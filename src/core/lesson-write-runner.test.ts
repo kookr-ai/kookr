@@ -1,13 +1,21 @@
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
-import { describe, expect, test } from 'vitest';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, test } from 'vitest';
 import { defaultSpoolDir, readPendingLessons } from './lesson-write-spool.js';
 import { createKbRememberWriteFn, runKbRemember } from './lesson-write-runner.js';
+
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 describe('runKbRemember', () => {
   test('TS-LESSON-001: sends the exact replay argv and lesson body to kb', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-kb-runner-'));
+    tempDirs.push(dir);
     const kbBin = join(dir, 'kb');
     const capturePath = join(dir, 'capture.json');
     await writeFile(
@@ -53,6 +61,7 @@ process.stdin.on('end', () => {
 
   test('TS-LESSON-003: preserves failure when replay resolves through the spool shim', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-kb-replay-shim-'));
+    tempDirs.push(dir);
     const realBinDir = join(dir, 'real-bin');
     const argvPath = join(dir, 'argv.txt');
     const stdinPath = join(dir, 'stdin.txt');
@@ -69,7 +78,7 @@ exit 17
     );
     await chmod(join(realBinDir, 'kb'), 0o755);
 
-    const repoBinDir = join(process.cwd(), 'bin');
+    const repoBinDir = fileURLToPath(new URL('../../bin', import.meta.url));
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       HOME: dir,
