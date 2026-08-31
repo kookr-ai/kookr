@@ -312,7 +312,7 @@ describe('ResourceWatchdogService', () => {
 
   test('TS-WATCHDOG-001: persisted OOM increase triggers once after restart', async () => {
     sample = healthySample({ oomKillTotal: 4, swapUsedPercent: 0 });
-    const { service } = makeService();
+    const { service, statePath } = makeService();
     await service.runOnce();
     expect(launches).toHaveLength(0);
 
@@ -342,6 +342,10 @@ describe('ResourceWatchdogService', () => {
       sampledAt: '2026-07-31T12:01:00.000Z',
       ageMs: 0,
       source: 'runtime_sample',
+    });
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline).toEqual({
+      total: 5,
+      sampledAt: '2026-07-31T12:01:00.000Z',
     });
   });
 

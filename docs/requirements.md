@@ -1170,13 +1170,13 @@ The system SHALL persist each readable resource-watchdog `oom_kill` sample so th
 - Given a persisted OOM baseline, when the first post-restart sample has a greater counter, then the watchdog emits exactly one `oom_kill_delta` trigger and advances the durable baseline.
 - Given legacy watchdog state without an OOM baseline, when the first readable sample arrives, then the watchdog establishes and persists a baseline without emitting `oom_kill_delta`.
 - Given a persisted OOM baseline, when a later readable counter is lower, then the watchdog rebaselines to the lower counter without emitting `oom_kill_delta`.
-- `GET /api/health.resourceWatchdog` reports the cached baseline value, sample time, age, and whether it came from persisted startup state or a sample observed by the current process, without reading `/proc` or disk on the request path.
+- `GET /api/health` reports the cached baseline value, sample time, age, and provenance in its `resourceWatchdog` field without reading `/proc` or disk on the request path.
 
 **Linked tests:** TS-WATCHDOG-001, TS-WATCHDOG-002, TS-WATCHDOG-003, TS-WATCHDOG-004, TS-WATCHDOG-005.
 
 **Dependencies:** R6.8.
 
-**Evidence:** `src/core/resource-watchdog-state.ts`, `src/server/resource-watchdog-service.ts`, `src/core/resource-watchdog-state.test.ts`, `src/server/resource-watchdog-service.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
+**Evidence:** `src/core/resource-watchdog-state.ts`, `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/resource-watchdog-state.test.ts`, `src/server/resource-watchdog-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
 
 ---
 

@@ -137,13 +137,13 @@ export interface ResourceWatchdogConfig {
   spawnBudgetWindowMs: number;
   /** Working directory for the spawned investigation/meta task. */
   taskCwd: string;
-  /** Absolute path to the persisted throttle/budget state file. */
+  /** Absolute path to the persisted throttle, budget, and OOM-baseline state file. */
   stateFilePath: string;
   /** Absolute path to the JSONL audit trail. */
   auditLogPath: string;
 }
 
-/** Durable throttle + rolling-budget state (persisted so restarts keep it). */
+/** Durable throttle, rolling-budget, and OOM-baseline state. */
 export interface ResourceWatchdogPersistedState {
   schemaVersion: typeof RESOURCE_WATCHDOG_STATE_SCHEMA_VERSION;
   /** ISO timestamps of spawns still inside the rolling window (or recent enough to matter for throttle). */

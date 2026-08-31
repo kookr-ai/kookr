@@ -17,8 +17,9 @@ preserves the last successful counts (issue #2912).
 The nullable `resourceWatchdog.oomKillBaseline` health object reports
 `{ total, sampledAt, ageMs, source }`. `source` is `persisted_state` until the
 current process observes a readable counter and `runtime_sample` afterward.
-This is a cached projection and never reads `/proc` or disk on the health
-request path (issue #2911).
+`ageMs` is the elapsed age in milliseconds, or `null` when the saved timestamp
+cannot be parsed. This is a cached projection and never reads `/proc` or disk
+on the health request path (issue #2911).
 
 | Endpoint | Description |
 | --- | --- |

@@ -1,9 +1,10 @@
 /**
  * Durable resource-watchdog state (issue #1724).
  *
- * Persists the 30-min throttle timestamp and the rolling 24h spawn budget in
- * `~/.kookr/resource-watchdog.state.json` so a server restart cannot re-arm a
- * just-fired watchdog and flood the host with investigation tasks.
+ * Persists the 30-min throttle timestamp, rolling 24h spawn budget, and last
+ * readable kernel OOM counter in `~/.kookr/resource-watchdog.state.json` so a
+ * server restart cannot re-arm a just-fired watchdog or lose pressure observed
+ * between samples.
  *
  * Read/write helpers are injectable for unit tests (no real disk required).
  */
