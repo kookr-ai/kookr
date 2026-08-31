@@ -17,7 +17,7 @@ import {
 import { LessonSpoolService, buildKbDegradedAlert } from './lesson-spool-service.js';
 
 describe('LessonSpoolService', () => {
-  test('drains spool when probe reports healthy', async () => {
+  test('TS-LESSON-002: drains a valid pending lesson when the probe reports healthy', async () => {
     const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-svc-'));
     await appendLessonWrite(
       spoolDir,
@@ -36,7 +36,13 @@ describe('LessonSpoolService', () => {
 
     const tick = await svc.tick();
     expect(tick.status).toBe('healthy');
-    expect(tick.drained?.written).toBe(1);
+    expect(tick.drained).toEqual({
+      attempted: 1,
+      written: 1,
+      failed: 0,
+      remaining: 0,
+    });
+    expect(tick.state.lastPendingCount).toBe(0);
     expect(written).toEqual(['recover-me']);
     expect(await readPendingLessons(spoolDir)).toHaveLength(0);
   });
