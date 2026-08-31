@@ -6,6 +6,7 @@ import { ResourceWatchdogService } from './resource-watchdog-service.js';
 import {
   FileResourceWatchdogStateStore,
   emptyResourceWatchdogState,
+  type ResourceWatchdogStateStore,
 } from '../core/resource-watchdog-state.js';
 import {
   JsonlResourceWatchdogAuditSink,
@@ -69,6 +70,7 @@ describe('ResourceWatchdogService', () => {
     config?: Partial<ResourceWatchdogConfig>;
     audit?: MemoryResourceWatchdogAuditSink;
     launchImpl?: (opts: LaunchOpts) => Promise<LaunchResult>;
+    stateStore?: ResourceWatchdogStateStore;
     getStaleDtachCount?: () => number | null;
     pressureWhileDisabledAlerter?: { evaluate: ReturnType<typeof vi.fn> };
   } = {}) {
@@ -89,7 +91,7 @@ describe('ResourceWatchdogService', () => {
     const service = new ResourceWatchdogService({
       getConfig: () => config,
       sampler: { sample: () => sample },
-      stateStore: new FileResourceWatchdogStateStore(statePath),
+      stateStore: opts.stateStore ?? new FileResourceWatchdogStateStore(statePath),
       auditSink: audit,
       launchTask,
       ...(opts.getStaleDtachCount ? { getStaleDtachCount: opts.getStaleDtachCount } : {}),
@@ -495,6 +497,180 @@ describe('ResourceWatchdogService', () => {
     await service.runOnce();
     expect(launches).toHaveLength(0);
     expect(audit.records.some((r) => r.action === 'suppress_throttled')).toBe(true);
+  });
+
+  test('TS-WATCHDOG-006: failed pre-launch reservation prevents launch and exposes bounded health', async () => {
+    sample = healthySample({ oomKillTotal: null, swapUsedPercent: 80 });
+    const audit = new MemoryResourceWatchdogAuditSink();
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const error = `reservation write failed: ${'x'.repeat(600)}`;
+    const stateStore: ResourceWatchdogStateStore = {
+      load: () => emptyResourceWatchdogState(),
+      save: () => { throw new Error(error); },
+    };
+    const { service } = makeService({ audit, launchImpl: launchTask, stateStore });
+
+    await service.runOnce();
+
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(audit.records.map((record) => record.action)).toEqual([
+      'trigger',
+      'spawn_persist_failed',
+    ]);
+    expect(audit.records.at(-1)?.error).toHaveLength(500);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'spawn_persist_failed',
+      throttleOpen: false,
+      spawnsIn24h: 1,
+      persistence: {
+        status: 'error',
+        reservationDurable: false,
+        consecutiveFailures: 1,
+        lastAttemptAt: '2026-07-31T12:00:00.000Z',
+        lastSuccessAt: null,
+        lastFailureAt: '2026-07-31T12:00:00.000Z',
+        lastError: expect.stringMatching(/^reservation write failed:/),
+      },
+    });
+    expect(service.getHealthSnapshot().persistence.lastError).toHaveLength(500);
+  });
+
+  test('TS-WATCHDOG-007: failed reservation keeps the next in-process tick suppressed', async () => {
+    sample = healthySample({ oomKillTotal: null, swapUsedPercent: 80 });
+    const audit = new MemoryResourceWatchdogAuditSink();
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const stateStore: ResourceWatchdogStateStore = {
+      load: () => emptyResourceWatchdogState(),
+      save: () => { throw new Error('disk unavailable'); },
+    };
+    const { service } = makeService({ audit, launchImpl: launchTask, stateStore });
+
+    await service.runOnce();
+    nowMs += 60_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: null,
+      swapUsedPercent: 90,
+    });
+    await service.runOnce();
+
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(audit.records.map((record) => record.action)).toEqual([
+      'trigger',
+      'spawn_persist_failed',
+      'suppress_throttled',
+    ]);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'suppress_throttled',
+      throttleOpen: false,
+      persistence: {
+        status: 'error',
+        reservationDurable: false,
+        consecutiveFailures: 2,
+      },
+    });
+  });
+
+  test('TS-WATCHDOG-008: restart with failed storage cannot claim or launch a durable reservation', async () => {
+    sample = healthySample({ oomKillTotal: null, swapUsedPercent: 80 });
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const stateStore: ResourceWatchdogStateStore = {
+      load: () => emptyResourceWatchdogState(),
+      save: () => { throw new Error('read-only filesystem'); },
+    };
+
+    const { service } = makeService({ launchImpl: launchTask, stateStore });
+    await service.runOnce();
+    const { service: restarted } = makeService({ launchImpl: launchTask, stateStore });
+    await restarted.runOnce();
+
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(restarted.getHealthSnapshot().persistence).toMatchObject({
+      status: 'error',
+      reservationDurable: false,
+      consecutiveFailures: 1,
+    });
+  });
+
+  test('TS-WATCHDOG-009: recovered storage permits exactly one launch after the throttle', async () => {
+    sample = healthySample({ oomKillTotal: null, swapUsedPercent: 80 });
+    let writable = false;
+    let durableState = emptyResourceWatchdogState();
+    const launchTask = vi.fn(async () => ({ task: { id: 'recovered-task' }, queued: false }));
+    const stateStore: ResourceWatchdogStateStore = {
+      load: () => durableState,
+      save: (state) => {
+        if (!writable) throw new Error('disk unavailable');
+        durableState = structuredClone(state);
+      },
+    };
+    const { service } = makeService({ launchImpl: launchTask, stateStore });
+
+    await service.runOnce();
+    expect(launchTask).not.toHaveBeenCalled();
+
+    writable = true;
+    nowMs += 60_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: null,
+      swapUsedPercent: 90,
+    });
+    await service.runOnce();
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(service.getHealthSnapshot().persistence).toMatchObject({
+      status: 'ok',
+      reservationDurable: true,
+      consecutiveFailures: 0,
+      lastSuccessAt: '2026-07-31T12:01:00.000Z',
+      lastError: null,
+    });
+
+    nowMs += 30 * 60 * 1000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: null,
+      swapUsedPercent: 90,
+    });
+    await service.runOnce();
+    await service.runOnce();
+
+    expect(launchTask).toHaveBeenCalledTimes(1);
+    expect(service.getHealthSnapshot().persistence.reservationDurable).toBe(true);
+  });
+
+  test('TS-WATCHDOG-010: post-launch task-id patch failure remains best-effort and throttled', async () => {
+    sample = healthySample({ oomKillTotal: null, swapUsedPercent: 80 });
+    let saveCalls = 0;
+    const launchTask = vi.fn(async () => ({ task: { id: 'launched-task' }, queued: false }));
+    const stateStore: ResourceWatchdogStateStore = {
+      load: () => emptyResourceWatchdogState(),
+      save: () => {
+        saveCalls += 1;
+        if (saveCalls === 2) throw new Error('task-id patch failed');
+      },
+    };
+    const { service, audit } = makeService({ audit: new MemoryResourceWatchdogAuditSink(), launchImpl: launchTask, stateStore });
+
+    await service.runOnce();
+
+    expect(launchTask).toHaveBeenCalledTimes(1);
+    expect(audit.records.map((record) => record.action)).toEqual(['trigger', 'spawn']);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'spawn',
+      lastSpawnTaskId: 'launched-task',
+      throttleOpen: false,
+      persistence: {
+        status: 'error',
+        reservationDurable: true,
+        consecutiveFailures: 1,
+        lastError: 'task-id patch failed',
+      },
+    });
+
+    nowMs += 60_000;
+    await service.runOnce();
+    expect(launchTask).toHaveBeenCalledTimes(1);
   });
 
   test('JSONL audit sink emits a line for spawn', async () => {

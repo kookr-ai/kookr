@@ -1193,6 +1193,23 @@ The system SHALL persist each readable resource-watchdog `oom_kill` sample so th
 
 **Evidence:** `src/core/resource-watchdog-state.ts`, `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/core/resource-watchdog-state.test.ts`, `src/server/resource-watchdog-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
 
+### R6.14: Fail Closed When a Resource-Watchdog Spawn Reservation Is Not Durable [#2902] — SHALL — `done`
+
+The system SHALL launch a resource-watchdog task only after its throttle reservation has been persisted successfully.
+
+**Acceptance criteria:**
+- Given a state-store write failure while reserving a spawn, the watchdog launches no task, keeps the in-memory throttle armed, and emits a distinct `spawn_persist_failed` audit decision.
+- Given a failed reservation, the next in-process tick remains throttled rather than retrying the launch on every sampling interval.
+- Given a restart while reservation storage remains unwritable, the new process does not report a durable reservation and does not launch a task without first completing a successful reservation write.
+- Given storage recovery, a successful reservation write permits exactly one launch; a later failure while patching the launched task ID remains best-effort and leaves the throttle armed.
+- `GET /api/health` reports bounded, cached resource-watchdog persistence status and the most recent write failure without reading disk on the request path.
+
+**Linked tests:** TS-WATCHDOG-006, TS-WATCHDOG-007, TS-WATCHDOG-008, TS-WATCHDOG-009, TS-WATCHDOG-010.
+
+**Dependencies:** R6.8, R6.13.
+
+**Evidence:** `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/resource-watchdog-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1636,6 +1653,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R6.11 | #2637 | SHALL | done | ops digest timerHealth / hookIngestion.p95LagMs / schedulesPausedByFailure |
 | R6.12 | #2912 | SHALL | done | background queue-feeder invent-class refresher, in-memory health projection |
 | R6.13 | #2911 | SHALL | done | resource-watchdog state, service, and cached health projection |
+| R6.14 | #2902 | SHALL | done | resource-watchdog fail-closed spawn reservation and persistence health |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

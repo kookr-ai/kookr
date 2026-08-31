@@ -39,6 +39,8 @@ import type {
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 
+const MAX_PERSISTENCE_ERROR_CHARS = 500;
+
 export interface ResourceWatchdogServiceDeps {
   getConfig: () => ResourceWatchdogConfig;
   sampler: ResourceWatchdogHostSampler;
@@ -97,6 +99,7 @@ export class ResourceWatchdogService {
   private oomKillBaselineSource: 'persisted_state' | 'runtime_sample' | null;
   private lastSample: ResourceWatchdogSample | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
+  private persistenceHealth: ResourceWatchdogHealthSnapshot['persistence'];
 
   constructor(deps: ResourceWatchdogServiceDeps) {
     this.getConfig = deps.getConfig;
@@ -117,6 +120,15 @@ export class ResourceWatchdogService {
     this.oomKillBaselineSource = this.state.oomKillBaseline === null
       ? null
       : 'persisted_state';
+    this.persistenceHealth = {
+      status: 'unknown',
+      reservationDurable: this.state.lastSpawnAt !== null,
+      consecutiveFailures: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    };
   }
 
   start(): void {
@@ -231,6 +243,7 @@ export class ResourceWatchdogService {
               : null,
             source: this.oomKillBaselineSource,
           },
+      persistence: { ...this.persistenceHealth },
     };
   }
 
@@ -420,7 +433,12 @@ export class ResourceWatchdogService {
       nowIso: this.nowIso(),
       triggerReasons: decision.triggers.map((t) => t.reason),
     });
-    this.persistState();
+    if (this.persistState() && this.state.lastSpawnAt !== null) {
+      this.persistenceHealth = {
+        ...this.persistenceHealth,
+        reservationDurable: true,
+      };
+    }
     this.auditSink.append(buildAuditRecord({
       action: 'suppress_throttled',
       timestamp: this.nowIso(),
@@ -470,7 +488,31 @@ export class ResourceWatchdogService {
       triggerReasons: decision.triggers.map((t) => t.reason),
       retainMs,
     });
-    this.persistState();
+    this.persistenceHealth = {
+      ...this.persistenceHealth,
+      reservationDurable: false,
+    };
+    if (!this.persistState()) {
+      this.lastDecision = 'spawn_persist_failed';
+      const error = this.persistenceHealth.lastError ?? 'unknown persistence failure';
+      this.auditSink.append(buildAuditRecord({
+        action: 'spawn_persist_failed',
+        timestamp: this.nowIso(),
+        sample,
+        triggers: decision.triggers,
+        kind: decision.kind,
+        error,
+        spawnsInWindow: decision.spawnsInWindow,
+      }));
+      this.logger.warn(
+        `[resource-watchdog] spawn refused because throttle reservation was not durable: ${error}`,
+      );
+      return;
+    }
+    this.persistenceHealth = {
+      ...this.persistenceHealth,
+      reservationDurable: true,
+    };
 
     const prompt = buildResourceWatchdogPrompt({
       kind: decision.kind,
@@ -534,14 +576,39 @@ export class ResourceWatchdogService {
     }
   }
 
-  private persistState(): void {
+  private persistState(): boolean {
+    const attemptedAt = this.nowIso();
     try {
       this.stateStore.save(this.state);
+      this.persistenceHealth = {
+        ...this.persistenceHealth,
+        status: 'ok',
+        consecutiveFailures: 0,
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: attemptedAt,
+        lastError: null,
+      };
+      return true;
     } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = (rawMessage || 'unknown persistence failure')
+        .slice(0, MAX_PERSISTENCE_ERROR_CHARS);
+      this.persistenceHealth = {
+        ...this.persistenceHealth,
+        status: 'error',
+        consecutiveFailures: Math.min(
+          Number.MAX_SAFE_INTEGER,
+          this.persistenceHealth.consecutiveFailures + 1,
+        ),
+        lastAttemptAt: attemptedAt,
+        lastFailureAt: attemptedAt,
+        lastError: message,
+      };
       this.logger.warn(
         '[resource-watchdog] failed to persist state:',
-        err instanceof Error ? err.message : err,
+        message,
       );
+      return false;
     }
   }
 
@@ -605,6 +672,15 @@ export function defaultResourceWatchdogHealthSnapshot(
     pressureWhileDisabledReason: null,
     autoEnableOnPressure,
     oomKillBaseline: null,
+    persistence: {
+      status: 'unknown',
+      reservationDurable: false,
+      consecutiveFailures: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    },
   };
 }
 
