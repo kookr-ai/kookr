@@ -1172,7 +1172,7 @@ The system SHALL persist each readable resource-watchdog `oom_kill` sample so th
 - Given a persisted OOM baseline, when a later readable counter is lower, then the watchdog rebaselines to the lower counter without emitting `oom_kill_delta`.
 - `GET /api/health.resourceWatchdog` reports the cached baseline value, sample time, age, and whether it came from persisted startup state or a sample observed by the current process, without reading `/proc` or disk on the request path.
 
-**Linked tests:** TS-WATCHDOG-001, TS-WATCHDOG-002, TS-WATCHDOG-003, TS-WATCHDOG-004.
+**Linked tests:** TS-WATCHDOG-001, TS-WATCHDOG-002, TS-WATCHDOG-003, TS-WATCHDOG-004, TS-WATCHDOG-005.
 
 **Dependencies:** R6.8.
 

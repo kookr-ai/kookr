@@ -349,12 +349,12 @@ describe('ResourceWatchdogService', () => {
     const statePath = join(dir, 'resource-watchdog.state.json');
     writeFileSync(statePath, JSON.stringify({
       schemaVersion: 1,
-      spawnTimestamps: [],
-      lastSpawnAt: null,
-      lastSpawnKind: null,
-      lastSpawnTaskId: null,
-      lastTriggerAt: null,
-      lastTriggerReasons: [],
+      spawnTimestamps: ['2026-07-31T10:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T10:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T10:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
       lastMetaReflectionAt: null,
     }), 'utf-8');
     sample = healthySample({ oomKillTotal: 7, swapUsedPercent: 0 });
@@ -363,9 +363,17 @@ describe('ResourceWatchdogService', () => {
     await service.runOnce();
 
     expect(launches).toHaveLength(0);
-    expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline).toEqual({
-      total: 7,
-      sampledAt: '2026-07-31T12:00:00.000Z',
+    expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toMatchObject({
+      spawnTimestamps: ['2026-07-31T10:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T10:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T10:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
+      oomKillBaseline: {
+        total: 7,
+        sampledAt: '2026-07-31T12:00:00.000Z',
+      },
     });
   });
 

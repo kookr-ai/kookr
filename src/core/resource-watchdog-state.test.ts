@@ -54,19 +54,44 @@ describe('FileResourceWatchdogStateStore', () => {
   test('TS-WATCHDOG-002: legacy state establishes a null OOM baseline on load', () => {
     writeFileSync(path, JSON.stringify({
       schemaVersion: 1,
-      spawnTimestamps: [],
-      lastSpawnAt: null,
-      lastSpawnKind: null,
-      lastSpawnTaskId: null,
-      lastTriggerAt: null,
-      lastTriggerReasons: [],
+      spawnTimestamps: ['2026-07-31T11:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T11:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T11:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
       lastMetaReflectionAt: null,
     }), 'utf-8');
 
     const loaded = new FileResourceWatchdogStateStore(path).load();
 
     expect(loaded.oomKillBaseline).toBeNull();
-    expect(loaded.spawnTimestamps).toEqual([]);
+    expect(loaded).toMatchObject({
+      spawnTimestamps: ['2026-07-31T11:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T11:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T11:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
+    });
+  });
+
+  test.each([
+    ['non-object', 42],
+    ['negative total', { total: -1, sampledAt: '2026-07-31T12:00:00.000Z' }],
+    ['fractional total', { total: 1.5, sampledAt: '2026-07-31T12:00:00.000Z' }],
+    ['non-number total', { total: '1', sampledAt: '2026-07-31T12:00:00.000Z' }],
+    ['non-string sampledAt', { total: 1, sampledAt: 42 }],
+  ])('invalid OOM baseline (%s) yields empty state (fail-open)', (_label, oomKillBaseline) => {
+    writeFileSync(path, JSON.stringify({
+      ...emptyResourceWatchdogState(),
+      lastSpawnTaskId: 'must-be-discarded',
+      oomKillBaseline,
+    }), 'utf-8');
+
+    expect(new FileResourceWatchdogStateStore(path).load()).toEqual(
+      emptyResourceWatchdogState(),
+    );
   });
 
   test('corrupt JSON yields empty state (fail-open)', () => {
