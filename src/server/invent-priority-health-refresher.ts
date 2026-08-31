@@ -7,6 +7,9 @@ import {
 /** Queue-feeder rollups are fresh enough at minute cadence and stay off health polls. */
 export const INVENT_PRIORITY_HEALTH_REFRESH_INTERVAL_MS = 60_000;
 
+/** Bound one ledger scan so a damaged or pathological file cannot run forever. */
+export const INVENT_PRIORITY_HEALTH_REFRESH_TIMEOUT_MS = 30_000;
+
 export interface InventPriorityClassHealthSnapshot extends InventPriorityClassHealth {
   /** Completion time of the last successful ledger scan. */
   generatedAt: string | null;
@@ -23,6 +26,7 @@ type InventPriorityHealthLoader = (
 export interface InventPriorityHealthRefresherDeps {
   kookrDir?: string;
   intervalMs?: number;
+  refreshTimeoutMs?: number;
   load?: InventPriorityHealthLoader;
   nowMs?: () => number;
   setIntervalFn?: typeof setInterval;
@@ -39,6 +43,7 @@ export interface InventPriorityHealthRefresherDeps {
 export class InventPriorityHealthRefresher {
   private readonly kookrDir: string | undefined;
   private readonly intervalMs: number;
+  private readonly refreshTimeoutMs: number;
   private readonly load: InventPriorityHealthLoader;
   private readonly nowMs: () => number;
   private readonly setIntervalFn: typeof setInterval;
@@ -57,6 +62,7 @@ export class InventPriorityHealthRefresher {
   constructor(deps: InventPriorityHealthRefresherDeps = {}) {
     this.kookrDir = deps.kookrDir;
     this.intervalMs = deps.intervalMs ?? INVENT_PRIORITY_HEALTH_REFRESH_INTERVAL_MS;
+    this.refreshTimeoutMs = deps.refreshTimeoutMs ?? INVENT_PRIORITY_HEALTH_REFRESH_TIMEOUT_MS;
     this.load = deps.load ?? loadInventPriorityClassHealth;
     this.nowMs = deps.nowMs ?? Date.now;
     this.setIntervalFn = deps.setIntervalFn ?? setInterval;
@@ -86,6 +92,7 @@ export class InventPriorityHealthRefresher {
       pending = this.load({
         ...(this.kookrDir !== undefined ? { kookrDir: this.kookrDir } : {}),
         windowHours: INVENT_PRIORITY_HEALTH_WINDOW_HOURS,
+        signal: AbortSignal.timeout(this.refreshTimeoutMs),
       }).then((counts) => {
         this.counts = counts;
         this.generatedAtMs = this.nowMs();

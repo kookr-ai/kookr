@@ -1160,6 +1160,8 @@ The system SHALL refresh the rolling 24-hour queue-feeder invent-class counts ou
 
 **Dependencies:** R6.8.
 
+**Evidence:** `src/server/invent-priority-health-refresher.ts` (single-flight publication and freshness metadata), `src/server/index.ts` (boot/shutdown lifecycle wiring), `src/server/routes/diagnostics-routes.ts` (in-memory health projection), `src/core/pipeline-starvation-state.ts` (ledger loading and refresh-error propagation), `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements

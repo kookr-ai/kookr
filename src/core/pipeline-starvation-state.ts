@@ -5,8 +5,11 @@
  * (user-scoped, same tree as other playbook-state artifacts).
  */
 
+import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { createInterface } from 'node:readline';
+import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import {
   defaultPipelineStarvationStateDir,
   effectiveStarvationScoutCooldownMs,
@@ -60,17 +63,72 @@ export interface InventPriorityClassHealth {
 /** Default lookback for invent-class health rollup from the queue-feeder ledger. */
 export const INVENT_PRIORITY_HEALTH_WINDOW_HOURS = 24;
 
+/** Lines parsed between cooperative event-loop yields during a ledger scan. */
+export const INVENT_PRIORITY_HEALTH_YIELD_EVERY_LINES = 1_000;
+
+function accumulateInventPriorityLine(
+  line: string,
+  cutoff: number,
+  counts: ReturnType<typeof emptyInventPriorityCounts>,
+): void {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  let row: Record<string, unknown>;
+  try {
+    row = JSON.parse(trimmed) as Record<string, unknown>;
+  } catch {
+    return;
+  }
+  const ts = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
+  if (!Number.isFinite(ts) || ts < cutoff) return;
+  const action = typeof row.action === 'string' ? row.action : '';
+  if (
+    action !== 'shred'
+    && action !== 'invent-product-wave'
+    && action !== 'emit-secondary'
+  ) {
+    return;
+  }
+  let klass: InventPriorityClass | null = null;
+  if (
+    row.inventPriorityClass === 'product'
+    || row.inventPriorityClass === 'micro'
+    || row.inventPriorityClass === 'other'
+  ) {
+    klass = row.inventPriorityClass;
+  } else if (action === 'invent-product-wave') {
+    klass = 'product';
+  } else if (action === 'shred' && row.productMetricBlocking === true) {
+    klass = 'product';
+  } else if (action === 'emit-secondary') {
+    klass = 'other';
+  }
+  if (!klass) return;
+  const n =
+    typeof row.leafCount === 'number' && Number.isFinite(row.leafCount) && row.leafCount > 0
+      ? Math.floor(row.leafCount)
+      : 1;
+  Object.assign(counts, accumulateInventPriorityCount(counts, klass, n));
+}
+
 /**
  * Roll invent-class counts from the queue-feeder decisions ledger (issue #2358).
  * Treats a missing ledger as empty and skips malformed rows. Other filesystem
  * failures reject so the background publisher can expose refresh failure while
- * retaining its last successful counts.
+ * retaining its last successful counts. Streams the ledger and yields between
+ * bounded batches so even a large background refresh cannot monopolize the
+ * server event loop.
  */
 export async function loadInventPriorityClassHealth(
   opts: {
     kookrDir?: string;
     nowMs?: number;
     windowHours?: number;
+    signal?: AbortSignal;
+    /** Test seam; production uses {@link INVENT_PRIORITY_HEALTH_YIELD_EVERY_LINES}. */
+    yieldEveryLines?: number;
+    /** Test seam for proving that request handling can overlap a real parse. */
+    yieldToEventLoop?: () => Promise<void>;
   } = {},
 ): Promise<InventPriorityClassHealth> {
   const nowMs = opts.nowMs ?? Date.now();
@@ -83,47 +141,31 @@ export async function loadInventPriorityClassHealth(
     '.kookr',
   );
   const path = queueFeederLedgerPath(kookrDir);
+  const yieldEveryLines = Math.max(
+    1,
+    Math.floor(opts.yieldEveryLines ?? INVENT_PRIORITY_HEALTH_YIELD_EVERY_LINES),
+  );
+  const yieldToEventLoop = opts.yieldToEventLoop ?? (async () => waitForImmediate());
   try {
-    const raw = await readFile(path, 'utf-8');
-    for (const line of raw.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let row: Record<string, unknown>;
-      try {
-        row = JSON.parse(trimmed) as Record<string, unknown>;
-      } catch {
-        continue;
+    opts.signal?.throwIfAborted();
+    const stream = createReadStream(path, {
+      encoding: 'utf-8',
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+    const lines = createInterface({ input: stream, crlfDelay: Infinity });
+    let scannedLines = 0;
+    try {
+      for await (const line of lines) {
+        opts.signal?.throwIfAborted();
+        accumulateInventPriorityLine(line, cutoff, counts);
+        scannedLines += 1;
+        if (scannedLines % yieldEveryLines === 0) {
+          await yieldToEventLoop();
+        }
       }
-      const ts = typeof row.ts === 'string' ? Date.parse(row.ts) : NaN;
-      if (!Number.isFinite(ts) || ts < cutoff) continue;
-      const action = typeof row.action === 'string' ? row.action : '';
-      if (
-        action !== 'shred'
-        && action !== 'invent-product-wave'
-        && action !== 'emit-secondary'
-      ) {
-        continue;
-      }
-      let klass: InventPriorityClass | null = null;
-      if (
-        row.inventPriorityClass === 'product'
-        || row.inventPriorityClass === 'micro'
-        || row.inventPriorityClass === 'other'
-      ) {
-        klass = row.inventPriorityClass;
-      } else if (action === 'invent-product-wave') {
-        klass = 'product';
-      } else if (action === 'shred' && row.productMetricBlocking === true) {
-        klass = 'product';
-      } else if (action === 'emit-secondary') {
-        klass = 'other';
-      }
-      if (!klass) continue;
-      const n =
-        typeof row.leafCount === 'number' && Number.isFinite(row.leafCount) && row.leafCount > 0
-          ? Math.floor(row.leafCount)
-          : 1;
-      Object.assign(counts, accumulateInventPriorityCount(counts, klass, n));
+    } finally {
+      lines.close();
+      stream.destroy();
     }
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;

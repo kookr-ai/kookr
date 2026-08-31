@@ -3147,6 +3147,7 @@ describe('diagnostics routes', () => {
       expect(body.controlPlane.collectionStatus).toBe('degraded');
       expect(body.controlPlane.erroredComponents).toEqual(['pipelineStarvation']);
       expect(body.agents).toBe(2);
+      expect((body as { pipelineStarvation?: unknown }).pipelineStarvation).toBeUndefined();
     });
 
     test('a slow refresh over a large queue-feeder ledger never runs on or delays health (#2912)', async () => {
@@ -3161,19 +3162,30 @@ describe('diagnostics routes', () => {
 
       let finishRefresh!: () => void;
       const refreshGate = new Promise<void>((resolve) => { finishRefresh = resolve; });
-      const load = vi.fn(async () => {
-        await refreshGate;
-        return pipelineStarvationState.loadInventPriorityClassHealth({
-          kookrDir: tempDir,
-          nowMs: Date.parse('2026-08-31T02:01:00.000Z'),
-        });
-      });
-      const refresher = new InventPriorityHealthRefresher({ load });
-      const refresh = refresher.refresh();
+      let markParsingStarted!: () => void;
+      const parsingStarted = new Promise<void>((resolve) => { markParsingStarted = resolve; });
+      let firstYield = true;
       const directLedgerRead = vi.spyOn(
         pipelineStarvationState,
         'loadInventPriorityClassHealth',
       );
+      const load = vi.fn(async () => {
+        return pipelineStarvationState.loadInventPriorityClassHealth({
+          kookrDir: tempDir,
+          nowMs: Date.parse('2026-08-31T02:01:00.000Z'),
+          yieldEveryLines: 1,
+          yieldToEventLoop: async () => {
+            if (!firstYield) return;
+            firstYield = false;
+            markParsingStarted();
+            await refreshGate;
+          },
+        });
+      });
+      const refresher = new InventPriorityHealthRefresher({ load });
+      const refresh = refresher.refresh();
+      await parsingStarted;
+      expect(directLedgerRead).toHaveBeenCalledTimes(1);
       const startedAt = performance.now();
 
       const res = await mkApp({
@@ -3186,7 +3198,7 @@ describe('diagnostics routes', () => {
 
       expect(res.status).toBe(200);
       expect(performance.now() - startedAt).toBeLessThan(2_500);
-      expect(directLedgerRead).not.toHaveBeenCalled();
+      expect(directLedgerRead).toHaveBeenCalledTimes(1);
       expect(load).toHaveBeenCalledTimes(1);
       const body = await res.json() as {
         pipelineStarvation?: { inventByPriorityClass?: InventPriorityClassHealthSnapshot };

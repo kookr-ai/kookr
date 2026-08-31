@@ -607,16 +607,20 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       deps.healthComponentBudgetMs ?? HEALTH_COMPONENT_BUDGET_MS,
     );
     recordComponentOutcome(pipelineStarvationOutcome.source, pipelineStarvationOutcome.name);
-    const pipelineStarvationRepos = pipelineStarvationOutcome.value ?? {};
-    // Issue #2912: this is an in-memory snapshot only. The process-scoped
-    // refresher owns boot/periodic ledger scans and single-flight publication.
-    const inventByPriorityClass = deps.inventPriorityHealth?.getSnapshot();
-    if (Object.keys(pipelineStarvationRepos).length > 0 || inventByPriorityClass) {
-      pipelineStarvationBlock = {
-        schemaVersion: 'pipeline-starvation.v1',
-        repos: pipelineStarvationRepos,
-        ...(inventByPriorityClass ? { inventByPriorityClass } : {}),
-      };
+    if (pipelineStarvationOutcome.value) {
+      const pipelineStarvationRepos = pipelineStarvationOutcome.value;
+      // Issue #2912: this is an in-memory snapshot only. The process-scoped
+      // refresher owns boot/periodic ledger scans and single-flight publication.
+      // Preserve the pre-existing soft-omit contract when the repo-state read
+      // fails; a cached invent snapshot must not fabricate a healthy empty block.
+      const inventByPriorityClass = deps.inventPriorityHealth?.getSnapshot();
+      if (Object.keys(pipelineStarvationRepos).length > 0 || inventByPriorityClass) {
+        pipelineStarvationBlock = {
+          schemaVersion: 'pipeline-starvation.v1',
+          repos: pipelineStarvationRepos,
+          ...(inventByPriorityClass ? { inventByPriorityClass } : {}),
+        };
+      }
     }
 
     const staleProcesses = getStaleProcessSummary();
