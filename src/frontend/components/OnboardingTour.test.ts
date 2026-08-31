@@ -121,6 +121,44 @@ describe('OnboardingTour readiness guidance', () => {
     expect(container.querySelector('[data-testid="onboarding-overlay"]')).toBeNull();
   });
 
+  test('only renders Check setup on the readiness card when both actions are wired', async () => {
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour, {
+        onCheckSetup: () => {},
+        onLaunchFirstTask: () => {},
+      }));
+    });
+    act(() => open());
+    await flush();
+
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+      });
+      await flush();
+    }
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('First-launch readiness');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+    });
+    await flush();
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Shortcuts that save clicks');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        `[aria-label="Step ${ONBOARDING_CARDS.length} of ${ONBOARDING_CARDS.length}"]`,
+      )?.click();
+    });
+    await flush();
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Findings and routing');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+    expect(container.querySelector('[data-testid="onboarding-launch-first-task"]')).not.toBeNull();
+  });
+
   test('surfaces a shortcut cheatsheet during onboarding', async () => {
     await act(async () => {
       root.render(React.createElement(OnboardingTour));

@@ -150,7 +150,10 @@ test.describe('Onboarding tour', () => {
     for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
     await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
 
-    await page.getByTestId('onboarding-check-setup').click();
+    await page
+      .getByTestId('onboarding-overlay')
+      .getByRole('button', { name: 'Check setup' })
+      .click();
 
     await expect(page.locator('.onboarding-tour')).not.toBeVisible();
     await expect(page.getByRole('dialog', { name: 'Diagnostics' })).toBeVisible();
