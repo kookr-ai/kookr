@@ -1261,7 +1261,40 @@ describe('resolveCodexCodeModeHost / missing-host preflight (issue #2001)', () =
     const result = await resolveCodexCodeModeHost('/opt/bin/codex', {
       resolveExecutablePath: async () => '/opt/bin/codex',
       access: async () => {},
+      realpath: async (path) => path,
     });
+    expect(result).toEqual({ ok: true, path: `/opt/bin/${CODEX_CODE_MODE_HOST_BIN}` });
+  });
+
+  test('reports absent when managed links resolve to different runtime pairs', async () => {
+    const result = await resolveCodexCodeModeHost('/opt/bin/codex', {
+      resolveExecutablePath: async () => '/opt/bin/codex',
+      access: async () => {},
+      realpath: async (path) => path.endsWith(CODEX_CODE_MODE_HOST_BIN)
+        ? '/opt/releases/pair-b/codex-code-mode-host'
+        : '/opt/releases/pair-a/codex',
+      readFile: async () => '{"schemaVersion":1}',
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toMatch(/different runtime pairs/);
+      expect(result.reason).toContain('pnpm codex:rebuild');
+    }
+  });
+
+  test('allows stock links that resolve to different directories without pair manifests', async () => {
+    const result = await resolveCodexCodeModeHost('/opt/bin/codex', {
+      resolveExecutablePath: async () => '/opt/bin/codex',
+      access: async () => {},
+      realpath: async (path) => path.endsWith(CODEX_CODE_MODE_HOST_BIN)
+        ? '/opt/vendor/host/codex-code-mode-host'
+        : '/opt/npm/codex/bin/codex',
+      readFile: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+    });
+
     expect(result).toEqual({ ok: true, path: `/opt/bin/${CODEX_CODE_MODE_HOST_BIN}` });
   });
 
