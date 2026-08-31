@@ -25,9 +25,9 @@ export interface RunKbRememberResult {
 }
 
 /**
- * Invoke `kb remember --kb=<kb> --title=<title> --stdin --yes` with the body
- * on stdin. Exit 0 → ok. Exit 3 (similarity guard) is NOT treated as degraded
- * — callers should not spool intentional refusals. Exit 1/other → failure.
+ * Invoke `kb remember --kb=<kb> --title=<title> --stdin --yes
+ * --no-check-similar` with the body on stdin. Exit 0 succeeds; any nonzero
+ * exit preserves the pending lesson for a later retry.
  */
 export function runKbRemember(opts: RunKbRememberOptions): Promise<RunKbRememberResult> {
   const bin = opts.kbBin ?? 'kb';
@@ -40,7 +40,6 @@ export function runKbRemember(opts: RunKbRememberOptions): Promise<RunKbRemember
     '--yes',
     // Drain path must not block on similarity when the index is recovering.
     // Source writes still go through the agent-facing path (default guard).
-    '--force',
     '--no-check-similar',
   ];
 
@@ -54,8 +53,14 @@ export function runKbRemember(opts: RunKbRememberOptions): Promise<RunKbRemember
 
     let child;
     try {
+      // This boundary already owns retry state. If `kb` resolves to Kookr's
+      // write-behind shim, re-spooling a failed replay can turn a duplicate
+      // append into exit 0 and make the drain delete an unwritten lesson.
       child = spawn(bin, args, {
-        env: opts.env ?? process.env,
+        env: {
+          ...(opts.env ?? process.env),
+          KOOKR_KB_SKIP_SPOOL: '1',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {

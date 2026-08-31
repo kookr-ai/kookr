@@ -89,6 +89,9 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   // bin/kb-spool-shim.js recursion depth counter — set only by the shim on
   // child env, never operator-configured. Aborts peer-shim chains at depth≥3.
   'KOOKR_KB_SHIM_DEPTH',
+  // Internal replay marker: the durable drain owns retry state, so the PATH
+  // shim must pass through instead of write-behind spooling the same lesson.
+  'KOOKR_KB_SKIP_SPOOL',
   'KOOKR_CANARY_SUBMIT_READY_MS',
   'KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE',
   // Experimental peer-to-peer collaboration feature (not user-configurable yet).

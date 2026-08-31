@@ -40,7 +40,7 @@ which tries `kb remember` first and spools on failure.
 
 - Server-side: `LessonSpoolService` probes `kb` every 5 minutes (and once ~15s
   after boot). On healthy, it drains the spool via
-  `kb remember … --force --no-check-similar`.
+  `kb remember … --stdin --yes --no-check-similar`.
 - Operator: `kookr lesson drain` (idempotent; re-running an empty spool is a
   no-op). `kookr lesson status` shows pending entries and the degradation
   streak.
