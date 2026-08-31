@@ -146,6 +146,7 @@ describe('QuickLaunch optimistic toast', () => {
   });
 
   test('R4b.4: a failed send keeps the full launch draft for a successful retry', async () => {
+    useKookrStore.setState({ defaultAgentType: 'codex-cli' });
     const sent: ClientMessage[] = [];
     let connected = false;
     const send = (msg: ClientMessage): boolean => {
@@ -171,6 +172,7 @@ describe('QuickLaunch optimistic toast', () => {
     await flush();
 
     const agentSelect = container.querySelector('.agent-type-select select') as HTMLSelectElement;
+    expect(agentSelect.value).toBe('codex-cli');
     await act(async () => { setSelectValue(agentSelect, 'claude-code'); });
     await flush();
 
@@ -204,6 +206,23 @@ describe('QuickLaunch optimistic toast', () => {
     expect(modelSelect.value).toBe('claude-fable-5');
     expect(recentPathStorage.getItem('kookr:recentPaths')).toBeNull();
 
+    // A reconnect replaces snapshot-backed store values. The launch draft is
+    // user-owned after a failed send, so those refreshes must not overwrite it.
+    const availableAgentTypes = useKookrStore.getState().availableAgentTypes;
+    await act(async () => {
+      useKookrStore.setState({
+        agents: [],
+        availableAgentTypes: [...availableAgentTypes],
+        serverCwd: '/tmp/reconnected-work',
+      });
+    });
+    await flush();
+    expect((container.querySelector('.quick-launch-cwd') as HTMLElement).textContent).toBe('/tmp/work');
+    expect(input.value).toBe('Fix the nav bug');
+    expect(agentSelect.value).toBe('claude-code');
+    expect(effortSelect.value).toBe('high');
+    expect(modelSelect.value).toBe('claude-fable-5');
+
     let { alerts } = useKookrStore.getState();
     expect(alerts).toHaveLength(1);
     expect(alerts[0].severity).toBe('error');
@@ -223,5 +242,34 @@ describe('QuickLaunch optimistic toast', () => {
     expect(alerts).toHaveLength(2);
     expect(alerts[1].severity).toBe('info');
     expect(alerts[1].summary).toBe('Launching task: Fix the nav bug');
+  });
+
+  test('R4b.4: successful dispatch still closes when recent-path storage fails', async () => {
+    const storageWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+    });
+    const sent: ClientMessage[] = [];
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(React.createElement(QuickLaunch, {
+        send: (msg) => { sent.push(msg); return true; },
+        onClose,
+      }));
+    });
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Fix the nav bug'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useKookrStore.getState().alerts.at(-1)).toMatchObject({
+      severity: 'info',
+      summary: 'Launching task: Fix the nav bug',
+    });
+    storageWrite.mockRestore();
   });
 });
