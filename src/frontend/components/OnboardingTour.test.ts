@@ -5,7 +5,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { NARRATED_DEMO_YOUTUBE_URL, ONBOARDING_CARDS, OnboardingTour } from './OnboardingTour.js';
-import { close, open } from '../store/onboarding-store.js';
+import { close, getSnapshot, open } from '../store/onboarding-store.js';
 
 async function flush() {
   await act(async () => { await Promise.resolve(); });
@@ -91,6 +91,72 @@ describe('OnboardingTour readiness guidance', () => {
     expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('First-launch readiness');
     expect(container.textContent).toContain('pnpm run doctor');
     expect(container.textContent).toContain('Missing agent binary or auth');
+  });
+
+  test('Check setup closes the tour before invoking the Diagnostics callback', async () => {
+    const callbackSnapshots: boolean[] = [];
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour, {
+        onCheckSetup: () => { callbackSnapshots.push(getSnapshot()); },
+      }));
+    });
+    act(() => open());
+    await flush();
+
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+      });
+      await flush();
+    }
+
+    const checkSetup = container.querySelector<HTMLButtonElement>('[data-testid="onboarding-check-setup"]');
+    expect(checkSetup?.textContent).toBe('Check setup');
+    await act(async () => {
+      checkSetup?.click();
+    });
+    await flush();
+
+    expect(callbackSnapshots).toEqual([false]);
+    expect(container.querySelector('[data-testid="onboarding-overlay"]')).toBeNull();
+  });
+
+  test('only renders Check setup on the readiness card when both actions are wired', async () => {
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour, {
+        onCheckSetup: () => {},
+        onLaunchFirstTask: () => {},
+      }));
+    });
+    act(() => open());
+    await flush();
+
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+    for (let i = 0; i < 3; i++) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+      });
+      await flush();
+    }
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('First-launch readiness');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).not.toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+    });
+    await flush();
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Shortcuts that save clicks');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        `[aria-label="Step ${ONBOARDING_CARDS.length} of ${ONBOARDING_CARDS.length}"]`,
+      )?.click();
+    });
+    await flush();
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Findings and routing');
+    expect(container.querySelector('[data-testid="onboarding-check-setup"]')).toBeNull();
+    expect(container.querySelector('[data-testid="onboarding-launch-first-task"]')).not.toBeNull();
   });
 
   test('surfaces a shortcut cheatsheet during onboarding', async () => {
