@@ -363,31 +363,37 @@ cascade had disabled.
    `schedules.schedulesPausedByFailure`.
 2. **Re-armed out of a cascade hold.** If a member is *already* parked in a
    cascade-origin hold (`enabled=false`, `stopReason=consecutive_failures`,
-   `operatorHold=true` — e.g. persisted from before this fix), the critical
-   re-arm (`decideCriticalScheduleRearm`) re-enables it *through* the
-   `operatorHold`, because `#2353` sets that hold on every auto-pause and a
-   cascade hold is otherwise indistinguishable from a genuine park.
+   `operatorHold=true`, with daemon or legacy untagged provenance — e.g.
+   persisted from before this fix), the critical re-arm
+   (`decideCriticalScheduleRearm`) re-enables it *through* the `operatorHold`.
+   An explicit `holdSource=operator` always wins, even if a stale
+   `consecutive_failures` reason remains.
 
 **Interaction with `#2520` provenance re-arm.** `#2520` stamps each hold with its
-origin so a cascade-origin `operatorHold` can be told apart from an operator
-park and self-clear once a fix is live. The bootstrap tier is the *bootstrap*
-for that machinery: it keeps the merge watchdog and (once it exists) the
-provenance re-arm executor alive **through** the cascade, so the fix that
-teaches the whole fleet to self-clear can always land. Concretely: a root-cause
-fix merged to main → the always-alive watchdog lands it → `#2520` provenance
-then lets the rest of the parked fleet self-clear. Until `#2520` ships, protection
-(2) uses the coarse `stopReason=consecutive_failures` signal as the cascade
-proxy; when `#2520` lands, prefer its explicit provenance and keep this tier as
-the floor underneath it.
+origin. `decideCriticalScheduleRearm` consumes that provenance so a
+cascade-origin hold can self-clear while an operator park stays authoritative.
+Legacy rows without provenance may still use `stopReason=consecutive_failures`
+as the narrow cascade proxy. The bootstrap tier keeps the merge watchdog alive
+through that cascade so the fix that teaches the rest of the fleet to
+self-clear can always land.
+
+**Persistence retry.** If the persistence-backed enable rejects, Kookr retries
+only that schedule twice on later ticks: three attempts total, at least 60
+seconds apart. Before every attempt it rechecks that the schedule still exists,
+remains allowlisted, has no authoritative operator-origin hold, and has trigger
+budget. A change to any of those conditions cancels the pending retry.
+Exhaustion is written to the post-recovery result and log. An audit-only failure
+after a successful enable is reported separately and never repeats the enable.
 
 **What is NOT changed.** The general fleet's fail-closed behavior is
 **unchanged** — every non-member schedule still auto-pauses on a
 `consecutive_failures` streak and still requires operator `kookr schedule
 enable`, exactly as section 3a describes. A **genuine operator park** of a
-bootstrap member (a manual disable, or any hold whose `stopReason` is not
-`consecutive_failures`) is still respected and will **not** be auto-re-armed.
-The floor only ever keeps a hand-audited handful of recovery-critical schedules
-alive; it never weakens fail-closed for anything else.
+bootstrap member (`holdSource=operator`, a manual disable, or any hold whose
+`stopReason` is not `consecutive_failures`) is still respected and will **not**
+be auto-re-armed. Trigger exhaustion also takes precedence over the bootstrap
+floor. The floor only ever keeps a hand-audited handful of recovery-critical
+schedules alive; it never weakens fail-closed for anything else.
 
 ---
 

@@ -13,6 +13,8 @@ export interface AppendAuditRowOptions {
   maxBytes?: number;
   /** Override default rotatedGenerations (tests / specialized sinks). */
   rotatedGenerations?: number;
+  /** Observe a swallowed write failure without changing the no-throw contract. */
+  onError?: (error: unknown) => void;
 }
 
 /**
@@ -43,5 +45,10 @@ export async function appendAuditRow(
     });
   } catch (err) {
     console.warn('[audit-log] failed to append audit row:', err);
+    try {
+      options.onError?.(err);
+    } catch (observerError) {
+      console.warn('[audit-log] failure observer threw:', observerError);
+    }
   }
 }

@@ -14,9 +14,10 @@
  *      persist the UTC-day key or stamp `lastStarvationScoutAt`, so the next
  *      tick can retry (issue #2744). No pay-per-token API-key auth path.
  *
- * Pure decisions live in `core/critical-schedule-rearm` and
- * `core/post-recovery-queue-fill`. This module owns timer, durable day keys,
- * audit rows, and launches (reusing starvation scout/batch helpers).
+ * Eligibility decisions live in `core/critical-schedule-rearm` and
+ * `core/post-recovery-queue-fill`. This module owns timer and retry
+ * bookkeeping, durable day keys, audit rows, and launches (reusing starvation
+ * scout/batch helpers).
  */
 
 import { mkdir, readFile } from 'node:fs/promises';
@@ -63,6 +64,10 @@ export const POST_RECOVERY_PROVENANCE = 'post-recovery' as const;
 
 /** Default tick period — recovery is not urgent; 60s matches idle-refinery. */
 export const DEFAULT_POST_RECOVERY_TICK_MS = 60_000;
+/** Fixed delay keeps persistence retries sparse and predictable. */
+const CRITICAL_REARM_RETRY_DELAY_MS = 60_000;
+/** Initial attempt plus two later-tick retries. */
+const CRITICAL_REARM_MAX_ATTEMPTS = 3;
 
 export interface ProductBatchRepoCandidate {
   repo: string;
@@ -103,6 +108,14 @@ export interface PostRecoveryServiceDeps {
 export interface RearmResult {
   rearmed: Array<{ id: string; name: string }>;
   skipped: Array<{ id: string; name: string; reason: string }>;
+  auditFailed: Array<{ id: string; name: string; reason: string }>;
+}
+
+interface CriticalRearmRetryState {
+  id: string;
+  name: string;
+  attempts: number;
+  nextAttemptAt: number;
 }
 
 export interface QueueFillKickResult {
@@ -118,11 +131,12 @@ export class PostRecoveryService {
   private ticking = false;
   private stopped = false;
   /**
-   * Critical-schedule re-arm runs once per process lifetime (boot recovery).
-   * Continuous re-arm every tick would thrash intentional Pause and spam audit.
-   * Queue-fill kicks still run every tick (UTC-day gated).
+   * The fleet-wide pass runs once per process lifetime. Only schedule IDs whose
+   * persistence-backed enable failed remain eligible on bounded later ticks.
+   * This avoids reprocessing successful schedules or fighting operator Pause.
    */
-  private criticalRearmDone = false;
+  private criticalRearmInitialPassDone = false;
+  private readonly criticalRearmRetries = new Map<string, CriticalRearmRetryState>();
   private readonly deps: PostRecoveryServiceDeps;
 
   constructor(deps: PostRecoveryServiceDeps) {
@@ -177,7 +191,7 @@ export class PostRecoveryService {
    */
   async tick(): Promise<{ rearm: RearmResult; kicks: QueueFillKickResult[] }> {
     const empty: { rearm: RearmResult; kicks: QueueFillKickResult[] } = {
-      rearm: { rearmed: [], skipped: [] },
+      rearm: { rearmed: [], skipped: [], auditFailed: [] },
       kicks: [],
     };
     if (this.stopped) return empty;
@@ -191,10 +205,9 @@ export class PostRecoveryService {
         return empty;
       }
 
-      let rearm: RearmResult = { rearmed: [], skipped: [] };
-      if (!this.criticalRearmDone) {
+      let rearm: RearmResult = { rearmed: [], skipped: [], auditFailed: [] };
+      if (!this.criticalRearmInitialPassDone || this.criticalRearmRetries.size > 0) {
         rearm = await this.rearmCriticalSchedules();
-        this.criticalRearmDone = true;
       }
       const kicks = await this.runQueueFillKicks();
       return { rearm, kicks };
@@ -209,53 +222,153 @@ export class PostRecoveryService {
 
   /** Re-enable allowlisted critical schedules without operator hold. */
   async rearmCriticalSchedules(): Promise<RearmResult> {
-    const schedules = this.deps.listSchedules();
-    const views: CriticalRearmScheduleView[] = schedules.map((s) => ({
-      id: s.id,
-      name: s.name,
-      enabled: s.enabled,
-      operatorHold: s.operatorHold,
-      stopReason: s.stopReason,
-      playbook: { path: s.playbook.path },
-    }));
-
     const rearmed: RearmResult['rearmed'] = [];
     const skipped: RearmResult['skipped'] = [];
-    const nowMs = this.now();
+    const auditFailed: RearmResult['auditFailed'] = [];
+    const initialPass = !this.criticalRearmInitialPassDone;
+    const candidates: Array<{ id: string; retry?: CriticalRearmRetryState }> = [];
 
-    for (const schedule of views) {
-      const decision = decideCriticalScheduleRearm(schedule);
+    if (initialPass) {
+      for (const schedule of this.deps.listSchedules()) {
+        candidates.push({ id: schedule.id });
+      }
+      this.criticalRearmInitialPassDone = true;
+    } else {
+      for (const retry of this.criticalRearmRetries.values()) {
+        candidates.push({ id: retry.id, retry });
+      }
+    }
+    candidates.sort((a, b) => a.id.localeCompare(b.id));
+
+    for (const candidate of candidates) {
+      const retry = candidate.retry;
+      if (retry && this.now() < retry.nextAttemptAt) continue;
+
+      // Read immediately before each attempt. Earlier persistence calls in
+      // this loop may yield long enough for an operator to hold, remove, or
+      // exhaust a later schedule.
+      const live = this.deps
+        .listSchedules()
+        .find((schedule) => schedule.id === candidate.id);
+      if (!live) {
+        if (retry) {
+          const reason = 'schedule_removed';
+          this.criticalRearmRetries.delete(retry.id);
+          skipped.push({
+            id: retry.id,
+            name: retry.name,
+            reason: `retry_cancelled:${reason}`,
+          });
+          this.deps.log?.(
+            `[post-recovery] re-arm retry cancelled for "${retry.name}" (${retry.id}): ${reason}`,
+          );
+        }
+        continue;
+      }
+      const schedule: CriticalRearmScheduleView = {
+        id: live.id,
+        name: live.name,
+        enabled: live.enabled,
+        operatorHold: live.operatorHold,
+        holdSource: live.holdSource,
+        stopReason: live.stopReason,
+        maxTriggers: live.maxTriggers,
+        remainingTriggers: live.remainingTriggers,
+        playbook: { path: live.playbook.path },
+      };
+      // A rejected ScheduleService persistence call may already have mutated
+      // the in-memory row to enabled=true. Retry provenance is authoritative
+      // for that one ID, while every other live eligibility field is re-read.
+      const decision = decideCriticalScheduleRearm(
+        retry ? { ...schedule, enabled: false } : schedule,
+      );
       if (!decision.rearm) {
+        if (retry) {
+          this.criticalRearmRetries.delete(schedule.id);
+          const reason = `retry_cancelled:${decision.reason}`;
+          skipped.push({ id: retry.id, name: retry.name, reason });
+          this.deps.log?.(
+            `[post-recovery] re-arm retry cancelled for "${retry.name}" (${retry.id}): ${decision.reason}`,
+          );
+          continue;
+        }
         // Only audit/skip-log allowlisted holds so noise stays low.
         if (decision.reason === 'operator_hold') {
           skipped.push({ id: schedule.id, name: schedule.name, reason: decision.reason });
         }
         continue;
       }
+
+      const attempt = (retry?.attempts ?? 0) + 1;
+      const maxAttempts = CRITICAL_REARM_MAX_ATTEMPTS;
       try {
         await this.deps.setEnabled(schedule.id, true);
-        rearmed.push({ id: schedule.id, name: schedule.name });
-        this.deps.log?.(
-          `[post-recovery] re-armed critical schedule "${schedule.name}" (${schedule.id})`,
-        );
-        await appendAuditRow(this.auditPath(), {
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (attempt >= maxAttempts) {
+          this.criticalRearmRetries.delete(schedule.id);
+          skipped.push({
+            id: schedule.id,
+            name: schedule.name,
+            reason: `retry_exhausted:attempt_${attempt}_of_${maxAttempts}:${message}`,
+          });
+          this.deps.log?.(
+            `[post-recovery] re-arm retry exhausted for "${schedule.name}" (${schedule.id}) after ${attempt} attempts: ${message}`,
+          );
+        } else {
+          this.criticalRearmRetries.set(schedule.id, {
+            id: schedule.id,
+            name: schedule.name,
+            attempts: attempt,
+            nextAttemptAt: this.now() + CRITICAL_REARM_RETRY_DELAY_MS,
+          });
+          skipped.push({
+            id: schedule.id,
+            name: schedule.name,
+            reason: `retry_scheduled:attempt_${attempt}_of_${maxAttempts}:${message}`,
+          });
+          this.deps.log?.(
+            `[post-recovery] re-arm failed for "${schedule.name}" (${schedule.id}) on attempt ${attempt}/${maxAttempts}: ${message}; retrying in ${CRITICAL_REARM_RETRY_DELAY_MS}ms`,
+          );
+        }
+        continue;
+      }
+
+      this.criticalRearmRetries.delete(schedule.id);
+      rearmed.push({ id: schedule.id, name: schedule.name });
+      this.deps.log?.(
+        `[post-recovery] re-armed critical schedule "${schedule.name}" (${schedule.id})`,
+      );
+      const rearmedAt = this.now();
+      let auditDidFail = false;
+      let auditError: unknown;
+      await appendAuditRow(
+        this.auditPath(),
+        {
           action: 'critical_schedule_rearm',
           provenance: POST_RECOVERY_PROVENANCE,
           scheduleId: schedule.id,
           scheduleName: schedule.name,
           playbookPath: schedule.playbook.path,
-          at: new Date(nowMs).toISOString(),
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        skipped.push({ id: schedule.id, name: schedule.name, reason: `error:${message}` });
+          at: new Date(rearmedAt).toISOString(),
+        },
+        {
+          onError: (error) => {
+            auditDidFail = true;
+            auditError = error;
+          },
+        },
+      );
+      if (auditDidFail) {
+        const message = auditError instanceof Error ? auditError.message : String(auditError);
+        auditFailed.push({ id: schedule.id, name: schedule.name, reason: message });
         this.deps.log?.(
-          `[post-recovery] re-arm failed for "${schedule.name}": ${message}`,
+          `[post-recovery] re-arm audit failed for "${schedule.name}" (${schedule.id}) after enable succeeded: ${message}`,
         );
       }
     }
 
-    return { rearmed, skipped };
+    return { rearmed, skipped, auditFailed };
   }
 
   /** Capacity-gated, per-repo, once-per-UTC-day scout kicks. */

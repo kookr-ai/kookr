@@ -89,15 +89,37 @@ describe('appendAuditRow', () => {
 
   test('never throws when the write fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const onError = vi.fn();
     // Parent path is a file, so mkdir/append fails.
     const blocker = join(tempDir, 'not-a-dir');
     writeFileSync(blocker, 'file');
     const badPath = join(blocker, 'audit.jsonl');
 
-    await expect(appendAuditRow(badPath, { type: 'should-fail' })).resolves.toBeUndefined();
+    await expect(
+      appendAuditRow(badPath, { type: 'should-fail' }, { onError }),
+    ).resolves.toBeUndefined();
     expect(warn).toHaveBeenCalledWith(
       '[audit-log] failed to append audit row:',
       expect.anything(),
+    );
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(expect.anything());
+  });
+
+  test('keeps the no-throw contract when a failure observer throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const blocker = join(tempDir, 'not-a-dir');
+    writeFileSync(blocker, 'file');
+    const badPath = join(blocker, 'audit.jsonl');
+
+    await expect(
+      appendAuditRow(badPath, { type: 'should-fail' }, {
+        onError: () => { throw new Error('observer failed'); },
+      }),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      '[audit-log] failure observer threw:',
+      expect.objectContaining({ message: 'observer failed' }),
     );
   });
 
