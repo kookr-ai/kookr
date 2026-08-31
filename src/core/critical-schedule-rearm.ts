@@ -201,9 +201,6 @@ export function decideCriticalScheduleRearm(
   ) {
     return { rearm: false, reason: 'trigger_limit_exhausted' };
   }
-  if (bootstrapCascadeHold) {
-    return { rearm: true };
-  }
   return { rearm: true };
 }
 

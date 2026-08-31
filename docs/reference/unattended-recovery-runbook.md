@@ -380,10 +380,10 @@ self-clear can always land.
 **Persistence retry.** If the persistence-backed enable rejects, Kookr retries
 only that schedule twice on later ticks: three attempts total, at least 60
 seconds apart. Before every attempt it rechecks that the schedule still exists,
-remains allowlisted, has no operator hold, and has trigger budget. A change to
-any of those conditions cancels the pending retry. Exhaustion is written to the
-post-recovery result and log. An audit-only failure after a successful enable is
-reported separately and never repeats the enable.
+remains allowlisted, has no authoritative operator-origin hold, and has trigger
+budget. A change to any of those conditions cancels the pending retry.
+Exhaustion is written to the post-recovery result and log. An audit-only failure
+after a successful enable is reported separately and never repeats the enable.
 
 **What is NOT changed.** The general fleet's fail-closed behavior is
 **unchanged** — every non-member schedule still auto-pauses on a
