@@ -62,8 +62,9 @@ export const INVENT_PRIORITY_HEALTH_WINDOW_HOURS = 24;
 
 /**
  * Roll invent-class counts from the queue-feeder decisions ledger (issue #2358).
- * Soft-fails missing/corrupt files; only counts invent/shred/secondary emits
- * that carry inventPriorityClass (or infers product for invent-product-wave).
+ * Treats a missing ledger as empty and skips malformed rows. Other filesystem
+ * failures reject so the background publisher can expose refresh failure while
+ * retaining its last successful counts.
  */
 export async function loadInventPriorityClassHealth(
   opts: {
@@ -125,9 +126,7 @@ export async function loadInventPriorityClassHealth(
       Object.assign(counts, accumulateInventPriorityCount(counts, klass, n));
     }
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-      // Soft-fail corrupt/missing ledger — health still returns zeros.
-    }
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
   return {
     product: counts.product,
