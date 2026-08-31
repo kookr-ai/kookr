@@ -1381,6 +1381,19 @@ The system SHALL preserve a playbook's configured completion-signal policy when 
 
 **Evidence:** `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, and `src/server/schedule-runner.test.ts`.
 
+### R10.7: Retry Failed Recovery-Critical Schedule Re-arms [F11.8, #2900] — SHALL — `done`
+
+The system SHALL retry a failed persistence-backed enable of an allowlisted recovery-critical schedule without repeating schedules whose enables already succeeded.
+
+**Acceptance criteria:**
+- The initial enable plus later-tick retries are limited to three total attempts per schedule, with at least 60 seconds between attempts
+- Each retry re-reads current schedule state and cancels when the schedule was removed, gained an operator hold, left the recovery allowlist, or exhausted its trigger limit
+- A rejected persistence write remains retryable even when the failed enable already mutated the in-memory schedule to `enabled: true`
+- A resolved enable is never repeated solely because its audit append failed
+- Retry exhaustion produces both a terminal result reason and a log naming the schedule and attempt limit
+
+**Evidence:** `src/server/post-recovery-service.ts` (bounded per-schedule retry state and separate audit failure reporting), `src/core/critical-schedule-rearm.ts` (live hold and trigger-limit eligibility), `src/core/audit-log.ts` (non-throwing failure observer), and `src/server/post-recovery-service.test.ts` (retry, cancellation, exhaustion, and audit-only regressions).
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1638,6 +1651,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R10.4 | F11.7 | SHALL | done | SchedulesDialog rollup glance, schedule-api, schedule-format |
 | R10.5 | #2893 | SHALL | done | SchedulesDialog current-effect guard and overlap regressions |
 | R10.6 | #2904 | SHALL | done | schedule-validator and schedule-runner completion-policy propagation |
+| R10.7 | F11.8, #2900 | SHALL | done | post-recovery-service bounded critical re-arm retries |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |

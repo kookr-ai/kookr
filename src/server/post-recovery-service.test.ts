@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -163,6 +163,237 @@ describe('PostRecoveryService', () => {
     expect(row.action).toBe('critical_schedule_rearm');
     expect(row.provenance).toBe(POST_RECOVERY_PROVENANCE);
     expect(row.scheduleId).toBe('eff');
+  });
+
+  it('R10.7: retries only a failed enable on a later tick, even after in-memory mutation', async () => {
+    const schedules = [
+      schedule({
+        id: 'persisted',
+        name: 'Lucy Orchestration Effectiveness',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+      schedule({
+        id: 'retry',
+        name: 'Lucy Product Surface Journey',
+        enabled: false,
+        playbook: { path: 'lucy-product-surface-journey.md', parameters: {} },
+      }),
+    ];
+    let retryAttempts = 0;
+    const setEnabled = vi.fn(async (id: string) => {
+      const current = schedules.find((candidate) => candidate.id === id)!;
+      current.enabled = true;
+      if (id === 'retry' && ++retryAttempts === 1) {
+        // ScheduleService mutates memory before awaiting persistence. The retry
+        // must retain failure provenance instead of trusting enabled=true.
+        throw new Error('transient disk rejection');
+      }
+    });
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+      criticalRearmRetryDelayMs: 60_000,
+      criticalRearmMaxAttempts: 3,
+    });
+
+    const first = await service.tick();
+    expect(first.rearm.rearmed).toEqual([
+      { id: 'persisted', name: 'Lucy Orchestration Effectiveness' },
+    ]);
+    expect(first.rearm.skipped).toEqual([
+      {
+        id: 'retry',
+        name: 'Lucy Product Surface Journey',
+        reason: 'retry_scheduled:attempt_1_of_3:transient disk rejection',
+      },
+    ]);
+
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledTimes(2);
+
+    nowMs += 60_000;
+    const retry = await service.tick();
+    expect(retry.rearm.rearmed).toEqual([
+      { id: 'retry', name: 'Lucy Product Surface Journey' },
+    ]);
+    expect(setEnabled.mock.calls.filter(([id]) => id === 'persisted')).toHaveLength(1);
+    expect(setEnabled.mock.calls.filter(([id]) => id === 'retry')).toHaveLength(2);
+  });
+
+  it.each([
+    {
+      name: 'operator hold',
+      mutate: (schedules: Schedule[]) => {
+        schedules[0]!.enabled = false;
+        schedules[0]!.operatorHold = true;
+        schedules[0]!.holdSource = 'operator';
+      },
+      reason: 'retry_cancelled:operator_hold',
+    },
+    {
+      name: 'schedule removal',
+      mutate: (schedules: Schedule[]) => {
+        schedules.splice(0, 1);
+      },
+      reason: 'retry_cancelled:schedule_removed',
+    },
+    {
+      name: 'trigger exhaustion',
+      mutate: (schedules: Schedule[]) => {
+        schedules[0]!.enabled = false;
+        schedules[0]!.maxTriggers = 1;
+        schedules[0]!.remainingTriggers = 0;
+      },
+      reason: 'retry_cancelled:trigger_limit_exhausted',
+    },
+    {
+      name: 'allowlist removal',
+      mutate: (schedules: Schedule[]) => {
+        schedules[0]!.enabled = false;
+        schedules[0]!.name = 'Ordinary nightly check';
+        schedules[0]!.playbook.path = 'ordinary-check.md';
+      },
+      reason: 'retry_cancelled:not_allowlisted',
+    },
+  ])('R10.7: cancels a pending retry after $name', async ({ mutate, reason }) => {
+    const schedules = [
+      schedule({
+        id: 'retry',
+        name: 'Lucy Orchestration Effectiveness',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+    ];
+    const setEnabled = vi.fn(async () => {
+      schedules[0]!.enabled = true;
+      throw new Error('transient disk rejection');
+    });
+    const logs: string[] = [];
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+      log: (line) => logs.push(line),
+      criticalRearmRetryDelayMs: 60_000,
+      criticalRearmMaxAttempts: 3,
+    });
+
+    await service.tick();
+    mutate(schedules);
+    nowMs += 60_000;
+    const cancelled = await service.tick();
+
+    expect(cancelled.rearm.skipped).toEqual([
+      { id: 'retry', name: 'Lucy Orchestration Effectiveness', reason },
+    ]);
+    expect(setEnabled).toHaveBeenCalledOnce();
+    expect(logs).toContain(
+      `[post-recovery] re-arm retry cancelled for "Lucy Orchestration Effectiveness" (retry): ${reason.replace('retry_cancelled:', '')}`,
+    );
+
+    nowMs += 60_000;
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledOnce();
+  });
+
+  it('R10.7: reports terminal exhaustion after three total enable attempts', async () => {
+    const setEnabled = vi.fn(async () => {
+      throw new Error('persistent disk rejection');
+    });
+    const logs: string[] = [];
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'retry',
+          name: 'Lucy Orchestration Effectiveness',
+          enabled: false,
+          playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+        }),
+      ],
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+      log: (line) => logs.push(line),
+      criticalRearmRetryDelayMs: 60_000,
+      criticalRearmMaxAttempts: 3,
+    });
+
+    await service.tick();
+    nowMs += 60_000;
+    await service.tick();
+    nowMs += 60_000;
+    const exhausted = await service.tick();
+
+    expect(exhausted.rearm.skipped).toEqual([
+      {
+        id: 'retry',
+        name: 'Lucy Orchestration Effectiveness',
+        reason: 'retry_exhausted:attempt_3_of_3:persistent disk rejection',
+      },
+    ]);
+    expect(logs).toContain(
+      '[post-recovery] re-arm retry exhausted for "Lucy Orchestration Effectiveness" (retry) after 3 attempts: persistent disk rejection',
+    );
+
+    nowMs += 60_000;
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledTimes(3);
+  });
+
+  it('R10.7: an audit-only failure never repeats a successful enable', async () => {
+    const schedules = [
+      schedule({
+        id: 'enabled',
+        name: 'Lucy Orchestration Effectiveness',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+    ];
+    const setEnabled = vi.fn(async () => {
+      schedules[0]!.enabled = true;
+    });
+    const logs: string[] = [];
+    await mkdir(join(tempDir, 'audit.jsonl'));
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+      log: (line) => logs.push(line),
+      criticalRearmRetryDelayMs: 60_000,
+      criticalRearmMaxAttempts: 3,
+    });
+
+    const first = await service.tick();
+    expect(first.rearm.rearmed).toEqual([
+      { id: 'enabled', name: 'Lucy Orchestration Effectiveness' },
+    ]);
+    expect(first.rearm.auditFailed).toHaveLength(1);
+    expect(first.rearm.auditFailed[0]).toMatchObject({
+      id: 'enabled',
+      name: 'Lucy Orchestration Effectiveness',
+    });
+    expect(logs.some((line) => line.includes('re-arm audit failed'))).toBe(true);
+
+    nowMs += 60_000;
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledOnce();
   });
 
   it('does not re-arm when operatorHold is set', async () => {

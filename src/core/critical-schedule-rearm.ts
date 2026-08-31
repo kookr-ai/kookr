@@ -103,8 +103,13 @@ export interface CriticalRearmScheduleView {
    * re-enable the schedule. Cleared when the operator re-enables manually.
    */
   operatorHold?: boolean;
+  /** Distinguishes an explicit operator park from a daemon-origin hold. */
+  holdSource?: 'operator' | 'daemon';
   /** Auto-exhaustion stop reason — not ops drift; leave alone. */
   stopReason?: string;
+  /** Finite-trigger state is re-checked before a failed enable is retried. */
+  maxTriggers?: number;
+  remainingTriggers?: number;
   playbook: { path: string };
 }
 
@@ -180,6 +185,7 @@ export function decideCriticalScheduleRearm(
   if (
     isBootstrapCriticalSchedule(schedule)
     && schedule.operatorHold === true
+    && schedule.holdSource !== 'operator'
     && schedule.stopReason === 'consecutive_failures'
   ) {
     return { rearm: true };
@@ -187,7 +193,13 @@ export function decideCriticalScheduleRearm(
   if (schedule.operatorHold === true) {
     return { rearm: false, reason: 'operator_hold' };
   }
-  if (schedule.stopReason === 'trigger_limit_reached') {
+  if (
+    schedule.stopReason === 'trigger_limit_reached'
+    || (
+      schedule.maxTriggers !== undefined
+      && (schedule.remainingTriggers ?? schedule.maxTriggers) <= 0
+    )
+  ) {
     return { rearm: false, reason: 'trigger_limit_exhausted' };
   }
   return { rearm: true };

@@ -216,6 +216,17 @@ describe('decideCriticalScheduleRearm — bootstrap sub-tier (issue #2530)', () 
     ).toEqual({ rearm: false, reason: 'operator_hold' });
   });
 
+  it('respects an explicit operator hold even when a stale cascade reason remains', () => {
+    expect(
+      decideCriticalScheduleRearm({
+        ...watchdog,
+        operatorHold: true,
+        holdSource: 'operator',
+        stopReason: 'consecutive_failures',
+      }),
+    ).toEqual({ rearm: false, reason: 'operator_hold' });
+  });
+
   it('does not bypass holds for ordinary (non-bootstrap) critical schedules', () => {
     // A cascade hold on a general critical schedule is still respected — the
     // floor is only for the tiny recovery sub-tier.
@@ -266,6 +277,16 @@ describe('decideCriticalScheduleRearm', () => {
       decideCriticalScheduleRearm({
         ...effectiveness,
         stopReason: 'trigger_limit_reached',
+      }),
+    ).toEqual({ rearm: false, reason: 'trigger_limit_exhausted' });
+  });
+
+  it('skips an exhausted finite trigger count before stopReason is projected', () => {
+    expect(
+      decideCriticalScheduleRearm({
+        ...effectiveness,
+        maxTriggers: 1,
+        remainingTriggers: 0,
       }),
     ).toEqual({ rearm: false, reason: 'trigger_limit_exhausted' });
   });
