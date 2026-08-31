@@ -162,16 +162,17 @@ export function isCriticalAllowlistedSchedule(
  * Order (first match wins):
  *  1. not on allowlist
  *  2. already enabled
- *  3. bootstrap sub-tier parked in a cascade-origin hold → rearm (#2530)
- *  4. operator hold marker set
- *  5. trigger-limit auto-exhausted (different recovery path)
+ *  3. operator hold marker set, unless it is a bootstrap cascade artifact
+ *  4. trigger-limit auto-exhausted (different recovery path)
+ *  5. bootstrap sub-tier parked in a cascade-origin hold → rearm (#2530)
  *  6. otherwise → rearm
  *
- * Step 3 is the bootstrap-safe floor: a `consecutive_failures` `operatorHold`
+ * Step 5 is the bootstrap-safe floor: a `consecutive_failures` `operatorHold`
  * is a cascade artifact (#2353 sets `operatorHold` on every auto-pause), so for
  * a recovery-critical member we re-arm through it rather than let the cascade
- * strand its own recovery path. A genuine operator park carries a different
- * stopReason (or none) and falls through to step 4, still respected.
+ * strand its own recovery path. It applies only to daemon-origin or legacy
+ * untagged holds. Explicit operator provenance wins even if a stale cascade
+ * reason remains, and trigger exhaustion wins before the bootstrap exception.
  */
 export function decideCriticalScheduleRearm(
   schedule: CriticalRearmScheduleView,
@@ -182,15 +183,13 @@ export function decideCriticalScheduleRearm(
   if (schedule.enabled) {
     return { rearm: false, reason: 'already_enabled' };
   }
-  if (
+  const bootstrapCascadeHold = (
     isBootstrapCriticalSchedule(schedule)
     && schedule.operatorHold === true
     && schedule.holdSource !== 'operator'
     && schedule.stopReason === 'consecutive_failures'
-  ) {
-    return { rearm: true };
-  }
-  if (schedule.operatorHold === true) {
+  );
+  if (schedule.operatorHold === true && !bootstrapCascadeHold) {
     return { rearm: false, reason: 'operator_hold' };
   }
   if (
@@ -201,6 +200,9 @@ export function decideCriticalScheduleRearm(
     )
   ) {
     return { rearm: false, reason: 'trigger_limit_exhausted' };
+  }
+  if (bootstrapCascadeHold) {
+    return { rearm: true };
   }
   return { rearm: true };
 }

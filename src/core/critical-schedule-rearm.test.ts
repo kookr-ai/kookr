@@ -227,6 +227,19 @@ describe('decideCriticalScheduleRearm — bootstrap sub-tier (issue #2530)', () 
     ).toEqual({ rearm: false, reason: 'operator_hold' });
   });
 
+  it('does not re-arm an exhausted bootstrap schedule through a cascade hold', () => {
+    expect(
+      decideCriticalScheduleRearm({
+        ...watchdog,
+        operatorHold: true,
+        holdSource: 'daemon',
+        stopReason: 'consecutive_failures',
+        maxTriggers: 1,
+        remainingTriggers: 0,
+      }),
+    ).toEqual({ rearm: false, reason: 'trigger_limit_exhausted' });
+  });
+
   it('does not bypass holds for ordinary (non-bootstrap) critical schedules', () => {
     // A cascade hold on a general critical schedule is still respected — the
     // floor is only for the tiny recovery sub-tier.

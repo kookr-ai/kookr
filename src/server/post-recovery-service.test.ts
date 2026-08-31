@@ -198,8 +198,6 @@ describe('PostRecoveryService', () => {
       launcher: vi.fn(),
       kookrDir: tempDir,
       now: () => nowMs,
-      criticalRearmRetryDelayMs: 60_000,
-      criticalRearmMaxAttempts: 3,
     });
 
     const first = await service.tick();
@@ -224,6 +222,122 @@ describe('PostRecoveryService', () => {
     ]);
     expect(setEnabled.mock.calls.filter(([id]) => id === 'persisted')).toHaveLength(1);
     expect(setEnabled.mock.calls.filter(([id]) => id === 'retry')).toHaveLength(2);
+  });
+
+  it('R10.7: re-reads each retry immediately before enabling it', async () => {
+    const schedules = [
+      schedule({
+        id: 'a',
+        name: 'Lucy Orchestration Effectiveness A',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+      schedule({
+        id: 'b',
+        name: 'Lucy Orchestration Effectiveness B',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+    ];
+    const attempts = new Map<string, number>();
+    let releaseRetryA!: () => void;
+    let markRetryAStarted!: () => void;
+    const retryAStarted = new Promise<void>((resolve) => {
+      markRetryAStarted = resolve;
+    });
+    const setEnabled = vi.fn(async (id: string) => {
+      const attempt = (attempts.get(id) ?? 0) + 1;
+      attempts.set(id, attempt);
+      const current = schedules.find((candidate) => candidate.id === id)!;
+      current.enabled = true;
+      if (attempt === 1) {
+        throw new Error('transient disk rejection');
+      }
+      if (id === 'a') {
+        markRetryAStarted();
+        await new Promise<void>((resolve) => {
+          releaseRetryA = resolve;
+        });
+      }
+    });
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+    });
+
+    await service.tick();
+    nowMs += 60_000;
+    const retryTick = service.tick();
+    await retryAStarted;
+    schedules[1]!.enabled = false;
+    schedules[1]!.operatorHold = true;
+    schedules[1]!.holdSource = 'operator';
+    releaseRetryA();
+    const result = await retryTick;
+
+    expect(result.rearm.rearmed).toEqual([
+      { id: 'a', name: 'Lucy Orchestration Effectiveness A' },
+    ]);
+    expect(result.rearm.skipped).toEqual([
+      {
+        id: 'b',
+        name: 'Lucy Orchestration Effectiveness B',
+        reason: 'retry_cancelled:operator_hold',
+      },
+    ]);
+    expect(setEnabled.mock.calls.filter(([id]) => id === 'b')).toHaveLength(1);
+  });
+
+  it('R10.7: measures retry delay from when a failed enable settles', async () => {
+    const schedules = [
+      schedule({
+        id: 'retry',
+        name: 'Lucy Orchestration Effectiveness',
+        enabled: false,
+        playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+      }),
+    ];
+    let rejectFirstAttempt!: () => void;
+    let markFirstAttemptStarted!: () => void;
+    const firstAttemptStarted = new Promise<void>((resolve) => {
+      markFirstAttemptStarted = resolve;
+    });
+    const setEnabled = vi.fn(async () => {
+      if (setEnabled.mock.calls.length === 1) {
+        markFirstAttemptStarted();
+        await new Promise<void>((_resolve, reject) => {
+          rejectFirstAttempt = () => reject(new Error('slow disk rejection'));
+        });
+      }
+    });
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled,
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () => makeLedger(),
+      launcher: vi.fn(),
+      kookrDir: tempDir,
+      now: () => nowMs,
+    });
+
+    const firstTick = service.tick();
+    await firstAttemptStarted;
+    nowMs += 59_000;
+    rejectFirstAttempt();
+    await firstTick;
+
+    nowMs += 1_000;
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledOnce();
+
+    nowMs += 59_000;
+    await service.tick();
+    expect(setEnabled).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -284,8 +398,6 @@ describe('PostRecoveryService', () => {
       kookrDir: tempDir,
       now: () => nowMs,
       log: (line) => logs.push(line),
-      criticalRearmRetryDelayMs: 60_000,
-      criticalRearmMaxAttempts: 3,
     });
 
     await service.tick();
@@ -327,8 +439,6 @@ describe('PostRecoveryService', () => {
       kookrDir: tempDir,
       now: () => nowMs,
       log: (line) => logs.push(line),
-      criticalRearmRetryDelayMs: 60_000,
-      criticalRearmMaxAttempts: 3,
     });
 
     await service.tick();
@@ -376,8 +486,6 @@ describe('PostRecoveryService', () => {
       kookrDir: tempDir,
       now: () => nowMs,
       log: (line) => logs.push(line),
-      criticalRearmRetryDelayMs: 60_000,
-      criticalRearmMaxAttempts: 3,
     });
 
     const first = await service.tick();
