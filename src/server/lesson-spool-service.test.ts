@@ -1,7 +1,7 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, test, vi } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   appendLessonWrite,
   buildLessonEntry,
@@ -16,9 +16,16 @@ import {
 } from '../observability/signal-delivery/index.js';
 import { LessonSpoolService, buildKbDegradedAlert } from './lesson-spool-service.js';
 
+const tempDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
 describe('LessonSpoolService', () => {
   test('TS-LESSON-002: drains a valid pending lesson when the probe reports healthy', async () => {
     const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-svc-'));
+    tempDirs.push(spoolDir);
     await appendLessonWrite(
       spoolDir,
       buildLessonEntry({ title: 'recover-me', body: 'body\n' }),
@@ -49,6 +56,7 @@ describe('LessonSpoolService', () => {
 
   test('fires prolonged degradation alert once past threshold', async () => {
     const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-svc-'));
+    tempDirs.push(spoolDir);
     const alerts: unknown[] = [];
     let nowMs = Date.parse('2026-07-23T10:00:00.000Z');
     const thresholdMs = 2 * 60 * 60 * 1000;
@@ -111,6 +119,7 @@ describe('LessonSpoolService', () => {
   test('prolonged degradation spools operator signal via detectorBroadcast bridge (#1990)', async () => {
     const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-signal-'));
     const signalDir = await mkdtemp(join(tmpdir(), 'kookr-lesson-signal-'));
+    tempDirs.push(spoolDir, signalDir);
     const pendingWrites: Promise<unknown>[] = [];
     let nowMs = Date.parse('2026-07-23T10:00:00.000Z');
     const thresholdMs = 2 * 60 * 60 * 1000;
