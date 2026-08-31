@@ -13,6 +13,12 @@
 export const RESOURCE_WATCHDOG_STATE_SCHEMA_VERSION = 1 as const;
 export const RESOURCE_WATCHDOG_AUDIT_SCHEMA_VERSION = 'resource-watchdog-audit.v1' as const;
 
+/** Durable comparison point for detecting `oom_kill` changes across restarts. */
+export interface ResourceWatchdogOomKillBaseline {
+  total: number;
+  sampledAt: string;
+}
+
 /** Per-agent-family process counts observed in one sample. */
 export interface AgentFamilyProcessCounts {
   claude: number;
@@ -148,6 +154,11 @@ export interface ResourceWatchdogPersistedState {
   lastTriggerAt: string | null;
   lastTriggerReasons: ResourceWatchdogTriggerReason[];
   lastMetaReflectionAt: string | null;
+  /**
+   * Last readable kernel `oom_kill` sample. Legacy schema-v1 files omit this
+   * field; the state store normalizes that shape to `null` on load.
+   */
+  oomKillBaseline: ResourceWatchdogOomKillBaseline | null;
 }
 
 export type ResourceWatchdogAuditAction =
@@ -215,4 +226,11 @@ export interface ResourceWatchdogHealthSnapshot {
    * Mirrors config so `/api/health` / doctor can show page-only vs actuator.
    */
   autoEnableOnPressure: boolean;
+  /** Cached durable OOM comparison point; never performs I/O on the health path. */
+  oomKillBaseline: (ResourceWatchdogOomKillBaseline & {
+    /** Freshness relative to the health snapshot clock; null for an invalid timestamp. */
+    ageMs: number | null;
+    /** Whether this process loaded the baseline or observed it itself. */
+    source: 'persisted_state' | 'runtime_sample';
+  }) | null;
 }

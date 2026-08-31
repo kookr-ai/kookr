@@ -29,12 +29,13 @@ export function emptyResourceWatchdogState(): ResourceWatchdogPersistedState {
     lastTriggerAt: null,
     lastTriggerReasons: [],
     lastMetaReflectionAt: null,
+    oomKillBaseline: null,
   };
 }
 
 export function isResourceWatchdogPersistedState(
   value: unknown,
-): value is ResourceWatchdogPersistedState {
+): boolean {
   if (value === null || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
   if (v.schemaVersion !== RESOURCE_WATCHDOG_STATE_SCHEMA_VERSION) return false;
@@ -50,6 +51,16 @@ export function isResourceWatchdogPersistedState(
   if (v.lastTriggerAt !== null && typeof v.lastTriggerAt !== 'string') return false;
   if (!Array.isArray(v.lastTriggerReasons)) return false;
   if (v.lastMetaReflectionAt !== null && typeof v.lastMetaReflectionAt !== 'string') return false;
+  // Backward compatibility: schema-v1 files written before issue #2911 omit
+  // oomKillBaseline. A present value must have the new bounded shape.
+  if (v.oomKillBaseline !== undefined && v.oomKillBaseline !== null) {
+    if (typeof v.oomKillBaseline !== 'object') return false;
+    const baseline = v.oomKillBaseline as Record<string, unknown>;
+    if (typeof baseline.total !== 'number'
+      || !Number.isInteger(baseline.total)
+      || baseline.total < 0) return false;
+    if (typeof baseline.sampledAt !== 'string') return false;
+  }
   return true;
 }
 
@@ -69,7 +80,15 @@ export class FileResourceWatchdogStateStore implements ResourceWatchdogStateStor
     try {
       const raw = readFileSync(this.path, 'utf-8');
       const parsed: unknown = JSON.parse(raw);
-      if (isResourceWatchdogPersistedState(parsed)) return parsed;
+      if (isResourceWatchdogPersistedState(parsed)) {
+        const state = parsed as Omit<ResourceWatchdogPersistedState, 'oomKillBaseline'> & {
+          oomKillBaseline?: ResourceWatchdogPersistedState['oomKillBaseline'];
+        };
+        return {
+          ...state,
+          oomKillBaseline: state.oomKillBaseline ?? null,
+        };
+      }
       return emptyResourceWatchdogState();
     } catch {
       return emptyResourceWatchdogState();
@@ -95,6 +114,25 @@ export class FileResourceWatchdogStateStore implements ResourceWatchdogStateStor
       }
     }
   }
+}
+
+export interface RecordOomKillBaselineInput {
+  state: ResourceWatchdogPersistedState;
+  total: number;
+  sampledAt: string;
+}
+
+/** Return a new state with the latest readable kernel OOM counter. */
+export function recordOomKillBaseline(
+  input: RecordOomKillBaselineInput,
+): ResourceWatchdogPersistedState {
+  return {
+    ...input.state,
+    oomKillBaseline: {
+      total: input.total,
+      sampledAt: input.sampledAt,
+    },
+  };
 }
 
 export interface RecordSpawnInput {

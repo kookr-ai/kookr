@@ -51,6 +51,24 @@ describe('FileResourceWatchdogStateStore', () => {
     expect(isResourceWatchdogPersistedState(raw)).toBe(true);
   });
 
+  test('TS-WATCHDOG-002: legacy state establishes a null OOM baseline on load', () => {
+    writeFileSync(path, JSON.stringify({
+      schemaVersion: 1,
+      spawnTimestamps: [],
+      lastSpawnAt: null,
+      lastSpawnKind: null,
+      lastSpawnTaskId: null,
+      lastTriggerAt: null,
+      lastTriggerReasons: [],
+      lastMetaReflectionAt: null,
+    }), 'utf-8');
+
+    const loaded = new FileResourceWatchdogStateStore(path).load();
+
+    expect(loaded.oomKillBaseline).toBeNull();
+    expect(loaded.spawnTimestamps).toEqual([]);
+  });
+
   test('corrupt JSON yields empty state (fail-open)', () => {
     writeFileSync(path, '{not json', 'utf-8');
     const store = new FileResourceWatchdogStateStore(path);

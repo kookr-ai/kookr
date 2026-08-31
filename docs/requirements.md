@@ -1162,6 +1162,22 @@ The system SHALL refresh the rolling 24-hour queue-feeder invent-class counts ou
 
 **Evidence:** `src/server/invent-priority-health-refresher.ts` (single-flight publication and freshness metadata), `src/server/index.ts` (boot/shutdown lifecycle wiring), `src/server/routes/diagnostics-routes.ts` (in-memory health projection), `src/core/pipeline-starvation-state.ts` (ledger loading and refresh-error propagation), `docs/reference/api.md`.
 
+### R6.13: Preserve the Resource-Watchdog OOM Baseline Across Restarts [#2911] — SHALL — `done`
+
+The system SHALL persist each readable resource-watchdog `oom_kill` sample so the first sample after a daemon restart can detect an OOM-counter increase that occurred after the last completed sample.
+
+**Acceptance criteria:**
+- Given a persisted OOM baseline, when the first post-restart sample has a greater counter, then the watchdog emits exactly one `oom_kill_delta` trigger and advances the durable baseline.
+- Given legacy watchdog state without an OOM baseline, when the first readable sample arrives, then the watchdog establishes and persists a baseline without emitting `oom_kill_delta`.
+- Given a persisted OOM baseline, when a later readable counter is lower, then the watchdog rebaselines to the lower counter without emitting `oom_kill_delta`.
+- `GET /api/health.resourceWatchdog` reports the cached baseline value, sample time, age, and whether it came from persisted startup state or a sample observed by the current process, without reading `/proc` or disk on the request path.
+
+**Linked tests:** TS-WATCHDOG-001, TS-WATCHDOG-002, TS-WATCHDOG-003, TS-WATCHDOG-004.
+
+**Dependencies:** R6.8.
+
+**Evidence:** `src/core/resource-watchdog-state.ts`, `src/server/resource-watchdog-service.ts`, `src/core/resource-watchdog-state.test.ts`, `src/server/resource-watchdog-service.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1603,6 +1619,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R6.10 | #2636 | SHALL | done | timer-health summary on GET /api/health, last-good pickGauges |
 | R6.11 | #2637 | SHALL | done | ops digest timerHealth / hookIngestion.p95LagMs / schedulesPausedByFailure |
 | R6.12 | #2912 | SHALL | done | background queue-feeder invent-class refresher, in-memory health projection |
+| R6.13 | #2911 | SHALL | done | resource-watchdog state, service, and cached health projection |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |
