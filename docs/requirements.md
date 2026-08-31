@@ -1546,7 +1546,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 
 **Linked tests:** TS-LESSON-001, TS-LESSON-002, TS-LESSON-003.
 
-**Evidence:** `src/core/lesson-write-runner.ts`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`, `TS-LESSON-003`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
+**Evidence:** `src/core/lesson-write-runner.ts`, `bin/kb-spool-shim.js`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`, `TS-LESSON-003`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
 
 ## Summary Matrix
 
@@ -1664,7 +1664,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R15.1 | #2782 | SHALL | done | orchestration-pause, orchestration-pause-service, diagnostics-routes |
 | R16.1 | emission bootstrap | SHALL | done | project-config-store, emission-budget, kookr-emission, ProjectDetailDrawer |
 | R17.1 | #2903 | SHALL | done | umbrella-chain-advancer, github-umbrella-chain-client, workspace-context, server wiring |
-| R18.1 | #2901 | SHALL | done | lesson-write-runner, lesson-spool-service |
+| R18.1 | #2901 | SHALL | done | lesson-write-runner, kb-spool-shim, lesson-spool-service |
 
 ---
 

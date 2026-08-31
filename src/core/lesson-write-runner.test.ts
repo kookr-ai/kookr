@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 import { defaultSpoolDir, readPendingLessons } from './lesson-write-spool.js';
 import { createKbRememberWriteFn, runKbRemember } from './lesson-write-runner.js';
 
-describe('createKbRememberWriteFn', () => {
+describe('runKbRemember', () => {
   test('TS-LESSON-001: sends the exact replay argv and lesson body to kb', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'kookr-kb-runner-'));
     const kbBin = join(dir, 'kb');
@@ -49,17 +49,6 @@ process.stdin.on('end', () => {
       ],
       stdin: body,
     });
-  });
-
-  test('exports a LessonWriteFn factory', async () => {
-    const write = createKbRememberWriteFn({ kbBin: 'kb-that-does-not-exist-xyz' });
-    const result = await write({
-      kb: 'agent-task-lessons',
-      title: 't',
-      body: 'body\n',
-    });
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/not found|ENOENT|kb/i);
   });
 
   test('TS-LESSON-003: preserves failure when replay resolves through the spool shim', async () => {
@@ -110,5 +99,18 @@ exit 17
     ].join('\n'));
     expect(await readFile(stdinPath, 'utf8')).toBe(body);
     expect(await readPendingLessons(defaultSpoolDir(env))).toHaveLength(0);
+  });
+});
+
+describe('createKbRememberWriteFn', () => {
+  test('exports a LessonWriteFn factory', async () => {
+    const write = createKbRememberWriteFn({ kbBin: 'kb-that-does-not-exist-xyz' });
+    const result = await write({
+      kb: 'agent-task-lessons',
+      title: 't',
+      body: 'body\n',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/not found|ENOENT|kb/i);
   });
 });
