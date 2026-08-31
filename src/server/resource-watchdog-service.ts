@@ -39,6 +39,8 @@ import type {
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 
+const MAX_PERSISTENCE_ERROR_CHARS = 500;
+
 export interface ResourceWatchdogServiceDeps {
   getConfig: () => ResourceWatchdogConfig;
   sampler: ResourceWatchdogHostSampler;
@@ -97,6 +99,7 @@ export class ResourceWatchdogService {
   private oomKillBaselineSource: 'persisted_state' | 'runtime_sample' | null;
   private lastSample: ResourceWatchdogSample | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
+  private persistenceHealth: ResourceWatchdogHealthSnapshot['persistence'];
 
   constructor(deps: ResourceWatchdogServiceDeps) {
     this.getConfig = deps.getConfig;
@@ -117,6 +120,15 @@ export class ResourceWatchdogService {
     this.oomKillBaselineSource = this.state.oomKillBaseline === null
       ? null
       : 'persisted_state';
+    this.persistenceHealth = {
+      status: 'unknown',
+      reservationDurable: this.state.lastSpawnAt !== null,
+      consecutiveFailures: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    };
   }
 
   start(): void {
@@ -231,6 +243,7 @@ export class ResourceWatchdogService {
               : null,
             source: this.oomKillBaselineSource,
           },
+      persistence: { ...this.persistenceHealth },
     };
   }
 
@@ -293,26 +306,38 @@ export class ResourceWatchdogService {
         config,
         nowMs: this.nowMs(),
       });
-      // Advance and persist after evaluation so a delta is seen exactly once,
-      // including when it occurs between the last sample and a daemon restart.
-      // A lower counter (reboot/cgroup recreation) naturally rebaselines here
-      // without firing because the evaluator only emits on a positive delta.
-      if (sample.oomKillTotal !== null) {
-        this.state = recordOomKillBaseline({
-          state: this.state,
-          total: sample.oomKillTotal,
-          sampledAt: sample.sampledAt,
-        });
-        this.oomKillBaselineSource = 'runtime_sample';
-        this.persistState();
-      }
       this.lastDecision = decision.action;
 
       if (decision.action === 'idle') {
+        // An idle sample can advance independently. Spawn decisions instead
+        // save the baseline and reservation together so a failed reservation
+        // cannot consume a one-shot OOM delta.
+        if (sample.oomKillTotal !== null) {
+          this.state = recordOomKillBaseline({
+            state: this.state,
+            total: sample.oomKillTotal,
+            sampledAt: sample.sampledAt,
+          });
+          this.oomKillBaselineSource = 'runtime_sample';
+          this.persistState();
+        }
         return;
       }
 
       if (decision.action === 'suppress_throttled') {
+        // Keep the old baseline while a reservation has no known task. This
+        // preserves an OOM delta through recovery until the normal throttle
+        // allows the deferred launch.
+        const unresolvedReservation = this.state.lastSpawnAt !== null
+          && this.state.lastSpawnTaskId === null;
+        if (sample.oomKillTotal !== null && !unresolvedReservation) {
+          this.state = recordOomKillBaseline({
+            state: this.state,
+            total: sample.oomKillTotal,
+            sampledAt: sample.sampledAt,
+          });
+          this.oomKillBaselineSource = 'runtime_sample';
+        }
         await this.handleSuppressThrottled(config, sample, decision);
         return;
       }
@@ -461,6 +486,17 @@ export class ResourceWatchdogService {
     const nowMs = this.nowMs();
     const nowIso = this.nowIso();
     const retainMs = Math.max(config.throttleMs, config.spawnBudgetWindowMs);
+    const previousOomKillBaseline = this.state.oomKillBaseline;
+    const previousOomKillBaselineSource = this.oomKillBaselineSource;
+    const previousLastMetaReflectionAt = this.state.lastMetaReflectionAt;
+    if (sample.oomKillTotal !== null) {
+      this.state = recordOomKillBaseline({
+        state: this.state,
+        total: sample.oomKillTotal,
+        sampledAt: sample.sampledAt,
+      });
+      this.oomKillBaselineSource = 'runtime_sample';
+    }
     this.state = recordSpawn({
       state: this.state,
       nowIso,
@@ -470,7 +506,37 @@ export class ResourceWatchdogService {
       triggerReasons: decision.triggers.map((t) => t.reason),
       retainMs,
     });
-    this.persistState();
+    this.persistenceHealth = {
+      ...this.persistenceHealth,
+      reservationDurable: false,
+    };
+    if (!this.persistState()) {
+      // Keep the conservative throttle reservation in memory, but do not let
+      // a failed write consume a one-shot OOM delta or claim that a meta task
+      // ran. A later durable save retains the old baseline, so the trigger is
+      // still present when the throttle reopens (including after restart).
+      this.state = {
+        ...this.state,
+        oomKillBaseline: previousOomKillBaseline,
+        lastMetaReflectionAt: previousLastMetaReflectionAt,
+      };
+      this.oomKillBaselineSource = previousOomKillBaselineSource;
+      this.lastDecision = 'spawn_persist_failed';
+      const error = this.persistenceHealth.lastError ?? 'unknown persistence failure';
+      this.auditSink.append(buildAuditRecord({
+        action: 'spawn_persist_failed',
+        timestamp: this.nowIso(),
+        sample,
+        triggers: decision.triggers,
+        kind: decision.kind,
+        error,
+        spawnsInWindow: decision.spawnsInWindow,
+      }));
+      this.logger.warn(
+        `[resource-watchdog] spawn refused because throttle reservation was not durable: ${error}`,
+      );
+      return;
+    }
 
     const prompt = buildResourceWatchdogPrompt({
       kind: decision.kind,
@@ -534,14 +600,40 @@ export class ResourceWatchdogService {
     }
   }
 
-  private persistState(): void {
+  private persistState(): boolean {
+    const attemptedAt = this.nowIso();
     try {
       this.stateStore.save(this.state);
+      this.persistenceHealth = {
+        ...this.persistenceHealth,
+        status: 'ok',
+        reservationDurable: this.state.lastSpawnAt !== null,
+        consecutiveFailures: 0,
+        lastAttemptAt: attemptedAt,
+        lastSuccessAt: attemptedAt,
+        lastError: null,
+      };
+      return true;
     } catch (err) {
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = (rawMessage || 'unknown persistence failure')
+        .slice(0, MAX_PERSISTENCE_ERROR_CHARS);
+      this.persistenceHealth = {
+        ...this.persistenceHealth,
+        status: 'error',
+        consecutiveFailures: Math.min(
+          Number.MAX_SAFE_INTEGER,
+          this.persistenceHealth.consecutiveFailures + 1,
+        ),
+        lastAttemptAt: attemptedAt,
+        lastFailureAt: attemptedAt,
+        lastError: message,
+      };
       this.logger.warn(
         '[resource-watchdog] failed to persist state:',
-        err instanceof Error ? err.message : err,
+        message,
       );
+      return false;
     }
   }
 
@@ -605,6 +697,15 @@ export function defaultResourceWatchdogHealthSnapshot(
     pressureWhileDisabledReason: null,
     autoEnableOnPressure,
     oomKillBaseline: null,
+    persistence: {
+      status: 'unknown',
+      reservationDurable: false,
+      consecutiveFailures: 0,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastError: null,
+    },
   };
 }
 

@@ -625,7 +625,7 @@ describe('diagnostics routes', () => {
   // ---------------------------------------------------------------------------
   // GET /api/health — resource-watchdog OOM baseline (issue #2911)
   // ---------------------------------------------------------------------------
-  describe('GET /api/health resourceWatchdog OOM baseline (issue #2911)', () => {
+  describe('GET /api/health resourceWatchdog durability (issues #2902 / #2911)', () => {
     test('TS-WATCHDOG-005: publishes the cached OOM baseline and provenance', async () => {
       const getHealthSnapshot = vi.fn(() => ({
         ...defaultResourceWatchdogHealthSnapshot(true),
@@ -654,6 +654,43 @@ describe('diagnostics routes', () => {
         source: 'runtime_sample',
       });
       expect(getHealthSnapshot).toHaveBeenCalledWith({ staleDtachCount: null });
+    });
+
+    test('publishes cached persistence failure health without touching storage', async () => {
+      const getHealthSnapshot = vi.fn(() => ({
+        ...defaultResourceWatchdogHealthSnapshot(true),
+        lastDecision: 'spawn_persist_failed' as const,
+        persistence: {
+          status: 'error' as const,
+          reservationDurable: false,
+          consecutiveFailures: 2,
+          lastAttemptAt: '2026-08-31T10:00:00.000Z',
+          lastSuccessAt: null,
+          lastFailureAt: '2026-08-31T10:00:00.000Z',
+          lastError: 'ENOSPC',
+        },
+      }));
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        resourceWatchdog: { getHealthSnapshot },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        resourceWatchdog?: { persistence?: Record<string, unknown> };
+      };
+      expect(body.resourceWatchdog?.persistence).toEqual({
+        status: 'error',
+        reservationDurable: false,
+        consecutiveFailures: 2,
+        lastAttemptAt: '2026-08-31T10:00:00.000Z',
+        lastSuccessAt: null,
+        lastFailureAt: '2026-08-31T10:00:00.000Z',
+        lastError: 'ENOSPC',
+      });
+      expect(getHealthSnapshot).toHaveBeenCalledTimes(1);
     });
   });
 

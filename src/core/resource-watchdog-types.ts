@@ -165,6 +165,7 @@ export type ResourceWatchdogAuditAction =
   | 'trigger'
   | 'suppress_throttled'
   | 'spawn'
+  | 'spawn_persist_failed'
   | 'spawn_failed'
   | 'disabled_skip'
   /** Actuator was off; soft-bound pressure auto-enabled one investigation cycle (#2354). */
@@ -210,7 +211,12 @@ export interface ResourceWatchdogHealthSnapshot {
   spawnsIn24h: number;
   throttleOpen: boolean;
   throttleRemainingMs: number;
-  lastDecision: ResourceWatchdogDecision['action'] | 'disabled' | 'auto_enable' | null;
+  lastDecision:
+    | ResourceWatchdogDecision['action']
+    | 'disabled'
+    | 'auto_enable'
+    | 'spawn_persist_failed'
+    | null;
   /**
    * Issue #2039 / #2354: true when the watchdog master switch is off *and* a
    * host-pressure gauge (currently `staleProcesses.dtach`) exceeds its soft
@@ -233,4 +239,16 @@ export interface ResourceWatchdogHealthSnapshot {
     /** Whether this process loaded the baseline or observed it itself. */
     source: 'persisted_state' | 'runtime_sample';
   }) | null;
+  /** Cached, bounded state-store write health; never performs I/O on read. */
+  persistence: {
+    status: 'unknown' | 'ok' | 'error';
+    /** Whether the current in-memory throttle reservation is known durable. */
+    reservationDurable: boolean;
+    consecutiveFailures: number;
+    lastAttemptAt: string | null;
+    lastSuccessAt: string | null;
+    lastFailureAt: string | null;
+    /** Most recent write error, capped at 500 characters. */
+    lastError: string | null;
+  };
 }
