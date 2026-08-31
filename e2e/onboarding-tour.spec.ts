@@ -79,7 +79,7 @@ test.describe('Onboarding tour', () => {
     await expect(page.locator('.shortcuts-help')).toBeVisible();
     await expect(page.locator('.shortcuts-header h3')).toHaveText('Help & Shortcuts');
 
-    await page.locator('.shortcuts-tour-cta').click();
+    await page.getByRole('button', { name: 'Take the product tour' }).click();
     await expect(page.locator('.shortcuts-help')).not.toBeVisible();
     await expect(page.locator('.onboarding-tour')).toBeVisible();
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
@@ -141,6 +141,19 @@ test.describe('Onboarding tour', () => {
     // Tour tears down; the existing Launch dialog opens (no aria-modal collision).
     await expect(page.locator('.onboarding-tour')).not.toBeVisible();
     await expect(page.locator('#launch-task-dialog-title')).toHaveText('Launch New Task');
+  });
+
+  test('First-launch readiness opens Diagnostics after tearing down the tour', async ({ page }) => {
+    await seedFresh(page);
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
+
+    for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+    await expect(page.locator('.onboarding-tour h3')).toHaveText('First-launch readiness');
+
+    await page.getByTestId('onboarding-check-setup').click();
+
+    await expect(page.locator('.onboarding-tour')).not.toBeVisible();
+    await expect(page.getByRole('dialog', { name: 'Diagnostics' })).toBeVisible();
   });
 
   test('body class swaps to match the active card targetClass', async ({ page }) => {

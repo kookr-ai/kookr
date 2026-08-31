@@ -20,6 +20,8 @@ interface Card {
   title: string;
   /** Body content. Renders inside `.onboarding-card-body`. */
   body: React.ReactNode;
+  /** Optional App-owned action rendered after the otherwise-static card body. */
+  action?: 'check-setup';
   /**
    * Optional tour-target class suffix. While this card is active, the global
    * `body` element gains `kookr-tour-active-<targetClass>`, and any element
@@ -85,6 +87,7 @@ export const ONBOARDING_CARDS: Card[] = [
   },
   {
     title: 'First-launch readiness',
+    action: 'check-setup',
     body: (
       <>
         <p>
@@ -158,6 +161,11 @@ function ShortcutCheatsheetRow({ shortcut }: { shortcut: ShortcutDisplay }) {
 
 export interface OnboardingTourProps {
   /**
+   * Opens the existing Diagnostics surface from the readiness card. The tour
+   * closes before this callback runs so only one modal owns focus at a time.
+   */
+  onCheckSetup?: () => void;
+  /**
    * Invoked from the final card's primary "Launch your first agent" action.
    * The tour closes itself before calling this so the Launch dialog it opens
    * owns focus / aria-modal cleanly (the tour dialog is unmounted in the same
@@ -172,19 +180,24 @@ export interface OnboardingTourProps {
  * can install the Tab trap, initial focus, and focus-restore lifecycle against
  * a real dialog DOM (matches ConfirmDialog / SnoozeDialog pattern).
  */
-export function OnboardingTour({ onLaunchFirstTask }: OnboardingTourProps = {}) {
+export function OnboardingTour({ onCheckSetup, onLaunchFirstTask }: OnboardingTourProps = {}) {
   const open = useSyncExternalStore(subscribe, getSnapshot, () => false);
   if (!open) return null;
-  return <OnboardingTourDialog onLaunchFirstTask={onLaunchFirstTask} />;
+  return <OnboardingTourDialog onCheckSetup={onCheckSetup} onLaunchFirstTask={onLaunchFirstTask} />;
 }
 
-function OnboardingTourDialog({ onLaunchFirstTask }: OnboardingTourProps) {
+function OnboardingTourDialog({ onCheckSetup, onLaunchFirstTask }: OnboardingTourProps) {
   // Fresh mount on each open resets to card 0 (replays start at the welcome step).
   const [index, setIndex] = useState(0);
   const dialogRef = useRef<HTMLDivElement>(null);
   const primaryButtonRef = useRef<HTMLButtonElement>(null);
 
   const handleClose = useCallback(() => { close(); }, []);
+
+  const handleCheckSetup = useCallback(() => {
+    close();
+    onCheckSetup?.();
+  }, [onCheckSetup]);
 
   const handleLaunchFirstTask = useCallback(() => {
     // Close the tour first so its dialog is torn down in the same commit that
@@ -280,7 +293,21 @@ function OnboardingTourDialog({ onLaunchFirstTask }: OnboardingTourProps) {
             {isLast ? 'Close' : 'Skip'}
           </button>
         </div>
-        <div className="onboarding-card-body">{card.body}</div>
+        <div className="onboarding-card-body">
+          {card.body}
+          {card.action === 'check-setup' && onCheckSetup && (
+            <p>
+              <button
+                type="button"
+                className="overview-tour-link"
+                data-testid="onboarding-check-setup"
+                onClick={handleCheckSetup}
+              >
+                Check setup
+              </button>
+            </p>
+          )}
+        </div>
         <div className="onboarding-footer">
           <div className="onboarding-dots" role="group" aria-label="Tour progress">
             {ONBOARDING_CARDS.map((_, i) => (
