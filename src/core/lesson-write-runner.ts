@@ -26,9 +26,8 @@ export interface RunKbRememberResult {
 
 /**
  * Invoke `kb remember --kb=<kb> --title=<title> --stdin --yes
- * --no-check-similar` with the body on stdin. Exit 0 → ok. Exit 3 (similarity
- * guard) is NOT treated as degraded — callers should not spool intentional
- * refusals. Exit 1/other → failure.
+ * --no-check-similar` with the body on stdin. Exit 0 succeeds; any nonzero
+ * exit preserves the pending lesson for a later retry.
  */
 export function runKbRemember(opts: RunKbRememberOptions): Promise<RunKbRememberResult> {
   const bin = opts.kbBin ?? 'kb';
