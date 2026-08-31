@@ -35,6 +35,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const preserveFailedDraftRef = useRef(false);
+  const submitAttemptRef = useRef(0);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
   // Same preflight the Launch dialog uses: it advertises whether a grok-build
   // launch would be refused and refreshes the rotation cursor on mount, so the
@@ -64,6 +66,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
+    if (preserveFailedDraftRef.current) return;
     let active = true;
 
     async function resolveCwd() {
@@ -75,13 +78,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           const task = tasks.find((t) =>
             t.sessions.some((s) => s.tmuxSession === selectedAgentId)
           );
-          if (task && active) {
+          if (task && active && !preserveFailedDraftRef.current) {
             setCwd(task.cwd);
             return;
           }
         } catch { /* ignore */ }
       }
-      if (active) {
+      if (active && !preserveFailedDraftRef.current) {
         setCwd(recentPaths.getAll()[0] ?? serverCwd);
       }
     }
@@ -91,6 +94,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }, [selectedAgentId, serverCwd]);
 
   useEffect(() => {
+    if (preserveFailedDraftRef.current) return;
     const selected = agents.find((agent) => agent.agentId === selectedAgentId);
     if (selected?.agentType) {
       setAgentType(selected.agentType);
@@ -129,7 +133,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
-    recentPaths.add(cwd);
+    submitAttemptRef.current += 1;
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
       type: 'launch',
@@ -142,17 +146,23 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         : {}),
     });
     if (sent) {
+      try {
+        recentPaths.add(cwd);
+      } catch {
+        // Browser storage is best-effort; the launch was already dispatched.
+      }
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
+      onClose();
     } else {
+      preserveFailedDraftRef.current = true;
       useKookrStore.getState().handleAlert(
         '',
         `Could not start task: not connected. ${excerpt}`,
         'error',
       );
     }
-    onClose();
   }
 
   function handleSubmit() {
@@ -187,8 +197,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     // Safari: clicking an in-bar button does not focus it, so relatedTarget is
     // null. Close on the next turn so the click can land before unmount.
     const bar = e.currentTarget;
+    const submitAttemptAtBlur = submitAttemptRef.current;
     window.setTimeout(() => {
       if (!bar.isConnected) return;
+      if (submitAttemptRef.current !== submitAttemptAtBlur) return;
       if (bar.contains(document.activeElement)) return;
       onClose();
     }, 0);

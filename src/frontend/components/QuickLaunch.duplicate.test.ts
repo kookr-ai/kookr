@@ -40,14 +40,17 @@ function liveTask(overrides: Partial<AgentState> & Pick<AgentState, 'agentId' | 
 
 function renderQuickLaunch(
   container: HTMLElement,
-  opts: { unmountOnClose?: boolean } = {},
+  opts: { unmountOnClose?: boolean; send?: (msg: ClientMessage) => boolean } = {},
 ): { root: Root; sent: ClientMessage[]; closed: number } {
   const sent: ClientMessage[] = [];
   const state = { closed: 0 };
   const root = createRoot(container);
   act(() => {
     root.render(React.createElement(QuickLaunch, {
-      send: (msg: ClientMessage) => { sent.push(msg); return true; },
+      send: (msg: ClientMessage) => {
+        sent.push(msg);
+        return opts.send?.(msg) ?? true;
+      },
       onClose: () => {
         state.closed += 1;
         if (opts.unmountOnClose) root.unmount();
@@ -192,6 +195,42 @@ describe('QuickLaunch active-duplicate warning', () => {
       disableDedup: true,
       metadataIntent: 'keep_as_duplicate',
     });
+  });
+
+  test('R4b.4: Safari-style blur does not close after Launch anyway fails to send', async () => {
+    vi.useFakeTimers();
+    const rendered = renderQuickLaunch(container, { send: () => false });
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Fix the auth bug'); });
+    await flush();
+
+    const anyway = container.querySelector('[data-testid="launch-duplicate-launch-anyway"]') as HTMLButtonElement;
+    await act(async () => {
+      input.focus();
+      input.blur();
+      anyway.click();
+    });
+    expect(rendered.sent).toHaveLength(1);
+    expect(rendered.closed).toBe(0);
+    await act(async () => { vi.runOnlyPendingTimers(); });
+    expect(rendered.closed).toBe(0);
+    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+    expect(input.value).toBe('Fix the auth bug');
+
+    // The failed-submit protection only cancels the blur caused by that
+    // submit click; a later explicit blur still cancels Quick Launch.
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    await act(async () => {
+      input.focus();
+      outside.focus();
+      vi.runOnlyPendingTimers();
+    });
+    expect(rendered.closed).toBe(1);
+    outside.remove();
+    act(() => rendered.root.unmount());
   });
 
   test('a deferred blur still closes Quick Launch when focus leaves the bar', async () => {

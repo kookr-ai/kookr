@@ -8,6 +8,10 @@ import { QuickLaunch } from './QuickLaunch.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 
+// QuickLaunch's module-level RecentPaths instance captures the browser storage
+// object before individual tests replace global localStorage with a fake.
+const recentPathStorage = localStorage;
+
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
   const nextData = Object.fromEntries(
@@ -33,6 +37,12 @@ function setInputValue(input: HTMLInputElement, value: string): void {
   input.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+function setSelectValue(select: HTMLSelectElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+  setter.call(select, value);
+  select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
 describe('QuickLaunch optimistic toast', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -48,6 +58,7 @@ describe('QuickLaunch optimistic toast', () => {
       removeItem: (key: string) => localStore.delete(key),
       clear: () => localStore.clear(),
     });
+    recentPathStorage.clear();
     syncGlobalStore();
     useKookrStore.setState({ serverCwd: '/tmp/work' });
     container = document.createElement('div');
@@ -58,6 +69,7 @@ describe('QuickLaunch optimistic toast', () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    recentPathStorage.clear();
     vi.unstubAllGlobals();
   });
 
@@ -133,14 +145,116 @@ describe('QuickLaunch optimistic toast', () => {
     expect(useKookrStore.getState().alerts).toHaveLength(0);
   });
 
-  test('when send returns false (socket closed), shows an error toast instead of an info toast', async () => {
+  test('R4b.4: a failed send keeps the full launch draft for a successful retry', async () => {
+    useKookrStore.setState({ defaultAgentType: 'codex-cli' });
     const sent: ClientMessage[] = [];
+    let connected = false;
     const send = (msg: ClientMessage): boolean => {
       sent.push(msg);
-      return false; // socket not open
+      return connected;
     };
+    const onClose = vi.fn();
+    function Harness() {
+      const [open, setOpen] = React.useState(true);
+      return open
+        ? React.createElement(QuickLaunch, {
+          send,
+          onClose: () => {
+            onClose();
+            setOpen(false);
+          },
+        })
+        : null;
+    }
     await act(async () => {
-      root.render(React.createElement(QuickLaunch, { send, onClose: () => {} }));
+      root.render(React.createElement(Harness));
+    });
+    await flush();
+
+    const agentSelect = container.querySelector('.agent-type-select select') as HTMLSelectElement;
+    expect(agentSelect.value).toBe('codex-cli');
+    await act(async () => { setSelectValue(agentSelect, 'claude-code'); });
+    await flush();
+
+    const effortSelect = container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement;
+    const modelSelect = container.querySelector('select[aria-label="Model"]') as HTMLSelectElement;
+    await act(async () => {
+      setSelectValue(effortSelect, 'high');
+      setSelectValue(modelSelect, 'claude-fable-5');
+    });
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Fix the nav bug'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      prompt: 'Fix the nav bug',
+      cwd: '/tmp/work',
+      agentType: 'claude-code',
+      effort: 'high',
+      model: 'claude-fable-5',
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+    expect(input.value).toBe('Fix the nav bug');
+    expect(agentSelect.value).toBe('claude-code');
+    expect(effortSelect.value).toBe('high');
+    expect(modelSelect.value).toBe('claude-fable-5');
+    expect(recentPathStorage.getItem('kookr:recentPaths')).toBeNull();
+
+    // A reconnect replaces snapshot-backed store values. The launch draft is
+    // user-owned after a failed send, so those refreshes must not overwrite it.
+    const availableAgentTypes = useKookrStore.getState().availableAgentTypes;
+    await act(async () => {
+      useKookrStore.setState({
+        agents: [],
+        availableAgentTypes: [...availableAgentTypes],
+        serverCwd: '/tmp/reconnected-work',
+      });
+    });
+    await flush();
+    expect((container.querySelector('.quick-launch-cwd') as HTMLElement).textContent).toBe('/tmp/work');
+    expect(input.value).toBe('Fix the nav bug');
+    expect(agentSelect.value).toBe('claude-code');
+    expect(effortSelect.value).toBe('high');
+    expect(modelSelect.value).toBe('claude-fable-5');
+
+    let { alerts } = useKookrStore.getState();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].severity).toBe('error');
+    expect(alerts[0].summary).toBe('Could not start task: not connected. Fix the nav bug');
+
+    connected = true;
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent).toHaveLength(2);
+    expect(sent[1]).toEqual(sent[0]);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('.quick-launch-bar')).toBeNull();
+    expect(JSON.parse(recentPathStorage.getItem('kookr:recentPaths') ?? 'null')).toEqual(['/tmp/work']);
+    alerts = useKookrStore.getState().alerts;
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1].severity).toBe('info');
+    expect(alerts[1].summary).toBe('Launching task: Fix the nav bug');
+  });
+
+  test('R4b.4: successful dispatch still closes when recent-path storage fails', async () => {
+    const storageWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('Storage quota exceeded', 'QuotaExceededError');
+    });
+    const sent: ClientMessage[] = [];
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(React.createElement(QuickLaunch, {
+        send: (msg) => { sent.push(msg); return true; },
+        onClose,
+      }));
     });
     await flush();
 
@@ -151,9 +265,11 @@ describe('QuickLaunch optimistic toast', () => {
     });
 
     expect(sent).toHaveLength(1);
-    const { alerts } = useKookrStore.getState();
-    expect(alerts).toHaveLength(1);
-    expect(alerts[0].severity).toBe('error');
-    expect(alerts[0].summary).toBe('Could not start task: not connected. Fix the nav bug');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(useKookrStore.getState().alerts.at(-1)).toMatchObject({
+      severity: 'info',
+      summary: 'Launching task: Fix the nav bug',
+    });
+    storageWrite.mockRestore();
   });
 });
