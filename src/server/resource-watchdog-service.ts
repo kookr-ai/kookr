@@ -325,9 +325,9 @@ export class ResourceWatchdogService {
       }
 
       if (decision.action === 'suppress_throttled') {
-        // Keep the old baseline while a failed reservation is only in memory.
-        // This preserves an OOM delta until the reservation becomes durable
-        // and the normal throttle allows the deferred launch.
+        // Keep the old baseline while a reservation has no known task. This
+        // preserves an OOM delta through recovery until the normal throttle
+        // allows the deferred launch.
         const unresolvedReservation = this.state.lastSpawnAt !== null
           && this.state.lastSpawnTaskId === null;
         if (sample.oomKillTotal !== null && !unresolvedReservation) {
