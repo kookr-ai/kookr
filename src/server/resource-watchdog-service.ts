@@ -306,26 +306,38 @@ export class ResourceWatchdogService {
         config,
         nowMs: this.nowMs(),
       });
-      // Advance and persist after evaluation so a delta is seen exactly once,
-      // including when it occurs between the last sample and a daemon restart.
-      // A lower counter (reboot/cgroup recreation) naturally rebaselines here
-      // without firing because the evaluator only emits on a positive delta.
-      if (sample.oomKillTotal !== null) {
-        this.state = recordOomKillBaseline({
-          state: this.state,
-          total: sample.oomKillTotal,
-          sampledAt: sample.sampledAt,
-        });
-        this.oomKillBaselineSource = 'runtime_sample';
-        this.persistState();
-      }
       this.lastDecision = decision.action;
 
       if (decision.action === 'idle') {
+        // An idle sample can advance independently. Spawn decisions instead
+        // save the baseline and reservation together so a failed reservation
+        // cannot consume a one-shot OOM delta.
+        if (sample.oomKillTotal !== null) {
+          this.state = recordOomKillBaseline({
+            state: this.state,
+            total: sample.oomKillTotal,
+            sampledAt: sample.sampledAt,
+          });
+          this.oomKillBaselineSource = 'runtime_sample';
+          this.persistState();
+        }
         return;
       }
 
       if (decision.action === 'suppress_throttled') {
+        // Keep the old baseline while a failed reservation is only in memory.
+        // This preserves an OOM delta until the reservation becomes durable
+        // and the normal throttle allows the deferred launch.
+        const unresolvedReservation = this.state.lastSpawnAt !== null
+          && this.state.lastSpawnTaskId === null;
+        if (sample.oomKillTotal !== null && !unresolvedReservation) {
+          this.state = recordOomKillBaseline({
+            state: this.state,
+            total: sample.oomKillTotal,
+            sampledAt: sample.sampledAt,
+          });
+          this.oomKillBaselineSource = 'runtime_sample';
+        }
         await this.handleSuppressThrottled(config, sample, decision);
         return;
       }
@@ -433,12 +445,7 @@ export class ResourceWatchdogService {
       nowIso: this.nowIso(),
       triggerReasons: decision.triggers.map((t) => t.reason),
     });
-    if (this.persistState() && this.state.lastSpawnAt !== null) {
-      this.persistenceHealth = {
-        ...this.persistenceHealth,
-        reservationDurable: true,
-      };
-    }
+    this.persistState();
     this.auditSink.append(buildAuditRecord({
       action: 'suppress_throttled',
       timestamp: this.nowIso(),
@@ -479,6 +486,17 @@ export class ResourceWatchdogService {
     const nowMs = this.nowMs();
     const nowIso = this.nowIso();
     const retainMs = Math.max(config.throttleMs, config.spawnBudgetWindowMs);
+    const previousOomKillBaseline = this.state.oomKillBaseline;
+    const previousOomKillBaselineSource = this.oomKillBaselineSource;
+    const previousLastMetaReflectionAt = this.state.lastMetaReflectionAt;
+    if (sample.oomKillTotal !== null) {
+      this.state = recordOomKillBaseline({
+        state: this.state,
+        total: sample.oomKillTotal,
+        sampledAt: sample.sampledAt,
+      });
+      this.oomKillBaselineSource = 'runtime_sample';
+    }
     this.state = recordSpawn({
       state: this.state,
       nowIso,
@@ -493,6 +511,16 @@ export class ResourceWatchdogService {
       reservationDurable: false,
     };
     if (!this.persistState()) {
+      // Keep the conservative throttle reservation in memory, but do not let
+      // a failed write consume a one-shot OOM delta or claim that a meta task
+      // ran. A later durable save retains the old baseline, so the trigger is
+      // still present when the throttle reopens (including after restart).
+      this.state = {
+        ...this.state,
+        oomKillBaseline: previousOomKillBaseline,
+        lastMetaReflectionAt: previousLastMetaReflectionAt,
+      };
+      this.oomKillBaselineSource = previousOomKillBaselineSource;
       this.lastDecision = 'spawn_persist_failed';
       const error = this.persistenceHealth.lastError ?? 'unknown persistence failure';
       this.auditSink.append(buildAuditRecord({
@@ -509,10 +537,6 @@ export class ResourceWatchdogService {
       );
       return;
     }
-    this.persistenceHealth = {
-      ...this.persistenceHealth,
-      reservationDurable: true,
-    };
 
     const prompt = buildResourceWatchdogPrompt({
       kind: decision.kind,
@@ -583,6 +607,7 @@ export class ResourceWatchdogService {
       this.persistenceHealth = {
         ...this.persistenceHealth,
         status: 'ok',
+        reservationDurable: this.state.lastSpawnAt !== null,
         consecutiveFailures: 0,
         lastAttemptAt: attemptedAt,
         lastSuccessAt: attemptedAt,

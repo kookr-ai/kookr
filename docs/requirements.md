@@ -1201,7 +1201,9 @@ The system SHALL launch a resource-watchdog task only after its throttle reserva
 - Given a state-store write failure while reserving a spawn, the watchdog launches no task, keeps the in-memory throttle armed, and emits a distinct `spawn_persist_failed` audit decision.
 - Given a failed reservation, the next in-process tick remains throttled rather than retrying the launch on every sampling interval.
 - Given a restart while reservation storage remains unwritable, the new process does not report a durable reservation and does not launch a task without first completing a successful reservation write.
+- Given a readable OOM delta, the watchdog persists the advanced OOM baseline and spawn reservation in one write so a failed reservation cannot consume the one-shot trigger.
 - Given storage recovery, a successful reservation write permits exactly one launch; a later failure while patching the launched task ID remains best-effort and leaves the throttle armed.
+- Given a failed meta-reflection reservation, storage recovery does not record the meta-reflection as launched or suppress its post-throttle retry.
 - `GET /api/health` reports bounded, cached resource-watchdog persistence status and the most recent write failure without reading disk on the request path.
 
 **Linked tests:** TS-WATCHDOG-006, TS-WATCHDOG-007, TS-WATCHDOG-008, TS-WATCHDOG-009, TS-WATCHDOG-010.
