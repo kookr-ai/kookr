@@ -52,6 +52,7 @@ import { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import { MaintenancePruneHealth } from '../maintenance-prune-schedule.js';
 import { TimerHealthTracker } from '../../core/timer-health.js';
 import type { RouteDeps } from './shared.js';
+import { defaultResourceWatchdogHealthSnapshot } from '../resource-watchdog-service.js';
 import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from '../../core/llm-factory.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -618,6 +619,41 @@ describe('diagnostics routes', () => {
       }).request('/api/diagnostics/timer-health');
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual(snapshot);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — resource-watchdog OOM baseline (issue #2911)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health resourceWatchdog OOM baseline (issue #2911)', () => {
+    test('TS-WATCHDOG-005: publishes the cached OOM baseline and provenance', async () => {
+      const getHealthSnapshot = vi.fn(() => ({
+        ...defaultResourceWatchdogHealthSnapshot(true),
+        oomKillBaseline: {
+          total: 9,
+          sampledAt: '2026-08-31T10:00:00.000Z',
+          ageMs: 2_000,
+          source: 'runtime_sample' as const,
+        },
+      }));
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        resourceWatchdog: { getHealthSnapshot },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        resourceWatchdog?: { oomKillBaseline?: Record<string, unknown> };
+      };
+      expect(body.resourceWatchdog?.oomKillBaseline).toEqual({
+        total: 9,
+        sampledAt: '2026-08-31T10:00:00.000Z',
+        ageMs: 2_000,
+        source: 'runtime_sample',
+      });
+      expect(getHealthSnapshot).toHaveBeenCalledWith({ staleDtachCount: null });
     });
   });
 

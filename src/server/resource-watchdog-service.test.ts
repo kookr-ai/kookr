@@ -1,5 +1,5 @@
 import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ResourceWatchdogService } from './resource-watchdog-service.js';
@@ -308,6 +308,125 @@ describe('ResourceWatchdogService', () => {
     await service.runOnce();
     expect(launches).toHaveLength(1);
     expect(launches[0]?.prompt).toContain('oom_kill');
+  });
+
+  test('TS-WATCHDOG-001: persisted OOM increase triggers once after restart', async () => {
+    sample = healthySample({ oomKillTotal: 4, swapUsedPercent: 0 });
+    const { service, statePath } = makeService();
+    await service.runOnce();
+    expect(launches).toHaveLength(0);
+
+    nowMs += 60_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: 5,
+      swapUsedPercent: 0,
+    });
+    const { service: restarted, audit } = makeService();
+    expect(restarted.getHealthSnapshot().oomKillBaseline).toEqual({
+      total: 4,
+      sampledAt: '2026-07-31T12:00:00.000Z',
+      ageMs: 60_000,
+      source: 'persisted_state',
+    });
+
+    await restarted.runOnce();
+    await restarted.runOnce();
+
+    expect(launches).toHaveLength(1);
+    expect(audit.records.filter((record) =>
+      record.triggers?.some((trigger) => trigger.reason === 'oom_kill_delta')),
+    ).toHaveLength(2); // trigger + spawn audit records for one decision
+    expect(restarted.getHealthSnapshot().oomKillBaseline).toEqual({
+      total: 5,
+      sampledAt: '2026-07-31T12:01:00.000Z',
+      ageMs: 0,
+      source: 'runtime_sample',
+    });
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline).toEqual({
+      total: 5,
+      sampledAt: '2026-07-31T12:01:00.000Z',
+    });
+  });
+
+  test('TS-WATCHDOG-002: first sample migrates legacy state without firing', async () => {
+    const statePath = join(dir, 'resource-watchdog.state.json');
+    writeFileSync(statePath, JSON.stringify({
+      schemaVersion: 1,
+      spawnTimestamps: ['2026-07-31T10:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T10:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T10:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
+      lastMetaReflectionAt: null,
+    }), 'utf-8');
+    sample = healthySample({ oomKillTotal: 7, swapUsedPercent: 0 });
+
+    const { service } = makeService();
+    await service.runOnce();
+
+    expect(launches).toHaveLength(0);
+    expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toMatchObject({
+      spawnTimestamps: ['2026-07-31T10:00:00.000Z'],
+      lastSpawnAt: '2026-07-31T10:00:00.000Z',
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'legacy-task',
+      lastTriggerAt: '2026-07-31T10:00:00.000Z',
+      lastTriggerReasons: ['swap_percent'],
+      oomKillBaseline: {
+        total: 7,
+        sampledAt: '2026-07-31T12:00:00.000Z',
+      },
+    });
+  });
+
+  test('TS-WATCHDOG-003: decreased OOM counter rebaselines without firing', async () => {
+    sample = healthySample({ oomKillTotal: 8, swapUsedPercent: 0 });
+    const { service, statePath } = makeService();
+    await service.runOnce();
+
+    nowMs += 60_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: 2,
+      swapUsedPercent: 0,
+    });
+    const { service: restarted } = makeService();
+    await restarted.runOnce();
+
+    expect(launches).toHaveLength(0);
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline).toEqual({
+      total: 2,
+      sampledAt: '2026-07-31T12:01:00.000Z',
+    });
+    expect(restarted.getHealthSnapshot().oomKillBaseline).toMatchObject({
+      total: 2,
+      source: 'runtime_sample',
+    });
+  });
+
+  test('TS-WATCHDOG-004: unreadable OOM counter retains persisted health provenance', async () => {
+    sample = healthySample({ oomKillTotal: 3, swapUsedPercent: 0 });
+    const { service } = makeService();
+    await service.runOnce();
+
+    nowMs += 90_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      oomKillTotal: null,
+      swapUsedPercent: 0,
+    });
+    const { service: restarted } = makeService();
+    await restarted.runOnce();
+
+    expect(launches).toHaveLength(0);
+    expect(restarted.getHealthSnapshot().oomKillBaseline).toEqual({
+      total: 3,
+      sampledAt: '2026-07-31T12:00:00.000Z',
+      ageMs: 90_000,
+      source: 'persisted_state',
+    });
   });
 
   test('24h budget switches to meta_reflection', async () => {

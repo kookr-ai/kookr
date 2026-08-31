@@ -24,6 +24,7 @@ import {
 } from '../core/resource-watchdog-prompt.js';
 import {
   emptyResourceWatchdogState,
+  recordOomKillBaseline,
   recordSpawn,
   recordTriggerOnly,
   type ResourceWatchdogStateStore,
@@ -93,7 +94,7 @@ export class ResourceWatchdogService {
   private running = false;
   private tickInFlight = false;
   private state: ResourceWatchdogPersistedState;
-  private previousOomKillTotal: number | null = null;
+  private oomKillBaselineSource: 'persisted_state' | 'runtime_sample' | null;
   private lastSample: ResourceWatchdogSample | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
 
@@ -113,6 +114,9 @@ export class ResourceWatchdogService {
     this.setTimeoutFn = deps.setTimeoutFn ?? setTimeout;
     this.clearTimeoutFn = deps.clearTimeoutFn ?? clearTimeout;
     this.state = this.stateStore.load();
+    this.oomKillBaselineSource = this.state.oomKillBaseline === null
+      ? null
+      : 'persisted_state';
   }
 
   start(): void {
@@ -189,6 +193,10 @@ export class ResourceWatchdogService {
     const lastDecision = config.enabled
       ? this.lastDecision
       : (this.lastDecision ?? 'disabled');
+    const oomKillBaseline = this.state.oomKillBaseline;
+    const oomKillBaselineSampledAtMs = oomKillBaseline === null
+      ? NaN
+      : Date.parse(oomKillBaseline.sampledAt);
     return {
       enabled: config.enabled,
       lastSampleAt: this.lastSample?.sampledAt ?? null,
@@ -214,6 +222,15 @@ export class ResourceWatchdogService {
       pressureWhileDisabled: pressure.pressureWhileDisabled,
       pressureWhileDisabledReason: pressure.pressureWhileDisabledReason,
       autoEnableOnPressure: config.autoEnableOnPressure,
+      oomKillBaseline: oomKillBaseline === null || this.oomKillBaselineSource === null
+        ? null
+        : {
+            ...oomKillBaseline,
+            ageMs: Number.isFinite(oomKillBaselineSampledAtMs)
+              ? Math.max(0, nowMs - oomKillBaselineSampledAtMs)
+              : null,
+            source: this.oomKillBaselineSource,
+          },
     };
   }
 
@@ -271,14 +288,23 @@ export class ResourceWatchdogService {
 
       const decision = evaluateResourceWatchdog({
         sample,
-        previousOomKillTotal: this.previousOomKillTotal,
+        previousOomKillTotal: this.state.oomKillBaseline?.total ?? null,
         state: this.state,
         config,
         nowMs: this.nowMs(),
       });
-      // Advance oom baseline after evaluation so a delta is only seen once.
+      // Advance and persist after evaluation so a delta is seen exactly once,
+      // including when it occurs between the last sample and a daemon restart.
+      // A lower counter (reboot/cgroup recreation) naturally rebaselines here
+      // without firing because the evaluator only emits on a positive delta.
       if (sample.oomKillTotal !== null) {
-        this.previousOomKillTotal = sample.oomKillTotal;
+        this.state = recordOomKillBaseline({
+          state: this.state,
+          total: sample.oomKillTotal,
+          sampledAt: sample.sampledAt,
+        });
+        this.oomKillBaselineSource = 'runtime_sample';
+        this.persistState();
       }
       this.lastDecision = decision.action;
 
@@ -578,6 +604,7 @@ export function defaultResourceWatchdogHealthSnapshot(
     pressureWhileDisabled: false,
     pressureWhileDisabledReason: null,
     autoEnableOnPressure,
+    oomKillBaseline: null,
   };
 }
 

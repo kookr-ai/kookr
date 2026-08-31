@@ -207,6 +207,7 @@ describe('evaluateResourceWatchdog', () => {
       lastTriggerAt: new Date(t0).toISOString(),
       lastTriggerReasons: ['swap_percent'],
       lastMetaReflectionAt: null,
+      oomKillBaseline: null,
     };
     const decision = evaluateResourceWatchdog({
       sample: sample({ swapUsedPercent: 95 }),
