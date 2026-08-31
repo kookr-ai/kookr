@@ -119,40 +119,37 @@ Operational rule:
 - Keep runtime/UI/app-server version surfaces aligned with the same build version where practical
 - After changing versioning, rebuild and reinstall `${KOOKR_CODEX_BIN:-$HOME/bin/codex}` before concluding the task
 
-Build from the single fork checkout, on `feat/claude-compat`. **Use the
-toolchain pinned in `codex-rs/rust-toolchain.toml`** (1.95.0 as of
-2026-06-12; upstream syncs bump it — a stale `+<version>` pin fails with
-"rustc X is not supported by the following packages"; `scripts/rebuild-codex.sh`
-auto-detects it):
+Build from the single fork checkout, on `feat/claude-compat`. Use the Kookr
+helper so the toolchain pinned in `codex-rs/rust-toolchain.toml` is selected
+automatically and both wire-compatible executables are prepared before the
+active installation changes:
 
 ```bash
 KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
-cd "$KOOKR_CODEX_CHECKOUT" && git checkout feat/claude-compat && git pull
-cargo +1.95.0 build \
-  --manifest-path "$KOOKR_CODEX_CHECKOUT/codex-rs/Cargo.toml" \
-  -p codex-cli \
-  --release
+cd "$KOOKR_CODEX_CHECKOUT" && git checkout feat/claude-compat && git pull --ff-only
+cd "${KOOKR_ROOT:-$HOME/git/kookr}" && \
+  CODEX_SRC="$KOOKR_CODEX_CHECKOUT" pnpm codex:rebuild
 ```
 
-Or use the Kookr helper: `pnpm codex:rebuild` (runs `scripts/rebuild-codex.sh`, uses `CODEX_SRC=$HOME/git/codex`).
+`scripts/rebuild-codex.sh` builds `codex` and `codex-code-mode-host` from the
+same checkout. It stores them together in a versioned directory and switches
+the `.codex-current` pointer only after both artifacts are ready. Never install
+one of these executables independently: the code-mode wire schema can change
+without a version bump, and a mixed pair can execute a command before failing
+to decode its result.
 
-Install the built binary for Kookr use:
-
-```bash
-CODEX_SRC="${CODEX_SRC:-${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}}"
-CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
-MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
-TARGET_DIR="$(cargo +1.95.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 | node -e 'let input = ""; process.stdin.on("data", chunk => input += chunk); process.stdin.on("end", () => process.stdout.write(JSON.parse(input).target_directory));')"
-
-install -m 755 "$TARGET_DIR/release/codex" "$CODEX_INSTALL_DIR/codex"
-```
+An official release host is a fallback only when its local git tag has the same
+`code-mode-protocol`, `code-mode-host`, and `code-mode-runtime` sources as the
+checkout. A similar release version is not proof of compatibility.
 
 Do not assume the binary lives under `codex-rs/target/release`. Some machines set Cargo's target directory outside the repo, for example `/mnt/d/cargo-target`. Use `cargo metadata`'s `target_directory` value when locating the built binary.
 
-Sanity check:
+Sanity checks:
 
 ```bash
 "${CODEX_INSTALL_DIR:-$HOME/bin}/codex" --version
+node "${KOOKR_ROOT:-$HOME/git/kookr}/scripts/smoke-codex-code-mode.mjs" \
+  --codex "${CODEX_INSTALL_DIR:-$HOME/bin}/codex"
 ```
 
 Kookr should use `${KOOKR_CODEX_BIN:-${CODEX_INSTALL_DIR:-$HOME/bin}/codex}` as the deployed custom Codex binary.
