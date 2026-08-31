@@ -71,8 +71,9 @@ export interface ResourceWatchdogStateStore {
 }
 
 /**
- * File-backed store. Corrupt/missing files return empty state (fail-open so a
- * bad write cannot disable the whole actuator permanently).
+ * File-backed store. Corrupt/missing files return empty state; the service's
+ * mandatory pre-launch save prevents that empty fallback from launching work
+ * unless a fresh throttle reservation can be made durable.
  */
 export class FileResourceWatchdogStateStore implements ResourceWatchdogStateStore {
   constructor(private readonly path: string) {}
