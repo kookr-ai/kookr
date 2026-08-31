@@ -675,6 +675,7 @@ describe('ResourceWatchdogService', () => {
 
   test('OOM baseline and reservation are one atomic pre-launch write', async () => {
     let writable = false;
+    const saveAttempts: ResourceWatchdogPersistedState[] = [];
     let durableState: ResourceWatchdogPersistedState = {
       ...emptyResourceWatchdogState(),
       oomKillBaseline: {
@@ -687,6 +688,7 @@ describe('ResourceWatchdogService', () => {
     const stateStore: ResourceWatchdogStateStore = {
       load: () => structuredClone(durableState),
       save: (state) => {
+        saveAttempts.push(structuredClone(state));
         if (!writable) throw new Error('reservation write failed');
         durableState = structuredClone(state);
       },
@@ -695,6 +697,15 @@ describe('ResourceWatchdogService', () => {
     const { service } = makeService({ launchImpl: launchTask, stateStore });
     await service.runOnce();
     expect(launchTask).not.toHaveBeenCalled();
+    expect(saveAttempts).toHaveLength(1);
+    expect(saveAttempts[0]).toMatchObject({
+      oomKillBaseline: {
+        total: 1,
+        sampledAt: '2026-07-31T12:00:00.000Z',
+      },
+      lastSpawnAt: '2026-07-31T12:00:00.000Z',
+      lastSpawnTaskId: null,
+    });
     expect(durableState.oomKillBaseline.total).toBe(0);
     expect(durableState.lastSpawnAt).toBeNull();
 
