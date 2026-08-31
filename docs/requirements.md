@@ -1145,6 +1145,23 @@ The system SHALL include overdue lifecycle timers, hook-ingestion p95 lag, and f
 
 **Evidence:** `src/cli/kookr-ops-digest.ts` (`collectOpsDigestWarnings`), `src/cli/kookr-ops-digest.test.ts`, `docs/reference/cli.md`.
 
+### R6.12: Keep Queue-Feeder Rollups Off the Health Request Path [#2912] — SHALL — `done`
+
+The system SHALL refresh the rolling 24-hour queue-feeder invent-class counts outside `GET /api/health` and SHALL serve health from the last completed in-memory publication.
+
+**Acceptance criteria:**
+- `GET /api/health` neither reads nor splits the queue-feeder decisions ledger
+- Concurrent refresh requests share one in-flight ledger scan
+- The health projection reports the last successful `generatedAt`, its `ageMs`, and `lastRefreshError`
+- A failed refresh preserves the last successful product, micro, and other counts
+- A slow refresh over a large ledger does not delay health beyond the 2.5-second cold-assembly deadline
+
+**Linked tests:** `src/server/invent-priority-health-refresher.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
+
+**Dependencies:** R6.8.
+
+**Evidence:** `src/server/invent-priority-health-refresher.ts` (single-flight publication and freshness metadata), `src/server/index.ts` (boot/shutdown lifecycle wiring), `src/server/routes/diagnostics-routes.ts` (in-memory health projection), `src/core/pipeline-starvation-state.ts` (ledger loading and refresh-error propagation), `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1585,6 +1602,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R6.9 | #2641 | SHALL | done | llm-factory helperLlm health snapshot, diagnostics-routes, ops digest |
 | R6.10 | #2636 | SHALL | done | timer-health summary on GET /api/health, last-good pickGauges |
 | R6.11 | #2637 | SHALL | done | ops digest timerHealth / hookIngestion.p95LagMs / schedulesPausedByFailure |
+| R6.12 | #2912 | SHALL | done | background queue-feeder invent-class refresher, in-memory health projection |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

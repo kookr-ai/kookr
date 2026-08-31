@@ -102,10 +102,9 @@ import {
 } from '../../core/retro-verify-queue.js';
 import {
   listPipelineStarvationHealth,
-  loadInventPriorityClassHealth,
-  type InventPriorityClassHealth,
   type PipelineStarvationHealthRepo,
 } from '../../core/pipeline-starvation-state.js';
+import type { InventPriorityClassHealthSnapshot } from '../invent-priority-health-refresher.js';
 import { defaultPipelineStarvationStateDir } from '../../core/pipeline-starvation.js';
 import {
   evaluateRelayOrphanBound,
@@ -594,7 +593,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       | {
           schemaVersion: 'pipeline-starvation.v1';
           repos: Record<string, PipelineStarvationHealthRepo>;
-          inventByPriorityClass?: InventPriorityClassHealth;
+          inventByPriorityClass?: InventPriorityClassHealthSnapshot;
         }
       | undefined;
     const pipelineStarvationOutcome = await collectBounded(
@@ -603,28 +602,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         const stateDir = deps.kookrDir
           ? `${deps.kookrDir}/playbook-state/pipeline-starvation`
           : defaultPipelineStarvationStateDir();
-        const repos = await listPipelineStarvationHealth({ stateDir });
-        const inventByPriorityClass = await loadInventPriorityClassHealth({
-          kookrDir: deps.kookrDir,
-        });
-        return { repos, inventByPriorityClass };
+        return listPipelineStarvationHealth({ stateDir });
       },
       deps.healthComponentBudgetMs ?? HEALTH_COMPONENT_BUDGET_MS,
     );
     recordComponentOutcome(pipelineStarvationOutcome.source, pipelineStarvationOutcome.name);
     if (pipelineStarvationOutcome.value) {
-      const { repos, inventByPriorityClass } = pipelineStarvationOutcome.value;
-      if (
-        Object.keys(repos).length > 0
-        || inventByPriorityClass.product
-          + inventByPriorityClass.micro
-          + inventByPriorityClass.other
-          > 0
-      ) {
+      const pipelineStarvationRepos = pipelineStarvationOutcome.value;
+      // Issue #2912: this is an in-memory snapshot only. The process-scoped
+      // refresher owns boot/periodic ledger scans and single-flight publication.
+      // Preserve the pre-existing soft-omit contract when the repo-state read
+      // fails; a cached invent snapshot must not fabricate a healthy empty block.
+      const inventByPriorityClass = deps.inventPriorityHealth?.getSnapshot();
+      if (Object.keys(pipelineStarvationRepos).length > 0 || inventByPriorityClass) {
         pipelineStarvationBlock = {
           schemaVersion: 'pipeline-starvation.v1',
-          repos,
-          inventByPriorityClass,
+          repos: pipelineStarvationRepos,
+          ...(inventByPriorityClass ? { inventByPriorityClass } : {}),
         };
       }
     }

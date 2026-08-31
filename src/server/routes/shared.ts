@@ -566,6 +566,15 @@ export interface RouteDeps {
    */
   lessonYieldHealth?: LessonYieldHealthCache;
   /**
+   * Process-scoped queue-feeder invent-class rollup (issue #2912). The
+   * refresher scans on its own boot/timer cadence; `/api/health` calls only the
+   * synchronous snapshot getter and never opens the decisions ledger.
+   */
+  inventPriorityHealth?: Pick<
+    import('../invent-priority-health-refresher.js').InventPriorityHealthRefresher,
+    'getSnapshot'
+  >;
+  /**
    * Shared `/api/health` body-cache timing gauges (issue #2497). Diagnostics
    * records the last assembly duration + land time; `/metrics` reads the same
    * instance via `snapshot()`. Absent in partial test harnesses ⇒ diagnostics

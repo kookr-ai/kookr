@@ -37,6 +37,7 @@ import {
 import { drainLifecycles } from '../core/suggestion-telemetry.js';
 import { createRoutes } from './routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
+import { InventPriorityHealthRefresher } from './invent-priority-health-refresher.js';
 import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDeps } from './agent-lifecycle.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
@@ -2433,6 +2434,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     log: (line) => console.log(line),
   });
+  // Issue #2912: scan the growing queue-feeder ledger on a process-owned
+  // cadence. Diagnostics receives only the in-memory snapshot, so cold health
+  // assembly can never wait on or trigger the full-file rollup.
+  const inventPriorityHealth = new InventPriorityHealthRefresher({ kookrDir });
+  inventPriorityHealth.start();
   // Hourly prod smoke tick (issue #1593 / #2031). Created before createRoutes so
   // GET /api/health can project consecutiveFailures + failingChecks from the
   // alert artifact without re-running checks. Enabled by default only on the
@@ -2483,6 +2489,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
+    inventPriorityHealth,
     opsStatusWriter,
     reapWarningCoordinator,
     faaAckReapWarningCoordinator,
@@ -3610,6 +3617,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       clearInterval(envBlockerHeartbeatTimer);
       envBlockerHeartbeatTimer = undefined;
     }
+
+    inventPriorityHealth.stop();
 
     lessonSpoolService.stop();
     signalOutboxService.stop();

@@ -38,6 +38,10 @@ import { DeliveryTraceBuffer } from '../../core/delivery-trace.js';
 import { HookIngestion, REPLAY_SESSION_PREFIX, type HookEventInjector } from '../hook-ingestion.js';
 import * as retroVerifyQueue from '../../core/retro-verify-queue.js';
 import * as pipelineStarvationState from '../../core/pipeline-starvation-state.js';
+import {
+  InventPriorityHealthRefresher,
+  type InventPriorityClassHealthSnapshot,
+} from '../invent-priority-health-refresher.js';
 import { LastGoodHealthWriter } from '../last-good-health.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
@@ -3143,6 +3147,82 @@ describe('diagnostics routes', () => {
       expect(body.controlPlane.collectionStatus).toBe('degraded');
       expect(body.controlPlane.erroredComponents).toEqual(['pipelineStarvation']);
       expect(body.agents).toBe(2);
+      expect((body as { pipelineStarvation?: unknown }).pipelineStarvation).toBeUndefined();
+    });
+
+    test('a slow refresh over a large queue-feeder ledger never runs on or delays health (#2912)', async () => {
+      const queueFeederDir = join(tempDir, 'playbook-state', 'queue-feeder');
+      mkdirSync(queueFeederDir, { recursive: true });
+      const row = JSON.stringify({
+        ts: '2026-08-31T02:00:00.000Z',
+        action: 'invent-product-wave',
+        inventPriorityClass: 'product',
+      });
+      writeFileSync(join(queueFeederDir, 'decisions.jsonl'), `${row}\n`.repeat(50_000));
+
+      let finishRefresh!: () => void;
+      const refreshGate = new Promise<void>((resolve) => { finishRefresh = resolve; });
+      let markParsingStarted!: () => void;
+      const parsingStarted = new Promise<void>((resolve) => { markParsingStarted = resolve; });
+      let firstYield = true;
+      const directLedgerRead = vi.spyOn(
+        pipelineStarvationState,
+        'loadInventPriorityClassHealth',
+      );
+      const load = vi.fn(async () => {
+        return pipelineStarvationState.loadInventPriorityClassHealth({
+          kookrDir: tempDir,
+          nowMs: Date.parse('2026-08-31T02:01:00.000Z'),
+          yieldEveryLines: 1,
+          yieldToEventLoop: async () => {
+            if (!firstYield) return;
+            firstYield = false;
+            markParsingStarted();
+            await refreshGate;
+          },
+        });
+      });
+      const refresher = new InventPriorityHealthRefresher({ load });
+      const refresh = refresher.refresh();
+      await parsingStarted;
+      expect(directLedgerRead).toHaveBeenCalledTimes(1);
+      const startedAt = performance.now();
+
+      const res = await mkApp({
+        taskStore: twoTaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+        inventPriorityHealth: refresher,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      expect(performance.now() - startedAt).toBeLessThan(2_500);
+      expect(directLedgerRead).toHaveBeenCalledTimes(1);
+      expect(load).toHaveBeenCalledTimes(1);
+      const body = await res.json() as {
+        pipelineStarvation?: { inventByPriorityClass?: InventPriorityClassHealthSnapshot };
+      };
+      expect(body.pipelineStarvation?.inventByPriorityClass).toMatchObject({
+        product: 0,
+        micro: 0,
+        other: 0,
+        generatedAt: null,
+        ageMs: null,
+        lastRefreshError: null,
+      });
+
+      finishRefresh();
+      await refresh;
+      expect(directLedgerRead).toHaveBeenCalledTimes(1);
+      expect(refresher.getSnapshot()).toMatchObject({
+        product: 50_000,
+        micro: 0,
+        other: 0,
+        generatedAt: expect.any(String),
+        ageMs: expect.any(Number),
+        lastRefreshError: null,
+      });
     });
 
     test('cold-cache deadline serves the on-disk last-good snapshot with counts intact', async () => {

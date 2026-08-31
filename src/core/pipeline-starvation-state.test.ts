@@ -140,4 +140,12 @@ describe('loadInventPriorityClassHealth (#2358)', () => {
     });
     expect(health).toEqual({ product: 0, micro: 0, other: 0, windowHours: 24 });
   });
+
+  test('surfaces filesystem failures to the background publisher', async () => {
+    const ledger = join(kookrDir, 'playbook-state', 'queue-feeder', 'decisions.jsonl');
+    await mkdir(ledger);
+
+    await expect(loadInventPriorityClassHealth({ kookrDir, nowMs: NOW }))
+      .rejects.toMatchObject({ code: 'EISDIR' });
+  });
 });
