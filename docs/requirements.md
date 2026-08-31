@@ -651,10 +651,13 @@ The system SHOULD provide a minimal quick-launch mode that inherits the path fro
 - If no agent is selected, falls back to Kookr's CWD (R4b.1)
 - Enter submits, Escape cancels
 - Launched task uses the inherited path and entered prompt
+- If the immediate WebSocket send fails, the input stays open with its exact prompt, path, agent, effort, and model selections intact and shows the existing connection error
+- Retrying after the sender recovers dispatches the same launch payload and closes Quick Launch exactly once
+- Failed sends do not update recent-path ordering or remembered launch selections
 
 **Rationale:** When running multiple agents in the same repo, the path is always the same. Removing the dialog entirely for this case cuts launch time to a single keystroke + prompt.
 
-**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling).
+**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling), `src/frontend/components/QuickLaunch.toast.test.ts` (failed-send state retention and successful retry).
 
 ### R4b.5: Telegram Agent Selection — SHOULD — `done`
 

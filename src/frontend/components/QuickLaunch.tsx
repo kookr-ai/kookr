@@ -129,7 +129,6 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
-    recentPaths.add(cwd);
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const sent = send({
       type: 'launch',
@@ -142,9 +141,11 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         : {}),
     });
     if (sent) {
+      recentPaths.add(cwd);
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
+      onClose();
     } else {
       useKookrStore.getState().handleAlert(
         '',
@@ -152,7 +153,6 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         'error',
       );
     }
-    onClose();
   }
 
   function handleSubmit() {
