@@ -1003,6 +1003,18 @@ The system SHOULD show lightweight host and Kookr-server resource status in the 
 
 **Evidence:** `src/core/system-resource-metrics.ts`, `src/server/system-resource-sampler.ts`, `src/server/resource-status-service.ts`, `src/server/ws-connection-handler.ts`, `src/frontend/resource-status.ts`, `src/frontend/components/StatusBar.tsx`, related tests.
 
+### R5.11: In-Tour Setup Diagnostics Action — SHALL — `done`
+
+The system SHALL let a user open the existing Diagnostics surface from the onboarding tour's First-launch readiness card without stacking modal focus traps.
+
+**Acceptance criteria:**
+- The First-launch readiness card shows a `Check setup` action when the tour is wired to Diagnostics
+- Activating `Check setup` closes the onboarding tour before invoking the Diagnostics opener
+- App wiring opens the existing Diagnostics/Operations panel without introducing a second readiness flow or new recovery copy
+- Other onboarding cards and the final-card first-agent launch action retain their existing behavior
+
+**Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/App.tsx`, `src/frontend/components/OnboardingTour.test.ts`, `e2e/onboarding-tour.spec.ts`.
+
 ---
 
 ## R6: Infrastructure & Platform
@@ -1610,6 +1622,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R5.8 | — | SHOULD | done | prompt-display, monitor, launch-service, Tooltip, DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher, project-identity |
 | R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
+| R5.11 | #2909 | SHALL | done | OnboardingTour, App, onboarding-tour component/E2E tests |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

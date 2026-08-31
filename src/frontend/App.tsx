@@ -1812,7 +1812,10 @@ export function App() {
           />
         </Suspense>
       )}
-      <OnboardingTour onLaunchFirstTask={() => openLaunchFromPalette('manual', 'onboarding_tour')} />
+      <OnboardingTour
+        onCheckSetup={openDiagnostics}
+        onLaunchFirstTask={() => openLaunchFromPalette('manual', 'onboarding_tour')}
+      />
       {scheduleHintActive && (
         <ScheduledTasksHint onHide={() => setScheduleHintActive(false)} />
       )}
