@@ -32,9 +32,14 @@ async function main() {
     process.exit(127);
   }
 
-  // Fast path: anything that is not `kb remember …` — pure exec, no Node load
-  // of spool modules, zero behavioural change.
-  if (argv[0] !== 'remember') {
+  // Replay already owns the pending entry. Wrapping it again could convert a
+  // failed real write into a successful duplicate spool append, after which
+  // the drain would delete the only pending copy.
+  const skipSpool = process.env.KOOKR_KB_SKIP_SPOOL === '1';
+
+  // Fast path: anything that is not `kb remember …`, plus replay calls that
+  // explicitly own their retry state — pure exec, no spool-module load.
+  if (argv[0] !== 'remember' || skipSpool) {
     process.exitCode = await execReal(realKb, argv, process.env);
     return;
   }

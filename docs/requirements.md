@@ -1576,6 +1576,22 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 
 **Evidence:** `src/server/use-cases/umbrella-chain-advancer.ts`, `src/server/index.ts`, `src/adapters/github-umbrella-chain-client.ts`, `src/server/use-cases/workspace-context.ts`, `src/core/repo-policy-resolver.ts`, `src/server/use-cases/umbrella-chain-advancer.test.ts` (`TS-CHAIN-001`, `TS-CHAIN-003`), `src/adapters/github-umbrella-chain-client.test.ts` (`TS-CHAIN-002`), `src/server/use-cases/workspace-context.test.ts`.
 
+## R18: Lesson-write Recovery
+
+### R18.1: Replay Spooled Lessons Without Similarity-index Admission [#2901] — SHALL — `done`
+
+The system SHALL replay a valid pending lesson through `kb remember` without depending on similarity-index availability and without passing mutually incompatible CLI flags.
+
+**Acceptance criteria:**
+- Replay invokes `kb remember` with `--stdin`, `--yes`, and `--no-check-similar`, and does not pass `--force`.
+- Replay sends the stored lesson body unchanged on standard input.
+- When `kb` resolves to Kookr's write-behind shim, replay bypasses re-spooling and preserves a downstream write failure for retry.
+- After a healthy probe and successful write, the service records the pending lesson as written and reduces the pending count.
+
+**Linked tests:** TS-LESSON-001, TS-LESSON-002, TS-LESSON-003.
+
+**Evidence:** `src/core/lesson-write-runner.ts`, `bin/kb-spool-shim.js`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`, `TS-LESSON-003`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -1695,6 +1711,7 @@ The system SHALL reconcile self-advancing umbrella chains in every configured Gi
 | R15.1 | #2782 | SHALL | done | orchestration-pause, orchestration-pause-service, diagnostics-routes |
 | R16.1 | emission bootstrap | SHALL | done | project-config-store, emission-budget, kookr-emission, ProjectDetailDrawer |
 | R17.1 | #2903 | SHALL | done | umbrella-chain-advancer, github-umbrella-chain-client, workspace-context, server wiring |
+| R18.1 | #2901 | SHALL | done | lesson-write-runner, kb-spool-shim, lesson-spool-service |
 
 ---
 
