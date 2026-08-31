@@ -54,8 +54,14 @@ export function runKbRemember(opts: RunKbRememberOptions): Promise<RunKbRemember
 
     let child;
     try {
+      // This boundary already owns retry state. If `kb` resolves to Kookr's
+      // write-behind shim, re-spooling a failed replay can turn a duplicate
+      // append into exit 0 and make the drain delete an unwritten lesson.
       child = spawn(bin, args, {
-        env: opts.env ?? process.env,
+        env: {
+          ...(opts.env ?? process.env),
+          KOOKR_KB_SKIP_SPOOL: '1',
+        },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
     } catch (err) {

@@ -1541,11 +1541,12 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 **Acceptance criteria:**
 - Replay invokes `kb remember` with `--stdin`, `--yes`, and `--no-check-similar`, and does not pass `--force`.
 - Replay sends the stored lesson body unchanged on standard input.
+- When `kb` resolves to Kookr's write-behind shim, replay bypasses re-spooling and preserves a downstream write failure for retry.
 - After a healthy probe and successful write, the service records the pending lesson as written and reduces the pending count.
 
-**Linked tests:** TS-LESSON-001, TS-LESSON-002.
+**Linked tests:** TS-LESSON-001, TS-LESSON-002, TS-LESSON-003.
 
-**Evidence:** `src/core/lesson-write-runner.ts`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
+**Evidence:** `src/core/lesson-write-runner.ts`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`, `TS-LESSON-003`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
 
 ## Summary Matrix
 
