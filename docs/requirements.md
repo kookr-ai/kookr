@@ -444,18 +444,18 @@ For `grok-build` launches, the system SHALL validate the launch-scoped `auth.jso
 
 **Evidence:** `src/adapters/grok-auth-preflight.ts`, `src/adapters/grok-auth-preflight.test.ts`, `src/adapters/grok-build-adapter.ts`, and `src/server/ws-handlers/launch-result.ts`.
 
-### R4.1b: Surface Grok Auth Preflight in the Launch Dialog [F4.1] — SHALL — `done`
+### R4.1b: Surface Grok Auth Preflight in Dashboard Launch Surfaces [F4.1] — SHALL — `done`
 
-The system SHALL show operators the Grok credential-cache verdict in the Launch dialog before they submit, using the same offline `inspectGrokAuthFile` preflight the adapter already runs, without exposing secrets or changing launch billing or API-key auth.
+The system SHALL show operators the Grok credential-cache verdict in the Launch dialog and Quick Launch bar before they submit, using the same offline `inspectGrokAuthFile` preflight the adapter already runs, without exposing secrets or changing launch billing or API-key auth.
 
 **Acceptance criteria:**
-- Given Grok Build is selected (or would be the next round-robin pick) and the shared credential cache is missing, expired, or invalid, when the Launch dialog is open, then a banner is visible and contains `grok login`
-- Given the same cache is usable (`ok`), when the Launch dialog is open, then no Grok auth banner is shown
-- Given a failing preflight, when the operator would launch `grok-build`, then Launch is disabled; other agent selections (including round-robin, which skips Grok) stay launchable
+- Given Grok Build is selected (or would be the next round-robin pick) and the shared credential cache is missing, expired, or invalid, when the Launch dialog or Quick Launch bar is open, then a banner is visible and contains `grok login`
+- Given the same cache is usable (`ok`), when either dashboard launch surface is open, then no Grok auth banner is shown
+- Given a failing preflight, when the operator would explicitly launch `grok-build` from either dashboard surface, then submission is disabled; other agent selections (including round-robin, which skips Grok) stay launchable
 - The status payload never includes access tokens, refresh tokens, API keys, or other credential values
 - Existing CLI and `POST /api/tasks` launch defaults stay unchanged
 
-**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/GrokAuthPreflightBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`.
+**Evidence:** `src/shared/contracts/grok-auth-status.ts`, `src/adapters/grok-auth-status.ts`, `src/server/routes/grok-auth-routes.ts`, `src/frontend/components/GrokAuthPreflightBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchTaskDialog.grok-auth.test.ts`, and `src/frontend/components/QuickLaunch.round-robin-preview.test.ts`.
 
 ### R4.1c: Warn on Active Duplicate Prompts in the Launch Dialog [F17.4] — SHALL — `done`
 
@@ -463,7 +463,8 @@ The system SHALL warn in the Launch dialog and Quick Launch bar before submit wh
 
 **Acceptance criteria:**
 - Given two in-memory active tasks and a matching prompt + cwd + agent, when the Launch dialog or Quick Launch bar is open, then a warning banner is visible with Open existing and Launch anyway
-- Given the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadataIntent` `keep_as_duplicate`
+- Given an otherwise launchable duplicate and the operator clicks Launch anyway, when the form submits, then the launch is sent with `disableDedup` and `metadataIntent` `keep_as_duplicate`
+- Given another preflight blocks a matching Quick Launch, when the duplicate warning is visible, then Launch anyway is disabled while Open existing remains available
 - Given a non-matching prompt, when the operator clicks Launch, then the payload is sent without those duplicate-preserving fields
 - Existing CLI (`kookr spawn --dedupe`) and `POST /api/tasks` defaults stay unchanged
 
@@ -1632,7 +1633,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R3.11 | F3.1 | SHOULD | done | activity-role-filter, ActivityPanel |
 | R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
-| R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog |
+| R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog, QuickLaunch |
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
 | R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
