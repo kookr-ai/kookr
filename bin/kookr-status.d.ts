@@ -5,6 +5,24 @@
 export type Severity = 'critical' | 'warning' | 'info';
 export type FailOnSeverity = Severity | 'none';
 
+export interface ReadinessCheckLike {
+  critical?: boolean;
+  ready?: boolean;
+  status?: string;
+  reason?: string;
+  detail?: unknown;
+  [key: string]: unknown;
+}
+
+export interface ReadinessStatus {
+  status: 'ready' | 'not-ready' | 'unavailable';
+  available: boolean;
+  ready: boolean | null;
+  httpStatus: number | null;
+  checks: Record<string, ReadinessCheckLike> | null;
+  error?: string;
+}
+
 export interface Finding {
   agentId: string;
   taskName: string;
@@ -465,6 +483,7 @@ export interface RenderReportArgs {
   port: number;
   health: HealthLike;
   agents: AgentLike[];
+  readiness?: ReadinessStatus;
   degraded?: DegradedRenderContext;
 }
 
@@ -550,6 +569,7 @@ export function parseStatusArgs(argv: string[]): {
   help: boolean;
   json: boolean;
   failOn: FailOnSeverity;
+  requireReady: boolean;
   error?: string;
 };
 export function parsePortEnv(
@@ -559,6 +579,8 @@ export function resolvePort(env?: Record<string, string | undefined>): Promise<P
 export function main(deps?: MainDeps): Promise<void>;
 export function apiAuthHeaders(env?: Record<string, string | undefined>): Record<string, string>;
 export const HELP_TEXT: string;
+/** Exit used only by the opt-in readiness gate. */
+export const READINESS_EXIT_CODE: number;
 /** Default machine-readable status JSON budget (80 KiB). */
 export const STATUS_JSON_MAX_BYTES: number;
 /** Per-string UTF-8 cap so one field cannot blow the document. */
