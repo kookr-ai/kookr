@@ -1,7 +1,9 @@
 import { describe, test, expect } from 'vitest';
 import {
   describeBlocker,
+  describeVerdictOutcome,
   formatDirtySummary,
+  isAlreadyGoneBlocker,
   isPermanentBlocker,
   totalDirtyCount,
   type WorktreeCleanupBlocker,
@@ -37,6 +39,51 @@ describe('describeBlocker', () => {
     for (const blocker of ALL_BLOCKERS) {
       expect(describeBlocker(blocker), blocker).not.toContain('-');
     }
+  });
+});
+
+describe('isAlreadyGoneBlocker', () => {
+  test('only a vanished path counts — it is the state removal was after', () => {
+    expect(isAlreadyGoneBlocker('not-found')).toBe(true);
+    for (const blocker of ALL_BLOCKERS.filter((b) => b !== 'not-found')) {
+      expect(isAlreadyGoneBlocker(blocker), blocker).toBe(false);
+    }
+  });
+});
+
+describe('describeVerdictOutcome', () => {
+  test('a vanished worktree reads as done, not refused', () => {
+    // The regression this guards: "kept — path no longer exists" made a task
+    // that had cleaned up after itself look like it could not be closed.
+    const text = describeVerdictOutcome({ removable: false, blocker: 'not-found' });
+    expect(text).toBe('already removed — nothing to clean up');
+    expect(text).not.toContain('kept');
+  });
+
+  test('every other blocker still reads as a refusal, with its cause', () => {
+    for (const blocker of ALL_BLOCKERS.filter((b) => b !== 'not-found')) {
+      expect(describeVerdictOutcome({ removable: false, blocker }), blocker)
+        .toBe(`kept — ${describeBlocker(blocker)}`);
+    }
+  });
+
+  test('the separator swaps for the spoken summary, so nothing reads out "em dash"', () => {
+    expect(describeVerdictOutcome({ removable: false, blocker: 'not-found' }, ', '))
+      .toBe('already removed, nothing to clean up');
+    expect(describeVerdictOutcome({ removable: false, blocker: 'uncommitted-changes' }, ', '))
+      .toBe('kept, uncommitted changes');
+  });
+
+  test('a refusal with no named cause does not read as safe', () => {
+    // `blocker` is present exactly when `removable` is false, so this is
+    // malformed — but the row still draws a refusal glyph beside this text,
+    // and "safe to remove" there would contradict it.
+    expect(describeVerdictOutcome({ removable: false })).toBe('kept — reason unavailable');
+  });
+
+  test('a removable worktree says so regardless of separator', () => {
+    expect(describeVerdictOutcome({ removable: true })).toBe('safe to remove');
+    expect(describeVerdictOutcome({ removable: true }, ', ')).toBe('safe to remove');
   });
 });
 

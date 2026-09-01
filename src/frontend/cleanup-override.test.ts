@@ -96,6 +96,41 @@ describe('resolveCleanupOverride — blocked', () => {
   });
 });
 
+describe('resolveCleanupOverride — worktree already gone', () => {
+  function gone(): WorktreeCleanupVerdict {
+    return { ...verdict(false), blocker: 'not-found' };
+  }
+
+  test('still vetoes, even though the dialog calls it an outcome rather than a refusal', () => {
+    // The dialog shows a disabled box for an all-gone task, so the wire must
+    // say no. Deferring to the server's setting would let the cleanup
+    // re-inspect at execution and act on what it finds then — and `not-found`
+    // rests on a single `existsSync`, which also reads false for a briefly
+    // unreachable mount. A real worktree would be removed with `force: true`
+    // right after the user was told there was nothing to clean up.
+    expect(resolveCleanupOverride({ ...base, verdicts: [gone()] })).toBe(false);
+  });
+
+  test('a real blocker alongside it still vetoes', () => {
+    expect(resolveCleanupOverride({ ...base, verdicts: [gone(), verdict(false)] })).toBe(false);
+  });
+
+  test('a removable worktree alongside it still honours the checkbox', () => {
+    expect(resolveCleanupOverride({
+      ...base, verdicts: [gone(), verdict(true)], checkboxValue: true,
+    })).toBe(true);
+    expect(resolveCleanupOverride({
+      ...base, verdicts: [gone(), verdict(true)], checkboxValue: false,
+    })).toBe(false);
+  });
+
+  test('a running loop vetoes it too, without consulting the verdict', () => {
+    expect(resolveCleanupOverride({
+      ...base, verdicts: [gone()], ralphActive: true, touched: true, checkboxValue: true,
+    })).toBe(false);
+  });
+});
+
 describe('resolveCleanupOverride — removable', () => {
   test('sends the checkbox value once the saved default is known', () => {
     expect(resolveCleanupOverride({ ...base, checkboxValue: true })).toBe(true);

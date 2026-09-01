@@ -28,8 +28,17 @@ export function resolveCleanupOverride(input: {
   // this dialog showed a verdict at all. Sending `false` here would let a
   // transient git failure silently switch off a user's saved cleanup.
   if (input.inspectFailed) return input.touched ? input.checkboxValue : undefined;
-  // The dialog said every worktree is kept. Say so, rather than letting the
+  // The dialog said nothing will be removed. Say so, rather than letting the
   // server's default contradict what the user just read.
+  //
+  // `not-found` counts here too, even though the dialog presents it as an
+  // outcome rather than a refusal. A verdict is a snapshot of one `existsSync`
+  // call, which also returns false for a momentarily unreachable mount or an
+  // unreadable parent directory; the cleanup re-inspects at execution and would
+  // then find a perfectly real worktree and remove it with `force: true`. The
+  // dialog showed a disabled box, so the wire must veto — the record-tidying a
+  // permissive answer would buy is not worth removing a worktree the user was
+  // just told there was nothing to clean up.
   if (!input.verdicts.some((v) => v.removable)) return false;
   // Removable: honour the checkbox, but only once we know what its default
   // should have been — otherwise defer to the server as before.

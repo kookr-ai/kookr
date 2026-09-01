@@ -120,6 +120,48 @@ export function isPermanentBlocker(blocker: WorktreeCleanupBlocker): boolean {
   return (PERMANENT_BLOCKERS as readonly WorktreeCleanupBlocker[]).includes(blocker);
 }
 
+/**
+ * Blockers where the cleanup's goal state has *already been reached*.
+ *
+ * `not-found` is the only one: the directory is gone, which is precisely what
+ * removal would have produced. The cleanup agrees — `cleanupSingleWorktree`
+ * takes it as success, marks the session `cleaned_up`, and logs
+ * `worktree_skipped: not found` rather than a failure.
+ *
+ * It rides in `WorktreeCleanupBlocker` because it does stop the removal steps
+ * from running, but presenting it as a refusal ("kept — path no longer
+ * exists", "this cannot be removed by Kookr") reads as if completion were
+ * stuck on a worktree that in fact no longer exists. Callers that report an
+ * outcome to a human must branch on this.
+ */
+export function isAlreadyGoneBlocker(blocker: WorktreeCleanupBlocker): boolean {
+  return blocker === 'not-found';
+}
+
+/**
+ * The one-line outcome shown for a verdict, in the dialog and read aloud.
+ *
+ * Single source for both so the visible row and the spoken summary cannot
+ * describe the same verdict differently. `separator` is the only thing that
+ * varies: the dialog sets an outcome off with an em dash, while the spoken
+ * summary uses a comma, which screen readers pause on instead of announcing
+ * the symbol by name.
+ */
+export function describeVerdictOutcome(
+  verdict: Pick<WorktreeCleanupVerdict, 'removable' | 'blocker'>,
+  separator = ' — ',
+): string {
+  if (verdict.removable) return 'safe to remove';
+  // `blocker` is present exactly when `removable` is false, so this is a
+  // malformed verdict. Say the removal is off rather than "safe to remove",
+  // which would contradict the refusal glyph the row draws beside it.
+  if (verdict.blocker === undefined) return `kept${separator}reason unavailable`;
+  if (isAlreadyGoneBlocker(verdict.blocker)) {
+    return `already removed${separator}nothing to clean up`;
+  }
+  return `kept${separator}${describeBlocker(verdict.blocker)}`;
+}
+
 /** Short human-readable cause, rendered after "kept — " in the dialog. */
 export function describeBlocker(blocker: WorktreeCleanupBlocker): string {
   switch (blocker) {
