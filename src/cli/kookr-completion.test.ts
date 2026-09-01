@@ -129,7 +129,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('complete -F _kookr kookr');
     expect(script).toContain('spawn signal issue doctor status ops github logs command ralph schedule drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
     expect(script).toContain('compgen -W "spawn signal issue doctor status ops github logs command ralph schedule drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
-    expect(script).toContain('compgen -W "status --json -h --help"');
+    expect(script).toContain('compgen -W "--json --fail-on --require-ready -h --help"');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.
     expect(script).toContain('compgen -W "digest timers --json --offline -h --help"');
@@ -159,7 +159,7 @@ describe('renderCompletion', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
     expect(script).toContain('root_commands=(spawn signal issue doctor status ops github logs command ralph schedule drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
-    expect(script).toContain('compadd -- status --json -h --help');
+    expect(script).toContain('compadd -- --json --fail-on --require-ready -h --help');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.
     expect(script).toContain('compadd -- digest timers --json --offline -h --help');
@@ -393,6 +393,7 @@ describe('bash completion behavior', () => {
     await expect(completeBash(['kookr', 'status', ''])).resolves.toEqual([
       '--json',
       '--fail-on',
+      '--require-ready',
       '-h',
       '--help',
     ]);
@@ -534,6 +535,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
     await expect(completeZsh(['kookr', 'status', ''], 3)).resolves.toEqual([
       '--json',
       '--fail-on',
+      '--require-ready',
       '-h',
       '--help',
     ]);

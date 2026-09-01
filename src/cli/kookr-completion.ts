@@ -95,7 +95,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'status',
-    flags: ['--json', '--fail-on', '-h', '--help'],
+    flags: ['--json', '--fail-on', '--require-ready', '-h', '--help'],
     flagValues: {
       '--fail-on': STATUS_FAIL_ON_VALUES,
     },

@@ -2809,7 +2809,10 @@ describe('kookr-status main (integration-style)', () => {
   function mockSuccessfulFetch(
     snapshotBody: unknown[],
     healthExtra: Record<string, unknown> = {},
-    readiness: { body: unknown; status: number } | Error = { body: readyBody, status: 200 },
+    readiness: { body: unknown; status: number; raw?: boolean } | Error = {
+      body: readyBody,
+      status: 200,
+    },
   ) {
     const healthBody = {
       status: 'ok',
@@ -2824,7 +2827,10 @@ describe('kookr-status main (integration-style)', () => {
       }
       if (href.endsWith('/api/ready')) {
         if (readiness instanceof Error) throw readiness;
-        return new Response(JSON.stringify(readiness.body), { status: readiness.status });
+        return new Response(
+          readiness.raw ? String(readiness.body) : JSON.stringify(readiness.body),
+          { status: readiness.status },
+        );
       }
       if (href.endsWith('/api/snapshot')) {
         return new Response(JSON.stringify(snapshotBody), { status: 200 });
@@ -2932,6 +2938,52 @@ describe('kookr-status main (integration-style)', () => {
     await main({ ...gatedDeps, argv: ['--require-ready'] });
     expect(gatedDeps.exits).toEqual([READINESS_EXIT_CODE]);
     expect(gatedDeps.logs[0]).toContain('Readiness: unavailable (connection reset)');
+  });
+
+  it.each([
+    {
+      label: 'non-JSON body',
+      readiness: { body: 'not json', status: 200, raw: true },
+    },
+    {
+      label: 'invalid verdict shape',
+      readiness: { body: { ready: true }, status: 200 },
+    },
+  ])('treats a malformed readiness $label as unavailable and fails closed only when gated', async ({ readiness }) => {
+    mockSuccessfulFetch([], {}, readiness);
+
+    const defaultDeps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...defaultDeps, argv: ['--json'] });
+    const defaultEnvelope = parseSingleJsonLog(defaultDeps.logs);
+    expect(defaultDeps.exits).toEqual([0]);
+    expect(defaultEnvelope).toMatchObject({
+      ok: true,
+      code: 'OK',
+      details: {
+        readiness: {
+          status: 'unavailable',
+          available: false,
+          ready: null,
+          httpStatus: 200,
+          checks: null,
+          error: 'unexpected /api/ready response',
+        },
+      },
+    });
+
+    mockSuccessfulFetch([], {}, readiness);
+    const gatedDeps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...gatedDeps, argv: ['--json', '--require-ready'] });
+    const gatedEnvelope = parseSingleJsonLog(gatedDeps.logs);
+    expect(gatedDeps.exits).toEqual([READINESS_EXIT_CODE]);
+    expect(gatedEnvelope).toMatchObject({
+      ok: false,
+      code: 'READINESS_FAILED',
+      details: {
+        readinessRequired: true,
+        readiness: { status: 'unavailable' },
+      },
+    });
   });
 
   it('keeps readiness failure distinct when the finding gate also matches (issue #2838)', async () => {
@@ -4239,7 +4291,16 @@ describe('kookr-status main degraded snapshot path (issue #2848)', () => {
    * Snapshot rejects (slow/timed out); health always ok; tasks resolves to the
    * supplied fixture (or rejects when `tasks` is an Error).
    */
-  function mockDegradedFetch(tasks: unknown[] | Error) {
+  function mockDegradedFetch(
+    tasks: unknown[] | Error,
+    readiness: { body: unknown; status: number } = {
+      body: {
+        ready: true,
+        checks: { persistence: { critical: true, ready: true, status: 'ok' } },
+      },
+      status: 200,
+    },
+  ) {
     const attempted: string[] = [];
     globalThis.fetch = vi.fn(async (url: string | URL) => {
       const href = typeof url === 'string' ? url : url.href;
@@ -4249,6 +4310,9 @@ describe('kookr-status main degraded snapshot path (issue #2848)', () => {
       }
       if (href.endsWith('/api/snapshot')) {
         throw timeoutError();
+      }
+      if (href.endsWith('/api/ready')) {
+        return new Response(JSON.stringify(readiness.body), { status: readiness.status });
       }
       if (href.includes('/api/tasks')) {
         if (tasks instanceof Error) throw tasks;
@@ -4404,6 +4468,48 @@ describe('kookr-status main degraded snapshot path (issue #2848)', () => {
       highestSeverity: null,
       findingsEvaluated: false,
     });
+  });
+
+  it('applies --require-ready on the degraded snapshot path in JSON and human output', async () => {
+    const notReady = {
+      body: {
+        ready: false,
+        checks: {
+          startup: { critical: true, ready: false, status: 'startup-in-progress' },
+        },
+      },
+      status: 503,
+    };
+    mockDegradedFetch([{ status: 'inProgress' }], notReady);
+
+    const jsonDeps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...jsonDeps, argv: ['--json', '--require-ready'] });
+    const envelope = parseSingleJsonLog(jsonDeps.logs);
+    expect(jsonDeps.exits).toEqual([READINESS_EXIT_CODE]);
+    expect(envelope).toMatchObject({
+      ok: false,
+      code: 'READINESS_FAILED',
+      details: {
+        readinessRequired: true,
+        readiness: { status: 'not-ready', ready: false, httpStatus: 503 },
+        summary: { findingsAvailable: false },
+        degraded: {
+          sections: [
+            { source: '/api/snapshot', status: 'unavailable' },
+            { source: '/api/tasks?view=compact', status: 'ok' },
+          ],
+        },
+      },
+    });
+
+    mockDegradedFetch([{ status: 'inProgress' }], notReady);
+    const humanDeps = makeDeps({ KOOKR_PORT: '4800' });
+    await main({ ...humanDeps, argv: ['--require-ready'] });
+    expect(humanDeps.exits).toEqual([READINESS_EXIT_CODE]);
+    expect(humanDeps.logs[0]).toContain(
+      'Readiness: NOT READY (HTTP 503; startup=startup-in-progress)',
+    );
+    expect(humanDeps.logs[0]).toContain('Degraded: full event snapshot unavailable');
   });
 
   it('renders a compatible degraded human report', async () => {

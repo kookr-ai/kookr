@@ -1850,11 +1850,14 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   // to a bounded fast path built from /api/health plus the compact task list, so
   // machine-readable status stays a cheap, reliable control-plane probe even when
   // event history grows and full snapshot assembly slows.
-  const [healthResult, snapshotResult, readinessResult] = await Promise.allSettled([
+  // fetchReadiness normalizes every endpoint failure into an explicit
+  // unavailable verdict, so only health/snapshot need settled-promise arms.
+  const readinessPromise = fetchReadiness(`${base}/api/ready`, READINESS_TIMEOUT_MS);
+  const [healthResult, snapshotResult] = await Promise.allSettled([
     fetchJson(`${base}/api/health`),
     fetchJson(`${base}/api/snapshot`, SNAPSHOT_TIMEOUT_MS),
-    fetchReadiness(`${base}/api/ready`, READINESS_TIMEOUT_MS),
   ]);
+  const readiness = await readinessPromise;
 
   if (healthResult.status === 'rejected') {
     const msg = `/api/health: ${errMessage(healthResult.reason)}`;
@@ -1896,16 +1899,6 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
 
   const health = healthResult.value;
   const agents = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
-  const readiness = readinessResult.status === 'fulfilled'
-    ? readinessResult.value
-    : {
-      status: 'unavailable',
-      available: false,
-      ready: null,
-      httpStatus: null,
-      checks: null,
-      error: errMessage(readinessResult.reason),
-    };
   const readinessFailed = args.requireReady && readiness.status !== 'ready';
   const readinessGateDetails = args.requireReady ? { readinessRequired: true } : {};
 

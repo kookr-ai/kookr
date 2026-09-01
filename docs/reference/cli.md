@@ -661,9 +661,9 @@ The envelope fields are:
 | `message` | string | Short human-readable summary of the outcome. |
 | `details` | object | Command-specific structured data. |
 
-`kookr status` exits `1` for invalid ports, unreachable servers, and an unexpected `/api/health` response; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. A slow, unreachable, or malformed `/api/snapshot` is non-fatal: the command exits `0` with `code: "OK_DEGRADED"` and a `details.degraded` block (issue #2848). When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`.
+`kookr status` exits `1` for invalid ports, unreachable servers, and an unexpected `/api/health` response; in JSON mode its `code` distinguishes `USER_ERROR`, `NO_SERVER`, and `SERVER_ERROR` while preserving that numeric behavior. A slow, unreachable, or malformed `/api/snapshot` is non-fatal: without a failed `--require-ready` gate, the command exits `0` with `code: "OK_DEGRADED"` and a `details.degraded` block (issue #2848). When `kookr status --fail-on <severity>` finds an active finding at or above the threshold, it exits `5` and JSON mode returns `code: "FINDINGS_PRESENT"`. When `--require-ready` cannot confirm readiness, it instead exits `6` with `code: "READINESS_FAILED"`; degraded snapshot details remain available in that response.
 
-`kookr status --json` always emits one complete JSON document. A size limit of 80 KiB is applied *before* serialization (override with `KOOKR_STATUS_JSON_MAX_BYTES`): large collections such as `details.agents` and `details.summary.findings` are shortened structurally, and `details.truncation` reports each shortened collection with `truncated`, `originalCount`, and `returnedCount`. Capacity, queue depth, outcome counts, and envelope metadata stay complete. Oversized strings are capped so a single field cannot make the document invalid. The serialized byte stream is never sliced. Human-readable `kookr status` is unchanged.
+`kookr status --json` always emits one complete JSON document. A size limit of 80 KiB is applied *before* serialization (override with `KOOKR_STATUS_JSON_MAX_BYTES`): large collections such as `details.agents` and `details.summary.findings` are shortened structurally, and `details.truncation` reports each shortened collection with `truncated`, `originalCount`, and `returnedCount`. Capacity, queue depth, outcome counts, and envelope metadata stay complete. Oversized strings are capped so a single field cannot make the document invalid. The serialized byte stream is never sliced. Human-readable `kookr status` preserves the existing report and adds a compact `Readiness:` line.
 
 Examples:
 
@@ -762,7 +762,7 @@ Options:
 
 Exit behavior:
 
-- `0` when the status snapshot is read successfully and no `--fail-on` threshold is met. This includes the degraded fast path (`code: "OK_DEGRADED"`) when `/api/health` is reachable but the full event snapshot is slow, unreachable, or malformed; on that path `--fail-on` cannot evaluate findings, so the gate does not fire and JSON reports `findingsEvaluated: false`.
+- `0` when the status snapshot is read successfully, no `--fail-on` threshold is met, and any `--require-ready` gate passes. This includes the degraded fast path (`code: "OK_DEGRADED"`) when `/api/health` is reachable but the full event snapshot is slow, unreachable, or malformed; on that path `--fail-on` cannot evaluate findings, so the gate does not fire and JSON reports `findingsEvaluated: false`.
 - `1` for invalid `KOOKR_PORT`, unreachable servers, or an unexpected `/api/health` response (a bad `/api/snapshot` is non-fatal — see the degraded path above).
 - `2` for usage errors such as an unknown argument or invalid `--fail-on` value.
 - `5` when `--fail-on` is set and active findings meet or exceed the requested severity.
