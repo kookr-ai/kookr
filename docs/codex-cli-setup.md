@@ -21,64 +21,88 @@ A deeper gap analysis lives in [`docs/poc/003-codex-compatibility-gaps.md`](poc/
 
 ## Step-by-step setup
 
-### Option A — using the Kookr helper (recommended)
+### Prepare the fork checkout
 
-From a Kookr checkout:
+Clone the maintained branch once. For an existing checkout, switch to this
+branch and pull it instead.
 
 ```bash
+git clone --branch feat/claude-compat \
+  https://github.com/jeanibarz/codex.git "$HOME/git/codex"
+```
+
+### Install a development build
+
+From a Kookr checkout, point the helper at a local checkout of the fork:
+
+```bash
+CODEX_SRC="$HOME/git/codex" \
+CODEX_INSTALL_DIR="$HOME/bin" \
 pnpm codex:rebuild
 ```
 
-This runs `scripts/rebuild-codex.sh`, which clones `jeanibarz/codex` into `$HOME/git/codex` if absent, checks out `feat/claude-compat`, pulls latest, and builds the release binary. The default `CODEX_SRC` is `$HOME/git/codex`; override by setting `CODEX_SRC` in the environment.
+This runs `scripts/rebuild-codex.sh` with the `kookr-dev` profile. The profile
+keeps release semantics while using faster local compiler settings. The source
+checkout must already exist on `feat/claude-compat`; the helper does not change
+its branch or pull commits.
 
-### Option B — manual build
+If `KOOKR_CODEX_BIN` uses a custom basename, pass the same basename during a
+manual rebuild. For example, `KOOKR_CODEX_BIN=$HOME/bin/codex-fork` requires
+`CODEX_PUBLIC_CLI_NAME=codex-fork`; the daily sync playbook derives this value
+automatically.
 
-Requires a Rust toolchain via [`rustup`](https://rustup.rs). The fork pins its
-exact toolchain in `codex-rs/rust-toolchain.toml`; `rustup` reads that file and
-auto-installs the right version on first build, so you do not hardcode a version.
+### Install a full release build
 
-```bash
-# 1. Clone the fork
-git clone https://github.com/jeanibarz/codex.git "$HOME/git/codex"
-cd "$HOME/git/codex"
-
-# 2. Check out the Claude-compat branch
-git checkout feat/claude-compat
-git pull
-
-# 3. Build. Run from the repo so rustup honors rust-toolchain.toml.
-cargo build \
-  --manifest-path "$HOME/git/codex/codex-rs/Cargo.toml" \
-  -p codex-cli \
-  --release
-```
-
-The Kookr helper (`pnpm codex:rebuild`, Option A) detects and uses the pinned
-toolchain automatically — prefer it unless you need a manual build.
-
-### Install the binary
-
-`cargo` may write the build to a non-default target directory on some systems. Use `cargo metadata` to locate it reliably:
+Set the release profile when preparing a build for long-lived use:
 
 ```bash
-CODEX_SRC="${CODEX_SRC:-$HOME/git/codex}"
-CODEX_INSTALL_DIR="${CODEX_INSTALL_DIR:-$HOME/bin}"
-MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
-
-TARGET_DIR="$(cargo +1.93.0 metadata --manifest-path "$MANIFEST" --no-deps --format-version 1 \
-  | node -e 'let i = ""; process.stdin.on("data", c => i += c); process.stdin.on("end", () => process.stdout.write(JSON.parse(i).target_directory));')"
-
-install -m 755 "$TARGET_DIR/release/codex" "$CODEX_INSTALL_DIR/codex"
+CODEX_SRC="$HOME/git/codex" \
+CODEX_INSTALL_DIR="$HOME/bin" \
+CODEX_BUILD_PROFILE=release \
+pnpm codex:rebuild
 ```
 
-Make sure `$CODEX_INSTALL_DIR` is on your `PATH` (typically `$HOME/bin`).
+Both profiles require a Rust toolchain via [`rustup`](https://rustup.rs). The
+fork pins the exact version in `codex-rs/rust-toolchain.toml`, and the helper
+uses that version automatically.
+
+### Paired installation layout
+
+The CLI sends local tool requests to the code-mode host over an inter-process
+communication (IPC) protocol. The helper treats these executables as one
+runtime pair: it prepares both files before changing the active install, then
+creates this layout under `CODEX_INSTALL_DIR`:
+
+```text
+codex                    -> .codex-current/codex
+codex-code-mode-host     -> .codex-current/codex-code-mode-host
+.codex-current           -> .codex-releases/<pair-id>
+.codex-releases/<pair-id>/codex-pair.json
+```
+
+The manifest records the source commit and hashes of both executables. Switching
+`.codex-current` activates the complete pair atomically; three validated pairs
+are kept by default for rollback. `CODEX_KEEP_RELEASE_PAIRS` changes that bound.
+
+If the host cannot be built locally, the helper accepts a release artifact only
+when the matching release tag contains the same code-mode implementation as the
+checkout. `CODEX_HOST_FROM_RELEASE=1` requests this path directly, and
+`CODEX_HOST_RELEASE_TAG` selects an explicit tag.
+
+Make sure `CODEX_INSTALL_DIR` is on `PATH` (typically `$HOME/bin`).
 
 ## Verification
 
-After install, run:
+After installation, check the fork version and exercise one real local tool
+request across the IPC boundary:
 
 ```bash
-codex --version
+CODEX_BIN_PATH="${CODEX_INSTALL_DIR:-$HOME/bin}/${CODEX_PUBLIC_CLI_NAME:-codex}"
+"$CODEX_BIN_PATH" --version
+CODEX_SOURCE_COMMIT=$(git -C "${CODEX_SRC:-$HOME/git/codex}" rev-parse HEAD)
+node scripts/smoke-codex-code-mode.mjs \
+  --codex "$CODEX_BIN_PATH" \
+  --expected-source-commit "$CODEX_SOURCE_COMMIT"
 ```
 
 You should see output of the form:
@@ -89,7 +113,7 @@ codex-cli 0.118.0+kookr.<short-sha>
 
 The `+kookr.<sha>` suffix confirms you're on the fork build, not upstream. If the worktree was dirty at build time the suffix becomes `+kookr.<sha>.dirty` — rebuild from a clean checkout for a release-quality binary.
 
-If `codex --version` reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `which codex` and confirm it resolves to your install path.
+If the version command reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `CODEX_INSTALL_DIR` and `CODEX_PUBLIC_CLI_NAME`, then confirm `KOOKR_CODEX_BIN` selects that path. With `--expected-source-commit`, the smoke first verifies that the public CLI and host resolve to one runtime directory and that the manifest source and executable hashes match; it then exercises the IPC round trip. Do not consider an update healthy unless it prints `code-mode IPC smoke passed`.
 
 ## Configuration
 
@@ -160,10 +184,12 @@ To pull the latest fork changes:
 cd "$HOME/git/codex"
 git checkout feat/claude-compat
 git pull
-pnpm codex:rebuild  # from the Kookr checkout
+cd /path/to/kookr
+CODEX_SRC="$HOME/git/codex" pnpm codex:rebuild
 ```
 
-Re-run `codex --version` to confirm the short SHA updated.
+Re-run both verification commands above to confirm the short SHA updated and
+the installed pair can exchange a real tool result.
 
 ## Troubleshooting
 

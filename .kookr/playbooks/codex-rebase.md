@@ -1,6 +1,6 @@
 ---
 name: Codex CLI Daily Upstream Sync
-description: Merge the latest openai/codex main into the fork's feat/claude-compat branch through a sync PR, rebuild the binary, and report conflicts that need human attention
+description: Merge the latest openai/codex main into the fork's feat/claude-compat branch through a sync PR, rebuild its matched runtime pair, and report conflicts that need human attention
 cwd: $HOME/git/codex
 checklist:
   - Working tree was clean before starting (or stopped early with a clear message)
@@ -17,8 +17,9 @@ checklist:
   - Pushed sync branch to origin and opened a PR into feat/claude-compat
   - PR was merged with a normal merge commit, never squash or rebase merge
   - Local feat/claude-compat was fast-forwarded from origin/feat/claude-compat after PR merge
-  - Release binary built from the final local feat/claude-compat tip
-  - Binary installed at $HOME/bin/codex
+  - Release CLI and code-mode host built from the final local feat/claude-compat tip
+  - Matched CLI/host pair installed at $HOME/bin
+  - A real code-mode IPC smoke call returned its marker
   - codex --version shows a +kookr.<sha> stamp matching the final feat/claude-compat tip
   - Final report includes PR URL, merge commit, conflict-resolution log, tests, and binary stamp
 ---
@@ -57,6 +58,28 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
 export CARGO_PROFILE_RELEASE_INCREMENTAL=true
 export KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
 export KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$HOME/bin/codex}"
+export KOOKR_ROOT="${KOOKR_ROOT:-$HOME/git/kookr-prod}"
+case "$KOOKR_CODEX_BIN" in
+  */*)
+    KOOKR_CODEX_BIN_DIR=$(cd "$(dirname "$KOOKR_CODEX_BIN")" && pwd -P) || exit 1
+    KOOKR_CODEX_BIN_PATH="$KOOKR_CODEX_BIN_DIR/$(basename "$KOOKR_CODEX_BIN")"
+    ;;
+  *)
+    KOOKR_CODEX_BIN_RESOLVED=$(command -v "$KOOKR_CODEX_BIN") \
+      || { echo "ERROR: cannot resolve KOOKR_CODEX_BIN=$KOOKR_CODEX_BIN on PATH" >&2; exit 1; }
+    case "$KOOKR_CODEX_BIN_RESOLVED" in
+      */*)
+        KOOKR_CODEX_BIN_DIR=$(cd "$(dirname "$KOOKR_CODEX_BIN_RESOLVED")" && pwd -P) || exit 1
+        KOOKR_CODEX_BIN_PATH="$KOOKR_CODEX_BIN_DIR/$(basename "$KOOKR_CODEX_BIN_RESOLVED")"
+        ;;
+      *)
+        echo "ERROR: KOOKR_CODEX_BIN=$KOOKR_CODEX_BIN does not resolve to an executable file" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+export KOOKR_CODEX_BIN_PATH
 cd "$KOOKR_CODEX_CHECKOUT"
 ```
 
@@ -138,15 +161,24 @@ installed binary already matches the integration branch:
 
 ```bash
 if git merge-base --is-ancestor upstream/main origin/feat/claude-compat; then
+    FINAL_FULL_SHA=$(git rev-parse origin/feat/claude-compat)
     FINAL_SHA=$(git rev-parse --short=9 origin/feat/claude-compat)
-    INSTALLED_VERSION=$("$KOOKR_CODEX_BIN" --version 2>/dev/null || true)
-    if printf '%s\n' "$INSTALLED_VERSION" | grep -q "+kookr.$FINAL_SHA"; then
-        echo "feat/claude-compat already contains upstream/main and installed binary matches — no upstream changes today"
+    INSTALLED_VERSION=$("$KOOKR_CODEX_BIN_PATH" --version 2>/dev/null || true)
+    PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
+    INSTALLED_PAIR_SHA=$(jq -r '.sourceCommit // empty' "$PAIR_MANIFEST" 2>/dev/null || true)
+    if printf '%s\n' "$INSTALLED_VERSION" | grep -q "+kookr.$FINAL_SHA" \
+        && [ "$INSTALLED_PAIR_SHA" = "$FINAL_FULL_SHA" ] \
+        && node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" \
+            --codex "$KOOKR_CODEX_BIN_PATH" \
+            --expected-source-commit "$FINAL_FULL_SHA"; then
+        echo "feat/claude-compat already contains upstream/main and the installed CLI/host pair matches — no upstream changes today"
         exit 0
     fi
-    echo "feat/claude-compat already contains upstream/main, but installed binary is missing or stale"
-    echo "expected +kookr.$FINAL_SHA, got: ${INSTALLED_VERSION:-<none>}"
-    echo "skip Phases 3-5 and run Phase 6 to rebuild/install from the current integration branch"
+    echo "feat/claude-compat already contains upstream/main, but its installed CLI/host pair is missing or stale"
+    echo "expected +kookr.$FINAL_SHA and pair source $FINAL_FULL_SHA"
+    echo "got version: ${INSTALLED_VERSION:-<none>}"
+    echo "got pair source: ${INSTALLED_PAIR_SHA:-<none>}"
+    echo "skip Phases 3-5 and run Phase 6 to rebuild/install the matched pair from the current integration branch"
     RECOVER_INSTALL_ONLY=1
 else
     RECOVER_INSTALL_ONLY=0
@@ -348,15 +380,16 @@ branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
 
    If any test fails, stop and report. Do not merge the PR.
 
-4. Verify the release build before the sync PR is merged:
+4. Verify both release executables before the sync PR is merged:
 
    ```bash
    cargo build --offline --release -p codex-cli --bin codex 2>&1 | tail -5
+   cargo build --offline --release -p codex-code-mode-host --bin codex-code-mode-host 2>&1 | tail -5
    ```
 
-   If the release build fails, stop and report. Do not merge the PR. This keeps
-   `feat/claude-compat` from advancing to a commit that cannot produce the Kookr
-   runtime binary.
+   If either release build fails, stop and report. Do not merge the PR. This
+   keeps `feat/claude-compat` from advancing to a commit that cannot produce a
+   matched Kookr runtime pair.
 
 ## Phase 5: Open and merge the sync PR
 
@@ -383,7 +416,7 @@ branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
            --base feat/claude-compat \
            --head "$SYNC_BRANCH" \
            --title "sync: merge upstream/main into feat/claude-compat ($DATE)" \
-           --body "Daily upstream sync. Merges openai/codex upstream/main into feat/claude-compat with a normal merge commit. Verification: cargo check --workspace --offline; cargo test --offline -p codex-core-skills -p codex-hooks; cargo test --offline -p codex-cli --test version; cargo build --offline --release -p codex-cli --bin codex.")
+           --body "Daily upstream sync. Merges openai/codex upstream/main into feat/claude-compat with a normal merge commit. Verification: cargo check --workspace --offline; cargo test --offline -p codex-core-skills -p codex-hooks; cargo test --offline -p codex-cli --test version; release builds for codex and codex-code-mode-host.")
    fi
    echo "$PR_URL"
    ```
@@ -421,7 +454,7 @@ branch. Do not amend fork commits and do not rewrite `feat/claude-compat`.
    If GitHub refuses to merge because checks, permissions, or branch protection
    block it, stop and report the PR URL. Do not bypass protections.
 
-## Phase 6: Fast-forward local feat/claude-compat and build the deployed binary
+## Phase 6: Fast-forward local feat/claude-compat and deploy the matched pair
 
 After the PR is merged, or when Phase 2 enters install-only recovery, update the
 main checkout by fast-forward only:
@@ -435,38 +468,41 @@ git pull --ff-only origin feat/claude-compat
 
 If this cannot fast-forward, stop and report. Do not reset automatically.
 
-Build and install from this final local `feat/claude-compat` tip, not from the
-pre-merge sync branch, so the version stamp matches the branch Kookr uses:
+Build and install both executables from this final local `feat/claude-compat`
+tip, not from the pre-merge sync branch. The paired installer prepares both
+artifacts before it atomically switches the active runtime directory:
 
 ```bash
-cd "$KOOKR_CODEX_CHECKOUT/codex-rs"
-cargo build --offline --release -p codex-cli --bin codex 2>&1 | tail -5
+CODEX_SRC="$KOOKR_CODEX_CHECKOUT" \
+CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")" \
+CODEX_PUBLIC_CLI_NAME="$(basename "$KOOKR_CODEX_BIN_PATH")" \
+CODEX_BUILD_PROFILE=release \
+    "$KOOKR_ROOT/scripts/rebuild-codex.sh"
 ```
 
-Resolve the release binary path through Cargo metadata:
+Sanity-check the installed pair and its source commit:
 
 ```bash
-TARGET_DIR=$(cargo metadata --format-version=1 --no-deps --offline 2>/dev/null | jq -r .target_directory)
-BIN="$TARGET_DIR/release/codex"
-if [ ! -x "$BIN" ]; then
-    echo "FAIL: codex binary not found at $BIN"
-    echo "  cargo reported target_directory: $TARGET_DIR"
-    echo "  CARGO_TARGET_DIR env: ${CARGO_TARGET_DIR:-<unset>}"
-    echo "  Did the build actually finish? Re-check the build log."
-    exit 1
-fi
-install -m 755 "$BIN" "$KOOKR_CODEX_BIN"
+CODEX_VERSION_OUTPUT=$("$KOOKR_CODEX_BIN_PATH" --version)
+printf '%s\n' "$CODEX_VERSION_OUTPUT"
+FINAL_FULL_SHA=$(git rev-parse feat/claude-compat)
+FINAL_SHORT_SHA=$(git rev-parse --short=9 feat/claude-compat)
+case "$CODEX_VERSION_OUTPUT" in
+  *"+kookr.$FINAL_SHORT_SHA"*) ;;
+  *) echo "ERROR: installed Codex version does not identify $FINAL_SHORT_SHA" >&2; exit 1 ;;
+esac
+PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
+test "$(jq -r .sourceCommit "$PAIR_MANIFEST")" = "$FINAL_FULL_SHA"
+node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" \
+    --codex "$KOOKR_CODEX_BIN_PATH" \
+    --expected-source-commit "$FINAL_FULL_SHA"
 ```
 
-Sanity-check the installed binary:
-
-```bash
-"$KOOKR_CODEX_BIN" --version
-git rev-parse --short=9 feat/claude-compat
-```
-
-The `+kookr.<sha>` suffix must match the final `feat/claude-compat` short SHA.
-If it does not match, report the mismatch and stop.
+The `+kookr.<sha>` suffix must match `$FINAL_SHORT_SHA`. The smoke command checks
+that both public executable paths resolve to the same runtime directory, that
+the manifest source and hashes match the installed files, and that a real
+code-mode tool result returns its marker. If any check fails, report the
+mismatch and stop.
 
 ## Phase 7: Report
 
@@ -480,9 +516,10 @@ State clearly in the final summary:
 - Conflict-resolution log, required even when there were zero conflicts.
 - Post-merge fix-up commits, if any.
 - Test results with passed / failed / ignored counts.
-- Installed binary version stamp.
+- Installed binary version stamp and pair source commit.
+- Code-mode IPC smoke result.
 - Whether the run performed a full sync PR or install-only recovery.
-- That the binary is installed at `${KOOKR_CODEX_BIN:-$HOME/bin/codex}`.
+- That the matched pair is active through `${KOOKR_CODEX_BIN:-$HOME/bin/codex}`.
 - That the production Kookr instance has **not** been auto-restarted; the user
   must run `pnpm prod:update` or `pnpm prod:restart` themselves to pick up the
   new binary in the running dashboard.

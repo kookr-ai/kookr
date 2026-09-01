@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { access } from 'node:fs/promises';
+import { access, readFile, realpath } from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join } from 'node:path';
 import type { TerminalBackend } from './terminal-backend.js';
 import {
@@ -89,19 +89,24 @@ export function resolveCodexModel(
  * (issue #2001). Codex spawns this host for shell/tool execution; a CLI-only
  * install boots but every tool call fails with "failed to spawn code-mode host".
  *
- * Resolution: PATH-resolve `agentBin` (or use absolute path), then check
- * `<dirname(codex)>/codex-code-mode-host` is executable.
+ * Resolution: PATH-resolve `agentBin` (or use absolute path), check
+ * `<dirname(codex)>/codex-code-mode-host` is executable, and reject Kookr-managed
+ * links when their pair manifests resolve to different runtime directories.
  */
 export async function resolveCodexCodeModeHost(
   agentBin: string,
   deps: {
     resolveExecutablePath?: (bin: string, env: NodeJS.ProcessEnv) => Promise<string | null>;
     access?: (path: string, mode: number) => Promise<void>;
+    realpath?: (path: string) => Promise<string>;
+    readFile?: (path: string, encoding: BufferEncoding) => Promise<string>;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
   const env = deps.env ?? process.env;
   const accessFn = deps.access ?? ((p: string, mode: number) => access(p, mode));
+  const realpathFn = deps.realpath ?? realpath;
+  const readFileFn = deps.readFile ?? readFile;
   const resolvePath = deps.resolveExecutablePath ?? resolveExecutablePathLight;
 
   const launcherPath = await resolvePath(agentBin, env);
@@ -116,6 +121,32 @@ export async function resolveCodexCodeModeHost(
   const hostPath = join(dirname(launcherPath), CODEX_CODE_MODE_HOST_BIN);
   try {
     await accessFn(hostPath, fsConstants.X_OK);
+    const [launcherRealPath, hostRealPath] = await Promise.all([
+      realpathFn(launcherPath),
+      realpathFn(hostPath),
+    ]);
+    const launcherDirectory = dirname(launcherRealPath);
+    const hostDirectory = dirname(hostRealPath);
+    const hasPairManifest = async (directory: string): Promise<boolean> => {
+      try {
+        const manifest = JSON.parse(
+          await readFileFn(join(directory, 'codex-pair.json'), 'utf8'),
+        ) as { schemaVersion?: unknown };
+        return manifest.schemaVersion === 1;
+      } catch {
+        return false;
+      }
+    };
+    if (launcherDirectory !== hostDirectory && (
+      await hasPairManifest(launcherDirectory) || await hasPairManifest(hostDirectory)
+    )) {
+      return {
+        ok: false,
+        reason:
+          `codex and ${CODEX_CODE_MODE_HOST_BIN} resolve to different runtime pairs ` +
+          `(install both binaries via pnpm codex:rebuild)`,
+      };
+    }
     return { ok: true, path: hostPath };
   } catch {
     return {
