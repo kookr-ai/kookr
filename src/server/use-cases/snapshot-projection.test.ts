@@ -328,11 +328,72 @@ describe('snapshot projection', () => {
     });
   });
 
+  it('projects exact playbook configuration for live, pending, and terminal tasks', () => {
+    const taskStore = new TaskStore();
+    const playbookSource = {
+      id: 'analyze.md',
+      scope: 'user' as const,
+      sourceCwd: '/user/playbooks',
+      sourceDigest: 'sha256:original',
+    };
+    const playbookParameterValues = { repo: 'owner/repo', count: '10' };
+    const createPlaybookTask = (prompt: string) => createTaskForMutation(taskStore, {
+      prompt,
+      cwd: '/workspace/app',
+      playbookId: 'analyze.md',
+      playbookSource,
+      playbookParameterValues,
+    });
+    const live = createPlaybookTask('Live analysis');
+    taskStore.addSession(live.id, {
+      tmuxSession: 'agent-playbook-live',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-08-01T10:00:00Z'),
+    });
+    const pending = createPlaybookTask('Pending analysis');
+    taskStore.pendTask(pending.id);
+    const terminal = createPlaybookTask('Completed analysis');
+    taskStore.addSession(terminal.id, {
+      tmuxSession: 'agent-playbook-terminal',
+      agentType: 'claude-code',
+      cwd: '/workspace/app',
+      createdAt: new Date('2026-08-01T09:00:00Z'),
+    });
+    taskStore.completeTask(terminal.id);
+
+    const snapshot = project(taskStore, [liveAgent('agent-playbook-live')]);
+    const entries = [
+      snapshot.find((state) => state.taskId === live.id),
+      snapshot.find((state) => state.taskId === pending.id),
+      snapshot.find((state) => state.taskId === terminal.id),
+    ];
+
+    for (const entry of entries) {
+      expect(entry).toMatchObject({
+        playbookId: 'analyze.md',
+        playbookSource,
+        playbookParameterValues,
+      });
+    }
+    expect(entries.map((entry) => entry?.taskStatus)).toEqual([
+      'inProgress',
+      'pending',
+      'completed',
+    ]);
+  });
+
   it('creates synthetic entries for pending tasks', () => {
     const taskStore = new TaskStore();
     const task = createTaskForMutation(taskStore, {
       prompt: 'Analyze owner/repo',
       cwd: '/workspace/app',
+      playbookSource: {
+        id: 'analyze.md',
+        scope: 'user',
+        sourceCwd: '/user/playbooks',
+        sourceDigest: 'sha256:original',
+      },
       playbookParameterValues: { repo: 'owner/repo', count: '10' },
     });
     task.playbookId = 'analyze.md';
@@ -351,6 +412,12 @@ describe('snapshot projection', () => {
       cwd: '/workspace/app',
       priority: 'high',
       playbookId: 'analyze.md',
+      playbookSource: {
+        id: 'analyze.md',
+        scope: 'user',
+        sourceCwd: '/user/playbooks',
+        sourceDigest: 'sha256:original',
+      },
       playbookParameterValues: { repo: 'owner/repo', count: '10' },
     });
   });

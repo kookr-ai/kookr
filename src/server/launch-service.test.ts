@@ -2135,12 +2135,24 @@ describe('launchTask', () => {
     expect(dup.duplicate).toBe(true);
   });
 
-  it('persists playbookParameterValues on the created task', async () => {
+  it('persists playbook source identity and parameter values on the created task', async () => {
     const result = await launchTask(deps, {
       prompt: 'Analyze owner/repo',
       cwd: '/tmp',
       playbookId: 'analyze.md',
+      playbookSource: {
+        id: 'analyze.md',
+        scope: 'plugin',
+        sourceCwd: '/plugin/playbooks',
+        sourceDigest: 'sha256:original',
+      },
       playbookParameterValues: { repo: 'owner/repo', count: '10' },
+    });
+    expect(result.task.playbookSource).toEqual({
+      id: 'analyze.md',
+      scope: 'plugin',
+      sourceCwd: '/plugin/playbooks',
+      sourceDigest: 'sha256:original',
     });
     expect(result.task.playbookParameterValues).toEqual({ repo: 'owner/repo', count: '10' });
   });

@@ -26,6 +26,13 @@ describe('resolveUmbrellaDecomposeLaunch', () => {
     const launch = await resolveUmbrellaDecomposeLaunch(repoRoot);
     expect(launch).not.toBeNull();
     expect(launch!.playbookId).toBe(UMBRELLA_DECOMPOSE_PLAYBOOK_PATH);
+    expect(launch!.playbookSource).toEqual({
+      id: UMBRELLA_DECOMPOSE_PLAYBOOK_PATH,
+      scope: 'plugin',
+      sourceCwd: join(pluginDir, 'playbooks'),
+      sourceDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+    });
+    expect(launch!.playbookParameterValues).toEqual({});
     expect(launch!.name).toBe('Umbrella Decompose');
     // Body is the real playbook prose, no leftover {{placeholders}}.
     expect(launch!.prompt).toContain('supply refinery');

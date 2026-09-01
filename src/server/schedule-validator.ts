@@ -6,7 +6,7 @@ import { ScheduleValidationError, isValidMaxTriggers } from '../core/schedule.js
 import { isPracticalCron, isValidCron } from '../core/cron.js';
 import { parsePlaybook, interpolateParameters, PlaybookParseError } from '../core/playbook-parser.js';
 import type { PlaybookScope } from '../core/playbook.js';
-import type { LaunchDependency } from '../shared/contracts/playbook.js';
+import type { LaunchDependency, PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 import { isPathInside, playbookScopeDir, resolvePlaybookInScope } from '../core/playbook-paths.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import {
@@ -29,6 +29,8 @@ export interface ResolvedScheduleLaunch {
   criteria?: string;
   name: string;
   playbookId: string;
+  playbookParameterValues: Record<string, string>;
+  playbookSource: PlaybookSourceIdentity;
   projectId?: string;
   dependencies?: LaunchDependency[];
   autoCloseOnSignal?: boolean;
@@ -72,6 +74,7 @@ export class ScheduleValidator {
       playbookPath: input.playbook.path,
       parameterValues: input.playbook.parameters,
       scope: input.playbook.scope,
+      sourceCwd: input.playbook.sourceCwd,
     });
   }
 
@@ -132,6 +135,7 @@ export class ScheduleValidator {
       // Resolve the same scope `resolveLaunch` would after the merge-carry
       // (R6 parity): an omitted scope falls back to the already-pinned one.
       scope: patch.playbook?.scope ?? existing.playbook.scope,
+      sourceCwd: patch.playbook?.sourceCwd ?? existing.playbook.sourceCwd,
     };
 
     await this.validateDefinitionFields(effective);
@@ -145,7 +149,8 @@ export class ScheduleValidator {
     // probe, no cross-tier fallback. R5: re-resolve the tier *directory*
     // (plugin upgrades change the versioned path) but never the *tier*.
     const scope: PlaybookScope = schedule.playbook.scope ?? 'project';
-    const resolved = await resolveSchedulePlaybook(schedule.playbook.path, scope, schedule.cwd);
+    const sourceCwd = schedule.playbook.sourceCwd ?? schedule.cwd;
+    const resolved = await resolveSchedulePlaybook(schedule.playbook.path, scope, sourceCwd);
     if (!resolved) {
       throw new ScheduleValidationError(
         `Playbook not found in ${scope} tier: ${schedule.playbook.path}`,
@@ -155,7 +160,10 @@ export class ScheduleValidator {
 
     try {
       const raw = await readFile(resolved.filePath, 'utf-8');
-      const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd, scope);
+      const identityCwd = scope === 'project'
+        ? sourceCwd
+        : (playbookScopeDir(scope, sourceCwd) ?? sourceCwd);
+      const playbook = parsePlaybook(raw, schedule.playbook.path, identityCwd, scope);
       const prompt = interpolateParameters(playbook.body, playbook.parameters, schedule.playbook.parameters);
       const criteria = playbook.checklist.length > 0
         ? playbook.checklist.join('\n')
@@ -184,6 +192,13 @@ export class ScheduleValidator {
         criteria,
         name: playbook.name ?? schedule.name,
         playbookId: schedule.playbook.path,
+        playbookParameterValues: structuredClone(schedule.playbook.parameters),
+        playbookSource: {
+          id: schedule.playbook.path,
+          scope,
+          sourceCwd: playbook.sourceCwd,
+          sourceDigest: playbook.sourceDigest,
+        },
         projectId,
         ...(playbook.dependencies ? { dependencies: [...playbook.dependencies] } : {}),
         ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
@@ -203,6 +218,7 @@ export class ScheduleValidator {
     playbookPath: string;
     parameterValues: Record<string, string>;
     scope?: PlaybookScope;
+    sourceCwd?: string;
   }): Promise<void> {
     const fieldErrors: Record<string, string> = {};
 
@@ -215,9 +231,10 @@ export class ScheduleValidator {
     // resolves to `undefined` (treated as unresolvable) rather than throwing,
     // so a PR1 revert while a newer UI persists `scope` cannot wedge updates.
     const scope: PlaybookScope = input.scope ?? 'project';
+    const sourceCwd = input.sourceCwd ?? input.cwd;
     let resolved: { filePath: string } | undefined;
     try {
-      resolved = await resolveSchedulePlaybook(input.playbookPath, scope, input.cwd);
+      resolved = await resolveSchedulePlaybook(input.playbookPath, scope, sourceCwd);
     } catch (err) {
       if (err instanceof ScheduleValidationError) {
         fieldErrors.playbook = err.fieldErrors?.playbook ?? INVALID_PLAYBOOK_PATH_MESSAGE;
@@ -235,7 +252,10 @@ export class ScheduleValidator {
 
     try {
       const raw = await readFile(resolved.filePath, 'utf-8');
-      const playbook = parsePlaybook(raw, input.playbookPath, input.cwd, scope);
+      const identityCwd = scope === 'project'
+        ? sourceCwd
+        : (playbookScopeDir(scope, sourceCwd) ?? sourceCwd);
+      const playbook = parsePlaybook(raw, input.playbookPath, identityCwd, scope);
       const allowedNames = new Set(playbook.parameters.map((param) => param.name));
       const unknown = Object.keys(input.parameterValues).filter((key) => !allowedNames.has(key));
       if (unknown.length > 0) {

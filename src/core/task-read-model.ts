@@ -7,6 +7,7 @@ import type { SessionInfo } from './session-read-model.js';
 import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
+import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition, TaskTerminalReceipt } from '../shared/contracts/task.js';
 
@@ -82,6 +83,8 @@ export interface CreateTaskOptions {
   launchAdmission?: TaskLaunchAdmission;
   name?: string;
   playbookId?: string;
+  /** Exact playbook resource used at launch. Optional for legacy task records. */
+  playbookSource?: PlaybookSourceIdentity;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
   /** Advisory diagnostics captured during launch without changing task identity. */
@@ -157,6 +160,8 @@ export interface Task {
   /** Pre-worker admission state, present while a dependency parks the task. */
   launchAdmission?: TaskLaunchAdmission;
   playbookId?: string;
+  /** Exact playbook resource used at launch. Optional for legacy task records. */
+  playbookSource?: PlaybookSourceIdentity;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
   /** Advisory launch diagnostics. Does not affect duplicate detection. */

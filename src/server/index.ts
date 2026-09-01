@@ -3261,6 +3261,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
             criteria: task.criteria,
             name: task.name,
             playbookId: task.playbookId,
+            playbookSource: task.playbookSource,
             playbookParameterValues: task.playbookParameterValues,
             projectId: intent.intent.projectId ?? task.projectId,
             agentType: intent.intent.agentType,

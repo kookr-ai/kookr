@@ -154,6 +154,12 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       criteria,
       name: playbook.name,
       playbookId: playbook.id,
+      playbookSource: {
+        id: playbook.id,
+        scope: playbook.scope,
+        sourceCwd: playbook.sourceCwd,
+        sourceDigest: playbook.sourceDigest,
+      },
       playbookParameterValues: parameterValues,
       agentType: input.agentType,
       projectId,

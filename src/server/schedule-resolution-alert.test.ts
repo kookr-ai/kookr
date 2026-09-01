@@ -75,6 +75,39 @@ describe('crossTierResolutionHint (issue #1661)', () => {
     expect(seen).toEqual(['user', 'plugin']);
   });
 
+  it('probes a project fallback from the task cwd for a global-tier schedule', () => {
+    const seen: Array<{ scope: PlaybookScope; cwd: string }> = [];
+    const schedule = scheduleLike(
+      { scope: 'user', sourceCwd: '/home/example/.kookr/playbooks' },
+      '/repos/task-target',
+    );
+    const probe: ScheduleResolutionProbe = (_path, scope, cwd) => {
+      seen.push({ scope, cwd });
+      return scope === 'project';
+    };
+
+    expect(crossTierResolutionHint(schedule, probe)).toBe('project');
+    expect(seen).toEqual([{ scope: 'project', cwd: '/repos/task-target' }]);
+  });
+
+  it('retains the source cwd when a project-scoped schedule probes global tiers', () => {
+    const seen: Array<{ scope: PlaybookScope; cwd: string }> = [];
+    const schedule = scheduleLike(
+      { scope: 'project', sourceCwd: '/repos/catalog-source' },
+      '/repos/task-target',
+    );
+    const probe: ScheduleResolutionProbe = (_path, scope, cwd) => {
+      seen.push({ scope, cwd });
+      return scope === 'plugin';
+    };
+
+    expect(crossTierResolutionHint(schedule, probe)).toBe('plugin');
+    expect(seen).toEqual([
+      { scope: 'user', cwd: '/repos/catalog-source' },
+      { scope: 'plugin', cwd: '/repos/catalog-source' },
+    ]);
+  });
+
   it('treats a throwing probe as non-resolving instead of propagating', () => {
     const probe: ScheduleResolutionProbe = (_path, scope) => {
       if (scope === 'user') throw new Error('bad path');

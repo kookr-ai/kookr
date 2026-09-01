@@ -42,6 +42,7 @@ import type { RelaunchArbiter } from './relaunch-arbiter.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import { parsePlaybook } from '../core/playbook-parser.js';
 import type { PlaybookProbe } from '../core/playbook.js';
+import { playbookScopeDir } from '../core/playbook-paths.js';
 import {
   probeReceiptLine,
   resolveScheduleProbe,
@@ -676,10 +677,11 @@ export class ScheduleRunner {
     for (const schedule of this.deps.store.list()) {
       const scope = schedule.playbook.scope ?? 'project';
       const cwdExists = existsSync(schedule.cwd);
+      const sourceCwd = schedule.playbook.sourceCwd ?? schedule.cwd;
       let resolvable = false;
       if (cwdExists) {
         try {
-          resolvable = resolveSchedulePlaybookSync(schedule.playbook.path, scope, schedule.cwd) !== undefined;
+          resolvable = resolveSchedulePlaybookSync(schedule.playbook.path, scope, sourceCwd) !== undefined;
         } catch {
           resolvable = false;
         }
@@ -919,6 +921,8 @@ export class ScheduleRunner {
         criteria: launch.criteria,
         name: launch.name,
         playbookId: launch.playbookId,
+        playbookParameterValues: launch.playbookParameterValues,
+        playbookSource: launch.playbookSource,
         projectId: launch.projectId,
         ...(launch.dependencies ? { dependencies: [...launch.dependencies] } : {}),
         ...(launch.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: launch.autoCloseOnSignal }),
@@ -1370,10 +1374,14 @@ export class ScheduleRunner {
     const parameterDefaults: Record<string, string> = {};
     try {
       const scope = schedule.playbook.scope ?? 'project';
-      const resolved = resolveSchedulePlaybookSync(schedule.playbook.path, scope, schedule.cwd);
+      const sourceCwd = schedule.playbook.sourceCwd ?? schedule.cwd;
+      const resolved = resolveSchedulePlaybookSync(schedule.playbook.path, scope, sourceCwd);
       if (resolved) {
         const raw = readFileSync(resolved.filePath, 'utf-8');
-        const playbook = parsePlaybook(raw, schedule.playbook.path, schedule.cwd, scope);
+        const identityCwd = scope === 'project'
+          ? sourceCwd
+          : (playbookScopeDir(scope, sourceCwd) ?? sourceCwd);
+        const playbook = parsePlaybook(raw, schedule.playbook.path, identityCwd, scope);
         declared = playbook.probe;
         if (playbook.cwd) cwd = expandConfiguredCwd(playbook.cwd);
         for (const param of playbook.parameters) {

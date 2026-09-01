@@ -46,7 +46,7 @@ describe('createScheduleRuntime', () => {
     }));
   });
 
-  test('forwards a schedule model tier through the runtime loop composition root', async () => {
+  test('forwards schedule source, target, parameters, and model tier through the loop composition root', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-schedule-tier-'));
     const taskStore = new TaskStore();
     const launchLoopedPlaybookFn = vi.fn().mockResolvedValue({
@@ -67,8 +67,13 @@ describe('createScheduleRuntime', () => {
     const schedule = runtime.scheduleStore.create({
       name: 'Portable small loop',
       cron: '* * * * *',
-      playbook: { path: 'workflow.md', parameters: {} },
-      cwd: tempDir,
+      playbook: {
+        path: 'workflow.md',
+        parameters: { repo: 'owner/repo' },
+        scope: 'project',
+        sourceCwd: join(tempDir, 'catalog'),
+      },
+      cwd: join(tempDir, 'target'),
       loop: {},
       modelTier: 'small',
     });
@@ -80,6 +85,11 @@ describe('createScheduleRuntime', () => {
       expect.objectContaining({
         scheduleId: schedule.id,
         modelTier: 'small',
+        playbookSourceCwd: join(tempDir, 'catalog'),
+        taskTargetCwd: join(tempDir, 'target'),
+        taskTargetCwdExplicit: true,
+        parameterValues: { repo: 'owner/repo' },
+        scope: 'project',
       }),
     );
   });

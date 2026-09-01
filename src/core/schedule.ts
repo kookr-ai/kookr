@@ -22,6 +22,8 @@ export interface SchedulePlaybook {
    * rfc-schedule-playbook-resolution R2/R3.
    */
   scope?: PlaybookScope;
+  /** Catalog cwd used to resolve a project-scoped playbook when task cwd differs. */
+  sourceCwd?: string;
   /**
    * When present on the playbook reference, the schedule arms an always-running
    * Ralph loop via `launchLoopedPlaybook` on fire (issue #1899 / #1699 WS2.1).
@@ -526,12 +528,12 @@ export type PlaybookResolutionState = 'unknown' | 'resolvable' | 'unresolvable';
 
 /**
  * Cache key for a schedule's resolution health. Includes the inputs that
- * determine resolvability, so a cwd/path/scope edit invalidates the cached
- * value (the stale entry no longer matches → `unknown`).
+ * determine resolvability, so a source-cwd/path/scope edit invalidates the
+ * cached value (the stale entry no longer matches → `unknown`).
  */
 export function scheduleResolutionSignature(schedule: Pick<Schedule, 'playbook' | 'cwd'>): string {
   const scope = schedule.playbook.scope ?? 'project';
-  return [schedule.playbook.path, scope, schedule.cwd].join('\u0000');
+  return [schedule.playbook.path, scope, schedule.playbook.sourceCwd ?? schedule.cwd].join('\u0000');
 }
 
 /** Schedule enriched with computed fields for API responses. */
@@ -838,6 +840,7 @@ export class ScheduleStore {
         path: input.playbook.path,
         parameters: { ...(input.playbook.parameters ?? {}) },
         ...(input.playbook.scope ? { scope: input.playbook.scope } : {}),
+        ...(input.playbook.sourceCwd ? { sourceCwd: input.playbook.sourceCwd } : {}),
       },
       cwd: input.cwd,
       // Omit agentType when unset so fire-time resolves settings.defaultAgentType.
@@ -916,6 +919,9 @@ export class ScheduleStore {
           // client sending only path+parameters from un-pinning a schedule.
           ...((patchPlaybook.scope ?? existing.playbook.scope)
             ? { scope: patchPlaybook.scope ?? existing.playbook.scope }
+            : {}),
+          ...((patchPlaybook.sourceCwd ?? existing.playbook.sourceCwd)
+            ? { sourceCwd: patchPlaybook.sourceCwd ?? existing.playbook.sourceCwd }
             : {}),
         },
       } : {}),
@@ -1090,6 +1096,9 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       // resolver — not normalization — decides resolvability.
       ...(typeof candidate.playbook.scope === 'string'
         ? { scope: candidate.playbook.scope as PlaybookScope }
+        : {}),
+      ...(typeof candidate.playbook.sourceCwd === 'string'
+        ? { sourceCwd: candidate.playbook.sourceCwd }
         : {}),
     },
     cwd: String(candidate.cwd),

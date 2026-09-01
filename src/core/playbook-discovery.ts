@@ -64,7 +64,10 @@ export function pluginPlaybooksDir(): string | undefined {
  * Missing directories are treated as empty. Files that fail to parse are
  * skipped with a warning. The returned list is sorted by id.
  */
-export async function discoverPlaybooks(cwd: string): Promise<Playbook[]> {
+export async function discoverPlaybooks(
+  cwd: string,
+  options: { includeShadowed?: boolean } = {},
+): Promise<Playbook[]> {
   const projectDir = join(cwd, PROJECT_PLAYBOOKS_SUBDIR);
   const userDir = userPlaybooksDir();
   const pluginDir = pluginPlaybooksDir();
@@ -95,15 +98,24 @@ export async function discoverPlaybooks(cwd: string): Promise<Playbook[]> {
     detectRepoTags(cwd),
   ]);
 
+  const visiblePluginPlaybooks = pluginPlaybooks.filter((playbook) => repoTagsAllow(playbook.repoTags, repoTags));
+
+  // Schedule cloning needs every concrete resource so it can match the task's
+  // immutable source identity even when a higher-precedence tier now shadows
+  // the same id. Ordinary discovery keeps the winner-only catalog below.
+  if (options.includeShadowed) {
+    const scopeOrder: Record<PlaybookScope, number> = { project: 0, user: 1, plugin: 2 };
+    return [...projectPlaybooks, ...userPlaybooks, ...visiblePluginPlaybooks]
+      .sort((a, b) => a.id.localeCompare(b.id) || scopeOrder[a.scope] - scopeOrder[b.scope]);
+  }
+
   // Merge with project > user > plugin precedence by id. Plugin-tier
   // playbooks that declare `repo-tags` are filtered out when the cwd's
   // detected tags don't intersect — this is what hides e.g. `oss-bug-fix`
   // outside github-hosted repos. Project and user playbooks bypass the
   // filter (the user explicitly placed those files).
   const byId = new Map<string, Playbook>();
-  for (const pb of pluginPlaybooks) {
-    if (repoTagsAllow(pb.repoTags, repoTags)) byId.set(pb.id, pb);
-  }
+  for (const pb of visiblePluginPlaybooks) byId.set(pb.id, pb);
   for (const pb of userPlaybooks) byId.set(pb.id, pb);
   for (const pb of projectPlaybooks) byId.set(pb.id, pb);
 

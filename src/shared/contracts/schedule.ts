@@ -13,6 +13,8 @@ export interface SchedulePlaybook {
    * definition (both must carry the field or the types diverge).
    */
   scope?: PlaybookScope;
+  /** Catalog cwd used to resolve a project-scoped playbook when task cwd differs. */
+  sourceCwd?: string;
 }
 
 /**

@@ -842,7 +842,7 @@ Returns the full sanitized config object for that project.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/playbooks?cwd=` | Discover playbooks at a CWD |
+| `GET /api/playbooks?cwd=&targetCwd=` | Discover playbooks from `cwd`; optional `targetCwd` filters frontmatter-pinned entries against a distinct task target. The schedule catalog may include multiple resources with the same `id`; distinguish them by `id`, `scope`, `sourceCwd`, and `sourceDigest`. |
 | `GET /api/schedules` | List scheduled tasks |
 | `POST /api/schedules` | Create a scheduled task |
 | `POST /api/schedules/preview` | Preview next-run timestamps for a candidate schedule |
@@ -856,6 +856,9 @@ Schedule create/update bodies accept `modelTier: "small"` with the same mapping
 as task launches. Omit `agentType` (or PATCH it to `null`) to follow the live
 default agent on every fire. PATCH `modelTier` to `null` to clear the tier.
 A tier cannot coexist with an effective raw `model` or `effort` pin.
+Schedule create/update `playbook` objects also accept `sourceCwd`, the catalog
+directory used to resolve a project-scoped resource. The schedule's top-level
+`cwd` remains the task execution target.
 
 ### `POST /api/pipeline-starvation/handle`
 

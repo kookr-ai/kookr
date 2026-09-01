@@ -36,6 +36,13 @@ describe('ScheduleRunner', () => {
     launchSource?: string;
     dependencies?: string[];
     autoCloseOnSignal?: boolean;
+    playbookParameterValues?: Record<string, string>;
+    playbookSource?: {
+      id: string;
+      scope: string;
+      sourceCwd: string;
+      sourceDigest: string;
+    };
   }>;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
@@ -101,6 +108,8 @@ Do the test thing.
           dependencies: opts.dependencies,
           priorAgentSubstitutions: opts.priorAgentSubstitutions,
           autoCloseOnSignal: opts.autoCloseOnSignal,
+          playbookParameterValues: opts.playbookParameterValues,
+          playbookSource: opts.playbookSource,
         });
         const queued = activeCount >= maxActive;
         if (queued) {
@@ -156,6 +165,49 @@ Do the test thing.
         scheduledFor: expect.any(String),
       }),
     ]);
+  });
+
+  it('fires with the persisted parameters and exact source identity from a distinct task cwd', async () => {
+    const targetCwd = join(dir, 'target');
+    await mkdir(targetCwd, { recursive: true });
+    await writeFile(join(dir, '.kookr', 'playbooks', 'parameterized.md'), `---
+name: Parameterized
+parameters:
+  - name: repo
+    required: true
+---
+
+Review {{repo}}.
+`);
+    const schedule = store.create({
+      name: 'Configured review',
+      cron: '* * * * *',
+      playbook: {
+        path: 'parameterized.md',
+        parameters: { repo: 'owner/repo' },
+        scope: 'project',
+        sourceCwd: dir,
+      },
+      cwd: targetCwd,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    await createRunner().tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]).toMatchObject({
+      prompt: expect.stringContaining('Review owner/repo.'),
+      cwd: targetCwd,
+      playbookParameterValues: { repo: 'owner/repo' },
+      playbookSource: {
+        id: 'parameterized.md',
+        scope: 'project',
+        sourceCwd: dir,
+        sourceDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      },
+    });
   });
 
   it('forwards schedule effort and model pins into the launcher (#1518)', async () => {

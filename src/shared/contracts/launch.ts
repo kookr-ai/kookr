@@ -1,6 +1,6 @@
 import type { AgentSelection, AgentType } from './agent-types.js';
 import type { ModelTier } from './model-tier.js';
-import type { LaunchDependency } from './playbook.js';
+import type { LaunchDependency, PlaybookSourceIdentity } from './playbook.js';
 import type { AgentSubstitutionHop, TaskLaunchAdmission, TaskLaunchSource, TaskMetadataIntent } from './task.js';
 
 /**
@@ -32,6 +32,8 @@ export interface LaunchOpts {
   name?: string;
   /** Playbook identifier for traceability. */
   playbookId?: string;
+  /** Exact playbook resource used for this launch. Omitted on legacy/direct launches. */
+  playbookSource?: PlaybookSourceIdentity;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
   /**

@@ -23,6 +23,13 @@ const RESOLVED: ResolvedRefineryLaunch = {
   criteria: 'leaf issues filed',
   name: 'Umbrella Decompose',
   playbookId: 'umbrella-decompose.md',
+  playbookSource: {
+    id: 'umbrella-decompose.md',
+    scope: 'plugin',
+    sourceCwd: '/plugin/playbooks',
+    sourceDigest: 'sha256:original',
+  },
+  playbookParameterValues: { repo: 'owner/repo' },
 };
 
 function makeDeps(overrides: Partial<IdleRefineryRunnerDeps> = {}): {
@@ -59,6 +66,8 @@ describe('IdleRefineryRunner', () => {
     expect(opts.launchSource).toBe('idle-refinery');
     expect(opts.disableDedup).toBe(true);
     expect(opts.playbookId).toBe('umbrella-decompose.md');
+    expect(opts.playbookSource).toEqual(RESOLVED.playbookSource);
+    expect(opts.playbookParameterValues).toEqual({ repo: 'owner/repo' });
     expect(opts.prompt).toBe('decompose one umbrella');
     // Resolved criteria/name must reach the launcher (conditional pass-through).
     expect(opts.criteria).toBe('leaf issues filed');

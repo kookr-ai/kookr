@@ -27,7 +27,8 @@ export function SchedulePlaybookButton({ agent, onSchedule }: {
         trackClick('schedule_playbook');
         onSchedule({
           cwd: agent.cwd ?? '',
-          playbookId,
+          playbookSource: agent.playbookSource,
+          playbookParameterValues: agent.playbookParameterValues,
           name: agent.taskName ?? playbookId,
         });
       }}

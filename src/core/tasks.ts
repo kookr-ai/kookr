@@ -331,6 +331,7 @@ export class TaskStore {
       launchIntent,
       name,
       playbookId,
+      playbookSource,
       playbookParameterValues,
       launchHealthSummary,
       launchAdmission,
@@ -413,6 +414,7 @@ export class TaskStore {
       task.autoNamed = true;
     }
     if (playbookId) task.playbookId = playbookId;
+    if (playbookSource) task.playbookSource = structuredClone(playbookSource);
     if (projectId) task.projectId = projectId;
     // Cross-agent migration lineage (RFC: rfc-cross-agent-task-migration): a
     // continuation task records the interrupted task it continues. The reverse

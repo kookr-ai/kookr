@@ -1718,6 +1718,7 @@ async function launchTaskCore(
       agentType,
       name: opts.name,
       playbookId: opts.playbookId,
+      playbookSource: opts.playbookSource,
       projectId: opts.projectId,
       playbookParameterValues: opts.playbookParameterValues,
       launchIntent: buildLaunchIntent(opts, {

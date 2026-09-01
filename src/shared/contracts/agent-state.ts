@@ -23,6 +23,7 @@ import type { WorktreeHealth } from './session.js';
 import type { TerminalInputSnapshot } from './terminal-input.js';
 import type { UserInputDeliverySnapshot } from './user-input-delivery.js';
 import type { SessionHealthSnapshot } from './session-health.js';
+import type { PlaybookSourceIdentity } from './playbook.js';
 
 /**
  * Client/wire agent state — the dashboard and protocol SSOT (issue #1460).
@@ -67,6 +68,7 @@ export interface AgentState {
    */
   finishedAt?: string;
   playbookId?: string;
+  playbookSource?: PlaybookSourceIdentity;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
   launchPermissionPosture?: TaskLaunchPermissionPosture;

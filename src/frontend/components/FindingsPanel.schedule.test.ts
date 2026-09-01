@@ -117,14 +117,33 @@ describe('FindingsPanel schedule button', () => {
     const onSchedule = vi.fn();
     const selectSpy = vi.spyOn(useKookrStore.getState(), 'selectAgent');
     root = renderPanel(container, {
-      healthy: [agent({ agentId: 'a', taskId: 't-a', taskName: 'Nightly triage', cwd: '/repo', playbookId: 'triage.md' })],
+      healthy: [agent({
+        agentId: 'a',
+        taskId: 't-a',
+        taskName: 'Nightly triage',
+        cwd: '/repo',
+        playbookId: 'triage.md',
+        playbookSource: {
+          id: 'triage.md',
+          scope: 'user',
+          sourceCwd: '/user/playbooks',
+          sourceDigest: 'sha256:original',
+        },
+        playbookParameterValues: { repo: 'owner/repo', label: 'priority' },
+      })],
     }, onSchedule);
 
     act(() => { scheduleButtons(container)[0].click(); });
 
     expect(onSchedule).toHaveBeenCalledWith({
       cwd: '/repo',
-      playbookId: 'triage.md',
+      playbookSource: {
+        id: 'triage.md',
+        scope: 'user',
+        sourceCwd: '/user/playbooks',
+        sourceDigest: 'sha256:original',
+      },
+      playbookParameterValues: { repo: 'owner/repo', label: 'priority' },
       name: 'Nightly triage',
     });
     // stopPropagation: clicking the button must not select the underlying row.

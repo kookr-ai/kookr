@@ -1458,6 +1458,19 @@ The system SHALL retry a failed persistence-backed enable of an allowlisted reco
 
 **Evidence:** `src/server/post-recovery-service.ts` (bounded per-schedule retry state and separate audit failure reporting), `src/core/critical-schedule-rearm.ts` (live hold and trigger-limit eligibility), `src/core/audit-log.ts` (non-throwing failure observer), and `src/server/post-recovery-service.test.ts` (retry, cancellation, exhaustion, and audit-only regressions).
 
+### R10.8: Preserve Scheduled Task Playbook Configuration [F11.9, #2887] — SHALL — `done`
+
+The system SHALL preserve the executed playbook configuration when a developer schedules a playbook from an existing task.
+
+**Acceptance criteria:**
+- Playbook-backed tasks persist and expose the playbook path, parameter values, scope, source directory, and content digest
+- **Schedule this playbook** preserves the source task's working directory and uses its parameter values before defaults; defaults apply only to parameters absent from the source task
+- Catalog collisions SHALL resolve the prefill by source directory, scope, path, and content digest rather than by path alone
+- If the exact resource is missing or modified, or a legacy task lacks its resource identity, the form SHALL select no replacement automatically, explain the problem, and require an explicit selection before saving
+- The created schedule persists the selected scope, source directory, and parameter values, and a scheduled fire renders and records that same playbook configuration on its task
+
+**Evidence:** `src/core/tasks.ts`, `src/core/playbook-discovery.ts`, `src/server/use-cases/playbook-launch.ts`, `src/server/use-cases/snapshot-projection.ts`, `src/server/umbrella-decompose-launch.ts`, `src/server/idle-refinery-runner.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/FindingsPanel/SchedulePlaybookButton.tsx`, `src/frontend/components/SchedulesDialog.tsx`, and focused tests beside those modules.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1736,6 +1749,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R10.5 | #2893 | SHALL | done | SchedulesDialog current-effect guard and overlap regressions |
 | R10.6 | #2904 | SHALL | done | schedule-validator and schedule-runner completion-policy propagation |
 | R10.7 | F11.8, #2900 | SHALL | done | post-recovery-service bounded critical re-arm retries |
+| R10.8 | F11.9, #2887 | SHALL | done | task playbook identity, scoped catalog, schedule prefill and fire fidelity |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |

@@ -150,6 +150,7 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
           path?: unknown;
           parameters?: unknown;
           scope?: unknown;
+          sourceCwd?: unknown;
           loop?: unknown;
         };
         if (typeof playbook.path === "string") {
@@ -162,6 +163,7 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
             // pinned tier. Merge-carry against the existing scope happens in
             // ScheduleStore.updateDefinition.
             ...(typeof playbook.scope === "string" ? { scope: playbook.scope as PlaybookScope } : {}),
+            ...(typeof playbook.sourceCwd === "string" ? { sourceCwd: playbook.sourceCwd } : {}),
             // Nested loop is accepted for create/update convenience (#1899 /
             // #2193) and normalized onto Schedule.loop in updateDefinition.
             ...(playbook.loop !== undefined

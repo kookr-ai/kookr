@@ -110,7 +110,7 @@ export type {
   GitHubStateChange,
 } from './contracts/github.js';
 export type { AgentActivityMeta } from './contracts/hook-events.js';
-export type { Playbook, LaunchDependency, PlaybookScope } from './contracts/playbook.js';
+export type { Playbook, LaunchDependency, PlaybookScope, PlaybookSourceIdentity } from './contracts/playbook.js';
 export type {
   EvolutionChampionRecord,
   EvolutionRunProjection,

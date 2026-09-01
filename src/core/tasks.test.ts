@@ -705,18 +705,36 @@ describe('TaskStore', () => {
       expect(inProgressTasks[0].prompt).toBe('Task 1');
     });
 
-    test('createTask stores playbookParameterValues when provided', () => {
+    test('createTask stores the exact playbook source and parameter values when provided', () => {
       const task = store.createTask({
         prompt: 'Analyze repo',
         cwd: '/workspace/project',
+        playbookSource: {
+          id: 'analyze.md',
+          scope: 'user',
+          sourceCwd: '/user/playbooks',
+          sourceDigest: 'sha256:original',
+        },
         playbookParameterValues: { repoFullName: 'owner/repo', batchSize: '5' },
       });
 
+      expect(task.playbookSource).toEqual({
+        id: 'analyze.md',
+        scope: 'user',
+        sourceCwd: '/user/playbooks',
+        sourceDigest: 'sha256:original',
+      });
       expect(task.playbookParameterValues).toEqual({ repoFullName: 'owner/repo', batchSize: '5' });
     });
 
     test('createTask clones object-bearing inputs on ingress', () => {
       const playbookParameterValues = { repoFullName: 'owner/repo', batchSize: '5' };
+      const playbookSource = {
+        id: 'analyze.md',
+        scope: 'user' as const,
+        sourceCwd: '/user/playbooks',
+        sourceDigest: 'sha256:original',
+      };
       const launchHealthSummary = {
         degradedDependencies: ['kb'],
         findings: [{
@@ -730,15 +748,18 @@ describe('TaskStore', () => {
       const task = store.createTask({
         prompt: 'Analyze repo',
         cwd: '/workspace/project',
+        playbookSource,
         playbookParameterValues,
         launchHealthSummary,
       });
 
       playbookParameterValues.batchSize = '100';
+      playbookSource.sourceCwd = '/mutated';
       launchHealthSummary.degradedDependencies.push('git');
       launchHealthSummary.findings[0]!.summary = 'mutated';
 
       const reread = store.getTask(task.id)!;
+      expect(reread.playbookSource?.sourceCwd).toBe('/user/playbooks');
       expect(reread.playbookParameterValues).toEqual({ repoFullName: 'owner/repo', batchSize: '5' });
       expect(reread.launchHealthSummary).toEqual({
         degradedDependencies: ['kb'],
@@ -1536,6 +1557,33 @@ describe('TaskStore', () => {
         workDisposition: 'abandoned',
         recoveryCorrelationId: 'epoch-9',
       });
+    });
+
+    test('playbook source identity and parameters round-trip through task persistence', async () => {
+      const { saveTasks, loadTasks } = await import('./task-persistence.js');
+      const { mkdtempSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const task = store.createTask({
+        prompt: 'Configured playbook run',
+        cwd: '/target/repo',
+        playbookId: 'triage.md',
+        playbookSource: {
+          id: 'triage.md',
+          scope: 'user',
+          sourceCwd: '/user/playbooks',
+          sourceDigest: 'sha256:original',
+        },
+        playbookParameterValues: { repo: 'owner/repo', label: 'priority' },
+      });
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-playbook-source-persist-'));
+      const file = join(dir, 'tasks.json');
+
+      await saveTasks(store.getAllTasks(), file);
+
+      const restored = (await loadTasks(file)).tasks.find((candidate) => candidate.id === task.id);
+      expect(restored?.playbookSource).toEqual(task.playbookSource);
+      expect(restored?.playbookParameterValues).toEqual(task.playbookParameterValues);
     });
 
     test('getAllTasks and loadTasks do not leak mutable task records', () => {

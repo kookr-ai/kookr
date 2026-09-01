@@ -20,6 +20,14 @@ describe('createProviderTransientRetryHandler', () => {
       cwd: '/repo',
       criteria: 'file 1 issue',
       agentType: 'claude-code',
+      playbookId: 'scout.md',
+      playbookSource: {
+        id: 'scout.md',
+        scope: 'plugin',
+        sourceCwd: '/plugin/playbooks',
+        sourceDigest: 'sha256:original',
+      },
+      playbookParameterValues: { repo: 'owner/repo' },
       provenance: { kind: 'schedule', sourceId: 'sched-lucy' },
       launchIntent: {
         ...buildTaskLaunchIntent('claude-code'),
@@ -58,6 +66,9 @@ describe('createProviderTransientRetryHandler', () => {
       disableDedup: true,
       launchSource: 'schedule',
       scheduleId: 'sched-lucy',
+      playbookId: 'scout.md',
+      playbookSource: original.playbookSource,
+      playbookParameterValues: { repo: 'owner/repo' },
     }));
     await vi.waitFor(() =>
       expect(taskStore.setRetryLineage).toHaveBeenCalledWith('retry-1', { retryOf: 'orig', retryAttempt: 1 }),
