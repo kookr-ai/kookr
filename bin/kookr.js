@@ -14,7 +14,8 @@ Usage:
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
-  kookr status [--json] [--fail-on <critical|warning|info|none>] Print a read-only server snapshot.
+  kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
+                                                        Print a read-only server snapshot.
   kookr ops digest [--json] [--offline]  One-pager of top unattended failure signals (ready + health); --offline reads the last-good snapshot when HTTP is dark.
   kookr ops timers [--json]              List lifecycle-timer lastFiredAt and overdue flags (GET /api/diagnostics/timer-health).
   kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.

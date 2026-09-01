@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Kookr CLI status command — prints a human-readable snapshot of the running
 // Kookr instance. Read-only, no mutations, no external dependencies.
-// Contract: reads `AgentState[]` from /api/snapshot and `{ serverStartedAt,
-// build.version }` from /api/health (see src/server/routes/diagnostics-routes.ts).
+// Contract: reads `AgentState[]` from /api/snapshot, `{ serverStartedAt,
+// build.version }` from /api/health, and the readiness verdict from /api/ready
+// (see src/server/routes/diagnostics-routes.ts).
 // Auto-detects port (4800 → 4801) when KOOKR_PORT is unset.
 
 import { pathToFileURL } from 'node:url';
@@ -18,11 +19,13 @@ const PORTS_TO_TRY = [4800, 4801];
 const SEVERITIES = /** @type {const} */ (['critical', 'warning', 'info']);
 const FAIL_ON_VALUES = /** @type {const} */ ([...SEVERITIES, 'none']);
 const FINDINGS_EXIT_CODE = 5;
+const READINESS_EXIT_CODE = 6;
 const TERMINAL_STATUSES = new Set(['completed', 'cancelled', 'terminated']);
 // Bounded per-request deadlines (issue #2848). Health is the required liveness
 // probe; a slow /api/snapshot must not block the whole status request, so the
 // snapshot and the degraded-path task list each carry their own bounded timeout.
 const SNAPSHOT_TIMEOUT_MS = 2000;
+const READINESS_TIMEOUT_MS = 2000;
 const TASKS_TIMEOUT_MS = 2000;
 // Machine-readable status is a closed JSON document. A size limit is
 // reasonable, but slicing the serialized byte stream at 80 KiB (the
@@ -38,14 +41,16 @@ const STATUS_JSON_COLLECTIONS = [
 const HELP_TEXT = `kookr status — print a read-only snapshot of a running Kookr instance.
 
 Usage:
-  kookr status [--json] [--fail-on <critical|warning|info|none>]
-  kookr-status [--json] [--fail-on <critical|warning|info|none>]        Deprecated compatibility alias.
+  kookr status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
+  kookr-status [--json] [--require-ready] [--fail-on <critical|warning|info|none>]
+                                                                     Deprecated compatibility alias.
 
 Options:
   --json                    Print one complete machine-readable JSON envelope to stdout.
                             Large fleets are bounded structurally at 80 KiB.
   --fail-on <severity>      Exit ${FINDINGS_EXIT_CODE} when active findings meet or exceed
                             critical, warning, info, or none.
+  --require-ready           Exit ${READINESS_EXIT_CODE} unless /api/ready confirms readiness.
   -h, --help                Show this help.
 
 Environment:
@@ -69,6 +74,65 @@ async function fetchJson(url, timeoutMs = 2000) {
   });
   if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
   return res.json();
+}
+
+function isRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+// Readiness is optional for backward compatibility with older Kookr servers.
+// Unlike fetchJson(), this accepts the endpoint's expected 503 response so the
+// not-ready verdict and its checks remain available to operators and scripts.
+async function fetchReadiness(url, timeoutMs = READINESS_TIMEOUT_MS) {
+  try {
+    const res = await fetch(url, {
+      headers: apiAuthHeaders(),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      const status = `HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ''}`;
+      return {
+        status: 'unavailable',
+        available: false,
+        ready: null,
+        httpStatus: res.status,
+        checks: null,
+        error: res.ok ? 'unexpected /api/ready response' : status,
+      };
+    }
+
+    if (!isRecord(body) || typeof body.ready !== 'boolean' || !isRecord(body.checks)) {
+      return {
+        status: 'unavailable',
+        available: false,
+        ready: null,
+        httpStatus: res.status,
+        checks: null,
+        error: 'unexpected /api/ready response',
+      };
+    }
+
+    const ready = res.ok && body.ready;
+    return {
+      status: ready ? 'ready' : 'not-ready',
+      available: true,
+      ready,
+      httpStatus: res.status,
+      checks: body.checks,
+    };
+  } catch (err) {
+    return {
+      status: 'unavailable',
+      available: false,
+      ready: null,
+      httpStatus: null,
+      checks: null,
+      error: errMessage(err),
+    };
+  }
 }
 
 function parsePortEnv(raw) {
@@ -1005,7 +1069,7 @@ function summarizeHungSuspectTtlReclaim(health) {
   return summary;
 }
 
-function renderReport({ port, health, agents, degraded }) {
+function renderReport({ port, health, agents, readiness, degraded }) {
   const lines = [];
   const startedAt = health.serverStartedAt ? Date.parse(health.serverStartedAt) : NaN;
   const uptime = Number.isFinite(startedAt) ? formatUptime(Date.now() - startedAt) : 'unknown';
@@ -1017,6 +1081,22 @@ function renderReport({ port, health, agents, degraded }) {
 
   lines.push(`Kookr on port ${port}${buildLabel}`);
   lines.push(`Uptime:  ${uptime}`);
+  if (readiness) {
+    if (readiness.status === 'ready') {
+      const checkCount = Object.keys(readiness.checks ?? {}).length;
+      lines.push(`Readiness: ready (${checkCount} ${checkCount === 1 ? 'check' : 'checks'})`);
+    } else if (readiness.status === 'not-ready') {
+      const failures = Object.entries(readiness.checks ?? {})
+        .filter(([, check]) => isRecord(check) && check.critical === true && check.ready === false)
+        .map(([name, check]) => `${name}=${
+          typeof check.status === 'string' ? check.status : 'not-ready'
+        }`);
+      const detail = [`HTTP ${readiness.httpStatus ?? 'unknown'}`, ...failures].join('; ');
+      lines.push(`Readiness: NOT READY (${detail})`);
+    } else {
+      lines.push(`Readiness: unavailable (${readiness.error})`);
+    }
+  }
 
   if (degraded) {
     // Issue #2848: the full event snapshot was slow/unavailable — agent and
@@ -1416,7 +1496,7 @@ function renderReport({ port, health, agents, degraded }) {
 }
 
 function parseStatusArgs(argv) {
-  const args = { help: false, json: false, failOn: 'none' };
+  const args = { help: false, json: false, failOn: 'none', requireReady: false };
   let error = null;
   for (let i = 0; i < argv.length; i += 1) {
     const tok = argv[i];
@@ -1424,6 +1504,8 @@ function parseStatusArgs(argv) {
       args.help = true;
     } else if (tok === '--json') {
       args.json = true;
+    } else if (tok === '--require-ready') {
+      args.requireReady = true;
     } else if (tok === '--fail-on') {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('-')) {
@@ -1768,9 +1850,10 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   // to a bounded fast path built from /api/health plus the compact task list, so
   // machine-readable status stays a cheap, reliable control-plane probe even when
   // event history grows and full snapshot assembly slows.
-  const [healthResult, snapshotResult] = await Promise.allSettled([
+  const [healthResult, snapshotResult, readinessResult] = await Promise.allSettled([
     fetchJson(`${base}/api/health`),
     fetchJson(`${base}/api/snapshot`, SNAPSHOT_TIMEOUT_MS),
+    fetchReadiness(`${base}/api/ready`, READINESS_TIMEOUT_MS),
   ]);
 
   if (healthResult.status === 'rejected') {
@@ -1813,13 +1896,30 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
 
   const health = healthResult.value;
   const agents = snapshotResult.status === 'fulfilled' ? snapshotResult.value : null;
+  const readiness = readinessResult.status === 'fulfilled'
+    ? readinessResult.value
+    : {
+      status: 'unavailable',
+      available: false,
+      ready: null,
+      httpStatus: null,
+      checks: null,
+      error: errMessage(readinessResult.reason),
+    };
+  const readinessFailed = args.requireReady && readiness.status !== 'ready';
+  const readinessGateDetails = args.requireReady ? { readinessRequired: true } : {};
 
   if (Array.isArray(agents)) {
-    // Happy path — the full snapshot is present, so the envelope is byte-for-byte
-    // compatible with the historical output (agents array + snapshot-derived
-    // summary/findings, including the --fail-on gate).
+    // Happy path — the full snapshot is present, so the historical agents,
+    // summary, findings, and --fail-on fields stay intact alongside the additive
+    // readiness block.
     const summary = summarize(agents);
     const findingsExceeded = hasFindingsAtOrAbove(summary, args.failOn);
+    const exitCode = readinessFailed
+      ? READINESS_EXIT_CODE
+      : findingsExceeded
+        ? FINDINGS_EXIT_CODE
+        : 0;
     const gateDetails = args.failOn === 'none'
       ? {}
       : { failOn: args.failOn, highestSeverity: highestKnownSeverity(summary) };
@@ -1828,24 +1928,29 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
       return exitJson({
         out,
         exit,
-        exitCode: findingsExceeded ? FINDINGS_EXIT_CODE : 0,
-        ok: !findingsExceeded,
-        code: findingsExceeded ? 'FINDINGS_PRESENT' : 'OK',
-        message: findingsExceeded
-          ? `Active findings meet or exceed ${args.failOn} severity.`
-          : 'Kookr status snapshot',
+        exitCode,
+        ok: exitCode === 0,
+        code: readinessFailed ? 'READINESS_FAILED' : findingsExceeded ? 'FINDINGS_PRESENT' : 'OK',
+        message: readinessFailed
+          ? `Kookr readiness gate failed: ${readiness.status}.`
+          : findingsExceeded
+            ? `Active findings meet or exceed ${args.failOn} severity.`
+            : 'Kookr status snapshot',
         details: {
           port,
           health,
+          readiness,
           agents,
           summary,
           ...buildHealthDetailProjections(health),
           ...gateDetails,
+          ...readinessGateDetails,
         },
         jsonOptions,
       });
     }
-    out.log(renderReport({ port, health, agents }));
+    out.log(renderReport({ port, health, agents, readiness }));
+    if (readinessFailed) return exit(READINESS_EXIT_CODE);
     if (findingsExceeded) return exit(FINDINGS_EXIT_CODE);
     return;
   }
@@ -1938,17 +2043,21 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
     return exitJson({
       out,
       exit,
-      exitCode: 0,
-      ok: true,
-      code: 'OK_DEGRADED',
-      message: 'Kookr status snapshot (degraded: full event snapshot unavailable)',
+      exitCode: readinessFailed ? READINESS_EXIT_CODE : 0,
+      ok: !readinessFailed,
+      code: readinessFailed ? 'READINESS_FAILED' : 'OK_DEGRADED',
+      message: readinessFailed
+        ? `Kookr readiness gate failed: ${readiness.status}.`
+        : 'Kookr status snapshot (degraded: full event snapshot unavailable)',
       details: {
         port,
         health,
+        readiness,
         summary: degradedSummary,
         ...buildHealthDetailProjections(health),
         degraded,
         ...gateDetails,
+        ...readinessGateDetails,
       },
       jsonOptions,
     });
@@ -1956,7 +2065,14 @@ async function main({ argv = process.argv.slice(2), env = process.env, out = con
   // renderReport takes the slim DegradedRenderContext shape ({ snapshotReason,
   // taskSummary, tasksReason }) — distinct from the richer `degraded` block above
   // that the --json envelope carries. See bin/kookr-status.d.ts.
-  out.log(renderReport({ port, health, agents: [], degraded: { snapshotReason, taskSummary, tasksReason } }));
+  out.log(renderReport({
+    port,
+    health,
+    agents: [],
+    readiness,
+    degraded: { snapshotReason, taskSummary, tasksReason },
+  }));
+  if (readinessFailed) return exit(READINESS_EXIT_CODE);
 }
 
 // Guard main() so vitest can import the module without triggering a fetch.
@@ -1985,6 +2101,7 @@ if (isInvokedDirectly()) {
 
 export {
   HELP_TEXT,
+  READINESS_EXIT_CODE,
   STATUS_JSON_MAX_BYTES,
   STATUS_JSON_MAX_STRING_BYTES,
   boundStatusJson,
