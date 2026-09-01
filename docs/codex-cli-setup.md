@@ -46,6 +46,11 @@ keeps release semantics while using faster local compiler settings. The source
 checkout must already exist on `feat/claude-compat`; the helper does not change
 its branch or pull commits.
 
+If `KOOKR_CODEX_BIN` uses a custom basename, pass the same basename during a
+manual rebuild. For example, `KOOKR_CODEX_BIN=$HOME/bin/codex-fork` requires
+`CODEX_PUBLIC_CLI_NAME=codex-fork`; the daily sync playbook derives this value
+automatically.
+
 ### Install a full release build
 
 Set the release profile when preparing a build for long-lived use:
@@ -92,10 +97,11 @@ After installation, check the fork version and exercise one real local tool
 request across the IPC boundary:
 
 ```bash
-codex --version
+CODEX_BIN_PATH="${CODEX_INSTALL_DIR:-$HOME/bin}/${CODEX_PUBLIC_CLI_NAME:-codex}"
+"$CODEX_BIN_PATH" --version
 CODEX_SOURCE_COMMIT=$(git -C "${CODEX_SRC:-$HOME/git/codex}" rev-parse HEAD)
 node scripts/smoke-codex-code-mode.mjs \
-  --codex "$(command -v codex)" \
+  --codex "$CODEX_BIN_PATH" \
   --expected-source-commit "$CODEX_SOURCE_COMMIT"
 ```
 
@@ -107,7 +113,7 @@ codex-cli 0.118.0+kookr.<short-sha>
 
 The `+kookr.<sha>` suffix confirms you're on the fork build, not upstream. If the worktree was dirty at build time the suffix becomes `+kookr.<sha>.dirty` — rebuild from a clean checkout for a release-quality binary.
 
-If `codex --version` reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `command -v codex` and confirm it resolves to your install path. With `--expected-source-commit`, the smoke first verifies that the public CLI and host resolve to one runtime directory and that the manifest source and executable hashes match; it then exercises the IPC round trip. Do not consider an update healthy unless it prints `code-mode IPC smoke passed`.
+If the version command reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `CODEX_INSTALL_DIR` and `CODEX_PUBLIC_CLI_NAME`, then confirm `KOOKR_CODEX_BIN` selects that path. With `--expected-source-commit`, the smoke first verifies that the public CLI and host resolve to one runtime directory and that the manifest source and executable hashes match; it then exercises the IPC round trip. Do not consider an update healthy unless it prints `code-mode IPC smoke passed`.
 
 ## Configuration
 

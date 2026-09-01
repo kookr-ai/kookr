@@ -475,6 +475,7 @@ artifacts before it atomically switches the active runtime directory:
 ```bash
 CODEX_SRC="$KOOKR_CODEX_CHECKOUT" \
 CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")" \
+CODEX_PUBLIC_CLI_NAME="$(basename "$KOOKR_CODEX_BIN_PATH")" \
 CODEX_BUILD_PROFILE=release \
     "$KOOKR_ROOT/scripts/rebuild-codex.sh"
 ```

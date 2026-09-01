@@ -28,7 +28,10 @@ function isolatedGitEnv(): NodeJS.ProcessEnv {
     'GIT_COMMON_DIR',
     'GIT_CONFIG',
     'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_NOSYSTEM',
     'GIT_CONFIG_PARAMETERS',
+    'GIT_CONFIG_SYSTEM',
     'GIT_DIR',
     'GIT_GRAFT_FILE',
     'GIT_IMPLICIT_WORK_TREE',
@@ -43,6 +46,8 @@ function isolatedGitEnv(): NodeJS.ProcessEnv {
   ]) {
     delete env[name];
   }
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
+  env.GIT_CONFIG_NOSYSTEM = '1';
   return env;
 }
 
@@ -169,8 +174,10 @@ function sha256(path: string): string {
 describe('R4b.14: matched Codex runtime pair', () => {
   it('isolates fixture repositories from Git hook environment variables', () => {
     const ambientRoot = mkdtempSync(join(tmpdir(), 'kookr-ambient-git-'));
+    const hostileConfigRoot = mkdtempSync(join(tmpdir(), 'kookr-hostile-git-config-'));
     const ambientEnv = isolatedGitEnv();
     const originalGitDir = process.env.GIT_DIR;
+    const originalGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     const originalGitWorkTree = process.env.GIT_WORK_TREE;
     let fixture: Fixture | undefined;
 
@@ -189,14 +196,22 @@ describe('R4b.14: matched Codex runtime pair', () => {
       cwd: ambientRoot,
       env: ambientEnv,
     });
+    const hooksDir = join(hostileConfigRoot, 'hooks');
+    const globalConfig = join(hostileConfigRoot, 'global-config');
+    mkdirSync(hooksDir);
+    writeExecutable(join(hooksDir, 'pre-commit'), 'exit 91');
+    writeFileSync(globalConfig, `[core]\n\thooksPath = ${hooksDir}\n`);
 
     try {
       process.env.GIT_DIR = join(ambientRoot, '.git');
+      process.env.GIT_CONFIG_GLOBAL = globalConfig;
       process.env.GIT_WORK_TREE = ambientRoot;
       fixture = createFixture(0);
       const result = runRebuild(fixture);
 
       expect(result.status, result.stderr).toBe(0);
+      expect(fixture.env.GIT_CONFIG_GLOBAL).toBe('/dev/null');
+      expect(fixture.env.GIT_CONFIG_NOSYSTEM).toBe('1');
       expect(
         execFileSync('git', ['rev-parse', '--show-toplevel'], {
           cwd: fixture.sourceDir,
@@ -214,10 +229,13 @@ describe('R4b.14: matched Codex runtime pair', () => {
     } finally {
       if (originalGitDir === undefined) delete process.env.GIT_DIR;
       else process.env.GIT_DIR = originalGitDir;
+      if (originalGitConfigGlobal === undefined) delete process.env.GIT_CONFIG_GLOBAL;
+      else process.env.GIT_CONFIG_GLOBAL = originalGitConfigGlobal;
       if (originalGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
       else process.env.GIT_WORK_TREE = originalGitWorkTree;
       if (fixture) rmSync(fixture.root, { recursive: true, force: true });
       rmSync(ambientRoot, { recursive: true, force: true });
+      rmSync(hostileConfigRoot, { recursive: true, force: true });
     }
   });
 
@@ -240,6 +258,90 @@ describe('R4b.14: matched Codex runtime pair', () => {
       rmSync(fixture.root, { recursive: true, force: true });
     }
   });
+
+  it('installs the managed CLI under an explicitly configured public basename', () => {
+    const fixture = createFixture(0);
+    const customCli = join(fixture.installDir, 'codex-fork');
+    rmSync(join(fixture.installDir, 'codex'));
+    writeExecutable(customCli, 'printf \'old-custom-cli\\n\'');
+    fixture.env.CODEX_PUBLIC_CLI_NAME = 'codex-fork';
+    try {
+      const result = runRebuild(fixture);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(readlinkSync(customCli)).toBe('.codex-current/codex');
+      expect(execFileSync(customCli, { encoding: 'utf8' })).toBe('new-cli\n');
+      expect(existsSync(join(fixture.installDir, 'codex'))).toBe(false);
+      expect(readlinkSync(join(fixture.installDir, 'codex-code-mode-host'))).toBe(
+        '.codex-current/codex-code-mode-host',
+      );
+      expect(
+        execFileSync(join(fixture.installDir, '.codex-legacy-pair', 'codex'), {
+          encoding: 'utf8',
+        }),
+      ).toBe('old-custom-cli\n');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    '',
+    '.',
+    '..',
+    'nested/codex',
+    'codex-code-mode-host',
+    '.codex-current',
+    '.codex-releases',
+    '.codex-legacy-pair',
+  ])(
+    'rejects the reserved public CLI basename %s',
+    (publicName) => {
+      const fixture = createFixture(0);
+      fixture.env.CODEX_PUBLIC_CLI_NAME = publicName;
+      try {
+        const result = runRebuild(fixture);
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          'CODEX_PUBLIC_CLI_NAME must be a non-reserved filename',
+        );
+        expect(execFileSync(join(fixture.installDir, 'codex'), { encoding: 'utf8' })).toBe(
+          'old-cli\n',
+        );
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(['codex', 'codex-code-mode-host'])(
+    'repairs a managed installation whose public %s link is missing',
+    (missingName) => {
+      const fixture = createFixture(0);
+      try {
+        const firstResult = runRebuild(fixture);
+        expect(firstResult.status, firstResult.stderr).toBe(0);
+        rmSync(join(fixture.installDir, missingName));
+
+        const repairResult = runRebuild(fixture);
+
+        expect(repairResult.status, repairResult.stderr).toBe(0);
+        expect(readlinkSync(join(fixture.installDir, 'codex'))).toBe('.codex-current/codex');
+        expect(readlinkSync(join(fixture.installDir, 'codex-code-mode-host'))).toBe(
+          '.codex-current/codex-code-mode-host',
+        );
+        expect(execFileSync(join(fixture.installDir, 'codex'), { encoding: 'utf8' })).toBe(
+          'new-cli\n',
+        );
+        expect(
+          execFileSync(join(fixture.installDir, 'codex-code-mode-host'), { encoding: 'utf8' }),
+        ).toBe('new-host\n');
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each([
     ['CLI-only', 'codex', 'codex-code-mode-host', 'old-cli\n'],
@@ -552,12 +654,60 @@ describe('R4b.14: matched Codex runtime pair', () => {
     expect(playbook).toContain('codex-code-mode-host');
     expect(playbook).toContain('command -v "$KOOKR_CODEX_BIN"');
     expect(playbook).toContain('CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")"');
+    expect(playbook).toContain(
+      'CODEX_PUBLIC_CLI_NAME="$(basename "$KOOKR_CODEX_BIN_PATH")"',
+    );
     expect(phaseTwo).toContain('scripts/smoke-codex-code-mode.mjs');
     expect(phaseTwo).toContain('--expected-source-commit "$FINAL_FULL_SHA"');
     expect(phaseTwo.indexOf('scripts/smoke-codex-code-mode.mjs')).toBeLessThan(
       phaseTwo.indexOf('exit 0'),
     );
     expect(playbook).not.toContain('install -m 755 "$BIN" "$KOOKR_CODEX_BIN"');
+  });
+
+  it('passes a custom public CLI basename through the executable Phase 6 installer block', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-codex-sync-install-'));
+    const scriptsDir = join(root, 'scripts');
+    const installDir = join(root, 'custom-bin');
+    const installLog = join(root, 'install.log');
+    const checkout = join(root, 'codex-checkout');
+    mkdirSync(scriptsDir);
+    writeExecutable(
+      join(scriptsDir, 'rebuild-codex.sh'),
+      `printf '%s\\n' "$CODEX_SRC" "$CODEX_INSTALL_DIR" "$CODEX_PUBLIC_CLI_NAME" "$CODEX_BUILD_PROFILE" > ${JSON.stringify(installLog)}`,
+    );
+    const playbook = readFileSync(SYNC_PLAYBOOK, 'utf8');
+    const phaseSix = playbook.slice(
+      playbook.indexOf('## Phase 6:'),
+      playbook.indexOf('## Phase 7:'),
+    );
+    const installerBlock = [...phaseSix.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+      .map((match) => match[1])
+      .find((block) => block.includes('scripts/rebuild-codex.sh'));
+
+    try {
+      expect(installerBlock).toBeDefined();
+      const result = spawnSync('bash', ['-c', installerBlock ?? 'exit 99'], {
+        cwd: root,
+        env: {
+          ...isolatedGitEnv(),
+          KOOKR_CODEX_CHECKOUT: checkout,
+          KOOKR_CODEX_BIN_PATH: join(installDir, 'codex-fork'),
+          KOOKR_ROOT: root,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(installLog, 'utf8').trimEnd().split('\n')).toEqual([
+        checkout,
+        installDir,
+        'codex-fork',
+        'release',
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it.each([

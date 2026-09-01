@@ -15,6 +15,7 @@ CODEX_BUILD_PROFILE="${CODEX_BUILD_PROFILE:-kookr-dev}"
 CODEX_HOST_FROM_RELEASE="${CODEX_HOST_FROM_RELEASE:-0}"
 CODEX_HOST_RELEASE_TAG="${CODEX_HOST_RELEASE_TAG:-}"
 CODEX_KEEP_RELEASE_PAIRS="${CODEX_KEEP_RELEASE_PAIRS:-3}"
+CODEX_PUBLIC_CLI_NAME="${CODEX_PUBLIC_CLI_NAME-codex}"
 MANIFEST="$CODEX_SRC/codex-rs/Cargo.toml"
 CODEX_CLI_BIN=codex
 CODEX_HOST_BIN=codex-code-mode-host
@@ -48,6 +49,12 @@ esac
 
 case "$CODEX_KEEP_RELEASE_PAIRS" in
   ''|*[!0-9]*|0) die "CODEX_KEEP_RELEASE_PAIRS must be a positive integer" ;;
+esac
+
+case "$CODEX_PUBLIC_CLI_NAME" in
+  ''|.|..|*/*|codex-code-mode-host|.codex-current|.codex-releases|.codex-legacy-pair)
+    die "CODEX_PUBLIC_CLI_NAME must be a non-reserved filename distinct from codex-code-mode-host"
+    ;;
 esac
 
 mkdir -p "$CODEX_INSTALL_DIR"
@@ -282,20 +289,37 @@ validate_pair_directory "$PAIR_DIR" \
   || die "runtime pair directory failed manifest, hash, or executable validation: $PAIR_DIR"
 
 CURRENT_LINK="$CODEX_INSTALL_DIR/.codex-current"
-INSTALLED_CLI="$CODEX_INSTALL_DIR/$CODEX_CLI_BIN"
+INSTALLED_CLI="$CODEX_INSTALL_DIR/$CODEX_PUBLIC_CLI_NAME"
 INSTALLED_HOST="$CODEX_INSTALL_DIR/$CODEX_HOST_BIN"
 MANAGED_LINKS=0
+PARTIAL_MANAGED_LINKS=0
 if [ -L "$INSTALLED_CLI" ] && [ -L "$INSTALLED_HOST" ] \
   && [ "$(readlink "$INSTALLED_CLI")" = ".codex-current/$CODEX_CLI_BIN" ] \
   && [ "$(readlink "$INSTALLED_HOST")" = ".codex-current/$CODEX_HOST_BIN" ]
 then
   MANAGED_LINKS=1
+elif [ -L "$INSTALLED_CLI" ] \
+  && [ "$(readlink "$INSTALLED_CLI")" = ".codex-current/$CODEX_CLI_BIN" ] \
+  && [ ! -e "$INSTALLED_HOST" ] && [ ! -L "$INSTALLED_HOST" ]
+then
+  PARTIAL_MANAGED_LINKS=1
+elif [ -L "$INSTALLED_HOST" ] \
+  && [ "$(readlink "$INSTALLED_HOST")" = ".codex-current/$CODEX_HOST_BIN" ] \
+  && [ ! -e "$INSTALLED_CLI" ] && [ ! -L "$INSTALLED_CLI" ]
+then
+  PARTIAL_MANAGED_LINKS=1
 fi
 
-# Existing managed installs switch both executables with this one rename. For a
-# legacy install, first route both public names through a preserved copy of the
-# old pair. The final pointer switch then remains the only behavior change.
+# Existing managed installs switch both executables with one pointer rename. If
+# one managed public link is missing, restore both stable links before that
+# switch. For a legacy install, first route both public names through a
+# preserved copy of the old pair; the final pointer switch remains the only
+# behavior change.
 if [ "$MANAGED_LINKS" = "1" ]; then
+  activate_symlink ".codex-releases/$PAIR_ID" "$CURRENT_LINK"
+elif [ "$PARTIAL_MANAGED_LINKS" = "1" ]; then
+  activate_symlink ".codex-current/$CODEX_HOST_BIN" "$INSTALLED_HOST"
+  activate_symlink ".codex-current/$CODEX_CLI_BIN" "$INSTALLED_CLI"
   activate_symlink ".codex-releases/$PAIR_ID" "$CURRENT_LINK"
 else
   if [ -e "$INSTALLED_CLI" ] || [ -e "$INSTALLED_HOST" ]; then

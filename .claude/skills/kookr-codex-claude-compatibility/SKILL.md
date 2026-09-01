@@ -138,6 +138,9 @@ one of these executables independently: the code-mode wire schema can change
 without a version bump, and a mixed pair can execute a command before failing
 to decode its result.
 
+For a custom `KOOKR_CODEX_BIN` basename, pass that basename as
+`CODEX_PUBLIC_CLI_NAME`; the sync playbook does this automatically.
+
 An official release host is a fallback only when its local git tag has the same
 `code-mode-protocol`, `code-mode-host`, and `code-mode-runtime` sources as the
 checkout. A similar release version is not proof of compatibility.
@@ -147,10 +150,11 @@ Do not assume the binary lives under `codex-rs/target/release`. Some machines se
 Sanity checks:
 
 ```bash
-"${CODEX_INSTALL_DIR:-$HOME/bin}/codex" --version
+CODEX_BIN_PATH="${CODEX_INSTALL_DIR:-$HOME/bin}/${CODEX_PUBLIC_CLI_NAME:-codex}"
+"$CODEX_BIN_PATH" --version
 CODEX_SOURCE_COMMIT=$(git -C "${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}" rev-parse HEAD)
 node "${KOOKR_ROOT:-$HOME/git/kookr}/scripts/smoke-codex-code-mode.mjs" \
-  --codex "${CODEX_INSTALL_DIR:-$HOME/bin}/codex" \
+  --codex "$CODEX_BIN_PATH" \
   --expected-source-commit "$CODEX_SOURCE_COMMIT"
 ```
 
