@@ -55,21 +55,36 @@ function selectValue(el: HTMLSelectElement, value: string): void {
   el.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 function nextLabel(container: HTMLElement): string | undefined {
   return container.querySelector('.agent-type-select-next')?.textContent ?? undefined;
 }
 
-function renderQuickLaunch(container: HTMLElement): { root: Root } {
+function renderQuickLaunch(container: HTMLElement): {
+  root: Root;
+  sent: ClientMessage[];
+  readonly closed: number;
+} {
+  const sent: ClientMessage[] = [];
+  const state = { closed: 0 };
   const root = createRoot(container);
   act(() => {
     root.render(
       React.createElement(QuickLaunch, {
-        send: (_msg: ClientMessage) => true,
-        onClose: () => {},
+        send: (msg: ClientMessage) => {
+          sent.push(msg);
+          return true;
+        },
+        onClose: () => { state.closed += 1; },
       }),
     );
   });
-  return { root };
+  return { root, sent, get closed() { return state.closed; } };
 }
 
 describe('QuickLaunch round-robin preview honors Grok auth', () => {
@@ -114,13 +129,25 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
       roundRobinIndex: 2,
     });
 
-    const { root } = renderQuickLaunch(container);
+    const { root, sent } = renderQuickLaunch(container);
     await flush();
     await act(async () => { selectValue(getAgentSelectEl(container), 'round-robin'); });
     await flush();
 
     // The launch skips an unusable grok-build, so the preview must not promise it.
     expect(nextLabel(container)).toBe('Next: Claude Code');
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Launch the next usable runtime'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      agentType: 'round-robin',
+      prompt: 'Launch the next usable runtime',
+    });
 
     act(() => root.unmount());
   });
@@ -164,5 +191,87 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
     expect(nextLabel(container)).toBe('Next: Grok Build');
 
     act(() => root.unmount());
+  });
+
+  test('shows login guidance and blocks Enter for an explicitly selected refused Grok launch', async () => {
+    mockGrokAuth({
+      status: 'expired',
+      loginCommand: 'grok login --device-code',
+      message: 'Grok authentication expired. Run `grok login --device-code`.',
+      launchWouldRefuse: true,
+      roundRobinIndex: 2,
+    });
+
+    const rendered = renderQuickLaunch(container);
+    await flush();
+    await act(async () => { selectValue(getAgentSelectEl(container), 'grok-build'); });
+    await flush();
+
+    const banner = container.querySelector('[data-testid="grok-auth-banner"]');
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    expect(banner?.textContent).toContain('grok login --device-code');
+    expect(input.getAttribute('aria-describedby')).toContain('grok-auth-preflight-banner');
+
+    await act(async () => { setInputValue(input, 'Use Grok for this task'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(rendered.sent).toHaveLength(0);
+    expect(rendered.closed).toBe(0);
+    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+
+    act(() => rendered.root.unmount());
+  });
+
+  test.each(['claude-code', 'codex-cli'] as const)(
+    'keeps %s launchable when Grok preflight would refuse',
+    async (selection) => {
+      mockGrokAuth({
+        status: 'expired',
+        loginCommand: 'grok login --device-code',
+        message: 'Grok authentication expired. Run `grok login --device-code`.',
+        launchWouldRefuse: true,
+        roundRobinIndex: 2,
+      });
+
+      const rendered = renderQuickLaunch(container);
+      await flush();
+      await act(async () => { selectValue(getAgentSelectEl(container), selection); });
+      await flush();
+
+      const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+      await act(async () => { setInputValue(input, `Launch ${selection}`); });
+      await act(async () => {
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      });
+
+      expect(container.querySelector('[data-testid="grok-auth-banner"]')).toBeNull();
+      expect(rendered.sent).toHaveLength(1);
+      expect(rendered.sent[0]).toMatchObject({ type: 'launch', agentType: selection });
+
+      act(() => rendered.root.unmount());
+    },
+  );
+
+  test('keeps an explicit Grok launch fail-open when auth status is unavailable', async () => {
+    mockGrokAuthUnavailable();
+
+    const rendered = renderQuickLaunch(container);
+    await flush();
+    await act(async () => { selectValue(getAgentSelectEl(container), 'grok-build'); });
+    await flush();
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'Try Grok without a verdict'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="grok-auth-banner"]')).toBeNull();
+    expect(rendered.sent).toHaveLength(1);
+    expect(rendered.sent[0]).toMatchObject({ type: 'launch', agentType: 'grok-build' });
+
+    act(() => rendered.root.unmount());
   });
 });
