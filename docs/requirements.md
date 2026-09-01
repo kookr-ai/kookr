@@ -521,7 +521,7 @@ The system SHALL allow relaunching a task with the same or modified prompt and w
 - Prompt and working directory can be edited before launch
 - New task is linked to the original via `parentTaskId` for traceability
 
-**Evidence:** `src/core/tasks.ts` (relaunch creates child task), `src/server/ws.ts` (`relaunch` message handler), `src/frontend/components/LaunchTaskDialog.tsx` (relaunch flow), `src/server/ws.test.ts` (relaunch protocol coverage).
+**Evidence:** `src/core/tasks.ts` (relaunch creates child task), `src/server/ws-handlers/lifecycle-handler.ts` (`launch` and legacy `relaunch` message handlers), `src/frontend/components/LaunchTaskDialog.tsx` (relaunch flow), `src/server/ws.test.ts` (relaunch protocol coverage).
 
 ### R4.4: Task Lifecycle Management [F4.4] — SHALL — `done`
 

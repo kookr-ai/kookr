@@ -1284,6 +1284,36 @@ describe('Crash Recovery', () => {
     expect(taskStore.getTask(child.id)!.sessions).toHaveLength(1);
   });
 
+  test('still recovers a user relaunch that finished an interactive turn', async () => {
+    const cwd = join(tempDir, 'user-relaunch');
+    await mkdir(cwd, { recursive: true });
+    const parent = taskStore.createTask('Original attempt', cwd);
+    const successor = taskStore.createTask({
+      prompt: 'Supervised retry',
+      cwd,
+      parentTaskId: parent.id,
+      metadata: { userInitiatedRelaunch: true },
+    });
+    const deadSessionId = `kookr-relaunch-${successor.id.slice(0, 8)}`;
+    taskStore.addSession(successor.id, {
+      tmuxSession: deadSessionId,
+      agentType: 'claude-code',
+      cwd,
+      createdAt: new Date(),
+      lastStatus: 'running',
+      lastTurnState: 'completed_turn',
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    expect(reconcileResult.markedCompleted).toContain(deadSessionId);
+
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toContainEqual(expect.objectContaining({ taskId: successor.id }));
+    expect(result.skipped).not.toContainEqual(expect.objectContaining({ taskId: successor.id }));
+    expect(taskStore.getTask(successor.id)!.status).toBe('inProgress');
+  });
+
   test('does NOT relaunch a task terminated for a non-recoverable reason (#1664)', async () => {
     // A deliberate kill (operator / supervisor sweep) must not auto-resume.
     const cwd = join(tempDir, 'manual-kill');

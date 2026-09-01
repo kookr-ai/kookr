@@ -67,6 +67,7 @@ Loop {{target}}.
         cwd,
         playbookPath: 'workflow.md',
         parameterValues: { target: 'repo' },
+        parentTaskId: 'original-task',
         modelTier: 'small',
       });
 
@@ -75,6 +76,8 @@ Loop {{target}}.
         expect.objectContaining({
           disableDedup: true,
           modelTier: 'small',
+          parentTaskId: 'original-task',
+          userInitiatedRelaunch: true,
           prompt: expect.stringContaining('This runtime is one loop iteration, not the whole loop.'),
         }),
         { deliveryPolicy: 'pre-authorized' },

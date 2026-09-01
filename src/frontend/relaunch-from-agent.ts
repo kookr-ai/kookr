@@ -17,8 +17,11 @@ export async function relaunchFromAgent(
   >,
   setRelaunchTask: (task: RelaunchTask) => void,
 ): Promise<void> {
+  if (!agent.taskId) return;
+
   if (agent.playbookId && agent.playbookParameterValues) {
     setRelaunchTask({
+      sourceTaskId: agent.taskId,
       prompt: agent.description ?? '',
       cwd: agent.cwd ?? '',
       agentType: agent.agentType,
@@ -28,11 +31,11 @@ export async function relaunchFromAgent(
     return;
   }
 
-  if (!agent.taskId) return;
   try {
-    const task = await getTask<RelaunchTask & { error?: unknown }>(agent.taskId);
+    const task = await getTask<Omit<RelaunchTask, 'sourceTaskId'> & { error?: unknown }>(agent.taskId);
     if (task && !task.error) {
       setRelaunchTask({
+        sourceTaskId: agent.taskId,
         prompt: task.prompt,
         cwd: task.cwd,
         criteria: task.criteria,

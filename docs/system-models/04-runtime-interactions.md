@@ -155,11 +155,11 @@ sequenceDiagram
     end
     BE->>SPA: WS: {type: "update", taskId, taskState: "completed"}
   else Relaunch
-    Dev->>SPA: Edit prompt + click "Relaunch"
-    SPA->>BE: WS: {type: "relaunch", taskId, prompt}
-    BE->>BE: Task → InProgress, new agent session created
-    BE->>BE: Create new terminal session + launch agent
-    BE->>SPA: WS: {type: "update", taskId, agentId: newId, state: "starting"}
+    Dev->>SPA: Open Relaunch, edit prompt/cwd, submit
+    SPA->>BE: WS: {type: "launch", prompt, cwd, parentTaskId: originalTaskId}
+    BE->>BE: Preserve original; create successor task linked by parentTaskId
+    BE->>BE: Create successor terminal session + launch agent
+    BE->>SPA: WS: snapshot containing successor task/session state
   else Cancel
     Dev->>SPA: Click "Cancel Task"
     SPA->>BE: WS: {type: "cancelTask", taskId}

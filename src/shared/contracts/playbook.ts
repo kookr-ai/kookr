@@ -117,8 +117,9 @@ export interface Playbook {
   /**
    * Server-consumed policy flag: when true, tasks launched from this playbook
    * auto-complete after a `completion_ready` signal has been pending for the
-   * grace period instead of waiting indefinitely for manual review. Successors
-   * spawned via parentTaskId inherit it automatically.
+   * grace period instead of waiting indefinitely for manual review. Autonomous
+   * successors spawned via parentTaskId inherit it automatically; attended user
+   * relaunches inherit it only when the relaunched playbook explicitly sets it.
    * See docs/reference/auto-close-on-signal.md.
    */
   autoCloseOnSignal?: boolean;

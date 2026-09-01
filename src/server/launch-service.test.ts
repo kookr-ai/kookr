@@ -1943,6 +1943,53 @@ describe('launchTask', () => {
     expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledTimes(2);
   });
 
+  it('creates a linked successor when a relaunch matches an active duplicate', async () => {
+    const original = store.createTask({ prompt: 'original attempt', cwd: '/tmp' });
+    const activeDuplicate = await launchTask(deps, { prompt: 'supervised retry', cwd: '/tmp' });
+
+    const successor = await launchTask(deps, {
+      prompt: 'supervised retry',
+      cwd: '/tmp',
+      disableDedup: true,
+      parentTaskId: original.id,
+      userInitiatedRelaunch: true,
+    });
+
+    expect(successor.duplicate).toBeUndefined();
+    expect(successor.task.id).not.toBe(activeDuplicate.task.id);
+    expect(successor.task.parentTaskId).toBe(original.id);
+    expect(store.getTask(original.id)?.childTaskIds).toContain(successor.task.id);
+    expect(store.listRelations()).toContainEqual(expect.objectContaining({
+      sourceTaskId: successor.task.id,
+      targetTaskId: original.id,
+      type: 'spawned_by',
+    }));
+  });
+
+  it('records a user relaunch without inheriting autonomous parent policies', async () => {
+    const parent = store.createTask({
+      prompt: 'autonomous original',
+      cwd: '/tmp',
+      autoCloseOnSignal: true,
+      unattended: true,
+    });
+
+    const result = await launchTask(deps, {
+      prompt: 'supervised retry',
+      cwd: '/tmp',
+      parentTaskId: parent.id,
+      userInitiatedRelaunch: true,
+    });
+
+    expect(result.task).toMatchObject({
+      parentTaskId: parent.id,
+      provenance: { kind: 'parent', sourceId: parent.id },
+      metadata: { userInitiatedRelaunch: true },
+    });
+    expect(result.task.autoCloseOnSignal).toBeUndefined();
+    expect(result.task.unattended).toBeUndefined();
+  });
+
   it('bypasses and reconciles a stale inProgress duplicate whose session is gone', async () => {
     const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
     store.addSession(existing.id, {

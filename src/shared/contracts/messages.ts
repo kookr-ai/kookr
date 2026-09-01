@@ -303,6 +303,8 @@ type LaunchPlaybookBaseMessage = {
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
   scope?: PlaybookScope;
+  /** Explicit user-relaunch lineage; never inferred from playbook content. */
+  parentTaskId?: string;
 };
 
 type LaunchPlaybookLegacyMessage = LaunchPlaybookBaseMessage & {
@@ -543,6 +545,8 @@ export type ClientMessage =
       disableDedup?: boolean;
       /** Required with disableDedup: marks the launch as an intentional duplicate. */
       metadataIntent?: TaskMetadataIntent;
+      /** Explicit user-relaunch lineage; never inferred from prompt/cwd. */
+      parentTaskId?: string;
     }
   | {
       type: 'completeTask';

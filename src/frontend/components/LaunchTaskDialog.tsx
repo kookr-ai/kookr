@@ -235,6 +235,8 @@ interface Props {
   defaultPrompt?: string;
   defaultCriteria?: string;
   defaultAgentType?: AgentType;
+  /** Original task id retained across editable relaunch fields. */
+  relaunchParentTaskId?: string;
   /** When set, auto-switch to playbooks tab and pre-select this playbook for relaunch. */
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
@@ -248,7 +250,7 @@ interface Props {
   sttShortcutBinding?: ShortcutBinding;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchParentTaskId, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -467,6 +469,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       cwd: cwd.trim(),
       criteria: criteria.trim() || undefined,
       agentType,
+      ...(relaunchParentTaskId ? { parentTaskId: relaunchParentTaskId } : {}),
       ...optionalLaunchPins(effort, model),
       ...(keepAsDuplicate
         ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
@@ -528,7 +531,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     return () => clearTimeout(id);
   }, [spawnCopied]);
 
-  const canCopySpawn = prompt.trim().length > 0 && cwd.trim().length > 0;
+  const canCopySpawn = !relaunchParentTaskId && prompt.trim().length > 0 && cwd.trim().length > 0;
 
   async function handleCopySpawn() {
     if (!canCopySpawn) return;
@@ -933,7 +936,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 className="btn-secondary launch-copy-spawn"
                 onClick={handleCopySpawn}
                 disabled={!canCopySpawn}
-                title="Copy the equivalent kookr spawn command to run this launch from your shell"
+                title={relaunchParentTaskId
+                  ? 'Copy is unavailable for relaunches because kookr spawn cannot preserve attended relaunch lineage'
+                  : 'Copy the equivalent kookr spawn command to run this launch from your shell'}
               >
                 {spawnCopied ? 'Copied' : 'Copy kookr spawn'}
               </button>
@@ -967,6 +972,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               : {})}
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
+            relaunchParentTaskId={relaunchParentTaskId}
             projectContext={projectContext}
             onRequestEditCwd={() => {
               setTab('manual');

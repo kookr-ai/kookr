@@ -315,9 +315,7 @@ export function OverviewEmptyState({
               {recentCompleted.map((agent) => {
                 const name = agent.taskName ?? agent.agentId;
                 const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
-                const canRelaunch = Boolean(
-                  agent.taskId || (agent.playbookId && agent.playbookParameterValues),
-                );
+                const canRelaunch = Boolean(agent.taskId);
                 return (
                   <li key={agent.agentId} className="overview-completed-row">
                     <span className="overview-completed-name">{name}</span>

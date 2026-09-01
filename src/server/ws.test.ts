@@ -77,6 +77,8 @@ describe('WebSocket MessageRouter', () => {
         prompt: opts.prompt,
         cwd: opts.cwd,
         criteria: opts.criteria,
+        parentTaskId: opts.parentTaskId,
+        metadata: opts.userInitiatedRelaunch ? { userInitiatedRelaunch: true } : undefined,
         name: opts.name,
         playbookId: opts.playbookId,
         projectId: opts.projectId,
@@ -1378,7 +1380,15 @@ describe('WebSocket MessageRouter', () => {
     expect(newTask!.prompt).toBe('Try a different approach');
     expect(newTask!.cwd).toBe('/cwd');
     expect(newTask!.criteria).toBe('All tests pass');
+    expect(newTask!.parentTaskId).toBe(task.id);
+    expect(newTask!.metadata?.userInitiatedRelaunch).toBe(true);
     expect(newTask!.status).toBe('inProgress');
+    expect(taskStore.getTask(task.id)!.childTaskIds).toContain(newTask!.id);
+    expect(taskStore.listRelations()).toContainEqual(expect.objectContaining({
+      sourceTaskId: newTask!.id,
+      targetTaskId: task.id,
+      type: 'spawned_by',
+    }));
   });
 
   test('client sends renameTask - task name updated', async () => {

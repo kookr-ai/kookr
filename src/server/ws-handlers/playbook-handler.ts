@@ -46,6 +46,7 @@ export class PlaybookHandler {
             parameterValues: msg.parameterValues,
             agentType: msg.agentType,
             scope: msg.scope,
+            parentTaskId: msg.parentTaskId,
           });
           result = await this.deps.launchTask?.(prepared.launchOpts, { deliveryPolicy: prepared.deliveryPolicy });
         } catch (e) { err = e; }

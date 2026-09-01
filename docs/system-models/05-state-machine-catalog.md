@@ -10,7 +10,7 @@ Core attention-loop stateful entities: **Task**, **Agent Session**, **Attention 
 
 > Updated 2026-05-09: The original catalog covered the V1 attention loop. The implemented codebase now also contains operational state machines for Ralph loops, schedules, workspace attempts, quota polling, and watchdog verdicts. Those are summarized in the "Additional Operational State Machines" section below.
 
-**Key distinction:** A Task is the *goal* ("fix the auth bug"). An Agent Session is one *attempt* at that goal. A task may go through multiple agent sessions — an agent can error out, get stuck, or only partially complete the work, and the developer relaunches with a new or modified prompt. This is analogous to GitHub/GitLab issues: the issue exists independently of any branch or PR attempt.
+**Key distinction:** A Task is the *goal* ("fix the auth bug"). An Agent Session is one *attempt* at that goal. Recovery and loop retries may add sessions to the same task. An attended developer relaunch with a new or modified prompt instead creates a successor task linked to the original by `parentTaskId`, so both attempts remain visible in history. This is analogous to GitHub/GitLab issues: the issue exists independently of any branch or PR attempt.
 
 ### 1. Task Lifecycle
 

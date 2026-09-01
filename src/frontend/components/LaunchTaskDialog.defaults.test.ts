@@ -65,7 +65,7 @@ function mkProject(overrides: Partial<ProjectSummary> & { project: string; displ
 
 function renderDialog(
   container: HTMLElement,
-  props: { defaultAgentType?: 'claude-code' | 'codex-cli' } = {},
+  props: Partial<React.ComponentProps<typeof LaunchTaskDialog>> = {},
 ): { root: Root; sent: ClientMessage[] } {
   const sent: ClientMessage[] = [];
   const root = createRoot(container);
@@ -74,12 +74,107 @@ function renderDialog(
       React.createElement(LaunchTaskDialog, {
         send: (msg: ClientMessage) => { sent.push(msg); return true; },
         onClose: () => {},
-        defaultAgentType: props.defaultAgentType,
+        ...props,
       }),
     );
   });
   return { root, sent };
 }
+
+describe('LaunchTaskDialog relaunch lineage (R4.3)', () => {
+  let container: HTMLDivElement;
+
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    syncGlobalStore();
+    useKookrStore.setState({ serverCwd: '/tmp/original', sttUrl: '' });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = '';
+    localStorage.clear();
+  });
+
+  test('submitting edited relaunch values preserves the source as parentTaskId', async () => {
+    const { root, sent } = renderDialog(container, {
+      defaultPrompt: 'Original prompt',
+      defaultCwd: '/tmp/original',
+      relaunchParentTaskId: 'original-task',
+    });
+    await flush();
+
+    await act(async () => { setInputValue(getPromptEl(container), 'Edited retry prompt'); });
+    await act(async () => { setInputValue(getCwdEl(container), '/tmp/edited'); });
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'launch',
+      prompt: 'Edited retry prompt',
+      cwd: '/tmp/edited',
+      parentTaskId: 'original-task',
+    }));
+    act(() => root.unmount());
+  });
+
+  test('disables copying a spawn command that would lose attended relaunch semantics', async () => {
+    const { root } = renderDialog(container, {
+      defaultPrompt: 'Retry this task',
+      defaultCwd: '/tmp/original',
+      relaunchParentTaskId: 'original-task',
+    });
+    await flush();
+
+    const copyButton = container.querySelector<HTMLButtonElement>('.launch-copy-spawn');
+    expect(copyButton?.disabled).toBe(true);
+    expect(copyButton?.title).toContain('unavailable for relaunches');
+    act(() => root.unmount());
+  });
+
+  test('forwards relaunch lineage through the playbook submission path', async () => {
+    useKookrStore.setState({
+      playbooks: [{
+        id: 'retry.md',
+        name: 'Retry playbook',
+        description: 'Retry the task',
+        parameters: [],
+        checklist: [],
+        tags: [],
+        body: 'Retry.',
+        sourceCwd: '/tmp/original',
+        scope: 'project',
+      }],
+      playbooksLoading: false,
+      availableAgentTypes: [],
+      defaultAgentType: 'claude-code',
+    });
+    const { root, sent } = renderDialog(container, {
+      defaultCwd: '/tmp/original',
+      relaunchParentTaskId: 'original-task',
+      relaunchPlaybookId: 'retry.md',
+      relaunchParameterValues: {},
+    });
+    await flush();
+
+    await act(async () => {
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(sent).toContainEqual(expect.objectContaining({
+      type: 'launchPlaybook',
+      playbookPath: 'retry.md',
+      parentTaskId: 'original-task',
+    }));
+    act(() => root.unmount());
+  });
+});
 
 describe('LaunchTaskDialog cwd default chain and dropdown (RFC F13)', () => {
   let container: HTMLDivElement;

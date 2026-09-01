@@ -7,8 +7,12 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { App } from './App.js';
 import { createKookrStore, useKookrStore } from './store/useStore.js';
 
+const { sendMock } = vi.hoisted(() => ({
+  sendMock: vi.fn(() => true),
+}));
+
 vi.mock('./hooks/useWebSocket.js', () => ({
-  useWebSocket: () => ({ send: () => true }),
+  useWebSocket: () => ({ send: sendMock }),
 }));
 
 vi.mock('./hooks/useNotifications.js', () => ({
@@ -75,6 +79,7 @@ describe('App command-palette project launch', () => {
     document.body.innerHTML = '';
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     localStorage.clear();
+    sendMock.mockClear();
     syncGlobalStore();
     useKookrStore.setState({
       serverCwd: '/server/cwd',
@@ -137,5 +142,30 @@ describe('App command-palette project launch', () => {
     expect(cwdInput?.value).toBe('/work/idle');
     // The palette itself closed on launch.
     expect(container.querySelector('[data-testid="command-palette-input"]')).toBeNull();
+  });
+
+  test('passes stored relaunch lineage through App into the submitted launch', async () => {
+    useKookrStore.getState().setRelaunchTask({
+      sourceTaskId: 'original-task',
+      prompt: 'Retry this task',
+      cwd: '/work/idle',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    const form = await waitForElement<HTMLFormElement>(container, '.dialog-overlay form');
+
+    await act(async () => {
+      form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    await flush();
+
+    expect(sendMock).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'launch',
+      prompt: 'Retry this task',
+      cwd: '/work/idle',
+      parentTaskId: 'original-task',
+    }));
   });
 });

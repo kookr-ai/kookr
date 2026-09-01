@@ -181,6 +181,8 @@ interface Props {
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
+  /** Original task id retained across editable playbook relaunch fields. */
+  relaunchParentTaskId?: string;
   /** When launched from a project detail drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
   /** Update the execution target without leaving the selected playbook detail. */
@@ -267,6 +269,7 @@ export function PlaybookBrowser({
   taskTargetCwd,
   relaunchPlaybookId,
   relaunchParameterValues,
+  relaunchParentTaskId,
   projectContext,
   onTaskTargetCwdChange,
   onRequestEditCwd,
@@ -657,6 +660,7 @@ export function PlaybookBrowser({
       playbookPath,
       parameterValues: paramValues,
       agentType,
+      ...(relaunchParentTaskId ? { parentTaskId: relaunchParentTaskId } : {}),
       ...(selected?.scope ? { scope: selected.scope } : {}),
     };
     if (!shouldSendSplitFields) {

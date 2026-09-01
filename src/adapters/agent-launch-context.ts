@@ -239,6 +239,7 @@ export async function buildAgentLaunchContext(
   opts: BuildAgentLaunchContextOptions,
 ): Promise<AgentLaunchContext> {
   const task = opts.taskStore.getTask(opts.taskId);
+  const userInitiatedRelaunch = task?.metadata?.userInitiatedRelaunch === true;
   const env: Record<string, string> = {
     KOOKR_TASK_ID: opts.taskId,
     // Managed agents always run inside a PTY. A server restarted with
@@ -258,20 +259,24 @@ export async function buildAgentLaunchContext(
     env.KOOKR_AGENT_ID = opts.sessionName;
   }
 
-  if (task?.parentTaskId) {
+  if (task?.parentTaskId && !userInitiatedRelaunch) {
     env.KOOKR_PARENT_TASK_ID = task.parentTaskId;
   }
 
-  // Surface the immutable launch provenance (issue #1583) to the running agent
-  // so headless playbooks can branch on how they were launched (issue #1714).
+  // Surface the runtime launch posture to the running agent so headless
+  // playbooks can branch on how they were launched (issue #1714).
   // A scheduled or parent-spawned run has nobody to answer an interactive
   // prompt, so the parallel-issue-batch playbook uses this to report-and-exit on
   // an empty backlog instead of stranding on `AskUserQuestion`. `parentTaskId`
   // is already exposed above; `schedule` provenance had no runtime signal until
   // now. Manual/unknown provenance is passed through too so the playbook's
-  // interactive branch stays exact.
+  // interactive branch stays exact. An attended relaunch is reported as
+  // manual even though its persisted lineage provenance remains parent-based.
   if (task?.provenance) {
-    env.KOOKR_LAUNCH_PROVENANCE = task.provenance.kind;
+    // A user relaunch retains parent provenance in persisted lineage, but its
+    // runtime posture is attended/manual: headless playbooks must not treat it
+    // as an autonomous child merely because it has a parentTaskId.
+    env.KOOKR_LAUNCH_PROVENANCE = userInitiatedRelaunch ? 'manual' : task.provenance.kind;
   }
 
   // Unattended/autonomous marker (issue #1562) as a runtime signal too: an

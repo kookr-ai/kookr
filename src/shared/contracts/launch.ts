@@ -17,6 +17,11 @@ export interface LaunchOpts {
   criteria?: string;
   parentTaskId?: string;
   /**
+   * Server-controlled discriminator for an attended user relaunch. Keeps
+   * parentTaskId as lineage without applying autonomous-child launch policy.
+   */
+  userInitiatedRelaunch?: boolean;
+  /**
    * Cross-agent migration lineage (RFC: rfc-cross-agent-task-migration). When
    * set, the created task records this as the interrupted task it continues
    * (`Task.migratedFromTaskId`). The migration use-case also stamps a

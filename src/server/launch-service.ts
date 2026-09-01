@@ -1734,10 +1734,11 @@ async function launchTaskCore(
       // pendings as self-releasing. Additive — absent when no source was given.
       // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
       // hops so receipts match the final agentType after multi-hop cascade.
-      metadata: (opts.metadataIntent || opts.launchSource || agentSubstitutionChain.length > 0)
+      metadata: (opts.metadataIntent || opts.launchSource || opts.userInitiatedRelaunch || agentSubstitutionChain.length > 0)
         ? {
             ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
             ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
+            ...(opts.userInitiatedRelaunch ? { userInitiatedRelaunch: true as const } : {}),
             ...(agentSubstitutionChain.length > 0
               ? { agentSubstitutionChain: [...agentSubstitutionChain] }
               : {}),

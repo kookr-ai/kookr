@@ -176,9 +176,14 @@ export async function recoverCrashedSessions(
     // pending) and reconcile auto-completed it (#693); relaunching here would
     // re-run finished work and re-spawn its successor — exactly the
     // self-continuation churn this fix retires. Scoped to spawned tasks
-    // (`parentTaskId` set): human-launched interactive tasks have no parent and
-    // are untouched, so idle-interactive crash recovery is unaffected.
-    if (task.parentTaskId !== undefined && session.lastTurnState === 'completed_turn') {
+    // (`parentTaskId` set, without attended relaunch intent): user-initiated
+    // relaunches retain a parent for lineage but remain interactive and must
+    // keep the same idle-session recovery behavior as other manual launches.
+    if (
+      task.parentTaskId !== undefined
+      && task.metadata?.userInitiatedRelaunch !== true
+      && session.lastTurnState === 'completed_turn'
+    ) {
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,

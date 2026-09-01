@@ -148,6 +148,44 @@ describe('ClientMessageSchema — happy path sanity', () => {
     expect(result.success).toBe(true);
   });
 
+  test('accepts explicit relaunch lineage on launch and playbook messages', () => {
+    const launch = ClientMessageSchema.safeParse({
+      type: 'launch',
+      prompt: 'retry',
+      cwd: '/tmp',
+      parentTaskId: 'original-task',
+    });
+    const playbook = ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'triage.md',
+      cwd: '/tmp',
+      parameterValues: {},
+      parentTaskId: 'original-task',
+    });
+
+    expect(launch.success).toBe(true);
+    expect(playbook.success).toBe(true);
+    if (launch.success && launch.data.type === 'launch') {
+      expect(launch.data.parentTaskId).toBe('original-task');
+    }
+    if (playbook.success && playbook.data.type === 'launchPlaybook') {
+      expect(playbook.data.parentTaskId).toBe('original-task');
+    }
+  });
+
+  test('rejects empty relaunch lineage ids', () => {
+    expect(ClientMessageSchema.safeParse({
+      type: 'launch', prompt: 'retry', cwd: '/tmp', parentTaskId: '',
+    }).success).toBe(false);
+    expect(ClientMessageSchema.safeParse({
+      type: 'launchPlaybook',
+      playbookPath: 'triage.md',
+      cwd: '/tmp',
+      parameterValues: {},
+      parentTaskId: '',
+    }).success).toBe(false);
+  });
+
   test('accepts a relaunch message with the round-robin agent selection', () => {
     const result = ClientMessageSchema.safeParse({
       type: 'relaunch',

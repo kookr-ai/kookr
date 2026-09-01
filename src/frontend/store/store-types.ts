@@ -64,6 +64,8 @@ export const SEVERITY_ORDER: Record<AnomalySeverity, number> = {
 };
 
 export interface RelaunchTask {
+  /** Original task that this user-initiated launch retries. */
+  sourceTaskId: string;
   prompt: string;
   cwd: string;
   criteria?: string;
