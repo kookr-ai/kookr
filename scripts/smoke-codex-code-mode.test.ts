@@ -31,18 +31,19 @@ function sha256(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
 }
 
-function writeManagedPairManifest(directory: string, codex: string, sourceCommit: string): string {
+function writeManagedPairManifest(directory: string, codex: string, sourceCommit: string) {
   const host = join(directory, 'codex-code-mode-host');
+  const manifestPath = join(directory, 'codex-pair.json');
   writeFileSync(host, '#!/usr/bin/env bash\nexit 0\n');
   chmodSync(host, 0o755);
-  writeFileSync(join(directory, 'codex-pair.json'), `${JSON.stringify({
+  writeFileSync(manifestPath, `${JSON.stringify({
     schemaVersion: 1,
     sourceCommit,
     source: 'source-build',
     cliSha256: sha256(codex),
     hostSha256: sha256(host),
   })}\n`);
-  return host;
+  return { host, manifestPath };
 }
 
 function runSmoke(codex: string, marker: string, expectedSourceCommit?: string) {
@@ -128,13 +129,70 @@ describe('Codex code-mode IPC smoke validator and invocation', () => {
     }
   });
 
-  it('rejects a managed pair whose executable hashes differ from its manifest', () => {
+  it.each([
+    ['CLI', 'codex'],
+    ['host', 'host'],
+  ] as const)('rejects a managed pair whose %s hash differs from its manifest', (_label, target) => {
     const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
     const marker = 'kookr-ipc-smoke-test-marker';
     const sourceCommit = 'a'.repeat(40);
     const codex = writeFakeCodex(directory, '');
-    const host = writeManagedPairManifest(directory, codex, sourceCommit);
-    writeFileSync(host, '#!/usr/bin/env bash\nexit 1\n');
+    const { host } = writeManagedPairManifest(directory, codex, sourceCommit);
+    writeFileSync(target === 'codex' ? codex : host, '#!/usr/bin/env bash\nexit 1\n');
+
+    try {
+      const result = runSmoke(codex, marker, sourceCommit);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'managed Codex pair manifest, source commit, or executable hashes do not match',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a managed pair whose source commit differs from the expected checkout', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const codex = writeFakeCodex(directory, '');
+    writeManagedPairManifest(directory, codex, 'a'.repeat(40));
+
+    try {
+      const result = runSmoke(codex, marker, 'b'.repeat(40));
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'managed Codex pair manifest, source commit, or executable hashes do not match',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a managed pair whose manifest is missing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const codex = writeFakeCodex(directory, '');
+    const host = join(directory, 'codex-code-mode-host');
+    writeFileSync(host, '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(host, 0o755);
+
+    try {
+      const result = runSmoke(codex, marker, 'a'.repeat(40));
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('could not read managed Codex pair manifest');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a managed pair with an unsupported manifest schema', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const sourceCommit = 'a'.repeat(40);
+    const codex = writeFakeCodex(directory, '');
+    const { manifestPath } = writeManagedPairManifest(directory, codex, sourceCommit);
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    writeFileSync(manifestPath, `${JSON.stringify({ ...manifest, schemaVersion: 2 })}\n`);
 
     try {
       const result = runSmoke(codex, marker, sourceCommit);

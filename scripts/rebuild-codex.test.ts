@@ -559,4 +559,137 @@ describe('R4b.14: matched Codex runtime pair', () => {
     );
     expect(playbook).not.toContain('install -m 755 "$BIN" "$KOOKR_CODEX_BIN"');
   });
+
+  it.each([
+    ['failed IPC smoke', 'codex-cli 0.1.0+kookr.abcdef123', 'a'.repeat(40), 1, 1],
+    ['stale CLI version', 'codex-cli 0.1.0+kookr.stale0000', 'a'.repeat(40), 0, 0],
+    ['stale manifest source', 'codex-cli 0.1.0+kookr.abcdef123', 'b'.repeat(40), 0, 0],
+  ] as const)(
+    'routes an idempotent sync with %s into install-only recovery',
+    (_label, version, manifestSource, smokeExit, expectedSmokeCalls) => {
+      const root = mkdtempSync(join(tmpdir(), 'kookr-codex-sync-health-'));
+      const stubBin = join(root, 'bin');
+      const installDir = join(root, 'install');
+      const currentDir = join(installDir, '.codex-current');
+      const codex = join(installDir, 'codex');
+      const smokeLog = join(root, 'smoke.log');
+      const fullSha = 'a'.repeat(40);
+      mkdirSync(stubBin);
+      mkdirSync(currentDir, { recursive: true });
+      writeFileSync(smokeLog, '');
+      writeFileSync(join(currentDir, 'codex-pair.json'), JSON.stringify({
+        sourceCommit: manifestSource,
+      }));
+      writeExecutable(codex, 'printf \'%s\\n\' "$TEST_CODEX_VERSION"');
+      writeExecutable(
+        join(stubBin, 'git'),
+        `case "$*" in
+  "merge-base --is-ancestor upstream/main origin/feat/claude-compat") exit 0 ;;
+  "rev-parse origin/feat/claude-compat") printf '%s\\n' ${JSON.stringify(fullSha)} ;;
+  "rev-parse --short=9 origin/feat/claude-compat") printf '%s\\n' abcdef123 ;;
+  *) printf 'unexpected git args: %s\\n' "$*" >&2; exit 2 ;;
+esac`,
+      );
+      writeExecutable(
+        join(stubBin, 'node'),
+        `printf '%s\\n' "$*" >> ${JSON.stringify(smokeLog)}
+exit "$TEST_SMOKE_EXIT"`,
+      );
+      const playbook = readFileSync(SYNC_PLAYBOOK, 'utf8');
+      const phaseTwo = playbook.slice(
+        playbook.indexOf('## Phase 2:'),
+        playbook.indexOf('## Phase 3:'),
+      );
+      const shellBlock = phaseTwo.match(/```bash\n([\s\S]*?)\n```/)?.[1];
+
+      try {
+        expect(shellBlock).toBeDefined();
+        const result = spawnSync(
+          'bash',
+          ['-c', `${shellBlock}\nprintf 'recover=%s\\n' "\${RECOVER_INSTALL_ONLY:-unset}"`],
+          {
+            cwd: root,
+            env: {
+              ...isolatedGitEnv(),
+              PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+              KOOKR_CODEX_BIN_PATH: codex,
+              KOOKR_ROOT: root,
+              TEST_CODEX_VERSION: version,
+              TEST_SMOKE_EXIT: String(smokeExit),
+            },
+            encoding: 'utf8',
+          },
+        );
+
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain('recover=1');
+        expect(readFileSync(smokeLog, 'utf8').trim().split('\n').filter(Boolean)).toHaveLength(
+          expectedSmokeCalls,
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('exits successfully only after the idempotent sync smoke passes', () => {
+    const root = mkdtempSync(join(tmpdir(), 'kookr-codex-sync-health-'));
+    const stubBin = join(root, 'bin');
+    const installDir = join(root, 'install');
+    const currentDir = join(installDir, '.codex-current');
+    const codex = join(installDir, 'codex');
+    const smokeLog = join(root, 'smoke.log');
+    const fullSha = 'a'.repeat(40);
+    mkdirSync(stubBin);
+    mkdirSync(currentDir, { recursive: true });
+    writeFileSync(smokeLog, '');
+    writeFileSync(join(currentDir, 'codex-pair.json'), JSON.stringify({ sourceCommit: fullSha }));
+    writeExecutable(codex, 'printf \'codex-cli 0.1.0+kookr.abcdef123\\n\'');
+    writeExecutable(
+      join(stubBin, 'git'),
+      `case "$*" in
+  "merge-base --is-ancestor upstream/main origin/feat/claude-compat") exit 0 ;;
+  "rev-parse origin/feat/claude-compat") printf '%s\\n' ${JSON.stringify(fullSha)} ;;
+  "rev-parse --short=9 origin/feat/claude-compat") printf '%s\\n' abcdef123 ;;
+  *) exit 2 ;;
+esac`,
+    );
+    writeExecutable(
+      join(stubBin, 'node'),
+      `printf '%s\\n' "$*" >> ${JSON.stringify(smokeLog)}`,
+    );
+    const playbook = readFileSync(SYNC_PLAYBOOK, 'utf8');
+    const phaseTwo = playbook.slice(
+      playbook.indexOf('## Phase 2:'),
+      playbook.indexOf('## Phase 3:'),
+    );
+    const shellBlock = phaseTwo.match(/```bash\n([\s\S]*?)\n```/)?.[1];
+
+    try {
+      expect(shellBlock).toBeDefined();
+      const result = spawnSync(
+        'bash',
+        ['-c', `${shellBlock}\nprintf 'unexpected fallthrough\\n'`],
+        {
+          cwd: root,
+          env: {
+            ...isolatedGitEnv(),
+            PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+            KOOKR_CODEX_BIN_PATH: codex,
+            KOOKR_ROOT: root,
+          },
+          encoding: 'utf8',
+        },
+      );
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('installed CLI/host pair matches');
+      expect(result.stdout).not.toContain('unexpected fallthrough');
+      expect(readFileSync(smokeLog, 'utf8')).toContain(
+        '--expected-source-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
