@@ -4,7 +4,7 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { LaunchTaskDialog, SAMPLE_LAUNCH_PROMPTS, buildSpawnCommand } from './LaunchTaskDialog.js';
+import { LaunchTaskDialog, SAMPLE_LAUNCH_PROMPTS } from './LaunchTaskDialog.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AvailableAgentType, ClientMessage } from '../../shared/protocol.js';
 
@@ -25,137 +25,8 @@ function seedStore(overrides: Record<string, unknown> = {}): void {
   useKookrStore.setState({ ...nextData, availableAgentTypes, serverCwd: CWD, ...overrides });
 }
 
-describe('buildSpawnCommand', () => {
-  test('simple prompt yields a runnable quoted one-liner', () => {
-    const built = buildSpawnCommand({
-      prompt: 'review the diff since origin/main',
-      cwd: CWD,
-      agentType: 'claude-code',
-    });
-    expect(built.usedPromptFile).toBe(false);
-    expect(built.command).toBe(
-      'kookr spawn -C /home/user/proj -a claude-code "review the diff since origin/main"',
-    );
-  });
-
-  test('criteria is appended as a quoted --criteria flag', () => {
-    const built = buildSpawnCommand({
-      prompt: 'fix the auth bug',
-      cwd: CWD,
-      agentType: 'codex-cli',
-      criteria: 'tests pass and PR created',
-    });
-    expect(built.usedPromptFile).toBe(false);
-    expect(built.command).toBe(
-      "kookr spawn -C /home/user/proj -a codex-cli --criteria 'tests pass and PR created' \"fix the auth bug\"",
-    );
-  });
-
-  test('a cwd with spaces is single-quoted', () => {
-    const built = buildSpawnCommand({
-      prompt: 'do the thing',
-      cwd: '/home/user/my project',
-      agentType: 'claude-code',
-    });
-    expect(built.command).toBe(
-      "kookr spawn -C '/home/user/my project' -a claude-code \"do the thing\"",
-    );
-  });
-
-  test('a single quote in the prompt stays on the quoted one-liner path', () => {
-    // A single quote is safe inside double quotes and is NOT hook-sensitive, so
-    // it must not trip the prompt-file fallback.
-    const built = buildSpawnCommand({
-      prompt: "it's working now",
-      cwd: CWD,
-      agentType: 'claude-code',
-    });
-    expect(built.usedPromptFile).toBe(false);
-    expect(built.command).toBe('kookr spawn -C /home/user/proj -a claude-code "it\'s working now"');
-  });
-
-  test('a bang in criteria is single-quoted so history expansion cannot fire', () => {
-    // `!` cannot be neutralized inside bash double quotes; single quotes make it
-    // literal. criteria has no --prompt-file escape hatch, so quoting must be safe.
-    const built = buildSpawnCommand({
-      prompt: 'do the thing',
-      cwd: CWD,
-      agentType: 'claude-code',
-      criteria: 'must be !important',
-    });
-    expect(built.usedPromptFile).toBe(false);
-    expect(built.command).toBe(
-      "kookr spawn -C /home/user/proj -a claude-code --criteria 'must be !important' \"do the thing\"",
-    );
-  });
-
-  test('round-robin omits -a so the server default applies', () => {
-    const built = buildSpawnCommand({
-      prompt: 'do the thing',
-      cwd: CWD,
-      agentType: 'round-robin',
-    });
-    expect(built.command).toBe('kookr spawn -C /home/user/proj "do the thing"');
-  });
-
-  test('a prompt with double quotes falls back to an exact --prompt-file heredoc', () => {
-    const built = buildSpawnCommand({
-      prompt: 'say "hello" to the world',
-      cwd: CWD,
-      agentType: 'claude-code',
-    });
-    expect(built.usedPromptFile).toBe(true);
-    expect(built.command).toBe(
-      `${MKTEMP_PREFIX}\ncat > "$prompt_file" <<'SPAWN_PROMPT_EOF'\n` +
-      'say "hello" to the world\n' +
-      'SPAWN_PROMPT_EOF\n' +
-      `kookr spawn -C /home/user/proj -a claude-code ${PROMPT_FILE_FLAG}`,
-    );
-  });
-
-  test.each([
-    ['backtick', 'run `whoami` now'],
-    ['dollar', 'echo $HOME please'],
-    ['bang', 'do it now!'],
-    ['backslash', 'path C:\\temp'],
-    ['newline', 'line one\nline two'],
-  ])('a prompt with a %s token uses the prompt-file form', (_label, prompt) => {
-    const built = buildSpawnCommand({ prompt, cwd: CWD, agentType: 'claude-code' });
-    expect(built.usedPromptFile).toBe(true);
-    expect(built.command).toContain(PROMPT_FILE_FLAG);
-    expect(built.command.startsWith(`${MKTEMP_PREFIX}\n`)).toBe(true);
-    // The raw prompt body is preserved verbatim between the heredoc delimiters.
-    expect(built.command).toContain(`<<'SPAWN_PROMPT_EOF'\n${prompt}\nSPAWN_PROMPT_EOF\n`);
-  });
-
-  test('a prompt line equal to the delimiter extends the delimiter (no early terminate)', () => {
-    const built = buildSpawnCommand({
-      prompt: 'first line has a "quote"\nSPAWN_PROMPT_EOF\nlast line',
-      cwd: CWD,
-      agentType: 'claude-code',
-    });
-    expect(built.usedPromptFile).toBe(true);
-    // The extended delimiter must not appear as a standalone line inside the body.
-    expect(built.command).toBe(
-      `${MKTEMP_PREFIX}\ncat > "$prompt_file" <<'SPAWN_PROMPT_EOF_'\n` +
-      'first line has a "quote"\nSPAWN_PROMPT_EOF\nlast line\n' +
-      'SPAWN_PROMPT_EOF_\n' +
-      `kookr spawn -C /home/user/proj -a claude-code ${PROMPT_FILE_FLAG}`,
-    );
-  });
-
-  test('prompt-file fallback still carries criteria', () => {
-    const built = buildSpawnCommand({
-      prompt: 'say "hi"',
-      cwd: CWD,
-      agentType: 'claude-code',
-      criteria: 'green CI',
-    });
-    expect(built.usedPromptFile).toBe(true);
-    expect(built.command).toContain("--criteria 'green CI'");
-  });
-});
-
+// The pure buildSpawnCommand golden corpus lives in spawn-command.test.ts. The
+// tests below verify only that the dialog wires its copy action to that builder.
 describe('LaunchTaskDialog copy kookr spawn', () => {
   let container: HTMLDivElement;
   let root: Root;
