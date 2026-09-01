@@ -6,6 +6,8 @@ import { isSystemResourceStatus } from '../resource-status.js';
 import type { TransportSessionSlice, TriageNavigationSlice } from '../store/store-types.js';
 import { recordInbound, recordOutbound } from '../bug-report-recorder.js';
 import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
+import { listSchedules } from '../schedule-api.js';
+import type { ScheduleListResponse } from '../../shared/protocol.js';
 import { DeltaSequenceTracker } from '../delta-sequence.js';
 import { measureSync } from '../debug-timeline.js';
 
@@ -30,6 +32,18 @@ export function recordAndParseServerMessageForClient(data: string): unknown | nu
 
 export function recordClientMessageForSend(msg: ClientMessage): void {
   recordOutbound(msg);
+}
+
+// Best-effort schedule refresh shared by the two WebSocket lifecycle points
+// (first snapshot per connection and 'scheduleFired'). Backed by the typed
+// listSchedules() API rather than a raw /api/schedules fetch. Failures are
+// swallowed so a transient error never replaces newer pushed schedule state
+// with stale data — the caller's own pushed 'schedules' messages remain the
+// source of truth on failure.
+export function refreshSchedules(
+  handleSchedules: (payload: ScheduleListResponse) => void,
+): void {
+  listSchedules().then(handleSchedules).catch(() => {});
 }
 
 export function workspaceRefreshMessageAfterSweep(
@@ -236,7 +250,7 @@ export function useWebSocket() {
               // messages keep them current afterwards.
               if (!hasFetchedSchedulesForConnectionRef.current) {
                 hasFetchedSchedulesForConnectionRef.current = true;
-                fetch('/api/schedules').then(r => r.json()).then(store.handleSchedules).catch(() => {});
+                refreshSchedules(store.handleSchedules);
               }
               break;
             case 'update':
@@ -345,7 +359,7 @@ export function useWebSocket() {
               store.handleSchedules({ revision: msg.revision, schedules: msg.schedules, status: msg.status });
               break;
             case 'scheduleFired':
-              fetch('/api/schedules').then(r => r.json()).then(store.handleSchedules).catch(() => {});
+              refreshSchedules(store.handleSchedules);
               break;
             case 'workspaceView':
               store.handleWorkspaceView(msg.view, msg.error, msg.cleanupResult, msg.cleanupResults, msg.diagnosticLaunch);
