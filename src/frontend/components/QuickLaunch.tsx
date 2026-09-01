@@ -11,7 +11,7 @@ import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
 import { saveLastLaunchPins } from '../store/last-launch-pins.js';
 
-import { AgentTypeSelector } from './AgentTypeSelector.js';
+import { AgentTypeSelector, type AgentTypeSelectorValue } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import {
   effortOptionsForSelection,
@@ -43,6 +43,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const preserveFailedDraftRef = useRef(false);
+  const hasManualAgentChoiceRef = useRef(false);
   const submitAttemptRef = useRef(0);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
   // Same preflight the Launch dialog uses: it advertises whether a grok-build
@@ -55,12 +56,15 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     () => withLaunchTaskCwds(agents, launchCwds),
     [agents, launchCwds],
   );
-  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
+  const agentOptions = useMemo(
+    () => buildAgentSelectionOptions(availableAgentTypes),
+    [availableAgentTypes],
+  );
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
   // agent type (effect) → last-used → server default → 'claude-code'.
-  // Initializer covers the no-selected-agent path; the effect re-applies when
-  // selection / availability / server default change.
+  // Initializer covers the no-selected-agent path; the effect re-applies that
+  // chain only until the operator makes an explicit picker choice.
   const [agentType, setAgentType] = useState<AgentSelection>(() => {
     const store = useKookrStore.getState();
     const options = buildAgentSelectionOptions(store.availableAgentTypes);
@@ -68,9 +72,14 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     if (lastUsed && options.some((opt) => opt.type === lastUsed)) return lastUsed;
     return store.defaultAgentType ?? 'claude-code';
   });
+  const agentTypeLabelRef = useRef(
+    agentOptions.find((option) => option.type === agentType)?.label ?? agentType,
+  );
   const [initialPins] = useState(() => restoreLastLaunchPins(agentType));
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
+  const [agentFallbackNotice, setAgentFallbackNotice] = useState<string | null>(null);
+  const selectedAgentType = agents.find((agent) => agent.agentId === selectedAgentId)?.agentType;
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -103,21 +112,47 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   useEffect(() => {
     if (preserveFailedDraftRef.current) return;
-    const selected = agents.find((agent) => agent.agentId === selectedAgentId);
-    if (selected?.agentType) {
-      setAgentType(selected.agentType);
+    const isAvailable = (selection: AgentSelection) => (
+      agentOptions.some((option) => option.type === selection)
+    );
+
+    // Live agent activity replaces the store's agents array, but that is not
+    // permission to replace an explicit launch choice. The only exception is
+    // when the server stops advertising the chosen runtime.
+    if (hasManualAgentChoiceRef.current && isAvailable(agentType)) {
+      agentTypeLabelRef.current = agentOptions.find(
+        (option) => option.type === agentType,
+      )?.label ?? agentType;
       return;
+    }
+
+    let resolved: AgentSelection | undefined;
+    if (selectedAgentType && isAvailable(selectedAgentType)) {
+      resolved = selectedAgentType;
     }
     // RFC F6: last-used preference beats the server default when no selected
     // agent pins a type. Skip last-used when it is not currently offered.
-    const options = buildAgentSelectionOptions(availableAgentTypes);
     const lastUsed = loadLastAgentType();
-    if (lastUsed && options.some((opt) => opt.type === lastUsed)) {
-      setAgentType(lastUsed);
-      return;
+    if (!resolved && lastUsed && isAvailable(lastUsed)) {
+      resolved = lastUsed;
     }
-    setAgentType(defaultAgentType ?? 'claude-code');
-  }, [agents, selectedAgentId, defaultAgentType, availableAgentTypes]);
+    if (!resolved && isAvailable(defaultAgentType)) {
+      resolved = defaultAgentType;
+    }
+    resolved ??= agentOptions[0]?.type ?? 'claude-code';
+
+    if (hasManualAgentChoiceRef.current && resolved !== agentType) {
+      const unavailableLabel = agentTypeLabelRef.current;
+      const fallbackLabel = agentOptions.find((option) => option.type === resolved)?.label ?? resolved;
+      setAgentFallbackNotice(
+        `${unavailableLabel} became unavailable. Using ${fallbackLabel} instead.`,
+      );
+    }
+    agentTypeLabelRef.current = agentOptions.find(
+      (option) => option.type === resolved,
+    )?.label ?? resolved;
+    setAgentType(resolved);
+  }, [agentOptions, agentType, defaultAgentType, selectedAgentId, selectedAgentType]);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -189,6 +224,16 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     submitLaunch(false);
   }
 
+  function handleAgentTypeChange(next: AgentTypeSelectorValue) {
+    if (!next) return;
+    hasManualAgentChoiceRef.current = true;
+    agentTypeLabelRef.current = agentOptions.find(
+      (option) => option.type === next,
+    )?.label ?? next;
+    setAgentFallbackNotice(null);
+    setAgentType(next);
+  }
+
   function openExistingDuplicate() {
     if (!activeDuplicate?.agentId) return;
     useKookrStore.getState().selectAgent(
@@ -232,7 +277,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
         <AgentTypeSelector
           value={agentType}
-          onChange={setAgentType}
+          onChange={handleAgentTypeChange}
           options={agentOptions}
           label="Agent"
           compact
@@ -271,6 +316,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           </Suspense>
         )}
       </div>
+      <span
+        className={agentFallbackNotice ? 'agent-type-select-hint' : 'sr-only'}
+        role="status"
+        aria-atomic="true"
+      >
+        {agentFallbackNotice ?? ''}
+      </span>
       {showGrokAuthBanner && grokAuth?.message && (
         <GrokAuthPreflightBanner message={grokAuth.message} />
       )}

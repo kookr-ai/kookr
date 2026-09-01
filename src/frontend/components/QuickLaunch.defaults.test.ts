@@ -41,6 +41,14 @@ function getAgentSelectEl(container: HTMLElement): HTMLSelectElement {
   return el as HTMLSelectElement;
 }
 
+async function setAgentSelectValue(select: HTMLSelectElement, value: string): Promise<void> {
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    setter.call(select, value);
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
 function renderQuickLaunch(
   container: HTMLElement,
   send: (msg: ClientMessage) => boolean = () => true,
@@ -116,6 +124,117 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
     await flush();
 
     expect(getAgentSelectEl(container).value).toBe('codex-cli');
+    act(() => root.unmount());
+  });
+
+  test('keeps a manual agent choice across live updates and submits that choice', async () => {
+    const selectedAgent = {
+      agentId: 'sess-1',
+      events: [],
+      anomaly: null,
+      agentType: 'codex-cli' as const,
+      description: 'selected',
+    };
+    useKookrStore.setState({
+      selectedAgentId: selectedAgent.agentId,
+      agents: [selectedAgent],
+    });
+    const sent: ClientMessage[] = [];
+    const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return true; });
+    await flush();
+
+    const select = getAgentSelectEl(container);
+    expect(select.value).toBe('codex-cli');
+    await setAgentSelectValue(select, 'claude-code');
+
+    await act(async () => {
+      useKookrStore.getState().handleUpdate(selectedAgent.agentId, {
+        ...selectedAgent,
+        description: 'fresh activity with the same runtime',
+      });
+    });
+    await flush();
+
+    expect(select.value).toBe('claude-code');
+    await act(async () => {
+      useKookrStore.getState().handleDelta({
+        agents: {
+          upserts: [{ ...selectedAgent, description: 'fresh delta with the same runtime' }],
+          removed: [],
+        },
+      });
+    });
+    await flush();
+    expect(select.value).toBe('claude-code');
+
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'keep my runtime choice'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'claude-code' });
+    act(() => root.unmount());
+  });
+
+  test('reinitializes from a newly selected task before the picker is changed', async () => {
+    useKookrStore.setState({
+      selectedAgentId: 'sess-codex',
+      agents: [
+        { agentId: 'sess-codex', events: [], anomaly: null, agentType: 'codex-cli' },
+        { agentId: 'sess-claude', events: [], anomaly: null, agentType: 'claude-code' },
+      ],
+    });
+    const root = renderQuickLaunch(container);
+    await flush();
+    expect(getAgentSelectEl(container).value).toBe('codex-cli');
+
+    await act(async () => {
+      useKookrStore.setState({ selectedAgentId: 'sess-claude' });
+    });
+    await flush();
+
+    expect(getAgentSelectEl(container).value).toBe('claude-code');
+    act(() => root.unmount());
+  });
+
+  test('explains a deterministic fallback when a manual choice becomes unavailable', async () => {
+    const sent: ClientMessage[] = [];
+    useKookrStore.setState({
+      selectedAgentId: 'sess-1',
+      agents: [{ agentId: 'sess-1', events: [], anomaly: null, agentType: 'codex-cli' }],
+      availableAgentTypes: [
+        { type: 'claude-code', label: 'Claude Code' },
+        { type: 'codex-cli', label: 'Codex CLI' },
+      ],
+    });
+    const root = renderQuickLaunch(container, (msg) => { sent.push(msg); return true; });
+    await flush();
+
+    const select = getAgentSelectEl(container);
+    const status = container.querySelector('[role="status"]');
+    expect(status).not.toBeNull();
+    expect(status?.getAttribute('aria-atomic')).toBe('true');
+    expect(status?.textContent).toBe('');
+    await setAgentSelectValue(select, 'claude-code');
+    await act(async () => {
+      useKookrStore.setState({
+        availableAgentTypes: [{ type: 'codex-cli', label: 'Codex CLI' }],
+      });
+    });
+    await flush();
+
+    expect(select.value).toBe('codex-cli');
+    expect(status?.textContent).toContain(
+      'Claude Code became unavailable. Using Codex CLI instead.',
+    );
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'use the available runtime'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: 'launch', agentType: 'codex-cli' });
     act(() => root.unmount());
   });
 
