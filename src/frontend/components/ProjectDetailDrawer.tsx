@@ -5,7 +5,7 @@ import { formatCost } from '../presentation.js';
 interface Props {
   project: ProjectSummary;
   onClose: () => void;
-  send: (msg: ClientMessage) => void;
+  send: (msg: ClientMessage) => boolean;
   onOpenWorkspace?: () => void;
   onLaunchManual?: () => void;
   onRunPlaybook?: () => void;
@@ -59,6 +59,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
   const [zeroDrainIssueLimit, setZeroDrainIssueLimit] = useState<string>(project.zeroDrainIssueLimit?.toString() ?? '');
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSendError, setSaveSendError] = useState<string | null>(null);
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
@@ -72,6 +73,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const overBudget = budgetThreshold !== undefined && (spendUsd ?? 0) > budgetThreshold;
 
   function handleSave() {
+    setSaveSendError(null);
     const limit = parseInt(dailyLimit, 10);
     const budget = Number(budgetWarnUsd);
     const zeroDrainLimit = Number(zeroDrainIssueLimit);
@@ -88,7 +90,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         return;
       }
     }
-    send({
+    const sent = send({
       type: 'setProjectConfig',
       project: project.project,
       config: {
@@ -101,6 +103,10 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         notes: notes || undefined,
       },
     });
+    if (!sent) {
+      setSaveSendError('Project settings were not saved. Kookr may be disconnected, or this view may be read-only.');
+      return;
+    }
     setSaveError(null);
     setDirty(false);
   }
@@ -432,6 +438,9 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               data-testid="project-notes-input"
             />
           </div>
+          {saveSendError && (
+            <span className="project-drawer-setting-error" role="alert">{saveSendError}</span>
+          )}
           {dirty && (
             <button className="btn-primary project-drawer-save" onClick={handleSave} data-testid="save-config">
               Save
