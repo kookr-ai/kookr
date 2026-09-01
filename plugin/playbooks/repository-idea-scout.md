@@ -811,7 +811,7 @@ fi
 
 invalidate_source_artifacts() {
   [ "$RECS_DIR" = "$STATE_DIR/recommendations" ] || return 1
-  rm -rf "$RECS_DIR"
+  rm -rf "$RECS_DIR" || return 1
   rm -f \
     "$STATE_DIR/features.md" \
     "$STATE_DIR/capability-inventory.md" \
@@ -820,7 +820,7 @@ invalidate_source_artifacts() {
     "$STATE_DIR/proposals.md" \
     "$STATE_DIR/conflict-matrix.md" \
     "$STATE_DIR/duplicate-search-matrix.md" \
-    "$STATE_DIR/ideas-log.json"
+    "$STATE_DIR/ideas-log.json" || return 1
   mkdir -p "$RECS_DIR" || return 1
   printf '[]\n' > "$IDEAS_LOG"
 }

@@ -761,6 +761,44 @@ describe('repository-idea-scout playbook', () => {
         cleanupFixture(fixture);
       }
     });
+
+    test('blocks a moving-tip resume when stale artifacts cannot be removed', () => {
+      const fixture = createSnapshotFixture('equal');
+      try {
+        runSnapshotPhase(fixture);
+        const first = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          analysisSha: string;
+        };
+        const recommendations = join(fixture.state, 'recommendations');
+        writeFileSync(join(recommendations, 'stale.md'), 'stale candidate\n');
+        chmodSync(recommendations, 0o500);
+
+        writeFileSync(join(fixture.seed, 'moving-tip.txt'), 'new default tip\n');
+        runGit(fixture.seed, ['add', 'moving-tip.txt'], fixture.env);
+        runGit(fixture.seed, [
+          '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+          'commit', '-m', 'move default tip',
+        ], fixture.env);
+        runGit(fixture.seed, ['push', 'origin', 'trunk'], fixture.env);
+
+        runSnapshotPhase(fixture);
+
+        const retained = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          analysisSha: string;
+        };
+        expect(retained.analysisSha).toBe(first.analysisSha);
+        expect(readFileSync(join(fixture.state, 'state.md'), 'utf8')).toMatch(
+          /source-derived artifact invalidation failed[\s\S]*<promise>BLOCKED<\/promise>/,
+        );
+        expect(existsSync(join(recommendations, 'stale.md'))).toBe(true);
+        expect(existsSync(join(fixture.state, 'analysis-transition.json'))).toBe(true);
+        expect(existsSync(join(fixture.state, 'analysis-snapshots'))).toBe(false);
+        expect(readdirSync(fixture.tempParent)).toEqual([]);
+        expect(readFileSync(join(fixture.local, '.git', 'index'))).toEqual(fixture.indexBefore);
+      } finally {
+        cleanupFixture(fixture);
+      }
+    });
   });
 
   describe('authority policy gates unsafe work', () => {
