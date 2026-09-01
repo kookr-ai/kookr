@@ -208,7 +208,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
 
     expect(input.value).toBe('12');
     expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
-    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*disconnected/i);
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*disconnected.*read-only/i);
   });
 
   test('clears the dirty state only after an explicit successful send', () => {
@@ -257,7 +257,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     expect(rawSend).not.toHaveBeenCalled();
     expect(useKookrStore.getState().alerts[0]?.summary).toMatch(/read-only/i);
     expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
-    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved/i);
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*disconnected.*read-only/i);
   });
 
   test('shows accumulated spend against the cost-warning threshold', () => {
