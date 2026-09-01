@@ -21,6 +21,31 @@ import { describe, expect, it } from 'vitest';
 const REBUILD_SCRIPT = resolve('scripts/rebuild-codex.sh');
 const SYNC_PLAYBOOK = resolve('.kookr/playbooks/codex-rebase.md');
 
+function isolatedGitEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const name of [
+    'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+    'GIT_COMMON_DIR',
+    'GIT_CONFIG',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_PARAMETERS',
+    'GIT_DIR',
+    'GIT_GRAFT_FILE',
+    'GIT_IMPLICIT_WORK_TREE',
+    'GIT_INDEX_FILE',
+    'GIT_INTERNAL_SUPER_PREFIX',
+    'GIT_NO_REPLACE_OBJECTS',
+    'GIT_OBJECT_DIRECTORY',
+    'GIT_PREFIX',
+    'GIT_REPLACE_REF_BASE',
+    'GIT_SHALLOW_FILE',
+    'GIT_WORK_TREE',
+  ]) {
+    delete env[name];
+  }
+  return env;
+}
+
 interface Fixture {
   root: string;
   sourceDir: string;
@@ -50,6 +75,7 @@ function createFixture(
   const cargoLog = join(root, 'cargo.log');
   const curlLog = join(root, 'curl.log');
   const releaseArchive = join(root, 'release-host.tgz');
+  const fixtureEnv = isolatedGitEnv();
 
   mkdirSync(codexRsDir, { recursive: true });
   mkdirSync(releaseDir, { recursive: true });
@@ -61,13 +87,13 @@ function createFixture(
   writeExecutable(join(installDir, 'codex'), 'printf \'old-cli\\n\'');
   writeExecutable(join(installDir, 'codex-code-mode-host'), 'printf \'old-host\\n\'');
 
-  execFileSync('git', ['init', '--quiet'], { cwd: sourceDir });
-  execFileSync('git', ['config', 'user.name', 'Kookr Test'], { cwd: sourceDir });
-  execFileSync('git', ['config', 'user.email', 'kookr-test@example.invalid'], { cwd: sourceDir });
-  execFileSync('git', ['add', 'codex-rs/Cargo.toml'], { cwd: sourceDir });
-  execFileSync('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: sourceDir });
+  execFileSync('git', ['init', '--quiet'], { cwd: sourceDir, env: fixtureEnv });
+  execFileSync('git', ['config', 'user.name', 'Kookr Test'], { cwd: sourceDir, env: fixtureEnv });
+  execFileSync('git', ['config', 'user.email', 'kookr-test@example.invalid'], { cwd: sourceDir, env: fixtureEnv });
+  execFileSync('git', ['add', 'codex-rs/Cargo.toml'], { cwd: sourceDir, env: fixtureEnv });
+  execFileSync('git', ['commit', '--quiet', '-m', 'fixture'], { cwd: sourceDir, env: fixtureEnv });
   if (releaseDownloadSucceeds) {
-    execFileSync('git', ['tag', 'rust-v0.145.0-alpha.4'], { cwd: sourceDir });
+    execFileSync('git', ['tag', 'rust-v0.145.0-alpha.4'], { cwd: sourceDir, env: fixtureEnv });
     const releaseHostDir = join(root, 'release-host');
     mkdirSync(releaseHostDir);
     writeExecutable(join(releaseHostDir, 'codex-code-mode-host'), 'printf \'release-host\\n\'');
@@ -117,8 +143,8 @@ esac`,
     cargoLog,
     curlLog,
     env: {
-      ...process.env,
-      PATH: `${stubBin}:${process.env.PATH ?? ''}`,
+      ...fixtureEnv,
+      PATH: `${stubBin}:${fixtureEnv.PATH ?? ''}`,
       CODEX_SRC: sourceDir,
       CODEX_INSTALL_DIR: installDir,
       CODEX_BUILD_PROFILE: 'release',
@@ -141,6 +167,58 @@ function sha256(path: string): string {
 }
 
 describe('R4b.14: matched Codex runtime pair', () => {
+  it('isolates fixture repositories from Git hook environment variables', () => {
+    const ambientRoot = mkdtempSync(join(tmpdir(), 'kookr-ambient-git-'));
+    const ambientEnv = isolatedGitEnv();
+    const originalGitDir = process.env.GIT_DIR;
+    const originalGitWorkTree = process.env.GIT_WORK_TREE;
+    let fixture: Fixture | undefined;
+
+    writeFileSync(join(ambientRoot, 'sentinel'), 'keep me\n');
+    execFileSync('git', ['init', '--quiet'], { cwd: ambientRoot, env: ambientEnv });
+    execFileSync('git', ['config', 'user.name', 'Kookr Test'], {
+      cwd: ambientRoot,
+      env: ambientEnv,
+    });
+    execFileSync('git', ['config', 'user.email', 'kookr-test@example.invalid'], {
+      cwd: ambientRoot,
+      env: ambientEnv,
+    });
+    execFileSync('git', ['add', 'sentinel'], { cwd: ambientRoot, env: ambientEnv });
+    execFileSync('git', ['commit', '--quiet', '-m', 'ambient'], {
+      cwd: ambientRoot,
+      env: ambientEnv,
+    });
+
+    try {
+      process.env.GIT_DIR = join(ambientRoot, '.git');
+      process.env.GIT_WORK_TREE = ambientRoot;
+      fixture = createFixture(0);
+
+      expect(
+        execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          cwd: fixture.sourceDir,
+          env: isolatedGitEnv(),
+          encoding: 'utf8',
+        }).trim(),
+      ).toBe(fixture.sourceDir);
+      expect(
+        execFileSync('git', ['status', '--short'], {
+          cwd: ambientRoot,
+          env: ambientEnv,
+          encoding: 'utf8',
+        }),
+      ).toBe('');
+    } finally {
+      if (originalGitDir === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = originalGitDir;
+      if (originalGitWorkTree === undefined) delete process.env.GIT_WORK_TREE;
+      else process.env.GIT_WORK_TREE = originalGitWorkTree;
+      if (fixture) rmSync(fixture.root, { recursive: true, force: true });
+      rmSync(ambientRoot, { recursive: true, force: true });
+    }
+  });
+
   it('leaves the active pair unchanged when no compatible host can be prepared', () => {
     const fixture = createFixture(1);
     try {
@@ -197,8 +275,15 @@ describe('R4b.14: matched Codex runtime pair', () => {
     const runtimeDir = join(fixture.sourceDir, 'codex-rs', 'code-mode-runtime');
     mkdirSync(runtimeDir);
     writeFileSync(join(runtimeDir, 'protocol.txt'), 'changed after release\n');
-    execFileSync('git', ['add', 'codex-rs/code-mode-runtime/protocol.txt'], { cwd: fixture.sourceDir });
-    execFileSync('git', ['commit', '--quiet', '-m', 'change protocol'], { cwd: fixture.sourceDir });
+    const gitEnv = isolatedGitEnv();
+    execFileSync('git', ['add', 'codex-rs/code-mode-runtime/protocol.txt'], {
+      cwd: fixture.sourceDir,
+      env: gitEnv,
+    });
+    execFileSync('git', ['commit', '--quiet', '-m', 'change protocol'], {
+      cwd: fixture.sourceDir,
+      env: gitEnv,
+    });
     try {
       const result = runRebuild(fixture);
 
@@ -332,6 +417,7 @@ describe('R4b.14: matched Codex runtime pair', () => {
     const fixture = createFixture(0);
     const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
       cwd: fixture.sourceDir,
+      env: isolatedGitEnv(),
       encoding: 'utf8',
     }).trim();
     const releaseDir = join(fixture.root, 'target', 'release');
