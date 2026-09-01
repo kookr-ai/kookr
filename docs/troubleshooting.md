@@ -359,11 +359,18 @@ in-memory and cleared by process exit — no post-restart resume is required.
 Opt out with `KOOKR_RESTART_SKIP_DRAIN=1`.
 
 After the port is free, the script waits for `~/.kookr/server.pid` (the
-single-writer lock) to be released before it starts the next process. A leftover
-lock from a process that has already closed the listen socket was the #2501
-`exited before becoming healthy` failure. If restart still dies that way, check
-`server.log` for `[single-writer] another Kookr server` and inspect
-`~/.kookr/server.pid` (delete only if that pid is gone).
+single-writer ownership record) to be released before it starts the next
+process. Current records keep the decimal PID on line one for compatibility
+with older binaries and put JSON containing `version`, `pid`,
+`processStartTimeMs`, and `acquisitionId` on line two; a decimal PID alone is
+the supported legacy shape. A leftover record from a process that has already
+closed the listen socket was the #2501 `exited before becoming healthy`
+failure. A live PID whose start time differs from the versioned record is a
+recycled PID and is reclaimed automatically. If restart still dies that way,
+check `server.log` for `[single-writer] another Kookr server` and inspect both
+`~/.kookr/server.pid` and `~/.kookr/server.lock.sqlite`. Never delete either
+while a Kookr server is running; unreadable metadata deliberately fails closed,
+so confirm the server is stopped before manual cleanup.
 
 Operator runbook (procedure, API blackout vs M2 clocks, client contracts,
 residual same-port blackout after speech-detach P1):

@@ -997,6 +997,140 @@ describe('prod-restart waits for single-writer lock release (issue #2501)', () =
     }
   });
 
+  it('parses the PID from the versioned two-line lock shape', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      writeFileSync(join(kookrDir, 'server.pid'), `424242\n${JSON.stringify({
+        version: 2,
+        pid: 424242,
+        processStartTimeMs: 1_765_000_000_123,
+        acquisitionId: 'test-acquisition',
+      })}\n`);
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'writer_lock_holder_pid',
+        ].join('; ')],
+        { encoding: 'utf8' },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe('424242');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('waits for a matching live process identity in the versioned lock shape', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    const holder = spawn('sleep', ['30'], { stdio: 'ignore' });
+    const holderPid = holder.pid;
+    expect(holderPid).toBeDefined();
+    let waiter: ReturnType<typeof spawn> | undefined;
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      const psResult = spawnSync('ps', ['-p', String(holderPid), '-o', 'lstart='], { encoding: 'utf8' });
+      const processStartTimeMs = Date.parse(psResult.stdout.trim());
+      expect(Number.isFinite(processStartTimeMs)).toBe(true);
+      writeFileSync(join(kookrDir, 'server.pid'), `${holderPid}\n${JSON.stringify({
+        version: 2,
+        pid: holderPid,
+        processStartTimeMs,
+        acquisitionId: 'live-acquisition',
+      })}\n`);
+      waiter = spawn(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'wait_for_writer_lock_clear 5',
+          'echo LOCK_CLEAR',
+        ].join('; ')],
+        { stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      let stdout = '';
+      let stderr = '';
+      waiter.stdout.on('data', (chunk) => { stdout += String(chunk); });
+      waiter.stderr.on('data', (chunk) => { stderr += String(chunk); });
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`waiter did not observe holder: ${stdout}${stderr}`)), 5_000);
+        const onData = (): void => {
+          if (!/Waiting for .*server\.pid holder/.test(stdout)) return;
+          clearTimeout(timeout);
+          waiter?.stdout.off('data', onData);
+          resolve();
+        };
+        waiter?.stdout.on('data', onData);
+        onData();
+      });
+      holder.kill('SIGKILL');
+      const status = await new Promise<number | null>((resolve) => waiter?.once('close', resolve));
+      expect(status, stderr).toBe(0);
+      expect(stdout).toMatch(/Waiting for .*server\.pid holder/);
+      expect(stdout).toContain('Single-writer lock released');
+      expect(stdout).toContain('LOCK_CLEAR');
+    } finally {
+      holder.kill('SIGKILL');
+      waiter?.kill('SIGKILL');
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not wait on a live recycled PID with a different recorded identity', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      writeFileSync(join(kookrDir, 'server.pid'), `${process.pid}\n${JSON.stringify({
+        version: 2,
+        pid: process.pid,
+        processStartTimeMs: 1,
+        acquisitionId: 'stale-acquisition',
+      })}\n`);
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'wait_for_writer_lock_clear 2',
+          'echo LOCK_CLEAR',
+        ].join('; ')],
+        { encoding: 'utf8' },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('LOCK_CLEAR\n');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps malformed lock metadata fail-closed', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
+    try {
+      const kookrDir = join(dir, '.kookr');
+      mkdirSync(kookrDir, { recursive: true });
+      writeFileSync(join(kookrDir, 'server.pid'), `${process.pid}\n{"version":2,"pid":`);
+      const result = spawnSync(
+        'bash',
+        ['-c', [
+          `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}`,
+          `KOOKR_DIR=${JSON.stringify(kookrDir)}`,
+          'if writer_lock_is_clear; then echo CLEAR; else echo BLOCKED; fi',
+        ].join('; ')],
+        { encoding: 'utf8' },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('BLOCKED\n');
+      expect(readFileSync(join(kookrDir, 'server.pid'), 'utf8')).toBe(`${process.pid}\n{"version":2,"pid":`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('waits for a short-lived lock holder to exit without signaling it', () => {
     const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-'));
     const holder = spawn('sleep', ['0.4'], { stdio: 'ignore' });

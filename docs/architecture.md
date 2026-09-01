@@ -299,12 +299,14 @@ listener serves.
 - **Flag**: `KOOKR_ISSUE_CLAIMS` (read at startup; restart to change; boot log
   prints the resolved value). Off = registry not constructed, routes absent
   (404 → clients proceed as pre-lock), release calls no-op.
-- **Single-writer assertion**: boot takes a pid lock (`server.pid`) on the data
-  dir so a second server process fails loudly instead of silently interleaving
-  writes (R27). A planned `prod:restart` waits for the outgoing process to
-  drop that lock without signaling the listed pid (and retries for a few
-  seconds on acquire) because the old server frees the listen port before it
-  unlinks the pid file.
+- **Single-writer assertion**: boot takes an OS-backed data-directory lock
+  (`server.lock.sqlite`) and records its versioned ownership identity in
+  `server.pid`, so a second server process fails loudly instead of silently
+  interleaving writes (R27). The record binds the PID to its OS process start
+  time and a unique acquisition ID; legacy PID-only records remain readable.
+  A planned `prod:restart` waits for the outgoing process to drop that lock
+  without signaling the listed pid (and retries for a few seconds on acquire)
+  because the old server frees the listen port before it releases ownership.
 
 ### `tasks.json` snapshots
 

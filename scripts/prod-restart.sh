@@ -387,22 +387,72 @@ enter_drain_before_stop() {
 
 # The outgoing server unlinks ${KOOKR_DIR}/server.pid as the last shutdown
 # step — after it has already closed the HTTP listen socket. Wait for that
-# file to name a dead/zombie pid (or disappear). Do NOT signal the listed
-# pid: after a crash the number can be reused by an unrelated process, and
-# a second SIGTERM aborts graceful close (issue #2501 review).
+# file to name a dead/zombie pid (or disappear). Version 2 keeps the decimal
+# PID on line one for older binaries and adds JSON process identity on line
+# two; the numeric-only format remains readable for rolling restarts. Do NOT
+# signal the listed pid: after a crash the number can be reused by an unrelated
+# process, and a second SIGTERM aborts graceful close (issue #2501 review).
 # Port/start pids are already TERMed by stop_existing_server.
 writer_lock_holder_pid() {
   local lock_file="${KOOKR_DIR}/server.pid"
-  local pid=""
   [[ -f "$lock_file" ]] || return 1
-  pid="$(tr -d '[:space:]' < "$lock_file" 2>/dev/null || true)"
-  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
-  printf '%s\n' "$pid"
+  node -e '
+    const fs = require("node:fs");
+    try {
+      const raw = fs.readFileSync(process.argv[1], "utf8").trim();
+      const newline = raw.indexOf("\n");
+      const pidText = (newline < 0 ? raw : raw.slice(0, newline)).trim();
+      if (!/^[1-9][0-9]*$/.test(pidText)) process.exit(1);
+      const pid = Number(pidText);
+      if (!Number.isSafeInteger(pid)) process.exit(1);
+      if (newline >= 0) {
+        const row = JSON.parse(raw.slice(newline + 1).trim());
+        if (row?.version !== 2 || row.pid !== pid || !Number.isSafeInteger(row.processStartTimeMs)
+          || row.processStartTimeMs < 0 || typeof row.acquisitionId !== "string" || !row.acquisitionId) process.exit(1);
+      }
+      process.stdout.write(String(pid));
+    } catch { process.exit(1); }
+  ' "$lock_file"
+}
+
+writer_lock_holder_start_ms() {
+  local lock_file="${KOOKR_DIR}/server.pid"
+  [[ -f "$lock_file" ]] || return 1
+  node -e '
+    const fs = require("node:fs");
+    try {
+      const raw = fs.readFileSync(process.argv[1], "utf8").trim();
+      const newline = raw.indexOf("\n");
+      if (newline < 0) process.exit(1);
+      const pid = Number(raw.slice(0, newline).trim());
+      const row = JSON.parse(raw.slice(newline + 1).trim());
+      if (row?.version !== 2 || row.pid !== pid
+        || !Number.isSafeInteger(row.processStartTimeMs) || row.processStartTimeMs < 0
+        || typeof row.acquisitionId !== "string" || !row.acquisitionId) process.exit(1);
+      process.stdout.write(String(row.processStartTimeMs));
+    } catch { process.exit(1); }
+  ' "$lock_file"
+}
+
+writer_lock_current_start_ms() {
+  local pid="$1"
+  local started=""
+  started="$(ps -p "$pid" -o lstart= 2>/dev/null || true)"
+  [[ -n "$started" ]] || return 1
+  node -e '
+    const value = Date.parse(process.argv[1]);
+    if (!Number.isFinite(value)) process.exit(1);
+    process.stdout.write(String(value));
+  ' "$started"
 }
 
 writer_lock_is_clear() {
-  local pid=""
-  pid="$(writer_lock_holder_pid)" || return 0
+  local lock_file="${KOOKR_DIR}/server.pid"
+  local pid="" recorded_start_ms="" current_start_ms=""
+  [[ -f "$lock_file" ]] || return 0
+  # A present but unreadable record is not proof that ownership is stale.
+  # Preserve it and let server startup report the fail-closed diagnostic.
+  pid="$(writer_lock_holder_pid)" || return 1
   if ! kill -0 "$pid" 2>/dev/null; then
     return 0
   fi
@@ -420,6 +470,17 @@ writer_lock_is_clear() {
     local ps_stat=""
     ps_stat="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
     [[ "${ps_stat:0:1}" == "Z" ]] && return 0
+  fi
+  recorded_start_ms="$(writer_lock_holder_start_ms || true)"
+  if [[ -n "$recorded_start_ms" ]]; then
+    current_start_ms="$(writer_lock_current_start_ms "$pid" || true)"
+    # `ps -o lstart=` has one-second resolution. Treat an unreadable identity
+    # or a same-second value conservatively as the recorded holder; a recycled
+    # PID with a different start second is already stale and needs no wait.
+    if [[ -n "$current_start_ms" ]] \
+      && (( recorded_start_ms / 1000 != current_start_ms / 1000 )); then
+      return 0
+    fi
   fi
   return 1
 }
