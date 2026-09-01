@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   appendLessonWrite,
   buildLessonEntry,
+  MAX_LESSON_DRAIN_ATTEMPTS,
   readPendingLessons,
   readSpoolState,
 } from '../core/lesson-write-spool.js';
@@ -47,11 +48,43 @@ describe('LessonSpoolService', () => {
       attempted: 1,
       written: 1,
       failed: 0,
+      deadLetteredCount: 0,
       remaining: 0,
     });
     expect(tick.state.lastPendingCount).toBe(0);
     expect(written).toEqual(['recover-me']);
     expect(await readPendingLessons(spoolDir)).toHaveLength(0);
+  });
+
+  test('TS-LESSON-005: reports a poison entry quarantined by the drain', async () => {
+    const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-svc-'));
+    tempDirs.push(spoolDir);
+    await appendLessonWrite(
+      spoolDir,
+      {
+        ...buildLessonEntry({ title: 'poison', body: 'body\n' }),
+        attempts: MAX_LESSON_DRAIN_ATTEMPTS - 1,
+      },
+    );
+    const log = vi.fn();
+    const svc = new LessonSpoolService({
+      spoolDir,
+      probeKb: async () => 'healthy',
+      writeFn: async () => ({ ok: false, error: 'input rejected' }),
+      log,
+    });
+
+    const tick = await svc.tick();
+    expect(tick.drained).toEqual({
+      attempted: 1,
+      written: 0,
+      failed: 1,
+      deadLetteredCount: 1,
+      remaining: 0,
+    });
+    expect(tick.state.lastPendingCount).toBe(0);
+    expect(await readPendingLessons(spoolDir)).toHaveLength(0);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('deadLettered=1'));
   });
 
   test('fires prolonged degradation alert once past threshold', async () => {
@@ -157,5 +190,3 @@ describe('LessonSpoolService', () => {
     expect(signal?.title).toMatch(/KB launch dependency degraded/);
   });
 });
-
-void vi;

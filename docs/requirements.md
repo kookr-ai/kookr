@@ -1643,12 +1643,27 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 **Acceptance criteria:**
 - Replay invokes `kb remember` with `--stdin`, `--yes`, and `--no-check-similar`, and does not pass `--force`.
 - Replay sends the stored lesson body unchanged on standard input.
-- When `kb` resolves to Kookr's write-behind shim, replay bypasses re-spooling and preserves a downstream write failure for retry.
+- When `kb` resolves to Kookr's write-behind shim, replay bypasses re-spooling and preserves downstream write failures according to the bounded retry policy in R18.2.
 - After a healthy probe and successful write, the service records the pending lesson as written and reduces the pending count.
 
 **Linked tests:** TS-LESSON-001, TS-LESSON-002, TS-LESSON-003.
 
 **Evidence:** `src/core/lesson-write-runner.ts`, `bin/kb-spool-shim.js`, `src/core/lesson-write-runner.test.ts` (`TS-LESSON-001`, `TS-LESSON-003`), `src/server/lesson-spool-service.test.ts` (`TS-LESSON-002`), `docs/reference/lesson-write-spool.md`.
+
+### R18.2: Bound Lesson Replay and Quarantine Poison Entries [#2875] — SHALL — `done`
+
+The system SHALL bound automatic replay of a failing lesson and preserve a permanently rejected entry outside the active spool for operator inspection.
+
+**Acceptance criteria:**
+- Before invoking the provider, each replay reserves its next persisted attempt so a process stop cannot repeat an uncounted call; fewer than five reserved attempts leave a failed entry active for a later drain.
+- A failed fifth call is quarantined immediately. If a process stops after the fifth reservation with an unknown outcome, the next drain quarantines the entry without issuing a sixth call.
+- Quarantine syncs `dead-letter.jsonl` and its directory entry before removing the entry from `pending.jsonl`; later automatic drains do not retry it.
+- Concurrent production, development, and operator drains serialize attempt spending for the shared user-scoped spool; stopped claims and claims whose PID was recycled are identified by process generation and are reclaimable without revoking a live holder.
+- The core drain result reports the dead-lettered count, and the lesson-spool service tick reports `deadLetteredCount` with the remaining active count.
+
+**Linked tests:** TS-LESSON-004, TS-LESSON-005.
+
+**Evidence:** `src/core/lesson-write-spool.ts`, `src/core/lesson-write-spool.test.ts` (`TS-LESSON-004`), `src/server/lesson-spool-service.ts`, `src/server/lesson-spool-service.test.ts` (`TS-LESSON-005`), `docs/reference/lesson-write-spool.md`.
 
 ## Summary Matrix
 
@@ -1774,6 +1789,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R16.1 | emission bootstrap | SHALL | done | project-config-store, emission-budget, kookr-emission, ProjectDetailDrawer |
 | R17.1 | #2903 | SHALL | done | umbrella-chain-advancer, github-umbrella-chain-client, workspace-context, server wiring |
 | R18.1 | #2901 | SHALL | done | lesson-write-runner, kb-spool-shim, lesson-spool-service |
+| R18.2 | #2875 | SHALL | done | lesson-write-spool, lesson-spool-service |
 
 ---
 
