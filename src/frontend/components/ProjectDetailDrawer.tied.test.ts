@@ -208,7 +208,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
 
     expect(input.value).toBe('12');
     expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
-    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*not connected/i);
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*disconnected/i);
   });
 
   test('clears the dirty state only after an explicit successful send', () => {

@@ -59,7 +59,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
   const [zeroDrainIssueLimit, setZeroDrainIssueLimit] = useState<string>(project.zeroDrainIssueLimit?.toString() ?? '');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveConnectionError, setSaveConnectionError] = useState<string | null>(null);
+  const [saveSendError, setSaveSendError] = useState<string | null>(null);
   const [notes, setNotes] = useState(project.notes ?? '');
   const [dirty, setDirty] = useState(false);
   const [tasksExpanded, setTasksExpanded] = useState(false);
@@ -73,7 +73,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const overBudget = budgetThreshold !== undefined && (spendUsd ?? 0) > budgetThreshold;
 
   function handleSave() {
-    setSaveConnectionError(null);
+    setSaveSendError(null);
     const limit = parseInt(dailyLimit, 10);
     const budget = Number(budgetWarnUsd);
     const zeroDrainLimit = Number(zeroDrainIssueLimit);
@@ -104,7 +104,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
       },
     });
     if (!sent) {
-      setSaveConnectionError('Project settings were not saved because Kookr is not connected.');
+      setSaveSendError('Project settings were not saved. Kookr may be disconnected, or this view may be read-only.');
       return;
     }
     setSaveError(null);
@@ -438,8 +438,8 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               data-testid="project-notes-input"
             />
           </div>
-          {saveConnectionError && (
-            <span className="project-drawer-setting-error" role="alert">{saveConnectionError}</span>
+          {saveSendError && (
+            <span className="project-drawer-setting-error" role="alert">{saveSendError}</span>
           )}
           {dirty && (
             <button className="btn-primary project-drawer-save" onClick={handleSave} data-testid="save-config">
