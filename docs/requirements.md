@@ -1487,6 +1487,18 @@ The system SHALL record anomaly detection telemetry only when new agent events a
 
 **Evidence:** `src/core/anomaly-detector.ts` (pure evaluation + narrowed merge-conflict detector), `src/core/monitor.ts` (single telemetry write boundary), `src/core/anomaly-detector.test.ts`, `src/core/monitor.test.ts`.
 
+### R11.2: Publish Cached Data-Directory Capacity [#2896] — SHALL — `done`
+
+The system SHALL publish cached, path-free data-directory capacity on `GET /api/health` and retain it for offline diagnosis without fresh filesystem I/O or mirror-write amplification.
+
+**Acceptance criteria:**
+- `dataDirectory` exposes `status`, `diskFreeBytes`, `diskTotalBytes`, `diskFreePercent`, and `sampledAt` from one retained resource-sampler snapshot without exposing the sampled path.
+- `status` is `known` only when all three capacity values are present; missing samples are explicit `unknown` values with unavailable fields represented as `null`, never fabricated zeroes.
+- First-tier last-good truncation retains `dataDirectory`, while changes to its fluctuating values alone do not bypass the mirror write throttle.
+- The ops digest warns when a known free percentage is at or below 15%, stays quiet for explicit `unknown` samples, and leaves readiness and launch-admission behavior unchanged.
+
+**Evidence:** `src/server/routes/diagnostics-routes.ts`, `src/server/last-good-health.ts`, `src/cli/kookr-ops-digest.ts`, their focused tests (`TS-HEALTH-DISK-001` through `TS-HEALTH-DISK-004`), `docs/reference/api.md`, and `docs/reference/cli.md`.
+
 ---
 
 ## R12: Cross-Signal Terminal Session Health
@@ -1751,6 +1763,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R10.7 | F11.8, #2900 | SHALL | done | post-recovery-service bounded critical re-arm retries |
 | R10.8 | F11.9, #2887 | SHALL | done | task playbook identity, scoped catalog, schedule prefill and fire fidelity |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
+| R11.2 | #2896 | SHALL | done | diagnostics-routes, last-good-health, kookr-ops-digest |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |

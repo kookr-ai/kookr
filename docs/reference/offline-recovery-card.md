@@ -33,7 +33,7 @@ du -sh ~/.kookr/* 2>/dev/null | sort -h | tail -20
 
 # Health may surface disk / data-directory alerts when the resource sampler is on
 curl -sS http://127.0.0.1:4800/api/health \
-  | python3 -c 'import json,sys; h=json.load(sys.stdin); print({k:h.get(k) for k in h if "disk" in k.lower() or "resource" in k.lower() or "alert" in k.lower()})'
+  | python3 -c 'import json,sys; h=json.load(sys.stdin); print("dataDirectory", h.get("dataDirectory")); print("resourceWatchdog", h.get("resourceWatchdog"))'
 ```
 
 If byte capacity is critical or free inodes are exhausted, inspect the launch

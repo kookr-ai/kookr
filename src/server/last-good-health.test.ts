@@ -119,6 +119,58 @@ describe('LastGoodHealthWriter', () => {
     });
   });
 
+  test('TS-HEALTH-DISK-003: keeps dataDirectory when the full body is truncated', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      dataDirectory: {
+        status: 'known',
+        diskFreeBytes: 15_000_000_000,
+        diskTotalBytes: 100_000_000_000,
+        diskFreePercent: 15,
+        sampledAt: '2026-09-01T04:05:06.000Z',
+      },
+    }));
+
+    const snap = readFile(dir);
+    expect(snap.truncated).toBe(true);
+    expect(snap.health.dataDirectory).toEqual({
+      status: 'known',
+      diskFreeBytes: 15_000_000_000,
+      diskTotalBytes: 100_000_000_000,
+      diskFreePercent: 15,
+      sampledAt: '2026-09-01T04:05:06.000Z',
+    });
+  });
+
+  test('TS-HEALTH-DISK-004: dataDirectory changes alone do not bypass the write throttle', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth({
+      dataDirectory: {
+        status: 'known',
+        diskFreeBytes: 20,
+        diskTotalBytes: 100,
+        diskFreePercent: 20,
+        sampledAt: '2026-09-01T04:05:06.000Z',
+      },
+    }));
+    t = 1_000;
+    writer.record(baseHealth({
+      dataDirectory: {
+        status: 'known',
+        diskFreeBytes: 10,
+        diskTotalBytes: 100,
+        diskFreePercent: 10,
+        sampledAt: '2026-09-01T04:05:07.000Z',
+      },
+    }));
+
+    const snap = readFile(dir);
+    expect(snap.capturedAt).toBe(new Date(0).toISOString());
+    expect((snap.health.dataDirectory as { diskFreePercent: number }).diskFreePercent).toBe(20);
+  });
+
   test('forces an out-of-band write when timerHealth neverFired flips', () => {
     let t = 0;
     const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });

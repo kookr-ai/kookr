@@ -67,7 +67,13 @@ const HEALTH_WITH_WARNINGS = {
       },
     },
   },
-  dataDirectoryFreePercent: 4.2,
+  dataDirectory: {
+    status: 'known',
+    diskFreeBytes: 4_200_000_000,
+    diskTotalBytes: 100_000_000_000,
+    diskFreePercent: 4.2,
+    sampledAt: '2026-09-01T04:05:06.000Z',
+  },
 };
 
 const READY_OK = {
@@ -194,6 +200,35 @@ describe('collectOpsDigestWarnings', () => {
     expect(warnings).toEqual([]);
     expect(signals.pressureWhileDisabled).toBe(false);
     expect(signals.phantomActive).toBe(0);
+  });
+
+  it('stays quiet when cached data-directory capacity is explicitly unknown', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      dataDirectory: {
+        status: 'unknown',
+        diskFreeBytes: 4_200_000_000,
+        diskTotalBytes: null,
+        diskFreePercent: 4.2,
+        sampledAt: '2026-09-01T04:05:06.000Z',
+      },
+    });
+
+    expect(warnings).toEqual([]);
+  });
+
+  it.each([
+    ['top-level alias', { dataDirectoryFreePercent: 4.2 }],
+    ['nested host alias', { host: { dataDirectory: { diskFreePercent: 4.2 } } }],
+    ['sampler alias', { resourceWatchdog: { lastSample: { diskFreePercent: 4.2 } } }],
+  ])('preserves the %s for older health payloads', (_name, health) => {
+    const { warnings, signals } = collectOpsDigestWarnings(health);
+
+    expect(warnings).toContainEqual({
+      path: 'dataDirectory.diskFreePercent',
+      summary: 'dataDirectory.diskFreePercent=4.2% (low)',
+      value: 4.2,
+    });
+    expect(signals.diskFreePercent).toBe(4.2);
   });
 
   it('surfaces safeMode when engaged', () => {
@@ -884,6 +919,7 @@ describe('kookr ops digest offline last-good (issue #2495)', () => {
     // Same signal paths the live digest would surface.
     expect(text).toContain('resourceWatchdog.pressureWhileDisabled');
     expect(text).toContain('capacity.phantomActive');
+    expect(text).toContain('dataDirectory.diskFreePercent=4.2% (low)');
   });
 
   it('--offline prints the snapshot and exits 0', async () => {

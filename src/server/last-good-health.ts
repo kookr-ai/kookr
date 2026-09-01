@@ -133,6 +133,7 @@ function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
     'serverStartedAt',
     'attentionQueue',
     'capacity',
+    'dataDirectory',
     'helperLlm',
     'timerHealth',
   ] as const) {

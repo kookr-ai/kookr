@@ -194,9 +194,7 @@ du -sh "$KOOKR_DIR"/* 2>/dev/null | sort -h | tail -20
 python3 - <<'PY'
 import json
 h=json.load(open("/tmp/kookr-health.json"))
-# Prefer stable top-level keys; resource samples may also live under nested host blocks
-keys=[k for k in h if "disk" in k.lower() or "resource" in k.lower()]
-print({k:h.get(k) for k in keys})
+print("dataDirectory", h.get("dataDirectory"))
 print("resourceWatchdog", h.get("resourceWatchdog"))
 PY
 ```
