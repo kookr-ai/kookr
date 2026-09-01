@@ -5,6 +5,8 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { ClientMessage, ProjectSummary } from '../../shared/protocol.js';
+import { useKookrStore } from '../store/useStore.js';
+import { __resetViewerSessionForTests, useViewerGuardedSend } from '../viewer-session.js';
 import { ProjectDetailDrawer } from './ProjectDetailDrawer.js';
 
 function baseProject(overrides: Partial<ProjectSummary> = {}): ProjectSummary {
@@ -33,6 +35,7 @@ let container: HTMLElement;
 let root: Root;
 
 beforeEach(() => {
+  __resetViewerSessionForTests();
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -42,9 +45,13 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  __resetViewerSessionForTests();
+  while (useKookrStore.getState().alerts.length > 0) {
+    useKookrStore.getState().dismissAlert(0);
+  }
 });
 
-function renderDrawer(project: ProjectSummary, compact = false, send: (msg: ClientMessage) => void = () => {}) {
+function renderDrawer(project: ProjectSummary, compact = false, send: (msg: ClientMessage) => boolean = () => true) {
   act(() => {
     root.render(
       React.createElement(ProjectDetailDrawer, {
@@ -55,6 +62,19 @@ function renderDrawer(project: ProjectSummary, compact = false, send: (msg: Clie
       }),
     );
   });
+}
+
+function renderViewerDrawer(project: ProjectSummary, rawSend: (msg: ClientMessage) => boolean): void {
+  function ViewerDrawer() {
+    const send = useViewerGuardedSend(rawSend, true);
+    return React.createElement(ProjectDetailDrawer, {
+      project,
+      onClose: () => {},
+      send,
+    });
+  }
+
+  act(() => root.render(React.createElement(ViewerDrawer)));
 }
 
 function setInputValue(input: HTMLInputElement | HTMLTextAreaElement, value: string): void {
@@ -75,7 +95,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('saves an edited threshold and sends null to restore the global default', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ budgetWarnUsd: 7.5 }), false, send);
     const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
 
@@ -93,7 +113,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('renders and saves the repository zero-drain issue limit without a built-in maximum', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ zeroDrainIssueLimit: 1000 }), false, send);
     const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
 
@@ -107,7 +127,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('TS-EMISSION-004: renders and saves -1 as the unlimited zero-drain sentinel', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ zeroDrainIssueLimit: -1 }), false, send);
     const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
 
@@ -123,7 +143,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('TS-EMISSION-004: saves zero as an explicit refusal', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ effectiveZeroDrainIssueLimit: -1 }), false, send);
     const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
 
@@ -135,7 +155,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('keeps an unlimited sentinel dirty when the installation has a ceiling', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ zeroDrainIssueLimitMax: 1000 }), false, send);
     const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
 
@@ -146,7 +166,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('leaves an inherited default unset when another setting is saved', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ effectiveZeroDrainIssueLimit: -1 }), false, send);
     const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
 
@@ -167,7 +187,7 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
   });
 
   test('keeps an over-cap value dirty and explains the deployment ceiling', () => {
-    const send = vi.fn<(msg: ClientMessage) => void>();
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ zeroDrainIssueLimitMax: 1000 }), false, send);
     const input = container.querySelector('[data-testid="zero-drain-issue-limit-input"]') as HTMLInputElement;
 
@@ -177,6 +197,69 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     expect(container.textContent).toContain('allows at most 1000');
     expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
   });
+
+  test('keeps edited settings dirty and reports when the send is rejected', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => false);
+    renderDrawer(baseProject({ budgetWarnUsd: 7.5 }), false, send);
+    const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '12'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(input.value).toBe('12');
+    expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved.*not connected/i);
+  });
+
+  test('clears the dirty state only after an explicit successful send', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
+    renderDrawer(baseProject({ budgetWarnUsd: 7.5 }), false, send);
+    const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '12'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="save-config"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test('retries the same edited values after reconnecting and clears the error on success', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    renderDrawer(baseProject({ notes: 'Original note' }), false, send);
+    const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
+
+    act(() => setInputValue(notes, 'Retry this exact note'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ notes: 'Retry this exact note' }),
+    }));
+    expect(container.querySelector('[data-testid="save-config"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  test('keeps viewer-blocked settings dirty after showing the read-only notice', () => {
+    const rawSend = vi.fn<(msg: ClientMessage) => boolean>(() => true);
+    renderViewerDrawer(baseProject({ budgetWarnUsd: 7.5 }), rawSend);
+    const input = container.querySelector('[data-testid="budget-warn-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(input, '12'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(rawSend).not.toHaveBeenCalled();
+    expect(useKookrStore.getState().alerts[0]?.summary).toMatch(/read-only/i);
+    expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not saved/i);
+  });
+
   test('shows accumulated spend against the cost-warning threshold', () => {
     renderDrawer(baseProject({ costUsd: 3.2, budgetWarnUsd: 7.5 }));
     const row = container.querySelector('[data-testid="project-spend-row"]') as HTMLElement;

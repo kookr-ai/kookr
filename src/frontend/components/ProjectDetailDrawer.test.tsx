@@ -44,7 +44,7 @@ function renderDrawer(project: ProjectSummary) {
       React.createElement(ProjectDetailDrawer, {
         project,
         onClose: () => {},
-        send: () => {},
+        send: () => true,
       }),
     );
   });
