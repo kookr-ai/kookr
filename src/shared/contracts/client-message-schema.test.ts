@@ -78,6 +78,39 @@ describe('summarizeZodIssues', () => {
 });
 
 describe('ClientMessageSchema — happy path sanity', () => {
+  test('R5.12: accepts explicit project-config clears and keeps omitted keys omitted', () => {
+    const cleared = ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/acme/project',
+      config: { dailyPrLimit: null, notes: null },
+    });
+    const omitted = ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/acme/project',
+      config: {},
+    });
+
+    expect(cleared.success).toBe(true);
+    expect(omitted.success).toBe(true);
+    if (cleared.success && cleared.data.type === 'setProjectConfig') {
+      expect(cleared.data.config).toMatchObject({ dailyPrLimit: null, notes: null });
+    }
+    if (omitted.success && omitted.data.type === 'setProjectConfig') {
+      expect(omitted.data.config).not.toHaveProperty('dailyPrLimit');
+      expect(omitted.data.config).not.toHaveProperty('notes');
+    }
+  });
+
+  test('rejects invalid daily PR limits at the WebSocket boundary', () => {
+    for (const value of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      expect(ClientMessageSchema.safeParse({
+        type: 'setProjectConfig',
+        project: 'github.com/acme/project',
+        config: { dailyPrLimit: value },
+      }).success).toBe(false);
+    }
+  });
+
   test('rejects invalid zero-drain issue limits at the WebSocket boundary', () => {
     for (const value of [-2, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(ClientMessageSchema.safeParse({

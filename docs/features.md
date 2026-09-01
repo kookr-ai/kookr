@@ -287,7 +287,7 @@ Previously marked as deferred; now shipped in V1.
 | FS.1 | **Settings dialog** | `SettingsDialog.tsx` is the in-app configuration surface for user and project settings. |
 | FS.2 | **Settings store** | `settings-store.ts` persists preferences; `settings-side-effects.ts` applies changes at runtime. |
 | FS.3 | **HTTP surface** | `routes/settings-routes.ts` exposes CRUD endpoints for programmatic access. |
-| FS.4 | **Project config** | The `setProjectConfig` WS message updates per-project settings (contribution policy, agent defaults). |
+| FS.4 | **Project config** | The `setProjectConfig` WS message updates per-project settings (contribution policy, agent defaults) with PATCH semantics: omitted keys preserve stored values, while explicit nullable clears remove supported overrides and content. |
 
 ### F16: Optional Session Sharing & Relay
 

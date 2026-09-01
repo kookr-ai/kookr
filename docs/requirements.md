@@ -1033,6 +1033,20 @@ The system SHALL let a user open the existing Diagnostics surface from the onboa
 
 **Evidence:** `src/frontend/components/OnboardingTour.tsx`, `src/frontend/App.tsx`, `src/frontend/components/OnboardingTour.test.ts`, `e2e/onboarding-tour.spec.ts`.
 
+### R5.12: Clear Project Configuration Overrides [FS.4, #2888] — SHALL — `done`
+
+The system SHALL let a user remove an existing Daily PR cap or Notes value from the project detail drawer.
+
+**Acceptance criteria:**
+- Saving a blank Daily PR cap sends an explicit clear operation and removes the persisted project override
+- Saving blank or whitespace-only Notes sends an explicit clear operation and removes the persisted content
+- Omitted project-config keys preserve their existing persisted values
+- Saving one field omits untouched fields so concurrent updates are not overwritten
+- Clearing either field preserves unrelated project configuration and the cleared value stays absent after reload
+- A rejected WebSocket send keeps the cleared fields dirty and retryable until a send succeeds
+
+**Evidence:** `src/frontend/components/ProjectDetailDrawer.tsx`, `src/shared/contracts/client-message-schema.ts`, `src/server/ws-handlers/config-handler.ts`, and their focused tests.
+
 ---
 
 ## R6: Infrastructure & Platform
@@ -1690,6 +1704,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher, project-identity |
 | R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
 | R5.11 | #2909 | SHALL | done | OnboardingTour, App, onboarding-tour component/E2E tests |
+| R5.12 | FS.4, #2888 | SHALL | done | ProjectDetailDrawer, client-message-schema, config-handler, project-config-store |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
 | R6.2 | PoC 001 | SHALL | done | claude-code-adapter, hook-watcher, hook-parser |
 | R6.3 | ADR-008 (superseded by ADR-014) | SHALL | done | reconciliation, local-dtach-backend |

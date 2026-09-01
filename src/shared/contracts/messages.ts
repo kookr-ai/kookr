@@ -585,9 +585,14 @@ export type ClientMessage =
   | {
       type: 'setProjectConfig';
       project: string;
-      config: Omit<Partial<ProjectConfig>, 'budgetWarnUsd' | 'zeroDrainIssueLimit'> & {
+      config: Omit<
+        Partial<ProjectConfig>,
+        'dailyPrLimit' | 'budgetWarnUsd' | 'zeroDrainIssueLimit' | 'notes'
+      > & {
+        dailyPrLimit?: number | null;
         budgetWarnUsd?: number | null;
         zeroDrainIssueLimit?: number | null;
+        notes?: string | null;
       };
     }
   | { type: 'clearCompleted'; includeTerminated?: boolean; projectId?: string }
