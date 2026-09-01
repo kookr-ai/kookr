@@ -136,6 +136,8 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
 
     // The launch skips an unusable grok-build, so the preview must not promise it.
     expect(nextLabel(container)).toBe('Next: Claude Code');
+    expect(container.querySelector('[data-testid="grok-auth-banner"]')?.textContent)
+      .toContain('grok login --device-code');
 
     const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
     await act(async () => { setInputValue(input, 'Launch the next usable runtime'); });
@@ -194,6 +196,18 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
   });
 
   test('shows login guidance and blocks Enter for an explicitly selected refused Grok launch', async () => {
+    useKookrStore.setState({
+      agents: [{
+        agentId: 'existing-grok-session',
+        taskId: 'existing-grok-task',
+        description: 'Use Grok for this task',
+        cwd: '/tmp/work',
+        agentType: 'grok-build',
+        taskStatus: 'inProgress',
+        events: [],
+        anomaly: null,
+      }],
+    });
     mockGrokAuth({
       status: 'expired',
       loginCommand: 'grok login --device-code',
@@ -213,6 +227,8 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
     expect(input.getAttribute('aria-describedby')).toContain('grok-auth-preflight-banner');
 
     await act(async () => { setInputValue(input, 'Use Grok for this task'); });
+    await flush();
+    expect(container.querySelector('[data-testid="launch-duplicate-launch-anyway"]')).toBeNull();
     await act(async () => {
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
