@@ -2665,6 +2665,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceWatchdog: resourceWatchdogService,
     staleProcessSummaryCache,
     ...(prodSmokeTick ? { prodSmokeTick } : {}),
+    // systemd notifier arming projection (issue #2853). Same notifier instance
+    // the liveness tick pings; /api/health reads only its in-memory arming state.
+    ...(systemdNotifier ? { systemdNotifier } : {}),
     deliveryTrace,
     coordinatorSuppressions,
     drainController,

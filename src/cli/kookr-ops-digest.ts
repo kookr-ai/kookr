@@ -192,6 +192,11 @@ export interface OpsDigestSnapshot {
     hookIngestionP95LagMs: number | null;
     schedulesPausedByFailure: number | null;
     timerHealthOverdue: number | null;
+    /**
+     * systemd notifier arming (issue #2853): three-way process-local state, or
+     * `null` when the server does not project a `systemdNotifier` block.
+     */
+    systemdNotifierArming: 'watchdog-armed' | 'notifier-only' | 'absent' | null;
   };
   serverStartedAt: string | null;
   sha: string | null;
@@ -818,6 +823,43 @@ export function collectOpsDigestWarnings(
     });
   }
 
+  // systemd notifier arming (issue #2853): a remote operator cannot tell
+  // whether process-level watchdog integration is disabled, so a dead service
+  // could be mistaken for one that is externally supervised. Warn whenever the
+  // watchdog heartbeat is NOT armed (absent notify env, or notifier-only). The
+  // block reports process-local arming only, so we never claim the external
+  // unit is active or that restart is guaranteed.
+  const systemdNotifier = asRecord(h.systemdNotifier);
+  let systemdNotifierArming: OpsDigestSnapshot['signals']['systemdNotifierArming'] = null;
+  if (systemdNotifier) {
+    const armingRaw = typeof systemdNotifier.arming === 'string' ? systemdNotifier.arming : null;
+    const watchdogArmed = systemdNotifier.watchdogArmed === true;
+    const notificationEnabled = systemdNotifier.notificationEnabled === true;
+    // Prefer the server's own three-way discriminator; fall back to the booleans
+    // for an older server that predates the `arming` field.
+    systemdNotifierArming =
+      armingRaw === 'watchdog-armed' || armingRaw === 'notifier-only' || armingRaw === 'absent'
+        ? armingRaw
+        : watchdogArmed
+          ? 'watchdog-armed'
+          : notificationEnabled
+            ? 'notifier-only'
+            : 'absent';
+    if (systemdNotifierArming !== 'watchdog-armed') {
+      const detail =
+        systemdNotifierArming === 'absent'
+          ? 'no NOTIFY_SOCKET (process not under a systemd notify unit)'
+          : 'notifier enabled but watchdog heartbeat not armed';
+      warnings.push({
+        path: 'systemdNotifier.watchdogArmed',
+        summary:
+          `systemdNotifier.arming=${systemdNotifierArming} — ${detail}; ` +
+          'external unit status unknown',
+        value: { arming: systemdNotifierArming },
+      });
+    }
+  }
+
   // Disk: warn when free percent is known and low (≤15%, matching "critical
   // headroom" operator intuition). Absent disk metrics → no warning.
   if (diskFreePercent !== null && diskFreePercent <= 15) {
@@ -844,6 +886,7 @@ export function collectOpsDigestWarnings(
         Array.isArray(pausedRaw) ? 0 : null
       ),
       timerHealthOverdue,
+      systemdNotifierArming,
     },
     serverStartedAt,
     sha,
@@ -876,6 +919,11 @@ export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
   }
   if (s.phantomActive === 0) {
     lines.push('capacity.phantomActive=0');
+  }
+  // Quiet armed line so a pasteable digest shows the field path even when the
+  // watchdog is healthy; the not-armed cases surface as warnings above (#2853).
+  if (s.systemdNotifierArming === 'watchdog-armed') {
+    lines.push('systemdNotifier.arming=watchdog-armed (external unit status unknown)');
   }
 
   if (snap.warnings.length === 0) {

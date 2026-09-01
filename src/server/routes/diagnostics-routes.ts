@@ -72,6 +72,7 @@ import {
   type LessonYieldSnapshot,
 } from '../../core/lesson-decision.js';
 import { summarizeOssAttemptsForHealth } from '../oss-attempts-snapshot.js';
+import { buildSystemdNotifierHealthBlock } from '../systemd-notify.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { LastGoodHealthWriter, readLastGoodHealth } from '../last-good-health.js';
@@ -816,6 +817,17 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // cold-cache deadline fallback in getCachedHealthBody overwrites this block
     // with a `last-good` / `unavailable` verdict when it serves a preserved
     // snapshot instead.
+    // systemd notifier arming (issue #2853): project the process-local
+    // readiness/watchdog arming state so a remote operator can tell whether
+    // process-level watchdog integration is disabled — a cheap in-memory read
+    // of the notifier's construction-time state, never a `systemctl` call or
+    // filesystem work. Omitted when the notifier is not wired (tests /
+    // non-server hosts). In production start.ts always wires it, so an unset
+    // NOTIFY_SOCKET surfaces as `arming: "absent"` rather than a missing block.
+    const systemdNotifierBlock = deps.systemdNotifier
+      ? buildSystemdNotifierHealthBlock(deps.systemdNotifier)
+      : undefined;
+
     const controlPlaneNowMs = deps.nowMs?.() ?? Date.now();
     const controlPlaneBlock: ControlPlaneCollectionBlock = buildControlPlaneCollectionBlock({
       source: 'live',
@@ -870,6 +882,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       dataDirectory: dataDirectoryBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(idempotencyLedgerBlock ? { idempotencyLedger: idempotencyLedgerBlock } : {}),
+      // systemd notifier arming (issue #2853): process-local readiness/watchdog
+      // state only — externalUnitStatus is always "unknown" (no systemctl probe).
+      ...(systemdNotifierBlock ? { systemdNotifier: systemdNotifierBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),
       ...(deps.umbrellaChainAdvancer

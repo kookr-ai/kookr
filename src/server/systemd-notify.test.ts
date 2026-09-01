@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSystemdNotifier } from './systemd-notify.js';
+import {
+  buildSystemdNotifierHealthBlock,
+  createSystemdNotifier,
+  SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION,
+} from './systemd-notify.js';
 
 /**
  * Unit coverage for the sd_notify(3) helper (issue #2491). Every case injects a
@@ -214,5 +218,72 @@ describe('createSystemdNotifier', () => {
       expect(spy).not.toHaveBeenCalled();
       spy.mockRestore();
     });
+  });
+});
+
+/**
+ * Health/ops-digest projection (issue #2853). The block reports only the
+ * notifier's cheap in-memory arming state and must never claim the external
+ * unit is active or that restart is guaranteed.
+ */
+describe('buildSystemdNotifierHealthBlock', () => {
+  it('reports "absent" when NOTIFY_SOCKET was unset', () => {
+    const notifier = createSystemdNotifier({ env: {}, send: () => {} });
+
+    const block = buildSystemdNotifierHealthBlock(notifier);
+
+    expect(block).toEqual({
+      schemaVersion: SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION,
+      arming: 'absent',
+      notificationEnabled: false,
+      watchdogArmed: false,
+      watchdogIntervalMs: 0,
+      externalUnitStatus: 'unknown',
+    });
+  });
+
+  it('reports "notifier-only" when notification is enabled but the watchdog is not armed', () => {
+    // NOTIFY_SOCKET present, no WATCHDOG_USEC ⇒ readiness armed, watchdog not.
+    const notifier = createSystemdNotifier({
+      env: { NOTIFY_SOCKET: '/run/systemd/notify' },
+      send: () => {},
+    });
+
+    const block = buildSystemdNotifierHealthBlock(notifier);
+
+    expect(block.arming).toBe('notifier-only');
+    expect(block.notificationEnabled).toBe(true);
+    expect(block.watchdogArmed).toBe(false);
+    expect(block.watchdogIntervalMs).toBe(0);
+    expect(block.externalUnitStatus).toBe('unknown');
+  });
+
+  it('reports "watchdog-armed" with the half-deadline heartbeat interval', () => {
+    const notifier = createSystemdNotifier({
+      env: { NOTIFY_SOCKET: '/run/systemd/notify', WATCHDOG_USEC: '30000000' },
+      send: () => {},
+    });
+
+    const block = buildSystemdNotifierHealthBlock(notifier);
+
+    expect(block.arming).toBe('watchdog-armed');
+    expect(block.notificationEnabled).toBe(true);
+    expect(block.watchdogArmed).toBe(true);
+    // WATCHDOG_USEC / 1000 / 2 → 15s.
+    expect(block.watchdogIntervalMs).toBe(15_000);
+    expect(block.externalUnitStatus).toBe('unknown');
+  });
+
+  it('never advertises a heartbeat cadence when the watchdog is not armed', () => {
+    // A hostile/odd input where an interval is present without arming must still
+    // report 0 so the block never implies pings are flowing.
+    const block = buildSystemdNotifierHealthBlock({
+      enabled: true,
+      watchdogEnabled: false,
+      watchdogIntervalMs: 15_000,
+    });
+
+    expect(block.arming).toBe('notifier-only');
+    expect(block.watchdogIntervalMs).toBe(0);
   });
 });

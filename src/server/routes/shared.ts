@@ -663,6 +663,17 @@ export interface RouteDeps {
    * disabled (dev/test, or explicitly off) so the block is omitted.
    */
   prodSmokeTick?: Pick<import('../prod-smoke-tick.js').ProdSmokeTick, 'getHealthSnapshot'>;
+  /**
+   * Optional systemd readiness/watchdog notifier (issues #2491, #2853).
+   * `/api/health` reads only its cheap in-memory arming state (`enabled`,
+   * `watchdogEnabled`, `watchdogIntervalMs`) to project the notifier block —
+   * never a `systemctl` call or filesystem work on the request path. Absent
+   * (tests, non-server hosts) ⇒ the block is omitted.
+   */
+  systemdNotifier?: Pick<
+    import('../systemd-notify.js').SystemdNotifier,
+    'enabled' | 'watchdogEnabled' | 'watchdogIntervalMs'
+  >;
   /** Cross-signal terminal/session diagnostics for the dashboard and support capture. */
   sessionHealthService?: Pick<SessionHealthService, 'getDiagnostics'>;
   /**

@@ -231,6 +231,71 @@ describe('collectOpsDigestWarnings', () => {
     expect(signals.diskFreePercent).toBe(4.2);
   });
 
+  // systemd notifier arming (issue #2853).
+  it('warns and records "absent" when NOTIFY_SOCKET is not present', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'absent',
+        notificationEnabled: false,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      },
+    });
+
+    expect(signals.systemdNotifierArming).toBe('absent');
+    const warning = warnings.find((w) => w.path === 'systemdNotifier.watchdogArmed');
+    expect(warning?.summary).toContain('systemdNotifier.arming=absent');
+    expect(warning?.summary).toContain('external unit status unknown');
+  });
+
+  it('warns and records "notifier-only" when the watchdog is not armed', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'notifier-only',
+        notificationEnabled: true,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      },
+    });
+
+    expect(signals.systemdNotifierArming).toBe('notifier-only');
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
+  });
+
+  it('stays quiet (no warning) when the watchdog is armed', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'watchdog-armed',
+        notificationEnabled: true,
+        watchdogArmed: true,
+        watchdogIntervalMs: 15_000,
+        externalUnitStatus: 'unknown',
+      },
+    });
+
+    expect(signals.systemdNotifierArming).toBe('watchdog-armed');
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(false);
+  });
+
+  it('leaves systemdNotifierArming null when an older server omits the block', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({ status: 'ok' });
+    expect(signals.systemdNotifierArming).toBeNull();
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(false);
+  });
+
+  it('derives arming from booleans when a pre-#2853 server omits the discriminator', () => {
+    const { signals, warnings } = collectOpsDigestWarnings({
+      systemdNotifier: { notificationEnabled: true, watchdogArmed: false },
+    });
+    expect(signals.systemdNotifierArming).toBe('notifier-only');
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
+  });
+
   it('surfaces safeMode when engaged', () => {
     const { warnings } = collectOpsDigestWarnings({
       safeMode: { engaged: true, since: '2026-08-01T00:00:00.000Z' },
@@ -509,6 +574,56 @@ describe('formatOpsDigestHuman', () => {
     expect(text).toMatch(/ready: yes/);
     expect(text).toContain('resourceWatchdog.pressureWhileDisabled');
     expect(text).toContain('capacity.phantomActive');
+  });
+
+  it('prints a quiet armed line when the watchdog is armed (issue #2853)', () => {
+    const collected = collectOpsDigestWarnings({
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'watchdog-armed',
+        notificationEnabled: true,
+        watchdogArmed: true,
+        watchdogIntervalMs: 15_000,
+        externalUnitStatus: 'unknown',
+      },
+    });
+    const text = formatOpsDigestHuman({
+      baseUrl: 'http://127.0.0.1:4800',
+      ready: true,
+      readyHttpStatus: 200,
+      failingCritical: [],
+      warnings: collected.warnings,
+      signals: collected.signals,
+      serverStartedAt: collected.serverStartedAt,
+      sha: collected.sha,
+    });
+    expect(text).toContain('systemdNotifier.arming=watchdog-armed');
+    expect(text).toContain('external unit status unknown');
+  });
+
+  it('warns in human output when the watchdog is not armed (issue #2853)', () => {
+    const collected = collectOpsDigestWarnings({
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'absent',
+        notificationEnabled: false,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      },
+    });
+    const text = formatOpsDigestHuman({
+      baseUrl: 'http://127.0.0.1:4800',
+      ready: true,
+      readyHttpStatus: 200,
+      failingCritical: [],
+      warnings: collected.warnings,
+      signals: collected.signals,
+      serverStartedAt: collected.serverStartedAt,
+      sha: collected.sha,
+    });
+    expect(text).toContain('systemdNotifier.watchdogArmed');
+    expect(text).toContain('arming=absent');
   });
 });
 
