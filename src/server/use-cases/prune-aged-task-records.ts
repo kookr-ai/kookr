@@ -33,10 +33,11 @@ import { isAgedTerminalTask, taskSnapshotRecencyMs } from './snapshot-projection
  *  - each pruned task's sessions are unregistered from the Monitor so its
  *    event windows / auditor records are freed with the record.
  *  - an audit row (`task.pruneAged`) is appended per sweep.
- *
- * Deliberately out of scope: archival of the pruned records to a dedicated
- * history file (the predelete/daily snapshots are the only history carriers;
- * see the follow-up noted on issue #1526).
+ *  - each pruned record is appended to the durable terminal-task archive
+ *    (issue #2765) BEFORE it is deleted; if archiving fails the prune aborts
+ *    (`archive_failed`) so no terminal record is removed before it is durably
+ *    archived. The archive outlives the bounded daily/predelete snapshots, so
+ *    history stays retrievable past the 7-day snapshot window.
  */
 
 /**
@@ -62,6 +63,15 @@ export interface PruneAgedTaskRecordsDeps {
    * aborts. When absent (tests / minimal wirings) the prune proceeds.
    */
   takePredeleteSnapshot?: () => Promise<void>;
+  /**
+   * Append the tasks about to be pruned to the durable terminal-task archive
+   * (issue #2765). Invoked with the exact set being deleted, AFTER the
+   * predelete snapshot and BEFORE any store delete. When present and throwing,
+   * the prune aborts (`archive_failed`) so a terminal record is never deleted
+   * before it is durably archived. Absent in tests / minimal wirings, in which
+   * case the prune runs without the archive step (snapshots remain the carrier).
+   */
+  archiveTerminalTasks?: (tasks: readonly Task[]) => Promise<void>;
   /** Audit log path (`<dataDir>/audit.jsonl`); rows are best-effort. */
   auditLogPath?: string;
   /**
@@ -78,7 +88,7 @@ export interface PruneAgedTaskRecordsDeps {
 }
 
 export interface PruneAgedTaskRecordsResult {
-  outcome: 'pruned' | 'snapshot_failed';
+  outcome: 'pruned' | 'snapshot_failed' | 'archive_failed';
   /** Ids of the deleted task records (empty when nothing was eligible). */
   prunedTaskIds: string[];
   /** Task-record count remaining in the store after the sweep. */
@@ -166,6 +176,18 @@ export async function pruneAgedTaskRecords(
         err,
       );
       return { outcome: 'snapshot_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
+    }
+  }
+
+  if (deps.archiveTerminalTasks) {
+    try {
+      await deps.archiveTerminalTasks(toPrune);
+    } catch (err) {
+      console.error(
+        '[task-record-prune] terminal-task archive failed, aborting prune to prevent unarchived data loss:',
+        err,
+      );
+      return { outcome: 'archive_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
     }
   }
 

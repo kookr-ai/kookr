@@ -92,6 +92,11 @@ import {
 } from '../../core/merge-required.js';
 import { preparePlaybookLaunchWithMetadata } from '../use-cases/playbook-launch.js';
 import { discoverApplicablePlaybooks } from '../use-cases/playbook-list.js';
+import {
+  readArchivedTasks,
+  TASK_ARCHIVE_DIRNAME,
+  type ReadArchivedTasksQuery,
+} from '../use-cases/task-archive.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -297,6 +302,51 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         })),
     ];
     return c.json({ targetAgent: targetRaw, candidates });
+  });
+
+  // Durable terminal-task archive read path (issue #2765). Pages archived
+  // terminal records older than the bounded daily/predelete snapshot window,
+  // by time (`before=<ISO|epoch-ms>`) and/or opaque `cursor`, WITHOUT hydrating
+  // the live task store. Registered BEFORE `/api/tasks/:id` so the static
+  // `archive` segment is not captured by the `:id` param route.
+  app.get('/api/tasks/archive', async (c) => {
+    // No data dir wired (minimal / test wirings): the archive lives on disk
+    // under <kookrDir>/task-archive, so with no dir there is nothing to read —
+    // return an empty page rather than 500.
+    if (!deps.kookrDir) {
+      return c.json({ schemaVersion: 'task-archive.v1', records: [], count: 0 });
+    }
+    const query = parseArchiveQuery({
+      limit: c.req.query('limit'),
+      before: c.req.query('before'),
+      cursor: c.req.query('cursor'),
+    });
+    if (query instanceof Error) return c.json({ error: query.message }, 400);
+
+    const archiveDir = join(deps.kookrDir, TASK_ARCHIVE_DIRNAME);
+    const result = await readArchivedTasks(archiveDir, query);
+    // Isolate per-record normalization: a single corrupt-but-parseable record
+    // (e.g. a schema-drifted task that makes normalizeTaskForApi throw) must
+    // never 500 the whole page — skip and count it, keeping the good records
+    // (the module's "a read never throws" corruption-tolerance contract).
+    const records: Array<{ archivedAt: string; lastActivityMs: number; task: ApiTask }> = [];
+    let skippedRecords = 0;
+    for (const r of result.records) {
+      try {
+        records.push({ archivedAt: r.archivedAt, lastActivityMs: r.lastActivityMs, task: normalizeTaskForApi(r.task) });
+      } catch (err) {
+        skippedRecords += 1;
+        console.warn(`[task-archive] skipping unprojectable record ${r.task.id}:`, err);
+      }
+    }
+    const skippedCorrupt = result.skippedLines + skippedRecords;
+    return c.json({
+      schemaVersion: 'task-archive.v1',
+      count: records.length,
+      records,
+      ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
+      ...(skippedCorrupt > 0 ? { skippedCorruptLines: skippedCorrupt } : {}),
+    });
   });
 
   app.get('/api/tasks/:id', (c) => {
@@ -1641,6 +1691,36 @@ export function parseTaskListQuery(raw: {
       return new Error('since must be an ISO 8601 date');
     }
     query.since = new Date(parsed);
+  }
+  return query;
+}
+
+/**
+ * Parse the `GET /api/tasks/archive` query. `before` accepts an ISO 8601 date
+ * or raw epoch-ms; `limit` a positive integer; `cursor` an opaque continuation
+ * token (validated by the archive read path, not here).
+ */
+export function parseArchiveQuery(raw: {
+  limit?: string;
+  before?: string;
+  cursor?: string;
+}): ReadArchivedTasksQuery | Error {
+  const query: ReadArchivedTasksQuery = {};
+  if (raw.limit !== undefined) {
+    if (!/^\d+$/.test(raw.limit) || Number(raw.limit) < 1) {
+      return new Error('limit must be a positive integer');
+    }
+    query.limit = Number(raw.limit);
+  }
+  if (raw.before !== undefined) {
+    const beforeMs = /^\d+$/.test(raw.before) ? Number(raw.before) : Date.parse(raw.before);
+    if (Number.isNaN(beforeMs)) {
+      return new Error('before must be an ISO 8601 date or epoch milliseconds');
+    }
+    query.beforeMs = beforeMs;
+  }
+  if (raw.cursor !== undefined && raw.cursor !== '') {
+    query.cursor = raw.cursor;
   }
   return query;
 }

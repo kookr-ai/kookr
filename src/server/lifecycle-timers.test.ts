@@ -1733,6 +1733,53 @@ describe('runScheduledMaintenancePrune', () => {
     expect(logSpy.mock.calls.flat().join('\n')).toMatch(/last snapshot broadcast=none yet/);
   });
 
+  test('compacts the terminal-task archive on every tick, and its failure is isolated (#2765)', async () => {
+    const run = vi.fn(async () => fakeResult());
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const compactTaskArchive = vi.fn(async () => {
+      throw new Error('compaction hiccup');
+    });
+
+    await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run,
+      pruneTaskRecords: async () => ({
+        outcome: 'pruned' as const,
+        prunedTaskIds: [],
+        remainingTasks: 0,
+        maxAgeDays: 7,
+      }),
+      compactTaskArchive,
+    });
+
+    expect(compactTaskArchive).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls.flat().join('\n')).toMatch(/terminal-task archive compaction failed/);
+  });
+
+  test('logs archive_failed distinctly and does not fire onTaskRecordsPruned (#2765)', async () => {
+    const run = vi.fn(async () => fakeResult());
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const onTaskRecordsPruned = vi.fn();
+
+    await runScheduledMaintenancePrune({
+      dataDir: '/tmp/data',
+      intervalHours: 24,
+      run,
+      pruneTaskRecords: async () => ({
+        outcome: 'archive_failed' as const,
+        prunedTaskIds: [],
+        remainingTasks: 5,
+        maxAgeDays: 7,
+      }),
+      onTaskRecordsPruned,
+    });
+
+    expect(onTaskRecordsPruned).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.flat().join('\n')).toMatch(/task-record prune skipped: terminal-task archive failed/);
+  });
+
   test('task-record prune leg still runs when the disk sweep throws, and its own failure is isolated', async () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const pruneTaskRecords = vi.fn(async () => {

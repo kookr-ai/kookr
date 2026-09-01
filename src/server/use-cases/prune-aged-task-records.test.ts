@@ -241,6 +241,65 @@ describe('pruneAgedTaskRecords', () => {
     expect(store.getTask(aged.id)).toBeDefined();
   });
 
+  it('archives the pruned records before deleting them (#2765)', async () => {
+    const store = new TaskStore();
+    const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+    const recent = seedTask(store, { session: 'recent-session', finishedAt: RECENT });
+
+    let archivedWhilePresent = false;
+    const archiveTerminalTasks = vi.fn(async (tasks: readonly Task[]) => {
+      // The tasks must still be in the store when archiving runs.
+      archivedWhilePresent = tasks.every((t) => store.getTask(t.id) !== undefined);
+    });
+
+    const result = await pruneAgedTaskRecords({
+      taskStore: store,
+      monitor: monitorSpy(),
+      archiveTerminalTasks,
+      now: () => NOW.getTime(),
+    });
+
+    expect(result.outcome).toBe('pruned');
+    expect(archiveTerminalTasks).toHaveBeenCalledTimes(1);
+    expect(archiveTerminalTasks.mock.calls[0][0].map((t) => t.id)).toEqual([aged.id]);
+    expect(archivedWhilePresent).toBe(true);
+    expect(store.getTask(aged.id)).toBeUndefined();
+    expect(store.getTask(recent.id)).toBeDefined();
+  });
+
+  it('aborts the prune (archive_failed) when archiving throws, deleting nothing', async () => {
+    const store = new TaskStore();
+    const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+
+    const result = await pruneAgedTaskRecords({
+      taskStore: store,
+      monitor: monitorSpy(),
+      archiveTerminalTasks: async () => {
+        throw new Error('archive disk full');
+      },
+      now: () => NOW.getTime(),
+    });
+
+    expect(result.outcome).toBe('archive_failed');
+    expect(result.prunedTaskIds).toEqual([]);
+    expect(store.getTask(aged.id)).toBeDefined();
+  });
+
+  it('does not archive when nothing is eligible', async () => {
+    const store = new TaskStore();
+    seedTask(store, { session: 'recent-session', finishedAt: RECENT });
+    const archiveTerminalTasks = vi.fn(async () => {});
+
+    await pruneAgedTaskRecords({
+      taskStore: store,
+      monitor: monitorSpy(),
+      archiveTerminalTasks,
+      now: () => NOW.getTime(),
+    });
+
+    expect(archiveTerminalTasks).not.toHaveBeenCalled();
+  });
+
   it('is a no-op (and takes no snapshot) when nothing is eligible', async () => {
     const store = new TaskStore();
     seedTask(store, { session: 'recent-session', finishedAt: RECENT });

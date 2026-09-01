@@ -102,13 +102,20 @@ export interface MaintenancePruneScheduleConfig {
    * tests are unchanged.
    */
   pruneTaskRecords?: () => Promise<{
-    outcome: 'pruned' | 'snapshot_failed';
+    outcome: 'pruned' | 'snapshot_failed' | 'archive_failed';
     prunedTaskIds: string[];
     remainingTasks: number;
     maxAgeDays: number;
   }>;
   /** Fired after ≥1 record was pruned — bootstrap broadcasts a fresh snapshot. */
   onTaskRecordsPruned?: (result: { prunedTaskIds: string[]; remainingTasks: number }) => void;
+  /**
+   * Compact the durable terminal-task archive (issue #2765): apply the
+   * retention horizon (whole-segment age deletes) and collapse duplicate task
+   * ids. Run every sweep regardless of the prune outcome so retention advances
+   * even on quiet ticks. Best-effort — failures are logged, never fatal.
+   */
+  compactTaskArchive?: () => Promise<void>;
   /**
    * Payload-diet observability (issue #1526 Phase C / C2): when wired, one
    * stats line is logged after every sweep so operators can watch the diet
@@ -378,6 +385,8 @@ async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfi
       const result = await config.pruneTaskRecords();
       if (result.outcome === 'snapshot_failed') {
         console.error('[maintenance-prune] task-record prune skipped: predelete snapshot failed');
+      } else if (result.outcome === 'archive_failed') {
+        console.error('[maintenance-prune] task-record prune skipped: terminal-task archive failed');
       } else {
         console.log(
           `[maintenance-prune] task-record prune removed ${result.prunedTaskIds.length} aged ` +
@@ -387,6 +396,13 @@ async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfi
       }
     } catch (err) {
       console.error('[maintenance-prune] task-record prune failed:', err);
+    }
+  }
+  if (config.compactTaskArchive) {
+    try {
+      await config.compactTaskArchive();
+    } catch (err) {
+      console.error('[maintenance-prune] terminal-task archive compaction failed:', err);
     }
   }
   if (config.getPayloadDietStats) {
