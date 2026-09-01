@@ -25,6 +25,7 @@ interface Fixture {
   root: string;
   sourceDir: string;
   installDir: string;
+  cargoLog: string;
   curlLog: string;
   env: NodeJS.ProcessEnv;
 }
@@ -34,7 +35,11 @@ function writeExecutable(path: string, body: string): void {
   chmodSync(path, 0o755);
 }
 
-function createFixture(hostBuildExit: number, releaseDownloadSucceeds = false): Fixture {
+function createFixture(
+  hostBuildExit: number,
+  releaseDownloadSucceeds = false,
+  cliBuildExit = 0,
+): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'kookr-codex-pair-'));
   const sourceDir = join(root, 'codex');
   const codexRsDir = join(sourceDir, 'codex-rs');
@@ -42,6 +47,7 @@ function createFixture(hostBuildExit: number, releaseDownloadSucceeds = false): 
   const releaseDir = join(targetDir, 'release');
   const installDir = join(root, 'install');
   const stubBin = join(root, 'bin');
+  const cargoLog = join(root, 'cargo.log');
   const curlLog = join(root, 'curl.log');
   const releaseArchive = join(root, 'release-host.tgz');
 
@@ -70,11 +76,13 @@ function createFixture(hostBuildExit: number, releaseDownloadSucceeds = false): 
 
   writeExecutable(
     join(stubBin, 'cargo'),
-    `case " $* " in
+    `printf '%s\\n' "$*" >> ${JSON.stringify(cargoLog)}
+case " $* " in
   *" metadata "*) printf '%s\\n' ${JSON.stringify(JSON.stringify({
     target_directory: targetDir,
     packages: [{ name: 'codex-cli', version: '0.145.0-alpha.4' }],
   }))} ;;
+  *" -p codex-cli "*) exit ${cliBuildExit} ;;
   *" -p codex-code-mode-host "*) exit ${hostBuildExit} ;;
   *) exit 0 ;;
 esac`,
@@ -106,6 +114,7 @@ esac`,
     root,
     sourceDir,
     installDir,
+    cargoLog,
     curlLog,
     env: {
       ...process.env,
@@ -148,6 +157,21 @@ describe('R4b.14: matched Codex runtime pair', () => {
     }
   });
 
+  it('leaves the active pair unchanged when the CLI build fails', () => {
+    const fixture = createFixture(0, false, 1);
+    try {
+      const result = runRebuild(fixture);
+
+      expect(result.status).not.toBe(0);
+      expect(readFileSync(fixture.cargoLog, 'utf8')).toContain('-p codex-cli');
+      expect(execFileSync(join(fixture.installDir, 'codex'), { encoding: 'utf8' })).toBe('old-cli\n');
+      expect(execFileSync(join(fixture.installDir, 'codex-code-mode-host'), { encoding: 'utf8' }))
+        .toBe('old-host\n');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   it('activates a release host only when its tag matches the checkout', () => {
     const fixture = createFixture(1, true);
     try {
@@ -163,6 +187,27 @@ describe('R4b.14: matched Codex runtime pair', () => {
         readFileSync(join(dirname(realpathSync(hostPath)), 'codex-pair.json'), 'utf8'),
       );
       expect(manifest.source).toBe('release:rust-v0.145.0-alpha.4');
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a release tag whose code-mode sources differ from the checkout', () => {
+    const fixture = createFixture(1, true);
+    const runtimeDir = join(fixture.sourceDir, 'codex-rs', 'code-mode-runtime');
+    mkdirSync(runtimeDir);
+    writeFileSync(join(runtimeDir, 'protocol.txt'), 'changed after release\n');
+    execFileSync('git', ['add', 'codex-rs/code-mode-runtime/protocol.txt'], { cwd: fixture.sourceDir });
+    execFileSync('git', ['commit', '--quiet', '-m', 'change protocol'], { cwd: fixture.sourceDir });
+    try {
+      const result = runRebuild(fixture);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('does not match the checkout code-mode protocol');
+      expect(existsSync(fixture.curlLog)).toBe(false);
+      expect(execFileSync(join(fixture.installDir, 'codex'), { encoding: 'utf8' })).toBe('old-cli\n');
+      expect(execFileSync(join(fixture.installDir, 'codex-code-mode-host'), { encoding: 'utf8' }))
+        .toBe('old-host\n');
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -193,6 +238,9 @@ describe('R4b.14: matched Codex runtime pair', () => {
         source: 'source-build',
       });
       expect(manifest.sourceCommit).toMatch(/^[0-9a-f]{40}$/);
+      const cargoInvocations = readFileSync(fixture.cargoLog, 'utf8');
+      expect(cargoInvocations).toContain('-p codex-cli');
+      expect(cargoInvocations).toContain('-p codex-code-mode-host');
       expect(execFileSync(join(fixture.installDir, '.codex-legacy-pair', 'codex'), {
         encoding: 'utf8',
       })).toBe('old-cli\n');
@@ -339,7 +387,9 @@ describe('R4b.14: matched Codex runtime pair', () => {
         malformedPair,
         foreignDirectory,
       ]));
-      expect(entries).not.toEqual(expect.arrayContaining([oldPairNames[0], oldPairNames[1]]));
+      expect(entries).not.toContain(oldPairNames[0]);
+      expect(entries).not.toContain(oldPairNames[1]);
+      expect([activePair, ...oldPairNames].filter((entry) => entries.includes(entry))).toHaveLength(3);
       expect(readFileSync(join(releasesDir, foreignDirectory, 'sentinel'), 'utf8')).toBe('keep me\n');
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });

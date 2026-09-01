@@ -26,7 +26,7 @@ function runSmoke(codex: string, marker: string) {
   });
 }
 
-describe('Codex code-mode IPC smoke', () => {
+describe('Codex code-mode IPC smoke validator and invocation', () => {
   it('accepts the marker only after a completed command-to-response round trip', () => {
     const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
     const marker = 'kookr-ipc-smoke-test-marker';
@@ -67,6 +67,13 @@ describe('Codex code-mode IPC smoke', () => {
         'features.code_mode_only=true',
         'features.code_mode_host={enabled=true,disable_in_process_fallback=true}',
       ]));
+      for (const value of [
+        'features.code_mode={enabled=true}',
+        'features.code_mode_only=true',
+        'features.code_mode_host={enabled=true,disable_in_process_fallback=true}',
+      ]) {
+        expect(args[args.indexOf(value) - 1]).toBe('-c');
+      }
       expect(args.at(-1)).toContain('Call functions.exec');
       expect(args.at(-1)).toContain('reply only with the exact value returned');
       expect(readFileSync(join(directory, 'marker.log'), 'utf8')).toBe(marker);
