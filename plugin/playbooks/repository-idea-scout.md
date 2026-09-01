@@ -746,6 +746,12 @@ if [ -e "$ANALYSIS_STAGING_ROOT" ] || [ -e "$ANALYSIS_ROOT" ]; then
 fi
 mkdir "$ANALYSIS_STAGING_ROOT" \
   || { block "snapshot materialization failed: cannot create staging root"; exit 0; }
+# Release-oriented attributes must not hide or rewrite source evidence. The
+# isolated repository's info/attributes has highest precedence over committed
+# .gitattributes, so the archive remains a byte-faithful commit snapshot.
+printf '* -export-ignore -export-subst\n** -export-ignore -export-subst\n' \
+  > "$ANALYSIS_GIT_DIR/info/attributes" \
+  || { block "snapshot attribute neutralization failed"; exit 0; }
 git --git-dir="$ANALYSIS_GIT_DIR" archive --format=tar \
   --output="$ANALYSIS_ARCHIVE" "$ANALYSIS_SHA" \
   || { block "snapshot archive failed for $ANALYSIS_SHA"; exit 0; }

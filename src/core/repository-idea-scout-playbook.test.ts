@@ -101,8 +101,16 @@ describe('repository-idea-scout playbook', () => {
     fixtureGit(root, ['init', '--bare', remote]);
     fixtureGit(seed, ['init']);
     fixtureGit(seed, ['checkout', '-b', 'trunk']);
+    writeFileSync(join(seed, '.gitattributes'), [
+      'src/** export-ignore',
+      'src/substituted.txt -export-ignore export-subst',
+      '',
+    ].join('\n'));
+    mkdirSync(join(seed, 'src'));
     writeFileSync(join(seed, 'tracked.txt'), 'base\n');
-    fixtureGit(seed, ['add', 'tracked.txt']);
+    writeFileSync(join(seed, 'src', 'capability.ts'), 'export const shipped = true;\n');
+    writeFileSync(join(seed, 'src', 'substituted.txt'), '$Format:%H$\n');
+    fixtureGit(seed, ['add', '.gitattributes', 'tracked.txt', 'src']);
     fixtureGit(seed, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base']);
     fixtureGit(seed, ['remote', 'add', 'origin', remote]);
     fixtureGit(seed, ['push', '-u', 'origin', 'trunk']);
@@ -677,6 +685,24 @@ describe('repository-idea-scout playbook', () => {
         expect(runGit(fixture.local, ['status', '--short'], fixture.env)).toBe(fixture.statusBefore);
         expect(runGit(fixture.local, ['rev-parse', 'HEAD'], fixture.env)).toBe(fixture.localHead);
         expect(readdirSync(fixture.tempParent)).toEqual([]);
+      } finally {
+        cleanupFixture(fixture);
+      }
+    });
+
+    test('keeps export-ignored paths and export-subst content byte-faithful', () => {
+      const fixture = createSnapshotFixture('equal');
+      try {
+        runSnapshotPhase(fixture);
+        const manifest = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          analysisRoot: string;
+        };
+        expect(readFileSync(join(manifest.analysisRoot, 'src', 'capability.ts'), 'utf8')).toBe(
+          'export const shipped = true;\n',
+        );
+        expect(readFileSync(join(manifest.analysisRoot, 'src', 'substituted.txt'), 'utf8')).toBe(
+          '$Format:%H$\n',
+        );
       } finally {
         cleanupFixture(fixture);
       }
