@@ -302,13 +302,15 @@ else
     [ -x "$INSTALLED_CLI" ] && [ -x "$INSTALLED_HOST" ] \
       || die "cannot migrate a partial legacy install; both codex executables must be present and executable"
     LEGACY_DIR="$CODEX_INSTALL_DIR/.codex-legacy-pair"
-    [ ! -e "$LEGACY_DIR" ] \
-      || die "cannot preserve the legacy pair because $LEGACY_DIR already exists"
-    LEGACY_STAGING=$(mktemp -d "$CODEX_INSTALL_DIR/.codex-legacy-staging.XXXXXX")
-    TEMP_DIRS+=("$LEGACY_STAGING")
-    install -m 755 "$INSTALLED_CLI" "$LEGACY_STAGING/$CODEX_CLI_BIN"
-    install -m 755 "$INSTALLED_HOST" "$LEGACY_STAGING/$CODEX_HOST_BIN"
-    mv "$LEGACY_STAGING" "$LEGACY_DIR"
+    if [ ! -e "$LEGACY_DIR" ]; then
+      LEGACY_STAGING=$(mktemp -d "$CODEX_INSTALL_DIR/.codex-legacy-staging.XXXXXX")
+      TEMP_DIRS+=("$LEGACY_STAGING")
+      install -m 755 "$INSTALLED_CLI" "$LEGACY_STAGING/$CODEX_CLI_BIN"
+      install -m 755 "$INSTALLED_HOST" "$LEGACY_STAGING/$CODEX_HOST_BIN"
+      mv "$LEGACY_STAGING" "$LEGACY_DIR"
+    fi
+    [ -x "$LEGACY_DIR/$CODEX_CLI_BIN" ] && [ -x "$LEGACY_DIR/$CODEX_HOST_BIN" ] \
+      || die "cannot recover migration because $LEGACY_DIR is not a complete executable pair"
     activate_symlink ".codex-legacy-pair" "$CURRENT_LINK"
   fi
   activate_symlink ".codex-current/$CODEX_HOST_BIN" "$INSTALLED_HOST"
@@ -370,7 +372,7 @@ PAIR_KEEP_COUNT="$CODEX_KEEP_RELEASE_PAIRS" \
     }
   '
 
-VERSION=$($INSTALLED_CLI --version 2>&1 || true)
+VERSION=$("$INSTALLED_CLI" --version 2>&1 || true)
 printf '\nActivated Codex runtime pair: %s\n' "$PAIR_DIR_REAL"
 printf 'Installed CLI:  %s\n' "$INSTALLED_CLI"
 printf 'Installed host: %s\n' "$INSTALLED_HOST"

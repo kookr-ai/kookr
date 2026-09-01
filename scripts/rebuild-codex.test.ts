@@ -263,6 +263,15 @@ describe('R4b.14: matched Codex runtime pair', () => {
       expect(readlinkSync(currentPath)).not.toBe(firstCurrentTarget);
       expect(execFileSync(cliPath, { encoding: 'utf8' })).toBe('newer-cli\n');
       expect(execFileSync(hostPath, { encoding: 'utf8' })).toBe('newer-host\n');
+
+      rmSync(cliPath);
+      writeExecutable(cliPath, 'printf \'unmanaged-cli\\n\'');
+      const repairResult = runRebuild(fixture);
+      expect(repairResult.status, repairResult.stderr).toBe(0);
+      expect(readlinkSync(cliPath)).toBe('.codex-current/codex');
+      expect(readlinkSync(hostPath)).toBe('.codex-current/codex-code-mode-host');
+      expect(execFileSync(cliPath, { encoding: 'utf8' })).toBe('newer-cli\n');
+      expect(execFileSync(hostPath, { encoding: 'utf8' })).toBe('newer-host\n');
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -401,6 +410,8 @@ describe('R4b.14: matched Codex runtime pair', () => {
 
     expect(playbook).toContain('scripts/rebuild-codex.sh');
     expect(playbook).toContain('codex-code-mode-host');
+    expect(playbook).toContain('command -v "$KOOKR_CODEX_BIN"');
+    expect(playbook).toContain('CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")"');
     expect(playbook).not.toContain('install -m 755 "$BIN" "$KOOKR_CODEX_BIN"');
   });
 });

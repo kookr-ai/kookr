@@ -59,6 +59,17 @@ export CARGO_PROFILE_RELEASE_INCREMENTAL=true
 export KOOKR_CODEX_CHECKOUT="${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}"
 export KOOKR_CODEX_BIN="${KOOKR_CODEX_BIN:-$HOME/bin/codex}"
 export KOOKR_ROOT="${KOOKR_ROOT:-$HOME/git/kookr-prod}"
+case "$KOOKR_CODEX_BIN" in
+  */*)
+    KOOKR_CODEX_BIN_DIR=$(cd "$(dirname "$KOOKR_CODEX_BIN")" && pwd -P) || exit 1
+    KOOKR_CODEX_BIN_PATH="$KOOKR_CODEX_BIN_DIR/$(basename "$KOOKR_CODEX_BIN")"
+    ;;
+  *)
+    KOOKR_CODEX_BIN_PATH=$(command -v "$KOOKR_CODEX_BIN") \
+      || { echo "ERROR: cannot resolve KOOKR_CODEX_BIN=$KOOKR_CODEX_BIN on PATH" >&2; exit 1; }
+    ;;
+esac
+export KOOKR_CODEX_BIN_PATH
 cd "$KOOKR_CODEX_CHECKOUT"
 ```
 
@@ -142,8 +153,8 @@ installed binary already matches the integration branch:
 if git merge-base --is-ancestor upstream/main origin/feat/claude-compat; then
     FINAL_FULL_SHA=$(git rev-parse origin/feat/claude-compat)
     FINAL_SHA=$(git rev-parse --short=9 origin/feat/claude-compat)
-    INSTALLED_VERSION=$("$KOOKR_CODEX_BIN" --version 2>/dev/null || true)
-    PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN")/.codex-current/codex-pair.json"
+    INSTALLED_VERSION=$("$KOOKR_CODEX_BIN_PATH" --version 2>/dev/null || true)
+    PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
     INSTALLED_PAIR_SHA=$(jq -r '.sourceCommit // empty' "$PAIR_MANIFEST" 2>/dev/null || true)
     if printf '%s\n' "$INSTALLED_VERSION" | grep -q "+kookr.$FINAL_SHA" \
         && [ "$INSTALLED_PAIR_SHA" = "$FINAL_FULL_SHA" ]; then
@@ -450,7 +461,7 @@ artifacts before it atomically switches the active runtime directory:
 
 ```bash
 CODEX_SRC="$KOOKR_CODEX_CHECKOUT" \
-CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN")" \
+CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")" \
 CODEX_BUILD_PROFILE=release \
     "$KOOKR_ROOT/scripts/rebuild-codex.sh"
 ```
@@ -458,7 +469,7 @@ CODEX_BUILD_PROFILE=release \
 Sanity-check the installed pair and its source commit:
 
 ```bash
-CODEX_VERSION_OUTPUT=$("$KOOKR_CODEX_BIN" --version)
+CODEX_VERSION_OUTPUT=$("$KOOKR_CODEX_BIN_PATH" --version)
 printf '%s\n' "$CODEX_VERSION_OUTPUT"
 FINAL_FULL_SHA=$(git rev-parse feat/claude-compat)
 FINAL_SHORT_SHA=$(git rev-parse --short=9 feat/claude-compat)
@@ -466,9 +477,9 @@ case "$CODEX_VERSION_OUTPUT" in
   *"+kookr.$FINAL_SHORT_SHA"*) ;;
   *) echo "ERROR: installed Codex version does not identify $FINAL_SHORT_SHA" >&2; exit 1 ;;
 esac
-PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN")/.codex-current/codex-pair.json"
+PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
 test "$(jq -r .sourceCommit "$PAIR_MANIFEST")" = "$FINAL_FULL_SHA"
-node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" --codex "$KOOKR_CODEX_BIN"
+node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" --codex "$KOOKR_CODEX_BIN_PATH"
 ```
 
 The `+kookr.<sha>` suffix must match `$FINAL_SHORT_SHA`, the pair manifest must
