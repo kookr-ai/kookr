@@ -132,7 +132,7 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
         {
           taskId: 't-loop',
           sessionId: 's-loop',
-          reason: 'rapid crash-loop (relaunched 8s ago, window is 60s)',
+          reason: 'crash-loop cap reached (5 relaunches, cap is 5)',
         },
         {
           taskId: 't-cwd',
@@ -183,8 +183,8 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
         // A sibling session of the RELAUNCHED task (t1) — must NOT clobber its
         // `relaunched` disposition down to `superseded` (blocking regression).
         { taskId: t1.id, sessionId: 's2', reason: 'task already relaunched in this recovery pass' },
-        // Crash-loop skip classifies needs-human → abandoned.
-        { taskId: t4.id, sessionId: 's', reason: 'rapid crash-loop (relaunched 8s ago, window is 60s)' },
+        // A cumulative crash-loop skip classifies needs-human → abandoned.
+        { taskId: t4.id, sessionId: 's', reason: 'crash-loop cap reached (5 relaunches, cap is 5)' },
       ],
       failed: [{ taskId: t3.id, sessionId: 's', error: 'boom' }],
     }));

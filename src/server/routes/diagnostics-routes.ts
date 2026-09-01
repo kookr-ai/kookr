@@ -44,7 +44,7 @@ import type { BackendStats } from '../../adapters/terminal-backend.js';
 import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
 import { validateSpeechServiceUrl } from '../speech-service-url.js';
 import type { RouteDeps } from './shared.js';
-import type { CrashRecoveryResult } from '../crash-recovery.js';
+import { isCrashLoopSkipReason, type CrashRecoveryResult } from '../crash-recovery.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
@@ -2086,7 +2086,7 @@ export function checkSchedulesPausedReadiness(
  *
  * Counts only — full relaunched/skipped/failed entry lists stay on
  * `GET /api/startup-summary`. `crashLoopSkips` is the subset of `skipped`
- * whose reason is the rapid crash-loop guard (see crash-recovery.ts).
+ * whose reason came from either crash-loop guard (see crash-recovery.ts).
  */
 export interface StartupRecoveryHealthSummary {
   relaunched: number;
@@ -2095,9 +2095,6 @@ export interface StartupRecoveryHealthSummary {
   crashLoopSkips: number;
   generatedAt: string;
 }
-
-/** Prefix of skip reasons emitted by the rapid crash-loop guard. */
-const CRASH_LOOP_SKIP_REASON_PREFIX = 'rapid crash-loop';
 
 const EMPTY_CRASH_RECOVERY_RESULT: CrashRecoveryResult = {
   relaunched: [],
@@ -2114,10 +2111,7 @@ export function buildStartupRecoveryHealthSummary(
 ): StartupRecoveryHealthSummary {
   let crashLoopSkips = 0;
   for (const entry of summary.skipped) {
-    if (
-      typeof entry.reason === 'string' &&
-      entry.reason.startsWith(CRASH_LOOP_SKIP_REASON_PREFIX)
-    ) {
+    if (typeof entry.reason === 'string' && isCrashLoopSkipReason(entry.reason)) {
       crashLoopSkips += 1;
     }
   }

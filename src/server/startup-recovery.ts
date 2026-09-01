@@ -15,7 +15,11 @@ import {
   type DispositionKind,
 } from '../core/disposition-ledger.js';
 import { promotePendingTasks, registerNewAgent, type AgentLifecycleDeps } from './agent-lifecycle.js';
-import { recoverCrashedSessions, type CrashRecoveryResult } from './crash-recovery.js';
+import {
+  isCrashLoopSkipReason,
+  recoverCrashedSessions,
+  type CrashRecoveryResult,
+} from './crash-recovery.js';
 import { runPostRestartRecovery } from './post-restart-recovery.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { HookIngestion } from './hook-ingestion.js';
@@ -627,7 +631,7 @@ async function writeCrashRecoveryDispositions(
  */
 function classifyCrashRecoverySkip(reason: string): { kind: DispositionKind; detail: string } | null {
   if (reason === 'task already relaunched in this recovery pass') return null;
-  if (reason.startsWith('rapid crash-loop')) {
+  if (isCrashLoopSkipReason(reason)) {
     return {
       kind: 'needs-human',
       detail: `needs-human: skipped by crash-loop protection (${reason}); repeated crashes need investigation before auto-resuming`,

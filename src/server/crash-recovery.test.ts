@@ -8,6 +8,7 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
 import { recoverCrashedSessions } from './crash-recovery.js';
+import { buildStartupRecoveryHealthSummary } from './routes/diagnostics-routes.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
@@ -1398,10 +1399,31 @@ describe('Crash Recovery', () => {
     expect(result.relaunched).toHaveLength(0);
   });
 
-  test('allows recovery when lastRelaunchedAt is old (outside crash-loop window)', async () => {
+  test('skips when the cumulative crash-relaunch cap is reached outside the rapid window', async () => {
+    const cwd = join(tempDir, 'project-capped-relaunch');
+    const task = await setupCrashedTask('Fix bug', cwd, {
+      relaunchCount: 5,
+      lastRelaunchedAt: Date.now() - 120_000,
+    });
+
+    const reconcileResult = await reconcile(taskStore, terminal);
+    const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+
+    expect(result.relaunched).toHaveLength(0);
+    expect(result.skipped).toEqual([
+      expect.objectContaining({
+        taskId: task.id,
+        reason: expect.stringContaining('crash-loop cap reached'),
+      }),
+    ]);
+    expect(buildStartupRecoveryHealthSummary(result, '2026-09-01T00:00:00.000Z'))
+      .toMatchObject({ crashLoopSkips: 1 });
+  });
+
+  test('allows recovery one below the cumulative cap outside the rapid window', async () => {
     const cwd = join(tempDir, 'project-old-relaunch');
     const task = await setupCrashedTask('Fix bug', cwd, {
-      relaunchCount: 3,
+      relaunchCount: 4,
       lastRelaunchedAt: Date.now() - 120_000, // 2 minutes ago — outside 60s window
     });
 
@@ -1413,7 +1435,7 @@ describe('Crash Recovery', () => {
 
     // Relaunch count should be incremented
     const updatedTask = taskStore.getTaskForMutation(task.id)!;
-    const newSession = updatedTask.sessions.find((s) => s.relaunchCount === 4)!;
+    const newSession = updatedTask.sessions.find((s) => s.relaunchCount === 5)!;
     expect(newSession).toBeDefined();
   });
 
