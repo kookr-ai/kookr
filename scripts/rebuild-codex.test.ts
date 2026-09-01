@@ -194,7 +194,9 @@ describe('R4b.14: matched Codex runtime pair', () => {
       process.env.GIT_DIR = join(ambientRoot, '.git');
       process.env.GIT_WORK_TREE = ambientRoot;
       fixture = createFixture(0);
+      const result = runRebuild(fixture);
 
+      expect(result.status, result.stderr).toBe(0);
       expect(
         execFileSync('git', ['rev-parse', '--show-toplevel'], {
           cwd: fixture.sourceDir,
@@ -218,6 +220,53 @@ describe('R4b.14: matched Codex runtime pair', () => {
       rmSync(ambientRoot, { recursive: true, force: true });
     }
   });
+
+  it('installs a managed pair into an empty installation directory', () => {
+    const fixture = createFixture(0);
+    rmSync(join(fixture.installDir, 'codex'));
+    rmSync(join(fixture.installDir, 'codex-code-mode-host'));
+    try {
+      const result = runRebuild(fixture);
+
+      expect(result.status, result.stderr).toBe(0);
+      expect(execFileSync(join(fixture.installDir, 'codex'), { encoding: 'utf8' })).toBe(
+        'new-cli\n',
+      );
+      expect(
+        execFileSync(join(fixture.installDir, 'codex-code-mode-host'), { encoding: 'utf8' }),
+      ).toBe('new-host\n');
+      expect(existsSync(join(fixture.installDir, '.codex-legacy-pair'))).toBe(false);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['CLI-only', 'codex', 'codex-code-mode-host', 'old-cli\n'],
+    ['host-only', 'codex-code-mode-host', 'codex', 'old-host\n'],
+  ] as const)(
+    'rejects a partial %s legacy installation without replacing its executable',
+    (_label, installedName, missingName, installedOutput) => {
+      const fixture = createFixture(0);
+      const installedPath = join(fixture.installDir, installedName);
+      const missingPath = join(fixture.installDir, missingName);
+      rmSync(missingPath);
+      try {
+        const result = runRebuild(fixture);
+
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain(
+          'cannot migrate a partial legacy install; both codex executables must be present and executable',
+        );
+        expect(execFileSync(installedPath, { encoding: 'utf8' })).toBe(installedOutput);
+        expect(lstatSync(installedPath).isSymbolicLink()).toBe(false);
+        expect(existsSync(missingPath)).toBe(false);
+        expect(existsSync(join(fixture.installDir, '.codex-current'))).toBe(false);
+      } finally {
+        rmSync(fixture.root, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('leaves the active pair unchanged when no compatible host can be prepared', () => {
     const fixture = createFixture(1);
@@ -408,6 +457,7 @@ describe('R4b.14: matched Codex runtime pair', () => {
 
       expect(result.status, result.stderr).toBe(0);
       expect(readFileSync(join(tempPrefix, 'sentinel'), 'utf8')).toBe('keep me\n');
+      expect(readdirSync(tempWithSpaces)).toEqual([]);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
