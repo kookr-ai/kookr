@@ -4,7 +4,7 @@ import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskStore } from '../core/tasks.js';
+import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
@@ -905,7 +905,7 @@ describe('launchTask', () => {
       const task = store.listTasks()[0]!;
       expect(store.getActiveCount()).toBe(0);
       const originalMarker = task.launchAdmission;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementToken = store.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
 
@@ -1191,7 +1191,7 @@ describe('launchTask', () => {
       await flushStarted;
       const task = store.listTasks()[0]!;
       const originalMarker = task.launchAdmission;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementToken = store.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
 
@@ -1765,7 +1765,7 @@ describe('launchTask', () => {
       await secondStarted;
       const task = store.listTasks()[0]!;
       const replacementMarker = task.launchAdmission;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementToken = store.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
 
@@ -5289,7 +5289,7 @@ describe('launchTask claimIssue (RFC PR 1b / #1230)', () => {
       });
       await flushStarted;
       const task = store.listTasks()[0]!;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const successorToken = store.beginLaunchWithToken(task.id);
       expect(successorToken).toBeDefined();
       store.addSession(task.id, {

@@ -1,6 +1,6 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { Task } from '../core/tasks.js';
-import { TaskStore } from '../core/tasks.js';
+import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import {
   registerNewAgent,
   handleTerminalInput,
@@ -1966,7 +1966,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const stalePromotion = promotePendingTasks(deps);
       await firstStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await secondStarted;
 
@@ -2039,7 +2039,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const deniedPromotion = promotePendingTasks(deps);
       await deniedStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await probeStarted;
 
@@ -2117,7 +2117,7 @@ describe('promotePendingTasks (integration)', () => {
       launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
       releaseFirst();
       await secondStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await replacementStarted;
 
@@ -2179,7 +2179,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const stalePromotion = promotePendingTasks(deps);
       await staleStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await replacementStarted;
       const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
@@ -2245,7 +2245,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const stalePromotion = promotePendingTasks(deps);
       await staleStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await replacementStarted;
       const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
@@ -2319,7 +2319,7 @@ describe('promotePendingTasks (integration)', () => {
       launchDependencyAdmission.observe(['kb'], [{ dependency: 'kb', category: 'provider_api' }]);
       releaseFirst();
       await secondStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementPromotion = promotePendingTasks(deps);
       await replacementStarted;
       const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
@@ -2897,7 +2897,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const stalePromotion = promotePendingTasks(deps);
       await firstStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const successorPromotion = promotePendingTasks(deps);
       await successorCreated;
       rejectFirst(new Error('stale owner rejected'));
@@ -2968,7 +2968,7 @@ describe('promotePendingTasks (integration)', () => {
     try {
       const stalePromotion = promotePendingTasks(deps);
       await firstStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       expect(await promotePendingTasks(deps)).toBe(1);
       taskStore.updateSession(task.id, 'ended-successor-session', { lastStatus: 'completed' });
       taskStore.reopenTask(task.id);

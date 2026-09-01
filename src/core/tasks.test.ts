@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, isRecoverableTermination, type Task, type TokenUsage, type TerminationReason } from './tasks.js';
+import { TaskStore, InvalidTransitionError, isTerminalStatus, isActiveStatus, isRecoverableTermination, LAUNCH_RESERVATION_TTL_MS, type Task, type TokenUsage, type TerminationReason } from './tasks.js';
+import { MAX_LAUNCH_TIMEOUT_SEC } from './settings-store.js';
 import { COMPLETION_DIGEST_STORAGE_MAX_BYTES } from './completion-digest.js';
 import type { AgentEvent, TaskStatus } from './types.js';
 
@@ -2812,7 +2813,7 @@ describe('launch reservations (#700)', () => {
       const task = store.createTask('t', '/repo');
       store.pendTask(task.id);
       expect(store.beginLaunchWithToken(task.id)).toBeDefined();
-      vi.advanceTimersByTime(10 * 60 * 1000 + 1); // past LAUNCH_RESERVATION_TTL_MS
+      vi.advanceTimersByTime(LAUNCH_RESERVATION_TTL_MS + 1); // past LAUNCH_RESERVATION_TTL_MS
       expect(store.beginLaunchWithToken(task.id)).toBeDefined(); // wedged launch lost its hold
     } finally {
       vi.useRealTimers();
@@ -2826,7 +2827,7 @@ describe('launch reservations (#700)', () => {
       const task = store.createTask('t', '/repo');
       store.pendTask(task.id);
       const stale = store.beginLaunchWithToken(task.id)!;
-      vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+      vi.advanceTimersByTime(LAUNCH_RESERVATION_TTL_MS + 1);
       const replacement = store.beginLaunchWithToken(task.id)!;
 
       expect(store.ownsLaunchReservation(task.id, stale)).toBe(false);
@@ -2840,6 +2841,90 @@ describe('launch reservations (#700)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // Reservation TTL vs. the maximum launch timeout (issue #2764). A launch may
+  // legitimately run up to MAX_LAUNCH_TIMEOUT_SEC; its reservation must outlive
+  // that window, or capacity accounting develops a gap at the boundary.
+  describe('reservation TTL aligns with the maximum launch timeout (#2764)', () => {
+    const MAX_LAUNCH_TIMEOUT_MS = MAX_LAUNCH_TIMEOUT_SEC * 1000;
+
+    test('the TTL is at least the maximum configured launch timeout', () => {
+      // The core invariant: no valid launch can lose its reservation before the
+      // longest launch any operator can configure has had a chance to finish.
+      expect(LAUNCH_RESERVATION_TTL_MS).toBeGreaterThanOrEqual(MAX_LAUNCH_TIMEOUT_MS);
+    });
+
+    test('default case: a reservation is still fresh well within a normal launch', () => {
+      vi.useFakeTimers();
+      try {
+        const store = new TaskStore();
+        const task = store.createTask('t', '/repo');
+        store.pendTask(task.id);
+        const token = store.beginLaunchWithToken(task.id);
+        expect(token).toBeDefined();
+        // Default launchTimeoutSeconds is 180s — comfortably inside the window.
+        vi.advanceTimersByTime(180 * 1000);
+        expect(store.ownsLaunchReservation(task.id, token!)).toBe(true);
+        expect(store.getActiveCount()).toBe(1); // still holds its slot
+        expect(store.getNextPending()).toBeUndefined(); // still skipped as reserved
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('maximum case: a launch running the full max timeout keeps its reservation', () => {
+      vi.useFakeTimers();
+      try {
+        const store = new TaskStore();
+        const task = store.createTask('t', '/repo');
+        store.pendTask(task.id);
+        const token = store.beginLaunchWithToken(task.id);
+        expect(token).toBeDefined();
+        // Advance to exactly the maximum launch timeout: the launch is still
+        // valid, so the reservation must not have lapsed — no double-allocation.
+        vi.advanceTimersByTime(MAX_LAUNCH_TIMEOUT_MS);
+        expect(store.hasFreshLaunchReservation(task.id)).toBe(true);
+        expect(store.ownsLaunchReservation(task.id, token!)).toBe(true);
+        expect(store.getActiveCount()).toBe(1); // counted exactly once, still active
+        expect(store.beginLaunchWithToken(task.id)).toBeUndefined(); // no takeover
+        expect(store.getNextPending()).toBeUndefined(); // not re-offered
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('boundary-expiry case: fresh right up to the TTL, reclaimed deterministically after', () => {
+      vi.useFakeTimers();
+      try {
+        const store = new TaskStore();
+        const task = store.createTask('t', '/repo');
+        store.pendTask(task.id);
+        const token = store.beginLaunchWithToken(task.id)!;
+
+        // 1ms before the TTL: still owns the slot (no under-counting).
+        vi.advanceTimersByTime(LAUNCH_RESERVATION_TTL_MS - 1);
+        expect(store.hasFreshLaunchReservation(task.id)).toBe(true);
+        expect(store.getActiveCount()).toBe(1);
+        expect(store.getNextPending()).toBeUndefined();
+
+        // At the TTL boundary: reclaimed exactly once, no double-allocation.
+        vi.advanceTimersByTime(1);
+        expect(store.hasFreshLaunchReservation(task.id)).toBe(false);
+        expect(store.ownsLaunchReservation(task.id, token)).toBe(false);
+        expect(store.getActiveCount()).toBe(0);
+        expect(store.getNextPending()?.id).toBe(task.id); // free to re-launch
+
+        // Re-launch: the successor takes the single slot, and the reclaimed
+        // reservation does not linger to double-count it (issue #2764 no
+        // double-allocation).
+        const successor = store.beginLaunchWithToken(task.id);
+        expect(successor).toBeDefined();
+        expect(store.getActiveCount()).toBe(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 
   test('getNextPending skips reserved tasks; getActiveCount counts them', () => {
