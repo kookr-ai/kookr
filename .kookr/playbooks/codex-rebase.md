@@ -65,8 +65,18 @@ case "$KOOKR_CODEX_BIN" in
     KOOKR_CODEX_BIN_PATH="$KOOKR_CODEX_BIN_DIR/$(basename "$KOOKR_CODEX_BIN")"
     ;;
   *)
-    KOOKR_CODEX_BIN_PATH=$(command -v "$KOOKR_CODEX_BIN") \
+    KOOKR_CODEX_BIN_RESOLVED=$(command -v "$KOOKR_CODEX_BIN") \
       || { echo "ERROR: cannot resolve KOOKR_CODEX_BIN=$KOOKR_CODEX_BIN on PATH" >&2; exit 1; }
+    case "$KOOKR_CODEX_BIN_RESOLVED" in
+      */*)
+        KOOKR_CODEX_BIN_DIR=$(cd "$(dirname "$KOOKR_CODEX_BIN_RESOLVED")" && pwd -P) || exit 1
+        KOOKR_CODEX_BIN_PATH="$KOOKR_CODEX_BIN_DIR/$(basename "$KOOKR_CODEX_BIN_RESOLVED")"
+        ;;
+      *)
+        echo "ERROR: KOOKR_CODEX_BIN=$KOOKR_CODEX_BIN does not resolve to an executable file" >&2
+        exit 1
+        ;;
+    esac
     ;;
 esac
 export KOOKR_CODEX_BIN_PATH
