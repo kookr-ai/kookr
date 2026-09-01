@@ -174,16 +174,25 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       // selectedAgentSource: 'manual' marks this selection as a user choice
       // (rather than an auto-advance landing) so the engagement guard fires.
       withSelectionTransitionSource({ source: 'selectAgent', reason: agentId ? 'manual_select' : 'manual_deselect' }, () => {
+        const state = get();
         const selected = agentId
-          ? get().agents.find((agent) => (
+          ? state.agents.find((agent) => (
               agent.agentId === agentId
               && (taskId === undefined || agent.taskId === taskId)
-            )) ?? get().agents.find((agent) => agent.agentId === agentId)
+            )) ?? state.agents.find((agent) => agent.agentId === agentId)
           : null;
+        const selection = selected
+          ? activateNavigationSelection(
+              selected,
+              new Set(state.visibleProjectSummaries.map((project) => project.project)),
+            )
+          : {
+              selectedAgentId: agentId,
+              selectedTaskId: taskId ?? null,
+              selectedAgentSource: 'manual' as const,
+            };
         set({
-          selectedAgentId: agentId,
-          selectedTaskId: selected?.taskId ?? taskId ?? null,
-          selectedAgentSource: 'manual',
+          ...selection,
           ...(agentId === null ? { focusZone: 'none' as const } : {}),
           respondAllAgentIds: null,
           leftPane: 'activity',

@@ -50,6 +50,56 @@ function makeProject(project: string): ProjectSummary {
 }
 
 // ---------------------------------------------------------------------------
+// selectAgent — keep task detail and project-scoped dashboard state coherent
+// ---------------------------------------------------------------------------
+
+describe('selectAgent project synchronization', () => {
+  let store: ReturnType<typeof createKookrStore>;
+  let storage: Map<string, string>;
+
+  beforeEach(() => {
+    storage = new Map([['kookr-selected-project', 'org/a']]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    });
+    store = createKookrStore();
+    store.setState({
+      agents: [
+        makeAgent({ agentId: 'agent-a', taskId: 'task-a', projectId: 'org/a' }),
+        makeAgent({ agentId: 'agent-b', taskId: 'task-b', projectId: 'org/b' }),
+      ],
+      visibleProjectSummaries: [makeProject('org/a'), makeProject('org/b')],
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  test('activates and persists the selected task\'s visible project', () => {
+    store.getState().selectAgent('agent-b', 'task-b');
+
+    expect(store.getState().selectedAgentId).toBe('agent-b');
+    expect(store.getState().selectedTaskId).toBe('task-b');
+    expect(store.getState().selectedProject).toBe('org/b');
+    expect(storage.get('kookr-selected-project')).toBe('org/b');
+  });
+
+  test('falls back to All Projects when the selected task\'s project is hidden', () => {
+    store.setState({ visibleProjectSummaries: [makeProject('org/a')] });
+
+    store.getState().selectAgent('agent-b', 'task-b');
+
+    expect(store.getState().selectedAgentId).toBe('agent-b');
+    expect(store.getState().selectedTaskId).toBe('task-b');
+    expect(store.getState().selectedProject).toBeNull();
+    expect(storage.has('kookr-selected-project')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // handleAlert — focus guard (F20)
 // ---------------------------------------------------------------------------
 
