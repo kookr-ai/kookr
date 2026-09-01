@@ -21,6 +21,16 @@ A deeper gap analysis lives in [`docs/poc/003-codex-compatibility-gaps.md`](poc/
 
 ## Step-by-step setup
 
+### Prepare the fork checkout
+
+Clone the maintained branch once. For an existing checkout, switch to this
+branch and pull it instead.
+
+```bash
+git clone --branch feat/claude-compat \
+  https://github.com/jeanibarz/codex.git "$HOME/git/codex"
+```
+
 ### Install a development build
 
 From a Kookr checkout, point the helper at a local checkout of the fork:
