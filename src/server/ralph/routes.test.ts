@@ -98,6 +98,8 @@ function mockRouteLaunchTask(taskStore: TaskStore) {
       playbookId: opts.playbookId,
       projectId: opts.projectId,
       playbookParameterValues: opts.playbookParameterValues,
+      parentTaskId: opts.parentTaskId,
+      metadata: opts.userInitiatedRelaunch ? { userInitiatedRelaunch: true } : undefined,
     });
     return { task: taskStore.getTask(task.id)!, queued: false };
   });
@@ -373,6 +375,85 @@ Loop route.
     );
   });
 
+  test('creates a linked successor when a relaunch supplies parentTaskId', async () => {
+    const taskStore = new TaskStore();
+    const original = taskStore.createTask('Original loop', targetCwd);
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        parameterValues: {},
+        parentTaskId: original.id,
+      }),
+    });
+
+    expect(res.status).toBe(201);
+    const body = await res.json();
+    expect(body.parentTaskId).toBe(original.id);
+    expect(taskStore.getTask(original.id)!.childTaskIds).toContain(body.id);
+    expect(taskStore.listRelations()).toContainEqual(expect.objectContaining({
+      sourceTaskId: body.id,
+      targetTaskId: original.id,
+      type: 'spawned_by',
+    }));
+    expect(launchTask).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        parentTaskId: original.id,
+        userInitiatedRelaunch: true,
+      }),
+      { deliveryPolicy: 'pre-authorized' },
+    );
+  });
+
+  test.each([
+    ['empty', ''],
+    ['non-string', 42],
+  ])('rejects %s parentTaskId values', async (_label, parentTaskId) => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        cwd: sourceCwd,
+        parameterValues: {},
+        parentTaskId,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'parentTaskId must be a non-empty string' });
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
+  test('returns 404 when parentTaskId names a missing task', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request('/api/playbooks/ralph-loop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playbookPath: 'workflow.md',
+        cwd: sourceCwd,
+        parameterValues: {},
+        parentTaskId: 'missing-parent',
+      }),
+    });
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Parent task not found: missing-parent' });
+    expect(launchTask).not.toHaveBeenCalled();
+  });
+
   test('returns 503 with code "draining" when launchTask is gated by drain mode (issue #659)', async () => {
     const taskStore = new TaskStore();
     vi.mocked(launchTask).mockRejectedValue(new DrainModeError());
@@ -457,6 +538,7 @@ Loop {{target}}.
 
   test('keeps playbook replace available by default and matches keys against target cwd', async () => {
     const taskStore = new TaskStore();
+    const parent = taskStore.createTask('original loop', targetCwd);
     const old = createTaskForMutation(taskStore, {
       prompt: 'old loop',
       cwd: targetCwd,
@@ -501,6 +583,7 @@ Loop {{target}}.
           taskTargetCwd: targetCwd,
           projectId: `local/${basename(targetCwd)}`,
           parameterValues: { target: 'repo' },
+          parentTaskId: parent.id,
         }),
       },
     );
@@ -509,5 +592,44 @@ Loop {{target}}.
     const body = await success.json();
     expect(body.cwd).toBe(targetCwd);
     expect(body.projectId).toBe(`local/${basename(targetCwd)}`);
+    expect(body.parentTaskId).toBe(parent.id);
+    expect(taskStore.getTask(parent.id)!.childTaskIds).toContain(body.id);
+    expect(taskStore.listRelations()).toContainEqual(expect.objectContaining({
+      sourceTaskId: body.id,
+      targetTaskId: parent.id,
+      type: 'spawned_by',
+    }));
+    expect(launchTask).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        parentTaskId: parent.id,
+        userInitiatedRelaunch: true,
+      }),
+      { deliveryPolicy: 'pre-authorized' },
+    );
+  });
+
+  test('returns 404 when the replacement relaunch parent does not exist', async () => {
+    const taskStore = new TaskStore();
+    const old = taskStore.createTask('old loop', targetCwd);
+    mockRouteLaunchTask(taskStore);
+
+    const res = await mkApp(mkRalphDeps(taskStore)).request(
+      `/api/tasks/${old.id}/ralph-loop/replace-with-new`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          playbookPath: 'workflow.md',
+          cwd: sourceCwd,
+          parameterValues: {},
+          parentTaskId: 'missing-parent',
+        }),
+      },
+    );
+
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Parent task not found: missing-parent' });
+    expect(launchTask).not.toHaveBeenCalled();
   });
 });

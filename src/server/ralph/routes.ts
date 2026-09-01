@@ -254,6 +254,10 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
 
     const validationError = validateRalphPlaybookBody(body);
     if (validationError) return c.json({ error: validationError }, 400);
+    const missingParentTaskId = findMissingParentTaskId(body, taskStore);
+    if (missingParentTaskId) {
+      return c.json({ error: `Parent task not found: ${missingParentTaskId}` }, 404);
+    }
     const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
@@ -297,6 +301,10 @@ export function registerRalphRoutes(app: Hono, deps: RalphRouteDeps): void {
 
     const validationError = validateRalphPlaybookBody(body);
     if (validationError) return c.json({ error: validationError }, 400);
+    const missingParentTaskId = findMissingParentTaskId(body, taskStore);
+    if (missingParentTaskId) {
+      return c.json({ error: `Parent task not found: ${missingParentTaskId}` }, 404);
+    }
     const scope = body.scope as 'project' | 'user' | 'plugin' | undefined;
 
     try {
@@ -381,6 +389,15 @@ interface RalphPlaybookLaunchBody {
   parameterValues?: unknown;
   agentType?: string;
   scope?: unknown;
+  parentTaskId?: unknown;
+}
+
+function findMissingParentTaskId(
+  body: RalphPlaybookLaunchBody,
+  taskStore: RalphRouteDeps['taskStore'],
+): string | undefined {
+  if (typeof body.parentTaskId !== 'string') return undefined;
+  return taskStore.getTask(body.parentTaskId) ? undefined : body.parentTaskId;
 }
 
 function parseIterationLimit(rawLimit: string | undefined): number {
@@ -438,6 +455,9 @@ function validateRalphPlaybookBody(body: RalphPlaybookLaunchBody): string | null
   if (body.projectId !== undefined && typeof body.projectId !== 'string') {
     return 'projectId must be a string';
   }
+  if (body.parentTaskId !== undefined && (typeof body.parentTaskId !== 'string' || body.parentTaskId.length === 0)) {
+    return 'parentTaskId must be a non-empty string';
+  }
   if (body.scope !== undefined && body.scope !== 'project' && body.scope !== 'user' && body.scope !== 'plugin') {
     return 'scope must be "project", "user", or "plugin"';
   }
@@ -451,6 +471,7 @@ function ralphPlaybookLaunchOptions(body: RalphPlaybookLaunchBody) {
     taskTargetCwd: typeof body.taskTargetCwd === 'string' ? body.taskTargetCwd : undefined,
     taskTargetCwdExplicit: typeof body.taskTargetCwd === 'string' && body.taskTargetCwd.trim().length > 0,
     projectId: typeof body.projectId === 'string' ? body.projectId : undefined,
+    parentTaskId: typeof body.parentTaskId === 'string' ? body.parentTaskId : undefined,
     playbookPath: body.playbookPath as string,
     parameterValues: body.parameterValues as Record<string, string>,
   };

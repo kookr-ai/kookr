@@ -185,8 +185,10 @@ export class LifecycleHandler {
             dependencies: msg.dependencies,
             ...(msg.effort ? { effort: msg.effort } : {}),
             ...(msg.model ? { model: msg.model } : {}),
-            disableDedup: msg.disableDedup,
+            disableDedup: msg.parentTaskId !== undefined ? true : msg.disableDedup,
             metadataIntent: msg.metadataIntent,
+            parentTaskId: msg.parentTaskId,
+            ...(msg.parentTaskId !== undefined ? { userInitiatedRelaunch: true } : {}),
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);
@@ -205,6 +207,9 @@ export class LifecycleHandler {
             criteria: originalTask.criteria,
             agentType: msg.agentType ?? originalTask.agentType,
             dependencies: msg.dependencies,
+            disableDedup: true,
+            parentTaskId: originalTask.id,
+            userInitiatedRelaunch: true,
           });
         } catch (e) { err = e; }
         return handleLaunchResult(this.deps.send, excerpt, result, err);

@@ -210,8 +210,9 @@ kookr spawn --auto-close-on-signal "implement issue #42, then signal completion-
 
 ## Inheritance (the important part)
 
-A task launched with `autoCloseOnSignal` **propagates the policy to any successor
-spawned with its task id as `parentTaskId`** — automatically, on the server.
+A task launched with `autoCloseOnSignal` **propagates the policy to autonomous
+successors spawned with its task id as `parentTaskId`** — automatically, on the
+server.
 
 This matters because self-continuation chains are deliberately *memory-free*: task
 N+1 starts cold and cannot read task N's transcript or arguments. Relying on the
@@ -219,14 +220,19 @@ agent to remember and re-pass a flag in every successor launch would be fragile.
 Instead, inheritance reads the parent's policy from durable task state, so the
 whole chain keeps the behavior with **no per-successor configuration**.
 
+An attended user relaunch is the exception: it retains `parentTaskId` for
+history and relation projections, but does not inherit `autoCloseOnSignal` or
+`unattended`. An explicit value supplied by the relaunched playbook still wins.
+
 ### Resolution rules
 
 When a task is created, its effective policy is resolved as follows:
 
 1. **Explicit value wins.** If the launch sets `autoCloseOnSignal` (to `true`
    *or* `false`), that value is used verbatim.
-2. **Otherwise inherit from the parent.** If `autoCloseOnSignal` is unset and the
-   task has a `parentTaskId`, it inherits the parent's policy.
+2. **Otherwise inherit for autonomous children.** If `autoCloseOnSignal` is
+   unset, the task has a `parentTaskId`, and it is not an attended user
+   relaunch, it inherits the parent's policy.
 3. **Otherwise off.** No explicit value and no (auto-close) parent ⇒ the policy is
    off.
 

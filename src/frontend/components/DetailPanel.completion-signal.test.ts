@@ -208,6 +208,7 @@ describe('DetailPanel completion signal presentation', () => {
       launchFollowUp?.click();
     });
     expect(useKookrStore.getState().relaunchTask).toMatchObject({
+      sourceTaskId: 'task-1',
       prompt: 'Ship the dashboard next actions slice',
       cwd: '/tmp/kookr',
       playbookId: 'oss-pr-lessons',

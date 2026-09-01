@@ -95,6 +95,29 @@ describe('agent-launch-context', () => {
     ]);
   });
 
+  test('keeps a user relaunch interactive while retaining persisted lineage', async () => {
+    const taskStore = new TaskStore();
+    const parent = taskStore.createTask('Original task', '/repo');
+    const successor = taskStore.createTask({
+      prompt: 'Supervised retry',
+      cwd: '/repo',
+      parentTaskId: parent.id,
+      metadata: { userInitiatedRelaunch: true },
+    });
+
+    const context = await buildAgentLaunchContext({
+      taskStore,
+      taskId: successor.id,
+      cwd: makeTempDir(),
+    });
+
+    expect(successor.parentTaskId).toBe(parent.id);
+    expect(successor.provenance).toEqual({ kind: 'parent', sourceId: parent.id });
+    expect(context.env.KOOKR_PARENT_TASK_ID).toBeUndefined();
+    expect(context.env.KOOKR_LAUNCH_PROVENANCE).toBe('manual');
+    expect(context.permissionDenylist).toEqual([]);
+  });
+
   // issue #1562: unattended/autonomous tasks hard-deny interactive tools so a
   // blocking call fails fast instead of hanging on an unanswerable prompt.
   test('adds interactive-tool deny rules for unattended tasks', async () => {

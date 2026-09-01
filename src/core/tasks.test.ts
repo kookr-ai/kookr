@@ -926,6 +926,29 @@ describe('TaskStore', () => {
       expect(child.autoCloseOnSignal).toBe(true);
     });
 
+    test('user relaunch does not inherit the parent auto-close policy', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
+      const successor = store.createTask({
+        prompt: 'Supervised retry',
+        cwd: '/cwd',
+        parentTaskId: parent.id,
+        metadata: { userInitiatedRelaunch: true },
+      });
+      expect(successor.autoCloseOnSignal).toBeUndefined();
+    });
+
+    test('explicit playbook policy wins for a user relaunch', () => {
+      const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd' });
+      const successor = store.createTask({
+        prompt: 'Supervised retry',
+        cwd: '/cwd',
+        parentTaskId: parent.id,
+        autoCloseOnSignal: true,
+        metadata: { userInitiatedRelaunch: true },
+      });
+      expect(successor.autoCloseOnSignal).toBe(true);
+    });
+
     test('grandchild inherits transitively through the chain', () => {
       const parent = store.createTask({ prompt: 'Batch', cwd: '/cwd', autoCloseOnSignal: true });
       const child = store.createTask({ prompt: 'Unit 1', cwd: '/cwd', parentTaskId: parent.id });
@@ -2489,6 +2512,18 @@ describe('TaskStore unattended + operator-needed (issue #1562)', () => {
     const parent = store.createTask({ prompt: 'Autonomous parent', cwd: '/repo', unattended: true });
     const child = store.createTask({ prompt: 'Autonomous child', cwd: '/repo', parentTaskId: parent.id });
     expect(store.getTask(child.id)!.unattended).toBe(true);
+  });
+
+  test('user relaunch does not inherit the parent unattended policy', () => {
+    const store = new TaskStore();
+    const parent = store.createTask({ prompt: 'Autonomous parent', cwd: '/repo', unattended: true });
+    const successor = store.createTask({
+      prompt: 'Supervised retry',
+      cwd: '/repo',
+      parentTaskId: parent.id,
+      metadata: { userInitiatedRelaunch: true },
+    });
+    expect(store.getTask(successor.id)!.unattended).toBeUndefined();
   });
 
   test('a child can opt out of an inherited unattended policy with explicit false', () => {

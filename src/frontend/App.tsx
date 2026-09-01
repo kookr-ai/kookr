@@ -1829,6 +1829,7 @@ export function App() {
             defaultPrompt={relaunchTask?.prompt}
             defaultCriteria={relaunchTask?.criteria}
             defaultAgentType={relaunchTask?.agentType}
+            relaunchParentTaskId={relaunchTask?.sourceTaskId}
             relaunchPlaybookId={relaunchTask?.playbookId}
             relaunchParameterValues={relaunchTask?.playbookParameterValues}
             projectContext={launchProjectContext ?? undefined}

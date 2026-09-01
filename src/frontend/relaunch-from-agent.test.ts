@@ -39,6 +39,7 @@ describe('relaunchFromAgent', () => {
 
     expect(getTask).toHaveBeenCalledWith('task-1');
     expect(setRelaunchTask).toHaveBeenCalledWith({
+      sourceTaskId: 'task-1',
       prompt: 'Prefill from the task API, not the snapshot row',
       cwd: '/tmp/from-api',
       criteria: 'Merged PR, tests green',
@@ -74,6 +75,7 @@ describe('relaunchFromAgent', () => {
 
     expect(getTask).not.toHaveBeenCalled();
     expect(setRelaunchTask).toHaveBeenCalledWith({
+      sourceTaskId: 'task-1',
       prompt: 'Ship the dashboard next actions slice',
       cwd: '/tmp/kookr',
       agentType: 'claude-code',
@@ -85,7 +87,11 @@ describe('relaunchFromAgent', () => {
   test('does nothing when the agent has no task id', async () => {
     const setRelaunchTask = vi.fn<(task: RelaunchTask) => void>();
 
-    await relaunchFromAgent(completedAgent({ taskId: undefined }), setRelaunchTask);
+    await relaunchFromAgent(completedAgent({
+      taskId: undefined,
+      playbookId: 'oss-pr-lessons',
+      playbookParameterValues: { repo: 'kookr-ai/kookr' },
+    }), setRelaunchTask);
 
     expect(getTask).not.toHaveBeenCalled();
     expect(setRelaunchTask).not.toHaveBeenCalled();

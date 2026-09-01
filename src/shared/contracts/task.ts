@@ -100,6 +100,12 @@ export interface AgentSubstitutionHop {
 
 export interface TaskMetadata {
   intent?: TaskMetadataIntent;
+  /**
+   * Marks a parent-linked task as an attended, user-initiated retry rather
+   * than an autonomous child spawn. The parent link still drives lineage and
+   * relation projections, but autonomous parent policy is not inherited.
+   */
+  userInitiatedRelaunch?: true;
   /** Audit marker for tasks launched while permission prompts were globally bypassed. */
   launchPermissionPosture?: TaskLaunchPermissionPosture;
   /**

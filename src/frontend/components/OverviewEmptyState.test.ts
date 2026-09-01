@@ -789,9 +789,13 @@ describe('OverviewEmptyState', () => {
     expect(useKookrStore.getState().selectedTaskId).toBe('task-done-1');
   });
 
-  test('hides Relaunch when the completed row has no task id', () => {
+  test('hides Relaunch when a legacy playbook row has no task id for lineage', () => {
     render({
-      completed: [makeCompletedAgent('done-1', 'Ship the fix', { taskId: undefined })],
+      completed: [makeCompletedAgent('done-1', 'Ship the fix', {
+        taskId: undefined,
+        playbookId: 'ship.md',
+        playbookParameterValues: { repo: 'kookr-ai/kookr' },
+      })],
     });
 
     expect(container.textContent).toContain('Ship the fix');
@@ -819,6 +823,7 @@ describe('OverviewEmptyState', () => {
 
     expect(getTask).toHaveBeenCalledWith('task-done-1');
     expect(useKookrStore.getState().relaunchTask).toEqual({
+      sourceTaskId: 'task-done-1',
       prompt: 'Ship the dashboard next actions slice',
       cwd: '/tmp/kookr',
       criteria: 'Merged PR, tests green',

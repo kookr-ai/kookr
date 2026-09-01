@@ -84,6 +84,7 @@ const launchPlaybookMessage = z.object({
   parameterValues: z.record(z.string(), z.string()),
   agentType: agentSelection.optional(),
   scope: playbookScope.optional(),
+  parentTaskId: z.string().min(1).optional(),
 }).superRefine((value, ctx) => {
   const hasLegacy = value.cwd !== undefined;
   const hasSource = value.playbookSourceCwd !== undefined;
@@ -152,6 +153,7 @@ const ClientMessageSchemaImpl = z.union([
     model: z.string().min(1).optional(),
     disableDedup: z.boolean().optional(),
     metadataIntent: z.literal('keep_as_duplicate').optional(),
+    parentTaskId: z.string().min(1).optional(),
   }).superRefine((val, ctx) => {
     if (val.disableDedup === true && val.metadataIntent !== 'keep_as_duplicate') {
       ctx.addIssue({

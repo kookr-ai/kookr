@@ -70,13 +70,14 @@ describe('PlaybookHandler.listPlaybooks', () => {
     expect(playbooksMsg.capabilities).toBeUndefined();
   });
 
-  test('passes parsed delivery policy as server-only launch metadata', async () => {
+  test('passes parsed delivery and relaunch policy as server-only launch metadata', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-handler-'));
     try {
       await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
       await writeFile(join(cwd, '.kookr', 'playbooks', 'ship.md'), `---
 name: Ship
 deliveryPreAuthorized: true
+autoCloseOnSignal: true
 ---
 
 Ship it.
@@ -93,10 +94,18 @@ Ship it.
         cwd,
         playbookPath: 'ship.md',
         parameterValues: {},
+        parentTaskId: 'original-task',
       });
 
       expect(launchTask).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'Ship', prompt: expect.stringContaining('Ship it.') }),
+        expect.objectContaining({
+          name: 'Ship',
+          prompt: expect.stringContaining('Ship it.'),
+          disableDedup: true,
+          parentTaskId: 'original-task',
+          userInitiatedRelaunch: true,
+          autoCloseOnSignal: true,
+        }),
         { deliveryPolicy: 'pre-authorized' },
       );
     } finally {

@@ -351,10 +351,15 @@ export class TaskStore {
 
     // Resolve the auto-close-on-signal policy. An explicit value on the launch
     // opts always wins (including an explicit `false` to opt a successor out);
-    // otherwise the child inherits the parent's policy so it propagates down a
-    // self-continuation chain without relying on the agent forwarding a flag.
+    // otherwise an autonomous child inherits the parent's policy so it
+    // propagates down a self-continuation chain without relying on the agent
+    // forwarding a flag. An attended user relaunch keeps the parent link only
+    // for lineage and deliberately skips both parent-policy inheritances.
     // See docs/reference/auto-close-on-signal.md.
-    const parentForInherit = parentTaskId !== undefined ? this.tasks.get(parentTaskId) : undefined;
+    const inheritsParentPolicy = metadata?.userInitiatedRelaunch !== true;
+    const parentForInherit = parentTaskId !== undefined && inheritsParentPolicy
+      ? this.tasks.get(parentTaskId)
+      : undefined;
     const effectiveAutoCloseOnSignal = autoCloseOnSignal !== undefined
       ? autoCloseOnSignal
       : parentForInherit?.autoCloseOnSignal === true;
@@ -363,7 +368,8 @@ export class TaskStore {
     // child spawned by an autonomous agent that does not forward `unattended`
     // still needs interactive-tool protection — the failure mode #1562 targets
     // lives in self-continuation chains where "nobody can answer" propagates
-    // down. Explicit `false` on the launch opts opts a successor back out.
+    // down. Explicit `false` on the launch opts opts a successor back out;
+    // attended user relaunches also remain opted out when no value is explicit.
     const effectiveUnattended = unattended !== undefined
       ? unattended
       : parentForInherit?.unattended === true;

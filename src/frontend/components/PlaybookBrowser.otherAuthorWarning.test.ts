@@ -130,6 +130,31 @@ describe('PlaybookBrowser other-author warning', () => {
     expect(closeCount).toBe(1);
   });
 
+  test('includes the original task id when relaunching a playbook', async () => {
+    act(() => {
+      root.render(
+        React.createElement(PlaybookBrowser, {
+          cwd: '/repo',
+          relaunchParentTaskId: 'original-task',
+          send: (msg: ClientMessage) => {
+            sent.push(msg);
+            return true;
+          },
+          onClose: () => { closeCount += 1; },
+        }),
+      );
+    });
+    await openImplementIssueDetail();
+    await act(async () => { submitForm(); });
+    await flush();
+
+    expect(sent[0]).toMatchObject({
+      type: 'launchPlaybook',
+      playbookPath: 'implement-github-issue.md',
+      parentTaskId: 'original-task',
+    });
+  });
+
   test('shows warning and blocks launch when allowOtherAuthors=true', async () => {
     await openImplementIssueDetail();
     await act(async () => { setSelect('allowOtherAuthors', 'true'); });

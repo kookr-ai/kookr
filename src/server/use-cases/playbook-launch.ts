@@ -35,6 +35,8 @@ export interface PreparePlaybookLaunchInput {
   playbookPath: string;
   parameterValues: Record<string, string>;
   agentType?: AgentSelection;
+  /** Explicit user-relaunch lineage; never inferred from playbook identity. */
+  parentTaskId?: string;
   /** Where to read the playbook file from. Defaults to 'project' for back-compat. */
   scope?: PlaybookScope;
 }
@@ -156,6 +158,9 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       agentType: input.agentType,
       projectId,
       dependencies: playbook.dependencies,
+      ...(input.parentTaskId !== undefined ? { disableDedup: true } : {}),
+      parentTaskId: input.parentTaskId,
+      ...(input.parentTaskId !== undefined ? { userInitiatedRelaunch: true } : {}),
       ...(playbook.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: playbook.autoCloseOnSignal }),
     },
   };

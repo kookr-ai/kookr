@@ -1349,7 +1349,7 @@ delta sequence number.
 | `skipAll` | Skip findings for multiple agents. | `agentIds` |
 | `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
 | `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
-| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
+| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `parentTaskId` (user-relaunch lineage), `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
 | `completeTask` | Mark a task complete, optionally with feedback, reflection request, or worktree cleanup override. | `taskId`, optional `feedback`, `requestReflect`, `cleanupWorktree` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |
@@ -1366,7 +1366,7 @@ delta sequence number.
 | `stop` | Stop an agent session. | `agentId` |
 | `reflect` | Launch session-friction reflection. | none |
 | `listPlaybooks` | Discover playbooks for a cwd. | `cwd` |
-| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `scope`, `projectId` |
+| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `scope`, `projectId`, `parentTaskId` (user-relaunch lineage) |
 | `telemetry` | Send frontend telemetry events. | `events` |
 | `setProjectConfig` | Update a tracked project's configuration. | `project`, `config` |
 | `clearCompleted` | Clear completed tasks, optionally including terminated tasks or scoping to a project. | optional `includeTerminated`, `projectId` |

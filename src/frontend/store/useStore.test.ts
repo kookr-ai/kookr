@@ -614,6 +614,7 @@ describe('Kookr Zustand Store', () => {
 
   test('setRelaunchTask stores task data for dialog pre-fill', () => {
     store.getState().setRelaunchTask({
+      sourceTaskId: 'task-auth',
       prompt: 'Fix the auth bug',
       cwd: '/home/user/project',
       criteria: 'Tests pass',
@@ -621,6 +622,7 @@ describe('Kookr Zustand Store', () => {
 
     const task = store.getState().relaunchTask;
     expect(task).not.toBeNull();
+    expect(task!.sourceTaskId).toBe('task-auth');
     expect(task!.prompt).toBe('Fix the auth bug');
     expect(task!.cwd).toBe('/home/user/project');
     expect(task!.criteria).toBe('Tests pass');
@@ -628,6 +630,7 @@ describe('Kookr Zustand Store', () => {
 
   test('setRelaunchTask stores playbook context for relaunch', () => {
     store.getState().setRelaunchTask({
+      sourceTaskId: 'task-playbook',
       prompt: 'Analyze owner/repo',
       cwd: '/home/user/project',
       playbookId: 'analyze.md',
@@ -642,6 +645,7 @@ describe('Kookr Zustand Store', () => {
 
   test('clearRelaunchTask clears the stored task', () => {
     store.getState().setRelaunchTask({
+      sourceTaskId: 'task-clear',
       prompt: 'Fix bug',
       cwd: '/cwd',
     });

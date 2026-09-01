@@ -298,6 +298,45 @@ describe('LifecycleHandler lifecycle commands', () => {
       metadataIntent: 'keep_as_duplicate',
     }));
   });
+
+  test('launch forwards an explicit parentTaskId to launchTask', async () => {
+    const taskStore = new TaskStore();
+    const original = taskStore.createTask('Original attempt', '/tmp/work');
+    const launchTask = vi.fn(async () => ({ task: { id: 't1' }, queued: false }));
+    const { deps } = makeDeps(taskStore, { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({
+      type: 'launch',
+      prompt: 'Edited retry',
+      cwd: '/tmp/edited',
+      parentTaskId: original.id,
+    });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      prompt: 'Edited retry',
+      cwd: '/tmp/edited',
+      disableDedup: true,
+      parentTaskId: original.id,
+      userInitiatedRelaunch: true,
+    }));
+  });
+
+  test('legacy relaunch forwards the original task as parentTaskId', async () => {
+    const taskStore = new TaskStore();
+    const original = taskStore.createTask('Original attempt', '/tmp/work');
+    const launchTask = vi.fn(async () => ({ task: { id: 't1' }, queued: false }));
+    const { deps } = makeDeps(taskStore, { launchTask });
+    const handler = new LifecycleHandler(deps);
+
+    await handler.handle({ type: 'relaunch', taskId: original.id, prompt: 'Retry' });
+
+    expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
+      disableDedup: true,
+      parentTaskId: original.id,
+      userInitiatedRelaunch: true,
+    }));
+  });
 });
 
 describe('worktree:inspectCleanup', () => {
