@@ -536,7 +536,7 @@ The system SHALL manage tasks across `open`, `pending`, `inProgress`, `completed
 - On startup, tasks are loaded from disk and reconciled with live dtach sessions
 - Startup crash recovery skips a session after five persisted recovery relaunches, regardless of the rapid crash-loop window, and reports the skip through crash-loop health telemetry
 
-**Evidence:** `src/core/tasks.ts` (state machine, CRUD), `src/core/task-persistence.ts` (atomic JSON I/O), `src/server/reconciliation.ts` and `src/server/crash-recovery.ts` (startup recovery), `src/core/tasks.test.ts`, `src/core/task-persistence.test.ts`, `src/server/reconciliation.test.ts`, `src/server/crash-recovery.test.ts`.
+**Evidence:** `src/core/tasks.ts` (state machine, CRUD), `src/core/task-persistence.ts` (atomic JSON I/O), `src/server/reconciliation.ts` and `src/server/crash-recovery.ts` (startup recovery), `src/server/routes/diagnostics-routes.ts` (health projection), `src/core/tasks.test.ts`, `src/core/task-persistence.test.ts`, `src/server/reconciliation.test.ts`, `src/server/crash-recovery.test.ts`, `src/server/routes/diagnostics-routes.test.ts`.
 
 ### R4.5: Completion Criteria [F4.5] — SHOULD — `partial`
 
@@ -1671,7 +1671,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
-| R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation |
+| R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation, crash-recovery, diagnostics-routes |
 | R4.5 | F4.5 | SHOULD | partial | LaunchTaskDialog, tasks (auto-eval todo) |
 | R4.6 | F4.6 | SHOULD | done | local-dtach-backend (stable socket path), TerminalPanel (in-browser xterm.js) |
 | R4.7 | F4.4 | SHOULD | done | settings-store, App, SettingsDialog, agent-lifecycle, client-message-schema |

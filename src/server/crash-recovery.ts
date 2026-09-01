@@ -91,6 +91,11 @@ const CRASH_LOOP_WINDOW_MS = 60_000;
 /** Maximum recovery relaunches allowed before the session needs operator intervention. */
 const CRASH_LOOP_MAX_RELAUNCHES = 5;
 
+/** Whether a recovery skip was emitted by either crash-loop guard. */
+export function isCrashLoopSkipReason(reason: string): boolean {
+  return reason.startsWith('rapid crash-loop') || reason.startsWith('crash-loop cap reached');
+}
+
 /**
  * Attempt to relaunch sessions that died in a crash.
  *
@@ -240,13 +245,12 @@ export async function recoverCrashedSessions(
 
     // Guard: crash-loop detection. The cumulative cap bounds slow, repeatable
     // crashes that fall outside the rapid window and would otherwise relaunch
-    // forever. Keep the rapid prefix so health and disposition classifiers
-    // count both protections as crash-loop skips.
+    // forever.
     if ((session.relaunchCount ?? 0) >= CRASH_LOOP_MAX_RELAUNCHES) {
       result.skipped.push({
         taskId: task.id,
         sessionId: tmuxName,
-        reason: `rapid crash-loop (crash-loop cap reached: ${session.relaunchCount} relaunches, cap is ${CRASH_LOOP_MAX_RELAUNCHES})`,
+        reason: `crash-loop cap reached (${session.relaunchCount} relaunches, cap is ${CRASH_LOOP_MAX_RELAUNCHES})`,
       });
       continue;
     }

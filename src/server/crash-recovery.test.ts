@@ -8,6 +8,7 @@ import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { reconcile } from './reconciliation.js';
 import { recoverCrashedSessions } from './crash-recovery.js';
+import { buildStartupRecoveryHealthSummary } from './routes/diagnostics-routes.js';
 import { buildTaskLaunchIntent } from '../core/task-launch-intent.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 
@@ -1415,6 +1416,8 @@ describe('Crash Recovery', () => {
         reason: expect.stringContaining('crash-loop cap reached'),
       }),
     ]);
+    expect(buildStartupRecoveryHealthSummary(result, '2026-09-01T00:00:00.000Z'))
+      .toMatchObject({ crashLoopSkips: 1 });
   });
 
   test('allows recovery one below the cumulative cap outside the rapid window', async () => {

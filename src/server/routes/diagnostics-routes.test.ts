@@ -1859,7 +1859,7 @@ describe('diagnostics routes', () => {
             {
               taskId: 't5',
               sessionId: 's5',
-              reason: 'rapid crash-loop (crash-loop cap reached: 5 relaunches, cap is 5)',
+              reason: 'crash-loop cap reached (5 relaunches, cap is 5)',
             },
           ],
           failed: [{ taskId: 't4', sessionId: 's4', error: 'boom' }],

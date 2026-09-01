@@ -132,7 +132,7 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
         {
           taskId: 't-loop',
           sessionId: 's-loop',
-          reason: 'rapid crash-loop (relaunched 8s ago, window is 60s)',
+          reason: 'crash-loop cap reached (5 relaunches, cap is 5)',
         },
         {
           taskId: 't-cwd',
