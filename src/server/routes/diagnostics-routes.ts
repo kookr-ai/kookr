@@ -632,6 +632,24 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot({
       staleDtachCount: staleProcesses?.dtach.count ?? null,
     });
+    // Issue #2896: project the latest resource sampler's data-directory byte
+    // capacity onto health without re-sampling the filesystem. Keep this
+    // path-free because health and its last-good mirror are operator-visible.
+    // A zero-byte reading is valid; only null marks an unavailable field.
+    const latestResourceStatus = deps.getLatestResourceStatus?.() ?? null;
+    const latestDataDirectory = latestResourceStatus?.host.dataDirectory ?? null;
+    const hasCompleteDataDirectorySample =
+      latestDataDirectory !== null
+      && latestDataDirectory.diskFreeBytes !== null
+      && latestDataDirectory.diskTotalBytes !== null
+      && latestDataDirectory.diskFreePercent !== null;
+    const dataDirectoryBlock = {
+      status: hasCompleteDataDirectorySample ? 'known' as const : 'unknown' as const,
+      diskFreeBytes: latestDataDirectory?.diskFreeBytes ?? null,
+      diskTotalBytes: latestDataDirectory?.diskTotalBytes ?? null,
+      diskFreePercent: latestDataDirectory?.diskFreePercent ?? null,
+      sampledAt: latestResourceStatus?.sampledAt ?? null,
+    };
     // Issue #1885: first-class finding when relay-server orphans exceed the
     // bound, so sentinel/reflection can cite a stable code instead of
     // re-deriving a threshold from the raw count. Absent when within bound.
@@ -831,6 +849,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       nonCriticalTimerPause: nonCriticalTimerPauseBlock,
       snapshotShed: snapshotShedBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
+      dataDirectory: dataDirectoryBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
       ...(deps.scheduleService ? { schedules: deps.scheduleService.getStatusSnapshot() } : {}),

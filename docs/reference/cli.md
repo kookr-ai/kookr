@@ -788,7 +788,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | Hook-ingestion p95 lag | `hookIngestion.p95LagMs` | p95 strictly above 10 seconds (`HOOK_INGESTION_P95_WARN_MS`) |
 | Fail-closed paused schedule | `schedules.schedulesPausedByFailure` | any paused row (`count >= 1`, not only when three are paused) |
 | Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
-| Low data-dir disk | `dataDirectory.diskFreePercent` (or nested host/sampler aliases) | free percent present on health body and ≤15% (often absent today — live free space lives on `ops-status.json`) |
+| Low data-dir disk | `dataDirectory.diskFreePercent` (or legacy host/sampler aliases) | cached free percent is known and ≤15%; an explicit `dataDirectory.status: "unknown"` stays quiet |
 
 Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).
 

@@ -695,6 +695,137 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — cached data-directory capacity (issue #2896)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health dataDirectory block (issue #2896)', () => {
+    test('TS-HEALTH-DISK-001: projects one cached sample without exposing its path', async () => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        sampleGapMs: 10_000,
+        timerDriftMs: 2,
+        host: {
+          cpuUsagePercent: 12,
+          memoryUsedPercent: 34,
+          memoryFreeBytes: 1_000,
+          memoryTotalBytes: 2_000,
+          dataDirectory: {
+            path: '/private/operator/state',
+            diskFreeBytes: 15_000_000_000,
+            diskTotalBytes: 100_000_000_000,
+            diskFreePercent: 15,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 1,
+          processRssBytes: 2,
+          processHeapUsedBytes: 3,
+          processHeapTotalBytes: 4,
+        },
+        unavailable: [],
+      }));
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { dataDirectory?: Record<string, unknown> };
+      expect(body.dataDirectory).toEqual({
+        status: 'known',
+        diskFreeBytes: 15_000_000_000,
+        diskTotalBytes: 100_000_000_000,
+        diskFreePercent: 15,
+        sampledAt: '2026-09-01T04:05:06.000Z',
+      });
+      expect(body.dataDirectory).not.toHaveProperty('path');
+      expect(getLatestResourceStatus).toHaveBeenCalledTimes(1);
+    });
+
+    test('TS-HEALTH-DISK-002: represents a missing sample as explicit unknown nulls', async () => {
+      const getLatestResourceStatus = vi.fn(() => null);
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+      }).request('/api/health')).json() as { dataDirectory?: Record<string, unknown> };
+
+      expect(body.dataDirectory).toEqual({
+        status: 'unknown',
+        diskFreeBytes: null,
+        diskTotalBytes: null,
+        diskFreePercent: null,
+        sampledAt: null,
+      });
+      expect(getLatestResourceStatus).toHaveBeenCalledTimes(1);
+    });
+
+    test.each([
+      [
+        'missing free bytes',
+        { diskFreeBytes: null, diskTotalBytes: 100_000_000_000, diskFreePercent: 4.2 },
+        'unknown',
+      ],
+      [
+        'missing total bytes',
+        { diskFreeBytes: 4_200_000_000, diskTotalBytes: null, diskFreePercent: 4.2 },
+        'unknown',
+      ],
+      [
+        'missing free percent',
+        { diskFreeBytes: 4_200_000_000, diskTotalBytes: 100_000_000_000, diskFreePercent: null },
+        'unknown',
+      ],
+      [
+        'complete zero-valued sample',
+        { diskFreeBytes: 0, diskTotalBytes: 0, diskFreePercent: 0 },
+        'known',
+      ],
+    ] as const)('preserves available fields for a %s', async (_name, dataDirectory, status) => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        sampleGapMs: 10_000,
+        timerDriftMs: 2,
+        host: {
+          cpuUsagePercent: 12,
+          memoryUsedPercent: 34,
+          memoryFreeBytes: 1_000,
+          memoryTotalBytes: 2_000,
+          dataDirectory: {
+            path: '/private/operator/state',
+            ...dataDirectory,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 1,
+          processRssBytes: 2,
+          processHeapUsedBytes: 3,
+          processHeapTotalBytes: 4,
+        },
+        unavailable: status === 'known' ? [] : ['data_directory_disk_unavailable'],
+      }));
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+      }).request('/api/health')).json() as { dataDirectory?: Record<string, unknown> };
+
+      expect(body.dataDirectory).toEqual({
+        status,
+        ...dataDirectory,
+        sampledAt: '2026-09-01T04:05:06.000Z',
+      });
+      expect(body.dataDirectory).not.toHaveProperty('path');
+      expect(getLatestResourceStatus).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — timerHealth summary (issue #2636)
   // ---------------------------------------------------------------------------
   describe('GET /api/health timerHealth block (issue #2636)', () => {

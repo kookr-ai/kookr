@@ -545,15 +545,19 @@ export function collectOpsDigestWarnings(
   const hungSuspect = finiteNumber(byClass?.hungSuspect);
   const safeModeEngaged = typeof safeMode?.engaged === 'boolean' ? safeMode.engaged : null;
 
-  // Disk: health does not always publish free space. Prefer nested sampler /
-  // ops-status-shaped keys when present; stay quiet when absent.
+  // Disk: prefer the path-free cached sampler projection published by health.
+  // Keep legacy aliases for older servers and ops-status-shaped fixtures;
+  // explicit unknown/null stays quiet.
   let diskFreePercent: number | null = null;
-  const diskCandidates: unknown[] = [
-    h.dataDirectoryFreePercent,
-    asRecord(h.dataDirectory)?.diskFreePercent,
-    asRecord(asRecord(h.host)?.dataDirectory)?.diskFreePercent,
-    asRecord(rw?.lastSample)?.diskFreePercent,
-  ];
+  const dataDirectory = asRecord(h.dataDirectory);
+  const diskCandidates: unknown[] = dataDirectory?.status === 'unknown'
+    ? []
+    : [
+        dataDirectory?.diskFreePercent,
+        h.dataDirectoryFreePercent,
+        asRecord(asRecord(h.host)?.dataDirectory)?.diskFreePercent,
+        asRecord(rw?.lastSample)?.diskFreePercent,
+      ];
   for (const c of diskCandidates) {
     const n = finiteNumber(c);
     if (n !== null) {
