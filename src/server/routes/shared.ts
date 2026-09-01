@@ -634,6 +634,15 @@ export interface RouteDeps {
     'getHealthSnapshot'
   >;
   /**
+   * Post-recovery queue-fill actuator decision (issue #2895). Health reads only
+   * the service's bounded process-local snapshot; it never scans kick state,
+   * audit files, schedules, or tasks on the request path.
+   */
+  postRecoveryService?: Pick<
+    import('../post-recovery-service.js').PostRecoveryService,
+    'getQueueFillHealthSnapshot'
+  >;
+  /**
    * Hourly prod smoke tick (issues #1593, #2031). `/api/health` reads only
    * `getHealthSnapshot()` — a cheap artifact read projecting status /
    * consecutiveFailures / failingChecks; never re-runs smoke checks on the

@@ -53,6 +53,7 @@ import { MaintenancePruneHealth } from '../maintenance-prune-schedule.js';
 import { TimerHealthTracker } from '../../core/timer-health.js';
 import type { RouteDeps } from './shared.js';
 import { defaultResourceWatchdogHealthSnapshot } from '../resource-watchdog-service.js';
+import { PostRecoveryService } from '../post-recovery-service.js';
 import { FallbackLlmClient, resetHelperLlmDiagnosticsForTest } from '../../core/llm-factory.js';
 import type { AgentEvent, Anomaly, InjectHookEventResult } from '../../core/types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -3225,6 +3226,147 @@ describe('diagnostics routes', () => {
         connectedViewerCount: 0,
         grantStoreWritable: true,
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — post-recovery queue-fill decision (issue #2895)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health postRecoveryQueueFill block (issue #2895)', () => {
+    test('omits the informational block when the service is unwired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.status).toBe('ok');
+      expect(body).not.toHaveProperty('postRecoveryQueueFill');
+    });
+
+    test('exposes the initial lifecycle state when wired before the first tick', async () => {
+      const initial = {
+        schemaVersion: 'post-recovery-queue-fill.v1' as const,
+        state: 'not_started' as const,
+        evaluatedAt: null,
+        ageMs: null,
+        reason: null,
+        resultLimit: 25 as const,
+        truncated: false,
+        results: [],
+      };
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        postRecoveryService: { getQueueFillHealthSnapshot: () => initial },
+      }).request('/api/health');
+
+      expect(await res.json()).toMatchObject({
+        status: 'ok',
+        postRecoveryQueueFill: initial,
+      });
+    });
+
+    test('projects only the service in-memory snapshot without affecting health status', async () => {
+      const snapshot = {
+        schemaVersion: 'post-recovery-queue-fill.v1' as const,
+        state: 'completed' as const,
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 2_000,
+        reason: null,
+        resultLimit: 25,
+        truncated: false,
+        results: [{
+          repository: 'kookr-ai/kookr',
+          utcDay: '2026-08-10',
+          kicked: true,
+          reason: 'scout_launched' as const,
+          evaluatedAt: '2026-08-10T15:00:00.000Z',
+          ageMs: 2_000,
+          scoutTaskId: 'scout-1',
+        }],
+      };
+      const getQueueFillHealthSnapshot = vi.fn(() => snapshot);
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        postRecoveryService: { getQueueFillHealthSnapshot },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.status).toBe('ok');
+      expect(body.postRecoveryQueueFill).toEqual(snapshot);
+      expect(getQueueFillHealthSnapshot).toHaveBeenCalledOnce();
+    });
+
+    test('serves the snapshot produced by a real completed service tick', async () => {
+      const taskStore = new TaskStore();
+      const postRecoveryService = new PostRecoveryService({
+        listSchedules: () => [],
+        setEnabled: vi.fn(),
+        taskStore,
+        getCapacityLedger: () => ({
+          free: 9,
+          freeForGeneralSources: 9,
+          pendingQueueDepth: 0,
+        } as never),
+        launcher: vi.fn(),
+        now: () => Date.parse('2026-08-10T15:00:00.000Z'),
+      });
+      await postRecoveryService.tick();
+
+      const response = await mkApp({
+        taskStore,
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        postRecoveryService,
+      }).request('/api/health');
+
+      expect(await response.json()).toMatchObject({
+        status: 'ok',
+        postRecoveryQueueFill: {
+          state: 'completed',
+          evaluatedAt: '2026-08-10T15:00:00.000Z',
+          results: [],
+        },
+      });
+    });
+
+    test('keeps a whole-tick error informational for both health and readiness', async () => {
+      const failedSnapshot = {
+        schemaVersion: 'post-recovery-queue-fill.v1' as const,
+        state: 'error' as const,
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 0,
+        reason: 'tick_error' as const,
+        resultLimit: 25 as const,
+        truncated: false,
+        results: [],
+      };
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir: tempDir,
+        postRecoveryService: { getQueueFillHealthSnapshot: () => failedSnapshot },
+      });
+
+      const health = await app.request('/api/health');
+      expect(health.status).toBe(200);
+      expect(await health.json()).toMatchObject({
+        status: 'ok',
+        postRecoveryQueueFill: failedSnapshot,
+      });
+
+      const ready = await app.request('/api/ready');
+      expect(ready.status).toBe(200);
+      expect(await ready.json()).toMatchObject({ ready: true });
     });
   });
 

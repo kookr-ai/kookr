@@ -37,6 +37,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
+| Free capacity and an empty queue, but no visible recovery scout | `postRecoveryQueueFill` | Check lifecycle state, freshness, then the stable row reason — [post-recovery queue fill](#3c-post-recovery-queue-fill-issue-2895) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
@@ -401,6 +402,58 @@ bootstrap member (`holdSource=operator`, a manual disable, or any hold whose
 be auto-re-armed. Trigger exhaustion also takes precedence over the bootstrap
 floor. The floor only ever keeps a hand-audited handful of recovery-critical
 schedules alive; it never weakens fail-closed for anything else.
+
+---
+
+## 3c. Post-recovery queue fill (issue #2895)
+
+`postRecoveryQueueFill` is the last process-local queue-fill evaluation. It is
+informational: none of its states changes top-level `status` or `/api/ready`.
+The block is omitted when this service is not wired in the running build.
+
+```bash
+curl -fsS "$KOOKR_API_BASE_URL/api/health" \
+  | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin).get("postRecoveryQueueFill"), indent=2))'
+```
+
+Lifecycle states and their next check:
+
+| State / stable reason | Meaning | Next check |
+| --- | --- | --- |
+| `not_started` | This process has not evaluated queue fill yet. | Compare `serverStartedAt` with the deferred first tick (normally within 5 seconds). |
+| `suppressed` / `operator_drain` | Drain rejected this whole tick. | Run `kookr status` and confirm whether drain is intentional. |
+| `suppressed` / `safe_mode` | SAFE MODE rejected this whole tick. | Read `safeMode.engaged` and its `since` timestamp. |
+| `suppressed` / `tick_overlap` | A prior post-recovery tick was still running. | Re-probe after one 60-second tick interval; repeated overlap warrants checking server logs for a slow tick. |
+| `completed` / `reason: null` | Evaluation completed; `results` is this evaluation only. An empty array means no valid product-batch repository candidates were found. | List configured parallel-issue-batch schedules and validate their `repoFullName` parameters. |
+| `error` / `tick_error` | The whole evaluation threw; exception text and paths are intentionally absent from health. | Search the server log for the latest `[post-recovery] tick failed` line. |
+
+Each completed per-repository row has a stable reason and one next check:
+
+| Stable row reason | Meaning | Next check |
+| --- | --- | --- |
+| `scout_launched` | A scout task launched or queued. This alone does **not** prove implementation-batch re-entry. | Inspect the referenced `scoutTaskId`. |
+| `scout_launched_latch_persist_failed` | A scout launched, but the once-per-UTC-day latch could not be persisted. | Inspect `scoutTaskId`, then search the latest latch-persistence error for the repository in the server log. |
+| `insufficient_free_slots` | Effective general-source free capacity was below the queue-fill floor. | Read `capacity.freeForGeneralSources`. |
+| `queue_not_empty` | Pending work already existed. | Read `capacity.pendingQueueDepth`. |
+| `dispatch_unhealthy` | No healthy dispatch path was available. | Read `launchDependencies` for the blocked provider or dependency. |
+| `scout_or_batch_in_flight` | This repository already had a non-terminal scout or implementation batch. | Find the repository's active task in the task list. |
+| `already_kicked_utc_day` | A successful kick was already persisted for this repository and UTC day. | Compare `utcDay` with the repository's last kick audit row. |
+| `launch_error_retry_exhausted` | Today's bounded retry budget for scouts that died during launch was exhausted. | Inspect today's terminated-at-launch scout tasks for the repository. |
+| `scout_terminated_at_launch` | A created scout immediately reached a launch-error terminal state. | Inspect the referenced provider/session authentication state before the next tick. |
+| `scout_launch_failed` | Scout preparation, launch, or another uncategorized queue-fill step threw; raw exception detail is intentionally excluded. | Search the server log for the repository's latest `queue-fill kick failed` line. |
+
+Implementation-batch re-entry remains a separate decision owned by the
+`batchArmStatus` work in issue #2856. This block reports the scout launch only;
+it does not claim the later batch was armed, ran, or succeeded.
+
+The snapshot never accumulates history. A completed tick replaces all prior
+rows, `resultLimit` is the hard cap (currently 25), and `truncated: true` means
+additional repositories were omitted. `evaluatedAt` is the decision timestamp;
+`ageMs` is its age when the health body was assembled. Because health itself is
+cached, current staleness is approximately `ageMs + healthCacheAgeMs`. If
+`controlPlane.source` is `last-good`, instead treat the whole block as historical
+and use `evaluatedAt` plus `controlPlane.lastGoodAgeMs`. Even a fresh timestamp is
+not proof that capacity, drain, SAFE MODE, or dispatch gates remain unchanged.
 
 ---
 

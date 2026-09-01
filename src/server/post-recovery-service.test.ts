@@ -1,10 +1,11 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
 import type { Schedule } from '../core/schedule.js';
 import type { Task, TaskStore } from '../core/tasks.js';
+import { POST_RECOVERY_MIN_FREE_SLOTS } from '../core/post-recovery-queue-fill.js';
 
 vi.mock('./use-cases/playbook-launch.js', () => ({
   preparePlaybookLaunchWithMetadata: vi.fn(async () => ({
@@ -19,7 +20,9 @@ vi.mock('./use-cases/playbook-launch.js', () => ({
 import {
   collectProductBatchRepos,
   PostRecoveryService,
+  POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT,
   POST_RECOVERY_PROVENANCE,
+  type PostRecoveryServiceDeps,
 } from './post-recovery-service.js';
 
 function makeLedger(overrides: Partial<CapacityLedger> = {}): CapacityLedger {
@@ -109,6 +112,324 @@ describe('PostRecoveryService', () => {
 
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
+  });
+
+  function productSchedule(repo = 'jeanibarz/lucy', id = 'batch'): Schedule {
+    return schedule({
+      id,
+      name: `${repo} batch`,
+      enabled: true,
+      playbook: {
+        path: 'parallel-issue-batch.md',
+        parameters: { repoFullName: repo, localPath: `/checkout/${id}` },
+      },
+    });
+  }
+
+  function healthService(options: {
+    schedules?: Schedule[];
+    launcher?: PostRecoveryServiceDeps['launcher'];
+    getCapacityLedger?: PostRecoveryServiceDeps['getCapacityLedger'];
+    accepting?: boolean;
+    automationEnabled?: boolean;
+    stateKey?: string;
+    tasks?: Task[];
+  } = {}): PostRecoveryService {
+    const stateKey = options.stateKey ?? 'health';
+    return new PostRecoveryService({
+      listSchedules: () => options.schedules ?? [],
+      setEnabled: vi.fn(),
+      taskStore: makeTaskStore(options.tasks),
+      getCapacityLedger: options.getCapacityLedger ?? (() => makeLedger()),
+      launcher: options.launcher ?? vi.fn(),
+      isDispatchHealthy: () => true,
+      isAccepting: () => options.accepting ?? true,
+      isAutomationEnabled: () => options.automationEnabled ?? true,
+      kookrDir: tempDir,
+      kickStateDir: join(tempDir, `kick-${stateKey}`),
+      starvationStateDir: join(tempDir, `starvation-${stateKey}`),
+      now: () => nowMs,
+      log: () => {},
+    });
+  }
+
+  describe('queue-fill health snapshot (issue #2895)', () => {
+    it('starts with an explicit bounded not_started snapshot', () => {
+      const service = healthService();
+
+      expect(service.getQueueFillHealthSnapshot()).toEqual({
+        schemaVersion: 'post-recovery-queue-fill.v1',
+        state: 'not_started',
+        evaluatedAt: null,
+        ageMs: null,
+        reason: null,
+        resultLimit: POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT,
+        truncated: false,
+        results: [],
+      });
+    });
+
+    it('records stable whole-tick suppression reasons for drain and SAFE MODE', async () => {
+      const drain = healthService({ accepting: false, stateKey: 'drain' });
+      await drain.tick();
+      expect(drain.getQueueFillHealthSnapshot()).toMatchObject({
+        state: 'suppressed',
+        reason: 'operator_drain',
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 0,
+        results: [],
+      });
+
+      const safeMode = healthService({ automationEnabled: false, stateKey: 'safe-mode' });
+      await safeMode.tick();
+      expect(safeMode.getQueueFillHealthSnapshot()).toMatchObject({
+        state: 'suppressed',
+        reason: 'safe_mode',
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 0,
+        results: [],
+      });
+    });
+
+    it('distinguishes a completed evaluation with no repository candidates', async () => {
+      const service = healthService();
+
+      await service.tick();
+
+      expect(service.getQueueFillHealthSnapshot()).toMatchObject({
+        state: 'completed',
+        reason: null,
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 0,
+        truncated: false,
+        results: [],
+      });
+    });
+
+    it('projects ordinary skips with stable per-repo reason and freshness fields', async () => {
+      const service = healthService({
+        schedules: [productSchedule()],
+        getCapacityLedger: () => makeLedger({ free: 0, freeForGeneralSources: 0 }),
+      });
+
+      await service.tick();
+
+      expect(service.getQueueFillHealthSnapshot().results).toEqual([
+        {
+          repository: 'jeanibarz/lucy',
+          utcDay: '2026-08-10',
+          kicked: false,
+          reason: 'insufficient_free_slots',
+          evaluatedAt: '2026-08-10T15:00:00.000Z',
+          ageMs: 0,
+        },
+      ]);
+    });
+
+    it('projects a scout launch without claiming implementation-batch re-entry', async () => {
+      const service = healthService({
+        schedules: [productSchedule()],
+        launcher: vi.fn(async () => ({
+          task: { id: 'scout-health', status: 'running' } as Task,
+          queued: false,
+        })),
+        stateKey: 'success',
+      });
+
+      await service.tick();
+
+      expect(service.getQueueFillHealthSnapshot().results).toHaveLength(1);
+      expect(service.getQueueFillHealthSnapshot().results[0]).toMatchObject({
+        repository: 'jeanibarz/lucy',
+        utcDay: '2026-08-10',
+        kicked: true,
+        reason: 'scout_launched',
+        evaluatedAt: '2026-08-10T15:00:00.000Z',
+        ageMs: 0,
+        scoutTaskId: 'scout-health',
+      });
+    });
+
+    it('retains the scout ID when the daily latch cannot be persisted after launch', async () => {
+      const stateKey = 'persist-failure';
+      await writeFile(join(tempDir, `kick-${stateKey}`), 'not a directory');
+      const service = healthService({
+        schedules: [productSchedule(), productSchedule('z/second', 'second')],
+        launcher: vi.fn(async () => ({
+          task: { id: 'scout-persist-failure', status: 'running' } as Task,
+          queued: false,
+        })),
+        getCapacityLedger: () => makeLedger({
+          free: POST_RECOVERY_MIN_FREE_SLOTS,
+          freeForGeneralSources: POST_RECOVERY_MIN_FREE_SLOTS,
+        }),
+        stateKey,
+      });
+
+      await service.tick();
+
+      expect(service.getQueueFillHealthSnapshot().results[0]).toMatchObject({
+        repository: 'jeanibarz/lucy',
+        kicked: true,
+        reason: 'scout_launched_latch_persist_failed',
+        scoutTaskId: 'scout-persist-failure',
+      });
+      expect(service.getQueueFillHealthSnapshot().results[1]).toMatchObject({
+        repository: 'z/second',
+        kicked: false,
+        reason: 'insufficient_free_slots',
+      });
+      expect(service.getQueueFillHealthSnapshot().results).toHaveLength(2);
+    });
+
+    it('maps terminated-at-launch and exhausted retries to stable public reasons', async () => {
+      const terminated = healthService({
+        schedules: [productSchedule()],
+        launcher: vi.fn(async () => ({
+          task: {
+            id: 'scout-terminated',
+            status: 'terminated',
+            disposition: {
+              reason: 'launch_error',
+              at: '2026-08-10T15:00:00.000Z',
+              source: 'launch-service',
+              detail: 'private provider detail',
+            },
+          } as Task,
+          queued: false,
+        })),
+        stateKey: 'terminated',
+      });
+      await terminated.tick();
+      expect(terminated.getQueueFillHealthSnapshot().results[0]).toMatchObject({
+        kicked: false,
+        reason: 'scout_terminated_at_launch',
+        scoutTaskId: 'scout-terminated',
+      });
+
+      const failedScouts = Array.from({ length: 3 }, (_, index) => ({
+        id: `failed-scout-${index}`,
+        status: 'terminated',
+        playbookId: 'repository-idea-scout.md',
+        projectId: 'github.com/jeanibarz/lucy',
+        playbookParameterValues: { repoFullName: 'jeanibarz/lucy' },
+        name: 'Idea scout: jeanibarz/lucy',
+        prompt: 'repository idea scout for jeanibarz/lucy',
+        createdAt: new Date('2026-08-10T12:00:00.000Z'),
+        disposition: {
+          reason: 'launch_error',
+          at: '2026-08-10T12:00:00.000Z',
+          source: 'launch-service',
+        },
+      })) as unknown as Task[];
+      const exhausted = healthService({
+        schedules: [productSchedule()],
+        tasks: failedScouts,
+        stateKey: 'exhausted',
+      });
+      await exhausted.tick();
+      expect(exhausted.getQueueFillHealthSnapshot().results[0]).toMatchObject({
+        kicked: false,
+        reason: 'launch_error_retry_exhausted',
+      });
+    });
+
+    it('redacts raw launch exceptions and local paths behind a stable failure code', async () => {
+      const service = healthService({
+        schedules: [productSchedule()],
+        launcher: vi.fn(async () => {
+          throw new Error('spawn failed at /private/operator/checkout');
+        }),
+        stateKey: 'launch-error',
+      });
+
+      await service.tick();
+
+      const snapshot = service.getQueueFillHealthSnapshot();
+      expect(snapshot.results[0]).toMatchObject({
+        repository: 'jeanibarz/lucy',
+        kicked: false,
+        reason: 'scout_launch_failed',
+      });
+      expect(JSON.stringify(snapshot)).not.toContain('/private/operator');
+      expect(JSON.stringify(snapshot)).not.toContain('spawn failed');
+    });
+
+    it('replaces prior rows, reports freshness, and caps the latest evaluation', async () => {
+      const schedules = [productSchedule('z/first', 'first')];
+      const service = healthService({
+        schedules,
+        getCapacityLedger: () => makeLedger({ free: 0, freeForGeneralSources: 0 }),
+        stateKey: 'replacement',
+      });
+      await service.tick();
+
+      nowMs += 5_000;
+      schedules.splice(
+        0,
+        schedules.length,
+        ...Array.from(
+          { length: POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT + 2 },
+          (_, index) => productSchedule(`owner/repo-${String(index).padStart(2, '0')}`, `repo-${index}`),
+        ),
+      );
+      await service.tick();
+
+      nowMs += 2_000;
+      const snapshot = service.getQueueFillHealthSnapshot();
+      expect(snapshot.results).toHaveLength(POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT);
+      expect(snapshot.truncated).toBe(true);
+      expect(snapshot.ageMs).toBe(2_000);
+      expect(snapshot.results.every((row) => row.ageMs === 2_000)).toBe(true);
+      expect(snapshot.results.some((row) => row.repository === 'z/first')).toBe(false);
+    });
+
+    it('records overlap suppression and a stable whole-tick error without exception detail', async () => {
+      let releaseEnable!: () => void;
+      const enableGate = new Promise<void>((resolve) => { releaseEnable = resolve; });
+      let enableStarted!: () => void;
+      const enableStartedGate = new Promise<void>((resolve) => { enableStarted = resolve; });
+      const overlapping = new PostRecoveryService({
+        listSchedules: () => [schedule({
+          id: 'critical',
+          name: 'Lucy Orchestration Effectiveness',
+          enabled: false,
+          playbook: { path: 'lucy-orchestration-effectiveness.md', parameters: {} },
+        })],
+        setEnabled: async () => {
+          enableStarted();
+          await enableGate;
+        },
+        taskStore: makeTaskStore(),
+        getCapacityLedger: () => makeLedger(),
+        launcher: vi.fn(),
+        now: () => nowMs,
+      });
+      const firstTick = overlapping.tick();
+      await enableStartedGate;
+      await overlapping.tick();
+      expect(overlapping.getQueueFillHealthSnapshot()).toMatchObject({
+        state: 'suppressed',
+        reason: 'tick_overlap',
+      });
+      releaseEnable();
+      await firstTick;
+
+      const failing = healthService({
+        getCapacityLedger: () => {
+          throw new Error('secret store failure at /private/path');
+        },
+        stateKey: 'tick-error',
+      });
+      await failing.tick();
+      const failedSnapshot = failing.getQueueFillHealthSnapshot();
+      expect(failedSnapshot).toMatchObject({
+        state: 'error',
+        reason: 'tick_error',
+        results: [],
+      });
+      expect(JSON.stringify(failedSnapshot)).not.toContain('/private/path');
+    });
   });
 
   it('re-arms allowlisted disabled schedules without hold and audits', async () => {
@@ -633,7 +954,6 @@ describe('PostRecoveryService', () => {
     //
     // First: force-write a kick state as if a prior kick today already happened.
     const kickDir = join(tempDir, 'kick-state');
-    const { mkdir, writeFile } = await import('node:fs/promises');
     await mkdir(kickDir, { recursive: true });
     await writeFile(
       join(kickDir, 'jeanibarz-lucy.json'),
