@@ -420,14 +420,54 @@ function emptyDrainResult(remaining = 0): DrainLessonResult {
 }
 
 type ReleaseSpoolLock = () => Promise<void>;
+const heldLocalSpoolLocks = new Set<string>();
 
 async function acquireSpoolLock(lockPath: string, waitMs: number): Promise<ReleaseSpoolLock | null> {
   const deadline = Date.now() + waitMs;
+  const releaseLocal = await acquireLocalSpoolLock(lockPath, deadline);
+  if (!releaseLocal) return null;
+  try {
+    do {
+      const releaseCrossProcess = await tryAcquireSpoolLock(lockPath);
+      if (releaseCrossProcess) {
+        return async () => {
+          try {
+            await releaseCrossProcess();
+          } finally {
+            await releaseLocal();
+          }
+        };
+      }
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        await releaseLocal();
+        return null;
+      }
+      // Contending processes that published candidates together should not
+      // wake in the same fixed cadence and repeatedly withdraw in lockstep.
+      const backoffMs = Math.min(remainingMs, 10 + Math.floor(Math.random() * 21));
+      await new Promise<void>((resolve) => setTimeout(resolve, backoffMs));
+    } while (true);
+  } catch (err) {
+    await releaseLocal();
+    throw err;
+  }
+}
+
+async function acquireLocalSpoolLock(
+  lockPath: string,
+  deadline: number,
+): Promise<ReleaseSpoolLock | null> {
   do {
-    const release = await tryAcquireSpoolLock(lockPath);
-    if (release) return release;
-    if (Date.now() >= deadline) return null;
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    if (!heldLocalSpoolLocks.has(lockPath)) {
+      heldLocalSpoolLocks.add(lockPath);
+      return async () => {
+        heldLocalSpoolLocks.delete(lockPath);
+      };
+    }
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return null;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(remainingMs, 10)));
   } while (true);
 }
 

@@ -57,7 +57,9 @@ per-process lock claims prevent the production and development servers (or an
 operator drain) from spending the same attempt concurrently; later callers
 remove only a stopped holder's unique claim. Each claim binds the PID to its
 operating-system process generation, so PID reuse cannot make an abandoned
-claim look like the original live holder.
+claim look like the original live holder. Same-process mutations first queue
+behind a keyed local lock, while cross-process retries use jittered backoff to
+avoid synchronized claim collisions.
 
 ## Escalation
 

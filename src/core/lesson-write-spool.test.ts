@@ -88,6 +88,24 @@ describe('appendLessonWrite + drainLessonSpool', () => {
     expect(await readPendingLessons(spoolDir)).toHaveLength(1);
   });
 
+  test('TS-LESSON-004: serializes simultaneous same-process appends', async () => {
+    const spoolDir = await tempSpoolDir();
+    const results = await Promise.all([
+      appendLessonWrite(
+        spoolDir,
+        buildLessonEntry({ title: 'concurrent-one', body: 'first fallback\n' }),
+      ),
+      appendLessonWrite(
+        spoolDir,
+        buildLessonEntry({ title: 'concurrent-two', body: 'second fallback\n' }),
+      ),
+    ]);
+
+    expect(results.map((result) => result.appended)).toEqual([true, true]);
+    expect((await readPendingLessons(spoolDir)).map((entry) => entry.title))
+      .toEqual(['concurrent-one', 'concurrent-two']);
+  });
+
   test('drain writes successfully and empties the spool (idempotent re-drain)', async () => {
     const spoolDir = await tempSpoolDir();
     const e1 = buildLessonEntry({ title: 'one', body: 'body one\n' });
