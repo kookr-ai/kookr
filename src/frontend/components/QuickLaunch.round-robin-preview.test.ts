@@ -173,6 +173,7 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
     await flush();
 
     expect(nextLabel(container)).toBe('Next: Grok Build');
+    expect(container.querySelector('[data-testid="grok-auth-banner"]')).toBeNull();
 
     act(() => root.unmount());
   });
