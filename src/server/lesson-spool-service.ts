@@ -45,6 +45,7 @@ export interface LessonSpoolTickResult {
     attempted: number;
     written: number;
     failed: number;
+    deadLetteredCount: number;
     remaining: number;
   };
   alertFired: boolean;
@@ -143,12 +144,14 @@ export class LessonSpoolService {
         attempted: result.attempted,
         written: result.written,
         failed: result.failed,
+        deadLetteredCount: result.deadLettered,
         remaining: result.remaining,
       };
       if (result.attempted > 0) {
         this.log(
           `[lesson-spool] drain attempted=${result.attempted} written=${result.written} `
-            + `failed=${result.failed} remaining=${result.remaining}`,
+            + `failed=${result.failed} deadLettered=${result.deadLettered} `
+            + `remaining=${result.remaining}`,
         );
       }
       transition.state.lastPendingCount = result.remaining;
