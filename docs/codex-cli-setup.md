@@ -93,7 +93,10 @@ request across the IPC boundary:
 
 ```bash
 codex --version
-node scripts/smoke-codex-code-mode.mjs --codex "$(command -v codex)"
+CODEX_SOURCE_COMMIT=$(git -C "${CODEX_SRC:-$HOME/git/codex}" rev-parse HEAD)
+node scripts/smoke-codex-code-mode.mjs \
+  --codex "$(command -v codex)" \
+  --expected-source-commit "$CODEX_SOURCE_COMMIT"
 ```
 
 You should see output of the form:
@@ -104,7 +107,7 @@ codex-cli 0.118.0+kookr.<short-sha>
 
 The `+kookr.<sha>` suffix confirms you're on the fork build, not upstream. If the worktree was dirty at build time the suffix becomes `+kookr.<sha>.dirty` — rebuild from a clean checkout for a release-quality binary.
 
-If `codex --version` reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `command -v codex` and confirm it resolves to your install path. Do not consider an update healthy unless the IPC smoke also prints `code-mode IPC smoke passed`.
+If `codex --version` reports anything else (especially `codex-cli 0.0.0` or a version without the `+kookr` suffix), the fork did not install correctly. Re-check `command -v codex` and confirm it resolves to your install path. With `--expected-source-commit`, the smoke first verifies that the public CLI and host resolve to one runtime directory and that the manifest source and executable hashes match; it then exercises the IPC round trip. Do not consider an update healthy unless it prints `code-mode IPC smoke passed`.
 
 ## Configuration
 

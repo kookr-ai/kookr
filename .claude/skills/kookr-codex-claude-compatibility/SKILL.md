@@ -148,9 +148,15 @@ Sanity checks:
 
 ```bash
 "${CODEX_INSTALL_DIR:-$HOME/bin}/codex" --version
+CODEX_SOURCE_COMMIT=$(git -C "${KOOKR_CODEX_CHECKOUT:-$HOME/git/codex}" rev-parse HEAD)
 node "${KOOKR_ROOT:-$HOME/git/kookr}/scripts/smoke-codex-code-mode.mjs" \
-  --codex "${CODEX_INSTALL_DIR:-$HOME/bin}/codex"
+  --codex "${CODEX_INSTALL_DIR:-$HOME/bin}/codex" \
+  --expected-source-commit "$CODEX_SOURCE_COMMIT"
 ```
+
+The expected source commit check requires both public executable paths to
+resolve to the same runtime directory and verifies the manifest hashes before
+the real IPC round trip.
 
 Kookr should use `${KOOKR_CODEX_BIN:-${CODEX_INSTALL_DIR:-$HOME/bin}/codex}` as the deployed custom Codex binary.
 
