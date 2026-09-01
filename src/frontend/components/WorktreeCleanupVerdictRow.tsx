@@ -1,23 +1,36 @@
 import React, { useState } from 'react';
 import type { WorktreeCleanupVerdict } from '../../shared/contracts/worktree-cleanup-verdict.js';
-import { describeBlocker, formatDirtySummary, totalDirtyCount } from '../../shared/contracts/worktree-cleanup-verdict.js';
+import {
+  describeVerdictOutcome,
+  formatDirtySummary,
+  isAlreadyGoneBlocker,
+  totalDirtyCount,
+} from '../../shared/contracts/worktree-cleanup-verdict.js';
 
 interface Props {
   verdict: WorktreeCleanupVerdict;
-  /** Blocked-but-recoverable states render amber rather than red. */
-  tone: 'safe' | 'blocked' | 'pending';
+  /**
+   * Blocked-but-recoverable states render amber rather than red, and a
+   * worktree that is already gone renders muted — it is an outcome reached,
+   * not a refusal.
+   */
+  tone: 'safe' | 'blocked' | 'pending' | 'gone';
 }
 
 /**
  * One worktree's verdict: a status line, plus a `why?` drawer holding the
  * evidence behind it.
  *
- * The drawer opens whenever the verdict is blocked — a refused action should
- * explain itself without a second click — and stays closed when safe, where the
- * detail only interests someone who doubts the answer.
+ * The drawer opens whenever the verdict is a refusal — a refused action should
+ * explain itself without a second click — and stays closed when safe or when
+ * the worktree is already gone, where the detail only interests someone who
+ * doubts the answer.
  */
 export function WorktreeCleanupVerdictRow({ verdict, tone }: Props): JSX.Element {
-  const blocked = !verdict.removable;
+  // Already gone is not a refusal: the directory is in exactly the state
+  // removal would have left it in, and the cleanup treats it as success.
+  const alreadyGone = verdict.blocker !== undefined && isAlreadyGoneBlocker(verdict.blocker);
+  const refused = !verdict.removable && !alreadyGone;
   const [toggle, setToggle] = useState<{ open: boolean; forVerdict: string } | null>(null);
 
   // Derived, not initialised-once: a re-check keeps this row mounted (rows are
@@ -28,10 +41,16 @@ export function WorktreeCleanupVerdictRow({ verdict, tone }: Props): JSX.Element
   // dismissing the detail of a *safe* row expresses no opinion about a later
   // refusal, and letting it carry over would re-hide the explanation.
   const verdictKey = `${verdict.removable}:${verdict.blocker ?? ''}`;
-  const showDetails = toggle !== null && toggle.forVerdict === verdictKey ? toggle.open : blocked;
+  const showDetails = toggle !== null && toggle.forVerdict === verdictKey ? toggle.open : refused;
 
-  const glyphColor = tone === 'safe' ? 'var(--green)' : tone === 'pending' ? 'var(--amber)' : 'var(--red)';
-  const verdictColor = tone === 'safe' ? 'var(--text-muted)' : glyphColor;
+  const glyphColor = tone === 'safe'
+    ? 'var(--green)'
+    : tone === 'pending'
+      ? 'var(--amber)'
+      : tone === 'gone'
+        ? 'var(--text-muted)'
+        : 'var(--red)';
+  const verdictColor = tone === 'safe' || tone === 'gone' ? 'var(--text-muted)' : glyphColor;
 
   const dirtyText = formatDirtySummary(verdict.evidence.dirty);
   const hasDirty = verdict.evidence.dirty !== undefined;
@@ -43,16 +62,14 @@ export function WorktreeCleanupVerdictRow({ verdict, tone }: Props): JSX.Element
           chars, and sharing a row means either the name wraps mid-word or the
           verdict gets truncated. Neither degrades well. */}
       <div className="complete-cleanup-idline">
-        <span aria-hidden="true" style={{ color: glyphColor }}>{blocked ? '✕' : '✓'}</span>
+        <span aria-hidden="true" style={{ color: glyphColor }}>{refused ? '✕' : '✓'}</span>
         <span className="complete-cleanup-name" title={verdict.worktreePath}>
           {verdict.worktreeName}
         </span>
       </div>
       <div className="complete-cleanup-line">
         <span style={{ color: verdictColor }}>
-          {blocked && verdict.blocker
-            ? `kept — ${describeBlocker(verdict.blocker)}`
-            : 'safe to remove'}
+          {describeVerdictOutcome(verdict)}
         </span>
         <button
           type="button"

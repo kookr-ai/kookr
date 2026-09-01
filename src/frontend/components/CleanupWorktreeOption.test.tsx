@@ -305,6 +305,112 @@ describe('CleanupWorktreeOption — refresh during the first probe', () => {
   });
 });
 
+describe('CleanupWorktreeOption — worktree already gone', () => {
+  function gone(overrides: Partial<WorktreeCleanupVerdict> = {}) {
+    return verdict({ removable: false, blocker: 'not-found', evidence: {}, ...overrides });
+  }
+
+  test('reports the outcome rather than a refusal', async () => {
+    // A task that removed its own worktree used to close under a red ✕ reading
+    // "kept — path no longer exists", as if completion were stuck on it.
+    await render({ verdicts: [gone()] });
+
+    expect(container.textContent).toContain('already removed — nothing to clean up');
+    expect(container.textContent).not.toContain('kept —');
+    expect(container.textContent).not.toContain('cannot be removed by Kookr');
+    expect(container.querySelector('.complete-cleanup-idline')!.textContent).toContain('✓');
+  });
+
+  test('the spoken summary agrees with the visible row', async () => {
+    await render({ verdicts: [gone()] });
+
+    const summary = container.querySelector('.sr-only')!;
+    expect(summary.textContent).toContain('already removed, nothing to clean up');
+    expect(summary.textContent).not.toContain('kept');
+  });
+
+  test('leaves the evidence drawer closed — there is nothing to justify', async () => {
+    await render({ verdicts: [gone()] });
+
+    expect(container.querySelector('.complete-cleanup-details')).toBeNull();
+    expect(container.textContent).toContain('why?');
+  });
+
+  test('the drawer still opens on request, showing the path that vanished', async () => {
+    await render({ verdicts: [gone()] });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.complete-cleanup-why')!.click();
+    });
+
+    expect(container.querySelector('.complete-cleanup-details')!.textContent)
+      .toContain('/repos/kookr-arch-478-remote-handler');
+  });
+
+  test('nothing is offered for removal, so the box stays unchecked and disabled', async () => {
+    await render({ verdicts: [gone()], cleanupWorktree: true });
+
+    expect(checkbox()!.disabled).toBe(true);
+    expect(checkbox()!.checked).toBe(false);
+  });
+
+  test('no re-check, and no age line inviting one', async () => {
+    // A deleted directory will not come back, so the ↻ is withheld — and the
+    // age exists only to prompt a re-check, so a stamp reading "checked 4m ago"
+    // beside no button would be an invitation to nothing.
+    await render({ verdicts: [gone()] });
+
+    expect(refreshButton()).toBeNull();
+    expect(container.querySelector('.complete-cleanup-stamp')).toBeNull();
+  });
+
+  test('a re-check that finds the worktree gone reopens nothing and drops the refusal', async () => {
+    // Rows stay mounted across a re-check, so a blocked→gone flip has to
+    // re-derive the drawer rather than carry the old refusal's open state.
+    await render({ verdicts: [verdict({ removable: false, blocker: 'uncommitted-changes' })] });
+    expect(container.querySelector('.complete-cleanup-details')).not.toBeNull();
+
+    await render({ verdicts: [gone()] });
+
+    expect(container.querySelector('.complete-cleanup-details')).toBeNull();
+    expect(container.textContent).toContain('already removed — nothing to clean up');
+    expect(container.textContent).not.toContain('uncommitted changes');
+  });
+
+  test('a running loop does not relabel it — the worktree is gone either way', async () => {
+    // The loop only overrides verdicts that would otherwise go ahead. Saying
+    // "kept — Ralph loop still active" about a path that no longer exists would
+    // name a reason that cannot apply to it.
+    await render({ verdicts: [gone()], ralphActive: true });
+
+    expect(container.textContent).toContain('already removed — nothing to clean up');
+    expect(container.textContent).not.toContain('Ralph loop still active');
+    expect(checkbox()!.disabled).toBe(true);
+  });
+
+  test('a genuinely unremovable worktree beside it still carries the warning', async () => {
+    // "All permanent" is not "all fine": one of these really cannot be removed.
+    await render({
+      verdicts: [
+        gone(),
+        verdict({
+          worktreePath: '/repos/kookr',
+          worktreeName: 'kookr',
+          removable: false,
+          blocker: 'primary-working-tree',
+          evidence: {},
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain('already removed — nothing to clean up');
+    expect(container.textContent).toContain('kept — primary working tree');
+    expect(container.textContent).toContain('cannot be removed by Kookr');
+    expect(container.querySelector('.sr-only')!.textContent)
+      .toBe('kookr-arch-478-remote-handler: already removed, nothing to clean up. kookr: kept, primary working tree');
+  });
+});
+
 describe('CleanupWorktreeOption — a loop does not mask a more specific reason', () => {
   test('a permanently blocked worktree keeps its own reason during a loop', async () => {
     // Overwriting "primary working tree" with "Ralph loop active" would both

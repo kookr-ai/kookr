@@ -1,6 +1,10 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import type { WorktreeCleanupVerdict } from '../../shared/contracts/worktree-cleanup-verdict.js';
-import { describeBlocker, isPermanentBlocker } from '../../shared/contracts/worktree-cleanup-verdict.js';
+import {
+  describeVerdictOutcome,
+  isAlreadyGoneBlocker,
+  isPermanentBlocker,
+} from '../../shared/contracts/worktree-cleanup-verdict.js';
 import { WorktreeCleanupVerdictRow } from './WorktreeCleanupVerdictRow.js';
 
 interface Props {
@@ -85,7 +89,7 @@ function describeMode(mode: CleanupMode): string {
     // falls through — named verdicts read the same either way
     case 'verdicts':
       return mode.verdicts
-        .map((v) => `${v.worktreeName}: ${v.removable ? 'safe to remove' : `kept, ${describeBlocker(v.blocker!)}`}`)
+        .map((v) => `${v.worktreeName}: ${describeVerdictOutcome(v, ', ')}`)
         .join('. ');
   }
 }
@@ -159,9 +163,17 @@ export function CleanupWorktreeOption({
     || mode.kind === 'checking'
     || (mode.kind === 'verdicts' && !anyRemovable);
   // Re-checking a settled fact (a primary working tree will never become
-  // removable) would imply a possibility that doesn't exist.
+  // removable, a deleted directory will not come back) would imply a
+  // possibility that doesn't exist.
   const allPermanentlyBlocked = rows.length > 0
     && rows.every((v) => v.blocker !== undefined && isPermanentBlocker(v.blocker));
+  // ...but "already gone" is the outcome removal was after, not a refusal.
+  // Warning that Kookr cannot remove it reads as if completion were stuck on a
+  // worktree that no longer exists — which is exactly what the user just saw
+  // their task clean up. Nothing is refused and no re-check is on offer, so the
+  // whole stamp line goes: an age is only there to prompt a re-check.
+  const allAlreadyGone = rows.length > 0
+    && rows.every((v) => v.blocker !== undefined && isAlreadyGoneBlocker(v.blocker));
   // Withheld while the first probe is in flight — one is already running, and an
   // idle-looking button that silently does nothing is worse than no button.
   const showRefresh = verdicts !== undefined && !allPermanentlyBlocked;
@@ -234,13 +246,15 @@ export function CleanupWorktreeOption({
                 ? 'safe'
                 : verdict.blocker === 'ralph-loop-active'
                   ? 'pending'
-                  : 'blocked'
+                  : verdict.blocker !== undefined && isAlreadyGoneBlocker(verdict.blocker)
+                    ? 'gone'
+                    : 'blocked'
             }
           />
         ))}
       </div>
 
-      {checkedAt !== undefined && (
+      {checkedAt !== undefined && !allAlreadyGone && (
         <div className="complete-cleanup-line complete-cleanup-stamp">
           {allPermanentlyBlocked ? 'this cannot be removed by Kookr' : formatAge(checkedAt, now)}
         </div>
