@@ -11,9 +11,11 @@
  * Signals reused from the resource sampler (no second monitors):
  * - Event-loop delay p95 (`SystemResourceStatus.server.eventLoopDelayP95Ms`)
  *   — issue #1590.
- * - Data-directory free space (`host.dataDirectory`) — issue #1992. Fail-closed
- *   once free falls at or below the operational-alert floors for the same
- *   sustain-sample window, so unattended recovery stops spawning before ENOSPC.
+ * - Data-directory filesystem capacity (`host.dataDirectory`) — issue #1992
+ *   and #2926. Fail-closed once free bytes/percent breaches the operational-
+ *   alert floors or a supported filesystem reports zero free inodes for the
+ *   same sustain-sample window, so unattended recovery stops spawning before
+ *   ENOSPC.
  */
 
 import {
@@ -21,13 +23,24 @@ import {
   DEFAULT_OPERATIONAL_ALERT_DATA_DIR_FREE_PERCENT,
   DEFAULT_OPERATIONAL_ALERT_SUSTAIN_SAMPLES,
 } from './config.js';
-import { isDataDirectoryFreeCritical } from '../core/system-resource-metrics.js';
+import {
+  isDataDirectoryFreeCritical,
+  normalizeDataDirectoryInodeCounts,
+} from '../core/system-resource-metrics.js';
 
 /** Response `code` on the load-based 503, distinct from the #1536 depth 429s. */
 export const EVENT_LOOP_SATURATED_CODE = 'event_loop_saturated';
 
-/** Response `code` / `reason` when data-directory free space is critically low (#1992). */
+/** Stable response `code` / `reason` for critical byte or inode capacity (#1992/#2926). */
 export const DATA_DIRECTORY_DISK_CRITICAL_CODE = 'data_directory_disk_critical';
+
+/** Machine-readable disk-pressure causes kept separate from the stable 503 code. */
+export const DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE = 'data_directory_free_space_critical';
+export const DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE = 'data_directory_inodes_exhausted';
+
+export type DataDirectoryDiskPressureCause =
+  | typeof DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE
+  | typeof DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE;
 
 /**
  * Default event-loop delay p95 threshold (ms) above which a spawn POST is
@@ -128,7 +141,7 @@ export function readAdmissionControlConfigFromEnv(
  * - `KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES`
  *
  * Retry-After reuses `KOOKR_ADMISSION_RETRY_AFTER_SECONDS`. Both floors at `0`
- * disables the gate (opt-out).
+ * disable byte-space checks; validated zero-free-inode protection remains on.
  */
 export function readDiskAdmissionConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -209,10 +222,12 @@ export function evaluateTaskAdmission(input: {
   };
 }
 
-/** Latest data-directory free-space reading used by disk admission (#1992). */
+/** Latest data-directory filesystem-capacity reading used by admission. */
 export interface DataDirectoryDiskSample {
   diskFreePercent: number | null | undefined;
   diskFreeBytes: number | null | undefined;
+  diskFreeInodes?: number | null;
+  diskTotalInodes?: number | null;
   path?: string | null;
   /** Resource-status `sampledAt` — used to dedupe multi-observe of the same tick. */
   sampledAt?: string | null;
@@ -224,8 +239,12 @@ export interface DiskCriticalDetails {
   code: typeof DATA_DIRECTORY_DISK_CRITICAL_CODE;
   /** Stable machine-readable reason (mirrors drain's `reason` field). */
   reason: typeof DATA_DIRECTORY_DISK_CRITICAL_CODE;
+  /** Specific pressure signal while preserving the existing code/reason contract. */
+  pressureCause: DataDirectoryDiskPressureCause;
   diskFreePercent: number | null;
   diskFreeBytes: number | null;
+  diskFreeInodes: number | null;
+  diskTotalInodes: number | null;
   freePercentThreshold: number;
   freeBytesThreshold: number;
   path: string | null;
@@ -236,11 +255,34 @@ export type DiskAdmissionDecision =
   | { admit: true }
   | { admit: false; rejection: DiskCriticalDetails };
 
+function evaluateDataDirectoryDiskPressure(
+  sample: DataDirectoryDiskSample,
+  config: DiskAdmissionConfig,
+): DataDirectoryDiskPressureCause | null {
+  const inodeCounts = normalizeDataDirectoryInodeCounts({
+    diskFreeInodes: sample.diskFreeInodes,
+    diskTotalInodes: sample.diskTotalInodes,
+  });
+  if (inodeCounts?.diskFreeInodes === 0) {
+    return DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE;
+  }
+  if (isDataDirectoryFreeCritical({
+    freePercent: sample.diskFreePercent,
+    freeBytes: sample.diskFreeBytes,
+    percentThreshold: config.freePercentThreshold,
+    bytesThreshold: config.freeBytesThreshold,
+  })) {
+    return DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE;
+  }
+  return null;
+}
+
 /**
- * Edge-triggered consecutive-breach tracker for data-directory free space
- * (issue #1992). Fed once per resource-sampler tick; rejects launches only
- * after `sustainSamples` consecutive breaches so a single noisy reading cannot
- * false-positive the gate shut (same discipline as the ops-alert evaluator).
+ * Edge-triggered consecutive-breach tracker for data-directory filesystem
+ * capacity (issues #1992 and #2926). Fed once per resource-sampler tick;
+ * rejects launches only after `sustainSamples` consecutive breaches so a
+ * single noisy reading cannot false-positive the gate shut (same discipline
+ * as the ops-alert evaluator).
  *
  * Fail-open on missing data: a null/non-finite reading neither advances the
  * counter nor clears an active critical state (matches ops-alert rules).
@@ -248,6 +290,9 @@ export type DiskAdmissionDecision =
 export class DataDirectoryDiskAdmissionTracker {
   private consecutive = 0;
   private critical = false;
+  private pressureCause: DataDirectoryDiskPressureCause | null = null;
+  private freeSpaceRecoveryPending = false;
+  private inodeRecoveryPending = false;
   private configKey: string | null = null;
   private lastSampledAt: string | null = null;
 
@@ -268,17 +313,13 @@ export class DataDirectoryDiskAdmissionTracker {
     const bytesThreshold = config.freeBytesThreshold;
     const sustainSamples = Math.max(1, Math.floor(config.sustainSamples));
 
-    if (!(percentThreshold > 0) && !(bytesThreshold > 0)) {
-      this.consecutive = 0;
-      this.critical = false;
-      this.configKey = null;
-      return;
-    }
-
     const configKey = `disk:${percentThreshold}:${bytesThreshold}:${sustainSamples}`;
     if (this.configKey !== null && this.configKey !== configKey) {
       this.consecutive = 0;
       this.critical = false;
+      this.pressureCause = null;
+      this.freeSpaceRecoveryPending = false;
+      this.inodeRecoveryPending = false;
     }
     this.configKey = configKey;
 
@@ -288,8 +329,22 @@ export class DataDirectoryDiskAdmissionTracker {
     const freeBytes = sample.diskFreeBytes;
     const percentKnown = freePercent != null && Number.isFinite(freePercent);
     const bytesKnown = freeBytes != null && Number.isFinite(freeBytes);
-    const hasAnyEnabledReading =
-      (percentEnabled && percentKnown) || (bytesEnabled && bytesKnown);
+    const inodeCounts = normalizeDataDirectoryInodeCounts({
+      diskFreeInodes: sample.diskFreeInodes,
+      diskTotalInodes: sample.diskTotalInodes,
+    });
+    const allEnabledReadingsKnown =
+      (!percentEnabled || percentKnown) && (!bytesEnabled || bytesKnown);
+    const freeSpacePressure = isDataDirectoryFreeCritical({
+      freePercent,
+      freeBytes,
+      percentThreshold,
+      bytesThreshold,
+    });
+    const inodePressure = inodeCounts?.diskFreeInodes === 0;
+    const hasAnyEnabledReading = (percentEnabled && percentKnown)
+      || (bytesEnabled && bytesKnown)
+      || inodeCounts !== null;
 
     if (!hasAnyEnabledReading) {
       // No data: preserve streak + critical flag (fail-open on missing, do not
@@ -297,34 +352,49 @@ export class DataDirectoryDiskAdmissionTracker {
       return;
     }
 
-    const breached = isDataDirectoryFreeCritical({
-      freePercent,
-      freeBytes,
-      percentThreshold,
-      bytesThreshold,
-    });
+    // Remember every pressure dimension observed in the current streak/episode.
+    // A valid healthy reading clears only its own dimension. This prevents a
+    // joint byte+inode breach from recovering on an inode-only sample while
+    // still allowing an inode-only episode to recover when byte accounting is
+    // unavailable.
+    if (freeSpacePressure) this.freeSpaceRecoveryPending = true;
+    else if (allEnabledReadingsKnown) this.freeSpaceRecoveryPending = false;
+    if (inodePressure) this.inodeRecoveryPending = true;
+    else if (inodeCounts !== null) this.inodeRecoveryPending = false;
 
-    if (breached) {
+    const pressureCause = evaluateDataDirectoryDiskPressure(sample, config);
+    if (pressureCause !== null) {
       this.consecutive += 1;
       if (!this.critical && this.consecutive >= sustainSamples) {
         this.critical = true;
       }
+      if (this.critical) this.pressureCause = pressureCause;
       return;
     }
 
-    // Recovery requires every enabled floor to have a known reading above the
-    // floor (same as the ops-alert recovery path).
-    const allEnabledReadingsKnown =
-      (!percentEnabled || percentKnown) && (!bytesEnabled || bytesKnown);
-    if (!allEnabledReadingsKnown) return;
+    if (this.freeSpaceRecoveryPending || this.inodeRecoveryPending) {
+      // Current readings may prove one half of a joint episode recovered while
+      // the other half is unavailable. Keep the gate shut, but report the
+      // unresolved dimension so clients do not act on a stale cause.
+      this.pressureCause = this.inodeRecoveryPending
+        ? DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE
+        : DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE;
+      return;
+    }
 
     this.consecutive = 0;
     this.critical = false;
+    this.pressureCause = null;
   }
 
-  /** True once free space has stayed critical for `sustainSamples` ticks. */
+  /** True once filesystem-capacity pressure has persisted for the sustain window. */
   isCritical(): boolean {
     return this.critical;
+  }
+
+  /** Current or most recently observed pressure signal while critical. */
+  getPressureCause(): DataDirectoryDiskPressureCause | null {
+    return this.critical ? this.pressureCause : null;
   }
 
   /** Test/diagnostics snapshot. */
@@ -336,23 +406,28 @@ export class DataDirectoryDiskAdmissionTracker {
   reset(): void {
     this.consecutive = 0;
     this.critical = false;
+    this.pressureCause = null;
+    this.freeSpaceRecoveryPending = false;
+    this.inodeRecoveryPending = false;
     this.configKey = null;
     this.lastSampledAt = null;
   }
 }
 
 /**
- * Decide whether a spawn POST may proceed given data-directory free space.
+ * Decide whether a spawn POST may proceed given data-directory capacity.
  *
  * Prefer feeding {@link DataDirectoryDiskAdmissionTracker} from the resource-
  * status tick and passing `critical: tracker.isCritical()` so the sustain
  * window is measured in sampler ticks, not launch attempts. When no tracker is
  * wired, a single-sample breach still fails closed (sustainSamples treated as
  * already met) so tests and partial wiring remain fail-closed under known
- * critical free space.
+ * critical filesystem capacity.
  *
- * Disabled when both floors are `<= 0`. Missing readings fail open unless the
- * tracker already marked critical.
+ * Both byte-space checks are disabled when their floors are `<= 0`; validated
+ * zero-free-inode protection remains enabled. Unavailable readings cannot
+ * initiate a rejection, while tracker-held critical state requires a valid
+ * recovery sample for each pressure dimension observed in the episode.
  */
 export function evaluateDiskAdmission(input: {
   config: DiskAdmissionConfig;
@@ -362,28 +437,29 @@ export function evaluateDiskAdmission(input: {
    * When omitted, falls back to a pure single-sample breach check.
    */
   critical?: boolean;
+  /** Current or most recently observed cause retained by the sustain tracker. */
+  pressureCause?: DataDirectoryDiskPressureCause | null;
 }): DiskAdmissionDecision {
   const { config, sample } = input;
   const percentThreshold = config.freePercentThreshold;
   const bytesThreshold = config.freeBytesThreshold;
-  if (!(percentThreshold > 0) && !(bytesThreshold > 0)) {
-    return { admit: true };
-  }
-
   const freePercent = sample?.diskFreePercent ?? null;
   const freeBytes = sample?.diskFreeBytes ?? null;
   const path = sample?.path ?? null;
+  const inodeCounts = normalizeDataDirectoryInodeCounts({
+    diskFreeInodes: sample?.diskFreeInodes,
+    diskTotalInodes: sample?.diskTotalInodes,
+  });
+  const sampledPressureCause = sample
+    ? evaluateDataDirectoryDiskPressure(sample, config)
+    : null;
 
-  const isCritical =
-    input.critical
-    ?? isDataDirectoryFreeCritical({
-      freePercent,
-      freeBytes,
-      percentThreshold,
-      bytesThreshold,
-    });
+  const isCritical = input.critical ?? (sampledPressureCause !== null);
 
   if (!isCritical) return { admit: true };
+  const pressureCause = input.pressureCause
+    ?? sampledPressureCause
+    ?? DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE;
 
   const retryAfterSeconds = Math.max(1, Math.floor(config.retryAfterSeconds));
   const freePctText =
@@ -395,19 +471,30 @@ export function evaluateDiskAdmission(input: {
       ? `${Math.round(freeBytes)}B`
       : 'unknown';
 
+  const error = pressureCause === DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE
+    ? `Data-directory inodes are exhausted (`
+      + `${inodeCounts?.diskFreeInodes ?? 'unknown'} free / `
+      + `${inodeCounts?.diskTotalInodes ?? 'unknown'} total`
+      + `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. `
+      + `Retry after ${retryAfterSeconds}s once a data-directory inode is available. `
+      + `Reclaim/reap paths remain available.`
+    : `Data-directory disk free is critical (${freePctText} / ${freeBytesText}`
+      + `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. `
+      + `Retry after ${retryAfterSeconds}s once free space recovers above the floors `
+      + `(percent≤${percentThreshold || 'off'}, bytes≤${bytesThreshold || 'off'}). `
+      + `Reclaim/reap paths remain available.`;
+
   return {
     admit: false,
     rejection: {
-      error:
-        `Data-directory disk free is critical (${freePctText} / ${freeBytesText}` +
-        `${path ? ` at ${path}` : ''}). Refusing new task launches to avoid ENOSPC. ` +
-        `Retry after ${retryAfterSeconds}s once free space recovers above the floors ` +
-        `(percent≤${percentThreshold || 'off'}, bytes≤${bytesThreshold || 'off'}). ` +
-        `Reclaim/reap paths remain available.`,
+      error,
       code: DATA_DIRECTORY_DISK_CRITICAL_CODE,
       reason: DATA_DIRECTORY_DISK_CRITICAL_CODE,
+      pressureCause,
       diskFreePercent: freePercent != null && Number.isFinite(freePercent) ? freePercent : null,
       diskFreeBytes: freeBytes != null && Number.isFinite(freeBytes) ? freeBytes : null,
+      diskFreeInodes: inodeCounts?.diskFreeInodes ?? null,
+      diskTotalInodes: inodeCounts?.diskTotalInodes ?? null,
       freePercentThreshold: percentThreshold,
       freeBytesThreshold: bytesThreshold,
       path: path ?? null,

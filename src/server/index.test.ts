@@ -8,6 +8,10 @@ import { createKookrServerInternal, notifyBootReconciledTaskOutcomes } from './i
 import type { KookrServerInternal } from './server-test-helpers.js';
 import type { ResourceStatusSampler } from './resource-status-service.js';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
+import {
+  readDataDirectoryDiskUsageWithStatfs,
+  SystemResourceSampler,
+} from './system-resource-sampler.js';
 import { createRelayServer } from '../../relay/server.js';
 import { resolveTaskSqlitePath } from '../core/task-sqlite-store.js';
 
@@ -1276,6 +1280,91 @@ describe('createKookrServer', () => {
       expect(data.agents).toBe(0);
       expect(data.build).toEqual(expect.any(Object));
       expect(typeof data.serverStartedAt).toBe('string');
+    });
+
+    test('sustained zero-inode samples reject launches and trigger emergency prune', { timeout: 15_000 }, async () => {
+      await server.close();
+      serverClosed = true;
+
+      let inodeServer: KookrServerInternal | null = null;
+      let sampleCount = 0;
+      const inodeDir = join(tempDir, 'inode-admission');
+      const sampler = new SystemResourceSampler({
+        dataDirectoryPath: inodeDir,
+        intervalMs: 20,
+        nowMs: () => sampleCount * 20,
+        nowIso: () => new Date(Date.UTC(2026, 7, 20, 0, 0, sampleCount++)).toISOString(),
+        createEventLoopMonitor: () => ({
+          count: 0,
+          enable: () => {},
+          disable: () => {},
+          reset: () => {},
+          percentile: () => 0,
+        }),
+        readDataDirectoryDiskUsage: (path) => readDataDirectoryDiskUsageWithStatfs(
+          path,
+          () => ({
+            bsize: 4_096,
+            bavail: 10_000_000,
+            blocks: 20_000_000,
+            files: 100_000,
+            ffree: 0,
+          }),
+        ),
+      });
+
+      try {
+        await withEnv({
+          KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT: '0',
+          KOOKR_ADMISSION_DATA_DIR_FREE_BYTES: '0',
+          KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES: '2',
+          KOOKR_EMERGENCY_PRUNE_THROTTLE_MS: '0',
+        }, async () => {
+          inodeServer = await createKookrServerInternal({
+            port: 0,
+            host: '127.0.0.1',
+            kookrDir: inodeDir,
+            tasksFile: join(inodeDir, 'tasks.json'),
+            hooksDir: join(inodeDir, 'hooks'),
+            settingsDir: join(inodeDir, 'settings'),
+            serverCwd: '/test/cwd',
+            frontendDir: join(inodeDir, 'frontend'),
+            saveIntervalMs: 600_000,
+            livenessIntervalMs: 600_000,
+            terminalBackend: new FakeTerminalBackend(),
+            claudeDir: join(inodeDir, 'claude'),
+            resourceStatusSampler: sampler,
+            resourceStatusIntervalMs: 20,
+          });
+
+          await waitForCondition(() => sampleCount >= 2);
+          const inodeBaseUrl = `http://127.0.0.1:${getActualPort(inodeServer!)}`;
+          const healthRes = await fetch(`${inodeBaseUrl}/api/health`);
+          expect(healthRes.status).toBe(200);
+          expect(await healthRes.json()).toMatchObject({
+            maintenancePrune: {
+              emergencyPruneTriggeredTotal: 1,
+            },
+          });
+
+          const launchRes = await fetch(`${inodeBaseUrl}/api/tasks`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ prompt: 'must be rejected', cwd: CWD }),
+          });
+          expect(launchRes.status).toBe(503);
+          expect(await launchRes.json()).toMatchObject({
+            code: 'data_directory_disk_critical',
+            reason: 'data_directory_disk_critical',
+            pressureCause: 'data_directory_inodes_exhausted',
+            diskFreeInodes: 0,
+            diskTotalInodes: 100_000,
+          });
+          expect(inodeServer!.taskStore.listTasks()).toHaveLength(0);
+        });
+      } finally {
+        await inodeServer?.close();
+      }
     });
 
     test('GET /api/tasks returns empty array initially', async () => {

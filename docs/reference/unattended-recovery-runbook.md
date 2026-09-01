@@ -32,7 +32,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | --- | --- | --- |
 | Schedules / autonomous spawns stopped; manual launches still work | `safeMode.engaged` | Confirm intentional; **disengage** when incident over (see [SAFE MODE](#1-safe-mode-engage--disengage)) |
 | Need to stop schedule fires during an incident | `safeMode.engaged == false` | **Engage** SAFE MODE via settings (not drain — drain blocks *all* launches) |
-| New launches HTTP **503** with `data_directory_disk_critical` | admission / free space under `KOOKR_DIR` | Free disk; reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
+| New launches HTTP **503** with `data_directory_disk_critical` | admission / byte and inode capacity under `KOOKR_DIR` | Inspect `pressureCause`; reclaim byte space or inodes. Reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
@@ -169,6 +169,8 @@ handling.
 
 **Symptom.** `POST /api/tasks` returns **HTTP 503** with
 `code` / `reason` **`data_directory_disk_critical`** (and usually `Retry-After`).
+The `pressureCause` field says whether byte capacity is critical or the
+data-directory filesystem has no free inodes.
 Reclaim / reap / soft-terminate paths stay open — only **new** task creation is
 shed (issue #1992).
 
@@ -179,12 +181,13 @@ shed (issue #1992).
 | `KOOKR_ALERT_DATA_DIR_FREE_PERCENT` / `_BYTES` | Alert floors (default percent floor `5`) |
 | `KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT` / `_BYTES` | Optional admission overrides (else reuse alert floors) |
 | `KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES` | Consecutive low samples before shed |
-| Both floors at `0` | Disables disk admission |
+| Both floors at `0` | Disables byte-space floors; zero-free-inode protection remains on when supported |
 
 **Actions:**
 
 ```bash
 df -h "$KOOKR_DIR"
+df -i "$KOOKR_DIR"
 du -sh "$KOOKR_DIR"/* 2>/dev/null | sort -h | tail -20
 
 # Optional: host free-space sample when the resource sampler is on
@@ -198,12 +201,18 @@ print("resourceWatchdog", h.get("resourceWatchdog"))
 PY
 ```
 
-1. Stop adding work if needed (`kookr drain` for *all* launches, or SAFE MODE for
+1. Inspect the launch 503 `pressureCause`: `data_directory_free_space_critical`
+   identifies byte pressure; `data_directory_inodes_exhausted` identifies zero
+   free inodes.
+2. Stop adding work if needed (`kookr drain` for *all* launches, or SAFE MODE for
    schedules only).
-2. Free space under `$KOOKR_DIR` (old hooks/transcripts, rotated `server.log`,
-   stale worktrees via dashboard/sweep — never delete foreign paths blindly).
-3. Re-try a benign spawn or wait for sustain samples to clear; admission fails
-   **open** when disk samples are missing.
+3. Reclaim eligible paths under `$KOOKR_DIR` (old hooks/transcripts, rotated
+   `server.log`, stale worktrees via dashboard/sweep — never delete foreign paths
+   blindly). For inode exhaustion, continue until `df -i` reports available
+   inodes even if `df -h` already shows ample bytes.
+4. Wait for a valid resource sample to confirm recovery, then re-try a benign
+   spawn. Missing readings cannot initiate pressure, but they preserve an
+   already-critical gate until the affected signal is observed healthy.
 
 Full admission semantics: [backpressure.md](./backpressure.md) §5b.
 

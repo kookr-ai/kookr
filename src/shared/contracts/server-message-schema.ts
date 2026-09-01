@@ -248,6 +248,8 @@ const resourceStatusMessage = z.object({
         diskFreeBytes: z.number().nullable(),
         diskTotalBytes: z.number().nullable(),
         diskFreePercent: z.number().nullable(),
+        diskFreeInodes: z.number().nullable().optional(),
+        diskTotalInodes: z.number().nullable().optional(),
       }),
     }),
     server: z.object({

@@ -183,3 +183,35 @@ export function isDataDirectoryFreeCritical(input: {
 
   return percentBreached || bytesBreached;
 }
+
+export interface DataDirectoryInodeCounts {
+  diskFreeInodes: number;
+  diskTotalInodes: number;
+}
+
+/**
+ * Validate inode counts exposed by `statfs` before policy code relies on them.
+ *
+ * Some filesystems report zero totals, sentinel-sized values, or internally
+ * inconsistent counts when inode accounting is unsupported. Treat those
+ * readings as unavailable. A real zero free count remains meaningful only
+ * when paired with a positive total.
+ */
+export function normalizeDataDirectoryInodeCounts(input: {
+  diskFreeInodes: number | null | undefined;
+  diskTotalInodes: number | null | undefined;
+}): DataDirectoryInodeCounts | null {
+  const { diskFreeInodes, diskTotalInodes } = input;
+  if (
+    diskFreeInodes == null
+    || diskTotalInodes == null
+    || !Number.isSafeInteger(diskFreeInodes)
+    || !Number.isSafeInteger(diskTotalInodes)
+    || diskFreeInodes < 0
+    || diskTotalInodes <= 0
+    || diskFreeInodes > diskTotalInodes
+  ) {
+    return null;
+  }
+  return { diskFreeInodes, diskTotalInodes };
+}

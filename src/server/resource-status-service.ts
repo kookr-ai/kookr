@@ -341,6 +341,8 @@ export function createUnavailableResourceStatus(sampledAt: string): SystemResour
         diskFreeBytes: null,
         diskTotalBytes: null,
         diskFreePercent: null,
+        diskFreeInodes: null,
+        diskTotalInodes: null,
       },
     },
     server: {

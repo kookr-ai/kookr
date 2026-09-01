@@ -216,20 +216,30 @@ metric must never become a spurious rejection.
 
 ## 5b. Data-directory disk-critical admission (issue #1992)
 
-Under critically low free space on the Kookr data directory, spawning more
-agents worsens ENOSPC. Before parsing the body, `POST /api/tasks` also consults
-the already-sampled `host.dataDirectory` free-space reading. When free percent
-or free bytes stays at or below the configured floors for the same sustain
-window the ops alerts use, the request is shed with **HTTP 503**,
+Under critically low free space or zero free inodes on the Kookr data
+directory, spawning more agents worsens ENOSPC. Before parsing the body,
+`POST /api/tasks` also consults the already-sampled `host.dataDirectory`
+filesystem reading. When free percent/free bytes breaches a configured floor,
+or a supported filesystem reports zero free inodes, for the same sustain window
+the ops alerts use, the request is shed with **HTTP 503**,
 `Retry-After`, and body
-`{ error, code: "data_directory_disk_critical", reason: "data_directory_disk_critical", … }`.
+`{ error, code: "data_directory_disk_critical", reason: "data_directory_disk_critical", pressureCause, … }`.
+`pressureCause` distinguishes `data_directory_free_space_critical` from
+`data_directory_inodes_exhausted`. The response includes `diskFreeInodes` and
+`diskTotalInodes` for either cause; each is `null` when inode accounting is
+unavailable.
 
 Defaults reuse `KOOKR_ALERT_DATA_DIR_FREE_PERCENT` / `_BYTES` /
 `KOOKR_ALERT_SUSTAIN_SAMPLES`. Optional admission-only overrides:
 `KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT`, `KOOKR_ADMISSION_DATA_DIR_FREE_BYTES`,
-`KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES`. Both floors at `0` disables the gate.
-Missing disk readings fail open; reclaim/reap paths are not gated.
-Manual reclaim / TTL reaps continue to run while launches are refused.
+`KOOKR_ADMISSION_DATA_DIR_SUSTAIN_SAMPLES`. Both byte-space floors at `0`
+disable only those floors; confirmed zero-free-inode protection remains on.
+Unsupported, zero-total, or inconsistent inode readings cannot engage inode
+admission. If inode admission is already critical, Kookr preserves the gate
+until a valid sample reports positive free inodes. Other missing readings also
+cannot initiate pressure but preserve any corresponding tracker-held critical
+state until recovery is observed. Reclaim/reap paths are not gated, so manual
+reclaim / TTL reaps continue to run while launches are refused.
 
 ### Invariants (issue #1590 invariant gate)
 

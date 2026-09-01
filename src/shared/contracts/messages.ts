@@ -158,6 +158,9 @@ export interface SystemResourceStatus {
       diskFreeBytes: number | null;
       diskTotalBytes: number | null;
       diskFreePercent: number | null;
+      /** Additive inode capacity fields; absent on older servers and null when unsupported. */
+      diskFreeInodes?: number | null;
+      diskTotalInodes?: number | null;
     };
   };
   server: {

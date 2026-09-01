@@ -21,6 +21,8 @@ const resourceStatus = {
       diskFreeBytes: 1024,
       diskTotalBytes: 2048,
       diskFreePercent: 50,
+      diskFreeInodes: 500,
+      diskTotalInodes: 1_000,
     },
   },
   server: {
@@ -253,6 +255,23 @@ describe('ServerMessageSchema', () => {
     }));
 
     expect(result.success).toBe(true);
+  });
+
+  test('accepts legacy resource status messages without inode fields', () => {
+    const {
+      diskFreeInodes: _diskFreeInodes,
+      diskTotalInodes: _diskTotalInodes,
+      ...legacyDataDirectory
+    } = resourceStatus.host.dataDirectory;
+    const legacyResourceStatus = {
+      ...resourceStatus,
+      host: { ...resourceStatus.host, dataDirectory: legacyDataDirectory },
+    };
+
+    expect(ServerMessageSchema.safeParse({
+      type: 'resourceStatus',
+      status: legacyResourceStatus,
+    }).success).toBe(true);
   });
 
   test('accepts Grok Build in the advertised agent types and default selection', () => {

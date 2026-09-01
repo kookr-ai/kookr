@@ -2531,9 +2531,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // instead of rebuilding full snapshots synchronously on every success.
     requestSnapshotBroadcast,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
-    // issue #1590 / #1992: feed the load-based POST /api/tasks admission gates
-    // the same already-sampled resource snapshot (event-loop p95 + data-dir
-    // free space) and the sustain tracker fed on every resource tick.
+    // issues #1590/#1992/#2926: feed the load-based POST /api/tasks admission
+    // gates the same already-sampled resource snapshot (event-loop p95 plus
+    // data-dir byte/inode capacity) and the sustain tracker on every tick.
     getLatestResourceStatus: () => resourceStatusService.getLatest(),
     diskAdmissionConfig,
     diskAdmissionTracker,
@@ -2888,9 +2888,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   } else {
     console.log('[ops-alerts] Operational alerts disabled (set KOOKR_ALERT_* thresholds to enable)');
   }
-  // Load-based admission for POST /api/tasks (issue #1590 / #1992): shed spawn
-  // POSTs with 503 + Retry-After when the sampled event-loop delay p95 is
-  // saturated, or when data-directory free space stays critically low.
+  // Load-based admission for POST /api/tasks (issues #1590/#1992/#2926): shed
+  // spawn POSTs with 503 + Retry-After when sampled event-loop delay p95 is
+  // saturated, or data-directory byte/inode capacity stays critical.
   // (diskAdmissionConfig / diskAdmissionTracker were constructed earlier so
   // createRoutes could hold the live tracker; log the resolved posture here.)
   const admissionControlConfig = readAdmissionControlConfigFromEnv();
@@ -2907,8 +2907,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           `${diskAdmissionConfig.freePercentThreshold || 'off'}% / ` +
           `${diskAdmissionConfig.freeBytesThreshold || 'off'}B ` +
           `for ${diskAdmissionConfig.sustainSamples} sample(s) ` +
-          `(503, Retry-After ${diskAdmissionConfig.retryAfterSeconds}s)`
-      : '[admission] Data-directory disk admission disabled (set KOOKR_ALERT_DATA_DIR_FREE_* or KOOKR_ADMISSION_DATA_DIR_FREE_* to enable)',
+          `(503, Retry-After ${diskAdmissionConfig.retryAfterSeconds}s); ` +
+          `zero-free-inode protection is also armed`
+      : '[admission] Data-directory byte-space floors disabled; zero-free-inode protection remains armed',
   );
 
   // Shared maintenance-prune config (scheduled interval + emergency edge).
@@ -2972,6 +2973,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         {
           diskFreePercent: status.host.dataDirectory.diskFreePercent,
           diskFreeBytes: status.host.dataDirectory.diskFreeBytes,
+          diskFreeInodes: status.host.dataDirectory.diskFreeInodes,
+          diskTotalInodes: status.host.dataDirectory.diskTotalInodes,
           path: status.host.dataDirectory.path,
           sampledAt: status.sampledAt,
         },

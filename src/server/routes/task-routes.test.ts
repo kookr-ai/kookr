@@ -2002,6 +2002,8 @@ describe('POST /api/tasks data-directory disk-critical admission (issue #1992)',
   function statusWithDisk(free: {
     diskFreePercent: number | null;
     diskFreeBytes: number | null;
+    diskFreeInodes?: number | null;
+    diskTotalInodes?: number | null;
     path?: string | null;
   }): SystemResourceStatus {
     return {
@@ -2014,6 +2016,8 @@ describe('POST /api/tasks data-directory disk-critical admission (issue #1992)',
           diskFreePercent: free.diskFreePercent,
           diskFreeBytes: free.diskFreeBytes,
           diskTotalBytes: 100_000_000_000,
+          diskFreeInodes: free.diskFreeInodes,
+          diskTotalInodes: free.diskTotalInodes,
         },
       },
     } as unknown as SystemResourceStatus;
@@ -2021,7 +2025,12 @@ describe('POST /api/tasks data-directory disk-critical admission (issue #1992)',
 
   function diskDeps(
     taskStore: TaskStore,
-    free: { diskFreePercent: number | null; diskFreeBytes: number | null },
+    free: {
+      diskFreePercent: number | null;
+      diskFreeBytes: number | null;
+      diskFreeInodes?: number | null;
+      diskTotalInodes?: number | null;
+    },
     over: Partial<TaskRouteDeps> = {},
   ): TaskRouteDeps {
     return {
@@ -2094,6 +2103,35 @@ describe('POST /api/tasks data-directory disk-critical admission (issue #1992)',
     });
     expect(res.status).toBe(201);
     expect(launchTask).toHaveBeenCalledTimes(1);
+  });
+
+  test('zero free inodes reject before launch and expose inode pressure details', async () => {
+    const taskStore = new TaskStore();
+    vi.mocked(launchTask).mockImplementation(async () => {
+      throw new Error('launchTask must not run when data-directory inodes are exhausted');
+    });
+    const res = await mkApp(
+      diskDeps(taskStore, {
+        diskFreePercent: 50,
+        diskFreeBytes: 50 * 1024 * 1024 * 1024,
+        diskFreeInodes: 0,
+        diskTotalInodes: 100_000,
+      }),
+    ).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({
+      code: 'data_directory_disk_critical',
+      reason: 'data_directory_disk_critical',
+      pressureCause: 'data_directory_inodes_exhausted',
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+    });
+    expect(launchTask).not.toHaveBeenCalled();
   });
 
   test('disabled floors (both 0) admit even under zero free space', async () => {

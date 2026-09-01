@@ -105,7 +105,7 @@ function supervisorUnauthorizedResponse(c: Context) {
 export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   const { taskStore, monitor, adapter, hookWatcher, watchdog, broadcastToAll, serverCwd, hookIngestion } = deps;
   // Load-based admission gates for POST /api/tasks (issue #1590 event-loop,
-  // issue #1992 data-directory free space). Read env once at registration
+  // issues #1992/#2926 data-directory byte/inode capacity). Read env once at registration
   // (env config, like the operational-alert thresholds), unless a config was
   // threaded explicitly (tests).
   const admissionControlConfig = deps.admissionControlConfig ?? readAdmissionControlConfigFromEnv();
@@ -461,7 +461,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   app.post('/api/tasks', async (c) => {
     // Load-based admission (issue #1590 / #1992): shed the request BEFORE
     // parsing the body or touching the launch path, so a saturated event loop
-    // or critically-low data-directory free space fast-fails with 503 +
+    // or critical data-directory filesystem capacity fast-fails with 503 +
     // Retry-After in ≤2s instead of hanging into a client timeout / ENOSPC.
     // Reuses the already-sampled health snapshot (no second monitors); event-
     // loop fails open when the signal is missing; disk fails closed once the
@@ -475,7 +475,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       c.header('Retry-After', String(admission.rejection.retryAfterSeconds));
       return c.json(admission.rejection, 503);
     }
-    // Disk-critical admission (issue #1992). Observe the latest sample when a
+    // Disk-critical admission (issues #1992 and #2926). Observe the latest sample when a
     // tracker is wired so concurrent POSTs still advance the sustain window
     // even if the resource-status callback was not yet attached (tests); in
     // production the tracker is also fed on every resource tick. Host /
@@ -485,6 +485,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ? {
           diskFreePercent: dataDirectory.diskFreePercent,
           diskFreeBytes: dataDirectory.diskFreeBytes,
+          diskFreeInodes: dataDirectory.diskFreeInodes,
+          diskTotalInodes: dataDirectory.diskTotalInodes,
           path: dataDirectory.path,
           sampledAt: latestResourceStatus?.sampledAt,
         }
@@ -496,7 +498,10 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       config: diskAdmissionConfig,
       sample: diskSample,
       ...(deps.diskAdmissionTracker
-        ? { critical: deps.diskAdmissionTracker.isCritical() }
+        ? {
+            critical: deps.diskAdmissionTracker.isCritical(),
+            pressureCause: deps.diskAdmissionTracker.getPressureCause(),
+          }
         : {}),
     });
     if (!diskAdmission.admit) {

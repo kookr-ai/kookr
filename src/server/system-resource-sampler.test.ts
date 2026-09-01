@@ -39,6 +39,8 @@ describe('SystemResourceSampler', () => {
         diskFreeBytes: 3_000,
         diskTotalBytes: 10_000,
         diskFreePercent: 30,
+        diskFreeInodes: 300,
+        diskTotalInodes: 1_000,
       }),
     });
 
@@ -60,6 +62,8 @@ describe('SystemResourceSampler', () => {
       diskFreeBytes: 3_000,
       diskTotalBytes: 10_000,
       diskFreePercent: 30,
+      diskFreeInodes: 300,
+      diskTotalInodes: 1_000,
     });
     expect(status.unavailable).toEqual([]);
   });
@@ -87,6 +91,8 @@ describe('SystemResourceSampler', () => {
       diskFreeBytes: null,
       diskTotalBytes: null,
       diskFreePercent: null,
+      diskFreeInodes: null,
+      diskTotalInodes: null,
     });
     expect(status.unavailable).toEqual([
       'cpu_unavailable',
@@ -117,6 +123,8 @@ describe('SystemResourceSampler', () => {
       diskFreeBytes: null,
       diskTotalBytes: null,
       diskFreePercent: null,
+      diskFreeInodes: null,
+      diskTotalInodes: null,
     });
     expect(status.unavailable).toEqual([
       'cpu_warming_up',
@@ -134,6 +142,52 @@ describe('SystemResourceSampler', () => {
     expect(usage?.diskFreePercent).toBeCloseTo(
       (usage!.diskFreeBytes! / usage!.diskTotalBytes!) * 100,
     );
+    if (usage?.diskFreeInodes === null || usage?.diskTotalInodes === null) {
+      expect(usage?.diskFreeInodes).toBeNull();
+      expect(usage?.diskTotalInodes).toBeNull();
+    } else {
+      expect(usage.diskFreeInodes).toBeGreaterThanOrEqual(0);
+      expect(usage.diskTotalInodes).toBeGreaterThan(0);
+      expect(usage.diskFreeInodes).toBeLessThanOrEqual(usage.diskTotalInodes);
+    }
+  });
+
+  test('statfs helper preserves a supported zero-free-inode reading', () => {
+    const usage = readDataDirectoryDiskUsageWithStatfs('/data', () => ({
+      bsize: 4_096,
+      bavail: 1_000,
+      blocks: 10_000,
+      files: 50_000,
+      ffree: 0,
+    }));
+
+    expect(usage).toMatchObject({
+      diskFreeBytes: 4_096_000,
+      diskTotalBytes: 40_960_000,
+      diskFreeInodes: 0,
+      diskTotalInodes: 50_000,
+    });
+  });
+
+  test.each([
+    { name: 'unsupported', files: undefined, ffree: undefined },
+    { name: 'zero total', files: 0, ffree: 0 },
+    { name: 'negative free', files: 100, ffree: -1 },
+    { name: 'free above total', files: 100, ffree: 101 },
+    { name: 'unsafe total', files: Number.MAX_SAFE_INTEGER + 1, ffree: 1 },
+  ])('statfs helper reports $name inode counts as unavailable', ({ files, ffree }) => {
+    const usage = readDataDirectoryDiskUsageWithStatfs('/data', () => ({
+      bsize: 4_096,
+      bavail: 1_000,
+      blocks: 10_000,
+      files,
+      ffree,
+    }));
+
+    expect(usage).toMatchObject({
+      diskFreeInodes: null,
+      diskTotalInodes: null,
+    });
   });
 
   test('statfs helper fails open to null when the directory is unreadable', () => {
