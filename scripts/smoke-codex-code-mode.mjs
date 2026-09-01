@@ -20,23 +20,29 @@ function argumentValue(name) {
   return value;
 }
 
-function commandResultContainsMarker(stdout, marker) {
-  return stdout
+function completedRoundTripContainsMarker(stdout, marker) {
+  const events = stdout
     .split(/\r?\n/)
     .filter(Boolean)
-    .some((line) => {
+    .flatMap((line) => {
       let event;
       try {
         event = JSON.parse(line);
       } catch {
-        return false;
+        return [];
       }
-      return event?.type === 'item.completed'
-        && event?.item?.type === 'command_execution'
-        && event?.item?.status === 'completed'
-        && event?.item?.exit_code === 0
-        && event?.item?.aggregated_output?.trim() === marker;
+      return [event];
     });
+  const commandIndex = events.findIndex((event) => event?.type === 'item.completed'
+    && event?.item?.type === 'command_execution'
+    && event?.item?.status === 'completed'
+    && event?.item?.exit_code === 0
+    && event?.item?.aggregated_output?.trim() === marker);
+  return commandIndex !== -1 && events.slice(commandIndex + 1).some(
+    (event) => event?.type === 'item.completed'
+      && event?.item?.type === 'agent_message'
+      && event?.item?.text?.trim() === marker,
+  );
 }
 
 const codex = argumentValue('--codex')
@@ -56,7 +62,7 @@ const prompt = [
   'Call functions.exec with JavaScript that invokes tools.exec_command using',
   '{cmd:"printenv CODEX_IPC_SMOKE_MARKER", workdir:"/tmp", yield_time_ms:10000}.',
   'Pass the command output to text(). Do not call another tool.',
-  'After the tool result arrives, reply only with: done',
+  'After the tool result arrives, reply only with the exact value returned by the command.',
 ].join(' ');
 
 const result = spawnSync(
@@ -73,6 +79,8 @@ const result = spawnSync(
     '--dangerously-bypass-approvals-and-sandbox',
     '-c',
     'features.code_mode={enabled=true}',
+    '-c',
+    'features.code_mode_only=true',
     '-c',
     'features.code_mode_host={enabled=true,disable_in_process_fallback=true}',
     prompt,
@@ -95,9 +103,9 @@ if (result.status !== 0) {
     [result.stderr, result.stdout].filter(Boolean).join('\n'),
   );
 }
-if (!commandResultContainsMarker(result.stdout, marker)) {
+if (!completedRoundTripContainsMarker(result.stdout, marker)) {
   fail(
-    'marker was not observed in a completed command result',
+    'marker did not complete the command-to-final-response code-mode round trip',
     [result.stderr, result.stdout].filter(Boolean).join('\n'),
   );
 }

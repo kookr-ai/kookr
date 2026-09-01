@@ -20,11 +20,11 @@ CODEX_CLI_BIN=codex
 CODEX_HOST_BIN=codex-code-mode-host
 PAIR_MANIFEST=codex-pair.json
 
-TEMP_DIRS=""
+TEMP_DIRS=()
 
 cleanup() {
   local dir
-  for dir in $TEMP_DIRS; do
+  for dir in "${TEMP_DIRS[@]}"; do
     if [ -n "$dir" ] && [ -d "$dir" ]; then
       rm -rf -- "$dir"
     fi
@@ -53,7 +53,7 @@ esac
 mkdir -p "$CODEX_INSTALL_DIR"
 
 # Use the checkout's pinned toolchain. The sed expression works with both GNU
-# and BSD sed; the previous grep -P form failed on macOS.
+# and BSD sed; the previous PCRE-based grep failed on macOS.
 TOOLCHAIN_FILE="$CODEX_SRC/codex-rs/rust-toolchain.toml"
 CHANNEL=""
 if [ -f "$TOOLCHAIN_FILE" ]; then
@@ -120,11 +120,11 @@ validate_release_host_compatibility() {
 download_release_host() {
   local tag="$1"
   local output="$2"
-  local arch url download_dir archive extracted
-  arch="x86_64-unknown-linux-musl"
-  url="https://github.com/openai/codex/releases/download/${tag}/codex-code-mode-host-${arch}.tar.gz"
+  local target url download_dir archive extracted
+  target=$(resolve_host_release_target) || return 1
+  url="https://github.com/openai/codex/releases/download/${tag}/codex-code-mode-host-${target}.tar.gz"
   download_dir=$(mktemp -d "${TMPDIR:-/tmp}/kookr-codex-host.XXXXXX")
-  TEMP_DIRS="$TEMP_DIRS $download_dir"
+  TEMP_DIRS+=("$download_dir")
   archive="$download_dir/host.tgz"
   printf 'Fetching compatible code-mode host from release %s ...\n' "$tag"
   curl -fsSL -o "$archive" "$url" || die "failed to download code-mode host from $url"
@@ -132,6 +132,22 @@ download_release_host() {
   extracted=$(find "$download_dir" -type f \( -name 'codex-code-mode-host' -o -name 'codex-code-mode-host-*' \) ! -name '*.tgz' | head -1)
   [ -n "$extracted" ] && [ -f "$extracted" ] || die "release archive did not contain codex-code-mode-host"
   install -m 755 "$extracted" "$output"
+}
+
+resolve_host_release_target() {
+  local platform machine
+  platform=$(uname -s)
+  machine=$(uname -m)
+  case "$platform:$machine" in
+    Linux:x86_64) printf '%s\n' 'x86_64-unknown-linux-musl' ;;
+    Linux:aarch64|Linux:arm64) printf '%s\n' 'aarch64-unknown-linux-musl' ;;
+    Darwin:x86_64) printf '%s\n' 'x86_64-apple-darwin' ;;
+    Darwin:arm64|Darwin:aarch64) printf '%s\n' 'aarch64-apple-darwin' ;;
+    *)
+      printf 'ERROR: no code-mode host release target for %s %s\n' "$platform" "$machine" >&2
+      return 1
+      ;;
+  esac
 }
 
 sha256_file() {
@@ -177,7 +193,10 @@ activate_symlink() {
   local next="${link}.next.$$"
   rm -f -- "$next"
   ln -s "$target" "$next"
-  mv -f -- "$next" "$link"
+  PAIR_NEXT_LINK="$next" PAIR_LINK="$link" node -e '
+    const fs = require("node:fs");
+    fs.renameSync(process.env.PAIR_NEXT_LINK, process.env.PAIR_LINK);
+  '
 }
 
 if [ "$CODEX_BUILD_PROFILE" = "kookr-dev" ]; then
@@ -218,7 +237,7 @@ if [ "$CODEX_HOST_FROM_RELEASE" = "1" ]; then
   HOST_TAG=$(derive_host_release_tag) || die "could not derive a code-mode host release tag"
   validate_release_host_compatibility "$HOST_TAG" || exit 1
   HOST_DOWNLOAD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/kookr-codex-host-artifact.XXXXXX")
-  TEMP_DIRS="$TEMP_DIRS $HOST_DOWNLOAD_DIR"
+  TEMP_DIRS+=("$HOST_DOWNLOAD_DIR")
   HOST_ARTIFACT="$HOST_DOWNLOAD_DIR/$CODEX_HOST_BIN"
   download_release_host "$HOST_TAG" "$HOST_ARTIFACT"
   HOST_SOURCE="release:$HOST_TAG"
@@ -237,7 +256,7 @@ mkdir -p "$RELEASES_DIR"
 
 if [ ! -d "$PAIR_DIR" ]; then
   STAGING_DIR=$(mktemp -d "$RELEASES_DIR/.staging.XXXXXX")
-  TEMP_DIRS="$TEMP_DIRS $STAGING_DIR"
+  TEMP_DIRS+=("$STAGING_DIR")
   install -m 755 "$CLI_ARTIFACT" "$STAGING_DIR/$CODEX_CLI_BIN"
   install -m 755 "$HOST_ARTIFACT" "$STAGING_DIR/$CODEX_HOST_BIN"
   PAIR_MANIFEST_PATH="$STAGING_DIR/$PAIR_MANIFEST" \
@@ -257,7 +276,6 @@ if [ ! -d "$PAIR_DIR" ]; then
       fs.writeFileSync(process.env.PAIR_MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
     '
   mv "$STAGING_DIR" "$PAIR_DIR"
-  TEMP_DIRS=${TEMP_DIRS%" $STAGING_DIR"}
 fi
 
 validate_pair_directory "$PAIR_DIR" \
@@ -274,14 +292,28 @@ then
   MANAGED_LINKS=1
 fi
 
-# Existing managed installs switch both executables with this one rename.
-activate_symlink ".codex-releases/$PAIR_ID" "$CURRENT_LINK"
-if [ "$MANAGED_LINKS" != "1" ]; then
-  # One-time migration from legacy regular files to stable public symlinks.
-  # Install the host link first because a freshly built CLI may already be the
-  # active legacy file, as in the incident this migration repairs.
+# Existing managed installs switch both executables with this one rename. For a
+# legacy install, first route both public names through a preserved copy of the
+# old pair. The final pointer switch then remains the only behavior change.
+if [ "$MANAGED_LINKS" = "1" ]; then
+  activate_symlink ".codex-releases/$PAIR_ID" "$CURRENT_LINK"
+else
+  if [ -e "$INSTALLED_CLI" ] || [ -e "$INSTALLED_HOST" ]; then
+    [ -x "$INSTALLED_CLI" ] && [ -x "$INSTALLED_HOST" ] \
+      || die "cannot migrate a partial legacy install; both codex executables must be present and executable"
+    LEGACY_DIR="$CODEX_INSTALL_DIR/.codex-legacy-pair"
+    [ ! -e "$LEGACY_DIR" ] \
+      || die "cannot preserve the legacy pair because $LEGACY_DIR already exists"
+    LEGACY_STAGING=$(mktemp -d "$CODEX_INSTALL_DIR/.codex-legacy-staging.XXXXXX")
+    TEMP_DIRS+=("$LEGACY_STAGING")
+    install -m 755 "$INSTALLED_CLI" "$LEGACY_STAGING/$CODEX_CLI_BIN"
+    install -m 755 "$INSTALLED_HOST" "$LEGACY_STAGING/$CODEX_HOST_BIN"
+    mv "$LEGACY_STAGING" "$LEGACY_DIR"
+    activate_symlink ".codex-legacy-pair" "$CURRENT_LINK"
+  fi
   activate_symlink ".codex-current/$CODEX_HOST_BIN" "$INSTALLED_HOST"
   activate_symlink ".codex-current/$CODEX_CLI_BIN" "$INSTALLED_CLI"
+  activate_symlink ".codex-releases/$PAIR_ID" "$CURRENT_LINK"
 fi
 
 PAIR_DIR_REAL=$(PAIR_CLI="$INSTALLED_CLI" PAIR_HOST="$INSTALLED_HOST" node -e '

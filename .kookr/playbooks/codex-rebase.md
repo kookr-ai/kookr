@@ -458,9 +458,14 @@ CODEX_BUILD_PROFILE=release \
 Sanity-check the installed pair and its source commit:
 
 ```bash
-"$KOOKR_CODEX_BIN" --version
+CODEX_VERSION_OUTPUT=$("$KOOKR_CODEX_BIN" --version)
+printf '%s\n' "$CODEX_VERSION_OUTPUT"
 FINAL_FULL_SHA=$(git rev-parse feat/claude-compat)
 FINAL_SHORT_SHA=$(git rev-parse --short=9 feat/claude-compat)
+case "$CODEX_VERSION_OUTPUT" in
+  *"+kookr.$FINAL_SHORT_SHA"*) ;;
+  *) echo "ERROR: installed Codex version does not identify $FINAL_SHORT_SHA" >&2; exit 1 ;;
+esac
 PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN")/.codex-current/codex-pair.json"
 test "$(jq -r .sourceCommit "$PAIR_MANIFEST")" = "$FINAL_FULL_SHA"
 node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" --codex "$KOOKR_CODEX_BIN"

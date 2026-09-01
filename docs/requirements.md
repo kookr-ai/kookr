@@ -832,13 +832,13 @@ The system SHALL let routine tasks request `modelTier: "small"` without pinning 
 
 **Evidence:** `src/shared/contracts/model-tier.ts`, `src/shared/contracts/task.ts`, `src/core/task-launch-intent.ts`, `src/server/launch-service.ts`, `src/server/provider-transient-retry.ts`, `src/server/provider-reset-scheduler.ts`, `src/adapters/codex-cli-adapter.ts`, `src/core/schedule.ts`, `src/server/schedule-runner.ts`, `bin/kookr-spawn.js`, and focused tests beside each module.
 
-### R4b.14: Matched Codex Runtime Pair [F4.12] — SHALL — `done`
+### R4b.14: Matched Codex Runtime Pair — SHALL — `done`
 
 The system SHALL deploy the Codex CLI and its code-mode host as one compatible runtime pair.
 
 **Acceptance criteria:**
 - A rebuild prepares both executables before it changes the active installation
-- A failed host build or incompatible release fallback leaves the previously active pair unchanged
+- If neither a source-built host nor a compatible release fallback can be prepared, the previously active pair remains unchanged
 - Both public executable paths resolve through one versioned runtime directory, and a single atomic pointer selects the active pair
 - The installer retains a bounded rollback window and removes only older directories that carry its valid pair manifest
 - A release-provided host is accepted only when its tagged code-mode protocol matches the Codex source checkout
@@ -847,7 +847,7 @@ The system SHALL deploy the Codex CLI and its code-mode host as one compatible r
 
 **Rationale:** The code-mode wire format can change without a protocol-version bump. Installing only the CLI can therefore execute a command successfully but lose its response when an older host emits a frame the new CLI cannot decode.
 
-**Evidence:** `scripts/rebuild-codex.sh`, `scripts/smoke-codex-code-mode.mjs`, `.kookr/playbooks/codex-rebase.md`, `src/adapters/codex-cli-adapter.ts`, `scripts/rebuild-codex.test.ts`, `scripts/smoke-codex-code-mode.test.ts`, and `src/adapters/codex-cli-adapter.test.ts`.
+**Evidence:** `scripts/rebuild-codex.sh`, `scripts/smoke-codex-code-mode.mjs`, `.kookr/playbooks/codex-rebase.md`, `docs/codex-cli-setup.md`, `src/adapters/codex-cli-adapter.ts`, `scripts/rebuild-codex.test.ts`, `scripts/smoke-codex-code-mode.test.ts`, and `src/adapters/codex-cli-adapter.test.ts`.
 
 ---
 
@@ -1675,7 +1675,7 @@ The system SHALL replay a valid pending lesson through `kb remember` without dep
 | R4b.11 | F4.1 | SHOULD | done | LaunchTaskDialog (`looksLikeAbsoluteClipboardPath`), LaunchTaskDialog.paste.test.ts |
 | R4b.12 | F4.12, F10.5 | SHALL | done | launch-dependency-admission, task-launch-intent, launch-service, agent-lifecycle, crash-recovery, schedule-validator, task-routes |
 | R4b.13 | F4.1, F11 | SHALL | done | model-tier, launch-service, schedule, schedule-runner, kookr-spawn |
-| R4b.14 | F4.12 | SHALL | done | rebuild-codex, smoke-codex-code-mode, codex-cli-adapter, codex-rebase playbook |
+| R4b.14 | — | SHALL | done | rebuild-codex, smoke-codex-code-mode, codex-cli-adapter, codex-rebase playbook, codex-cli-setup |
 | R4c.1 | — | SHALL | done | cleanup-inspector, workspace-cleanup-service, CleanupCandidateTable |
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |
