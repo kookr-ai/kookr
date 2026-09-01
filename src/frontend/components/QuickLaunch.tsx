@@ -1,5 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
-import { buildAgentSelectionOptions, type ClientMessage, type AgentSelection } from '../../shared/protocol.js';
+import {
+  buildAgentSelectionOptions,
+  shouldDisableLaunchForGrokAuth,
+  shouldShowGrokAuthBanner,
+  type ClientMessage,
+  type AgentSelection,
+} from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import { loadLastAgentType, saveLastAgentType } from '../store/last-agent-type.js';
@@ -20,6 +26,7 @@ import { getCompactTasks } from '../api/index.js';
 import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
+import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -49,6 +56,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     [agents, launchCwds],
   );
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
+  const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
   // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
   // agent type (effect) → last-used → server default → 'claude-code'.
   // Initializer covers the no-selected-agent path; the effect re-applies when
@@ -126,10 +134,22 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
     [duplicateCandidates, prompt, cwd, agentType],
   );
+  const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
+    agentType,
+    grokAuth?.launchWouldRefuse === true,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  );
+  const showGrokAuthBanner = shouldShowGrokAuthBanner(
+    agentType,
+    grokAuth?.status,
+    availableAgentTypeIds,
+    grokAuth?.roundRobinIndex ?? 0,
+  ) && Boolean(grokAuth?.message);
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
-    if (!trimmed || !cwd) return;
+    if (!trimmed || !cwd || grokAuthBlocksLaunch) return;
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
@@ -240,7 +260,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           placeholder="Task prompt... (Enter to launch, Esc to cancel)"
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          aria-describedby={activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : undefined}
+          aria-describedby={[
+            showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
+            activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
+          ].filter(Boolean).join(' ') || undefined}
         />
         {sttUrl && (
           <Suspense fallback={null}>
@@ -248,11 +271,15 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           </Suspense>
         )}
       </div>
+      {showGrokAuthBanner && grokAuth?.message && (
+        <GrokAuthPreflightBanner message={grokAuth.message} />
+      )}
       {activeDuplicate && (
         <LaunchDuplicateBanner
           taskName={activeDuplicate.taskName ?? undefined}
           onOpenExisting={openExistingDuplicate}
           onLaunchAnyway={() => submitLaunch(true)}
+          launchAnywayDisabled={grokAuthBlocksLaunch}
         />
       )}
     </div>
