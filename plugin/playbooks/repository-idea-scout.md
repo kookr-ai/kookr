@@ -82,6 +82,7 @@ parameters:
         value: "off"
 checklist:
   - GitHub repo and shell-facing parameters validated
+  - Matched remote and GitHub default branch fetched into isolated temporary Git storage; immutable analysis SHA archived read-only
   - Open and closed issues scanned for duplicate and adjacent ideas
   - Project purpose and current capabilities inventoried from docs and code
   - Knowledge base surveyed when useKnowledgeBase is auto and the kb CLI is available
@@ -425,6 +426,8 @@ Compute these from the resolved **repoFullName**:
 - **closedIssuesFile**: `<stateDir>/closed-issues.json`.
 - **featuresFile**: `<stateDir>/features.md`.
 - **duplicateMatrixFile**: `<stateDir>/duplicate-search-matrix.md`.
+- **analysisRoot**: an ephemeral read-only archive of the fetched default-branch commit. Every source, docs, tests, capability, critic, and evidence check reads this tree; it is removed before completion.
+- **analysisSha**: the immutable commit pinned from the isolated fetch before `<analysisRoot>` is materialized.
 
 Resolve **localPath**:
 
@@ -433,7 +436,9 @@ Resolve **localPath**:
 3. If the path does not exist, clone the resolved **repoFullName** there with `gh repo clone`.
 4. If the path exists, verify that either `origin` or `upstream` points at the resolved **repoFullName**. If neither does, mark the run `BLOCKED`; do not analyze that checkout.
 
-The target checkout is for read-only analysis. Record its initial `git status --short` in `<runManifest>` and do not leave new tracked changes there.
+The target checkout is only for repository identity, launch context, local/default divergence, and initial/final status integrity. Never use it as the source-analysis tree. Record its initial `git status --short` in `<runManifest>`, preserve dirty and untracked state byte-for-byte, and never switch, reset, merge, stash, fetch through, or edit the checkout or its shared Git metadata.
+
+The analysis tree comes from `git archive`, so it deliberately does not populate submodule worktrees and preserves Git-LFS pointer files rather than downloading LFS payloads. If a capability check depends on submodule content or a Git-LFS payload, record that evidence as unavailable and keep the candidate local/review-required; never infer absence or publish from the missing payload.
 
 The **local audit artifacts** (`report.md`, `duplicate-evidence.md`, `kb-evidence.md`, `critic-feedback.md`, `evidence-verification.json`, `classification.json`, `conflict-matrix.md`, `capability-inventory.md`, `ops-evidence.json`, portfolio scoring) stay under `<stateDir>` and are never published. Only the **reader-first `issue-body.md`** is ever sent to GitHub, and only for autonomous candidates.
 
@@ -448,6 +453,37 @@ STATE_DIR="$BASE_STATE_DIR/invalid-input/$RUN_KEY"
 STATE_FILE="$STATE_DIR/state.md"
 mkdir -p "$STATE_DIR"
 
+ANALYSIS_GIT_TMP_PARENT=
+ANALYSIS_GIT_TMP_DIR=
+ANALYSIS_ROOT=
+ANALYSIS_STAGING_ROOT=
+
+cleanup_analysis_git() {
+  [ -n "${ANALYSIS_GIT_TMP_DIR:-}" ] || return 0
+  case "$(basename "$ANALYSIS_GIT_TMP_DIR")" in
+    kookr-idea-scout.git.*) ;;
+    *) printf 'Refusing unsafe temporary Git cleanup path: %s\n' "$ANALYSIS_GIT_TMP_DIR" >&2; return 1 ;;
+  esac
+  ACTUAL_PARENT=$(cd "$(dirname "$ANALYSIS_GIT_TMP_DIR")" 2>/dev/null && pwd -P) || return 1
+  [ "$ACTUAL_PARENT" = "$ANALYSIS_GIT_TMP_PARENT" ] || return 1
+  rm -rf "$ANALYSIS_GIT_TMP_DIR"
+}
+
+cleanup_analysis_snapshot() {
+  [ -n "${STATE_DIR:-}" ] || return 1
+  SNAPSHOT_PARENT="$STATE_DIR/analysis-snapshots"
+  case "$SNAPSHOT_PARENT" in "$STATE_DIR"/analysis-snapshots) ;; *) return 1 ;; esac
+  if [ -e "$SNAPSHOT_PARENT" ]; then
+    chmod -R u+w "$SNAPSHOT_PARENT" 2>/dev/null || true
+    rm -rf "$SNAPSHOT_PARENT"
+  fi
+}
+
+cleanup_analysis() {
+  cleanup_analysis_git
+  cleanup_analysis_snapshot
+}
+
 block() {
   mkdir -p "$STATE_DIR"
   {
@@ -456,6 +492,7 @@ block() {
     printf 'Reason: %s\n\n' "$1"
     printf '<promise>BLOCKED</promise>\n'
   } > "$STATE_FILE"
+  cleanup_analysis || true
 }
 ```
 
@@ -617,16 +654,196 @@ if [ -z "$REMOTE_MATCH" ]; then
   exit 0
 fi
 
-INITIAL_STATUS=$(git -C "$LOCAL" status --short)
+REMOTE_URL=$(git -C "$LOCAL" remote get-url "$REMOTE_MATCH" 2>/dev/null) \
+  || { block "matched remote URL resolution failed for $REMOTE_MATCH"; exit 0; }
+LOCAL_HEAD_SHA=$(git -C "$LOCAL" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) \
+  || { block "local HEAD commit validation failed for $LOCAL"; exit 0; }
+CURRENT_STATUS=$(GIT_OPTIONAL_LOCKS=0 git -C "$LOCAL" status --short) \
+  || { block "local checkout status read failed for $LOCAL"; exit 0; }
+
+# Preserve the original status baseline across a resumed run. A changed status
+# remains visible to the Phase 8 integrity check instead of becoming a new
+# baseline merely because the task restarted.
+if jq -e 'has("initialStatus")' "$STATE_DIR/run.json" >/dev/null 2>&1; then
+  INITIAL_STATUS=$(jq -r '.initialStatus' "$STATE_DIR/run.json")
+else
+  INITIAL_STATUS=$CURRENT_STATUS
+fi
+
+PRIOR_ANALYSIS_SHA=$(jq -r '.analysisSha // empty' "$STATE_DIR/run.json" 2>/dev/null || true)
+PRIOR_LOCAL_HEAD_SHA=$(jq -r '.localHeadSha // empty' "$STATE_DIR/run.json" 2>/dev/null || true)
 ```
 
-Write `<runManifest>` atomically:
+Resolve GitHub's current default branch and materialize one immutable analysis
+snapshot. This always runs, including on resume. The fetch occurs in a new bare
+repository under `mktemp`; it never uses the target checkout's object database,
+refs, index, or worktree. Pin `ANALYSIS_SHA` from the fetched ref before
+materializing the archive so a moving branch cannot change the analyzed tree
+mid-run.
+
+Default-branch resolution, isolated fetch, commit validation, archive creation,
+extraction, or read-only materialization failure is an unrecoverable evidence
+blocker. Call `block`, clean the temporary directory, and stop. Never fall back
+to the local `HEAD`.
+
+The same uninterrupted setup call computes divergence and durably invalidates a
+changed baseline. Write `<runManifest>` atomically before releasing the
+temporary Git storage.
 
 ```bash
+DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null) \
+  || { block "default branch resolution failed for $REPO"; exit 0; }
+if [ -z "$DEFAULT_BRANCH" ] || ! git check-ref-format --branch "$DEFAULT_BRANCH" >/dev/null 2>&1; then
+  block "default branch resolution failed for $REPO: invalid or empty branch"
+  exit 0
+fi
+
+# A resumed run removes all prior state-scoped snapshot material before
+# replacing it. Removing the dedicated parent also recovers a staging or newly
+# materialized directory left by interruption before run.json was advanced.
+cleanup_analysis_snapshot \
+  || { block "prior analysis snapshot cleanup failed"; exit 0; }
+
+# Keep the fetched object database only for this one shell invocation. The
+# extracted snapshot lives under run-scoped state so later agent tool calls can
+# read it; it is removed on BLOCKED, on successful Phase 8 completion, or before
+# the same run resumes. Execute this entire fenced block as one shell call so
+# the EXIT trap owns the temporary Git directory for its complete lifetime.
+RAW_TMP_PARENT=${TMPDIR:-/tmp}
+case "$RAW_TMP_PARENT" in /*) ;; *) block "TMPDIR must be an absolute path"; exit 0 ;; esac
+ANALYSIS_GIT_TMP_PARENT=$(cd "$RAW_TMP_PARENT" 2>/dev/null && pwd -P) \
+  || { block "analysis temporary parent is unavailable: $RAW_TMP_PARENT"; exit 0; }
+ANALYSIS_GIT_TMP_DIR=$(mktemp -d \
+  "${ANALYSIS_GIT_TMP_PARENT%/}/kookr-idea-scout.git.XXXXXX") \
+  || { block "analysis temporary Git directory creation failed"; exit 0; }
+ANALYSIS_GIT_TMP_DIR=$(cd "$ANALYSIS_GIT_TMP_DIR" && pwd -P) \
+  || { block "analysis temporary Git path normalization failed"; exit 0; }
+trap 'cleanup_analysis_git || true' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+ANALYSIS_GIT_DIR="$ANALYSIS_GIT_TMP_DIR/repository.git"
+ANALYSIS_ARCHIVE="$ANALYSIS_GIT_TMP_DIR/snapshot.tar"
+
+git init --bare "$ANALYSIS_GIT_DIR" >/dev/null \
+  || { block "isolated Git storage initialization failed"; exit 0; }
+git --git-dir="$ANALYSIS_GIT_DIR" fetch --no-tags "$REMOTE_URL" \
+  "refs/heads/$DEFAULT_BRANCH:refs/kookr/default" >/dev/null 2>&1 \
+  || { block "default-branch fetch failed for $REPO:$DEFAULT_BRANCH"; exit 0; }
+ANALYSIS_SHA=$(git --git-dir="$ANALYSIS_GIT_DIR" rev-parse --verify 'refs/kookr/default^{commit}' 2>/dev/null) \
+  || { block "fetched default-branch commit resolution failed"; exit 0; }
+git --git-dir="$ANALYSIS_GIT_DIR" cat-file -e "$ANALYSIS_SHA^{commit}" 2>/dev/null \
+  || { block "fetched default-branch commit validation failed: $ANALYSIS_SHA"; exit 0; }
+
+SNAPSHOT_PARENT="$STATE_DIR/analysis-snapshots"
+ANALYSIS_STAGING_ROOT="$SNAPSHOT_PARENT/.staging"
+ANALYSIS_ROOT="$SNAPSHOT_PARENT/$ANALYSIS_SHA"
+mkdir -p "$SNAPSHOT_PARENT" \
+  || { block "snapshot materialization failed: cannot create snapshot parent"; exit 0; }
+if [ -e "$ANALYSIS_STAGING_ROOT" ] || [ -e "$ANALYSIS_ROOT" ]; then
+  block "snapshot materialization found an unexpected existing analysis path"
+  exit 0
+fi
+mkdir "$ANALYSIS_STAGING_ROOT" \
+  || { block "snapshot materialization failed: cannot create staging root"; exit 0; }
+git --git-dir="$ANALYSIS_GIT_DIR" archive --format=tar \
+  --output="$ANALYSIS_ARCHIVE" "$ANALYSIS_SHA" \
+  || { block "snapshot archive failed for $ANALYSIS_SHA"; exit 0; }
+tar -xf "$ANALYSIS_ARCHIVE" -C "$ANALYSIS_STAGING_ROOT" \
+  || { block "snapshot materialization failed for $ANALYSIS_SHA"; exit 0; }
+rm -f "$ANALYSIS_ARCHIVE"
+chmod -R a-w "$ANALYSIS_STAGING_ROOT" \
+  || { block "snapshot read-only materialization failed for $ANALYSIS_SHA"; exit 0; }
+mv "$ANALYSIS_STAGING_ROOT" "$ANALYSIS_ROOT" \
+  || { block "snapshot publication failed for $ANALYSIS_SHA"; exit 0; }
+ANALYSIS_STAGING_ROOT=
+
+# Compute local/default divergence inside the same temporary Git database.
+# Importing the recorded local commit is read-only and does not touch the
+# checkout or its shared Git metadata. Divergence is audit metadata, not an
+# analysis fallback: import/count failure records it as unavailable.
+
+DIVERGENCE_AVAILABLE=false
+DIVERGENCE_RELATIONSHIP=unknown
+LOCAL_AHEAD_BY=
+LOCAL_BEHIND_BY=
+MERGE_BASE=
+if git --git-dir="$ANALYSIS_GIT_DIR" fetch --no-tags "$LOCAL" \
+  "$LOCAL_HEAD_SHA:refs/kookr/local" >/dev/null 2>&1; then
+  DIVERGENCE_COUNTS=$(git --git-dir="$ANALYSIS_GIT_DIR" \
+    rev-list --left-right --count "$LOCAL_HEAD_SHA...$ANALYSIS_SHA" 2>/dev/null || true)
+  if [ -n "$DIVERGENCE_COUNTS" ]; then
+    set -- $DIVERGENCE_COUNTS
+    LOCAL_AHEAD_BY=${1:-}
+    LOCAL_BEHIND_BY=${2:-}
+    DIVERGENCE_AVAILABLE=true
+    MERGE_BASE=$(git --git-dir="$ANALYSIS_GIT_DIR" \
+      merge-base "$LOCAL_HEAD_SHA" "$ANALYSIS_SHA" 2>/dev/null || true)
+    if [ "$LOCAL_HEAD_SHA" = "$ANALYSIS_SHA" ]; then
+      DIVERGENCE_RELATIONSHIP=equal
+    elif git --git-dir="$ANALYSIS_GIT_DIR" merge-base --is-ancestor \
+      "$LOCAL_HEAD_SHA" "$ANALYSIS_SHA"; then
+      DIVERGENCE_RELATIONSHIP=behind
+    elif git --git-dir="$ANALYSIS_GIT_DIR" merge-base --is-ancestor \
+      "$ANALYSIS_SHA" "$LOCAL_HEAD_SHA"; then
+      DIVERGENCE_RELATIONSHIP=ahead
+    elif [ -n "$MERGE_BASE" ]; then
+      DIVERGENCE_RELATIONSHIP=diverged
+    else
+      DIVERGENCE_RELATIONSHIP=unrelated
+    fi
+  fi
+fi
+
+# Write the run manifest atomically. Do not persist REMOTE_URL because a local
+# HTTPS remote can contain credentials. Before advancing the manifest SHA,
+# durably mark a baseline transition and invalidate source-derived artifacts.
+# Remove the marker only after installing the manifest, so an interruption at
+# any point repeats invalidation on resume instead of reusing stale evidence.
+
+ANALYSIS_TRANSITION_FILE="$STATE_DIR/analysis-transition.json"
+BASELINE_CHANGED=false
+if [ -s "$ANALYSIS_TRANSITION_FILE" ] \
+    || [ "$PRIOR_ANALYSIS_SHA" != "$ANALYSIS_SHA" ] \
+    || [ "$PRIOR_LOCAL_HEAD_SHA" != "$LOCAL_HEAD_SHA" ]; then
+  BASELINE_CHANGED=true
+fi
+
+invalidate_source_artifacts() {
+  [ "$RECS_DIR" = "$STATE_DIR/recommendations" ] || return 1
+  rm -rf "$RECS_DIR"
+  rm -f \
+    "$STATE_DIR/features.md" \
+    "$STATE_DIR/capability-inventory.md" \
+    "$STATE_DIR/ops-evidence.json" \
+    "$STATE_DIR/recommendations.md" \
+    "$STATE_DIR/proposals.md" \
+    "$STATE_DIR/conflict-matrix.md" \
+    "$STATE_DIR/duplicate-search-matrix.md" \
+    "$STATE_DIR/ideas-log.json"
+  mkdir -p "$RECS_DIR" || return 1
+  printf '[]\n' > "$IDEAS_LOG"
+}
+
+if [ "$BASELINE_CHANGED" = true ]; then
+  TRANSITION_TMP="$ANALYSIS_TRANSITION_FILE.tmp"
+  jq -n \
+    --arg fromAnalysisSha "$PRIOR_ANALYSIS_SHA" \
+    --arg toAnalysisSha "$ANALYSIS_SHA" \
+    --arg fromLocalHeadSha "$PRIOR_LOCAL_HEAD_SHA" \
+    --arg toLocalHeadSha "$LOCAL_HEAD_SHA" \
+    '{fromAnalysisSha: $fromAnalysisSha, toAnalysisSha: $toAnalysisSha,
+      fromLocalHeadSha: $fromLocalHeadSha, toLocalHeadSha: $toLocalHeadSha}' \
+    > "$TRANSITION_TMP" \
+    && jq . "$TRANSITION_TMP" >/dev/null \
+    && mv "$TRANSITION_TMP" "$ANALYSIS_TRANSITION_FILE" \
+    || { rm -f "$TRANSITION_TMP"; block "analysis transition marker write failed"; exit 0; }
+  invalidate_source_artifacts \
+    || { block "source-derived artifact invalidation failed"; exit 0; }
+fi
+
 MANIFEST_TMP="$STATE_DIR/run.json.tmp"
-DEFAULT_BRANCH=$(gh repo view "$REPO" --json defaultBranchRef --jq '.defaultBranchRef.name')
-HEAD_SHA=$(git -C "$LOCAL" rev-parse HEAD 2>/dev/null || true)
-jq -n \
+if ! jq -n \
   --arg repo "$REPO" \
   --arg localPath "$LOCAL" \
   --arg repoSlug "$REPO_SLUG" \
@@ -641,8 +858,16 @@ jq -n \
   --argjson spendCapUsd "$SPEND_CAP_USD" \
   --argjson capEnforced "$CAP_ENFORCED" \
   --arg taskId "${KOOKR_TASK_ID:-}" \
+  --arg matchedRemote "$REMOTE_MATCH" \
   --arg defaultBranch "$DEFAULT_BRANCH" \
-  --arg head "$HEAD_SHA" \
+  --arg localHeadSha "$LOCAL_HEAD_SHA" \
+  --arg analysisSha "$ANALYSIS_SHA" \
+  --arg analysisRoot "$ANALYSIS_ROOT" \
+  --argjson divergenceAvailable "$DIVERGENCE_AVAILABLE" \
+  --arg divergenceRelationship "$DIVERGENCE_RELATIONSHIP" \
+  --arg localAheadBy "$LOCAL_AHEAD_BY" \
+  --arg localBehindBy "$LOCAL_BEHIND_BY" \
+  --arg mergeBase "$MERGE_BASE" \
   --arg initialStatus "$INITIAL_STATUS" \
   '{
     repo: $repo,
@@ -660,13 +885,55 @@ jq -n \
     capEnforced: $capEnforced,
     capBreached: false,
     taskId: $taskId,
+    matchedRemote: $matchedRemote,
     defaultBranch: $defaultBranch,
-    head: $head,
+    localHeadSha: $localHeadSha,
+    analysisSha: $analysisSha,
+    analysisRoot: $analysisRoot,
+    divergence: {
+      available: $divergenceAvailable,
+      relationship: $divergenceRelationship,
+      localAheadBy: (if $divergenceAvailable then ($localAheadBy | tonumber) else null end),
+      localBehindBy: (if $divergenceAvailable then ($localBehindBy | tonumber) else null end),
+      mergeBase: (if $mergeBase == "" then null else $mergeBase end)
+    },
+    snapshot: {
+      method: "git-archive",
+      readOnly: true,
+      sourceCommitValidated: true,
+      pinnedBeforeMaterialization: true,
+      limitations: ["submodule worktrees are absent", "Git-LFS files remain pointer files"]
+    },
     issueSnapshotFetchedAt: null,
     initialStatus: $initialStatus
-  }' > "$MANIFEST_TMP"
-jq . "$MANIFEST_TMP" >/dev/null && mv "$MANIFEST_TMP" "$STATE_DIR/run.json"
+  }' > "$MANIFEST_TMP"; then
+  rm -f "$MANIFEST_TMP"
+  block "run manifest generation failed"
+  exit 0
+fi
+if ! jq . "$MANIFEST_TMP" >/dev/null \
+    || ! mv "$MANIFEST_TMP" "$STATE_DIR/run.json"; then
+  rm -f "$MANIFEST_TMP"
+  block "run manifest validation or installation failed"
+  exit 0
+fi
+rm -f "$ANALYSIS_TRANSITION_FILE" \
+  || { block "analysis transition marker cleanup failed"; exit 0; }
+cleanup_analysis_git \
+  || { block "temporary Git storage cleanup failed"; exit 0; }
+trap - EXIT HUP INT TERM
 ```
+
+When the baseline changes, rerun Phase 3 onward. The invalidation above covers
+all source-derived inventory, candidate, critic, verification, ranking, citation,
+and publication artifacts. It runs even when `PRIOR_LOCAL_HEAD_SHA` equals
+`LOCAL_HEAD_SHA`: a moving default-branch tip is a new evidence baseline. Issue
+snapshots still follow their separate 24-hour refresh rule.
+
+Shell-tool calls may not share an environment. Before any later source-consuming
+phase, reload `ANALYSIS_ROOT` and `ANALYSIS_SHA` from `<runManifest>` and verify
+that the root still exists; a missing root blocks publication and requires Phase
+1 to fetch, pin, and materialize a fresh current-default snapshot again.
 
 When `{{extraInstruction}}` is non-empty, persist the validated scope text to `<stateFile>` under a `## Scope filter` heading.
 
@@ -732,7 +999,13 @@ Do not rely only on titles. Read bodies for any issue that looks adjacent to a c
 
 ## Phase 3: Codebase And Feature Inventory
 
-In the local checkout, understand what the project is and what it already does:
+Use only the immutable `$ANALYSIS_ROOT` materialized from `$ANALYSIS_SHA` to
+understand what the project is and what it already does. Every source, docs,
+tests, examples, configuration, route, public-API, and capability check in this
+phase must resolve paths under `$ANALYSIS_ROOT`; `$LOCAL` is not an analysis
+input. Start targeted searches with `rg --files "$ANALYSIS_ROOT"` and
+`rg '<pattern>' "$ANALYSIS_ROOT"`, and report repository-relative paths rather
+than the ephemeral root.
 
 1. Read top-level docs: `README*`, `docs/`, `CONTRIBUTING*`, examples, changelog or release notes when present.
 2. Identify language and framework from package or build files.
@@ -745,7 +1018,9 @@ For each likely idea area, run an **existing capability check** before treating 
 - cite positive evidence for related existing capabilities
 - cite negative evidence for why those capabilities do not already solve the proposed problem
 
-Use fast targeted searches (`rg`, `rg --files`) instead of broad full-repo reads. Keep the summary evidence-based and cite file paths.
+Use fast targeted searches (`rg`, `rg --files`) instead of broad full-repo reads.
+Keep the summary evidence-based, cite repository-relative file paths, and bind
+the inventory to `analysisSha: $ANALYSIS_SHA`.
 
 When `workProfile` is `simplification-preserving`, additionally build `<capabilityInventoryFile>`: enumerate the documented and user-visible capabilities in scope, sourced from docs, CLI help, routes, config schemas, public APIs, and tests — not from usage frequency. Record characterization evidence (the tests or observed behavior that pin current behavior) for each area a simplification candidate might touch. When the profile is anything else, write `<capabilityInventoryFile>` as a one-line `status: skipped (profile=<profile>)` marker.
 
@@ -1250,6 +1525,12 @@ If subagents are available, launch these reviews in parallel for each accepted c
 - **Duplicate issue hunter**: Is there any wording variant or adjacent issue we missed?
 - **Implementation skeptic**: Hidden complexity, unclear tests, or excessive blast radius?
 
+Give every critic the immutable `analysisRoot: $ANALYSIS_ROOT` and
+`analysisSha: $ANALYSIS_SHA`, and direct all source/docs/tests inspection to that
+root. Do not give a critic `$LOCAL` as an evidence path. Record the analysis SHA
+in `critic-feedback.md` so resumed output cannot be mistaken for review of a
+newer default-branch tip.
+
 When `<kbSeedsFile>` has `status: ok`, the Product opportunity reviewer and the Implementation skeptic each run one `kb search` against the `_wisdom` and `agent-task-lessons` shelves so their critique cites recorded process wisdom rather than unsupported judgement.
 
 Write findings to `<recommendationsDir>/<NN>-<slug>/critic-feedback.md`. If critic findings reject a candidate, discard it and, if the pool is still below target, generate a replacement.
@@ -1260,9 +1541,12 @@ Idea-scout candidates carry problem evidence — cited `file:line` claims and cl
 
 Run this step for every candidate that survived the duplicate check (4.2) and critic review (4.4), before Classification (4.6). Reuse the run's existing subagent budget and spend ledger — a Haiku- or Sonnet-tier check is enough; do not spend an expensive reasoning tier, because the work is mechanical: does the cited evidence exist and say what the candidate claims. If subagents are available, launch one cheap-tier validator per candidate in parallel (as in 4.4); otherwise perform the checks yourself as a written pass. The validator's cost accrues to the same ledger as every other phase (see Per-Run Spend Cap); it is not a separate budget.
 
-Each validator runs three checks against the local checkout (`git -C "$LOCAL"`, `rg`, targeted reads at the run's `HEAD`) and the Phase 2 issue snapshots, never trusting the candidate's own summary:
+Each validator receives `analysisRoot: $ANALYSIS_ROOT` and
+`analysisSha: $ANALYSIS_SHA`, then runs three checks with `rg` and targeted reads
+under that immutable root and against the Phase 2 issue snapshots. It never uses
+the local working tree or the candidate's own summary as evidence:
 
-1. **Cited `file:line` exists and supports the claim.** For every `path:line` (or `path` plus a quoted snippet) the candidate cites as problem evidence, confirm the path exists at the run's `HEAD`, the referenced lines are present, and the surrounding code or doc actually says what the candidate claims. A citation to a moved, deleted, or misquoted location, or one whose real content contradicts the claim, fails.
+1. **Cited `file:line` exists and supports the claim.** For every `path:line` (or `path` plus a quoted snippet) the candidate cites as problem evidence, confirm the path exists under `$ANALYSIS_ROOT` at `$ANALYSIS_SHA`, the referenced lines are present, and the surrounding code or doc actually says what the candidate claims. A citation to a moved, deleted, or misquoted location, or one whose real content contradicts the claim, fails.
 2. **Claimed-missing capability is absent, not merely unfound.** For every capability the candidate asserts is missing, re-run the Phase 3 existing-capability check with fresh synonyms across docs, CLI help, routes, config schemas, public APIs, tests, and source names. The capability counts as **present** if any surface implements it. "I did not find it" is not "it does not exist": the claim stands only after a search that plausibly would have surfaced the capability had it existed. This is the same discipline as *Absence of usage evidence is unknown* — an unfound capability is unknown, not proven absent.
 3. **Cited adjacent issue/PR evidence is real.** Any issue or PR number the candidate cites as supporting the gap must exist and say what the candidate claims. Reuse the 4.2 snapshots and adjacent-comment fetches rather than re-querying.
 
@@ -1273,6 +1557,7 @@ Record the verdict as `<recommendationsDir>/<NN>-<slug>/evidence-verification.js
   "verdict": "pass",
   "checkedAt": "<UTC ISO timestamp>",
   "tier": "haiku",
+  "analysisSha": "<full immutable analysis SHA>",
   "fileLineChecks": [
     { "citation": "src/foo/bar.ts:42", "exists": true, "supportsClaim": true, "note": "" }
   ],
@@ -1327,6 +1612,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 # Repository Idea Recommendation: <idea title>
 
 ## Summary
+## Analysis baseline (default branch, immutable analysis SHA)
 ## Classification (authority, changeShape, size, confidence, risks)
 ## Project context
 ## Scope filter (only when extraInstruction is non-empty; quote the filter and explain the fit)
@@ -1345,7 +1631,7 @@ For every surviving candidate, write the detailed local audit `<recommendationsD
 ## Files and issues inspected
 ```
 
-The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line. When the ops sweep was skipped or had no items for the candidate's category, the `## Operational evidence` section states so in one line (`Operational evidence: none (<reason>)`).
+The report is a **local audit artifact** and is never published verbatim. It MUST include the literal headings `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`. It MUST also include `## Analysis baseline (default branch, immutable analysis SHA)`. When KB grounding was skipped or returned nothing usable, the `## Knowledge base grounding` section states so in one line. When the ops sweep was skipped or had no items for the candidate's category, the `## Operational evidence` section states so in one line (`Operational evidence: none (<reason>)`).
 
 ## Phase 5: Portfolio Consolidation, Conflict Matrix, And Ranking
 
@@ -1420,6 +1706,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
   "category": "<dimension>",
   "angle": "<short distinguishing summary>",
   "title": "<idea title>",
+  "analysisSha": "<full immutable analysis SHA>",
   "authority": "autonomous",
   "changeShape": "corrective",
   "size": "small",
@@ -1444,7 +1731,7 @@ Atomically write `<ideasLogFile>` as a JSON array (temp file then `mv`). Each en
 }
 ```
 
-`evidenceVerification` is the Phase 4.5 gate verdict carried forward — `pass` or `downgraded` (a `discarded` candidate never reaches the ideas log). `conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. `wildcard` is `true` only on the single out-of-profile excursion candidate of a focused-profile run (see Coverage-ordered rotation); `false` everywhere else. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
+`analysisSha` is `$ANALYSIS_SHA` for every entry; mixed-baseline portfolios are invalid. `evidenceVerification` is the Phase 4.5 gate verdict carried forward — `pass` or `downgraded` (a `discarded` candidate never reaches the ideas log). `conflictsWith` lists the `idx` values of portfolio items with predicted file/module overlap. `groundedIn` lists the `<kb>/<path>` passages that seeded or refined the idea; it is `[]` when the idea has no KB grounding. `kbStale` is `true` when any cited KB passage carried a stale-index warning. `wildcard` is `true` only on the single out-of-profile excursion candidate of a focused-profile run (see Coverage-ordered rotation); `false` everywhere else. Never paste idea text directly into shell source; store generated entries in files and merge with `jq` or a structured JSON writer.
 
 ### 5.6 Update dimension coverage
 
@@ -1493,6 +1780,7 @@ For every candidate whose `publishDecision` is `publish`, write the reader-first
 <who is affected and how much>
 
 ## Code evidence
+Analysis commit: `<full immutable analysis SHA>`
 <file paths and short quotes that show the gap; no local state paths>
 
 ## Smallest solution
@@ -1512,6 +1800,10 @@ For every candidate whose `publishDecision` is `publish`, write the reader-first
 Classification: <changeShape> · <size> · <confidence> confidence · autonomous-safe
 ```
 
+Every source citation in the issue body must have been read from
+`$ANALYSIS_ROOT` and verified at `$ANALYSIS_SHA`. Publish repository-relative
+paths and the `Analysis commit:` line, never the ephemeral analysis-root path.
+
 For every candidate whose `publishDecision` is `rfc-first`, write
 `<recommendationsDir>/<NN>-<slug>/rfc-handoff.md`. It contains only the stable
 finding key, reader-facing title, verified code evidence, affected boundaries,
@@ -1524,6 +1816,7 @@ Repository: `<owner/name>`
 Finding key: `<stable-finding-key>`
 Finding title: `<reader-facing title>`
 Source reference: `<durable report or run reference>`
+Analysis commit: `<full immutable analysis SHA>`
 
 ## Verified evidence and affected boundaries
 <verified evidence, affected boundaries, and constraints>
@@ -1940,15 +2233,16 @@ The deterministic `Repository idea: <title>` prefix combined with the `--author 
 Before finishing, validate:
 
 - `<ideasLogFile>` exists, contains valid JSON, and has at most `PUBLISH_TARGET` entries. If it has fewer, `<recommendationsDoc>` explains the shortfall.
-- Every entry has a unique `idx`, `slug`, `rank`, `category`, `angle`, `title`, a boolean `wildcard`, and a full classification block (`authority`, `changeShape`, `size`, `confidence`, `expectedValue`, `evidenceStrength`, `duplicateRisk`, `implementationReadiness`, `parallelConflictRisk`).
+- `<runManifest>` records the matched remote, GitHub-resolved default branch, `localHeadSha`, immutable `analysisSha`, `analysisRoot`, and divergence availability/relationship/counts. Before cleanup, the analysis root exists, is read-only, its basename equals `analysisSha`, and the manifest records that the source commit was validated before archive materialization.
+- Every entry has a unique `idx`, `slug`, `rank`, `category`, `angle`, `title`, an `analysisSha` exactly equal to `<runManifest>.analysisSha`, a boolean `wildcard`, and a full classification block (`authority`, `changeShape`, `size`, `confidence`, `expectedValue`, `evidenceStrength`, `duplicateRisk`, `implementationReadiness`, `parallelConflictRisk`).
 - Every entry's `authority` is consistent with its `changeShape` per the Authority Policy — in particular, no entry with `changeShape: reductive` has `authority` other than `protected`.
 - Every entry has `<recommendationsDir>/<idx>-<slug>/report.md`, `duplicate-evidence.md`, `evidence-verification.json`, and `classification.json`.
-- Every entry has an `evidenceVerification` of `pass` or `downgraded` that matches the `verdict` in its `evidence-verification.json`; no entry has `verdict: discarded` (discarded candidates are excluded before the ideas log). Every `downgraded` entry's `evidenceStrength` and `confidence` reflect the one-step reduction the gate recorded.
-- Every report contains `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`.
+- Every entry has an `evidenceVerification` of `pass` or `downgraded` that matches the `verdict` in its `evidence-verification.json`; that artifact's `analysisSha` equals the run manifest; no entry has `verdict: discarded` (discarded candidates are excluded before the ideas log). Every `downgraded` entry's `evidenceStrength` and `confidence` reflect the one-step reduction the gate recorded.
+- Every report contains `## Analysis baseline (default branch, immutable analysis SHA)`, `## Classification (authority, changeShape, size, confidence, risks)`, `## Duplicate evidence table`, `## Evidence verification`, `## Knowledge base grounding`, and `## Operational evidence`.
 - `<conflictMatrixFile>` exists and covers every portfolio item.
 - `<recommendationsDoc>` exists and references the ranked portfolio; `<proposalsDoc>` exists and lists every review-required and protected candidate.
 - `<duplicateMatrixFile>` exists and references the portfolio.
-- Only candidates whose `publishDecision` is `publish` have an `issue-body.md`; that body contains none of `<stateDir>`, a local state path, or process boilerplate.
+- Only candidates whose `publishDecision` is `publish` have an `issue-body.md`; that body contains none of `<stateDir>`, a local state path, the ephemeral analysis root, or process boilerplate, and its `Analysis commit:` equals `<runManifest>.analysisSha`.
 - Every candidate whose `publishDecision` is `rfc-first` has an `rfc-handoff.md`, remains `authority: review-required`, has `issueUrl: null`, and — in `publish-safe` mode — has a non-null `rfcTaskId` backed by `rfc-task.json`. It never has an `issue-created.json`.
 - Every `deferred-over-budget` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and has a matching `kookr emission defer` record. It is not treated as a failed RFC-first launch.
 - Every `deferred-spend-cap` RFC candidate remains `authority: review-required`, has `issueUrl: null` and `rfcTaskId: null`, and is covered by a breached spend ledger. It is not treated as a failed RFC-first launch.
@@ -1963,7 +2257,7 @@ Before finishing, validate:
 - When `<ideasLogFile>` has at least one entry: `<dimensionCoverageFile>` exists and is valid JSON. Everything further about its *content* — `appliedRuns` containing this `<runKey>`, `dimensions.<d>.coveredCount` ≥ 1 for categories present in `<ideasLogFile>` — is a **warning recorded in `<recommendationsDoc>`, never a `BLOCKED`**: the file is last-writer-wins under concurrent runs (a sibling can erase this run's entry or increment), a resumed run's portfolio can grow after the guard fired, and an update failure is logged non-fatally. Coverage is ordering heuristics, not correctness state; no hard gate may test it beyond existence + validity.
 - `<ideaOutcomeLedgerFile>` exists and is valid JSON with object `ideas` and array `recordedRuns`/`refreshedRuns` after Phase 3.7 (self-heal guarantees this even when `gh` is down). Everything further about its *content* — which issues are present, whether `refreshedRuns`/`recordedRuns` contain this `<runKey>`, outcome classifications — is a **warning recorded in `<recommendationsDoc>`, never a `BLOCKED`**: refresh/record failures are non-fatal, concurrent runs are last-writer-wins, and the ledger is ordering/reporting heuristics. No hard gate may test outcome-ledger *content* beyond existence + schema validity.
 - At most one entry in `<ideasLogFile>` has `"wildcard": true`, and only on a focused-profile run.
-- The target checkout's `git status --short` still matches the initial status captured in `<runManifest>`.
+- The target checkout's `GIT_OPTIONAL_LOCKS=0 git status --short` still matches the initial status captured in `<runManifest>`, including dirty and untracked entries. The no-optional-locks mode is required for both the initial and final probes so status inspection cannot refresh the shared index.
 
 Record the final spend and surface it, then mark the run. The completion output must carry per-run spend and any cap breach so the schedule ledger/rollup can pick them up:
 
@@ -1983,16 +2277,39 @@ printf 'Run spend: $%s / cap $%s (enforced: %s; breached: %s)\n' \
 
 Also include that `Run spend: …` line and, when `capBreached` is true, an explicit "spend cap reached — stopped early" note in both the `<recommendationsDoc>` Summary and the run's final completion message (and the `kookr signal completion-ready --note …` digest), so the schedule ledger/rollup captures per-run spend and cap breaches.
 
+The isolated Git database was removed before Phase 1's shell call returned.
+After all evidence and status checks pass, remove the state-scoped read-only
+snapshot. Cleanup failure is a final validation failure, not a warning:
+
+```bash
+ANALYSIS_SHA=$(jq -er '.analysisSha' "$STATE_DIR/run.json") \
+  || { block "analysis SHA missing from run manifest"; exit 0; }
+ANALYSIS_ROOT=$(jq -er '.analysisRoot' "$STATE_DIR/run.json") \
+  || { block "analysis root missing from run manifest"; exit 0; }
+case "$ANALYSIS_SHA" in ''|*[!0-9a-f]*) block "invalid analysis SHA in run manifest"; exit 0 ;; esac
+case ${#ANALYSIS_SHA} in 40|64) ;; *) block "invalid analysis SHA length in run manifest"; exit 0 ;; esac
+EXPECTED_ANALYSIS_ROOT="$STATE_DIR/analysis-snapshots/$ANALYSIS_SHA"
+[ "$ANALYSIS_ROOT" = "$EXPECTED_ANALYSIS_ROOT" ] \
+  || { block "analysis root is outside run-scoped snapshot storage"; exit 0; }
+chmod -R u+w "$ANALYSIS_ROOT" 2>/dev/null \
+  || { block "analysis snapshot permission restoration failed"; exit 0; }
+rm -rf "$ANALYSIS_ROOT" \
+  || { block "analysis snapshot cleanup failed"; exit 0; }
+[ ! -e "$ANALYSIS_ROOT" ] \
+  || { block "analysis snapshot remains after cleanup"; exit 0; }
+rmdir "$STATE_DIR/analysis-snapshots" 2>/dev/null || true
+```
+
 If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If validation fails or an unrecoverable setup/evidence blocker occurs, write `<promise>BLOCKED</promise>` with a concrete reason. A spend cap breach is **not** a `BLOCKED` condition: it is a controlled early stop; the run still finishes `DONE` with the breach recorded.
 
 ## Idempotency Rules
 
 1. State is scoped to `<repoSlug>/<runKey>`, not just the repository — with exactly two deliberate repo-level exceptions: `<dimensionCoverageFile>` (rotation coverage) and `<ideaOutcomeLedgerFile>` (published-idea outcomes / conversion). Both use per-`<runKey>` idempotence arrays (`appliedRuns` / `recordedRuns`+`refreshedRuns`), self-heal on schema-invalid files, and are safe to delete at any time. A scoped run (`extraInstruction` non-empty) still updates them; that bias is accepted because both are ordering/reporting heuristics, not correctness state.
-2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, and local path.
+2. Reuse `<stateDir>` only when its `<runManifest>` matches the current repo, work profile, workload size, publish behavior, scan limit, knowledge-base mode, task id or run key, local path, matched remote, and default branch.
 3. Do not post comments, create branches, PRs, or edit tracked files in the target repository. The only allowed mutation beyond issue creation is the two provenance labels (`idea-scout`, `idea:<issue-number>`) applied to the idea issues this run creates in `publish-safe` mode; label creation and application are idempotent (`gh label create --force`, `gh issue edit --add-label`).
 4. Create GitHub issues only when `publishBehavior` is `publish-safe`, exactly one issue per **autonomous** candidate, never more, never for a review-required or protected candidate, and never above the drain-coupled emission budget (`kookr emission plan`). An `rfc-first` review-required candidate may launch only `architecture-refactor-rfc.md`; it does not enter `gh issue create`, and its eventual umbrella consumes the reserved slot.
 5. Do not duplicate issue API work unnecessarily; use saved snapshots from this run unless they are missing, invalid JSON, or older than 24 hours.
-6. Refresh feature inventory if the checkout `HEAD` changed from `<runManifest>`.
+6. On every start or resume, fetch the current default-branch tip into new isolated temporary Git storage and compare the pinned commit with `<runManifest>.analysisSha`. When it moved, invalidate and refresh every source-derived artifact even when `<runManifest>.localHeadSha` is unchanged. Also refresh when the local SHA moved; never reuse critics, evidence verification, citations, or candidate rankings across analysis SHAs.
 7. Do not claim a candidate is novel until per-candidate all-state issue and PR searches plus adjacent comment fetches have been run for that candidate.
 8. Do not append a candidate whose `category` and `angle` substantially match an existing portfolio entry; consolidate overlaps in Phase 5 instead.
 9. Never exceed `min(PUBLISH_TARGET, emission allowedBudget)` published ideas. Over-budget autonomous candidates go to the deferred-ideas log via `kookr emission defer`, not to GitHub.
@@ -2002,6 +2319,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 13. KB grounding is augmentation only: a missing, empty, or off-domain KB never blocks the run and never reduces the publish target.
 14. Run the Phase 3.6 operational-evidence sweep once; reuse `<opsEvidenceFile>` for every candidate instead of re-probing. Kookr-specific runtime probes are optional and never block the run.
 15. Use `architecture-refactor-rfc:<repoSlug>:<findingKey>` as the stable RFC-task idempotency key. Revalidate a saved task id against the task API before reuse. A timeout requires task/idempotency lookup before retry; never mint a new key for the same candidate.
+16. Clean the isolated Git database before its single owning shell invocation exits (including `HUP`, `INT`, and `TERM`). Keep only the state-scoped read-only snapshot across analysis calls; clean it on success, `BLOCKED`, or before a resumed run replaces it. A missing controlled-path cleanup is a validation failure.
 
 ## Anti-Patterns
 
@@ -2009,6 +2327,7 @@ If validation passes, write `<promise>DONE</promise>` to `<stateFile>`. If valid
 - Do not ignore closed issues; they often contain rejected or already-completed ideas.
 - Do not treat lack of exact title match as proof of novelty.
 - Do not analyze a checkout whose remotes do not match the requested repository.
+- Do not analyze source, docs, tests, capabilities, or citations from the target checkout. Use only the pinned default-branch snapshot, and never fall back to local `HEAD` when resolution, fetch, validation, or materialization fails.
 - Do not reuse terminal state from a different task or parameter set.
 - Do not propose a rewrite, plugin system, cloud service, or other broad platform shift unless the repository already points strongly in that direction — and when you do, it is review-required, never autonomous.
 - Do not mutate the target repository by default. This playbook is for portfolio recommendations, with optional autonomous-only issue creation when `publishBehavior` is `publish-safe`.

@@ -1,6 +1,19 @@
-import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { describe, test, expect } from 'vitest';
+import { gitExecEnv, NESTED_GIT_ENV_VARS } from './git-helpers.js';
 import { parsePlaybook, interpolateParameters } from './playbook-parser.js';
 
 /**
@@ -24,6 +37,201 @@ describe('repository-idea-scout playbook', () => {
   );
   const content = readFileSync(playbookPath, 'utf-8');
   const pb = parsePlaybook(content, 'repository-idea-scout.md', '/');
+
+  const bashBlockAfter = (marker: string): string => {
+    const markerAt = pb.body.indexOf(marker);
+    expect(markerAt).toBeGreaterThan(-1);
+    const start = pb.body.indexOf('```bash\n', markerAt);
+    expect(start).toBeGreaterThan(markerAt);
+    const bodyStart = start + '```bash\n'.length;
+    const end = pb.body.indexOf('\n```', bodyStart);
+    expect(end).toBeGreaterThan(bodyStart);
+    return pb.body.slice(bodyStart, end);
+  };
+
+  const runGit = (cwd: string, args: string[], env?: NodeJS.ProcessEnv): string => {
+    return execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      env: env ?? process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  };
+
+  type CheckoutRelation = 'equal' | 'behind' | 'ahead' | 'diverged';
+  interface SnapshotFixture {
+    root: string;
+    local: string;
+    seed: string;
+    state: string;
+    tempParent: string;
+    env: NodeJS.ProcessEnv;
+    localHead: string;
+    statusBefore: string;
+    indexBefore: Buffer;
+  }
+
+  const createSnapshotFixture = (
+    relation: CheckoutRelation,
+    options: { upstreamOnly?: boolean; dirty?: boolean; trailingSlashTmp?: boolean } = {},
+  ): SnapshotFixture => {
+    const root = mkdtempSync(join(tmpdir(), 'idea-scout-snapshot-test-'));
+    const remote = join(root, 'remote.git');
+    const seed = join(root, 'seed');
+    const local = join(root, 'local');
+    const state = join(root, 'state');
+    const tempParent = join(root, 'tmp');
+    const fakeBin = join(root, 'bin');
+    const testHome = join(root, 'home');
+    const gitConfig = join(root, 'gitconfig');
+    mkdirSync(seed);
+    mkdirSync(state);
+    mkdirSync(tempParent);
+    mkdirSync(fakeBin);
+    mkdirSync(testHome);
+    writeFileSync(gitConfig, '');
+    const gitEnv: NodeJS.ProcessEnv = {
+      ...gitExecEnv(),
+      GIT_CONFIG_GLOBAL: gitConfig,
+      GIT_CONFIG_NOSYSTEM: '1',
+      HOME: testHome,
+    };
+    const fixtureGit = (cwd: string, args: string[]): string => runGit(cwd, args, gitEnv);
+
+    fixtureGit(root, ['init', '--bare', remote]);
+    fixtureGit(seed, ['init']);
+    fixtureGit(seed, ['checkout', '-b', 'trunk']);
+    writeFileSync(join(seed, 'tracked.txt'), 'base\n');
+    fixtureGit(seed, ['add', 'tracked.txt']);
+    fixtureGit(seed, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'base']);
+    fixtureGit(seed, ['remote', 'add', 'origin', remote]);
+    fixtureGit(seed, ['push', '-u', 'origin', 'trunk']);
+    fixtureGit(root, ['--git-dir', remote, 'symbolic-ref', 'HEAD', 'refs/heads/trunk']);
+    fixtureGit(root, ['clone', remote, local]);
+    fixtureGit(local, ['checkout', '-b', 'feature']);
+
+    if (relation === 'ahead' || relation === 'diverged') {
+      writeFileSync(join(local, 'local-only.txt'), 'local\n');
+      fixtureGit(local, ['add', 'local-only.txt']);
+      fixtureGit(local, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'local']);
+    }
+    if (relation === 'behind' || relation === 'diverged') {
+      writeFileSync(join(seed, 'default-only.txt'), 'default\n');
+      fixtureGit(seed, ['add', 'default-only.txt']);
+      fixtureGit(seed, ['-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'default']);
+      fixtureGit(seed, ['push', 'origin', 'trunk']);
+    }
+
+    const remoteName = options.upstreamOnly ? 'upstream' : 'origin';
+    if (options.upstreamOnly) fixtureGit(local, ['remote', 'rename', 'origin', 'upstream']);
+    const githubUrl = 'https://github.com/example/snapshot-fixture.git';
+    fixtureGit(local, ['remote', 'set-url', remoteName, githubUrl]);
+
+    if (options.dirty) {
+      writeFileSync(join(local, 'tracked.txt'), 'dirty\n');
+      writeFileSync(join(local, 'untracked.txt'), 'untracked\n');
+    }
+
+    const ghPath = join(fakeBin, 'gh');
+    writeFileSync(ghPath, [
+      '#!/bin/sh',
+      'if [ "$1" = repo ] && [ "$2" = view ]; then',
+      '  printf "%s\\n" "$TEST_DEFAULT_BRANCH"',
+      '  exit 0',
+      'fi',
+      'exit 1',
+      '',
+    ].join('\n'));
+    chmodSync(ghPath, 0o755);
+    const gitPath = join(fakeBin, 'git');
+    writeFileSync(gitPath, [
+      '#!/bin/sh',
+      'if [ "${2:-}" = fetch ]; then',
+      '  exec "$REAL_GIT" -c "url.file://$TEST_REMOTE_PATH.insteadOf=$TEST_GITHUB_URL" "$@"',
+      'fi',
+      'exec "$REAL_GIT" "$@"',
+      '',
+    ].join('\n'));
+    chmodSync(gitPath, 0o755);
+
+    const env: NodeJS.ProcessEnv = {
+      ...gitEnv,
+      GIT_CONFIG_GLOBAL: gitConfig,
+      GIT_CONFIG_NOSYSTEM: '1',
+      HOME: testHome,
+      KOOKR_TASK_ID: 'snapshot-test-run',
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      REAL_GIT: execFileSync('which', ['git'], { encoding: 'utf8' }).trim(),
+      TEST_DEFAULT_BRANCH: 'trunk',
+      TEST_GITHUB_URL: githubUrl,
+      TEST_LOCAL: local,
+      TEST_REMOTE_PATH: remote,
+      TEST_REPO: 'example/snapshot-fixture',
+      TEST_STATE: state,
+      TMPDIR: options.trailingSlashTmp ? `${tempParent}/` : tempParent,
+    };
+
+    const localHead = runGit(local, ['rev-parse', 'HEAD'], env);
+    const statusBefore = runGit(local, ['status', '--short'], env);
+    const indexBefore = readFileSync(join(local, '.git', 'index'));
+    return {
+      root,
+      local,
+      seed,
+      state,
+      tempParent,
+      env,
+      localHead,
+      statusBefore,
+      indexBefore,
+    };
+  };
+
+  const runSnapshotPhase = (fixture: SnapshotFixture): void => {
+    const init = bashBlockAfter('Initialize derived values:');
+    const remote = bashBlockAfter('Resolve the local checkout and validate remotes:');
+    const snapshot = bashBlockAfter("Resolve GitHub's current default branch");
+    const scriptPath = join(fixture.root, 'run-snapshot.sh');
+    writeFileSync(scriptPath, [
+      init,
+      'REPO="$TEST_REPO"',
+      'REPO_SLUG=example-snapshot-fixture',
+      'LOCAL_INPUT="$TEST_LOCAL"',
+      'RUN_KEY=snapshot-test-run',
+      'STATE_DIR="$TEST_STATE"',
+      'STATE_FILE="$STATE_DIR/state.md"',
+      'RECS_DIR="$STATE_DIR/recommendations"',
+      'IDEAS_LOG="$STATE_DIR/ideas-log.json"',
+      'PROFILE=balanced',
+      'WORKLOAD=quick-shortlist',
+      'PUBLISH=report-only',
+      'USE_KB=off',
+      'SCAN_LIMIT=20',
+      'PUBLISH_TARGET=3',
+      'CANDIDATE_POOL=6',
+      'SPEND_CAP_USD=0',
+      'CAP_ENFORCED=false',
+      'mkdir -p "$STATE_DIR" "$RECS_DIR"',
+      '[ -f "$IDEAS_LOG" ] || printf "[]\\n" > "$IDEAS_LOG"',
+      remote,
+      snapshot,
+      '',
+    ].join('\n'));
+    execFileSync('bash', [scriptPath], {
+      cwd: fixture.root,
+      env: fixture.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  };
+
+  const cleanupFixture = (fixture: SnapshotFixture): void => {
+    try {
+      execFileSync('chmod', ['-R', 'u+w', fixture.root], { stdio: 'ignore' });
+    } catch {
+      // Best effort only; rmSync below reports an actual cleanup problem.
+    }
+    rmSync(fixture.root, { recursive: true, force: true });
+  };
 
   const paramNames = pb.parameters.map((p) => p.name);
   const param = (name: string) => pb.parameters.find((p) => p.name === name);
@@ -271,7 +479,7 @@ describe('repository-idea-scout playbook', () => {
       expect(classification).toBeGreaterThan(gate);
     });
 
-    test('the gate checks cited file:line and claimed-missing capabilities against the real checkout', () => {
+    test('the gate checks cited file:line and claimed-missing capabilities against the pinned snapshot', () => {
       const gate = pb.body.slice(
         pb.body.indexOf('### 4.5 Evidence Verification Gate'),
         pb.body.indexOf('### 4.6 Classification'),
@@ -302,6 +510,256 @@ describe('repository-idea-scout playbook', () => {
       expect(phase8).toContain('evidence-verification.json');
       expect(phase8).toMatch(/no entry has `verdict: discarded`/);
       expect(phase8).toContain('## Evidence verification');
+    });
+  });
+
+  describe('default-branch analysis snapshot (issue #2894)', () => {
+    const phase1 = pb.body.slice(
+      pb.body.indexOf('## Phase 1: Preflight And State'),
+      pb.body.indexOf('## Phase 1.5:'),
+    );
+    const phase3 = pb.body.slice(
+      pb.body.indexOf('## Phase 3: Codebase And Feature Inventory'),
+      pb.body.indexOf('## Phase 3.5:'),
+    );
+    const critic = pb.body.slice(
+      pb.body.indexOf('### 4.4 Critic Review'),
+      pb.body.indexOf('### 4.5 Evidence Verification Gate'),
+    );
+    const evidenceGate = pb.body.slice(
+      pb.body.indexOf('### 4.5 Evidence Verification Gate'),
+      pb.body.indexOf('### 4.6 Classification'),
+    );
+    const phase8 = pb.body.slice(pb.body.indexOf('## Phase 8: Final Validation'));
+
+    test('stale, ahead, and diverged checkouts record local/default provenance and divergence', () => {
+      for (const field of [
+        'matchedRemote:',
+        'defaultBranch:',
+        'localHeadSha:',
+        'analysisSha:',
+        'divergence:',
+      ]) {
+        expect(phase1).toContain(field);
+      }
+      expect(phase1).toMatch(/rev-list --left-right --count/);
+      for (const relationship of ['equal', 'behind', 'ahead', 'diverged']) {
+        expect(phase1).toContain(relationship);
+      }
+    });
+
+    test('fetches an upstream-only or origin match and supports a non-main default branch', () => {
+      expect(phase1).toMatch(/for REMOTE_NAME in origin upstream/);
+      expect(phase1).toContain('remote get-url "$REMOTE_MATCH"');
+      expect(phase1).toContain("DEFAULT_BRANCH=$(gh repo view \"$REPO\" --json defaultBranchRef");
+      expect(phase1).toContain('refs/heads/$DEFAULT_BRANCH:refs/kookr/default');
+      expect(phase1).not.toContain('origin/main');
+    });
+
+    test('uses isolated temporary Git storage, pins before archive, and fails closed', () => {
+      expect(phase1).toContain('mktemp -d');
+      expect(phase1).toContain('git init --bare "$ANALYSIS_GIT_DIR"');
+      expect(phase1).toMatch(/git --git-dir="\$ANALYSIS_GIT_DIR" fetch/);
+      expect(phase1).toContain('ANALYSIS_SHA=$(git --git-dir="$ANALYSIS_GIT_DIR" rev-parse');
+      expect(phase1).toContain('cat-file -e "$ANALYSIS_SHA^{commit}"');
+      const pin = phase1.indexOf('ANALYSIS_SHA=$(git --git-dir="$ANALYSIS_GIT_DIR" rev-parse');
+      const archive = phase1.indexOf('archive --format=tar');
+      expect(pin).toBeGreaterThan(-1);
+      expect(archive).toBeGreaterThan(pin);
+      expect(phase1).toMatch(/default branch resolution failed[^\n]*block|block "default branch resolution failed/i);
+      expect(phase1).toMatch(/default-branch fetch failed[^\n]*block|block "default-branch fetch failed/i);
+      expect(phase1).toMatch(/snapshot (archive|materialization) failed[^\n]*block|block "snapshot/i);
+      expect(pb.body).toMatch(/never fall back to (the )?local `HEAD`/i);
+    });
+
+    test('preserves dirty and untracked checkout state without shared-metadata mutation', () => {
+      expect(phase1).toContain('CURRENT_STATUS=$(GIT_OPTIONAL_LOCKS=0 git -C "$LOCAL" status --short)');
+      expect(phase1).toContain('INITIAL_STATUS=$CURRENT_STATUS');
+      expect(phase8).toMatch(/git status --short.*initial status|initial status.*git status --short/is);
+      expect(phase8).toContain('GIT_OPTIONAL_LOCKS=0');
+      expect(phase1).not.toMatch(/git -C "\$LOCAL" (fetch|checkout|switch|reset|merge|stash)\b/);
+      expect(pb.body).toMatch(/never switch, reset, merge, stash, fetch through, or edit/i);
+    });
+
+    test('threads the pinned root and SHA through inventory, critics, evidence, citations, and validation', () => {
+      expect(phase3).toContain('$ANALYSIS_ROOT');
+      expect(phase3).toMatch(/source, docs,\s+tests/i);
+      expect(critic).toContain('$ANALYSIS_ROOT');
+      expect(critic).toContain('$ANALYSIS_SHA');
+      expect(evidenceGate).toContain('$ANALYSIS_ROOT');
+      expect(evidenceGate).toContain('analysisSha');
+      expect(evidenceGate).not.toContain('git -C "$LOCAL"');
+      const issueBodies = pb.body.slice(pb.body.indexOf('### 5.7 Write the reader-first issue bodies'));
+      expect(issueBodies).toContain('Analysis commit:');
+      expect(phase8).toMatch(/analysisSha|analysis SHA/);
+      expect(phase8).toMatch(/analysisRoot|analysis root/);
+    });
+
+    test('moving default-branch tips force refresh even when local HEAD is unchanged', () => {
+      const resume = pb.body.slice(pb.body.indexOf('## Idempotency Rules'));
+      expect(resume).toMatch(/fetch the current default-branch tip/i);
+      expect(resume).toMatch(/analysisSha/);
+      expect(resume).toMatch(/even when.*localHeadSha.*unchanged/i);
+      expect(resume).toMatch(/invalidate|refresh/i);
+    });
+
+    test('cleans temporary artifacts and documents submodule and Git-LFS limits', () => {
+      expect(phase1).toContain('cleanup_analysis');
+      expect(phase1).toMatch(/chmod -R a-w "\$ANALYSIS_STAGING_ROOT"/);
+      expect(phase1).toContain("trap 'cleanup_analysis_git || true' EXIT");
+      expect(phase8).toContain('rm -rf "$ANALYSIS_ROOT"');
+      expect(pb.body).toMatch(/submodule/i);
+      expect(pb.body).toMatch(/Git[- ]LFS/i);
+      expect(pb.body).toMatch(/pointer files|LFS payloads/i);
+    });
+
+    test('scrubs inherited Git repository routing from subprocess fixtures', () => {
+      const routed = gitExecEnv();
+      for (const name of NESTED_GIT_ENV_VARS) expect(routed[name]).toBeUndefined();
+    });
+
+    test.each<CheckoutRelation>(['equal', 'behind', 'ahead', 'diverged'])(
+      'executes the isolated snapshot flow for a %s local checkout',
+      (relation) => {
+        const fixture = createSnapshotFixture(relation);
+        try {
+          runSnapshotPhase(fixture);
+          const manifest = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+            matchedRemote: string;
+            defaultBranch: string;
+            localHeadSha: string;
+            analysisSha: string;
+            analysisRoot: string;
+            divergence: { available: boolean; relationship: string };
+            snapshot: { sourceCommitValidated: boolean; pinnedBeforeMaterialization: boolean };
+          };
+          expect(manifest.matchedRemote).toBe('origin');
+          expect(manifest.defaultBranch).toBe('trunk');
+          expect(manifest.localHeadSha).toBe(fixture.localHead);
+          expect(manifest.analysisSha).toBe(runGit(fixture.seed, ['rev-parse', 'trunk'], fixture.env));
+          expect(manifest.divergence).toMatchObject({ available: true, relationship: relation });
+          expect(manifest.snapshot).toMatchObject({
+            sourceCommitValidated: true,
+            pinnedBeforeMaterialization: true,
+          });
+          expect(existsSync(manifest.analysisRoot)).toBe(true);
+          expect(statSync(manifest.analysisRoot).mode & 0o222).toBe(0);
+          expect(statSync(join(manifest.analysisRoot, 'tracked.txt')).mode & 0o222).toBe(0);
+          expect(readdirSync(fixture.tempParent)).toEqual([]);
+          expect(readFileSync(join(fixture.local, '.git', 'index'))).toEqual(fixture.indexBefore);
+        } finally {
+          cleanupFixture(fixture);
+        }
+      },
+    );
+
+    test('uses an upstream-only remote and non-main branch without changing dirty or untracked state', () => {
+      const fixture = createSnapshotFixture('behind', {
+        upstreamOnly: true,
+        dirty: true,
+        trailingSlashTmp: true,
+      });
+      try {
+        runSnapshotPhase(fixture);
+        const manifest = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          matchedRemote: string;
+          defaultBranch: string;
+          localHeadSha: string;
+          divergence: { relationship: string };
+        };
+        expect(manifest).toMatchObject({
+          matchedRemote: 'upstream',
+          defaultBranch: 'trunk',
+          localHeadSha: fixture.localHead,
+          divergence: { relationship: 'behind' },
+        });
+        expect(readFileSync(join(fixture.local, '.git', 'index'))).toEqual(fixture.indexBefore);
+        expect(runGit(fixture.local, ['status', '--short'], fixture.env)).toBe(fixture.statusBefore);
+        expect(runGit(fixture.local, ['rev-parse', 'HEAD'], fixture.env)).toBe(fixture.localHead);
+        expect(readdirSync(fixture.tempParent)).toEqual([]);
+      } finally {
+        cleanupFixture(fixture);
+      }
+    });
+
+    test('blocks publication on fetch failure without falling back to local HEAD', () => {
+      const fixture = createSnapshotFixture('behind', { dirty: true });
+      try {
+        rmSync(join(fixture.root, 'remote.git'), { recursive: true, force: true });
+        runSnapshotPhase(fixture);
+        expect(existsSync(join(fixture.state, 'run.json'))).toBe(false);
+        expect(readFileSync(join(fixture.state, 'state.md'), 'utf8')).toMatch(
+          /default-branch fetch failed[\s\S]*<promise>BLOCKED<\/promise>/,
+        );
+        expect(readFileSync(join(fixture.local, '.git', 'index'))).toEqual(fixture.indexBefore);
+        expect(runGit(fixture.local, ['status', '--short'], fixture.env)).toBe(fixture.statusBefore);
+        expect(runGit(fixture.local, ['rev-parse', 'HEAD'], fixture.env)).toBe(fixture.localHead);
+        expect(readdirSync(fixture.tempParent)).toEqual([]);
+        expect(existsSync(join(fixture.state, 'analysis-snapshots'))).toBe(false);
+      } finally {
+        cleanupFixture(fixture);
+      }
+    });
+
+    test('moving-tip resume invalidates stale artifacts before advancing the manifest and cleans snapshots', () => {
+      const fixture = createSnapshotFixture('equal');
+      try {
+        runSnapshotPhase(fixture);
+        const first = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          analysisSha: string;
+          analysisRoot: string;
+          localHeadSha: string;
+        };
+        writeFileSync(join(fixture.state, 'features.md'), 'stale inventory\n');
+        mkdirSync(join(fixture.state, 'recommendations'), { recursive: true });
+        writeFileSync(join(fixture.state, 'recommendations', 'stale.md'), 'stale candidate\n');
+        writeFileSync(join(fixture.state, 'ideas-log.json'), '[{"analysisSha":"stale"}]\n');
+
+        writeFileSync(join(fixture.seed, 'moving-tip.txt'), 'new default tip\n');
+        runGit(fixture.seed, ['add', 'moving-tip.txt'], fixture.env);
+        runGit(fixture.seed, [
+          '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+          'commit', '-m', 'move default tip',
+        ], fixture.env);
+        runGit(fixture.seed, ['push', 'origin', 'trunk'], fixture.env);
+
+        runSnapshotPhase(fixture);
+        const second = JSON.parse(readFileSync(join(fixture.state, 'run.json'), 'utf8')) as {
+          analysisSha: string;
+          analysisRoot: string;
+          localHeadSha: string;
+        };
+        expect(second.analysisSha).not.toBe(first.analysisSha);
+        expect(second.localHeadSha).toBe(first.localHeadSha);
+        expect(existsSync(first.analysisRoot)).toBe(false);
+        expect(existsSync(second.analysisRoot)).toBe(true);
+        expect(existsSync(join(fixture.state, 'features.md'))).toBe(false);
+        expect(existsSync(join(fixture.state, 'recommendations', 'stale.md'))).toBe(false);
+        expect(JSON.parse(readFileSync(join(fixture.state, 'ideas-log.json'), 'utf8'))).toEqual([]);
+        expect(existsSync(join(fixture.state, 'analysis-transition.json'))).toBe(false);
+        expect(readdirSync(fixture.tempParent)).toEqual([]);
+        expect(readFileSync(join(fixture.local, '.git', 'index'))).toEqual(fixture.indexBefore);
+
+        const init = bashBlockAfter('Initialize derived values:');
+        const finalCleanup = bashBlockAfter('After all evidence and status checks pass');
+        const cleanupScript = join(fixture.root, 'cleanup-snapshot.sh');
+        writeFileSync(cleanupScript, [
+          init,
+          'STATE_DIR="$TEST_STATE"',
+          'STATE_FILE="$STATE_DIR/state.md"',
+          finalCleanup,
+          '',
+        ].join('\n'));
+        execFileSync('bash', [cleanupScript], {
+          cwd: fixture.root,
+          env: fixture.env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        expect(existsSync(second.analysisRoot)).toBe(false);
+        expect(existsSync(join(fixture.state, 'analysis-snapshots'))).toBe(false);
+      } finally {
+        cleanupFixture(fixture);
+      }
     });
   });
 
