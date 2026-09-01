@@ -637,6 +637,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // top-level health or GET /api/ready classification.
     const postRecoveryQueueFillBlock =
       deps.postRecoveryService?.getQueueFillHealthSnapshot();
+    // Issue #2797: latest post-resume refill decision from bounded process-local
+    // memory only. Lets a capacity report separate pause-expected silence from
+    // post-resume idle capacity (intentional_idle vs refill_blocked vs
+    // refilled). Informational — not part of top-level health / GET /api/ready.
+    const postResumeRefillBlock =
+      deps.postResumeRefillService?.getRefillHealthSnapshot();
     // Issue #2896: project the latest resource sampler's data-directory byte
     // capacity onto health without re-sampling the filesystem. Keep this
     // path-free because health and its last-good mirror are operator-visible.
@@ -856,6 +862,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
       ...(postRecoveryQueueFillBlock
         ? { postRecoveryQueueFill: postRecoveryQueueFillBlock }
+        : {}),
+      ...(postResumeRefillBlock
+        ? { postResumeRefill: postResumeRefillBlock }
         : {}),
       dataDirectory: dataDirectoryBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),

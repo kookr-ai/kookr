@@ -94,6 +94,20 @@ export function registerOrchestrationRoutes(app: Hono, deps: RouteDeps): void {
     const auto = body.auto === true;
     try {
       const result = await service.resume({ by, auto });
+      // On the paused→live edge, run one bounded, idempotent refill pass so the
+      // fleet does not silently sit idle with free slots after a pause
+      // (issue #2797). Unlike the timer-driven post-recovery sibling, this pass
+      // is edge-triggered inline on the resume request: the response
+      // deliberately absorbs its bounded latency (a state read/write, and at
+      // most `getSpawnBudget` launches when enabled). Best-effort: a refill
+      // failure must never fail the resume.
+      if (result.resumed && result.transitionId && deps.postResumeRefillService) {
+        try {
+          await deps.postResumeRefillService.onResumeTransition(result.transitionId);
+        } catch {
+          // Recorded in the refill health snapshot; the resume itself succeeded.
+        }
+      }
       return c.json({ ...result.status, resumed: result.resumed, ...(result.reason ? { resumeDeclinedReason: result.reason } : {}) });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

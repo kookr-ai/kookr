@@ -97,6 +97,90 @@ describe('orchestration routes (issue #2672)', () => {
     expect(body.pauseProvenance.history[0]).toMatchObject({ lifecycle: 'ended', endSource: 'explicit-resume' });
   });
 
+  it('triggers exactly one post-resume refill pass on the paused→live edge (issue #2797)', async () => {
+    const calls: string[] = [];
+    const deps = mkDeps(dir, { initial: { automationKillSwitch: true } });
+    (deps as Partial<RouteDeps>).postResumeRefillService = {
+      getRefillHealthSnapshot: () => ({}) as never,
+      onResumeTransition: async (transitionId: string) => {
+        calls.push(transitionId);
+        return { outcome: 'intentional_idle', transitionId, launched: [], wouldLaunchCount: 0 };
+      },
+    };
+    const app = mkApp(deps);
+    await app.request('/api/orchestration/pause', { method: 'POST', body: JSON.stringify({ by: 'jean' }) });
+
+    const res = await app.request('/api/orchestration/resume', {
+      method: 'POST',
+      body: JSON.stringify({ by: 'jean' }),
+    });
+    expect((await res.json()).resumed).toBe(true);
+    // Called once, with the closed transition id (not empty).
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeTruthy();
+  });
+
+  it('does NOT trigger a refill pass when resume is declined (issue #2797)', async () => {
+    const calls: string[] = [];
+    const deps = mkDeps(dir);
+    (deps as Partial<RouteDeps>).postResumeRefillService = {
+      getRefillHealthSnapshot: () => ({}) as never,
+      onResumeTransition: async (transitionId: string) => {
+        calls.push(transitionId);
+        return { outcome: 'intentional_idle', transitionId, launched: [], wouldLaunchCount: 0 };
+      },
+    };
+    const app = mkApp(deps);
+    await app.request('/api/orchestration/pause', { method: 'POST', body: JSON.stringify({ source: 'human', by: 'jean' }) });
+
+    const res = await app.request('/api/orchestration/resume', {
+      method: 'POST',
+      body: JSON.stringify({ auto: true, by: 'orchestrator' }),
+    });
+    expect((await res.json()).resumed).toBe(false);
+    expect(calls).toHaveLength(0); // sticky human pause: no edge, no refill
+  });
+
+  it('a refill-pass failure never fails the resume (best-effort trigger, issue #2797)', async () => {
+    const deps = mkDeps(dir, { initial: { automationKillSwitch: true } });
+    (deps as Partial<RouteDeps>).postResumeRefillService = {
+      getRefillHealthSnapshot: () => ({}) as never,
+      onResumeTransition: async () => {
+        throw new Error('boom: refill exploded');
+      },
+    };
+    const app = mkApp(deps);
+    await app.request('/api/orchestration/pause', { method: 'POST', body: JSON.stringify({ by: 'jean' }) });
+
+    const res = await app.request('/api/orchestration/resume', {
+      method: 'POST',
+      body: JSON.stringify({ by: 'jean' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).resumed).toBe(true); // resume succeeded despite the refill throw
+  });
+
+  it('does NOT trigger a refill pass on a resume of an already-live fleet (no paused→live edge, issue #2797)', async () => {
+    const calls: string[] = [];
+    const deps = mkDeps(dir); // not paused
+    (deps as Partial<RouteDeps>).postResumeRefillService = {
+      getRefillHealthSnapshot: () => ({}) as never,
+      onResumeTransition: async (transitionId: string) => {
+        calls.push(transitionId);
+        return { outcome: 'intentional_idle', transitionId, launched: [], wouldLaunchCount: 0 };
+      },
+    };
+    const app = mkApp(deps);
+    // No prior pause: resume reports resumed but there is no transition edge.
+    const res = await app.request('/api/orchestration/resume', {
+      method: 'POST',
+      body: JSON.stringify({ by: 'jean' }),
+    });
+    const body = await res.json();
+    expect(body.resumed).toBe(true);
+    expect(calls).toHaveLength(0); // no transitionId emitted → no false-edge refill
+  });
+
   it('a soft auto-resume declines to lift a human pause', async () => {
     const deps = mkDeps(dir);
     const app = mkApp(deps);
