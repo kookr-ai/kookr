@@ -2543,6 +2543,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ...(findingEvidenceReviewEnabled ? { findingEvidenceReviewHmacKey } : {}),
     findingEvidenceReviewSampler,
     umbrellaChainAdvancer: umbrellaChainHealth,
+    postRecoveryService,
     remoteShare: remoteRelayRuntime.remoteShare,
     getCleanupWorktreeOnComplete,
     relayConnection: remoteRelayRuntime.relayConnection,

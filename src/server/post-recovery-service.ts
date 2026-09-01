@@ -126,6 +126,65 @@ export interface QueueFillKickResult {
   utcDay?: string;
 }
 
+export const POST_RECOVERY_QUEUE_FILL_HEALTH_SCHEMA = 'post-recovery-queue-fill.v1' as const;
+/** Latest-evaluation rows only; prevents a large schedule fleet from bloating health. */
+export const POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT = 25;
+
+export type PostRecoveryQueueFillHealthState =
+  | 'not_started'
+  | 'suppressed'
+  | 'completed'
+  | 'error';
+
+export type PostRecoveryQueueFillTickReason =
+  | 'operator_drain'
+  | 'safe_mode'
+  | 'tick_overlap'
+  | 'tick_error';
+
+export type PostRecoveryQueueFillResultReason =
+  | 'scout_launched'
+  | 'scout_launched_latch_persist_failed'
+  | 'insufficient_free_slots'
+  | 'queue_not_empty'
+  | 'dispatch_unhealthy'
+  | 'scout_or_batch_in_flight'
+  | 'already_kicked_utc_day'
+  | 'launch_error_retry_exhausted'
+  | 'scout_terminated_at_launch'
+  | 'scout_launch_failed';
+
+export interface PostRecoveryQueueFillHealthResult {
+  repository: string;
+  utcDay: string;
+  kicked: boolean;
+  reason: PostRecoveryQueueFillResultReason;
+  evaluatedAt: string;
+  ageMs: number;
+  scoutTaskId?: string;
+}
+
+export interface PostRecoveryQueueFillHealthSnapshot {
+  schemaVersion: typeof POST_RECOVERY_QUEUE_FILL_HEALTH_SCHEMA;
+  state: PostRecoveryQueueFillHealthState;
+  evaluatedAt: string | null;
+  ageMs: number | null;
+  reason: PostRecoveryQueueFillTickReason | null;
+  resultLimit: typeof POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT;
+  truncated: boolean;
+  results: PostRecoveryQueueFillHealthResult[];
+}
+
+type StoredQueueFillHealthResult = Omit<PostRecoveryQueueFillHealthResult, 'ageMs'>;
+
+interface StoredQueueFillHealthSnapshot {
+  state: PostRecoveryQueueFillHealthState;
+  evaluatedAtMs: number | null;
+  reason: PostRecoveryQueueFillTickReason | null;
+  truncated: boolean;
+  results: StoredQueueFillHealthResult[];
+}
+
 export class PostRecoveryService {
   private interval: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
@@ -138,6 +197,14 @@ export class PostRecoveryService {
   private criticalRearmInitialPassDone = false;
   private readonly criticalRearmRetries = new Map<string, CriticalRearmRetryState>();
   private readonly deps: PostRecoveryServiceDeps;
+  /** Latest queue-fill evaluation only; no history or request-time I/O. */
+  private queueFillHealth: StoredQueueFillHealthSnapshot = {
+    state: 'not_started',
+    evaluatedAtMs: null,
+    reason: null,
+    truncated: false,
+    results: [],
+  };
 
   constructor(deps: PostRecoveryServiceDeps) {
     this.deps = deps;
@@ -149,6 +216,53 @@ export class PostRecoveryService {
 
   private auditPath(): string | undefined {
     return this.deps.kookrDir ? join(this.deps.kookrDir, 'audit.jsonl') : undefined;
+  }
+
+  /** Cheap, detached process-local snapshot for GET `/api/health`. */
+  getQueueFillHealthSnapshot(): PostRecoveryQueueFillHealthSnapshot {
+    const evaluatedAtMs = this.queueFillHealth.evaluatedAtMs;
+    const ageMs = evaluatedAtMs === null ? null : Math.max(0, this.now() - evaluatedAtMs);
+    return {
+      schemaVersion: POST_RECOVERY_QUEUE_FILL_HEALTH_SCHEMA,
+      state: this.queueFillHealth.state,
+      evaluatedAt: evaluatedAtMs === null ? null : new Date(evaluatedAtMs).toISOString(),
+      ageMs,
+      reason: this.queueFillHealth.reason,
+      resultLimit: POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT,
+      truncated: this.queueFillHealth.truncated,
+      results: this.queueFillHealth.results.map((result) => ({
+        ...result,
+        ageMs: ageMs ?? 0,
+      })),
+    };
+  }
+
+  private recordQueueFillTick(
+    state: Exclude<PostRecoveryQueueFillHealthState, 'not_started' | 'completed'>,
+    reason: PostRecoveryQueueFillTickReason,
+  ): void {
+    this.queueFillHealth = {
+      state,
+      evaluatedAtMs: this.now(),
+      reason,
+      truncated: false,
+      results: [],
+    };
+  }
+
+  private recordCompletedQueueFill(results: QueueFillKickResult[]): void {
+    const evaluatedAtMs = this.now();
+    const evaluatedAt = new Date(evaluatedAtMs).toISOString();
+    const utcDay = evaluatedAt.slice(0, 10);
+    this.queueFillHealth = {
+      state: 'completed',
+      evaluatedAtMs,
+      reason: null,
+      truncated: results.length > POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT,
+      results: results
+        .slice(0, POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT)
+        .map((result) => queueFillHealthResult(result, evaluatedAt, utcDay)),
+    };
   }
 
   private kickStateDir(): string {
@@ -195,13 +309,18 @@ export class PostRecoveryService {
       kicks: [],
     };
     if (this.stopped) return empty;
-    if (this.ticking) return empty;
+    if (this.ticking) {
+      this.recordQueueFillTick('suppressed', 'tick_overlap');
+      return empty;
+    }
     this.ticking = true;
     try {
       if (this.deps.isAccepting && !this.deps.isAccepting()) {
+        this.recordQueueFillTick('suppressed', 'operator_drain');
         return empty;
       }
       if (this.deps.isAutomationEnabled && !this.deps.isAutomationEnabled()) {
+        this.recordQueueFillTick('suppressed', 'safe_mode');
         return empty;
       }
 
@@ -210,10 +329,12 @@ export class PostRecoveryService {
         rearm = await this.rearmCriticalSchedules();
       }
       const kicks = await this.runQueueFillKicks();
+      this.recordCompletedQueueFill(kicks);
       return { rearm, kicks };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.deps.log?.(`[post-recovery] tick failed: ${message}`);
+      this.recordQueueFillTick('error', 'tick_error');
       return empty;
     } finally {
       this.ticking = false;
@@ -471,6 +592,7 @@ export class PostRecoveryService {
             repo: candidate.repo,
             kicked: false,
             reason: `error:${message}`,
+            scoutTaskId: launched.id,
             utcDay: decision.utcDay,
           });
           continue;
@@ -490,7 +612,34 @@ export class PostRecoveryService {
           lastKickScoutTaskId: scoutTaskId,
           updatedAt: new Date(nowMs).toISOString(),
         };
-        await saveKickState(nextState, this.kickStateDir());
+        try {
+          await saveKickState(nextState, this.kickStateDir());
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          this.deps.log?.(
+            `[post-recovery] scout ${scoutTaskId} launched for ${candidate.repo}`
+            + ` but the daily kick latch could not be persisted: ${message}`,
+          );
+          await appendAuditRow(this.auditPath(), {
+            action: 'post_recovery_queue_fill_kick_failed',
+            provenance: POST_RECOVERY_PROVENANCE,
+            repo: candidate.repo,
+            utcDay: decision.utcDay,
+            scoutTaskId,
+            error: `daily kick latch persistence failed: ${message}`,
+            at: new Date(nowMs).toISOString(),
+          });
+          // The scout consumed capacity even though the daily latch failed.
+          freeBudget = Math.max(0, freeBudget - 1);
+          results.push({
+            repo: candidate.repo,
+            kicked: true,
+            reason: 'error:daily kick latch persistence failed',
+            scoutTaskId,
+            utcDay: decision.utcDay,
+          });
+          continue;
+        }
 
         await appendAuditRow(this.auditPath(), {
           action: 'post_recovery_queue_fill_kick',
@@ -618,6 +767,46 @@ export class PostRecoveryService {
         `[post-recovery] failed to arm starvation batch kick for ${repo}: ${message}`,
       );
     }
+  }
+}
+
+function queueFillHealthResult(
+  result: QueueFillKickResult,
+  evaluatedAt: string,
+  fallbackUtcDay: string,
+): StoredQueueFillHealthResult {
+  return {
+    repository: result.repo,
+    utcDay: result.utcDay ?? fallbackUtcDay,
+    kicked: result.kicked,
+    reason: stableQueueFillResultReason(result),
+    evaluatedAt,
+    ...(result.scoutTaskId ? { scoutTaskId: result.scoutTaskId } : {}),
+  };
+}
+
+function stableQueueFillResultReason(
+  result: QueueFillKickResult,
+): PostRecoveryQueueFillResultReason {
+  if (result.reason === 'error:daily kick latch persistence failed') {
+    return 'scout_launched_latch_persist_failed';
+  }
+  if (result.kicked) return 'scout_launched';
+  switch (result.reason) {
+    case 'insufficient_free_slots':
+    case 'queue_not_empty':
+    case 'dispatch_unhealthy':
+    case 'scout_or_batch_in_flight':
+    case 'already_kicked_utc_day':
+      return result.reason;
+    default:
+      if (result.reason?.startsWith('error:scout launch_error retry budget exhausted')) {
+        return 'launch_error_retry_exhausted';
+      }
+      if (result.reason?.startsWith('error:scout died at launch')) {
+        return 'scout_terminated_at_launch';
+      }
+      return 'scout_launch_failed';
   }
 }
 

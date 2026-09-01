@@ -632,6 +632,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const resourceWatchdogBlock = deps.resourceWatchdog?.getHealthSnapshot({
       staleDtachCount: staleProcesses?.dtach.count ?? null,
     });
+    // Issue #2895: latest post-recovery queue-fill decision from bounded
+    // process-local memory only. Informational — it does not participate in
+    // top-level health or GET /api/ready classification.
+    const postRecoveryQueueFillBlock =
+      deps.postRecoveryService?.getQueueFillHealthSnapshot();
     // Issue #2896: project the latest resource sampler's data-directory byte
     // capacity onto health without re-sampling the filesystem. Keep this
     // path-free because health and its last-good mirror are operator-visible.
@@ -849,6 +854,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       nonCriticalTimerPause: nonCriticalTimerPauseBlock,
       snapshotShed: snapshotShedBlock,
       ...(resourceWatchdogBlock ? { resourceWatchdog: resourceWatchdogBlock } : {}),
+      ...(postRecoveryQueueFillBlock
+        ? { postRecoveryQueueFill: postRecoveryQueueFillBlock }
+        : {}),
       dataDirectory: dataDirectoryBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(viewerBroadcasterBlock ? { viewerBroadcaster: viewerBroadcasterBlock } : {}),
