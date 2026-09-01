@@ -8,7 +8,8 @@ import {
   type AgentSelection,
   type GrokAuthStatusResponse,
 } from '../../shared/protocol.js';
-import type { LaunchDependency, PlaybookParameterOption, PlaybookScope } from '../../shared/contracts/playbook.js';
+import type { LaunchDependency, PlaybookParameterOption, PlaybookScope, PlaybookSourceIdentity } from '../../shared/contracts/playbook.js';
+import { isSamePlaybookResource } from '../playbook-source-identity.js';
 import type { ProjectSummary } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 
@@ -181,6 +182,13 @@ interface Props {
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
+  /**
+   * Exact playbook resource the relaunched task executed. When present, the
+   * relaunch preselect matches this resource identity (id + scope + sourceCwd)
+   * rather than id alone, so a later same-id playbook in a higher-precedence
+   * tier can never be silently substituted (issue #2892).
+   */
+  relaunchPlaybookSource?: PlaybookSourceIdentity;
   /** Original task id retained across editable playbook relaunch fields. */
   relaunchParentTaskId?: string;
   /** When launched from a project detail drawer, pre-fill source-matching params */
@@ -269,6 +277,7 @@ export function PlaybookBrowser({
   taskTargetCwd,
   relaunchPlaybookId,
   relaunchParameterValues,
+  relaunchPlaybookSource,
   relaunchParentTaskId,
   projectContext,
   onTaskTargetCwdChange,
@@ -324,23 +333,48 @@ export function PlaybookBrowser({
   const effectiveTaskTargetCwd = (taskTargetCwd ?? cwd).trim();
   const usesSplitLaunchFields = Boolean(playbookSourceCwd || taskTargetCwd || projectContext);
 
-  // Auto-select playbook when relaunching and playbooks have loaded
+  // When a relaunch carried a source identity but the exact resource is gone
+  // from the catalog (removed, edited to a new digest, or shadowed by a same-id
+  // playbook in a higher tier), we refuse to silently substitute the current
+  // winner and instead ask for an explicit reselection (issue #2892).
+  const [relaunchUnavailable, setRelaunchUnavailable] =
+    useState<'missing-identity' | 'unavailable' | null>(null);
+
+  // Auto-select the relaunched playbook once its catalog has loaded. We lock
+  // `relaunchAppliedRef` ONLY on a successful match: a no-match against the
+  // current snapshot may just mean a stale catalog (e.g. a different cwd's
+  // playbooks are still in the store while the dialog's own fetch is in
+  // flight), so we must stay eligible to re-resolve when the correct catalog
+  // arrives. Locking on no-match would freeze a transient miss into a permanent
+  // wrong "unavailable" state.
   const relaunchAppliedRef = useRef(false);
   useEffect(() => {
-    if (relaunchPlaybookId && !playbooksLoading && playbooks.length > 0 && !relaunchAppliedRef.current) {
-      const match = playbooks.find((pb) => pb.id === relaunchPlaybookId);
-      if (match) {
-        relaunchAppliedRef.current = true;
-        setParamValues(
-          mergeParamDefaults(match.parameters, relaunchParameterValues ?? {}, {
-            preserveDefaultFromSnapshot: true,
-          }),
-        );
-        setSelected(match);
-        return; // skip focusing search — we're in detail view
-      }
+    if (!relaunchPlaybookId || playbooksLoading || playbooks.length === 0 || relaunchAppliedRef.current) {
+      return;
     }
-  }, [relaunchPlaybookId, relaunchParameterValues, playbooksLoading, playbooks]);
+    // Match the exact recorded resource (id + scope + sourceCwd) so a same-id
+    // playbook in a higher-precedence tier can't be silently substituted
+    // (issue #2892). Fall back to id-only for legacy tasks that predate
+    // source-identity tracking — those carry no identity to match on.
+    const match = relaunchPlaybookSource
+      ? playbooks.find((pb) => isSamePlaybookResource(pb, relaunchPlaybookSource))
+      : playbooks.find((pb) => pb.id === relaunchPlaybookId);
+    if (match) {
+      relaunchAppliedRef.current = true;
+      setRelaunchUnavailable(null);
+      setParamValues(
+        mergeParamDefaults(match.parameters, relaunchParameterValues ?? {}, {
+          preserveDefaultFromSnapshot: true,
+        }),
+      );
+      setSelected(match);
+      return; // skip focusing search — we're in detail view
+    }
+    // No match in this catalog: stay on the list so the user can choose a
+    // replacement, and explain why the form did not open pre-filled. Left
+    // unlocked so a later (correct) catalog can still auto-select.
+    setRelaunchUnavailable(relaunchPlaybookSource ? 'unavailable' : 'missing-identity');
+  }, [relaunchPlaybookId, relaunchParameterValues, relaunchPlaybookSource, playbooksLoading, playbooks]);
 
   // Auto-focus search when playbooks arrive
   useEffect(() => {
@@ -470,6 +504,7 @@ export function PlaybookBrowser({
 
     setParamValues(defaults);
     setLaunchMode('standard');
+    setRelaunchUnavailable(null);
     setSelected(playbook);
   }
 
@@ -1072,6 +1107,15 @@ export function PlaybookBrowser({
         playbookSourceCwd={usesSplitLaunchFields ? effectivePlaybookSourceCwd : undefined}
         onRequestEdit={onRequestEditCwd}
       />
+      {relaunchUnavailable && (
+        <div className="playbook-relaunch-note" role="status">
+          {relaunchUnavailable === 'missing-identity' ? (
+            <>This task predates playbook source tracking, so its exact workflow can&rsquo;t be identified. Select a playbook to relaunch.</>
+          ) : (
+            <>The exact playbook that ran this task (<code>{relaunchPlaybookId}</code>) is no longer available — it was removed or shadowed by a same-name playbook in another location. Select a replacement to relaunch.</>
+          )}
+        </div>
+      )}
       <div className="playbook-search">
         <input
           ref={searchRef}

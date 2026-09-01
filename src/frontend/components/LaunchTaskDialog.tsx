@@ -7,7 +7,7 @@ import {
   type AgentType,
   type AgentSelection,
 } from '../../shared/protocol.js';
-import type { ProjectSummary } from '../../shared/protocol.js';
+import type { ProjectSummary, PlaybookSourceIdentity } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { track } from '../telemetry.js';
 import { RecentPaths } from '../store/recent-paths.js';
@@ -241,6 +241,8 @@ interface Props {
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
+  /** Exact playbook resource the relaunched task executed, for identity-matched reselection. */
+  relaunchPlaybookSource?: PlaybookSourceIdentity;
   /** When launched from a project drawer, pre-fill source-matching params */
   projectContext?: ProjectSummary;
   /** When launched from a selected project, pre-fill cwd with that project's local checkout. */
@@ -250,7 +252,7 @@ interface Props {
   sttShortcutBinding?: ShortcutBinding;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchParentTaskId, relaunchPlaybookId, relaunchParameterValues, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchParentTaskId, relaunchPlaybookId, relaunchParameterValues, relaunchPlaybookSource, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -972,6 +974,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               : {})}
             relaunchPlaybookId={relaunchPlaybookId}
             relaunchParameterValues={relaunchParameterValues}
+            relaunchPlaybookSource={relaunchPlaybookSource}
             relaunchParentTaskId={relaunchParentTaskId}
             projectContext={projectContext}
             onRequestEditCwd={() => {

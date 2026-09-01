@@ -33,6 +33,7 @@ import type {
   WorkspaceSweepProgressMessage,
   WorkspaceSweepProgressSnapshot,
   TaskRelation,
+  PlaybookSourceIdentity,
 } from '../../shared/protocol.js';
 import type {
   ProjectSidebarCatalogEntry,
@@ -72,6 +73,13 @@ export interface RelaunchTask {
   agentType?: AgentType;
   playbookId?: string;
   playbookParameterValues?: Record<string, string>;
+  /**
+   * Exact playbook resource the source task executed. Carried so the relaunch
+   * form reselects that resource instead of the current same-id precedence
+   * winner (issue #2892). Absent on legacy tasks launched before identity
+   * tracking — the picker then falls back to id-only matching.
+   */
+  playbookSource?: PlaybookSourceIdentity;
 }
 
 export interface SentOverlay {

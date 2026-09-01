@@ -13,7 +13,7 @@ import type { RelaunchTask } from './store/store-types.js';
 export async function relaunchFromAgent(
   agent: Pick<
     AgentState,
-    'taskId' | 'cwd' | 'agentType' | 'description' | 'playbookId' | 'playbookParameterValues'
+    'taskId' | 'cwd' | 'agentType' | 'description' | 'playbookId' | 'playbookParameterValues' | 'playbookSource'
   >,
   setRelaunchTask: (task: RelaunchTask) => void,
 ): Promise<void> {
@@ -27,6 +27,11 @@ export async function relaunchFromAgent(
       agentType: agent.agentType,
       playbookId: agent.playbookId,
       playbookParameterValues: agent.playbookParameterValues,
+      // Carry the exact resource identity so relaunch reselects the same
+      // playbook file rather than the current same-id precedence winner
+      // (issue #2892). Absent on legacy task records launched before identity
+      // tracking; those fall back to id-only matching downstream.
+      ...(agent.playbookSource ? { playbookSource: agent.playbookSource } : {}),
     });
     return;
   }
