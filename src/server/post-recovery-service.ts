@@ -118,12 +118,49 @@ interface CriticalRearmRetryState {
   nextAttemptAt: number;
 }
 
+/**
+ * Whether a launched scout's completion-trigger batch arm was durably persisted
+ * (issue #2856). `'armed'` — the scout-complete kick state saved, so implement
+ * re-enters the batch path when the scout finishes. `'failed'` — the scout is
+ * live (slot + UTC day consumed, not retried) but persisting its batch arm
+ * failed, so the queue-fill link is broken until the next kick window. It never
+ * implies the future batch itself succeeded — only that arming it persisted.
+ */
+export type PostRecoveryBatchArmStatus = 'armed' | 'failed';
+
+/** Internal outcome of {@link PostRecoveryService.armStarvationKickAfterScout}. */
+type BatchArmOutcome =
+  | { status: 'armed' }
+  | { status: 'failed'; error: string };
+
+/**
+ * Max characters of arm-failure detail recorded in the degraded audit row
+ * (issue #2856). Bounds a persistence stack trace / long fs error so it cannot
+ * bloat audit.jsonl while preserving enough to diagnose the broken queue-fill
+ * link.
+ */
+export const POST_RECOVERY_BATCH_ARM_ERROR_MAX = 500;
+
+export function boundedBatchArmError(message: string): string {
+  const trimmed = message.trim();
+  return trimmed.length > POST_RECOVERY_BATCH_ARM_ERROR_MAX
+    ? `${trimmed.slice(0, POST_RECOVERY_BATCH_ARM_ERROR_MAX)}…`
+    : trimmed;
+}
+
 export interface QueueFillKickResult {
   repo: string;
   kicked: boolean;
   reason?: string;
   scoutTaskId?: string;
   utcDay?: string;
+  /**
+   * Present only when `kicked` is true: whether the scout-completion batch arm
+   * was durably persisted (issue #2856). See {@link PostRecoveryBatchArmStatus}.
+   * A `'failed'` value still means the scout launched and consumed its slot/day
+   * — it is a degraded-success signal, not a launch failure.
+   */
+  batchArmStatus?: PostRecoveryBatchArmStatus;
 }
 
 export const POST_RECOVERY_QUEUE_FILL_HEALTH_SCHEMA = 'post-recovery-queue-fill.v1' as const;
@@ -602,7 +639,14 @@ export class PostRecoveryService {
         // Arm starvation scout-complete batch kick so implement re-enters when
         // the scout finishes (reuses #1715 R5 path when KOOKR_PIPELINE_BATCH_KICK
         // is on; still records lastStarvationScoutTaskId for open-episode match).
-        await this.armStarvationKickAfterScout(candidate.repo, scoutTaskId, nowMs);
+        // The scout is already live: a persistence failure here degrades the kick
+        // (the completion→batch link is broken) but does NOT unlaunch it — the
+        // slot/day are still consumed and it is not retried (issue #2856).
+        const batchArm = await this.armStarvationKickAfterScout(
+          candidate.repo,
+          scoutTaskId,
+          nowMs,
+        );
 
         const nextState: PostRecoveryKickRepoState = {
           schemaVersion: POST_RECOVERY_KICK_STATE_SCHEMA,
@@ -637,10 +681,15 @@ export class PostRecoveryService {
             reason: 'error:daily kick latch persistence failed',
             scoutTaskId,
             utcDay: decision.utcDay,
+            batchArmStatus: batchArm.status,
           });
           continue;
         }
 
+        // Ordinary launch audit is always written (retains #2196 launch-count
+        // telemetry); `batchArmStatus` is an additive field, so existing
+        // consumers that count `post_recovery_queue_fill_kick` rows are
+        // unaffected (issue #2856).
         await appendAuditRow(this.auditPath(), {
           action: 'post_recovery_queue_fill_kick',
           provenance: POST_RECOVERY_PROVENANCE,
@@ -650,15 +699,37 @@ export class PostRecoveryService {
           queued: launch.queued === true,
           free: freeBudget,
           pendingQueueDepth: ledger.pendingQueueDepth,
+          batchArmStatus: batchArm.status,
           at: new Date(nowMs).toISOString(),
         });
 
-        this.deps.log?.(
-          `[post-recovery] queue-fill kick for ${candidate.repo} → scout ${scoutTaskId}`
-          + `${launch.queued ? ' (queued)' : ''}`,
-        );
+        if (batchArm.status === 'failed') {
+          // Distinct degraded audit + log so operators can tell a launched-but-
+          // unarmed scout from a healthy kick, with bounded error detail. The
+          // scout still counts as kicked and consumed its slot/day (issue #2856).
+          await appendAuditRow(this.auditPath(), {
+            action: 'post_recovery_batch_arm_failed',
+            provenance: POST_RECOVERY_PROVENANCE,
+            repo: candidate.repo,
+            utcDay: decision.utcDay,
+            scoutTaskId,
+            error: boundedBatchArmError(batchArm.error),
+            at: new Date(nowMs).toISOString(),
+          });
+          this.deps.log?.(
+            `[post-recovery] queue-fill kick for ${candidate.repo} → scout ${scoutTaskId}`
+            + ' launched but batch-arm persistence FAILED — scout will not re-enter'
+            + ` the batch path this kick window: ${batchArm.error}`,
+          );
+        } else {
+          this.deps.log?.(
+            `[post-recovery] queue-fill kick for ${candidate.repo} → scout ${scoutTaskId}`
+            + `${launch.queued ? ' (queued)' : ''}`,
+          );
+        }
 
         // One successful kick consumes a free slot from this tick's budget.
+        // A failed batch-arm does not change this: the scout is live either way.
         freeBudget = Math.max(0, freeBudget - 1);
 
         results.push({
@@ -666,6 +737,7 @@ export class PostRecoveryService {
           kicked: true,
           scoutTaskId,
           utcDay: decision.utcDay,
+          batchArmStatus: batchArm.status,
         });
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -741,11 +813,17 @@ export class PostRecoveryService {
     return this.deps.launcher(launchOpts);
   }
 
+  /**
+   * Persist the scout-complete batch-kick arm. Returns `{status:'armed'}` on
+   * success and `{status:'failed', error}` when loading or saving the durable
+   * starvation state throws — the caller keeps the scout kicked and records a
+   * degraded audit/result (issue #2856). This helper never throws.
+   */
   private async armStarvationKickAfterScout(
     repo: string,
     scoutTaskId: string,
     nowMs: number,
-  ): Promise<void> {
+  ): Promise<BatchArmOutcome> {
     try {
       const prior = await loadPipelineStarvationState(repo, {
         stateDir: this.deps.starvationStateDir,
@@ -761,11 +839,13 @@ export class PostRecoveryService {
         updatedAt: nowIso,
       };
       await savePipelineStarvationState(next, { stateDir: this.deps.starvationStateDir });
+      return { status: 'armed' };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.deps.log?.(
         `[post-recovery] failed to arm starvation batch kick for ${repo}: ${message}`,
       );
+      return { status: 'failed', error: message };
     }
   }
 }

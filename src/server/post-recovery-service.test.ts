@@ -18,8 +18,10 @@ vi.mock('./use-cases/playbook-launch.js', () => ({
 }));
 
 import {
+  boundedBatchArmError,
   collectProductBatchRepos,
   PostRecoveryService,
+  POST_RECOVERY_BATCH_ARM_ERROR_MAX,
   POST_RECOVERY_QUEUE_FILL_HEALTH_RESULT_LIMIT,
   POST_RECOVERY_PROVENANCE,
   type PostRecoveryServiceDeps,
@@ -98,6 +100,31 @@ describe('collectProductBatchRepos', () => {
       { repo: 'jeanibarz/lucy', localPath: '/home/jean/git/lucy' },
       { repo: 'kookr-ai/kookr', localPath: '/home/jean/git/kookr' },
     ]);
+  });
+});
+
+describe('boundedBatchArmError (#2856)', () => {
+  it('passes short messages through unchanged (trimmed)', () => {
+    expect(boundedBatchArmError('  ENOTDIR: not a directory  ')).toBe('ENOTDIR: not a directory');
+  });
+
+  it('keeps a message exactly at the limit intact, without an ellipsis', () => {
+    const atLimit = 'x'.repeat(POST_RECOVERY_BATCH_ARM_ERROR_MAX);
+    const bounded = boundedBatchArmError(atLimit);
+    expect(bounded).toBe(atLimit);
+    expect(bounded.length).toBe(POST_RECOVERY_BATCH_ARM_ERROR_MAX);
+    expect(bounded.endsWith('…')).toBe(false);
+  });
+
+  it('truncates an over-limit message to the bound plus a single ellipsis', () => {
+    const longError = 'y'.repeat(POST_RECOVERY_BATCH_ARM_ERROR_MAX + 500);
+    const bounded = boundedBatchArmError(longError);
+    // slice(0, MAX) + '…' → MAX + 1 UTF-16 code units (U+2026 is one code unit).
+    expect(bounded.length).toBe(POST_RECOVERY_BATCH_ARM_ERROR_MAX + 1);
+    expect(bounded.endsWith('…')).toBe(true);
+    expect(bounded.slice(0, POST_RECOVERY_BATCH_ARM_ERROR_MAX)).toBe(
+      'y'.repeat(POST_RECOVERY_BATCH_ARM_ERROR_MAX),
+    );
   });
 });
 
@@ -1077,6 +1104,7 @@ describe('PostRecoveryService', () => {
         kicked: true,
         scoutTaskId: 'scout-happy',
         utcDay: '2026-08-10',
+        batchArmStatus: 'armed',
       },
     ]);
     expect(launcher).toHaveBeenCalledOnce();
@@ -1095,6 +1123,21 @@ describe('PostRecoveryService', () => {
     const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
     expect(audit).toContain('post_recovery_queue_fill_kick');
     expect(audit).toContain('scout-happy');
+    // Ordinary launch audit carries the armed status; no degraded row is written.
+    const armedRow = JSON.parse(
+      audit.trim().split('\n').find((l) => l.includes('post_recovery_queue_fill_kick'))!,
+    ) as Record<string, unknown>;
+    expect(armedRow.batchArmStatus).toBe('armed');
+    expect(audit).not.toContain('post_recovery_batch_arm_failed');
+
+    // The scout-complete batch arm was durably persisted (issue #2856).
+    const { loadPipelineStarvationState } = await import('../core/pipeline-starvation-state.js');
+    const starvation = await loadPipelineStarvationState('jeanibarz/lucy', {
+      stateDir: starvationDir,
+      nowMs,
+    });
+    expect(starvation.kickBatchWhenScoutCompletes).toBe(true);
+    expect(starvation.lastStarvationScoutTaskId).toBe('scout-happy');
 
     const second = await service.runQueueFillKicks();
     expect(second[0]).toMatchObject({
@@ -1104,6 +1147,95 @@ describe('PostRecoveryService', () => {
       utcDay: '2026-08-10',
     });
     expect(launcher).toHaveBeenCalledOnce(); // still one
+  });
+
+  it('degraded kick: batch-arm persistence failure reports failed + degraded audit while still consuming the day (#2856)', async () => {
+    const launcher = vi.fn(async () => ({
+      task: { id: 'scout-degraded', status: 'running' } as Task,
+      queued: false,
+    }));
+    const schedules = [
+      schedule({
+        id: 'batch',
+        name: 'Lucy batch',
+        enabled: true,
+        playbook: {
+          path: 'parallel-issue-batch.md',
+          parameters: {
+            repoFullName: 'jeanibarz/lucy',
+            localPath: '/home/jean/git/lucy',
+          },
+        },
+      }),
+    ];
+    const kickDir = join(tempDir, 'kick-degraded');
+    // Force a deterministic arm-state persistence failure: point the starvation
+    // state dir at a regular FILE, so loadPipelineStarvationState reads under a
+    // file (ENOTDIR, not ENOENT) and throws. The scout still launches (mocked).
+    const starvationPath = join(tempDir, 'starvation-degraded-file');
+    const { writeFile } = await import('node:fs/promises');
+    await writeFile(starvationPath, 'not a directory');
+
+    const service = new PostRecoveryService({
+      listSchedules: () => schedules,
+      setEnabled: vi.fn(),
+      taskStore: makeTaskStore(),
+      getCapacityLedger: () =>
+        makeLedger({ free: 7, freeForGeneralSources: 7, pendingQueueDepth: 0 }),
+      launcher,
+      isDispatchHealthy: () => true,
+      kookrDir: tempDir,
+      kickStateDir: kickDir,
+      starvationStateDir: starvationPath,
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    const first = await service.runQueueFillKicks();
+    // Scout stays kicked; batchArmStatus reports the degradation.
+    expect(first).toEqual([
+      {
+        repo: 'jeanibarz/lucy',
+        kicked: true,
+        scoutTaskId: 'scout-degraded',
+        utcDay: '2026-08-10',
+        batchArmStatus: 'failed',
+      },
+    ]);
+    expect(launcher).toHaveBeenCalledOnce();
+
+    // The daily kick still persisted (day consumed) so no second scout launches.
+    const stateRaw = await readFile(join(kickDir, 'jeanibarz-lucy.json'), 'utf-8');
+    const state = JSON.parse(stateRaw) as { lastKickUtcDay: string; lastKickScoutTaskId: string };
+    expect(state.lastKickUtcDay).toBe('2026-08-10');
+    expect(state.lastKickScoutTaskId).toBe('scout-degraded');
+
+    // Both the ordinary launch audit (retained) and the degraded audit exist.
+    const audit = await readFile(join(tempDir, 'audit.jsonl'), 'utf-8');
+    const rows = audit
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    const launchRow = rows.find((r) => r.action === 'post_recovery_queue_fill_kick');
+    const degradedRow = rows.find((r) => r.action === 'post_recovery_batch_arm_failed');
+    expect(launchRow?.batchArmStatus).toBe('failed');
+    expect(launchRow?.scoutTaskId).toBe('scout-degraded');
+    expect(degradedRow).toBeDefined();
+    expect(degradedRow?.scoutTaskId).toBe('scout-degraded');
+    expect(degradedRow?.repo).toBe('jeanibarz/lucy');
+    expect(degradedRow?.utcDay).toBe('2026-08-10');
+    expect(typeof degradedRow?.error).toBe('string');
+    expect((degradedRow?.error as string).length).toBeGreaterThan(0);
+    // Error detail is bounded (POST_RECOVERY_BATCH_ARM_ERROR_MAX + ellipsis).
+    expect((degradedRow?.error as string).length).toBeLessThanOrEqual(501);
+
+    // The day is consumed: a second tick does not launch a second scout.
+    const second = await service.runQueueFillKicks();
+    expect(second[0]).toMatchObject({
+      kicked: false,
+      reason: 'already_kicked_utc_day',
+    });
+    expect(launcher).toHaveBeenCalledOnce();
   });
 
   it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
