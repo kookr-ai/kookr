@@ -2,7 +2,12 @@ import { statfsSync } from 'node:fs';
 import { cpus, freemem, totalmem } from 'node:os';
 import { monitorEventLoopDelay, performance } from 'node:perf_hooks';
 import type { SystemResourceStatus } from '../shared/contracts/messages.js';
-import { calculateMemoryUsage, CpuUsageTracker, type CpuCoreSample } from '../core/system-resource-metrics.js';
+import {
+  calculateMemoryUsage,
+  CpuUsageTracker,
+  normalizeDataDirectoryInodeCounts,
+  type CpuCoreSample,
+} from '../core/system-resource-metrics.js';
 
 export const RESOURCE_STATUS_INTERVAL_MS = 2_000;
 const EVENT_LOOP_RESOLUTION_MS = 20;
@@ -21,6 +26,17 @@ export interface DataDirectoryDiskUsage {
   diskFreeBytes: number | null;
   diskTotalBytes: number | null;
   diskFreePercent: number | null;
+  diskFreeInodes: number | null;
+  diskTotalInodes: number | null;
+}
+
+/** Minimal `statfs` shape used by the sampler and deterministic tests. */
+export interface DataDirectoryStatfsSample {
+  bsize: number;
+  bavail: number;
+  blocks: number;
+  files?: number;
+  ffree?: number;
 }
 
 export interface SystemResourceSamplerDeps {
@@ -134,6 +150,8 @@ export class SystemResourceSampler {
         diskFreeBytes: null,
         diskTotalBytes: null,
         diskFreePercent: null,
+        diskFreeInodes: null,
+        diskTotalInodes: null,
       };
     }
     const usage = this.readDataDirectoryDiskUsage(this.dataDirectoryPath);
@@ -142,6 +160,8 @@ export class SystemResourceSampler {
       diskFreeBytes: null,
       diskTotalBytes: null,
       diskFreePercent: null,
+      diskFreeInodes: null,
+      diskTotalInodes: null,
     };
   }
 }
@@ -150,30 +170,40 @@ export function createSystemResourceSampler(deps?: SystemResourceSamplerDeps): S
   return new SystemResourceSampler(deps);
 }
 
-export function readDataDirectoryDiskUsageWithStatfs(path: string): DataDirectoryDiskUsage | null {
+export function readDataDirectoryDiskUsageWithStatfs(
+  path: string,
+  readStatfs: (target: string) => DataDirectoryStatfsSample = (target) => statfsSync(target),
+): DataDirectoryDiskUsage | null {
   if (typeof statfsSync !== 'function') return null;
   try {
-    const stats = statfsSync(path);
+    const stats = readStatfs(path);
     const blockSize = Number(stats.bsize);
     const availableBlocks = Number(stats.bavail);
     const totalBlocks = Number(stats.blocks);
     const diskFreeBytes = availableBlocks * blockSize;
     const diskTotalBytes = totalBlocks * blockSize;
-    if (
+    const bytesAvailable = !(
       !Number.isFinite(blockSize)
       || blockSize <= 0
       || !Number.isFinite(diskFreeBytes)
       || diskFreeBytes < 0
       || !Number.isFinite(diskTotalBytes)
       || diskTotalBytes <= 0
-    ) {
+    );
+    const inodeCounts = normalizeDataDirectoryInodeCounts({
+      diskFreeInodes: stats.ffree == null ? null : Number(stats.ffree),
+      diskTotalInodes: stats.files == null ? null : Number(stats.files),
+    });
+    if (!bytesAvailable && inodeCounts === null) {
       return null;
     }
     return {
       path,
-      diskFreeBytes,
-      diskTotalBytes,
-      diskFreePercent: (diskFreeBytes / diskTotalBytes) * 100,
+      diskFreeBytes: bytesAvailable ? diskFreeBytes : null,
+      diskTotalBytes: bytesAvailable ? diskTotalBytes : null,
+      diskFreePercent: bytesAvailable ? (diskFreeBytes / diskTotalBytes) * 100 : null,
+      diskFreeInodes: inodeCounts?.diskFreeInodes ?? null,
+      diskTotalInodes: inodeCounts?.diskTotalInodes ?? null,
     };
   } catch {
     return null;

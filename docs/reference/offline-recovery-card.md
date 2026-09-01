@@ -21,13 +21,14 @@ If `/api/ready` fails: fix the failing subsystem named in the body (scheduler ti
 
 If curl hangs or takes hundreds of milliseconds: `kookr doctor --json` `ops.http-latency` WARNs when ready exceeds 500ms or health exceeds 2s (or either times out / 5xx). Sibling doctor probes that skip on timeout are not a clean bill of health.
 
-## 2. Disk free (data directory)
+## 2. Disk and inode capacity (data directory)
 
 ENOSPC under `~/.kookr` (or `KOOKR_DIR`) kills launches and JSONL writers.
 
 ```bash
 # Default data dir
 df -h ~/.kookr
+df -i ~/.kookr
 du -sh ~/.kookr/* 2>/dev/null | sort -h | tail -20
 
 # Health may surface disk / data-directory alerts when the resource sampler is on
@@ -35,7 +36,12 @@ curl -sS http://127.0.0.1:4800/api/health \
   | python3 -c 'import json,sys; h=json.load(sys.stdin); print({k:h.get(k) for k in h if "disk" in k.lower() or "resource" in k.lower() or "alert" in k.lower()})'
 ```
 
-If free space is critical: stop new launches (`kookr drain` if available), prune hooks/transcripts via maintenance, rotate `~/.kookr/server.log`, free unrelated disk, then resume.
+If byte capacity is critical or free inodes are exhausted, inspect the launch
+503 `pressureCause`, stop new launches (`kookr drain` if available), and prune
+eligible hooks/transcripts via maintenance. For byte pressure, rotate
+`~/.kookr/server.log` or free unrelated disk; for inode exhaustion, remove
+eligible files until `df -i` reports available inodes. Then wait for a valid
+resource sample to confirm recovery before resuming.
 
 ## 3. hungSuspect residual (capacity waste)
 

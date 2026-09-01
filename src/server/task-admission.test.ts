@@ -6,6 +6,8 @@ import {
 } from './config.js';
 import {
   DATA_DIRECTORY_DISK_CRITICAL_CODE,
+  DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE,
+  DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE,
   DEFAULT_ADMISSION_EVENT_LOOP_DELAY_MS,
   DEFAULT_ADMISSION_RETRY_AFTER_SECONDS,
   DataDirectoryDiskAdmissionTracker,
@@ -190,7 +192,7 @@ describe('readDiskAdmissionConfigFromEnv (issue #1992)', () => {
     });
   });
 
-  test('both floors at 0 disable the gate', () => {
+  test('both floors at 0 disable byte-space checks', () => {
     const config = readDiskAdmissionConfigFromEnv({
       KOOKR_ALERT_DATA_DIR_FREE_PERCENT: '0',
       KOOKR_ALERT_DATA_DIR_FREE_BYTES: '0',
@@ -210,6 +212,7 @@ describe('evaluateDiskAdmission (issue #1992)', () => {
     if (!decision.admit) {
       expect(decision.rejection.code).toBe(DATA_DIRECTORY_DISK_CRITICAL_CODE);
       expect(decision.rejection.reason).toBe(DATA_DIRECTORY_DISK_CRITICAL_CODE);
+      expect(decision.rejection.pressureCause).toBe(DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE);
       expect(decision.rejection.retryAfterSeconds).toBe(2);
       expect(decision.rejection.path).toBe('/data');
       expect(decision.rejection.error).toMatch(/critical/i);
@@ -255,6 +258,66 @@ describe('evaluateDiskAdmission (issue #1992)', () => {
     });
     expect(rejectDespiteHigh.admit).toBe(false);
   });
+
+  test('rejects zero free inodes despite ample byte capacity with an inode-specific cause', () => {
+    const decision = evaluateDiskAdmission({
+      config: diskCfg(),
+      sample: {
+        diskFreePercent: 50,
+        diskFreeBytes: 50_000_000_000,
+        diskFreeInodes: 0,
+        diskTotalInodes: 100_000,
+        path: '/data',
+      },
+    });
+
+    expect(decision.admit).toBe(false);
+    if (!decision.admit) {
+      expect(decision.rejection).toMatchObject({
+        code: DATA_DIRECTORY_DISK_CRITICAL_CODE,
+        reason: DATA_DIRECTORY_DISK_CRITICAL_CODE,
+        pressureCause: DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE,
+        diskFreeInodes: 0,
+        diskTotalInodes: 100_000,
+      });
+      expect(decision.rejection.error).toMatch(/inodes are exhausted/i);
+    }
+  });
+
+  test.each([
+    { name: 'unsupported', diskFreeInodes: undefined, diskTotalInodes: undefined },
+    { name: 'zero total', diskFreeInodes: 0, diskTotalInodes: 0 },
+    { name: 'negative free', diskFreeInodes: -1, diskTotalInodes: 100 },
+    { name: 'free above total', diskFreeInodes: 101, diskTotalInodes: 100 },
+    { name: 'non-finite free', diskFreeInodes: Number.NaN, diskTotalInodes: 100 },
+  ])('fails open for $name inode readings when byte capacity is healthy', (inodeSample) => {
+    expect(evaluateDiskAdmission({
+      config: diskCfg(),
+      sample: {
+        diskFreePercent: 50,
+        diskFreeBytes: 50_000_000_000,
+        ...inodeSample,
+      },
+    }).admit).toBe(true);
+  });
+
+  test('keeps inode exhaustion identifiable when byte pressure also breaches', () => {
+    const decision = evaluateDiskAdmission({
+      config: diskCfg(),
+      sample: {
+        diskFreePercent: 1,
+        diskFreeBytes: 100,
+        diskFreeInodes: 0,
+        diskTotalInodes: 100_000,
+      },
+    });
+
+    expect(decision.admit).toBe(false);
+    if (!decision.admit) {
+      expect(decision.rejection.pressureCause).toBe(DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE);
+      expect(decision.rejection.diskFreeBytes).toBe(100);
+    }
+  });
 });
 
 describe('DataDirectoryDiskAdmissionTracker (issue #1992)', () => {
@@ -299,6 +362,34 @@ describe('DataDirectoryDiskAdmissionTracker (issue #1992)', () => {
     expect(tracker.isCritical()).toBe(true);
   });
 
+  test.each([
+    { name: 'unsupported', diskFreeInodes: null, diskTotalInodes: null },
+    { name: 'zero-total', diskFreeInodes: 0, diskTotalInodes: 0 },
+    { name: 'negative-free', diskFreeInodes: -1, diskTotalInodes: 100_000 },
+    { name: 'free-above-total', diskFreeInodes: 100_001, diskTotalInodes: 100_000 },
+  ])('keeps inode pressure critical across a $name inode reading', (inodeReading) => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1 });
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-low',
+    }, config);
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: inodeReading.diskFreeInodes,
+      diskTotalInodes: inodeReading.diskTotalInodes,
+      sampledAt: `inode-${inodeReading.name}`,
+    }, config);
+
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE);
+  });
+
   test('disabled floors clear critical and stop counting', () => {
     const tracker = new DataDirectoryDiskAdmissionTracker();
     tracker.observe(
@@ -310,6 +401,133 @@ describe('DataDirectoryDiskAdmissionTracker (issue #1992)', () => {
       { diskFreePercent: 1, diskFreeBytes: 0, sampledAt: 'off' },
       diskCfg({ freePercentThreshold: 0, freeBytesThreshold: 0, sustainSamples: 1 }),
     );
+    expect(tracker.isCritical()).toBe(false);
+  });
+
+  test('requires sustained zero-free-inode samples and recovers on a positive reading', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({
+      freePercentThreshold: 0,
+      freeBytesThreshold: 0,
+      sustainSamples: 2,
+    });
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-1',
+    }, config);
+    expect(tracker.isCritical()).toBe(false);
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-2',
+    }, config);
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE);
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 1,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-recovered',
+    }, config);
+    expect(tracker.isCritical()).toBe(false);
+    expect(tracker.getPressureCause()).toBeNull();
+  });
+
+  test('does not recover inode pressure while a byte-space floor is still breached', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1 });
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-low',
+    }, config);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE);
+
+    tracker.observe({
+      diskFreePercent: 1,
+      diskFreeBytes: 100,
+      diskFreeInodes: 1,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-ok-bytes-low',
+    }, config);
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE);
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: 1,
+      diskTotalInodes: 100_000,
+      sampledAt: 'all-ok',
+    }, config);
+    expect(tracker.isCritical()).toBe(false);
+  });
+
+  test('joint inode and byte pressure requires confirmed recovery of both signals', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1 });
+
+    tracker.observe({
+      diskFreePercent: 1,
+      diskFreeBytes: 100,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'joint-low',
+    }, config);
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_INODES_EXHAUSTED_CAUSE);
+
+    tracker.observe({
+      diskFreePercent: null,
+      diskFreeBytes: null,
+      diskFreeInodes: 1,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-only-recovery',
+    }, config);
+    expect(tracker.isCritical()).toBe(true);
+    expect(tracker.getPressureCause()).toBe(DATA_DIRECTORY_FREE_SPACE_CRITICAL_CAUSE);
+
+    tracker.observe({
+      diskFreePercent: 50,
+      diskFreeBytes: 50_000_000_000,
+      diskFreeInodes: null,
+      diskTotalInodes: null,
+      sampledAt: 'byte-recovery',
+    }, config);
+    expect(tracker.isCritical()).toBe(false);
+  });
+
+  test('inode-only pressure recovers without requiring unavailable byte readings', () => {
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({ sustainSamples: 1 });
+
+    tracker.observe({
+      diskFreePercent: null,
+      diskFreeBytes: null,
+      diskFreeInodes: 0,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-low',
+    }, config);
+    expect(tracker.isCritical()).toBe(true);
+
+    tracker.observe({
+      diskFreePercent: null,
+      diskFreeBytes: null,
+      diskFreeInodes: 1,
+      diskTotalInodes: 100_000,
+      sampledAt: 'inode-recovered',
+    }, config);
     expect(tracker.isCritical()).toBe(false);
   });
 });

@@ -125,6 +125,41 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(controller.getHealthSnapshot().emergencyPruneTriggeredTotal).toBe(2);
   });
 
+  test('sustained inode exhaustion fires the same emergency prune edge', async () => {
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 4096 }));
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 60_000,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const tracker = new DataDirectoryDiskAdmissionTracker();
+    const config = diskCfg({
+      freePercentThreshold: 0,
+      freeBytesThreshold: 0,
+      sustainSamples: 2,
+    });
+
+    for (const sampledAt of ['inode-1', 'inode-2', 'inode-3']) {
+      const wasCritical = tracker.isCritical();
+      tracker.observe({
+        diskFreePercent: 50,
+        diskFreeBytes: 50_000_000_000,
+        diskFreeInodes: 0,
+        diskTotalInodes: 100_000,
+        sampledAt,
+      }, config);
+      if (!wasCritical && tracker.isCritical()) {
+        await controller.maybeRunOnDiskCriticalEdge();
+      }
+    }
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      emergencyPruneTriggeredTotal: 1,
+      lastEmergencyReclaimedBytes: 4096,
+    });
+  });
+
   test('in-flight gate prevents concurrent re-entry', async () => {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
