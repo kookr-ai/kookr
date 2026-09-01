@@ -84,6 +84,36 @@ describe('relaunchFromAgent', () => {
     });
   });
 
+  test('carries the exact playbook source identity for identity-matched relaunch', async () => {
+    const setRelaunchTask = vi.fn<(task: RelaunchTask) => void>();
+    const playbookSource = {
+      id: 'oss-pr-lessons.md',
+      scope: 'user' as const,
+      sourceCwd: '/home/dev/.kookr/playbooks',
+      sourceDigest: 'sha-1',
+    };
+
+    await relaunchFromAgent(
+      completedAgent({
+        playbookId: 'oss-pr-lessons.md',
+        playbookParameterValues: { repo: 'kookr-ai/kookr' },
+        playbookSource,
+      }),
+      setRelaunchTask,
+    );
+
+    expect(getTask).not.toHaveBeenCalled();
+    expect(setRelaunchTask).toHaveBeenCalledWith({
+      sourceTaskId: 'task-1',
+      prompt: 'Ship the dashboard next actions slice',
+      cwd: '/tmp/kookr',
+      agentType: 'claude-code',
+      playbookId: 'oss-pr-lessons.md',
+      playbookParameterValues: { repo: 'kookr-ai/kookr' },
+      playbookSource,
+    });
+  });
+
   test('does nothing when the agent has no task id', async () => {
     const setRelaunchTask = vi.fn<(task: RelaunchTask) => void>();
 

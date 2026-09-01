@@ -3368,6 +3368,23 @@ a.overview-tour-link:visited:hover {
   color: var(--text-muted);
   font-size: 12px;
 }
+.playbook-relaunch-note {
+  margin: 6px 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--warning, #d6a824);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: var(--bg-terminal);
+  color: var(--text-bright);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.playbook-relaunch-note code {
+  background: var(--bg-terminal);
+  padding: 0 3px;
+  border-radius: 2px;
+  color: var(--blue);
+}
 .playbook-empty code {
   background: var(--bg-terminal);
   padding: 0 3px;

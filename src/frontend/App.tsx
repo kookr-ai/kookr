@@ -1832,6 +1832,7 @@ export function App() {
             relaunchParentTaskId={relaunchTask?.sourceTaskId}
             relaunchPlaybookId={relaunchTask?.playbookId}
             relaunchParameterValues={relaunchTask?.playbookParameterValues}
+            relaunchPlaybookSource={relaunchTask?.playbookSource}
             projectContext={launchProjectContext ?? undefined}
             projectCwd={launchProjectCwd ?? undefined}
             initialTab={launchInitialTab ?? undefined}

@@ -5,6 +5,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { isTerminalTaskStatus } from '../agent-buckets.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { PlaybookSelector, playbookSelectionKey } from './PlaybookSelector.js';
+import { matchesPlaybookSource } from '../playbook-source-identity.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -39,13 +40,6 @@ export interface SchedulePrefill {
   playbookSource?: PlaybookSourceIdentity;
   playbookParameterValues?: Record<string, string>;
   name?: string;
-}
-
-function matchesPlaybookSource(playbook: Playbook, source: PlaybookSourceIdentity): boolean {
-  return playbook.id === source.id
-    && playbook.scope === source.scope
-    && playbook.sourceCwd === source.sourceCwd
-    && playbook.sourceDigest === source.sourceDigest;
 }
 
 /**
