@@ -22,6 +22,7 @@ KOOKR_REVIEW_TIMEOUT_LABEL='review-skipped-timeout'
 
 PR=""
 REPO_ARG=()
+REPO_SLUG=""
 
 print_usage() {
   cat <<'EOF'
@@ -125,10 +126,12 @@ while [[ $# -gt 0 ]]; do
     --repo)
       [[ $# -ge 2 ]] || { echo "kookr-merge: --repo requires a value" >&2; exit 2; }
       REPO_ARG=(--repo "$2")
+      REPO_SLUG="$2"
       shift 2
       ;;
     --repo=*)
       REPO_ARG=(--repo "${1#--repo=}")
+      REPO_SLUG="${1#--repo=}"
       shift
       ;;
     -h|--help)
@@ -284,6 +287,81 @@ watch_checks() {
   done
 }
 
+# merge_pinned_via_api — squash-merge $PR pinned to a head SHA through the REST
+# API, for a gh too old to have `gh pr merge --match-head-commit` (issue #1853).
+# `sha` is the same head pin that flag sends: GitHub refuses the merge with 409
+# if the PR head has moved on, so an unreviewed commit can never slip in.
+# Deleting the head branch is a separate call here (the flag-based path gets it
+# from --delete-branch) and is best-effort: the merge is what must be atomic.
+# Returns 0 on a merged PR, 1 otherwise.
+merge_pinned_via_api() {
+  local head_sha="$1"
+  local slug head_json head_ref head_slug resp
+
+  slug="$REPO_SLUG"
+  if [[ -z "$slug" ]]; then
+    # Only reached when --repo was absent, so REPO_ARG is empty here too and
+    # `gh repo view` resolves the repo from the current git remote.
+    slug="$(gh repo view --json nameWithOwner -q .nameWithOwner)" || {
+      echo "kookr-merge: could not resolve the target repo for the REST merge" >&2
+      return 1
+    }
+  fi
+
+  # `gh --repo` accepts HOST/OWNER/REPO and full URLs, but an API path wants a
+  # bare OWNER/REPO. Splicing the long form in unchanged yields a 404 reported as
+  # a phantom head race, so reduce to the last two segments and refuse anything
+  # that still is not OWNER/REPO rather than calling a malformed path.
+  slug="${slug#http://}"
+  slug="${slug#https://}"
+  slug="${slug%/}"
+  slug="${slug%.git}"
+  if [[ "$slug" == */*/* ]]; then
+    slug="${slug#"${slug%/*/*}/"}"
+  fi
+  if [[ ! "$slug" =~ ^[^/]+/[^/]+$ ]]; then
+    echo "kookr-merge: cannot derive OWNER/REPO for the REST merge from '$REPO_SLUG'" >&2
+    return 1
+  fi
+
+  # Read the head branch before merging; afterwards it may already be gone. A
+  # failed read leaves head_json empty (set -e would otherwise abort the script),
+  # and the branch delete below is skipped rather than aimed at a guessed ref.
+  head_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json headRefName,headRepository,headRepositoryOwner)" || head_json=""
+  head_ref="$(printf '%s' "$head_json" | jq -r '.headRefName // ""')"
+  head_slug="$(printf '%s' "$head_json" | jq -r 'if .headRepositoryOwner.login and .headRepository.name then .headRepositoryOwner.login + "/" + .headRepository.name else "" end')"
+
+  # --raw-field, not --field: a SHA must stay a JSON string. --field infers types,
+  # and an all-digit SHA would go out as a number the API rejects.
+  if ! resp="$(gh api --method PUT "repos/$slug/pulls/$PR/merge" \
+      --raw-field "sha=$head_sha" --raw-field "merge_method=squash")"; then
+    echo "kookr-merge: REST merge refused — the head is no longer $head_sha, or the PR is not mergeable" >&2
+    return 1
+  fi
+  # A 2xx is not proof of a merge: the response body carries `merged`, and the
+  # endpoint can answer 200 with merged:false. Reporting a merge that did not
+  # happen is the worst outcome here — the caller closes the PR out as landed —
+  # so believe the field, not the exit status.
+  if ! printf '%s' "$resp" | jq -e '.merged == true' >/dev/null 2>&1; then
+    echo "kookr-merge: REST merge call succeeded but PR #$PR did not merge: $(printf '%s' "$resp" | jq -r '.message // "no message in response"')" >&2
+    return 1
+  fi
+  echo "kookr-merge: merged PR #$PR (squash), pinned to $head_sha"
+
+  # The head repo is the fork on a cross-repo PR, so delete the ref there — not
+  # in the base repo the merge just landed in.
+  if [[ -z "$head_ref" || -z "$head_slug" ]]; then
+    # The pre-merge head read failed. Say so: silence here is indistinguishable
+    # from a branch that was deleted.
+    echo "kookr-merge: could not resolve the head branch; it was left in place (delete it manually if wanted)" >&2
+  elif gh api --method DELETE "repos/$head_slug/git/refs/heads/$head_ref" >/dev/null 2>&1; then
+    echo "kookr-merge: deleted head branch $head_ref"
+  else
+    echo "kookr-merge: head branch $head_ref was not deleted (delete it manually if wanted)" >&2
+  fi
+  return 0
+}
+
 state_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,isDraft,reviewDecision)"
 state=$(printf '%s' "$state_json" | jq -r '.state')
 is_draft=$(printf '%s' "$state_json" | jq -r '.isDraft')
@@ -319,17 +397,22 @@ fi
 
 echo "kookr-merge: checks passed, squash-merging PR #$PR"
 # Pin the merge to the reviewed head when the review gate ran (REVIEW_HEAD_SHA is
-# set inside require_review_verdict). If the head advanced during the wait, gh
-# refuses the merge rather than merging an unreviewed commit.
-# --match-head-commit is required. Without it the wrapper cannot close the
-# check-watch TOCTOU window, so an old gh becomes a concrete blocker.
-HEAD_PIN=()
-if [[ -n "${REVIEW_HEAD_SHA:-}" ]]; then
-  if gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
-    HEAD_PIN=(--match-head-commit "$REVIEW_HEAD_SHA")
-  else
-    echo "kookr-merge: BLOCKED: installed gh lacks --match-head-commit; cannot safely merge an exact-head review" >&2
-    exit 4
-  fi
+# set inside require_review_verdict). If the head advanced during the wait, the
+# merge is refused rather than merging an unreviewed commit.
+#
+# Two ways to express the same server-side pin, in order of preference:
+#   1. `gh pr merge --match-head-commit` (gh >= ~2.15).
+#   2. The REST merge endpoint's `sha` parameter (any gh with `gh api`), which
+#      is what that flag sends on the wire. GitHub answers 409 when the head has
+#      advanced past `sha`, so the TOCTOU window is closed either way.
+# Both leave the squash commit message to GitHub's server-side default, so the
+# resulting history is identical whichever path runs.
+if [[ -z "${REVIEW_HEAD_SHA:-}" ]]; then
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch
+elif gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch \
+    --match-head-commit "$REVIEW_HEAD_SHA"
+else
+  echo "kookr-merge: installed gh lacks --match-head-commit; pinning the head via the REST API instead"
+  merge_pinned_via_api "$REVIEW_HEAD_SHA" || exit 1
 fi
-gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch ${HEAD_PIN[@]+"${HEAD_PIN[@]}"}
