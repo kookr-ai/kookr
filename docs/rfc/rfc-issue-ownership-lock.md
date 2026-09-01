@@ -70,7 +70,11 @@ Any record of issue ownership at selection time; any atomic claim (the batch rea
 
 - **No cross-machine / distributed lock.** Single host, single server process (now asserted at startup, R27).
 - **No file-scope lock.** Cross-issue file overlap (#779↔#780) is real but separate (reflection Rec #4). Not claimed solved here.
-- **No new durable *state* store.** Authority is an in-memory map; its durable projection is `Task.issueClaim` in `tasks.json`; the only new durable file is the append-only audit log.
+- **No new durable claim-authority store.** Authority is an in-memory map; its
+  durable projection is `Task.issueClaim` in `tasks.json`, and the append-only
+  audit log is the only additional durable claim-data file. R27 separately uses
+  `server.lock.sqlite` as reusable coordination infrastructure; its mutex state
+  is OS-managed and released on process exit.
 - **No GitHub-side lock** (labels/assignees/branches — Alternatives).
 - **No blocking queue in PR 1** (refuse-and-re-select; queue deferred).
 - **No session-attach rewrite.** One-live-session is enforced and the violation detected; the #700 root cause is audited first (R18), any refactor deferred with a stated fallback.
@@ -90,7 +94,7 @@ Deterministic, testable. Round tags: `W#` (round 1), `N#` (round 2), `R3v`/`R4v`
 - R5b. The `adapter.launch` failure catch (`launch-service.ts:426`, today `deleteTask` only) SHALL also call `releaseAllFor(taskId)` — else a failed launch leaves an orphaned map entry and a phantom `granted` audit row. [R3v]
 - R6. Claims SHALL be re-entrant for their owner (idempotent → exit 0).
 - R7. **Feature flag `KOOKR_ISSUE_CLAIMS`** (read at startup; **restart required**; resolved value SHALL be logged at boot, R23) SHALL gate the feature completely: when off, (a) the `launchTask` CAS is a **strict early no-op** — no repo resolution, no `await`, no throw, for the ~100% of launches that don't claim; (b) release-side calls are no-ops; (c) claim routes return **404**, collapsing flag-off and old-server into the single client behavior of R26. Default off in the first hot-path deploy. This is the canonical no-op/kill-switch statement; §1 and Rollback cross-reference it. [delivery, R4v]
-- R27. The server SHALL assert **single-writer at startup** (pid/port lock) so the CAS's inherited single-process assumption fails loudly, not with silent double-grants, if Kookr ever runs multi-process. Ships in PR 1a. (Promoted from SHOULD/Open Question — the same structural-enforcement standard R3 applies to field writes applies to the process assumption the whole CAS rests on.) [R4v ambition]
+- R27. The server SHALL assert **single-writer at startup** using an OS-backed data-directory mutex, with a versioned ownership record binding PID to process start time and acquisition identity, so the CAS's inherited single-process assumption fails loudly rather than permitting silent double-grants. The port bind remains a later secondary assertion. (Promoted from SHOULD/Open Question — the same structural-enforcement standard R3 applies to field writes applies to the process assumption the whole CAS rests on.) [R4v ambition]
 
 ### Release, expiry, reclaim
 

@@ -1,6 +1,19 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import {
+  closeSync,
+  fsyncSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
+import { readProcessStartTimeMs } from '../adapters/process-tree.js';
 
 /**
  * Startup single-writer assertion (RFC rfc-issue-ownership-lock R27).
@@ -10,23 +23,41 @@ import { join } from 'node:path';
  * data dir. The port bind enforces this eventually, but boot-time task
  * mutations (reconcile, claim rebuild) run BEFORE the bind — so a second
  * process pointed at the same dir could silently interleave writes during
- * that window. This pid-file lock makes the assumption fail loudly instead.
+ * that window. This lock makes the assumption fail loudly instead.
  *
- * A stale lock (crashed process, SIGKILL'd restart, or a zombie that
- * `kill(pid, 0)` still reports as present) is detected via a liveness
- * probe and taken over silently.
+ * `server.pid` remains the human-readable ownership record. Its first line is
+ * still the PID so older Kookr binaries fail closed on a live new-version
+ * owner. Version 2 adds a second-line JSON record that binds the PID to its OS
+ * start time (so a recycled PID is not mistaken for the crashed owner) and to
+ * a per-acquisition ID (so an old release callback cannot delete a successor's
+ * lock). `server.lock.sqlite` supplies the atomic cross-process mutex: its open
+ * write transaction is released by the OS on a crash, so stale metadata can be
+ * replaced without an unlink/recreate race.
  *
- * Planned restarts close the HTTP listen socket before they unlink this
- * pid file. The incoming process therefore often sees a still-live holder
- * for a few hundred milliseconds. We retry for a short window so
+ * Planned restarts close the HTTP listen socket before they release this
+ * lock. The incoming process therefore often sees a still-live holder for a
+ * few hundred milliseconds. We retry for a short window so
  * `pnpm prod:update` does not die with "exited before becoming healthy"
- * (issue #2501). A second *unrelated* server still fails after that window.
+ * (issue #2501). A second unrelated server still fails after that window.
  */
 
-/** Default retry budget when another live pid holds the lock (issue #2501). */
+/** Default retry budget when another live process holds the lock (issue #2501). */
 export const SINGLE_WRITER_LOCK_RETRY_MS = 5_000;
-/** Pause between exclusive-create attempts while waiting for the outgoing holder. */
+/** Pause between acquisition attempts while waiting for the outgoing holder. */
 export const SINGLE_WRITER_LOCK_RETRY_INTERVAL_MS = 50;
+
+interface SingleWriterLockRecord {
+  version: 2;
+  pid: number;
+  processStartTimeMs: number;
+  acquisitionId: string;
+}
+
+type HolderRecord =
+  | { kind: 'missing' }
+  | { kind: 'invalid' }
+  | { kind: 'legacy'; pid: number }
+  | { kind: 'current'; record: SingleWriterLockRecord };
 
 export interface AcquireSingleWriterLockOptions {
   /** How long to keep retrying when another live process holds the lock. */
@@ -37,6 +68,10 @@ export interface AcquireSingleWriterLockOptions {
   sleep?: (ms: number) => void;
   /** Test seam: replace the pid liveness probe. */
   isAlive?: (pid: number) => boolean;
+  /** Test seam: replace the OS process-start identity reader. */
+  readProcessStartTimeMs?: (pid: number) => number | null;
+  /** Test seam: make acquisition identity deterministic. */
+  createAcquisitionId?: () => string;
 }
 
 export function acquireSingleWriterLock(
@@ -44,63 +79,258 @@ export function acquireSingleWriterLock(
   options: AcquireSingleWriterLockOptions = {},
 ): () => void {
   const lockPath = join(kookrDir, 'server.pid');
+  const mutexPath = join(kookrDir, 'server.lock.sqlite');
   mkdirSync(kookrDir, { recursive: true });
 
   const retryMs = options.retryMs ?? SINGLE_WRITER_LOCK_RETRY_MS;
   const retryIntervalMs = options.retryIntervalMs ?? SINGLE_WRITER_LOCK_RETRY_INTERVAL_MS;
   const sleep = options.sleep ?? defaultSleep;
   const isAlive = options.isAlive ?? isProcessAlive;
-  const deadline = Date.now() + Math.max(0, retryMs);
-
-  const takeLock = (): void => writeFileSync(lockPath, `${process.pid}\n`, { flag: 'wx' });
-
-  for (;;) {
-    try {
-      takeLock();
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      const holderPid = readHolderPid(lockPath);
-      const holderIsOtherLive =
-        holderPid !== null
-        && holderPid !== process.pid
-        && isAlive(holderPid);
-      if (holderIsOtherLive) {
-        if (Date.now() < deadline) {
-          sleep(retryIntervalMs);
-          continue;
-        }
-        throw new Error(
-          `[single-writer] another Kookr server (pid ${holderPid}) already owns ${kookrDir} — `
-          + 'refusing to start a second writer against the same data dir (RFC issue-ownership-lock R27). '
-          + `Stop that process or remove ${lockPath} if it is stale.`,
-        );
-      }
-      // Stale (dead / zombie holder) or unreadable lock: take over.
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        // Raced with another cleanup; fall through to the exclusive write.
-      }
-    }
+  const readStartTime = options.readProcessStartTimeMs ?? readProcessStartTimeMs;
+  const ownStartTimeMs = readStartTime(process.pid);
+  if (ownStartTimeMs === null) {
+    throw new Error(
+      `[single-writer] cannot determine this process identity (pid ${process.pid}) — `
+      + `refusing to take the data-directory lock for ${kookrDir}`,
+    );
   }
 
-  return () => {
+  const ownRecord: SingleWriterLockRecord = {
+    version: 2,
+    pid: process.pid,
+    processStartTimeMs: ownStartTimeMs,
+    acquisitionId: (options.createAcquisitionId ?? randomUUID)(),
+  };
+  const serializedOwnRecord = `${ownRecord.pid}\n${JSON.stringify(ownRecord)}\n`;
+  const deadline = Date.now() + Math.max(0, retryMs);
+  const mutex = new Database(mutexPath, { timeout: 0 });
+  let transactionOpen = false;
+
+  const rollback = (): void => {
+    if (!transactionOpen) return;
     try {
-      if (readHolderPid(lockPath) === process.pid) unlinkSync(lockPath);
-    } catch {
-      // Best-effort release; a stale file is recovered by the next boot's liveness probe.
+      mutex.exec('ROLLBACK');
+    } finally {
+      transactionOpen = false;
     }
   };
+
+  const close = (): void => {
+    try {
+      rollback();
+    } finally {
+      mutex.close();
+    }
+  };
+
+  const retry = (holder: HolderRecord): void => {
+    try {
+      retryOrThrow(holder, lockPath, kookrDir, deadline, retryIntervalMs, sleep);
+    } catch (error) {
+      close();
+      throw error;
+    }
+  };
+
+  for (;;) {
+    let holder = readHolder(lockPath);
+    try {
+      mutex.exec('BEGIN IMMEDIATE');
+      transactionOpen = true;
+    } catch (error) {
+      if (!isSqliteBusy(error)) {
+        close();
+        throw error;
+      }
+      retry(holder);
+      continue;
+    }
+
+    // Re-read only after the mutex is held. Another new-version contender can
+    // no longer change the ownership record until this transaction ends.
+    holder = readHolder(lockPath);
+    const holderState = classifyHolder(holder, isAlive, readStartTime);
+    if (holderState === 'active' || holderState === 'unknown') {
+      rollback();
+      retry(holder);
+      continue;
+    }
+
+    try {
+      // `wx` preserves exclusivity for a genuinely absent path, including
+      // compatibility with an older Kookr binary that does not use the SQLite
+      // mutex. A stale path is safe to replace while the new-version mutex is
+      // held: a dead/recycled owner cannot release it, and live legacy holders
+      // were classified active above.
+      publishLockRecord(lockPath, serializedOwnRecord, holder.kind === 'missing');
+    } catch (error) {
+      rollback();
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') {
+        retry(readHolder(lockPath));
+        continue;
+      }
+      close();
+      throw error;
+    }
+    break;
+  }
+
+  let released = false;
+  const release = (): void => {
+    if (released) return;
+    released = true;
+    try {
+      const holder = readHolder(lockPath);
+      if (holder.kind === 'current' && sameAcquisition(holder.record, ownRecord)) {
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          // Best effort. A stale record is recovered after the OS releases the
+          // SQLite transaction when this process exits.
+        }
+      }
+      if (transactionOpen) {
+        mutex.exec('COMMIT');
+        transactionOpen = false;
+      }
+    } catch {
+      // Best-effort release. Closing the connection still drops the OS lock;
+      // ownership-checked metadata cleanup can be retried by the next boot.
+      rollback();
+    } finally {
+      mutex.close();
+    }
+  };
+  return release;
 }
 
-function readHolderPid(lockPath: string): number | null {
+function readHolder(lockPath: string): HolderRecord {
+  let raw: string;
   try {
-    const pid = Number.parseInt(readFileSync(lockPath, 'utf8').trim(), 10);
-    return Number.isFinite(pid) && pid > 0 ? pid : null;
-  } catch {
-    return null;
+    raw = readFileSync(lockPath, 'utf8').trim();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+      ? { kind: 'missing' }
+      : { kind: 'invalid' };
   }
+
+  const newline = raw.indexOf('\n');
+  const pidText = newline === -1 ? raw : raw.slice(0, newline).trim();
+  if (!/^[1-9]\d*$/.test(pidText)) return { kind: 'invalid' };
+  const pid = Number(pidText);
+  if (!Number.isSafeInteger(pid)) return { kind: 'invalid' };
+  if (newline === -1) {
+    return { kind: 'legacy', pid };
+  }
+
+  try {
+    const value: unknown = JSON.parse(raw.slice(newline + 1).trim());
+    if (!isSingleWriterLockRecord(value) || value.pid !== pid) return { kind: 'invalid' };
+    return { kind: 'current', record: value };
+  } catch {
+    return { kind: 'invalid' };
+  }
+}
+
+function publishLockRecord(lockPath: string, data: string, pathWasMissing: boolean): void {
+  const temporaryPath = join(dirname(lockPath), `.tmp-${randomUUID()}`);
+  let published = false;
+  try {
+    const fd = openSync(temporaryPath, 'wx');
+    try {
+      writeFileSync(fd, data, 'utf8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+
+    if (pathWasMissing) {
+      // Hard-link publication is atomic and refuses to overwrite a lock that
+      // appeared after the missing-path check (including an older binary).
+      linkSync(temporaryPath, lockPath);
+    } else {
+      // The stale record stays complete until this atomic replacement. A
+      // crash before rename leaves only an allowlisted `.tmp-<uuid>` file.
+      renameSync(temporaryPath, lockPath);
+      published = true;
+    }
+  } finally {
+    if (!published) {
+      try { unlinkSync(temporaryPath); } catch { /* best-effort temp cleanup */ }
+    }
+  }
+}
+
+function isSingleWriterLockRecord(value: unknown): value is SingleWriterLockRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<SingleWriterLockRecord>;
+  return record.version === 2
+    && Number.isSafeInteger(record.pid)
+    && (record.pid ?? 0) > 0
+    && Number.isSafeInteger(record.processStartTimeMs)
+    && (record.processStartTimeMs ?? -1) >= 0
+    && typeof record.acquisitionId === 'string'
+    && record.acquisitionId.length > 0;
+}
+
+function classifyHolder(
+  holder: HolderRecord,
+  isAlive: (pid: number) => boolean,
+  readStartTime: (pid: number) => number | null,
+): 'stale' | 'active' | 'unknown' {
+  if (holder.kind === 'missing') return 'stale';
+  if (holder.kind === 'invalid') return 'unknown';
+  if (!isAlive(holder.kind === 'legacy' ? holder.pid : holder.record.pid)) return 'stale';
+  if (holder.kind === 'legacy') return 'active';
+
+  const currentStartTimeMs = readStartTime(holder.record.pid);
+  if (currentStartTimeMs === null) return 'unknown';
+  return currentStartTimeMs === holder.record.processStartTimeMs ? 'active' : 'stale';
+}
+
+function sameAcquisition(left: SingleWriterLockRecord, right: SingleWriterLockRecord): boolean {
+  return left.pid === right.pid
+    && left.processStartTimeMs === right.processStartTimeMs
+    && left.acquisitionId === right.acquisitionId;
+}
+
+function holderPid(holder: HolderRecord): number | null {
+  if (holder.kind === 'legacy') return holder.pid;
+  if (holder.kind === 'current') return holder.record.pid;
+  return null;
+}
+
+function retryOrThrow(
+  holder: HolderRecord,
+  lockPath: string,
+  kookrDir: string,
+  deadline: number,
+  retryIntervalMs: number,
+  sleep: (ms: number) => void,
+): void {
+  if (Date.now() < deadline) {
+    sleep(retryIntervalMs);
+    return;
+  }
+
+  const pid = holderPid(holder);
+  if (pid !== null) {
+    throw new Error(
+      `[single-writer] another Kookr server (pid ${pid}) already owns ${kookrDir} — `
+      + 'refusing to start a second writer against the same data dir (RFC issue-ownership-lock R27). '
+      + `Stop that process or inspect ${lockPath} if it is stale.`,
+    );
+  }
+  throw new Error(
+    `[single-writer] cannot verify the owner recorded in ${lockPath} — `
+    + 'refusing to replace an unreadable data-directory lock. Ensure no Kookr server is running '
+    + 'before removing it manually.',
+  );
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown }).code;
+  return code === 'SQLITE_BUSY' || code === 'SQLITE_BUSY_SNAPSHOT';
 }
 
 /**
