@@ -249,6 +249,7 @@ import { createRealtimeServices, DEFAULT_SNAPSHOT_PAYLOAD_SIZE_LIMITS } from './
 import { createScheduleRuntime } from './bootstrap/create-schedule-runtime.js';
 import { IdleRefineryRunner } from './idle-refinery-runner.js';
 import { PostRecoveryService } from './post-recovery-service.js';
+import { PostResumeRefillService } from './post-resume-refill-service.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
@@ -2293,6 +2294,34 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     log: (line) => console.log(line),
   });
 
+  // Post-resume refill (issue #2797): on the paused→live edge (POST
+  // /api/orchestration/resume), run ONE bounded, idempotent-per-transition
+  // refill pass so the fleet does not silently sit idle with free slots after a
+  // pause. Consumes only existing vetted, ownerless leaves — never invents
+  // backlog — and reuses the SAME capacity ledger + SAFE-MODE / drain gates as
+  // the schedule runner and launch path. A new autonomous auto-spawn path, so
+  // actuation is OFF by default (env KOOKR_POST_RESUME_REFILL=1), mirroring the
+  // idle-refinery convention; with it off the pass still classifies the
+  // post-resume posture (intentional_idle / refill_blocked / would-refill) into
+  // the diagnostics capacity report for operator visibility.
+  const postResumeRefillEnabled = process.env.KOOKR_POST_RESUME_REFILL?.trim() === '1';
+  const postResumeRefillService = new PostResumeRefillService({
+    getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
+    // No-invent default: absent an in-process vetted-leaf source the pass finds
+    // nothing to launch and records `intentional_idle`. This injected seam is
+    // where a concrete eligible-leaf enumerator wires in without touching the
+    // decision logic or the safety contract.
+    enumerateEligibleLeaves: () => [],
+    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    isEnabled: () => postResumeRefillEnabled && !settingsLoadError,
+    // Bounded: at most one leaf per transition by default (idle-refinery ethos).
+    getSpawnBudget: () => 1,
+    kookrDir,
+    log: (line) => console.log(line),
+  });
+
   const persistenceHealth = new PersistenceHealthTracker();
   // Lifecycle-timer health (issue #1771): per-loop last-fired stamps for
   // GET /api/diagnostics/timer-health — optional on TimerDeps, always wired
@@ -2544,6 +2573,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     findingEvidenceReviewSampler,
     umbrellaChainAdvancer: umbrellaChainHealth,
     postRecoveryService,
+    postResumeRefillService,
     remoteShare: remoteRelayRuntime.remoteShare,
     getCleanupWorktreeOnComplete,
     relayConnection: remoteRelayRuntime.relayConnection,

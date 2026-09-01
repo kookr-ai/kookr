@@ -257,7 +257,7 @@ export class OrchestrationPauseService {
   async resume(input: {
     by: string;
     auto?: boolean;
-  }): Promise<{ status: OrchestrationStatus; resumed: boolean; reason?: string }> {
+  }): Promise<{ status: OrchestrationStatus; resumed: boolean; reason?: string; transitionId?: string }> {
     const state = readPauseStateSync(this.deps.kookrDir);
     const record = getCurrentPauseRecord(state.records);
     // Auto-resume (the orchestrator's soft-quota path) only ever lifts a
@@ -271,6 +271,12 @@ export class OrchestrationPauseService {
         : 'pause was not engaged by the soft-quota rule; auto-resume declined';
       return { status: this.status(), resumed: false, reason };
     }
+    // Capture whether the fleet was actually paused BEFORE we disengage. A
+    // paused→live edge only exists when it was paused; a human `resume` on an
+    // already-live fleet (or a replayed resume of one already resumed) must NOT
+    // be reported as a transition, or an edge-triggered consumer would fire on
+    // a non-edge and re-fire on every replay (issue #2797 review).
+    const wasPausedBefore = this.status().paused;
     const settings = this.deps.getSettings();
     if (settings.automationKillSwitch) {
       await this.deps.updateSettings({ ...settings, automationKillSwitch: false });
@@ -307,6 +313,16 @@ export class OrchestrationPauseService {
     // record clear failed (EACCES/EPERM — not swallowed ENOENT), `status()`
     // still reads `paused`, so `resumed` reflects reality rather than intent.
     const status = this.status();
-    return { status, resumed: !status.paused };
+    const resumed = !status.paused;
+    // A transition id is emitted ONLY on a genuine paused→live edge (it was
+    // paused before AND is live now). This is what an edge-triggered consumer
+    // (post-resume refill) keys on for "at most one pass per transition":
+    // suppressing it on a non-edge / replayed resume is the primary defense
+    // against a double refill, ahead of the service's own per-transition latch.
+    // Prefer the just-closed record id (stable across a same-call retry); fall
+    // back to the resume instant only when SAFE MODE was flipped with no record.
+    const transitioned = wasPausedBefore && resumed;
+    const transitionId = closedId ?? `resume-${closedAt}`;
+    return { status, resumed, ...(transitioned ? { transitionId } : {}) };
   }
 }

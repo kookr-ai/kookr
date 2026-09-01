@@ -643,6 +643,16 @@ export interface RouteDeps {
     'getQueueFillHealthSnapshot'
   >;
   /**
+   * Post-resume refill actuator (issue #2797). The resume route triggers one
+   * bounded, idempotent refill pass on the paused→live edge; diagnostics reads
+   * only the bounded process-local snapshot, never scanning state on the
+   * request path.
+   */
+  postResumeRefillService?: Pick<
+    import('../post-resume-refill-service.js').PostResumeRefillService,
+    'getRefillHealthSnapshot' | 'onResumeTransition'
+  >;
+  /**
    * Hourly prod smoke tick (issues #1593, #2031). `/api/health` reads only
    * `getHealthSnapshot()` — a cheap artifact read projecting status /
    * consecutiveFailures / failingChecks; never re-runs smoke checks on the
