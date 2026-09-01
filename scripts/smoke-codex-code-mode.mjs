@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import { randomUUID } from 'node:crypto';
-import { accessSync, constants } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { accessSync, constants, readFileSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 function fail(message, details = '') {
@@ -45,9 +45,50 @@ function completedRoundTripContainsMarker(stdout, marker) {
   );
 }
 
+function sha256(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function verifyManagedPair(codex, expectedSourceCommit) {
+  if (!/^[0-9a-f]{40}$/.test(expectedSourceCommit)) {
+    fail('--expected-source-commit must be a full lowercase Git SHA');
+  }
+
+  const host = join(dirname(codex), 'codex-code-mode-host');
+  let cliRealPath;
+  let hostRealPath;
+  try {
+    accessSync(host, constants.X_OK);
+    cliRealPath = realpathSync(codex);
+    hostRealPath = realpathSync(host);
+  } catch {
+    fail(`managed Codex host is missing or not executable: ${host}`);
+  }
+
+  const pairDirectory = dirname(cliRealPath);
+  if (dirname(hostRealPath) !== pairDirectory) {
+    fail('managed Codex CLI and host do not resolve to the same runtime pair');
+  }
+
+  const manifestPath = join(pairDirectory, 'codex-pair.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch (error) {
+    fail(`could not read managed Codex pair manifest: ${error.message}`);
+  }
+  if (manifest.schemaVersion !== 1
+    || manifest.sourceCommit !== expectedSourceCommit
+    || manifest.cliSha256 !== sha256(cliRealPath)
+    || manifest.hostSha256 !== sha256(hostRealPath)) {
+    fail('managed Codex pair manifest, source commit, or executable hashes do not match');
+  }
+}
+
 const codex = argumentValue('--codex')
   ?? process.env.KOOKR_CODEX_BIN
   ?? join(homedir(), 'bin', 'codex');
+const expectedSourceCommit = argumentValue('--expected-source-commit');
 const marker = process.env.CODEX_IPC_SMOKE_EXPECTED_MARKER
   ?? `kookr-ipc-smoke-${randomUUID()}`;
 
@@ -56,6 +97,7 @@ try {
 } catch {
   fail(`Codex executable is missing or not executable: ${codex}`);
 }
+if (expectedSourceCommit) verifyManagedPair(codex, expectedSourceCommit);
 
 const prompt = [
   'Perform exactly one code-mode IPC check.',

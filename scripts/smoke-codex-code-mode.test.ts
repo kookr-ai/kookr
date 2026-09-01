@@ -1,5 +1,14 @@
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -18,8 +27,28 @@ function writeFakeCodex(directory: string, jsonl: string, exitCode = 0): string 
   return path;
 }
 
-function runSmoke(codex: string, marker: string) {
-  return spawnSync(process.execPath, [SMOKE_SCRIPT, '--codex', codex], {
+function sha256(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function writeManagedPairManifest(directory: string, codex: string, sourceCommit: string): string {
+  const host = join(directory, 'codex-code-mode-host');
+  writeFileSync(host, '#!/usr/bin/env bash\nexit 0\n');
+  chmodSync(host, 0o755);
+  writeFileSync(join(directory, 'codex-pair.json'), `${JSON.stringify({
+    schemaVersion: 1,
+    sourceCommit,
+    source: 'source-build',
+    cliSha256: sha256(codex),
+    hostSha256: sha256(host),
+  })}\n`);
+  return host;
+}
+
+function runSmoke(codex: string, marker: string, expectedSourceCommit?: string) {
+  const args = [SMOKE_SCRIPT, '--codex', codex];
+  if (expectedSourceCommit) args.push('--expected-source-commit', expectedSourceCommit);
+  return spawnSync(process.execPath, args, {
     cwd: resolve('.'),
     env: { ...process.env, CODEX_IPC_SMOKE_EXPECTED_MARKER: marker },
     encoding: 'utf8',
@@ -30,6 +59,7 @@ describe('Codex code-mode IPC smoke validator and invocation', () => {
   it('accepts the marker only after a completed command-to-response round trip', () => {
     const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
     const marker = 'kookr-ipc-smoke-test-marker';
+    const sourceCommit = 'a'.repeat(40);
     const codex = writeFakeCodex(
       directory,
       [
@@ -49,9 +79,10 @@ describe('Codex code-mode IPC smoke validator and invocation', () => {
         }),
       ].join('\n'),
     );
+    writeManagedPairManifest(directory, codex, sourceCommit);
 
     try {
-      const result = runSmoke(codex, marker);
+      const result = runSmoke(codex, marker, sourceCommit);
       expect(result.status, result.stderr).toBe(0);
       expect(result.stdout).toContain('code-mode IPC smoke passed');
       const args = readFileSync(join(directory, 'argv.log'), 'utf8').trimEnd().split('\n');
@@ -78,6 +109,61 @@ describe('Codex code-mode IPC smoke validator and invocation', () => {
       expect(args.at(-1)).toContain('reply only with the exact value returned');
       expect(readFileSync(join(directory, 'marker.log'), 'utf8')).toBe(marker);
       expect(readFileSync(join(directory, 'cwd.log'), 'utf8')).toBe(tmpdir());
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a managed CLI whose public host executable is missing', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const codex = writeFakeCodex(directory, '');
+
+    try {
+      const result = runSmoke(codex, marker, 'a'.repeat(40));
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('managed Codex host is missing or not executable');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects a managed pair whose executable hashes differ from its manifest', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const sourceCommit = 'a'.repeat(40);
+    const codex = writeFakeCodex(directory, '');
+    const host = writeManagedPairManifest(directory, codex, sourceCommit);
+    writeFileSync(host, '#!/usr/bin/env bash\nexit 1\n');
+
+    try {
+      const result = runSmoke(codex, marker, sourceCommit);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'managed Codex pair manifest, source commit, or executable hashes do not match',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects public CLI and host paths that resolve to different runtime directories', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'kookr-codex-smoke-'));
+    const otherPair = join(directory, 'other-pair');
+    const marker = 'kookr-ipc-smoke-test-marker';
+    const codex = writeFakeCodex(directory, '');
+    mkdirSync(otherPair);
+    const otherHost = join(otherPair, 'codex-code-mode-host');
+    writeFileSync(otherHost, '#!/usr/bin/env bash\nexit 0\n');
+    chmodSync(otherHost, 0o755);
+    symlinkSync(otherHost, join(directory, 'codex-code-mode-host'));
+
+    try {
+      const result = runSmoke(codex, marker, 'a'.repeat(40));
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(
+        'managed Codex CLI and host do not resolve to the same runtime pair',
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

@@ -543,11 +543,20 @@ describe('R4b.14: matched Codex runtime pair', () => {
 
   it('makes the daily sync use the paired installer instead of replacing only codex', () => {
     const playbook = readFileSync(SYNC_PLAYBOOK, 'utf8');
+    const phaseTwo = playbook.slice(
+      playbook.indexOf('## Phase 2:'),
+      playbook.indexOf('## Phase 3:'),
+    );
 
     expect(playbook).toContain('scripts/rebuild-codex.sh');
     expect(playbook).toContain('codex-code-mode-host');
     expect(playbook).toContain('command -v "$KOOKR_CODEX_BIN"');
     expect(playbook).toContain('CODEX_INSTALL_DIR="$(dirname "$KOOKR_CODEX_BIN_PATH")"');
+    expect(phaseTwo).toContain('scripts/smoke-codex-code-mode.mjs');
+    expect(phaseTwo).toContain('--expected-source-commit "$FINAL_FULL_SHA"');
+    expect(phaseTwo.indexOf('scripts/smoke-codex-code-mode.mjs')).toBeLessThan(
+      phaseTwo.indexOf('exit 0'),
+    );
     expect(playbook).not.toContain('install -m 755 "$BIN" "$KOOKR_CODEX_BIN"');
   });
 });

@@ -167,7 +167,10 @@ if git merge-base --is-ancestor upstream/main origin/feat/claude-compat; then
     PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
     INSTALLED_PAIR_SHA=$(jq -r '.sourceCommit // empty' "$PAIR_MANIFEST" 2>/dev/null || true)
     if printf '%s\n' "$INSTALLED_VERSION" | grep -q "+kookr.$FINAL_SHA" \
-        && [ "$INSTALLED_PAIR_SHA" = "$FINAL_FULL_SHA" ]; then
+        && [ "$INSTALLED_PAIR_SHA" = "$FINAL_FULL_SHA" ] \
+        && node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" \
+            --codex "$KOOKR_CODEX_BIN_PATH" \
+            --expected-source-commit "$FINAL_FULL_SHA"; then
         echo "feat/claude-compat already contains upstream/main and the installed CLI/host pair matches — no upstream changes today"
         exit 0
     fi
@@ -489,12 +492,16 @@ case "$CODEX_VERSION_OUTPUT" in
 esac
 PAIR_MANIFEST="$(dirname "$KOOKR_CODEX_BIN_PATH")/.codex-current/codex-pair.json"
 test "$(jq -r .sourceCommit "$PAIR_MANIFEST")" = "$FINAL_FULL_SHA"
-node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" --codex "$KOOKR_CODEX_BIN_PATH"
+node "$KOOKR_ROOT/scripts/smoke-codex-code-mode.mjs" \
+    --codex "$KOOKR_CODEX_BIN_PATH" \
+    --expected-source-commit "$FINAL_FULL_SHA"
 ```
 
-The `+kookr.<sha>` suffix must match `$FINAL_SHORT_SHA`, the pair manifest must
-match `$FINAL_FULL_SHA`, and the IPC smoke must observe its marker in a real
-code-mode tool result. If any check fails, report the mismatch and stop.
+The `+kookr.<sha>` suffix must match `$FINAL_SHORT_SHA`. The smoke command checks
+that both public executable paths resolve to the same runtime directory, that
+the manifest source and hashes match the installed files, and that a real
+code-mode tool result returns its marker. If any check fails, report the
+mismatch and stop.
 
 ## Phase 7: Report
 
