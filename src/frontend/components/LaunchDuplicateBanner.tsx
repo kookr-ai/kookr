@@ -6,13 +6,19 @@ interface Props {
   taskName?: string;
   onOpenExisting: () => void;
   onLaunchAnyway: () => void;
+  launchAnywayDisabled?: boolean;
 }
 
 /**
  * Pre-submit warning when prompt + cwd + agent already have an active task.
  * Same interrupt the CLI documents for `kookr spawn --dedupe=warn`.
  */
-export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway }: Props) {
+export function LaunchDuplicateBanner({
+  taskName,
+  onOpenExisting,
+  onLaunchAnyway,
+  launchAnywayDisabled = false,
+}: Props) {
   const trimmedName = taskName?.trim();
   const existingLabel = trimmedName ? `Open existing (${trimmedName})` : 'Open existing';
   return (
@@ -46,6 +52,7 @@ export function LaunchDuplicateBanner({ taskName, onOpenExisting, onLaunchAnyway
           className="btn-secondary"
           onMouseDown={(e) => e.preventDefault()}
           onClick={onLaunchAnyway}
+          disabled={launchAnywayDisabled}
           data-testid="launch-duplicate-launch-anyway"
         >
           Launch anyway

@@ -196,6 +196,37 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
   });
 
   test('shows login guidance and blocks Enter for an explicitly selected refused Grok launch', async () => {
+    mockGrokAuth({
+      status: 'expired',
+      loginCommand: 'grok login --device-code',
+      message: 'Grok authentication expired. Run `grok login --device-code`.',
+      launchWouldRefuse: true,
+      roundRobinIndex: 2,
+    });
+
+    const rendered = renderQuickLaunch(container);
+    await flush();
+    await act(async () => { selectValue(getAgentSelectEl(container), 'grok-build'); });
+    await flush();
+
+    const banner = container.querySelector('[data-testid="grok-auth-banner"]');
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    expect(banner?.textContent).toContain('grok login --device-code');
+    expect(input.getAttribute('aria-describedby')).toContain('grok-auth-preflight-banner');
+
+    await act(async () => { setInputValue(input, 'Use Grok for this task'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(rendered.sent).toHaveLength(0);
+    expect(rendered.closed).toBe(0);
+    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+
+    act(() => rendered.root.unmount());
+  });
+
+  test('disables the duplicate override while Grok auth blocks but keeps Open existing available', async () => {
     useKookrStore.setState({
       agents: [{
         agentId: 'existing-grok-session',
@@ -221,21 +252,15 @@ describe('QuickLaunch round-robin preview honors Grok auth', () => {
     await act(async () => { selectValue(getAgentSelectEl(container), 'grok-build'); });
     await flush();
 
-    const banner = container.querySelector('[data-testid="grok-auth-banner"]');
     const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
-    expect(banner?.textContent).toContain('grok login --device-code');
-    expect(input.getAttribute('aria-describedby')).toContain('grok-auth-preflight-banner');
-
     await act(async () => { setInputValue(input, 'Use Grok for this task'); });
     await flush();
-    expect(container.querySelector('[data-testid="launch-duplicate-launch-anyway"]')).toBeNull();
-    await act(async () => {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-    });
 
-    expect(rendered.sent).toHaveLength(0);
-    expect(rendered.closed).toBe(0);
-    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+    expect(container.querySelector('[data-testid="grok-auth-banner"]')).not.toBeNull();
+    const launchAnyway = container.querySelector('[data-testid="launch-duplicate-launch-anyway"]') as HTMLButtonElement;
+    const openExisting = container.querySelector('[data-testid="launch-duplicate-open-existing"]') as HTMLButtonElement;
+    expect(launchAnyway.disabled).toBe(true);
+    expect(openExisting.disabled).toBe(false);
 
     act(() => rendered.root.unmount());
   });

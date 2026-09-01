@@ -146,7 +146,6 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
   ) && Boolean(grokAuth?.message);
-  const visibleActiveDuplicate = grokAuthBlocksLaunch ? null : activeDuplicate;
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
@@ -263,7 +262,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           onChange={(e) => setPrompt(e.target.value)}
           aria-describedby={[
             showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
-            visibleActiveDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
+            activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
           ].filter(Boolean).join(' ') || undefined}
         />
         {sttUrl && (
@@ -275,11 +274,12 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       {showGrokAuthBanner && grokAuth?.message && (
         <GrokAuthPreflightBanner message={grokAuth.message} />
       )}
-      {visibleActiveDuplicate && (
+      {activeDuplicate && (
         <LaunchDuplicateBanner
-          taskName={visibleActiveDuplicate.taskName ?? undefined}
+          taskName={activeDuplicate.taskName ?? undefined}
           onOpenExisting={openExistingDuplicate}
           onLaunchAnyway={() => submitLaunch(true)}
+          launchAnywayDisabled={grokAuthBlocksLaunch}
         />
       )}
     </div>
