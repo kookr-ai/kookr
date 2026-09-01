@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type { ProjectSummary, ClientMessage, TaskSummary } from '../../shared/protocol.js';
 import { formatCost } from '../presentation.js';
 
@@ -13,6 +13,7 @@ interface Props {
 }
 
 const COLLAPSED_TASK_COUNT = 3;
+type EditableProjectConfigField = 'dailyPrLimit' | 'budgetWarnUsd' | 'zeroDrainIssueLimit' | 'notes';
 
 function relativeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -56,13 +57,26 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
     ? (project.effectiveZeroDrainIssueLimit ?? project.zeroDrainIssueLimitMax ?? -1)
     : (project.zeroDrainIssueLimitMax ?? -1);
   const [dailyLimit, setDailyLimit] = useState<string>(project.dailyLimit?.toString() ?? '');
+  const [dailyLimitError, setDailyLimitError] = useState<string | null>(null);
   const [budgetWarnUsd, setBudgetWarnUsd] = useState<string>(project.budgetWarnUsd?.toString() ?? '');
   const [zeroDrainIssueLimit, setZeroDrainIssueLimit] = useState<string>(project.zeroDrainIssueLimit?.toString() ?? '');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveSendError, setSaveSendError] = useState<string | null>(null);
   const [notes, setNotes] = useState(project.notes ?? '');
-  const [dirty, setDirty] = useState(false);
+  const [dirtyFields, setDirtyFields] = useState<Partial<Record<EditableProjectConfigField, true>>>({});
   const [tasksExpanded, setTasksExpanded] = useState(false);
+  const dirty = Object.keys(dirtyFields).length > 0;
+
+  // Server broadcasts may refresh this project while the drawer stays mounted.
+  // Sync only untouched inputs; edited fields remain the user's pending patch.
+  useEffect(() => {
+    if (!dirtyFields.dailyPrLimit) setDailyLimit(project.dailyLimit?.toString() ?? '');
+    if (!dirtyFields.budgetWarnUsd) setBudgetWarnUsd(project.budgetWarnUsd?.toString() ?? '');
+    if (!dirtyFields.zeroDrainIssueLimit) {
+      setZeroDrainIssueLimit(project.zeroDrainIssueLimit?.toString() ?? '');
+    }
+    if (!dirtyFields.notes) setNotes(project.notes ?? '');
+  }, [project.dailyLimit, project.budgetWarnUsd, project.zeroDrainIssueLimit, project.notes]);
 
   const atLimit = project.dailyLimit !== undefined && project.todayPrCount >= project.dailyLimit;
   const limitPct = project.dailyLimit ? Math.min(100, Math.round((project.todayPrCount / project.dailyLimit) * 100)) : 0;
@@ -72,12 +86,24 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
   const showSpend = spendUsd !== undefined || budgetThreshold !== undefined;
   const overBudget = budgetThreshold !== undefined && (spendUsd ?? 0) > budgetThreshold;
 
+  function markDirty(field: EditableProjectConfigField): void {
+    setDirtyFields((fields) => ({ ...fields, [field]: true }));
+  }
+
   function handleSave() {
     setSaveSendError(null);
-    const limit = parseInt(dailyLimit, 10);
+    const limit = Number(dailyLimit);
     const budget = Number(budgetWarnUsd);
     const zeroDrainLimit = Number(zeroDrainIssueLimit);
-    if (zeroDrainIssueLimit.trim() !== '') {
+    if (
+      dirtyFields.dailyPrLimit
+      && dailyLimit.trim() !== ''
+      && (!Number.isSafeInteger(limit) || limit < 0)
+    ) {
+      setDailyLimitError('Daily PR cap must be a non-negative whole number.');
+      return;
+    }
+    if (dirtyFields.zeroDrainIssueLimit && zeroDrainIssueLimit.trim() !== '') {
       if (!Number.isSafeInteger(zeroDrainLimit) || zeroDrainLimit < -1) {
         setSaveError('Zero-drain issue limit must be -1 or a non-negative whole number.');
         return;
@@ -90,25 +116,35 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         return;
       }
     }
+    const config: Extract<ClientMessage, { type: 'setProjectConfig' }>['config'] = {
+      project: project.project,
+    };
+    if (dirtyFields.dailyPrLimit) {
+      config.dailyPrLimit = dailyLimit.trim() === '' ? null : limit;
+    }
+    if (dirtyFields.budgetWarnUsd) {
+      config.budgetWarnUsd = budgetWarnUsd.trim() === '' || !Number.isFinite(budget) ? null : budget;
+    }
+    if (dirtyFields.zeroDrainIssueLimit) {
+      config.zeroDrainIssueLimit = zeroDrainIssueLimit.trim() === '' || !Number.isFinite(zeroDrainLimit)
+        ? null
+        : zeroDrainLimit;
+    }
+    if (dirtyFields.notes) {
+      config.notes = notes.trim() === '' ? null : notes;
+    }
     const sent = send({
       type: 'setProjectConfig',
       project: project.project,
-      config: {
-        project: project.project,
-        dailyPrLimit: isNaN(limit) ? undefined : limit,
-        budgetWarnUsd: budgetWarnUsd.trim() === '' || !Number.isFinite(budget) ? null : budget,
-        zeroDrainIssueLimit: zeroDrainIssueLimit.trim() === '' || !Number.isFinite(zeroDrainLimit)
-          ? null
-          : zeroDrainLimit,
-        notes: notes || undefined,
-      },
+      config,
     });
     if (!sent) {
       setSaveSendError('Project settings were not saved. Kookr may be disconnected, or this view may be read-only.');
       return;
     }
+    setDailyLimitError(null);
     setSaveError(null);
-    setDirty(false);
+    setDirtyFields({});
   }
 
   const repoHealth = project.repoHealth;
@@ -379,13 +415,16 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               id={`daily-limit-${project.project}`}
               type="number"
               min="0"
-              max="100"
               value={dailyLimit}
               placeholder="—"
-              onChange={(e) => { setDailyLimit(e.target.value); setDirty(true); }}
+              onChange={(e) => { setDailyLimit(e.target.value); setDailyLimitError(null); markDirty('dailyPrLimit'); }}
+              aria-invalid={dailyLimitError !== null}
               className="project-drawer-input"
               data-testid="daily-limit-input"
             />
+            {dailyLimitError && (
+              <span className="project-drawer-setting-error" role="alert">{dailyLimitError}</span>
+            )}
           </div>
           <div className="project-drawer-setting">
             <label htmlFor={`budget-warn-${project.project}`}>Cost warning (USD)</label>
@@ -396,7 +435,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               step="0.01"
               value={budgetWarnUsd}
               placeholder="Global default"
-              onChange={(e) => { setBudgetWarnUsd(e.target.value); setDirty(true); }}
+              onChange={(e) => { setBudgetWarnUsd(e.target.value); markDirty('budgetWarnUsd'); }}
               className="project-drawer-input"
               data-testid="budget-warn-input"
             />
@@ -413,7 +452,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
               placeholder={inheritedZeroDrainIssueLimit === -1
                 ? '-1 (unlimited)'
                 : `${inheritedZeroDrainIssueLimit}`}
-              onChange={(e) => { setZeroDrainIssueLimit(e.target.value); setSaveError(null); setDirty(true); }}
+              onChange={(e) => { setZeroDrainIssueLimit(e.target.value); setSaveError(null); markDirty('zeroDrainIssueLimit'); }}
               aria-invalid={saveError !== null}
               aria-describedby={zeroDrainHintId}
               className="project-drawer-input"
@@ -432,7 +471,7 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
             <textarea
               id={`notes-${project.project}`}
               value={notes}
-              onChange={(e) => { setNotes(e.target.value); setDirty(true); }}
+              onChange={(e) => { setNotes(e.target.value); markDirty('notes'); }}
               className="project-drawer-textarea"
               placeholder="Contribution strategy…"
               data-testid="project-notes-input"

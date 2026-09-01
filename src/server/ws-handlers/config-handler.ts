@@ -48,7 +48,9 @@ export class ConfigHandler {
           const { project, config } = msg;
           const patch: Partial<Omit<ProjectConfig, 'project'>> = {};
           if (config.tracked !== undefined) patch.tracked = config.tracked;
-          if (config.dailyPrLimit !== undefined) patch.dailyPrLimit = config.dailyPrLimit;
+          if (config.dailyPrLimit !== undefined) {
+            patch.dailyPrLimit = config.dailyPrLimit ?? undefined;
+          }
           if (config.weeklyPrLimit !== undefined) patch.weeklyPrLimit = config.weeklyPrLimit;
           if (config.budgetWarnUsd !== undefined) {
             patch.budgetWarnUsd = config.budgetWarnUsd ?? undefined;
@@ -56,7 +58,7 @@ export class ConfigHandler {
           if (config.zeroDrainIssueLimit !== undefined) {
             patch.zeroDrainIssueLimit = config.zeroDrainIssueLimit ?? undefined;
           }
-          if (config.notes !== undefined) patch.notes = config.notes;
+          if (config.notes !== undefined) patch.notes = config.notes ?? undefined;
           if (config.webhook !== undefined) {
             const webhook = normalizeProjectWebhookRoutingSettings(config.webhook);
             if (webhook !== undefined) patch.webhook = webhook;

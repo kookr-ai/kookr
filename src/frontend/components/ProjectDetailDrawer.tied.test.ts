@@ -112,6 +112,33 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     }));
   });
 
+  test('R5.12: clears the daily PR cap and whitespace-only notes with explicit nulls', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>()
+      .mockReturnValueOnce(false)
+      .mockReturnValueOnce(true);
+    renderDrawer(baseProject({ dailyLimit: 2, notes: 'Keep this note' }), false, send);
+    const dailyLimit = container.querySelector('[data-testid="daily-limit-input"]') as HTMLInputElement;
+    const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
+
+    act(() => setInputValue(dailyLimit, ''));
+    act(() => setInputValue(notes, '   '));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ dailyPrLimit: null, notes: null }),
+    }));
+    expect(JSON.parse(JSON.stringify(send.mock.calls[0]?.[0]))).toMatchObject({
+      config: { dailyPrLimit: null, notes: null },
+    });
+    expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
+
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]).toEqual(send.mock.calls[0]);
+    expect(container.querySelector('[data-testid="save-config"]')).toBeNull();
+  });
+
   test('renders and saves the repository zero-drain issue limit without a built-in maximum', () => {
     const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ zeroDrainIssueLimit: 1000 }), false, send);
@@ -165,15 +192,61 @@ describe('ProjectDetailDrawer — active-task overlay', () => {
     expect(container.textContent).toContain('allows at most 1000');
   });
 
-  test('leaves an inherited default unset when another setting is saved', () => {
+  test('omits an inherited default when another setting is saved', () => {
     const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
     renderDrawer(baseProject({ effectiveZeroDrainIssueLimit: -1 }), false, send);
     const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
 
     act(() => setInputValue(notes, 'Updated note'));
     act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+    expect(send.mock.calls[0]?.[0].config).not.toHaveProperty('zeroDrainIssueLimit');
+  });
+
+  test('R5.12: does not clear untouched fields updated after the drawer opens', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
+    renderDrawer(baseProject({ dailyLimit: 2 }), false, send);
+    const dailyLimit = container.querySelector('[data-testid="daily-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(dailyLimit, ''));
+    renderDrawer(baseProject({ dailyLimit: 9, notes: 'Added elsewhere' }), false, send);
+    const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
+
+    expect(dailyLimit.value).toBe('');
+    expect(notes.value).toBe('Added elsewhere');
+
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
     expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
-      config: expect.objectContaining({ zeroDrainIssueLimit: null }),
+      config: expect.objectContaining({ dailyPrLimit: null }),
+    }));
+    expect(send.mock.calls[0]?.[0].config).not.toHaveProperty('notes');
+  });
+
+  test('R5.12: rejects an invalid daily PR cap without clearing dirty state', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
+    renderDrawer(baseProject({ dailyLimit: 2 }), false, send);
+    const dailyLimit = container.querySelector('[data-testid="daily-limit-input"]') as HTMLInputElement;
+
+    act(() => setInputValue(dailyLimit, '1.5'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-testid="save-config"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('non-negative whole number');
+  });
+
+  test('R5.12: an untouched cap does not block saving another field', () => {
+    const send = vi.fn<(msg: ClientMessage) => boolean>(() => true);
+    renderDrawer(baseProject({ dailyLimit: 101, notes: 'Original' }), false, send);
+    const notes = container.querySelector('[data-testid="project-notes-input"]') as HTMLTextAreaElement;
+
+    act(() => setInputValue(notes, 'Updated'));
+    act(() => (container.querySelector('[data-testid="save-config"]') as HTMLButtonElement).click());
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0].config).not.toHaveProperty('dailyPrLimit');
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({
+      config: expect.objectContaining({ notes: 'Updated' }),
     }));
   });
 
