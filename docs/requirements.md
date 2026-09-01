@@ -534,8 +534,9 @@ The system SHALL manage tasks across `open`, `pending`, `inProgress`, `completed
 - Tasks are persisted locally in JSON (`~/.kookr/tasks.json`)
 - Persistence uses atomic writes (temp file → rename)
 - On startup, tasks are loaded from disk and reconciled with live dtach sessions
+- Startup crash recovery skips a session after five persisted recovery relaunches, regardless of the rapid crash-loop window, and reports the skip through crash-loop health telemetry
 
-**Evidence:** `src/core/tasks.ts` (state machine, CRUD), `src/core/task-persistence.ts` (atomic JSON I/O), `src/server/reconciliation.ts` (startup recovery), `src/core/tasks.test.ts`, `src/core/task-persistence.test.ts`, `src/server/reconciliation.test.ts`.
+**Evidence:** `src/core/tasks.ts` (state machine, CRUD), `src/core/task-persistence.ts` (atomic JSON I/O), `src/server/reconciliation.ts` and `src/server/crash-recovery.ts` (startup recovery), `src/core/tasks.test.ts`, `src/core/task-persistence.test.ts`, `src/server/reconciliation.test.ts`, `src/server/crash-recovery.test.ts`.
 
 ### R4.5: Completion Criteria [F4.5] — SHOULD — `partial`
 

@@ -1856,6 +1856,11 @@ describe('diagnostics routes', () => {
               sessionId: 's3',
               reason: 'duplicate prompt already running or relaunched',
             },
+            {
+              taskId: 't5',
+              sessionId: 's5',
+              reason: 'rapid crash-loop (crash-loop cap reached: 5 relaunches, cap is 5)',
+            },
           ],
           failed: [{ taskId: 't4', sessionId: 's4', error: 'boom' }],
         },
@@ -1873,9 +1878,9 @@ describe('diagnostics routes', () => {
       };
       expect(body.startupRecovery).toEqual({
         relaunched: 1,
-        skipped: 2,
+        skipped: 3,
         failed: 1,
-        crashLoopSkips: 1,
+        crashLoopSkips: 2,
         generatedAt: '2026-08-12T00:00:00.000Z',
       });
       // Counts only — no full entry arrays on the compact health surface.

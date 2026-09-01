@@ -88,6 +88,8 @@ export interface CrashRecoveryOptions {
 
 /** How recently a session must have been relaunched to be considered a rapid crash-loop (ms). */
 const CRASH_LOOP_WINDOW_MS = 60_000;
+/** Maximum recovery relaunches allowed before the session needs operator intervention. */
+const CRASH_LOOP_MAX_RELAUNCHES = 5;
 
 /**
  * Attempt to relaunch sessions that died in a crash.
@@ -236,11 +238,21 @@ export async function recoverCrashedSessions(
       continue;
     }
 
-    // Guard: rapid crash-loop detection.
-    // If this session was recently relaunched (within 60s), skip it.
-    // This prevents infinite loops when Kookr itself crashes on startup.
-    // A time-based guard (not a boolean) allows recovery across multiple
-    // daily crashes — only rapid succession is blocked.
+    // Guard: crash-loop detection. The cumulative cap bounds slow, repeatable
+    // crashes that fall outside the rapid window and would otherwise relaunch
+    // forever. Keep the rapid prefix so health and disposition classifiers
+    // count both protections as crash-loop skips.
+    if ((session.relaunchCount ?? 0) >= CRASH_LOOP_MAX_RELAUNCHES) {
+      result.skipped.push({
+        taskId: task.id,
+        sessionId: tmuxName,
+        reason: `rapid crash-loop (crash-loop cap reached: ${session.relaunchCount} relaunches, cap is ${CRASH_LOOP_MAX_RELAUNCHES})`,
+      });
+      continue;
+    }
+
+    // If this session was recently relaunched (within 60s), skip it. The
+    // window still permits recovery after occasional crashes below the cap.
     if (
       session.relaunchCount != null &&
       session.relaunchCount > 0 &&
