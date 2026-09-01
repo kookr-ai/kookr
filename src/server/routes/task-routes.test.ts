@@ -908,6 +908,50 @@ Do something else.
     expect(body[0].name).toBe('Alt playbook');
   });
 
+  test('uses ?targetCwd= to filter a source catalog for the task repository', async () => {
+    const targetDir = join(tempDir, 'task-target');
+    const playbooksDir = join(tempDir, '.kookr', 'playbooks');
+    mkdirSync(targetDir, { recursive: true });
+    mkdirSync(playbooksDir, { recursive: true });
+    writeFileSync(join(playbooksDir, 'target.md'), `---
+name: Target playbook
+cwd: ${targetDir}
+---
+Run in the task target.
+`);
+    writeFileSync(join(playbooksDir, 'source.md'), `---
+name: Source-only playbook
+cwd: ${tempDir}
+---
+Run in the catalog source.
+`);
+
+    const res = await mkApp({ serverCwd: '/does-not-matter' }).request(
+      `/api/playbooks?cwd=${encodeURIComponent(tempDir)}&targetCwd=${encodeURIComponent(targetDir)}`,
+    );
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.map((playbook: { id: string }) => playbook.id)).toEqual(['target.md']);
+  });
+
+  test('returns shadowed scoped resources so schedule prefills can match exact identity', async () => {
+    const projectDir = join(tempDir, '.kookr', 'playbooks');
+    const userDir = join(tempDir, 'user-playbooks');
+    mkdirSync(projectDir, { recursive: true });
+    mkdirSync(userDir, { recursive: true });
+    process.env.KOOKR_USER_PLAYBOOKS_DIR = userDir;
+    writeFileSync(join(projectDir, 'shared.md'), '---\nname: Project\n---\nProject body.');
+    writeFileSync(join(userDir, 'shared.md'), '---\nname: User\n---\nUser body.');
+
+    const res = await mkApp({ serverCwd: tempDir }).request('/api/playbooks');
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.map((playbook: { id: string; scope: string }) => `${playbook.id}:${playbook.scope}`))
+      .toEqual(['shared.md:project', 'shared.md:user']);
+  });
+
   test('R4b.8 excludes user playbooks pinned to another project', async () => {
     const userDir = join(tempDir, 'user-playbooks');
     mkdirSync(userDir, { recursive: true });

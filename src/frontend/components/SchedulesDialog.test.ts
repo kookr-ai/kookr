@@ -214,11 +214,28 @@ describe('SchedulesDialog prefill', () => {
   let container: HTMLDivElement;
   let root: Root | undefined;
 
-  function stubFetch(playbooks: Array<{ id: string; name: string; scope: string; parameters: unknown[] }>) {
+  function stubFetch(playbooks: Array<{
+    id: string;
+    name: string;
+    scope: string;
+    parameters: unknown[];
+    sourceCwd?: string;
+    sourceDigest?: string;
+  }>) {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith('/api/playbooks')) {
-        return { ok: true, json: async () => playbooks };
+        return {
+          ok: true,
+          json: async () => playbooks.map((playbook) => ({
+            description: '',
+            checklist: [],
+            tags: [],
+            sourceCwd: '/repo',
+            sourceDigest: `sha256:${playbook.scope}`,
+            ...playbook,
+          })),
+        };
       }
       if (url.startsWith('/api/schedules/preview')) {
         return { ok: true, json: async () => ({ cronDescription: 'Daily at 09:00', nextRuns: [], timezone: 'UTC' }) };
@@ -249,6 +266,21 @@ describe('SchedulesDialog prefill', () => {
       setter.call(select, value);
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
+  }
+
+  function playbookOption(name: string): HTMLOptionElement {
+    const option = Array.from(container.querySelectorAll<HTMLOptionElement>('.schedule-form-field select option'))
+      .find((candidate) => candidate.textContent?.startsWith(name));
+    if (!option) throw new Error(`playbook option not found: ${name}`);
+    return option;
+  }
+
+  function parameterInput(name: string): HTMLInputElement {
+    const field = Array.from(container.querySelectorAll<HTMLDivElement>('.schedule-form-params .schedule-form-field'))
+      .find((candidate) => candidate.querySelector('span')?.textContent?.trim().startsWith(name));
+    const input = field?.querySelector<HTMLInputElement>('input');
+    if (!input) throw new Error(`parameter input not found: ${name}`);
+    return input;
   }
 
   async function submitCreate() {
@@ -283,7 +315,17 @@ describe('SchedulesDialog prefill', () => {
     await act(async () => {
       root!.render(React.createElement(SchedulesDialog, {
         onClose: () => {},
-        prefill: { cwd: '/repo', playbookId: 'triage.md', name: 'My nightly triage' },
+        prefill: {
+          cwd: '/repo',
+          playbookSource: {
+            id: 'triage.md',
+            scope: 'project',
+            sourceCwd: '/repo',
+            sourceDigest: 'sha256:project',
+          },
+          playbookParameterValues: {},
+          name: 'My nightly triage',
+        },
       }));
     });
     await settle();
@@ -303,20 +345,19 @@ describe('SchedulesDialog prefill', () => {
     expect(container.querySelector('.schedule-prefill-note')).toBeNull();
   });
 
-  test('shows a degradation note when the prefilled playbook is not project-scoped', async () => {
-    // The playbook the task ran isn't in the project list (e.g. user-scoped).
+  test('shows a blocking note when a legacy prefill has no exact source identity', async () => {
     stubFetch([{ id: 'other.md', name: 'Other', scope: 'project', parameters: [] }]);
     root = createRoot(container);
     await act(async () => {
       root!.render(React.createElement(SchedulesDialog, {
         onClose: () => {},
-        prefill: { cwd: '/repo', playbookId: 'user-only.md', name: 'User playbook' },
+        prefill: { cwd: '/repo', name: 'User playbook' },
       }));
     });
     await settle();
 
     const note = container.querySelector('.schedule-prefill-note');
-    expect(note?.textContent).toContain('Couldn’t pre-select');
+    expect(note?.textContent).toContain('source was not recorded');
     const save = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
       .find((b) => b.textContent === 'Save Schedule');
     expect(save?.disabled).toBe(true);
@@ -329,7 +370,17 @@ describe('SchedulesDialog prefill', () => {
     await act(async () => {
       root!.render(React.createElement(SchedulesDialog, {
         onClose: () => {},
-        prefill: { cwd: '/repo', playbookId: 'triage.md', name: 'Seeded' },
+        prefill: {
+          cwd: '/repo',
+          playbookSource: {
+            id: 'triage.md',
+            scope: 'project',
+            sourceCwd: '/repo',
+            sourceDigest: 'sha256:project',
+          },
+          playbookParameterValues: {},
+          name: 'Seeded',
+        },
         onCreated,
       }));
     });
@@ -373,11 +424,8 @@ describe('SchedulesDialog prefill', () => {
     await settle();
 
     // The plugin playbook is offered in the picker (no project-only filter).
-    const option = Array.from(container.querySelectorAll<HTMLOptionElement>('.schedule-form-field select option'))
-      .find((o) => o.value === 'plug.md');
-    expect(option).toBeTruthy();
-
-    selectPlaybook('plug.md');
+    const option = playbookOption('Plugin Job');
+    selectPlaybook(option.value);
     await act(async () => { await Promise.resolve(); });
     await submitCreate();
 
@@ -395,13 +443,144 @@ describe('SchedulesDialog prefill', () => {
     });
     await settle();
     // No prefill → user picks the playbook manually.
-    selectPlaybook('triage.md');
+    selectPlaybook(playbookOption('Triage').value);
     await act(async () => { await Promise.resolve(); });
 
     await submitCreate();
 
     expect(onCreated).toHaveBeenCalledTimes(1);
     expect(onCreated).toHaveBeenCalledWith(false);
+  });
+
+  test('preserves exact scoped source and parameters across async catalog loading', async () => {
+    const createBodies: Array<{
+      cwd?: string;
+      playbook?: {
+        path?: string;
+        scope?: string;
+        sourceCwd?: string;
+        parameters?: Record<string, string>;
+      };
+    }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/playbooks')) {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: 'triage.md', scope: 'project', sourceCwd: '/repo', sourceDigest: 'sha256:project',
+              name: 'Project Triage', description: '', checklist: [], tags: [],
+              parameters: [
+                { name: 'repo', default: 'default/project' },
+                { name: 'label', default: 'project-default' },
+                { name: 'cadence', default: 'weekly' },
+              ],
+            },
+            {
+              id: 'triage.md', scope: 'user', sourceCwd: '/user/playbooks', sourceDigest: 'sha256:user',
+              name: 'User Triage', description: '', checklist: [], tags: [],
+              parameters: [
+                { name: 'repo', default: 'default/user' },
+                { name: 'label', default: 'user-default' },
+                { name: 'cadence', default: 'daily' },
+              ],
+            },
+          ],
+        };
+      }
+      if (url.startsWith('/api/schedules/preview')) {
+        return { ok: true, json: async () => ({ cronDescription: 'Daily at 09:00', nextRuns: [], timezone: 'UTC' }) };
+      }
+      if (url === '/api/schedules' && init?.method === 'POST') {
+        createBodies.push(JSON.parse(init.body as string));
+        return { ok: true, json: async () => ({ id: 'new', name: 'User Triage' }) };
+      }
+      return {
+        ok: true,
+        json: async () => ({
+          revision: 1,
+          schedules: [],
+          status: { timezone: 'UTC', catchUpMode: 'auto', catchUpEnabled: true, schedulerHealthy: true },
+        }),
+      };
+    }));
+
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, {
+        onClose: () => {},
+        prefill: {
+          cwd: '/target/repo',
+          playbookSource: {
+            id: 'triage.md',
+            scope: 'user',
+            sourceCwd: '/user/playbooks',
+            sourceDigest: 'sha256:user',
+          },
+          playbookParameterValues: { repo: 'owner/repo', label: 'priority' },
+          name: 'Configured triage',
+        },
+      }));
+    });
+    await settle();
+
+    expect(playbookOption('User Triage').selected).toBe(true);
+    expect(parameterInput('repo').value).toBe('owner/repo');
+    expect(parameterInput('label').value).toBe('priority');
+    expect(parameterInput('cadence').value).toBe('daily');
+
+    await submitCreate();
+
+    expect(createBodies).toHaveLength(1);
+    expect(createBodies[0]).toMatchObject({
+      cwd: '/target/repo',
+      playbook: {
+        path: 'triage.md',
+        scope: 'user',
+        sourceCwd: '/user/playbooks',
+        parameters: { repo: 'owner/repo', label: 'priority', cadence: 'daily' },
+      },
+    });
+  });
+
+  test('does not substitute a same-id resource when the original source changed', async () => {
+    stubFetch([{
+      id: 'triage.md',
+      name: 'Changed user triage',
+      scope: 'user',
+      sourceCwd: '/user/playbooks',
+      sourceDigest: 'sha256:changed',
+      parameters: [],
+    }]);
+    root = createRoot(container);
+    await act(async () => {
+      root!.render(React.createElement(SchedulesDialog, {
+        onClose: () => {},
+        prefill: {
+          cwd: '/repo',
+          playbookSource: {
+            id: 'triage.md',
+            scope: 'user',
+            sourceCwd: '/user/playbooks',
+            sourceDigest: 'sha256:original',
+          },
+          playbookParameterValues: { repo: 'owner/repo' },
+          name: 'Original triage',
+        },
+      }));
+    });
+    await settle();
+
+    const select = container.querySelector<HTMLSelectElement>('.schedule-form-field select');
+    const save = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent === 'Save Schedule');
+    expect(select?.value).toBe('');
+    expect(save?.disabled).toBe(true);
+    expect(container.querySelector('.schedule-prefill-note')?.textContent).toContain('no longer available');
+
+    selectPlaybook(playbookOption('Changed user triage').value);
+    expect(save?.disabled).toBe(false);
   });
 });
 

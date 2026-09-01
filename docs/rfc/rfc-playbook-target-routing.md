@@ -171,7 +171,12 @@ Launch preparation:
    - If explicit ids conflict, reject rather than silently stamping the wrong project.
 8. Launch with `cwd = effectiveTargetCwd`.
 
-`effectiveTargetCwd` remains the task's runtime cwd. `playbookId` remains the catalog identity. v1 does not persist `playbookSourceCwd` on the task; add that later only if debugging proves it necessary.
+`effectiveTargetCwd` remains the task's runtime cwd. `playbookId` remains the catalog identity.
+
+> **Follow-up (#2887):** Playbook-backed tasks now persist `PlaybookSourceIdentity`
+> (`id`, `scope`, `sourceCwd`, and `sourceDigest`). History-based actions use
+> that identity to avoid binding to a same-ID resource from another scope or a
+> modified file at the same path.
 
 ### Looped Playbooks
 
@@ -290,5 +295,4 @@ A resolver endpoint that checks config, agents, candidates, filesystem existence
 ## Open Questions
 
 - Should a later RFC add explicit playbook frontmatter like `target: selected-project` to hide nonsensical catalog playbooks from project drawers?
-- Should schedules adopt the same split source/target model once UI launches are fixed?
-- Should tasks persist `playbookSourceCwd` for debugging provenance, or is `playbookId` enough for v1?
+- Resolved by #2887: schedules use the same split source/target model, and tasks persist the full playbook source identity.

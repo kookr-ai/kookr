@@ -1,10 +1,10 @@
 import React, { useEffect, useId, useMemo, useState } from 'react';
-import type { AgentSelection, AgentState, Playbook, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
+import type { AgentSelection, AgentState, Playbook, PlaybookSourceIdentity, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
 import { isTerminalTaskStatus } from '../agent-buckets.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
-import { PlaybookSelector } from './PlaybookSelector.js';
+import { PlaybookSelector, playbookSelectionKey } from './PlaybookSelector.js';
 import { PlaybookParameterForm } from './PlaybookParameterForm.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { ConfirmDialog } from './ConfirmDialog.js';
@@ -29,14 +29,23 @@ import {
 
 /**
  * Seed data for opening the dialog straight into a pre-filled create form,
- * e.g. from the task-panel "schedule this playbook" button. `playbookId` is the
- * playbook's relative path (=== `AgentState.playbookId`), which the picker
- * matches on once the project playbook list for `cwd` loads.
+ * e.g. from the task-panel "schedule this playbook" button. The picker matches
+ * the full source identity after its scoped catalog loads. Legacy tasks have no
+ * identity and therefore require an explicit replacement selection.
  */
 export interface SchedulePrefill {
   cwd: string;
-  playbookId: string;
+  /** Exact resource used by the source task. Absent on legacy task records. */
+  playbookSource?: PlaybookSourceIdentity;
+  playbookParameterValues?: Record<string, string>;
   name?: string;
+}
+
+function matchesPlaybookSource(playbook: Playbook, source: PlaybookSourceIdentity): boolean {
+  return playbook.id === source.id
+    && playbook.scope === source.scope
+    && playbook.sourceCwd === source.sourceCwd
+    && playbook.sourceDigest === source.sourceDigest;
 }
 
 /**
@@ -257,21 +266,30 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [showCreate, setShowCreate] = useState(schedules.length === 0 || Boolean(prefill));
-  const [cwd, setCwd] = useState(prefill?.cwd?.trim() || serverCwd);
+  const initialCwd = prefill?.cwd?.trim() || serverCwd;
+  const [cwd, setCwd] = useState(initialCwd);
+  // A project playbook may have been launched into a different target cwd.
+  // Seed discovery from its recorded source; an explicit cwd edit switches the
+  // catalog to the newly-entered directory.
+  const [catalogCwd, setCatalogCwd] = useState(
+    prefill?.playbookSource?.scope === 'project'
+      ? prefill.playbookSource.sourceCwd
+      : initialCwd,
+  );
   const [name, setName] = useState(prefill?.name ?? '');
   const [cron, setCron] = useState('0 9 * * *');
   const cronFieldId = useId();
   const [maxTriggers, setMaxTriggers] = useState('');
   const [playbooks, setPlaybooks] = useState<Playbook[]>([]);
   const [playbooksLoading, setPlaybooksLoading] = useState(false);
-  const [playbookId, setPlaybookId] = useState('');
-  const [parameterValues, setParameterValues] = useState<Record<string, string>>({});
-  // Playbook to pre-select once the project list for `cwd` loads. Cleared after
-  // one attempt so manual edits aren't fought. Null once resolved or absent.
-  const [pendingPlaybookId, setPendingPlaybookId] = useState<string | null>(prefill?.playbookId ?? null);
-  // True after the pending playbook couldn't be matched in the project list
-  // (non-project playbook, or a different source cwd) — drives an inline note.
-  const [prefillUnmatched, setPrefillUnmatched] = useState(false);
+  const [playbookKey, setPlaybookKey] = useState('');
+  const [parameterValues, setParameterValues] = useState<Record<string, string>>(
+    () => ({ ...(prefill?.playbookParameterValues ?? {}) }),
+  );
+  // Exact resource to pre-select once the catalog loads. A prefill without a
+  // source marks a legacy task and deliberately cannot auto-select a winner.
+  const [pendingPrefill, setPendingPrefill] = useState<SchedulePrefill | null>(prefill ?? null);
+  const [prefillUnavailable, setPrefillUnavailable] = useState<'missing-identity' | 'unavailable' | null>(null);
   // Empty string = no pin; fire uses settings.defaultAgentType.
   const [agentType, setAgentType] = useState<AgentSelection | ''>('');
   const [enabled, setEnabled] = useState(true);
@@ -282,8 +300,8 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   const [pendingDelete, setPendingDelete] = useState<ScheduleResponse | null>(null);
   const [rollupsById, setRollupsById] = useState<ReadonlyMap<string, ScheduleRollup>>(() => new Map());
   const selectedPlaybook = useMemo(
-    () => playbooks.find((playbook) => playbook.id === playbookId) ?? null,
-    [playbooks, playbookId],
+    () => playbooks.find((playbook) => playbookSelectionKey(playbook) === playbookKey) ?? null,
+    [playbooks, playbookKey],
   );
 
   useEffect(() => {
@@ -309,16 +327,16 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
     let cancelled = false;
     // Clear any stale "couldn't pre-select" note when the directory changes —
     // the prefill was evaluated against the previous cwd, not this one.
-    setPrefillUnmatched(false);
-    if (!cwd.trim()) {
+    setPrefillUnavailable(null);
+    if (!catalogCwd.trim()) {
       setPlaybooks([]);
-      setPlaybookId('');
+      setPlaybookKey('');
       setPlaybooksLoading(false);
       return;
     }
     const timeout = setTimeout(() => {
       setPlaybooksLoading(true);
-      listPlaybooksForCwd(cwd.trim())
+      listPlaybooksForCwd(catalogCwd.trim(), cwd.trim())
         .then((items: Playbook[]) => {
           if (cancelled) return;
           // Schedules now resolve from an explicit pinned scope (project | user
@@ -328,23 +346,34 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
           // Resolve a one-shot prefill against the freshly-loaded list. Done here
           // (not in a separate effect) so we never evaluate against the initial
           // empty list before the fetch returns and falsely report "unmatched".
-          setPendingPlaybookId((pending) => {
+          setPendingPrefill((pending) => {
             if (!pending) {
-              setPlaybookId((current) => (current && items.some((item) => item.id === current)) ? current : '');
+              setPlaybookKey((current) => (
+                current && items.some((item) => playbookSelectionKey(item) === current)
+                  ? current
+                  : ''
+              ));
               return null;
             }
-            const matched = items.some((item) => item.id === pending);
-            setPlaybookId(matched ? pending : '');
-            setPrefillUnmatched(!matched);
+            if (!pending.playbookSource) {
+              setPlaybookKey('');
+              setPrefillUnavailable('missing-identity');
+              return null;
+            }
+            const matched = items.find((item) => matchesPlaybookSource(item, pending.playbookSource!));
+            setPlaybookKey(matched ? playbookSelectionKey(matched) : '');
+            setPrefillUnavailable(matched ? null : 'unavailable');
             return null;
           });
         })
         .catch(() => {
           if (cancelled) return;
           setPlaybooks([]);
-          setPlaybookId('');
-          setPendingPlaybookId((pending) => {
-            if (pending) setPrefillUnmatched(true);
+          setPlaybookKey('');
+          setPendingPrefill((pending) => {
+            if (pending) {
+              setPrefillUnavailable(pending.playbookSource ? 'unavailable' : 'missing-identity');
+            }
             return null;
           });
         })
@@ -356,17 +385,19 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
       cancelled = true;
       clearTimeout(timeout);
     };
-  }, [cwd]);
+  }, [catalogCwd, cwd]);
 
   useEffect(() => {
     if (!selectedPlaybook) {
-      setParameterValues({});
+      if (!prefill) setParameterValues({});
       return;
     }
     setParameterValues((prev) => {
       const next: Record<string, string> = {};
       for (const param of selectedPlaybook.parameters) {
-        next[param.name] = prev[param.name] ?? param.default ?? '';
+        next[param.name] = Object.hasOwn(prev, param.name)
+          ? prev[param.name]!
+          : param.default ?? '';
       }
       return next;
     });
@@ -409,6 +440,7 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
           path: selectedPlaybook.id,
           parameters: parameterValues,
           scope: selectedPlaybook.scope,
+          sourceCwd: selectedPlaybook.sourceCwd,
         },
       });
       if (created) {
@@ -508,7 +540,14 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
 
               <label className="schedule-form-field">
                 <span>Working Directory</span>
-                <input value={cwd} onChange={(e) => setCwd(e.target.value)} placeholder={serverCwd} />
+                <input
+                  value={cwd}
+                  onChange={(e) => {
+                    setCwd(e.target.value);
+                    setCatalogCwd(e.target.value);
+                  }}
+                  placeholder={serverCwd}
+                />
                 {fieldErrors.cwd && <span className="schedule-field-error">{fieldErrors.cwd}</span>}
               </label>
 
@@ -551,19 +590,22 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
                 {fieldErrors.maxTriggers && <span className="schedule-field-error">{fieldErrors.maxTriggers}</span>}
               </label>
 
-              <PlaybookSelector playbooks={playbooks} value={playbookId} onChange={setPlaybookId} />
+              <PlaybookSelector playbooks={playbooks} value={playbookKey} onChange={setPlaybookKey} />
             </div>
 
-            {prefillUnmatched && !playbookId && !playbooksLoading && (
+            {prefillUnavailable && !playbookKey && !playbooksLoading && (
               <div className="schedule-preview schedule-prefill-note">
-                Couldn&rsquo;t pre-select{prefill?.name ? <> <strong>{prefill.name}</strong></> : ' that playbook'} under <code>{cwd.trim() || serverCwd}</code>.
-                Pick it from the list below.
+                {prefillUnavailable === 'missing-identity' ? (
+                  <>This legacy task&rsquo;s playbook source was not recorded. Select a replacement before saving.</>
+                ) : (
+                  <>The exact source for{prefill?.name ? <> <strong> {prefill.name}</strong></> : ' this playbook'} is no longer available. Select a replacement before saving.</>
+                )}
               </div>
             )}
 
             {playbooksLoading && <div className="schedule-preview">Loading playbooks…</div>}
-            {!playbooksLoading && playbooks.length === 0 && cwd.trim() && (
-              <div className="schedule-preview">No playbooks found in <code>{cwd}</code>.</div>
+            {!playbooksLoading && playbooks.length === 0 && catalogCwd.trim() && (
+              <div className="schedule-preview">No playbooks found in <code>{catalogCwd}</code>.</div>
             )}
             {fieldErrors.playbook && <div className="schedule-field-error">{fieldErrors.playbook}</div>}
 

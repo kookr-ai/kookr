@@ -71,6 +71,7 @@ export interface MonitorAgentState {
   /** ISO timestamp for the first terminal transition on synthetic terminal rows. */
   finishedAt?: string;
   playbookId?: string;
+  playbookSource?: import('../shared/contracts/playbook.js').PlaybookSourceIdentity;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
   launchPermissionPosture?: TaskLaunchPermissionPosture;

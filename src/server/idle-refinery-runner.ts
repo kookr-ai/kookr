@@ -169,6 +169,8 @@ export class IdleRefineryRunner {
         ...(launch.criteria ? { criteria: launch.criteria } : {}),
         ...(launch.name ? { name: launch.name } : {}),
         playbookId: launch.playbookId,
+        playbookSource: launch.playbookSource,
+        playbookParameterValues: launch.playbookParameterValues,
         // NOT spawn-budget-exempt (unlike 'schedule'): this is the cap the issue
         // asks for. Also marks the launch autonomous for the kill-switch.
         launchSource: 'idle-refinery',

@@ -463,6 +463,12 @@ describe('ProviderResetScheduler', () => {
       criteria: 'PR merged',
       name: 'Fix 42',
       playbookId: 'pb-implement',
+      playbookSource: {
+        id: 'pb-implement',
+        scope: 'plugin' as const,
+        sourceCwd: '/plugin/playbooks',
+        sourceDigest: 'sha256:original',
+      },
       playbookParameterValues: { issue: '42' },
       projectId: 'github.com/kookr-ai/kookr',
       agentType: 'claude-code' as const,
@@ -496,6 +502,7 @@ describe('ProviderResetScheduler', () => {
       expect(opts.criteria).toBe('PR merged');
       expect(opts.name).toBe('Fix 42');
       expect(opts.playbookId).toBe('pb-implement');
+      expect(opts.playbookSource).toEqual(src.playbookSource);
       expect(opts.playbookParameterValues).toEqual({ issue: '42' });
       expect(opts.projectId).toBe('github.com/kookr-ai/kookr');
       expect(opts.agentType).toBe('claude-code');

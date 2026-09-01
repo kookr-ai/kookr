@@ -84,6 +84,12 @@ Analyze {{repo}} with count {{count}}
       });
 
       expect(launch.playbookParameterValues).toEqual({ repo: 'owner/repo', count: '10' });
+      expect(launch.playbookSource).toEqual({
+        id: 'analyze.md',
+        scope: 'project',
+        sourceCwd: cwd,
+        sourceDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      });
       expect(launch.prompt).toContain('Analyze owner/repo with count 10');
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -943,7 +943,7 @@ describe('ScheduleStore', () => {
     expect(reloaded.list()).toHaveLength(0);
   });
 
-  describe('playbook scope carry-through (R2)', () => {
+  describe('playbook source carry-through (R2, R10.8)', () => {
     it('create stores an explicit scope', () => {
       const schedule = store.create({
         name: 'Plugin Job',
@@ -1003,6 +1003,30 @@ describe('ScheduleStore', () => {
       const reloaded = new ScheduleStore(dir);
       await reloaded.load();
       expect(reloaded.list()[0].playbook.scope).toBe('plugin');
+    });
+
+    it('source cwd survives create, partial update, and persist + reload', async () => {
+      const schedule = store.create({
+        name: 'Split source and target',
+        cron: '0 0 * * *',
+        playbook: {
+          path: 'triage.md',
+          parameters: { repo: 'owner/repo' },
+          scope: 'project',
+          sourceCwd: '/catalog/repo',
+        },
+        cwd: '/target/repo',
+      });
+
+      const updated = store.updateDefinition(schedule.id, {
+        playbook: { path: 'triage.md', parameters: { repo: 'other/repo' } },
+      });
+      expect(updated.playbook.sourceCwd).toBe('/catalog/repo');
+
+      await store.persist();
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      expect(reloaded.get(schedule.id)?.playbook.sourceCwd).toBe('/catalog/repo');
     });
   });
 

@@ -3,6 +3,8 @@ import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../core/playbook-parser.js';
 import { resolveSchedulePlaybookSync } from './schedule-validator.js';
 import { expandConfiguredCwd } from './cwd-paths.js';
+import { playbookScopeDir } from '../core/playbook-paths.js';
+import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 
 /**
  * The playbook the idle-slot idea refinery (issue #2144) spawns: it picks ONE
@@ -18,6 +20,8 @@ export interface ResolvedRefineryLaunch {
   criteria?: string;
   name?: string;
   playbookId: string;
+  playbookSource: PlaybookSourceIdentity;
+  playbookParameterValues: Record<string, string>;
 }
 
 /**
@@ -42,10 +46,16 @@ export async function resolveUmbrellaDecomposeLaunch(
   if (!resolved) return null;
 
   const raw = await readFile(resolved.filePath, 'utf-8');
-  const playbook = parsePlaybook(raw, UMBRELLA_DECOMPOSE_PLAYBOOK_PATH, serverCwd, 'plugin');
+  const sourceCwd = playbookScopeDir('plugin', serverCwd) ?? serverCwd;
+  const playbook = parsePlaybook(raw, UMBRELLA_DECOMPOSE_PLAYBOOK_PATH, sourceCwd, 'plugin');
   // No operator-supplied parameters: apply defaults only. A body with no
   // {{placeholders}} is returned unchanged.
-  const prompt = interpolateParameters(playbook.body, playbook.parameters, {});
+  const playbookParameterValues = Object.fromEntries(
+    playbook.parameters.flatMap((parameter) => (
+      parameter.default === undefined ? [] : [[parameter.name, parameter.default]]
+    )),
+  );
+  const prompt = interpolateParameters(playbook.body, playbook.parameters, playbookParameterValues);
   const criteria = playbook.checklist.length > 0 ? playbook.checklist.join('\n') : undefined;
   const cwd = expandConfiguredCwd(playbook.cwd ?? serverCwd);
 
@@ -55,5 +65,12 @@ export async function resolveUmbrellaDecomposeLaunch(
     ...(criteria ? { criteria } : {}),
     ...(playbook.name ? { name: playbook.name } : {}),
     playbookId: UMBRELLA_DECOMPOSE_PLAYBOOK_PATH,
+    playbookSource: {
+      id: UMBRELLA_DECOMPOSE_PLAYBOOK_PATH,
+      scope: 'plugin',
+      sourceCwd: playbook.sourceCwd,
+      sourceDigest: playbook.sourceDigest,
+    },
+    playbookParameterValues,
   };
 }

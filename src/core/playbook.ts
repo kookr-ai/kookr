@@ -13,6 +13,7 @@ export type {
   PlaybookProbe,
   EffectivePlaybookLoop,
   PlaybookScope,
+  PlaybookSourceIdentity,
   LaunchDependency,
 } from '../shared/contracts/playbook.js';
 

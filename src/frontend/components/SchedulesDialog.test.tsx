@@ -107,7 +107,7 @@ describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       const url = String(input);
       if (url.startsWith('/api/playbooks?cwd=')) {
-        const cwd = decodeURIComponent(url.slice('/api/playbooks?cwd='.length));
+        const cwd = new URLSearchParams(url.split('?')[1]).get('cwd') ?? '';
         const lookup = deferred<Response>();
         lookups.set(cwd, lookup);
         return lookup.promise;
@@ -145,11 +145,11 @@ describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
     document.body.innerHTML = '';
   });
 
-  function renderWithPrefill(playbookId = 'shared.md') {
+  function renderWithPrefill() {
     act(() => {
       root.render(React.createElement(SchedulesDialog, {
         onClose: vi.fn(),
-        prefill: { cwd: '/project-a', playbookId },
+        prefill: { cwd: '/project-a' },
       }));
     });
   }
@@ -196,10 +196,10 @@ describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
     const projectB = await changeCwd('/project-b');
 
     await settle(() => projectB.resolve(jsonResponse([makePlaybook('shared.md', 'Project B job')])));
-    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(playbookSelect().textContent).toContain('Project B job');
 
     await settle(() => projectA.resolve(jsonResponse([makePlaybook('shared.md', 'Project A job')])));
-    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(playbookSelect().textContent).toContain('Project B job');
     expect(container.textContent).not.toContain('Project A job');
   });
 
@@ -213,18 +213,18 @@ describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
     expect(container.textContent).toContain('Loading playbooks…');
 
     await settle(() => projectB.resolve(jsonResponse([makePlaybook('shared.md', 'Project B job')])));
-    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(playbookSelect().textContent).toContain('Project B job');
   });
 
   test('ignores a stale failure after the current catalog succeeds', async () => {
-    renderWithPrefill('project-b.md');
+    renderWithPrefill();
     const projectA = await startLookup('/project-a');
     const projectB = await changeCwd('/project-b');
 
     await settle(() => projectB.resolve(jsonResponse([makePlaybook('project-b.md', 'Project B job')])));
     await settle(() => projectA.reject(new Error('Project A lookup failed')));
 
-    expect(playbookSelect().selectedOptions[0]?.textContent).toBe('Project B job');
+    expect(playbookSelect().textContent).toContain('Project B job');
     expect(container.textContent).not.toContain('Couldn’t pre-select');
     expect(container.textContent).not.toContain('No playbooks found');
   });

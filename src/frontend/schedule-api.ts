@@ -28,6 +28,8 @@ export interface CreateScheduleRequest {
     parameters: Record<string, string>;
     /** Pinned tier for the selected playbook (project | user | plugin). */
     scope?: PlaybookScope;
+    /** Project catalog cwd used to resolve this resource, if distinct from task cwd. */
+    sourceCwd?: string;
   };
 }
 
@@ -41,8 +43,11 @@ export async function listScheduleRollups(): Promise<ScheduleRollup[]> {
   return Array.isArray(body.rollups) ? body.rollups : [];
 }
 
-export async function listPlaybooksForCwd(cwd: string): Promise<Playbook[]> {
-  return requestJson<Playbook[]>(`/api/playbooks?cwd=${encodeURIComponent(cwd)}`);
+export async function listPlaybooksForCwd(cwd: string, targetCwd?: string): Promise<Playbook[]> {
+  const targetQuery = targetCwd === undefined
+    ? ''
+    : `&targetCwd=${encodeURIComponent(targetCwd)}`;
+  return requestJson<Playbook[]>(`/api/playbooks?cwd=${encodeURIComponent(cwd)}${targetQuery}`);
 }
 
 export async function previewScheduleCron(cron: string): Promise<SchedulePreviewResponse | null> {

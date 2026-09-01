@@ -274,7 +274,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
               {
                 playbookPath: schedule.playbook.path,
                 parameterValues: schedule.playbook.parameters,
-                cwd: schedule.cwd,
+                playbookSourceCwd: schedule.playbook.sourceCwd ?? schedule.cwd,
+                taskTargetCwd: schedule.cwd,
+                taskTargetCwdExplicit: schedule.playbook.sourceCwd !== undefined,
                 ...(schedule.playbook.scope ? { scope: schedule.playbook.scope } : {}),
                 agentType: schedule.agentType,
                 launchSource: 'schedule',

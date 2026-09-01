@@ -58,6 +58,18 @@ describe('schedule api client', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/playbooks?cwd=%2Frepo%20with%20spaces', undefined);
   });
 
+  test('loads a source catalog using a distinct encoded task target', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, json: async () => [] }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listPlaybooksForCwd('/catalog repo', '/target repo');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/playbooks?cwd=%2Fcatalog%20repo&targetCwd=%2Ftarget%20repo',
+      undefined,
+    );
+  });
+
   test('previews schedule cron and returns null for validation failures', async () => {
     const preview = { cronDescription: 'Daily', nextRuns: [], timezone: 'UTC' };
     const fetchMock = vi

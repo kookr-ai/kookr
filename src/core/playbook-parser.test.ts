@@ -215,6 +215,14 @@ Ship it.
     expect(pb.sourceCwd).toBe('/opt/kookr-toolkit/playbooks');
   });
 
+  test('fingerprints the exact playbook content for task source identity', () => {
+    const original = parsePlaybook(MINIMAL_PLAYBOOK, 'simple.md', '/project');
+    const changed = parsePlaybook(`${MINIMAL_PLAYBOOK}\nChanged instructions.`, 'simple.md', '/project');
+
+    expect(original.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(changed.sourceDigest).not.toBe(original.sourceDigest);
+  });
+
   test('parses inline repo-tags frontmatter', () => {
     const content = `---
 name: Sample

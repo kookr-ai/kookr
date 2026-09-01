@@ -81,7 +81,14 @@ export function crossTierResolutionHint(
     if (scope === current) continue;
     let ok = false;
     try {
-      ok = probe(schedule.playbook.path, scope, schedule.cwd);
+      // A project-tier fallback belongs to the task target unless the schedule
+      // itself came from a project catalog. User/plugin directories are global,
+      // so their resolvers ignore this cwd; retaining sourceCwd still reflects
+      // the schedule's original catalog for those probes.
+      const probeCwd = scope === 'project' && current !== 'project'
+        ? schedule.cwd
+        : (schedule.playbook.sourceCwd ?? schedule.cwd);
+      ok = probe(schedule.playbook.path, scope, probeCwd);
     } catch {
       ok = false;
     }

@@ -11,6 +11,7 @@ import type { AgentStatus, Anomaly, TaskStatus, WorktreeHealth } from '../../cor
 import { normalizeTerminalWorktreeHealth } from '../../core/worktree-health.js';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import type { TaskPriority } from '../../shared/contracts/task.js';
+import type { PlaybookSourceIdentity } from '../../shared/contracts/playbook.js';
 
 interface SessionSnapshotMeta {
   task: Task;
@@ -23,6 +24,7 @@ interface SessionSnapshotMeta {
   taskStatus: TaskStatus;
   sessionStatus?: AgentStatus | 'completed' | 'aborted';
   playbookId?: string;
+  playbookSource?: PlaybookSourceIdentity;
   playbookParameterValues?: Record<string, string>;
   launchHealthSummary?: TaskLaunchHealthSummary;
   launchPermissionPosture?: NonNullable<Task['metadata']>['launchPermissionPosture'];
@@ -146,6 +148,7 @@ export function buildSnapshotProjection(deps: {
         taskStatus: task.status,
         sessionStatus: session.lastStatus,
         playbookId: task.playbookId,
+        playbookSource: task.playbookSource,
         playbookParameterValues: task.playbookParameterValues,
         launchHealthSummary: task.launchHealthSummary,
         launchPermissionPosture: task.metadata?.launchPermissionPosture,
@@ -272,6 +275,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.agentType = meta.agentType;
   state.startedAt = meta.createdAt.toISOString();
   state.playbookId = meta.playbookId;
+  state.playbookSource = meta.playbookSource;
   state.playbookParameterValues = meta.playbookParameterValues;
   state.launchHealthSummary = meta.launchHealthSummary;
   state.launchPermissionPosture = meta.launchPermissionPosture;
@@ -325,6 +329,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     agentType: task.agentType,
     startedAt: task.createdAt.toISOString(),
     playbookId: task.playbookId,
+    playbookSource: task.playbookSource,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
     launchPermissionPosture: task.metadata?.launchPermissionPosture,
@@ -359,6 +364,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     startedAt: task.createdAt.toISOString(),
     finishedAt,
     playbookId: task.playbookId,
+    playbookSource: task.playbookSource,
     playbookParameterValues: task.playbookParameterValues,
     launchHealthSummary: task.launchHealthSummary,
     launchPermissionPosture: task.metadata?.launchPermissionPosture,

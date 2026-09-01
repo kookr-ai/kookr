@@ -172,6 +172,55 @@ describe('ScheduleValidator (tier-aware resolution)', () => {
       }));
       expect(launch.playbookId).toBe('plug.md');
     });
+
+    it('resolves a project playbook from its source cwd while preserving a distinct task cwd', async () => {
+      const targetCwd = join(root, 'target');
+      await mkdir(targetCwd, { recursive: true });
+      await writeFile(join(projectCwd, '.kookr', 'playbooks', 'parameterized.md'), `---
+name: Parameterized
+parameters:
+  - name: repo
+    required: true
+---
+
+Review {{repo}}.
+`);
+
+      const launch = await validator.resolveLaunch(makeSchedule({
+        cwd: targetCwd,
+        playbook: {
+          path: 'parameterized.md',
+          parameters: { repo: 'owner/repo' },
+          scope: 'project',
+          sourceCwd: projectCwd,
+        },
+      }));
+
+      expect(launch).toMatchObject({
+        prompt: expect.stringContaining('Review owner/repo.'),
+        cwd: targetCwd,
+        playbookId: 'parameterized.md',
+        playbookParameterValues: { repo: 'owner/repo' },
+        playbookSource: {
+          id: 'parameterized.md',
+          scope: 'project',
+          sourceCwd: projectCwd,
+          sourceDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        },
+      });
+
+      await expect(validator.validateCreate({
+        name: 'Configured review',
+        cron: '0 9 * * *',
+        cwd: targetCwd,
+        playbook: {
+          path: 'parameterized.md',
+          parameters: { repo: 'owner/repo' },
+          scope: 'project',
+          sourceCwd: projectCwd,
+        },
+      })).resolves.toBeUndefined();
+    });
   });
 
   describe('validate / runtime parity (R6)', () => {

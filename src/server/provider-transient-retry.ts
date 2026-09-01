@@ -78,6 +78,7 @@ export function createProviderTransientRetryHandler(
       ...(original.criteria ? { criteria: original.criteria } : {}),
       ...(original.name ? { name: original.name } : {}),
       ...(original.playbookId ? { playbookId: original.playbookId } : {}),
+      ...(original.playbookSource ? { playbookSource: structuredClone(original.playbookSource) } : {}),
       ...(original.playbookParameterValues ? { playbookParameterValues: original.playbookParameterValues } : {}),
       ...((intent.intent.projectId ?? original.projectId)
         ? { projectId: intent.intent.projectId ?? original.projectId }

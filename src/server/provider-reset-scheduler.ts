@@ -44,6 +44,7 @@ import { claimKeyString, type ClaimKey } from '../core/issue-claim-types.js';
 import type { AgentType } from '../shared/contracts/agent-types.js';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
 import type { TaskLaunchIntent } from '../shared/contracts/task.js';
+import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
 
 /** Default per-window resume budget (token-bucket capacity). */
@@ -109,6 +110,7 @@ export interface ProviderResumeSource {
   criteria?: string;
   name?: string;
   playbookId?: string;
+  playbookSource?: PlaybookSourceIdentity;
   playbookParameterValues?: Record<string, string>;
   projectId?: string;
   agentType?: AgentType;
@@ -144,6 +146,9 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
     ...(task.criteria ? { criteria: task.criteria } : {}),
     ...(task.name ? { name: task.name } : {}),
     ...(task.playbookId ? { playbookId: task.playbookId } : {}),
+    ...(task.playbookSource
+      ? { playbookSource: structuredClone(task.playbookSource) }
+      : {}),
     // Detach from the source record (issue #2413): callers may pass a live
     // store ref (non-cloning views), and this LaunchOpts is retained by the
     // scheduler until the provider reset — potentially days.

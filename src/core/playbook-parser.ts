@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Playbook, EffectivePlaybookLoop, LaunchDependency, PlaybookParameter, PlaybookParameterOption, PlaybookProbe, PlaybookScope } from './playbook.js';
 import { LAUNCH_DEPENDENCIES } from './playbook.js';
 import {
@@ -67,7 +68,7 @@ export function parsePlaybook(
   relativePath: string,
   sourceCwd: string,
   scope: PlaybookScope = 'project',
-): Playbook {
+): Playbook & { sourceDigest: string } {
   const { frontmatter, body } = extractFrontmatter(content);
   const meta = parseFrontmatter(frontmatter);
 
@@ -111,6 +112,7 @@ export function parsePlaybook(
     ...(typeof meta.cwd === 'string' && meta.cwd ? { cwd: meta.cwd } : {}),
     ...(dependencies.length > 0 ? { dependencies } : {}),
     sourceCwd,
+    sourceDigest: `sha256:${createHash('sha256').update(content).digest('hex')}`,
     ...(repoTags.length > 0 ? { repoTags } : {}),
   };
 }

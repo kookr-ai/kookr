@@ -54,16 +54,21 @@ export async function preparePlaybookList(cwd: string): Promise<PlaybookListResu
 }
 
 /**
- * Discover the catalog entries that can execute in `cwd`'s repository.
+ * Discover catalog entries from `cwd` that can execute in the target repository.
  *
  * An unpinned playbook is portable and remains visible everywhere. A playbook
- * with frontmatter `cwd:` belongs to that cwd's repository, so showing it in a
- * different project is misleading: selecting it would silently replace the
- * project target. Repository identity (rather than path equality) keeps pins
- * visible across alternate checkouts and worktrees of the same repository.
+ * with frontmatter `cwd:` belongs to that pinned repository, so showing it for
+ * a different task target is misleading: selecting it would silently replace
+ * the target. `options.targetCwd` supplies the task target when it differs from
+ * the catalog source `cwd`; otherwise `cwd` serves both roles. Repository
+ * identity (rather than path equality) keeps pins visible across alternate
+ * checkouts and worktrees of the same repository.
  */
-export async function discoverApplicablePlaybooks(cwd: string): Promise<Playbook[]> {
-  const playbooks = await discoverPlaybooks(cwd);
+export async function discoverApplicablePlaybooks(
+  cwd: string,
+  options: { includeShadowed?: boolean; targetCwd?: string } = {},
+): Promise<Playbook[]> {
+  const playbooks = await discoverPlaybooks(cwd, { includeShadowed: options.includeShadowed });
   const pinnedCwds = new Set(
     playbooks.flatMap((playbook) => (
       playbook.cwd?.trim() ? [expandConfiguredCwd(playbook.cwd.trim())] : []
@@ -71,7 +76,7 @@ export async function discoverApplicablePlaybooks(cwd: string): Promise<Playbook
   );
   if (pinnedCwds.size === 0) return playbooks;
 
-  const targetProjectId = await getProjectId(expandConfiguredCwd(cwd));
+  const targetProjectId = await getProjectId(expandConfiguredCwd(options.targetCwd ?? cwd));
   const pinnedProjectIds = new Map(
     await Promise.all(
       [...pinnedCwds].map(async (pinnedCwd) => [pinnedCwd, await getProjectId(pinnedCwd)] as const),

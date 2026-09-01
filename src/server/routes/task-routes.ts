@@ -1332,7 +1332,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
   app.get('/api/playbooks', async (c) => {
     try {
       const cwd = c.req.query('cwd') ?? serverCwd;
-      const playbooks = await discoverApplicablePlaybooks(cwd);
+      const targetCwd = c.req.query('targetCwd') ?? cwd;
+      // The REST catalog backs schedule creation. Return every scoped resource
+      // so a task prefill can select its exact source even when another tier
+      // currently shadows the same relative id. The WebSocket launch catalog
+      // keeps ordinary precedence-collapsed discovery.
+      const playbooks = await discoverApplicablePlaybooks(cwd, {
+        includeShadowed: true,
+        targetCwd,
+      });
       return c.json(playbooks);
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);

@@ -105,6 +105,12 @@ export function resolvePlaybookInScope(
 
 > Note: no `probePlaybookScope`. There is deliberately no fallback chain anywhere in the runtime *resolution/launch* path. The only thing that ever *chooses* a scope by searching is the one-time migration script (R4), where a human reviews the result. (A read-only cross-tier probe also exists in `schedule-resolution-alert.ts` to compute the operator hint in the unresolvable-playbook alert — issue #1661 — but it never resolves or launches from the probed tier, so the no-fallback resolution invariant is unaffected.)
 
+> **Follow-up (#2887):** A schedule may now persist `playbook.sourceCwd`
+> separately from its task-execution `cwd`. Resolution uses
+> `schedule.playbook.sourceCwd ?? schedule.cwd`, while the selected scope remains
+> pinned with no cross-tier fallback. Fired tasks record the resolved resource's
+> full source identity, including its content digest.
+
 ### Why single-scope + migration, not runtime backfill
 
 Verified facts driving this:
@@ -135,7 +141,7 @@ async resolveLaunch(schedule: Schedule): Promise<ResolvedScheduleLaunch> {
 }
 ```
 
-Corrections from earlier drafts: `parsePlaybook` receives the **real scope** (its 4th arg is already optional — confirmed via the existing `playbook-launch.ts` call), and `sourceCwd` stays `schedule.cwd`. The previous "sourceCwd = tierDir for param-snapshot stability" justification was **false**: param snapshots are frontend-only (`src/frontend/store/playbook-usage.ts`); the scheduler never uses them and no production reader consumes a scheduled launch's `playbook.sourceCwd`/`scope`.
+Corrections from earlier drafts: `parsePlaybook` receives the **real scope** (its 4th arg is already optional — confirmed via the existing `playbook-launch.ts` call). The original decision kept `sourceCwd` equal to `schedule.cwd`; the #2887 follow-up above supersedes that detail by persisting a distinct catalog source and recording it on fired tasks.
 
 `validateDefinitionFields` makes the identical single-scope substitution (R6), defaulting missing scope to `project`.
 

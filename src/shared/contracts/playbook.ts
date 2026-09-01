@@ -71,6 +71,20 @@ export interface EffectivePlaybookLoop {
  */
 export type PlaybookScope = 'project' | 'user' | 'plugin';
 
+/**
+ * Immutable identity of the exact playbook resource used for a launch.
+ *
+ * The relative id alone is not unique because project, user, and plugin tiers
+ * may each contain the same filename. The digest also distinguishes a later
+ * edit at the same path from the workflow the task actually executed.
+ */
+export interface PlaybookSourceIdentity {
+  id: string;
+  scope: PlaybookScope;
+  sourceCwd: string;
+  sourceDigest: string;
+}
+
 export const LAUNCH_DEPENDENCIES = ['kb', 'evolution-config'] as const;
 export type LaunchDependency = typeof LAUNCH_DEPENDENCIES[number];
 
@@ -135,6 +149,8 @@ export interface Playbook {
   dependencies?: LaunchDependency[];
   /** The CWD where this playbook was discovered */
   sourceCwd: string;
+  /** SHA-256 identity of the source file contents. Present on server-parsed playbooks. */
+  sourceDigest?: string;
   /**
    * Frontmatter `repo-tags`. When non-empty, plugin-tier playbooks are only
    * visible in cwds whose detected repo-tags intersect this set. Ignored for

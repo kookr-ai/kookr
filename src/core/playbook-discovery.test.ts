@@ -299,6 +299,28 @@ describe('discoverPlaybooks', () => {
     }
   });
 
+  test('can return every scoped resource for an exact-identity schedule picker', async () => {
+    const dir = await createTempProject();
+    const pbDir = join(dir, '.kookr', 'playbooks');
+    await mkdir(pbDir, { recursive: true });
+    await writeFile(join(pbDir, 'shared.md'), '---\nname: Project\n---\nP');
+    await writeFile(join(isolatedUserDir, 'shared.md'), '---\nname: User\n---\nU');
+    await writeFile(join(isolatedPluginPlaybooksDir, 'shared.md'), '---\nname: Plugin\n---\nG');
+
+    try {
+      const result = await discoverPlaybooks(dir, { includeShadowed: true });
+
+      expect(result.map((playbook) => `${playbook.id}:${playbook.scope}`)).toEqual([
+        'shared.md:project',
+        'shared.md:user',
+        'shared.md:plugin',
+      ]);
+      expect(new Set(result.map((playbook) => playbook.sourceDigest)).size).toBe(3);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
   test('missing user dir is treated as empty (does not throw)', async () => {
     process.env.KOOKR_USER_PLAYBOOKS_DIR = join(isolatedUserDir, 'does-not-exist');
 

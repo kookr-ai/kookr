@@ -22,7 +22,7 @@ vi.mock('../launch-capability-probe.js', () => ({
   CAPABILITY_PROBES: { kb: mockKbProbe, 'evolution-config': mockEvolutionConfigProbe },
 }));
 
-import { preparePlaybookList } from './playbook-list.js';
+import { discoverApplicablePlaybooks, preparePlaybookList } from './playbook-list.js';
 
 function param(overrides: Partial<PlaybookParameter> = {}): PlaybookParameter {
   return {
@@ -72,6 +72,25 @@ describe('preparePlaybookList', () => {
     expect(mockGetProjectId).toHaveBeenCalledWith('/work/target');
     expect(mockGetProjectId).toHaveBeenCalledWith('/work/target-other-checkout');
     expect(mockGetProjectId).toHaveBeenCalledWith('/work/other');
+  });
+
+  test('filters a source catalog against a distinct task target', async () => {
+    mockDiscoverPlaybooks.mockResolvedValueOnce([
+      playbook([], { id: 'target-pinned.md', cwd: '/work/target' }),
+      playbook([], { id: 'source-pinned.md', cwd: '/work/catalog' }),
+    ]);
+    mockGetProjectId.mockImplementation(async (cwd: string) => (
+      cwd === '/work/target' ? 'github.com/acme/target' : 'github.com/acme/catalog'
+    ));
+
+    const result = await discoverApplicablePlaybooks('/work/catalog', {
+      includeShadowed: true,
+      targetCwd: '/work/target',
+    });
+
+    expect(result.map((item) => item.id)).toEqual(['target-pinned.md']);
+    expect(mockDiscoverPlaybooks).toHaveBeenCalledWith('/work/catalog', { includeShadowed: true });
+    expect(mockGetProjectId).toHaveBeenCalledWith('/work/target');
   });
 
   test('R4b.8 excludes hidden pinned playbooks from capability probes', async () => {
