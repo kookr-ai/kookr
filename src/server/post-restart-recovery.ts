@@ -43,6 +43,24 @@ export interface PostRestartRecoveryDeps {
 /** Default fleet-wide verification concurrency (see {@link PostRestartRecoveryDeps.maxConcurrency}). */
 const DEFAULT_RECOVERY_CONCURRENCY = 8;
 
+/**
+ * Max characters retained from a verifier error message (kookr-ai/kookr#2839).
+ * This summary is served over GET /api/startup-summary, so an unexpected stack
+ * trace or a chatty backend error must not leak unbounded text to operators.
+ * Every stored `errors[].error` is passed through {@link boundRecoveryError}
+ * first: whitespace is collapsed to one line and the message is truncated, so
+ * the field is safe-by-construction wherever the summary is exposed.
+ */
+const MAX_RECOVERY_ERROR_CHARS = 300;
+
+/** Collapse a verifier error to a single bounded line before it is retained/exposed. */
+export function boundRecoveryError(message: string): string {
+  const oneLine = message.replace(/\s+/g, ' ').trim();
+  return oneLine.length > MAX_RECOVERY_ERROR_CHARS
+    ? `${oneLine.slice(0, MAX_RECOVERY_ERROR_CHARS)}… (truncated)`
+    : oneLine;
+}
+
 export interface PostRestartRecoverySummary {
   restartEpoch: number;
   /** One result per session the backend could verify. */
@@ -146,11 +164,11 @@ export async function runPostRestartRecovery(
     } else {
       const reason = outcome.reason;
       if (reason instanceof SessionVerifyError) {
-        summary.errors.push({ sessionId: reason.sessionId, error: reason.detail });
+        summary.errors.push({ sessionId: reason.sessionId, error: boundRecoveryError(reason.detail) });
       } else {
         summary.errors.push({
           sessionId: 'unknown',
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: boundRecoveryError(reason instanceof Error ? reason.message : String(reason)),
         });
       }
     }

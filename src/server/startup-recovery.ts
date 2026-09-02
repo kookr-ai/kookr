@@ -20,7 +20,10 @@ import {
   recoverCrashedSessions,
   type CrashRecoveryResult,
 } from './crash-recovery.js';
-import { runPostRestartRecovery } from './post-restart-recovery.js';
+import {
+  runPostRestartRecovery,
+  type PostRestartRecoverySummary,
+} from './post-restart-recovery.js';
 import type { HookFileWatcher } from './hook-watcher.js';
 import type { HookIngestion } from './hook-ingestion.js';
 import type { ActivityLedger } from '../core/activity-ledger.js';
@@ -77,6 +80,20 @@ interface PromotePendingStartupTasksDeps {
   serverCwd: string;
 }
 
+/**
+ * Payload of {@link runStartupRecoveryPhase}, served verbatim by
+ * GET /api/startup-summary. It is the crash-recovery result plus an optional
+ * `postRestartRecovery` block (kookr-ai/kookr#2839): after an unattended
+ * restart, operators and the dashboard can see whether resumed sessions were
+ * verified or repaired before the node is declared safe to resume work. The
+ * field is omitted on boots that resumed no sessions to verify, and the
+ * crash-recovery fields (`relaunched`/`skipped`/`failed`) are unchanged, so
+ * existing consumers — the health-counts projection included — are unaffected.
+ */
+export interface StartupRecoverySummary extends CrashRecoveryResult {
+  postRestartRecovery?: PostRestartRecoverySummary;
+}
+
 export async function runStartupRecoveryPhase({
   taskStore,
   queue,
@@ -99,8 +116,8 @@ export async function runStartupRecoveryPhase({
   dispositionLedgerPath,
   staleOpenLaunchTaskIds = [],
   getLaunchTimeoutMs,
-}: StartupRecoveryDeps): Promise<CrashRecoveryResult | null> {
-  let startupRecoverySummary: CrashRecoveryResult | null = null;
+}: StartupRecoveryDeps): Promise<StartupRecoverySummary | null> {
+  let startupRecoverySummary: StartupRecoverySummary | null = null;
   // LaunchDependencyAdmission is process-local, while parked launch intents
   // are durable. Rehydrate the degraded side before crash recovery or pending
   // promotion so a clean first check after restart is a bounded half-open
@@ -419,9 +436,10 @@ export async function runStartupRecoveryPhase({
   // each recovered session becomes observably live and self-heal only the attach
   // transport when it does not — the dtach master + agent are preserved. Runs
   // best-effort so a verification hiccup never blocks startup.
+  let postRestartRecoverySummary: PostRestartRecoverySummary | null = null;
   if (reconcileResult.resumed.length > 0) {
     try {
-      await runPostRestartRecovery({
+      postRestartRecoverySummary = await runPostRestartRecovery({
         terminalBackend,
         taskStore,
         resumedSessions: reconcileResult.resumed,
@@ -430,6 +448,18 @@ export async function runStartupRecoveryPhase({
     } catch (err) {
       console.warn('[post-restart-recovery] verification phase failed:', err);
     }
+  }
+
+  // Surface the post-restart transport-verification result on
+  // GET /api/startup-summary (issue #2839). Attach it to the crash-recovery
+  // payload — synthesizing an empty crash-recovery carrier when nothing was
+  // relaunched this boot — so a restart that only resumed already-live sessions
+  // still reports whether they were verified or repaired.
+  if (postRestartRecoverySummary) {
+    startupRecoverySummary = {
+      ...(startupRecoverySummary ?? { relaunched: [], skipped: [], failed: [] }),
+      postRestartRecovery: postRestartRecoverySummary,
+    };
   }
 
   // Ralph startup reconcile. Runs AFTER recoverCrashedSessions so dead-but-relaunched

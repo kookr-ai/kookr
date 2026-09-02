@@ -34,7 +34,7 @@ import type { ScheduleRunner } from '../schedule-runner.js';
 import type { ScheduleService } from '../schedule-service.js';
 import type { LaunchServiceDeps } from '../launch-service.js';
 import type { DiagnosticRunner } from '../diagnostic-runner.js';
-import type { CrashRecoveryResult } from '../crash-recovery.js';
+import type { StartupRecoverySummary } from '../startup-recovery.js';
 import type { RalphCycler } from '../../core/ralph-cycler.js';
 import type { TokenTracker } from '../../core/token-tracker.js';
 import type { RalphLoopService } from '../ralph-loop-service.js';
@@ -685,14 +685,19 @@ export interface RouteDeps {
    */
   timerHealth?: Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'snapshot'>
     & Partial<Pick<import('../../core/timer-health.js').TimerHealthRecorder, 'summary'>>;
-  /** Result of the crash-recovery startup phase; fetched once by the frontend on mount. */
-  startupRecoverySummary?: CrashRecoveryResult | null;
   /**
-   * Live getter for the crash-recovery summary (issue #1721). Preferred over the
-   * static `startupRecoverySummary` field when recovery runs *after* the HTTP
+   * Result of the startup recovery phase; fetched once by the frontend on mount.
+   * Carries the crash-recovery counts plus the optional `postRestartRecovery`
+   * transport-verification block (issue #2839). `StartupRecoverySummary` extends
+   * `CrashRecoveryResult`, so the health-counts projection still reads it.
+   */
+  startupRecoverySummary?: StartupRecoverySummary | null;
+  /**
+   * Live getter for the startup recovery summary (issue #1721). Preferred over
+   * the static `startupRecoverySummary` field when recovery runs *after* the HTTP
    * listener binds — the summary is null until recovery finishes, then fills in.
    */
-  getStartupRecoverySummary?: () => CrashRecoveryResult | null | undefined;
+  getStartupRecoverySummary?: () => StartupRecoverySummary | null | undefined;
   /**
    * Startup-phase readiness gate (issue #1721). Critical on `/api/ready` until
    * post-listen recovery completes; also projected on `/api/health.startup`.

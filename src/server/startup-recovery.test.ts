@@ -221,6 +221,74 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
   });
 });
 
+describe('runStartupRecoveryPhase — post-restart verification summary (issue #2839)', () => {
+  test('attaches the post-restart verification result to the startup summary', async () => {
+    const deps = fakeDeps();
+    // A resumed session and a backend that verifies it as live.
+    const task = deps.taskStore.createTask({ prompt: 'resumed live', cwd: '/repo' });
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: 'resumed-live',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastTurnState: 'running',
+    });
+    const verifyRecoveredSession = vi.fn().mockResolvedValue({
+      sessionId: 'resumed-live',
+      classification: 'recovered-live',
+      restartEpoch: deps.restartEpoch,
+      repairAttempts: 0,
+      identityVerified: true,
+      masterPid: 4242,
+      agentPid: 4243,
+      livenessObserved: true,
+      elapsedMs: 12,
+    });
+    deps.terminalBackend = { verifyRecoveredSession } as unknown as typeof deps.terminalBackend;
+
+    const returned = await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: ['resumed-live'] }),
+    });
+
+    expect(verifyRecoveredSession).toHaveBeenCalledWith(
+      'resumed-live',
+      expect.objectContaining({ expectWorking: true, restartEpoch: deps.restartEpoch }),
+    );
+    // The crash-recovery fields stay valid (nothing to relaunch this boot) and
+    // the post-restart verification counts are surfaced alongside them.
+    expect(returned).toMatchObject({
+      relaunched: [],
+      skipped: [],
+      failed: [],
+      postRestartRecovery: {
+        restartEpoch: deps.restartEpoch,
+        live: 1,
+        idle: 0,
+        repaired: 0,
+        unverified: 0,
+        errors: [],
+      },
+    });
+    expect(returned?.postRestartRecovery?.verified).toHaveLength(1);
+  });
+
+  test('omits the post-restart block when no sessions were resumed', async () => {
+    const deps = fakeDeps();
+    const verifyRecoveredSession = vi.fn();
+    deps.terminalBackend = { verifyRecoveredSession } as unknown as typeof deps.terminalBackend;
+
+    const returned = await runStartupRecoveryPhase({
+      ...deps,
+      reconcileResult: reconciliationResult({ resumed: [] }),
+    });
+
+    expect(verifyRecoveredSession).not.toHaveBeenCalled();
+    // Nothing to relaunch and nothing to verify → the pre-recovery null payload.
+    expect(returned).toBeNull();
+  });
+});
+
 describe('runStartupRecoveryPhase — parked dependency hydration', () => {
   test('reaps the preallocated terminal for an interrupted probe before re-parking it', async () => {
     const deps = fakeDeps();
