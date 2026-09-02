@@ -10,7 +10,13 @@ import {
   saveDeployIntent,
 } from '../store/deploy-intent-storage.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
-import { ConnectionBanner, formatElapsed } from './ConnectionBanner.js';
+import {
+  ConnectionBanner,
+  FRESHNESS_RECHECK_MS,
+  FRESHNESS_STALE_MS,
+  formatElapsed,
+  formatFreshnessAge,
+} from './ConnectionBanner.js';
 
 function syncGlobalStore() {
   const freshState = createKookrStore().getState();
@@ -208,6 +214,132 @@ describe('ConnectionBanner', () => {
     expect(formatElapsed(12_000)).toBe('12s');
     expect(formatElapsed(65_000)).toBe('1m 5s');
     expect(formatElapsed(120_000)).toBe('2m');
+  });
+
+  test('formatFreshnessAge renders coarse, minute-grained labels (#2803)', () => {
+    // Floors below a minute up to 1m so the notice never reads "0m".
+    expect(formatFreshnessAge(FRESHNESS_STALE_MS)).toBe('last update 1m ago');
+    expect(formatFreshnessAge(90_000)).toBe('last update 1m ago');
+    expect(formatFreshnessAge(120_000)).toBe('last update 2m ago');
+    expect(formatFreshnessAge(605_000)).toBe('last update 10m ago');
+  });
+
+  test('renders nothing while connected and the inbound stream is fresh (#2803)', () => {
+    useKookrStore.setState({ connected: true, deploying: false, lastInboundAt: Date.now() });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+
+    expect(container.querySelector('[data-testid="connection-banner"]')).toBeNull();
+  });
+
+  test('renders nothing while connected before any inbound message (initial) (#2803)', () => {
+    useKookrStore.setState({ connected: true, deploying: false, lastInboundAt: null });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+
+    expect(container.querySelector('[data-testid="connection-banner"]')).toBeNull();
+  });
+
+  test('shows a neutral freshness notice when connected but the stream is quiet/stale (#2803)', () => {
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    useKookrStore.setState({
+      connected: true,
+      deploying: false,
+      lastInboundAt: t0 - 125_000,
+    });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+
+    const banner = container.querySelector<HTMLElement>('[data-testid="connection-banner"]');
+    expect(banner).not.toBeNull();
+    expect(banner?.classList.contains('connection-banner--stale')).toBe(true);
+    expect(banner?.getAttribute('role')).toBe('status');
+    expect(banner?.getAttribute('aria-live')).toBe('polite');
+    expect(container.textContent).toContain('Stale');
+    expect(container.textContent).toContain('Dashboard data may be stale');
+    expect(container.textContent).toContain('last update 2m ago');
+    expect(container.textContent).not.toContain('Reconnecting');
+
+    // Coarse age label is aria-hidden so its slow refresh does not re-announce.
+    const elapsed = container.querySelector('.connection-banner__elapsed');
+    expect(elapsed?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  test('flips to the freshness notice via a single one-shot, not a per-second loop (#2803)', () => {
+    vi.useFakeTimers();
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    useKookrStore.setState({ connected: true, deploying: false, lastInboundAt: t0 });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+    // Fresh: hidden, and no interval armed while fresh.
+    expect(container.querySelector('[data-testid="connection-banner"]')).toBeNull();
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+
+    // Well within the threshold: still hidden.
+    act(() => {
+      vi.setSystemTime(t0 + 5_000);
+      vi.advanceTimersByTime(5_000);
+    });
+    expect(container.querySelector('[data-testid="connection-banner"]')).toBeNull();
+
+    // Cross the stale threshold: the one-shot fires and the notice appears.
+    act(() => {
+      vi.setSystemTime(t0 + FRESHNESS_STALE_MS);
+      vi.advanceTimersByTime(FRESHNESS_STALE_MS - 5_000);
+    });
+    expect(container.querySelector('[data-testid="connection-banner"]')).not.toBeNull();
+    expect(container.textContent).toContain('Stale');
+
+    // Once stale, the age label refreshes on the coarse recheck interval — NOT a
+    // per-second loop. Assert the actual period so a regression back to ~1s fails.
+    expect(setIntervalSpy).toHaveBeenCalled();
+    expect(setIntervalSpy).toHaveBeenLastCalledWith(expect.any(Function), FRESHNESS_RECHECK_MS);
+    expect(FRESHNESS_RECHECK_MS).toBeGreaterThanOrEqual(5_000);
+
+    setIntervalSpy.mockRestore();
+  });
+
+  test('lastInboundAt is sticky across a disconnect so the reconnect age survives (#2803)', () => {
+    const stamp = Date.now() - 200_000;
+    useKookrStore.setState({ connected: true, lastInboundAt: stamp });
+
+    act(() => {
+      useKookrStore.getState().setConnected(false);
+    });
+
+    // setConnected must not wipe the last-received time — the reconnect banner
+    // relies on it to report how stale the data is.
+    expect(useKookrStore.getState().lastInboundAt).toBe(stamp);
+  });
+
+  test('shows the last-received age while reconnecting after receiving data (#2803)', () => {
+    vi.useFakeTimers();
+    const t0 = 1_700_000_000_000;
+    vi.setSystemTime(t0);
+    useKookrStore.setState({
+      connected: false,
+      deploying: false,
+      lastInboundAt: t0 - 180_000,
+    });
+
+    act(() => {
+      root.render(React.createElement(ConnectionBanner));
+    });
+
+    expect(container.textContent).toContain('Reconnecting');
+    expect(container.textContent).toContain('last update 3m ago');
   });
 
   test('re-stamp mid-window re-arms the TTL instead of clearing early (#1982)', () => {

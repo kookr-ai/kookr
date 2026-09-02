@@ -134,6 +134,15 @@ export interface TransportSessionSlice {
   agentsHydrated: boolean;
   connected: boolean;
   /**
+   * Epoch-ms timestamp of the last valid inbound WebSocket message, or `null`
+   * before any has arrived. Advanced only by well-formed, typed messages
+   * (malformed frames are dropped before this is written), so ConnectionBanner
+   * can surface a coarse "last update Xm ago" freshness state — distinguishing a
+   * quiet-but-healthy stream from one that is silently stalled (#2803). Sticky
+   * across a disconnect so the reconnect banner can report how stale the data is.
+   */
+  lastInboundAt: number | null;
+  /**
    * True while a production redeploy is in flight (dashboard Deploy button or
    * `/api/deploy/status` reported `deploying`). Sticky across the intentional
    * WS blackout (sessionStorage deploy-window, #1982) so ConnectionBanner can
@@ -264,6 +273,12 @@ export interface TransportSessionSlice {
     capabilities?: Partial<Record<LaunchDependency, HostCapability>>,
   ) => void;
   setConnected: (connected: boolean) => void;
+  /**
+   * Record that a valid inbound WebSocket message was just received, stamping
+   * `lastInboundAt`. Called from the transport layer only after a frame parses
+   * to a typed object, so malformed input never refreshes freshness (#2803).
+   */
+  recordInboundReceived: (at?: number) => void;
   /**
    * Mark a production redeploy as in-flight. When `preDeployCommit` is provided
    * it is persisted with the sticky intent so completion can be detected after
