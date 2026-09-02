@@ -1191,7 +1191,7 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     // mergeAfterImplementation=true, or an explicit mergeRequired stamp) and
     // the hook trail shows a PR was opened whose merge is unverified — refuse
     // completion-ready unless a PR-BLOCKER marker is present. Opt-in per task
-    // so ordinary "PR is the review gate" work is unaffected.
+    // so tasks without an explicit merge stamp are unaffected.
     if (body.kind === 'completion_ready' && isMergeRequiredGateEnabled()) {
       const hooksDir = deps.kookrDir
         ? hooksDirFromKookrDir(deps.kookrDir)

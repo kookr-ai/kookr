@@ -3,7 +3,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { applyWorktreeGuardrails } from './worktree-guardrails.js';
+import { promptDeclaresMergeAuthority } from '../core/merge-required.js';
+import {
+  applyWorktreeGuardrails,
+  PREAUTHORIZED_DELIVERY_GATE_SENTENCE,
+} from './worktree-guardrails.js';
 
 function git(cwd: string, ...args: string[]) {
   const env = { ...process.env };
@@ -64,15 +68,19 @@ describe('applyWorktreeGuardrails', () => {
 
       const prompt = await applyWorktreeGuardrails('Implement it.', repoDir, 'pre-authorized');
 
-      expect(prompt).toContain(
-        'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL.',
-      );
-      expect(prompt).toContain('If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle.');
-      expect(prompt).toContain('EXPLICITLY instructs you to merge the PR');
-      expect(prompt).toContain('do NOT grant merge authority on their own');
+      expect(prompt).toContain(PREAUTHORIZED_DELIVERY_GATE_SENTENCE);
+      expect(prompt).toContain("for the operator's own repositories, merge after local verification is the default");
+      expect(prompt).toContain('standing CLAUDE.md and repository policy grant this');
+      expect(prompt).toContain('external OSS contribution');
+      expect(prompt).toContain('mergeAfterImplementation=false');
+      expect(prompt).not.toContain('do NOT grant merge authority on their own');
+      expect(prompt).not.toContain('EXPLICITLY instructs you to merge the PR');
       expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
       expect(prompt).toContain('git worktree add');
       expect(prompt).toContain('Do NOT commit to main');
+      // OSS playbooks share this preamble; the merge-required 409 gate must
+      // stay opt-in via TERMINAL-STATE CONTRACT / mergeAfterImplementation=true.
+      expect(promptDeclaresMergeAuthority(PREAUTHORIZED_DELIVERY_GATE_SENTENCE)).toBe(false);
       // The escape hatch for a brief that did not survive delivery (#2977).
       // It lives in the preamble precisely so it reaches an agent whose prompt
       // was damaged, which makes its presence load-bearing, not decorative.

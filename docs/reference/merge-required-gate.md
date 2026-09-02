@@ -27,7 +27,10 @@ The gate is off unless the task declares merge authority via any of:
 3. Prompt text: `TERMINAL-STATE CONTRACT (mergeAfterImplementation=true)` (or
    the same policy language near “merge authority” / `mergedAt`)
 
-Ordinary “PR is the review gate” tasks are unaffected.
+Tasks without one of those stamps are unaffected. The pre-authorized launch
+preamble may still instruct the agent to merge the operator's own PRs; this
+gate only enforces playbook/contract opt-in so OSS playbooks are not forced
+to merge upstream.
 
 ## Evidence
 

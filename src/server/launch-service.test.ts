@@ -2907,6 +2907,9 @@ describe('launchTask', () => {
     expect(result.task.prompt).toContain('finish the full delivery cycle without asking again');
     expect(result.task.prompt).toContain('commit, push the branch, open or update the PR, and report the PR URL');
     expect(result.task.prompt).toContain('If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle.');
+    expect(result.task.prompt).toContain("for the operator's own repositories, merge after local verification is the default");
+    expect(result.task.prompt).toContain('standing CLAUDE.md and repository policy grant this');
+    expect(result.task.prompt).not.toContain('do NOT grant merge authority on their own');
     expect(result.task.prompt).toContain("If the work does not actually satisfy the task, do NOT open a PR; stop and report what's wrong instead.");
     expect(result.task.prompt).not.toContain('ask the user whether to push the branch and open a PR');
     expect(result.task.deliveryAuthorization).toBe('pre-authorized');
