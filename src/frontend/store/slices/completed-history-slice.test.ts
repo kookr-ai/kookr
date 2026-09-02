@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../../shared/protocol.js';
 import type { ArchivedTaskRecordJson, TaskArchivePage } from '../../completed-history.js';
 import { COMPLETED_HISTORY_PAGE_LIMIT, mergeCompletedHistory } from '../../completed-history.js';
+import { createCompletedHistorySlice } from './completed-history-slice.js';
 import { createKookrStore } from '../useStore.js';
 
 function archiveRecord(id: string, lastActivityMs: number): ArchivedTaskRecordJson {
@@ -57,6 +58,7 @@ describe('completed-history slice (issue #2760)', () => {
   });
 
   test('does not request the archive until loadOlderHistory runs', () => {
+    expect(typeof createCompletedHistorySlice).toBe('function');
     const spy = stubArchivePages([archivePage([])]);
     createKookrStore();
     expect(spy).not.toHaveBeenCalled();
