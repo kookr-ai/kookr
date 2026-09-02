@@ -74,4 +74,15 @@ describe('resource status helpers', () => {
 
     expect(details).toContain('Data dir disk 7.5 GB free / 93 GB total');
   });
+
+  test('surfaces an explicit reason line when the sample is a stale fallback (issue #2771)', () => {
+    const fresh = formatResourceDetails(status(), Date.parse('2026-05-13T00:00:05.000Z'));
+    expect(fresh.some((line) => line.startsWith('Showing last good sample'))).toBe(false);
+
+    const stale = formatResourceDetails(
+      status({ stale: { reason: 'sampler_error', lastGoodAt: '2026-05-13T00:00:00.000Z', ageMs: 5_000 } }),
+      Date.parse('2026-05-13T00:00:05.000Z'),
+    );
+    expect(stale).toContain('Showing last good sample — current sampler probe failed (sampler_error)');
+  });
 });

@@ -170,6 +170,32 @@ export interface SystemResourceStatus {
     processHeapTotalBytes: number | null;
   };
   unavailable: ResourceUnavailableReason[];
+  /**
+   * Present only when this tick's sampler call threw and the service fell back
+   * to the last successful sample's values instead of blanking every signal to
+   * null (issue #2771). Absent on a fresh sample.
+   *
+   * When present, every `host`/`server` metric field carries the LAST GOOD
+   * value (not null), so the dashboard and snapshot-reading consumers keep
+   * seeing real pressure evidence during a transient sampler outage. The
+   * values are last-known, not current — `ageMs` says how old they are.
+   * Sampler-derived alert rules are HELD while this is set (they neither fire
+   * nor clear), so a failed sample cannot cause a false recovery or a false
+   * breach; normal evaluation resumes on the next fresh sample.
+   */
+  stale?: {
+    /** Why the current sample was unusable. Matches the `unavailable` reason vocabulary. */
+    reason: 'sampler_error';
+    /**
+     * ISO timestamp of the last successful sample whose values are shown here.
+     * Equals `sampledAt` on a stale tick — the service freezes `sampledAt` to
+     * the last good sample rather than advancing it, so consumers that key off
+     * `sampledAt` hold instead of treating held-over values as fresh.
+     */
+    lastGoodAt: string;
+    /** Milliseconds elapsed between `lastGoodAt` and this failed tick (staleness age). */
+    ageMs: number;
+  };
 }
 
 export interface DrainStatusSnapshot {

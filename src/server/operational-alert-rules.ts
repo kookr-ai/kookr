@@ -195,6 +195,21 @@ export class OperationalAlertEvaluator {
     const messages: ServerMessage[] = [];
     const config = this.getConfig();
     const sustainSamples = Math.max(1, Math.trunc(config.sustainSamples));
+    // Issue #2771: on a stale fallback tick the host/server fields carry last
+    // GOOD values (for display), not a fresh reading. Treat every
+    // sampler-derived rule exactly like the "no data" case — hold both the
+    // breach counter and any active alert — so a failed sample can neither
+    // spuriously clear a firing alert nor advance one to a false breach.
+    //
+    // Persistence-, provider-, and circuit-breaker-health rules read from
+    // separate live getters, so they keep RUNNING below. Note one seam: the
+    // circuit-breaker and provider duration rules derive "now" from
+    // `status.sampledAt`, which the service freezes to the last good sample
+    // while stale. So their elapsed-duration thresholds (breaker-open ms,
+    // provider-paused ms) stop advancing during a sampler outage — they
+    // under-count rather than over-count (fail-safe: they cannot false-fire or
+    // false-clear on their own state) and resume on the next fresh sample.
+    const staleSample = status.stale != null;
     for (const rule of this.rules) {
       const threshold = rule.threshold(config);
       const state = this.states.get(rule.metric);
@@ -210,10 +225,11 @@ export class OperationalAlertEvaluator {
       state.configKey = configKey;
       const activeRule: ActiveRuleDefinition = { ...rule, threshold };
 
-      const value = rule.read(status);
+      const value = staleSample ? null : rule.read(status);
       if (value === null || !Number.isFinite(value)) {
-        // No data: leave both the counter and any active alert untouched so
-        // transient sampler errors neither fire nor clear.
+        // No data (or a stale fallback tick): leave both the counter and any
+        // active alert untouched so transient sampler errors neither fire nor
+        // clear.
         continue;
       }
 
@@ -265,7 +281,10 @@ export class OperationalAlertEvaluator {
     }
     state.configKey = configKey;
 
-    const value = status.server.processRssBytes;
+    // Issue #2771: a stale fallback tick carries last-good RSS (for display),
+    // not a fresh reading — hold, like the "no data" case below.
+    const staleSample = status.stale != null;
+    const value = staleSample ? null : status.server.processRssBytes;
     if (value === null || !Number.isFinite(value)) {
       // No data: leave both the counter and any active alert untouched so
       // transient sampler errors neither fire nor clear.
@@ -310,8 +329,12 @@ export class OperationalAlertEvaluator {
     state.configKey = configKey;
 
     const disk = status.host.dataDirectory;
-    const freePercent = disk.diskFreePercent;
-    const freeBytes = disk.diskFreeBytes;
+    // Issue #2771: on a stale fallback tick the disk fields carry last-good
+    // values, not a fresh probe — force "no data" so the rule holds instead of
+    // breaching or recovering on stale readings.
+    const staleSample = status.stale != null;
+    const freePercent = staleSample ? null : disk.diskFreePercent;
+    const freeBytes = staleSample ? null : disk.diskFreeBytes;
     const percentEnabled = percentThreshold > 0;
     const bytesEnabled = bytesThreshold > 0;
     const percentKnown = freePercent !== null && Number.isFinite(freePercent);

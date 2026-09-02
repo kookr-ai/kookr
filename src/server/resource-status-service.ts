@@ -99,6 +99,15 @@ export class ResourceStatusService {
   private timeout: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private latest: SystemResourceStatus | null = null;
+  /**
+   * Last raw sample the sampler returned WITHOUT throwing (issue #2771). Kept so
+   * a later throwing tick can fall back to these values (marked stale) instead
+   * of blanking every signal to null. Stored pre-circuit-breaker-attach, so it
+   * never carries a previous tick's breaker snapshots into a stale fallback.
+   */
+  private lastGoodSample: SystemResourceStatus | null = null;
+  /** `nowMs()` captured when {@link lastGoodSample} was recorded; drives staleness age. */
+  private lastGoodAtMs: number | null = null;
   private nextAlertHistoryId = 1;
   private readonly operationalAlertHistory: OperationalAlertHistoryEntry[] = [];
   private readonly activeOperationalAlerts = new Map<string, OperationalAlertHistoryEntry>();
@@ -172,9 +181,16 @@ export class ResourceStatusService {
       // #1725: feed the SAME sampled event-loop delay p95 that just went out on
       // `status` to the dashboard WS load-shed gate. Isolated so a throwing
       // consumer can never take down the resource-status tick loop.
+      //
+      // #2771: on a stale fallback tick the delay field carries a held-over
+      // value, not a fresh measurement. Feed `null` (not the stale value) so
+      // the load-shed gate's "missing data must never trigger shedding"
+      // contract holds — otherwise a stale reading would advance the gate's
+      // shed/recover streaks and engage or clear shedding during a sampler
+      // outage. This mirrors the hold the alert evaluator applies on `stale`.
       if (this.onEventLoopDelaySample) {
         try {
-          this.onEventLoopDelaySample(status.server.eventLoopDelayP95Ms);
+          this.onEventLoopDelaySample(status.stale ? null : status.server.eventLoopDelayP95Ms);
         } catch (err) {
           this.logger.warn('[resource-status] onEventLoopDelaySample threw; continuing', err);
         }
@@ -300,15 +316,52 @@ export class ResourceStatusService {
   }
 
   private takeSample(expectedAtMs: number | null): SystemResourceStatus {
+    let sampled: SystemResourceStatus;
     try {
-      return this.sampler.sample(expectedAtMs);
+      sampled = this.sampler.sample(expectedAtMs);
     } catch (err) {
       if (!this.samplerErrorLogged) {
         this.samplerErrorLogged = true;
         this.logger.warn('[resource-status] sampler failed:', err instanceof Error ? err.message : String(err));
       }
+      return this.buildFailedSampleStatus();
+    }
+    // Fresh sample succeeded: remember it as the last good values so a later
+    // throwing tick can preserve them (issue #2771).
+    this.lastGoodSample = sampled;
+    this.lastGoodAtMs = this.nowMs();
+    return sampled;
+  }
+
+  /**
+   * Build the status broadcast for a tick whose sampler call threw (issue
+   * #2771). When a previous sample succeeded, return those last good values
+   * with a `stale` marker (explicit age + `sampler_error` reason) so pressure
+   * evidence stays visible and consumers reading the snapshot fields keep the
+   * signal rather than a wall of nulls. With no prior good sample (the sampler
+   * has never succeeded), fall back to the original all-null unavailable
+   * snapshot — there is nothing to preserve.
+   */
+  private buildFailedSampleStatus(): SystemResourceStatus {
+    const lastGood = this.lastGoodSample;
+    if (lastGood === null || this.lastGoodAtMs === null) {
       return createUnavailableResourceStatus(this.nowIso());
     }
+    const ageMs = Math.max(0, this.nowMs() - this.lastGoodAtMs);
+    // Present the last good sample verbatim (its own `sampledAt`, gap, and drift
+    // stay honest for when it was actually measured) plus a `stale` marker. A
+    // frozen `sampledAt` is deliberate: consumers that key off it hold rather
+    // than double-count — the disk-admission tracker (#1992) dedupes a repeated
+    // `sampledAt`, and the dashboard's "Sampled N ago" line simply keeps ageing,
+    // so staleness is visible without any consumer treating stale data as fresh.
+    return {
+      ...lastGood,
+      stale: {
+        reason: 'sampler_error',
+        lastGoodAt: lastGood.sampledAt,
+        ageMs,
+      },
+    };
   }
 
   private attachCircuitBreakerSnapshots(status: SystemResourceStatus): SystemResourceStatus {

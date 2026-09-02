@@ -102,6 +102,143 @@ describe('ResourceStatusService', () => {
     }
   });
 
+  test('retains the last good sample values with a stale marker when a later tick throws (issue #2771)', () => {
+    vi.useFakeTimers();
+    try {
+      let now = 1_000;
+      let throwNext = false;
+      const broadcasts: ServerMessage[] = [];
+      const service = new ResourceStatusService({
+        sampler: {
+          start: vi.fn(),
+          stop: vi.fn(),
+          sample: vi.fn(() => {
+            if (throwNext) throw new Error('stat failed');
+            return status();
+          }),
+        },
+        broadcastToAll: (msg) => broadcasts.push(msg),
+        nowMs: () => now,
+        nowIso: () => new Date(now).toISOString(),
+        intervalMs: 2_000,
+      });
+
+      // First tick succeeds and is remembered as the last good sample.
+      service.start();
+      expect(service.getLatest()?.stale).toBeUndefined();
+
+      // Second tick throws: values are preserved (not blanked), with an
+      // explicit stale age and the sampler_error reason.
+      throwNext = true;
+      now = 6_000;
+      vi.advanceTimersByTime(2_000);
+
+      const stale = service.getLatest();
+      expect(stale?.stale).toEqual({
+        reason: 'sampler_error',
+        lastGoodAt: status().sampledAt,
+        ageMs: 5_000,
+      });
+      // Pressure evidence stays visible instead of collapsing to null.
+      expect(stale?.host.memoryUsedPercent).toBe(50);
+      expect(stale?.host.dataDirectory.diskFreePercent).toBe(90);
+      expect(stale?.server.processRssBytes).toBe(100);
+      // sampledAt stays frozen at the last good sample so consumers that key
+      // off it hold (the dashboard "Sampled N ago" line simply keeps ageing);
+      // the sampler_error reason lives on `stale`, so `unavailable` carries the
+      // preserved sample's own gaps verbatim, unchanged.
+      expect(stale?.sampledAt).toBe(status().sampledAt);
+      expect(stale?.unavailable).toEqual(status().unavailable);
+      expect(stale?.unavailable).not.toContain('sampler_error');
+
+      // A later successful sample clears the stale marker and restores fresh data.
+      throwNext = false;
+      now = 8_000;
+      vi.advanceTimersByTime(2_000);
+      expect(service.getLatest()?.stale).toBeUndefined();
+      expect(service.getLatest()?.unavailable).toEqual(status().unavailable);
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('feeds null (not the held-over value) to onEventLoopDelaySample on a stale tick (issue #2771)', () => {
+    vi.useFakeTimers();
+    try {
+      let now = 1_000;
+      let throwNext = false;
+      const goodSample: SystemResourceStatus = {
+        ...status(),
+        server: { ...status().server, eventLoopDelayP95Ms: 250 },
+      };
+      const delaySamples: (number | null)[] = [];
+      const service = new ResourceStatusService({
+        sampler: {
+          start: vi.fn(),
+          stop: vi.fn(),
+          sample: vi.fn(() => {
+            if (throwNext) throw new Error('stat failed');
+            return goodSample;
+          }),
+        },
+        broadcastToAll: vi.fn(),
+        onEventLoopDelaySample: (delayMs) => delaySamples.push(delayMs),
+        nowMs: () => now,
+        nowIso: () => new Date(now).toISOString(),
+        intervalMs: 2_000,
+      });
+
+      // Fresh tick forwards the real measurement.
+      service.start();
+      expect(delaySamples).toEqual([250]);
+
+      // Stale tick must forward null so the WS load-shed gate holds its streaks
+      // instead of shedding/recovering on a held-over 250 ms reading.
+      throwNext = true;
+      now = 3_000;
+      vi.advanceTimersByTime(2_000);
+      expect(delaySamples).toEqual([250, null]);
+      // The broadcast snapshot still shows the held-over value for display.
+      expect(service.getLatest()?.server.eventLoopDelayP95Ms).toBe(250);
+      expect(service.getLatest()?.stale?.reason).toBe('sampler_error');
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('falls back to an all-null unavailable snapshot when the first-ever sample throws (no last good)', () => {
+    vi.useFakeTimers();
+    try {
+      const service = new ResourceStatusService({
+        sampler: {
+          start: vi.fn(),
+          stop: vi.fn(),
+          sample: vi.fn(() => {
+            throw new Error('boom');
+          }),
+        },
+        broadcastToAll: vi.fn(),
+        nowIso: () => '2026-05-13T00:00:00.000Z',
+        logger: { warn: vi.fn() },
+      });
+
+      service.start();
+
+      // With nothing to preserve, keep the original all-null unavailable shape.
+      expect(service.getLatest()?.stale).toBeUndefined();
+      expect(service.getLatest()?.unavailable).toEqual(['sampler_error']);
+      expect(service.getLatest()?.host.memoryUsedPercent).toBeNull();
+
+      service.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('broadcasts evaluator alerts after the resourceStatus message on each tick', () => {
     vi.useFakeTimers();
     try {
