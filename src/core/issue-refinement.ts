@@ -44,7 +44,9 @@ export interface RefinementHandoffInput {
 function firstPayloadLine(raw: string): string {
   for (const line of raw.split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    // `#2884` is an issue-number selector, not a comment. Only skip `#` lines
+    // that are not a hash-prefixed integer (optional leading `#` then digits).
+    if (trimmed === '' || (trimmed.startsWith('#') && !/^#\d/.test(trimmed))) continue;
     return trimmed;
   }
   return '';
@@ -170,6 +172,34 @@ function hasRemainingBudget(limit: TotalLimit, processed: number): boolean {
  * launch stays on the current task until `batchSize` successful dispositions,
  * then either spawns a successor or stops.
  */
+export type RefinementSweepLabel =
+  | 'done'
+  | 'in-flight'
+  | 'blocked'
+  | 'pending'
+  | 'stale-open-but-shipped';
+
+export interface RefinementSweepIssue {
+  state: 'open' | 'closed';
+  claimedByOtherTask: boolean;
+  matchingMarker: boolean;
+  hardBlocked: boolean;
+  /** Out-of-band evidence the proposal was already refined, without a matching marker. */
+  refinedOutOfBand: boolean;
+}
+
+/**
+ * Read-only end-of-chain classification. Never mutates GitHub; `stale-open-but-shipped`
+ * is a drift report for a human, not a license to rewrite the issue.
+ */
+export function classifyRefinementSweep(issue: RefinementSweepIssue): RefinementSweepLabel {
+  if (issue.claimedByOtherTask) return 'in-flight';
+  if (issue.hardBlocked) return 'blocked';
+  if (issue.state === 'closed' || issue.matchingMarker) return 'done';
+  if (issue.refinedOutOfBand) return 'stale-open-but-shipped';
+  return 'pending';
+}
+
 export function decideRefinementHandoff(input: RefinementHandoffInput): RefinementHandoff {
   if (input.hardBlocker) return 'stop-blocker';
   if (!hasRemainingBudget(input.limit, input.totalProcessedAfter)) return 'stop-limit';

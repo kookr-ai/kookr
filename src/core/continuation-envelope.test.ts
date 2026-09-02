@@ -602,6 +602,28 @@ describe('batch progress on continuation envelopes', () => {
     expect(renderContinuationPrompt(next)).toContain('remaining budget: 5');
   });
 
+  test('omitting progress preserves existing counters', () => {
+    const current = envelope({
+      cursor: {
+        ...envelope().cursor,
+        processedCount: 4,
+        remainingBudget: 6,
+      },
+    });
+    const next = advanceEnvelope(current, {
+      selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
+      remainingUnits: ['#110'],
+      cursorWasStale: false,
+      sourceRevision: 'sha-def',
+      parentMissing: false,
+      notes: [],
+    });
+    expect(next.cursor.processedCount).toBe(4);
+    expect(next.cursor.remainingBudget).toBe(6);
+  });
+
   test('a budget-only advance is content-distinct even with the same next unit', () => {
     const current = envelope({
       cursor: {

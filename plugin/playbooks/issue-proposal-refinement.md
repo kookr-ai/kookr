@@ -162,9 +162,10 @@ raw parameters into executable shell source.
 - Resolve `{{repo}}` to `REPO`. If blank, normalize `git remote get-url origin`
   to `owner/name`. Require exactly one non-empty `owner/name` with no whitespace.
   Ambiguous repository resolution fails closed.
-- Trim `{{issueSelector}}` to `SELECTOR`. Its first non-blank, non-comment line
-  is either blank, a comma/whitespace-separated list whose tokens all match
-  `^#?[0-9]+$`, or a GitHub filter. A filter is rejected when any
+- Trim `{{issueSelector}}` to `SELECTOR`. Its first non-blank line that is not a
+  `# comment` (hash-prefixed issue numbers such as `#2884` are payload, not
+  comments) is either blank, a comma/whitespace-separated list whose tokens all
+  match `^#?[0-9]+$`, or a GitHub filter. A filter is rejected when any
   whitespace-separated token is exactly one of these reserved fields:
   `repo: state: is: archived: linked:`. State is always supplied separately as
   open. Reject malformed selectors and fail closed.
@@ -446,10 +447,12 @@ At a terminal Ralph boundary, write a clear `STOP:` line to
 `$BATCH_CWD/.proposal-refinement-stop`.
 
 **End-of-chain sweep (when not spawning).** Re-derive the full candidate list
-and emit a one-line-per-issue summary of `done` (matching marker or closed
-under policy), `in-flight` (claimed by another task), `blocked`, or `pending`.
-If a matching marker is missing but the issue was clearly refined out of band,
-label it `stale-open-but-shipped` and do not silently "fix" the drift.
+and classify each issue with `classifyRefinementSweep` in
+`src/core/issue-refinement.ts`: `done` (matching marker or closed under
+policy), `in-flight` (claimed by another task), `blocked`, `pending`, or
+`stale-open-but-shipped` when out-of-band refinement is visible without a
+matching marker. Emit a one-line-per-issue summary. Do not silently "fix" the
+drift.
 
 Do not spawn a successor when the total limit is exhausted, the selector is
 exhausted, self-continuation is disabled, or a hard blocker was recorded. State

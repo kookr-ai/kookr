@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import {
+  classifyRefinementSweep,
   decideRefinementHandoff,
   filterBurnedCandidates,
   isTrustedIssueAuthor,
@@ -23,6 +24,8 @@ describe('parseIssueSelector', () => {
       kind: 'list',
       numbers: [50, 565, 566],
     });
+    expect(parseIssueSelector('#2884')).toEqual({ kind: 'list', numbers: [2884] });
+    expect(parseIssueSelector('#42, #43')).toEqual({ kind: 'list', numbers: [42, 43] });
   });
 
   test('treats a non-numeric line as a GitHub filter', () => {
@@ -38,11 +41,20 @@ describe('parseIssueSelector', () => {
     expect(() => parseIssueSelector('is: issue')).toThrow(/is:/);
   });
 
-  test('rejects a mixed list that is neither all numbers nor a clean filter', () => {
+  test('treats a mixed number+token line as a filter', () => {
     expect(parseIssueSelector('50 label:bug')).toEqual({
       kind: 'filter',
       query: '50 label:bug',
     });
+  });
+
+  test('rejects a non-positive issue number in list shape', () => {
+    expect(() => parseIssueSelector('#0')).toThrow(/non-positive/);
+  });
+
+  test('rejects archived: and linked: reserved filter tokens', () => {
+    expect(() => parseIssueSelector('archived: true')).toThrow(/archived:/);
+    expect(() => parseIssueSelector('linked: pr')).toThrow(/linked:/);
   });
 });
 
@@ -172,6 +184,51 @@ describe('decideRefinementHandoff', () => {
       batchCompletedAfter: 3,
       selfContinuation: false,
     })).toBe('stop-no-continuation');
+  });
+
+  test('classifies end-of-chain sweep labels without mutating', () => {
+    expect(classifyRefinementSweep({
+      state: 'open',
+      claimedByOtherTask: true,
+      matchingMarker: false,
+      hardBlocked: false,
+      refinedOutOfBand: false,
+    })).toBe('in-flight');
+    expect(classifyRefinementSweep({
+      state: 'open',
+      claimedByOtherTask: false,
+      matchingMarker: false,
+      hardBlocked: true,
+      refinedOutOfBand: false,
+    })).toBe('blocked');
+    expect(classifyRefinementSweep({
+      state: 'closed',
+      claimedByOtherTask: false,
+      matchingMarker: false,
+      hardBlocked: false,
+      refinedOutOfBand: false,
+    })).toBe('done');
+    expect(classifyRefinementSweep({
+      state: 'open',
+      claimedByOtherTask: false,
+      matchingMarker: true,
+      hardBlocked: false,
+      refinedOutOfBand: false,
+    })).toBe('done');
+    expect(classifyRefinementSweep({
+      state: 'open',
+      claimedByOtherTask: false,
+      matchingMarker: false,
+      hardBlocked: false,
+      refinedOutOfBand: true,
+    })).toBe('stale-open-but-shipped');
+    expect(classifyRefinementSweep({
+      state: 'open',
+      claimedByOtherTask: false,
+      matchingMarker: false,
+      hardBlocked: false,
+      refinedOutOfBand: false,
+    })).toBe('pending');
   });
 
   test('remaining budget is omitted for an unbounded limit', () => {

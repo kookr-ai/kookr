@@ -81,12 +81,30 @@ describe('issue-proposal-refinement playbook', () => {
   });
 
   test('uses the repo-scoped issue claim API and releases only owned claims', () => {
-    expect(playbook.body).toContain('/api/issue-claims?repo=$REPO&number=$TARGET');
-    expect(playbook.body).toContain('-X POST "$KOOKR_API_BASE_URL/api/issue-claims"');
-    expect(playbook.body).toContain('-X DELETE "$KOOKR_API_BASE_URL/api/issue-claims"');
-    expect(playbook.body).toContain('CLAIMS_API_AVAILABLE');
-    expect(playbook.body).toContain('CLAIM_OWNED');
-    expect(playbook.body).toContain('claim_contended');
+    const phase2 = playbook.body.slice(
+      playbook.body.indexOf('## Phase 2: Acquire the issue claim'),
+      playbook.body.indexOf('## Phase 3: Inspect only enough evidence'),
+    );
+    const release = playbook.body.slice(
+      playbook.body.indexOf('## Phase 6: Release the claim'),
+      playbook.body.indexOf('## Phase 7: Post-task lesson decision'),
+    );
+    const claimBody = '-d "{\\"repo\\":\\"$REPO\\",\\"number\\":$TARGET,\\"taskId\\":\\"$KOOKR_TASK_ID\\"}"';
+
+    expect(phase2).toContain('$KOOKR_API_BASE_URL/api/issue-claims?repo=$REPO&number=$TARGET');
+    expect(phase2).toContain('-X POST "$KOOKR_API_BASE_URL/api/issue-claims"');
+    expect(phase2).toContain(claimBody);
+    expect(phase2).toContain('CLAIMS_API_AVAILABLE=0');
+    expect(phase2).toContain('CLAIM_OWNED=0');
+    expect(phase2).toContain('claim_contended');
+    expect(phase2).toContain('claims_api_unavailable');
+    expect(phase2).toMatch(/A 404\s+probe permits claimless operation/);
+    expect(phase2).toContain('verdict:"stalled"');
+    expect(release).toContain('CLAIMS_API_AVAILABLE:-0');
+    expect(release).toContain('CLAIM_OWNED:-0');
+    expect(release).toContain('-X DELETE "$KOOKR_API_BASE_URL/api/issue-claims"');
+    expect(release).toContain(claimBody);
+    expect(playbook.body).not.toContain('/api/issue-claims/acquire');
   });
 
   test('defines revision markers that make matching bodies ineligible and edited bodies eligible', () => {
@@ -159,8 +177,9 @@ describe('issue-proposal-refinement playbook', () => {
 
   test('reconciles the chain with an end-of-chain sweep instead of silent drift fixes', () => {
     expect(playbook.body).toContain('End-of-chain sweep');
+    expect(playbook.body).toContain('classifyRefinementSweep');
     expect(playbook.body).toContain('stale-open-but-shipped');
-    expect(playbook.body).toMatch(/do not silently "fix" the drift/i);
+    expect(playbook.body).toMatch(/Do not silently ["“]?fix["”]? the\s+drift/i);
   });
 
   test('keeps target repository inspection read-only and creates no worktree', () => {
