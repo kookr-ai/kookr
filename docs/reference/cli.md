@@ -1,6 +1,6 @@
 # CLI Reference
 
-Kookr exposes one public command-line entry point, `kookr`, with subcommands for launching tasks and inspecting a running instance.
+Kookr exposes one public command-line entry point, `kookr`, with subcommands for launching tasks and inspecting a running instance. One further command, `kookr-self-report`, is not installed globally — the launcher puts it on a spawned agent's PATH.
 
 Install them globally from a checkout:
 
@@ -196,6 +196,21 @@ kookr spawn --prompt-file /tmp/prompt.md
 ```
 
 This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
+
+## `kookr-self-report`
+
+On the PATH of every Kookr-spawned agent (alongside the `kb` shim). It exists for the case where the agent cannot do its job because of something upstream of the work itself — most often a task prompt that arrived damaged.
+
+```bash
+kookr-self-report "the prompt stops mid-sentence after 'not in'"
+kookr-self-report --kind environment_broken "the worktree has no origin remote"
+```
+
+`--kind` is one of `prompt_unusable` (the default), `environment_broken`, or `other`. Identity and endpoint come from the session environment (`KOOKR_AGENT_ID`, `KOOKR_API_BASE_URL`), so there is nothing to look up or quote.
+
+The report becomes an operational alert: broadcast to the dashboard live and appended to `operational-alerts.jsonl`. It is evidence for an operator, not a remediation trigger — see `POST /api/self-report` in [the API reference](api.md).
+
+Exit codes: `0` recorded, `1` the server was unreachable or refused the report, `2` bad usage (missing detail, unknown `--kind`, or not running inside a Kookr session).
 
 ## `kookr signal`
 

@@ -694,6 +694,27 @@ Escalation (issue #1702): escalations route to an owner-read control-room feed a
 
 The re-escalation heartbeat interval is configurable via `KOOKR_ENV_BLOCKER_HEARTBEAT_MS` (default 3600000; `0` disables the sweep — the TTL, not the tick, governs re-escalation cadence).
 
+### Agent self-report (issue #2977)
+
+A launched agent that cannot do its job because of something upstream of the work itself — a task prompt that arrived truncated, a checkout that is not usable — has no way to say so: it can only guess at the task or stall. This endpoint turns that observation into an operational alert on the same channel every detector uses: broadcast to the dashboard, spooled to the operator-signal outbox (Discord/Telegram) when one is configured, folded into the ops-status card, and appended to `operational-alerts.jsonl` for the incident record.
+
+Read reports back from that JSONL. `GET /api/admin/operational-alerts` serves the resource-status service's in-memory history, which self-reports do not feed, so it will not list them.
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/self-report` | Record an agent's report about its own run (`{agentId, kind, detail}`); returns `202 {recorded: true}`. `kind` is one of `prompt_unusable`, `environment_broken`, `other`; `detail` is free text capped at 2000 characters |
+
+Agents call this through the `kookr-self-report` shim on their PATH rather than by hand:
+
+```bash
+kookr-self-report "the prompt stops mid-sentence after 'not in'"
+kookr-self-report --kind environment_broken "the worktree has no origin remote"
+```
+
+The shim reads `KOOKR_AGENT_ID` and `KOOKR_API_BASE_URL` from the session environment, so there is nothing to look up or quote. The launch guardrail preamble tells every Kookr task to use it instead of guessing at a damaged brief.
+
+Reports are **evidence, not a trigger**. Nothing is auto-remediated from an agent's own claim about its prompt: one confused agent should not be able to start unattended work on the codebase. An operator — or a scheduled sweeper reading the alert log — decides what to do.
+
 ## Supervisor Surface
 
 Read-only diagnostics plus the mutating verbs a supervising agent (or an

@@ -28,9 +28,11 @@ export const JSON_SPAWN_PAYLOAD_PROMPT_NO_NAME = `{
 /**
  * Task 447580f6: the `userPrompt` itself began with the worktree-guardrail
  * preamble — a caller re-spawned by pasting an already-guarded prompt back in,
- * so both the name and the displayed prompt led with the boilerplate. This is
- * the current preamble shape produced by `applyWorktreeGuardrails`, including
- * the "When an investigation…" bullet that the earlier strip regex missed.
+ * so both the name and the displayed prompt led with the boilerplate. This is a
+ * frozen historical sample of the preamble, including the "When an
+ * investigation…" bullet that the earlier strip regex missed — the live
+ * preamble has since gained bullets this sample does not carry, and the strip
+ * regex is structural, so the sample does not need to track it.
  */
 export const GUARDRAIL_PREFIXED_USER_PROMPT = `You are currently in the main checkout \`/path/to/repo\` on branch \`main\`. Do NOT commit to main or in this checkout — every Kookr task must make tracked-file changes in a fresh git worktree of its own, not in any pre-existing checkout (the main repo, the production runtime worktree, or any sibling worktree spawned for unrelated work).
 - Refresh the remote base first: \`git fetch origin 'main'\`.

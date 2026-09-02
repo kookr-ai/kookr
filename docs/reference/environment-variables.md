@@ -162,7 +162,7 @@ not user configuration knobs.
 | `KOOKR_PIPELINE_BATCH_KICK` | unset (off) | `1`/`true`/`yes`/`on` to enable | Master enable for pipeline-starvation **batch re-entry** (RFC overnight-throughput PR4 / #1715). When on, a product `blocked-empty` that skips scout spawn because recent eligible ideation already exists (`followOnAction=batch_kick_only`), or a completing starvation idea-scout, can launch a capacity-gated `parallel-issue-batch` for that repo instead of waiting for the next fixed cron. Concurrent single-flight + 30m cooldown apply. **Off by default** — flip on after deploy review (`pnpm prod:update` then set in prod `.env`). Audit: `pipeline_starvation_batch_kick` in `~/.kookr/audit.jsonl`. Health: `pipelineStarvation` block may show `lastBatchKickAt`. |
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
-| `KOOKR_AGENT_ID` | Not injected yet (reserved) | Session id string | Optional session-id hint read by `kookr issue claim` to stamp the claiming session (RFC rfc-issue-ownership-lock). Harmless when unset; adapters may inject it in a later phase. |
+| `KOOKR_AGENT_ID` | Injected at launch from the terminal session name | Session id string | Stamps the claiming session for `kookr issue claim` (RFC rfc-issue-ownership-lock), and identifies the reporter for `kookr-self-report`, which refuses to run without it (exit 2). |
 
 ## CLI Tools
 
