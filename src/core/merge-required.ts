@@ -12,7 +12,11 @@
  *  2. When authority is set and the hook trail shows a PR was opened whose
  *     merge is unverified, `completion_ready` is refused with HTTP 409 /
  *     `merge_required` — unless a `PR-BLOCKER:` marker is in the trail.
- *  3. Ordinary "PR is the review gate" tasks are unaffected.
+ *  3. Tasks without an explicit mergeAfterImplementation=true / mergeRequired
+ *     stamp are unaffected. The pre-authorized preamble may still tell the
+ *     agent to merge operator-owned PRs; this gate only enforces
+ *     playbook/contract opt-in so OSS playbooks are not forced to merge
+ *     upstream.
  *
  * Detection reuses {@link extractShellCommandFromHookLine} / hook-log scanning
  * from `lesson-decision.ts`.

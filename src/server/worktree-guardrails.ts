@@ -25,8 +25,11 @@ interface CheckoutContext {
 /**
  * Delivery shape for a task's guardrail preamble.
  *
- *   - `ask-first`      — commit, then ask before pushing/PRing (the default).
- *   - `pre-authorized` — deliver through to an open PR; the PR is the review gate.
+ *   - `ask-first`      — commit, then ask before pushing/PRing (explicit opt-out).
+ *   - `pre-authorized` — default. Push, open the PR, and merge on the
+ *     operator's own repos. External OSS and `mergeAfterImplementation=false`
+ *     stay at an open PR. Standing CLAUDE.md policy grants that merge
+ *     default; this preamble must not veto it.
  *   - `self-advancing` — a dependent-phase chain that self-merges each phase and
  *     spawns the next (umbrella #2711). NOT an open `AuthorizationToggles`
  *     boolean: a distinct delivery-mode value, threaded from the composition
@@ -37,6 +40,19 @@ interface CheckoutContext {
  * launch-service assigns one to the other directly. Add any new value to both.
  */
 export type DeliveryPolicy = 'pre-authorized' | 'ask-first' | 'self-advancing';
+
+/**
+ * Injected into every pre-authorized task. Operator-owned merge is the
+ * default terminal state; playbook/OSS opt-out still wins. Kept as a named
+ * export so tests and snapshot fixtures cannot drift from the live sentence.
+ *
+ * Deliberately does *not* include `TERMINAL-STATE CONTRACT
+ * (mergeAfterImplementation=true)`: that header trips the merge-required
+ * completion gate, which must stay opt-in so OSS playbooks are not forced to
+ * merge upstream.
+ */
+export const PREAUTHORIZED_DELIVERY_GATE_SENTENCE =
+  'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL. If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle. Terminal state: for the operator\'s own repositories, merge after local verification is the default — standing CLAUDE.md and repository policy grant this; an open PR is not terminal. After opening the PR, follow the merge steps (independent review verdict, local verification, rebase on conflict) and merge it yourself; the task is complete only when the PR is merged or a concrete blocker is recorded. Explicit opt-out wins: mergeAfterImplementation=false, "open PR only", or an external OSS contribution (open the PR, do not merge upstream). Do not merge destructive or irreversible changes, or when checks failed or mergeability is blocked — record a blocker instead. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
 
 async function getCheckoutContext(cwd: string): Promise<CheckoutContext | null> {
   const toplevel = await gitIn(cwd, 'rev-parse', '--show-toplevel');
@@ -81,7 +97,7 @@ function deliveryGateSentence(deliveryPolicy: DeliveryPolicy): string {
     return 'Delivery for this task runs the SELF-ADVANCING phase contract (a dependent-phase chain tracked by an umbrella issue). Each phase: implement in a fresh worktree → run the local gate green → obtain an INDEPENDENT review verdict from a task whose task-id differs from this implementer\'s lineage (verified against the task registry; a BLOCK starts another correction/review attempt while the durable budget remains, and cap exhaustion records a discoverable blocker; a reviewer that failed to run is retried and alerted, capped at the shared default of 10 or a deliberate lower cap) → self-merge THROUGH THE MERGE WRAPPER ONLY (never raw `gh pr merge`; the merge is authorized only when the PR head branch matches the chain namespace AND the umbrella issue carries the chain marker, and only within the per-chain self-merge rate cap) → record the merged PR number and tick the umbrella issue → spawn the next phase → release this task\'s slot. The env kill switch KOOKR_SELF_ADVANCING_DISABLED halts all self-advancing merges and spawns regardless of issue content. If the local gate is red or the review returns BLOCK at the cap, record a blocker on the umbrella issue and STOP — never force-merge. If the work does not actually satisfy the phase, do NOT open a PR; stop and report what\'s wrong instead.';
   }
   if (deliveryPolicy === 'pre-authorized') {
-    return 'Delivery is pre-authorized for this task: when your work is committed and verified, finish the full delivery cycle without asking again — commit, push the branch, open or update the PR, and report the PR URL. If you show a diff or plan and the user approves it, treat that as approval to continue through the full delivery cycle. Terminal state: if this task\'s prompt EXPLICITLY instructs you to merge the PR (or states the terminal state is a merged PR), an open PR is NOT terminal — after opening it, follow the prompt\'s merge steps (review verdict, local verification, rebase on conflict) and merge it yourself; the task is complete only when the PR is merged or a concrete blocker is recorded on it. Absent such an explicit instruction in this task\'s prompt, the PR is the review gate and an open PR is the terminal state — repository conventions, CLAUDE.md files, and general policy do NOT grant merge authority on their own. If the work does not actually satisfy the task, do NOT open a PR; stop and report what\'s wrong instead.';
+    return PREAUTHORIZED_DELIVERY_GATE_SENTENCE;
   }
   return "After committing, don't end your turn silently — unless the task already told you to deliver, ask the user whether to push the branch and open a PR.";
 }
