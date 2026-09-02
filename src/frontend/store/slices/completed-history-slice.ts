@@ -5,14 +5,12 @@ import {
   COMPLETED_HISTORY_PAGE_LIMIT,
   MAX_EMPTY_ARCHIVE_PAGE_SKIPS,
   archiveErrorMessage,
-  oldestLiveCompletedMs,
 } from '../../completed-history.js';
 
 export function createCompletedHistorySlice(set: StoreSet, get: StoreGet): CompletedHistorySlice {
   return {
     archivedAgents: [],
     archiveNextCursor: null,
-    archiveBeforeMs: null,
     archiveHasMore: true,
     archiveLoading: false,
     archiveError: null,
@@ -33,11 +31,6 @@ export function createCompletedHistorySlice(set: StoreSet, get: StoreGet): Compl
 
       try {
         let cursor = get().archiveNextCursor;
-        let beforeMs = get().archiveBeforeMs;
-        if (beforeMs === null && cursor === null) {
-          beforeMs = oldestLiveCompletedMs(get().agents);
-        }
-
         const accumulated = [...get().archivedAgents];
         // Only skip ids already in the archive slice. Live snapshot overlap is
         // hidden at display time so a row can reappear after it ages out of
@@ -54,7 +47,6 @@ export function createCompletedHistorySlice(set: StoreSet, get: StoreGet): Compl
           const page = await getArchivedTasks({
             limit: COMPLETED_HISTORY_PAGE_LIMIT,
             ...(cursor ? { cursor } : {}),
-            ...(beforeMs !== null ? { before: beforeMs } : {}),
           });
           if (get().archiveRequestId !== requestId) return;
 
@@ -78,7 +70,6 @@ export function createCompletedHistorySlice(set: StoreSet, get: StoreGet): Compl
         set({
           archivedAgents: accumulated,
           archiveNextCursor: nextCursor,
-          archiveBeforeMs: beforeMs,
           archiveHasMore: hasMore,
           archiveLoadedOnce: true,
           archiveLoading: false,

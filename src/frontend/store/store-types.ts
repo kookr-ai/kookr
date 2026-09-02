@@ -820,12 +820,6 @@ export interface CompletedHistorySlice {
   archivedAgents: AgentState[];
   /** Opaque continuation token for the next older page; null at the start or end. */
   archiveNextCursor: string | null;
-  /**
-   * Exclusive `before` bound captured on the first page (oldest live completed
-   * finish time). Reused on later pages so a snapshot refresh cannot shift the
-   * window and duplicate rows.
-   */
-  archiveBeforeMs: number | null;
   /** True until a page arrives with no `nextCursor` (or before the first click). */
   archiveHasMore: boolean;
   archiveLoading: boolean;

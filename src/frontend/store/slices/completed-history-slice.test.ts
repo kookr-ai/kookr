@@ -174,13 +174,12 @@ describe('completed-history slice (issue #2760)', () => {
     expect(store.getState().archiveLoading).toBe(false);
   });
 
-  test('reuses the original before bound after a snapshot refresh', async () => {
+  test('continues from the stored cursor after a snapshot refresh, without a before bound', async () => {
     const spy = stubArchivePages([
       archivePage([archiveRecord('old-1', 1_000)], 'cursor-1'),
       archivePage([archiveRecord('old-2', 500)]),
     ]);
     const store = createKookrStore();
-    const originalBefore = Date.parse('2026-08-01T00:00:00.000Z');
     store.getState().handleSnapshot([{
       agentId: 'done',
       taskId: 'done',
@@ -199,25 +198,9 @@ describe('completed-history slice (issue #2760)', () => {
       finishedAt: '2026-08-20T00:00:00.000Z',
     }]);
     await store.getState().loadOlderHistory();
-    expect(String(spy.mock.calls[1][0])).toContain(`before=${originalBefore}`);
+    expect(String(spy.mock.calls[0][0])).not.toContain('before=');
     expect(String(spy.mock.calls[1][0])).toContain('cursor=cursor-1');
-  });
-
-  test('passes before=oldest live completed on the first page', async () => {
-    const spy = stubArchivePages([archivePage([])]);
-    const store = createKookrStore();
-    store.getState().handleSnapshot([
-      {
-        agentId: 'done',
-        taskId: 'done',
-        events: [],
-        anomaly: null,
-        taskStatus: 'completed',
-        finishedAt: '2026-08-20T00:00:00.000Z',
-      },
-    ]);
-    await store.getState().loadOlderHistory();
-    expect(String(spy.mock.calls[0][0])).toContain(`before=${Date.parse('2026-08-20T00:00:00.000Z')}`);
+    expect(String(spy.mock.calls[1][0])).not.toContain('before=');
   });
 
   test('a second click while loading is ignored', async () => {
