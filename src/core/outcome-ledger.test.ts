@@ -357,6 +357,74 @@ describe('buildOutcomeLedger', () => {
     expect(withProvenance.quality).toEqual(withoutProvenance.quality);
     expect(withProvenance.readiness).toBe(withoutProvenance.readiness);
   });
+
+  describe('previous-window comparison (issue #2784)', () => {
+    const DAY = 24 * HOUR;
+
+    test('reports equal-duration deltas when the previous window has tasks', () => {
+      const tasks = [
+        // Current window [NOW-7d, NOW]: 2 completed, both verified, both 👍.
+        ledgerTask({ id: 'cur-a', status: 'completed', createdAt: new Date(NOW - DAY), completionDigest: verifiedDigest(), completionFeedback: { rating: 'up' }, tokenUsage: usage() }),
+        ledgerTask({ id: 'cur-b', status: 'completed', createdAt: new Date(NOW - 2 * DAY), completionDigest: verifiedDigest(), completionFeedback: { rating: 'up' }, tokenUsage: usage() }),
+        // Previous window [NOW-14d, NOW-7d): 1 completed (verified, 👍), 1 terminated.
+        ledgerTask({ id: 'prev-a', status: 'completed', createdAt: new Date(NOW - 8 * DAY), completionDigest: verifiedDigest(), completionFeedback: { rating: 'up' }, tokenUsage: usage() }),
+        ledgerTask({ id: 'prev-b', status: 'terminated', createdAt: new Date(NOW - 9 * DAY), finishedAt: new Date(NOW - 9 * DAY + 10 * 60 * 1000), tokenUsage: usage() }),
+      ];
+      const response = ledger(tasks);
+
+      // Previous-window tasks never leak into the current-window rollups.
+      expect(response.summary.taskCount).toBe(2);
+      expect(response.comparison.available).toBe(true);
+      if (!response.comparison.available) throw new Error('expected comparison to be available');
+      expect(response.comparison.previousTaskCount).toBe(2);
+      // completion: current 2/2 = 1, previous 1/2 = 0.5.
+      expect(response.comparison.completionRate).toEqual({ current: 1, previous: 0.5, delta: 0.5 });
+      // verification (completed-only) and feedback are unchanged across windows.
+      expect(response.comparison.verificationCoverage).toEqual({ current: 1, previous: 1, delta: 0 });
+      expect(response.comparison.thumbsUpRate).toEqual({ current: 1, previous: 1, delta: 0 });
+      expect(response.comparison.costCoverage).toEqual({ current: 1, previous: 1, delta: 0 });
+      expect(response.comparison.previousWindow.start).toBe(new Date(NOW - 14 * DAY).toISOString());
+      expect(response.comparison.previousWindow.end).toBe(new Date(NOW - 7 * DAY).toISOString());
+    });
+
+    test('the all-time window has no bounded baseline to compare against', () => {
+      const response = buildOutcomeLedger({
+        tasks: [ledgerTask({ id: 'x' })],
+        window: 'all',
+        windowStartMs: 0,
+        windowEndMs: NOW,
+      });
+      expect(response.comparison).toEqual({ available: false, reason: 'all_time_window' });
+    });
+
+    test('an empty previous window is unavailable rather than a zero change', () => {
+      const response = ledger([ledgerTask({ id: 'cur', createdAt: new Date(NOW - HOUR) })]);
+      expect(response.comparison).toEqual({ available: false, reason: 'no_previous_data' });
+    });
+
+    test('a metric unknown on either side yields a null delta, not a zero', () => {
+      const tasks = [
+        ledgerTask({ id: 'cur', status: 'completed', createdAt: new Date(NOW - DAY), tokenUsage: usage() }),
+        // Previous window holds only a non-terminal task: no completion rate exists.
+        ledgerTask({ id: 'prev-active', status: 'inProgress', createdAt: new Date(NOW - 8 * DAY) }),
+      ];
+      const response = ledger(tasks);
+
+      expect(response.comparison.available).toBe(true);
+      if (!response.comparison.available) throw new Error('expected comparison to be available');
+      expect(response.comparison.completionRate.previous).toBeNull();
+      expect(response.comparison.completionRate.delta).toBeNull();
+    });
+
+    test('a task on the shared window boundary counts in the current window only', () => {
+      const boundary = new Date(NOW - 7 * DAY);
+      const response = ledger([ledgerTask({ id: 'boundary', createdAt: boundary })]);
+      // The task sits exactly on windowStart: current window is inclusive there,
+      // so it is a current task and the previous window is empty.
+      expect(response.summary.taskCount).toBe(1);
+      expect(response.comparison).toEqual({ available: false, reason: 'no_previous_data' });
+    });
+  });
 });
 
 function toMs(value: Date | string): number {

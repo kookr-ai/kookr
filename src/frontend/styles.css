@@ -4710,6 +4710,31 @@ a.playbook-empty-docs-link:visited:hover {
   background: none;
   color: var(--text-muted);
 }
+/* Previous-window delta badge on a scoreboard metric (issue #2784). */
+.outcome-delta {
+  display: inline-block;
+  margin-top: 2px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.outcome-delta.up {
+  color: var(--green);
+}
+.outcome-delta.down {
+  color: var(--red);
+}
+.outcome-delta.flat,
+.outcome-delta.unavailable {
+  color: var(--text-muted);
+}
+.outcome-comparison-note {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.outcome-comparison-note.unavailable {
+  font-style: italic;
+}
 .outcome-finding-breakdown {
   display: flex;
   flex-direction: column;

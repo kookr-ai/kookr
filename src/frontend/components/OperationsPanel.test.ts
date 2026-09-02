@@ -122,6 +122,7 @@ function outcomeLedger(overrides: Record<string, unknown> = {}) {
       counts: { manual: 1, scheduled: 1, parent: 0, unknown: 0 },
       shares: { manual: 0.5, scheduled: 0.5, parent: 0, unknown: 0 },
     },
+    comparison: { available: false, reason: 'no_previous_data' },
     quality: {
       costKnownTasks: 1,
       zeroCostTasks: 1,
