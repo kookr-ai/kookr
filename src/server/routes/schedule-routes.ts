@@ -180,6 +180,10 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
           ? null
           : parseScheduleLoopField(body.loop, "loop");
       }
+      if (body.failOnPlaybookDrift === true) patch.failOnPlaybookDrift = true;
+      else if (body.failOnPlaybookDrift === false || body.failOnPlaybookDrift === null) {
+        patch.failOnPlaybookDrift = null;
+      }
 
       return c.json(await deps.scheduleService.updateDefinition(id, patch));
     } catch (err) {

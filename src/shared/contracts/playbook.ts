@@ -83,17 +83,6 @@ export interface PlaybookSourceIdentity {
   scope: PlaybookScope;
   sourceCwd: string;
   sourceDigest: string;
-  /**
-   * HEAD commit SHA of the playbook source checkout when the playbook was
-   * resolved from a git worktree (issue #2945). Absent when not a git cwd.
-   */
-  ref?: string;
-  /** Upstream tracking ref, e.g. `origin/main`. */
-  upstreamRef?: string;
-  /** Commits HEAD is behind `@{u}`. */
-  behindBy?: number;
-  /** True when the playbook blob differs from upstream, or HEAD is behind. */
-  drifted?: boolean;
 }
 
 export const LAUNCH_DEPENDENCIES = ['kb', 'evolution-config'] as const;

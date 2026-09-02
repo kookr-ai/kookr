@@ -375,6 +375,35 @@ Do not schedule.
       expect(store.get(schedule.id)?.playbook.path).toBe('daily.md');
     });
 
+    test('persists failOnPlaybookDrift and clears it on null (issue #2945)', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      expect(store.get(schedule.id)?.failOnPlaybookDrift).toBeUndefined();
+
+      const arm = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failOnPlaybookDrift: true }),
+        },
+      );
+      expect(arm.status).toBe(200);
+      expect((await arm.json()).failOnPlaybookDrift).toBe(true);
+      expect(store.get(schedule.id)?.failOnPlaybookDrift).toBe(true);
+
+      const clear = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failOnPlaybookDrift: null }),
+        },
+      );
+      expect(clear.status).toBe(200);
+      expect((await clear.json()).failOnPlaybookDrift).toBeUndefined();
+      expect(store.get(schedule.id)?.failOnPlaybookDrift).toBeUndefined();
+    });
+
     // issue #2193 gap 2: loop must not be silently dropped by the PATCH allowlist.
     test('persists top-level loop: {} so fire routes through launchLoopedPlaybook', async () => {
       const schedule = await seedSchedule(service, tempDir);

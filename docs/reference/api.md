@@ -947,6 +947,16 @@ Schedule create/update bodies accept `modelTier: "small"` with the same mapping
 as task launches. Omit `agentType` (or PATCH it to `null`) to follow the live
 default agent on every fire. PATCH `modelTier` to `null` to clear the tier.
 A tier cannot coexist with an effective raw `model` or `effort` pin.
+
+Schedule create/update bodies also accept `failOnPlaybookDrift: true` (issue
+#2945). Default is warn-and-still-launch: a project-tier playbook whose cwd
+checkout lags its upstream tracking ref gets a briefing warning, and the
+fire's receipt/ledger `playbookSource` records `{ ref, upstreamRef, behindBy,
+drifted }`. When `failOnPlaybookDrift` is true, that fire records
+`outcome: "skipped_playbook_drift"` / `reasonCode: "playbook_cwd_lag"` and
+does not launch. PATCH `failOnPlaybookDrift` to `null` (or `false`) to clear
+the flag. Detection is bounded to one timed `git fetch` and is fail-open if
+git cannot run. Plugin- and user-tier playbooks skip the check.
 Schedule create/update `playbook` objects also accept `sourceCwd`, the catalog
 directory used to resolve a project-scoped resource. The schedule's top-level
 `cwd` remains the task execution target.

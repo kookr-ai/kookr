@@ -1,4 +1,5 @@
 import { gitIn, runGitIn } from '../core/git-helpers.js';
+import type { SchedulePlaybookCheckoutSource } from '../core/schedule.js';
 import { canonicalizeCwd } from './cwd.js';
 
 export interface CheckoutAutoSyncResult {
@@ -123,15 +124,7 @@ export interface PlaybookCheckoutDrift {
   warning?: string;
 }
 
-/** Shape persisted on a schedule execution receipt / ledger row (issue #2945). */
-export interface SchedulePlaybookSource {
-  ref: string;
-  upstreamRef?: string;
-  behindBy: number;
-  drifted: boolean;
-}
-
-export function toSchedulePlaybookSource(drift: PlaybookCheckoutDrift): SchedulePlaybookSource {
+export function toSchedulePlaybookSource(drift: PlaybookCheckoutDrift): SchedulePlaybookCheckoutSource {
   return {
     ref: drift.ref,
     upstreamRef: drift.upstreamRef,
@@ -186,7 +179,10 @@ export async function inspectPlaybookCheckoutDrift(
 
   const headBlob = await driftGit(cwd, ['rev-parse', `HEAD:${playbookGitPath}`]);
   const upstreamBlob = await driftGit(cwd, ['rev-parse', `@{u}:${playbookGitPath}`]);
-  const blobDiffers = headBlob === null || upstreamBlob === null || headBlob !== upstreamBlob;
+  // Both-null (file in neither tree, or git failed both lookups) is fail-open
+  // — not a blob difference. One-sided null means the path exists on only
+  // one side.
+  const blobDiffers = headBlob !== upstreamBlob;
   const drifted = blobDiffers || behindBy > 0;
 
   if (!drifted) {

@@ -378,7 +378,10 @@ export interface ScheduleRunnerDeps {
    * absent, the fire records `dispatch_failed` rather than falling through to
    * a one-shot launch (a one-shot would silently drop the loop intent).
    */
-  loopedLauncher?: (schedule: Schedule) => Promise<LaunchResult>;
+  loopedLauncher?: (
+    schedule: Schedule,
+    extras?: { promptPrefix?: string },
+  ) => Promise<LaunchResult>;
   /**
    * Inspect a project-tier playbook's cwd checkout against its upstream
    * tracking ref (issue #2945). Defaults to {@link inspectPlaybookCheckoutDrift}.
@@ -1226,7 +1229,10 @@ export class ScheduleRunner {
     }
 
     try {
-      const result = await this.deps.loopedLauncher(scheduleForLaunch);
+      const result = await this.deps.loopedLauncher(
+        scheduleForLaunch,
+        drift?.warning ? { promptPrefix: drift.warning } : undefined,
+      );
       // Looped launcher may not surface substitution chains; ledger at least
       // the schedule hop (issue #2001).
       const scheduleChain: AgentSubstitutionHop[] | undefined =
@@ -1584,21 +1590,10 @@ export class ScheduleRunner {
     launch: ResolvedScheduleLaunch,
     drift: PlaybookCheckoutDrift | null,
   ): ResolvedScheduleLaunch {
-    if (!drift) return launch;
-    const playbookSource = {
-      ...launch.playbookSource,
-      ref: drift.ref,
-      upstreamRef: drift.upstreamRef,
-      behindBy: drift.behindBy,
-      drifted: drift.drifted,
-    };
-    if (!drift.warning) {
-      return { ...launch, playbookSource };
-    }
+    if (!drift?.warning) return launch;
     console.warn(`[schedule] Playbook cwd lags upstream (issue #2945): ${drift.warning}`);
     return {
       ...launch,
-      playbookSource,
       prompt: `${drift.warning}\n\n${launch.prompt}`,
     };
   }
