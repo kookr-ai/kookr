@@ -1774,6 +1774,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
 | R4.1f | F4.1 | SHALL | done | task contracts, automation-kill-switch, post-recovery-service, launch-service |
+| R4.1g | F4.13 | SHALL | done | settings-store, launch-service, schedule-runner, SettingsDialog |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation, crash-recovery, diagnostics-routes |
