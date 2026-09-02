@@ -1734,4 +1734,152 @@ describe('HookFileWatcher', () => {
       expect(events).toHaveLength(1);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Backup-poll overlap suppression + overrun diagnostics (issue #2776)
+  // ---------------------------------------------------------------------------
+  describe('backup-poll overlap suppression (issue #2776)', () => {
+    // The self-scheduling backup poll and its in-flight guard live behind
+    // private members; reach into them the same way the rest of this suite
+    // reaches into `pollIntervals`/`offsets`.
+    type PollTestHooks = {
+      readNewLines: (tmuxName: string, filePath: string, options?: unknown) => Promise<void>;
+      runBackupPollTick: (tmuxName: string, filePath: string) => Promise<void>;
+      offsets: Map<string, number>;
+      pollActive: Set<string>;
+      pollIntervals: Map<string, ReturnType<typeof setTimeout>>;
+    };
+    const priv = (w: HookFileWatcher): PollTestHooks => w as unknown as PollTestHooks;
+
+    const sessionStartLine = (note: string): string =>
+      `${JSON.stringify({
+        session_id: 'sess-1',
+        transcript_path: '/path/to/transcript.jsonl',
+        cwd: '/cwd',
+        hook_event_name: 'SessionStart',
+        note,
+      })}\n`;
+
+    const healthOf = (w: HookFileWatcher, tmuxName: string) =>
+      w.getHealthSnapshot().sessions.find((s) => s.tmuxName === tmuxName);
+
+    test('a tick that fires while a prior read is in flight is skipped and counted', async () => {
+      const tmuxName = 'kookr-overlap';
+      const hookFile = join(tempDir, `${tmuxName}.jsonl`);
+      registerSession(tmuxName);
+      writeFileSync(hookFile, sessionStartLine('x'));
+      priv(watcher).offsets.set(tmuxName, 0); // size > offset ⇒ tick will read
+
+      // Gate the read so the first tick stays in flight while the second fires.
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let readCalls = 0;
+      priv(watcher).readNewLines = async () => {
+        readCalls += 1;
+        await gate;
+      };
+
+      const first = priv(watcher).runBackupPollTick(tmuxName, hookFile);
+      // `runBackupPollTick` sets the in-flight flag synchronously before its
+      // first await, so a second call now sees the session busy.
+      const second = priv(watcher).runBackupPollTick(tmuxName, hookFile);
+      await second; // returns immediately: suppressed, not queued
+
+      expect(healthOf(watcher, tmuxName)?.pollSkippedCount).toBe(1);
+
+      release();
+      await first;
+      expect(readCalls).toBe(1); // only one read ran despite two ticks
+      expect(healthOf(watcher, tmuxName)?.pollSkippedCount).toBe(1);
+    });
+
+    test('stop() during an in-flight tick does not re-arm the poll', async () => {
+      const tmuxName = 'kookr-stop-race';
+      const hookFile = join(tempDir, `${tmuxName}.jsonl`);
+      registerSession(tmuxName);
+      writeFileSync(hookFile, sessionStartLine('y'));
+      priv(watcher).offsets.set(tmuxName, 0);
+      priv(watcher).pollActive.add(tmuxName); // simulate an active backup poll
+
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      priv(watcher).readNewLines = async () => {
+        await gate;
+      };
+
+      const tick = priv(watcher).runBackupPollTick(tmuxName, hookFile);
+      watcher.stop(tmuxName); // deactivate mid-flight
+      release();
+      await tick; // its finally runs scheduleBackupPoll, which must no-op now
+
+      expect(priv(watcher).pollActive.has(tmuxName)).toBe(false);
+      expect(priv(watcher).pollIntervals.has(tmuxName)).toBe(false);
+    });
+
+    test('a read slower than the poll interval is recorded as an overrun', async () => {
+      const tmuxName = 'kookr-overrun';
+      const overrunWatcher = new HookFileWatcher(tempDir, adapter, { pollIntervalMs: 5 });
+      const hookFile = join(tempDir, `${tmuxName}.jsonl`);
+      registerSession(tmuxName);
+      writeFileSync(hookFile, sessionStartLine('z'));
+      priv(overrunWatcher).offsets.set(tmuxName, 0);
+      priv(overrunWatcher).readNewLines = async () => {
+        await new Promise((r) => setTimeout(r, 40)); // > 5ms interval
+      };
+
+      try {
+        await priv(overrunWatcher).runBackupPollTick(tmuxName, hookFile);
+        const health = healthOf(overrunWatcher, tmuxName);
+        expect(health?.pollOverrunCount).toBe(1);
+        expect(health?.lastPollOverrunMs ?? 0).toBeGreaterThanOrEqual(5);
+        expect(health?.maxPollOverrunMs).toBe(health?.lastPollOverrunMs);
+        expect(health?.pollSkippedCount).toBe(0);
+      } finally {
+        overrunWatcher.stopAll();
+      }
+    }, 6000);
+
+    test('the self-scheduling poll still recovers a truncation it alone observes', async () => {
+      const tmuxName = 'kookr-poll-recover';
+      const pollWatcher = new HookFileWatcher(tempDir, adapter, { pollIntervalMs: 25 });
+      const hookFile = join(tempDir, `${tmuxName}.jsonl`);
+      writeFileSync(hookFile, '');
+      registerSession(tmuxName);
+
+      try {
+        pollWatcher.watch(tmuxName);
+
+        const big = JSON.stringify({
+          session_id: 'sess-1',
+          transcript_path: '/path/to/transcript.jsonl',
+          cwd: '/cwd',
+          hook_event_name: 'SessionStart',
+          note: 'y'.repeat(500),
+        });
+        appendFileSync(hookFile, big + '\n');
+        await pollWatcher.drainNow(tmuxName);
+        expect(events.length).toBe(1);
+
+        // Replace with a shorter record and let ONLY the self-scheduling backup
+        // poll observe the shrink and recover (no drainNow, no fs.watch reliance).
+        const small = JSON.stringify({
+          session_id: 'sess-1',
+          transcript_path: '/path/to/transcript.jsonl',
+          cwd: '/cwd',
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+        });
+        writeFileSync(hookFile, small + '\n');
+
+        const deadline = Date.now() + 3000;
+        while (events.length < 2 && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        expect(events.length).toBe(2);
+        expect(events[1].type).toBe('tool_use');
+      } finally {
+        pollWatcher.stopAll();
+      }
+    }, 6000);
+  });
 });
