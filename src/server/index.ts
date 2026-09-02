@@ -105,9 +105,9 @@ import { DetectionStatsStore } from './detection-stats-store.js';
 import {
   promotePendingStartupTasks,
   runStartupRecoveryPhase,
+  type StartupRecoverySummary,
 } from './startup-recovery.js';
 import { StartupReadiness } from './startup-readiness.js';
-import type { CrashRecoveryResult } from './crash-recovery.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
 import {
   computeSnapshotBaseAgents as computeSnapshotBaseAgentsFn,
@@ -1962,7 +1962,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // during the multi-minute recovery window. The gate starts `initializing`
   // and flips to ready only after post-listen recovery completes.
   const startupReadiness = new StartupReadiness(serverStartedAt);
-  let startupRecoverySummary: CrashRecoveryResult | null = null;
+  let startupRecoverySummary: StartupRecoverySummary | null = null;
 
   // Reap worktrees for tasks reconcile drove to a terminal state at boot
   // (#1727). Prior-process crashes leave dead-session tasks whose worktrees

@@ -3,7 +3,11 @@ import { TaskStore } from '../core/tasks.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import type { BackendError } from '../adapters/terminal-backend.js';
 import type { TurnState } from '../shared/protocol.js';
-import { runPostRestartRecovery, isExpectedWorking } from './post-restart-recovery.js';
+import {
+  runPostRestartRecovery,
+  isExpectedWorking,
+  boundRecoveryError,
+} from './post-restart-recovery.js';
 
 function addResumedSession(
   store: TaskStore,
@@ -33,6 +37,19 @@ describe('isExpectedWorking', () => {
     expect(isExpectedWorking('blocked')).toBe(false);
     expect(isExpectedWorking('unknown')).toBe(false);
     expect(isExpectedWorking(undefined)).toBe(false);
+  });
+});
+
+describe('boundRecoveryError (issue #2839)', () => {
+  test('returns a short single-line message unchanged (whitespace collapsed)', () => {
+    expect(boundRecoveryError('socket missing')).toBe('socket missing');
+    expect(boundRecoveryError('  socket   missing \n after ')).toBe('socket missing after');
+  });
+
+  test('truncates an over-long message and marks it truncated', () => {
+    const bounded = boundRecoveryError('y'.repeat(1000));
+    expect(bounded).toBe(`${'y'.repeat(300)}… (truncated)`);
+    expect(bounded).not.toContain('\n');
   });
 });
 
@@ -165,6 +182,33 @@ describe('runPostRestartRecovery', () => {
     expect(summary.errors).toEqual([{ sessionId: 'multi-throw', error: 'verify boom' }]);
     // The thrower produced no verified result but the other three completed.
     expect(summary.verified).toHaveLength(3);
+  });
+
+  test('bounds and single-lines a verifier error before exposing it (issue #2839)', async () => {
+    const store = new TaskStore();
+    const backend = new FakeTerminalBackend();
+    await makeAliveSession(backend, 'sess-chatty');
+    addResumedSession(store, 'sess-chatty', 'running');
+    // A backend that throws a huge multi-line message (e.g. a raw stack trace).
+    const chatty = `attach failed\n${'x'.repeat(500)}\n  at somewhere`;
+    backend.verifyRecoveredSession = async () => {
+      throw new Error(chatty);
+    };
+
+    const summary = await runPostRestartRecovery({
+      terminalBackend: backend,
+      taskStore: store,
+      resumedSessions: ['sess-chatty'],
+      restartEpoch: 9000,
+    });
+
+    expect(summary.errors).toHaveLength(1);
+    const [{ sessionId, error }] = summary.errors;
+    expect(sessionId).toBe('sess-chatty');
+    // Collapsed to a single line and truncated — never the raw unbounded blob.
+    expect(error).not.toContain('\n');
+    expect(error.length).toBeLessThanOrEqual(320);
+    expect(error).toMatch(/^attach failed x+… \(truncated\)$/);
   });
 
   test('normalizes a non-Error rejection into the errors list', async () => {

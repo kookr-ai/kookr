@@ -6,8 +6,9 @@ import {
 } from './diagnostics-routes.js';
 import type { RouteDeps } from './shared.js';
 import type { CrashRecoveryResult } from '../crash-recovery.js';
+import type { StartupRecoverySummary } from '../startup-recovery.js';
 
-function mkApp(startupRecoverySummary: CrashRecoveryResult | null): Hono {
+function mkApp(startupRecoverySummary: StartupRecoverySummary | null): Hono {
   const app = new Hono();
   registerDiagnosticsRoutes(app, { startupRecoverySummary } as unknown as RouteDeps);
   return app;
@@ -30,6 +31,38 @@ describe('GET /api/startup-summary', () => {
       }],
       skipped: [],
       failed: [],
+    };
+    const res = await mkApp(summary).request('/api/startup-summary');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(summary);
+  });
+
+  it('exposes the optional post-restart verification block (issue #2839)', async () => {
+    const summary: StartupRecoverySummary = {
+      relaunched: [],
+      skipped: [],
+      failed: [],
+      postRestartRecovery: {
+        restartEpoch: 1_700_000_000_000,
+        verified: [
+          {
+            sessionId: 's1',
+            classification: 'recovered-live',
+            restartEpoch: 1_700_000_000_000,
+            repairAttempts: 0,
+            identityVerified: true,
+            masterPid: 100,
+            agentPid: 101,
+            livenessObserved: true,
+            elapsedMs: 5,
+          },
+        ],
+        errors: [{ sessionId: 's2', error: 'attach failed' }],
+        live: 1,
+        idle: 0,
+        repaired: 0,
+        unverified: 0,
+      },
     };
     const res = await mkApp(summary).request('/api/startup-summary');
     expect(res.status).toBe(200);
