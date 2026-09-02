@@ -206,27 +206,50 @@ Recommended action: <what to do>
 ```
 
 The WebSocket alert uses the same information in compact form, for example
-`Dependencies: kb=degraded (KB provider is unavailable).` A half-open retry
-that is already occupied is reported as `half_open_probe_busy` instead of a
-new provider failure. After a server restart, this busy state also protects an
-interrupted probe while Kookr reaps its exact expected terminal. This also
-appears immediately when a failed direct, promoted, or crash-recovery probe
-created a session but physical stop rejected: Kookr retains the exact session
-marker and ownership instead of re-parking or starting a replacement. Resolve
-the backend cleanup error, or let reconciliation/restart prove that exact
-session absent. The gate then permits one new bounded probe only when no
-confirmed degradation remains; otherwise fresh clean evidence must first move
-the circuit back to half-open.
+`Dependencies: kb=degraded (KB provider is unavailable).`
 
-A hard timeout can win before the adapter reports creation. In that state the
-task remains `probing` with the preallocated session id and may have no session
-row yet. The late callback links and reaps that exact id; reconciliation then
-settles the marker. A terminal task clears the marker immediately when the
-owning failure path proves the exact session stopped and settles the circuit;
-it retains the fence only while cleanup, creation, or circuit ownership remains
-unresolved. Do not infer liveness from a retained marker or delete the record;
-explicit deletion returns `409 task_cleanup_in_progress`, and bulk cleanup
-skips the record. Retry after reconciliation clears unresolved ownership.
+### When the reason is `half_open_probe_busy`
+
+After a dependency has been failing, Kookr does not retry it freely. It allows
+exactly one test launch at a time — a **probe** — and reports
+`half_open_probe_busy` when you ask for another while the first is still
+outstanding. This is not a new failure. It means "a retry is already in
+flight; wait for it rather than launching again."
+
+Three situations keep a probe outstanding longer than you might expect. All of
+them resolve on their own:
+
+- **A probe was interrupted by a restart.** Kookr went down mid-probe, leaving a
+  task in `probing` that names the session it started. On the way back up, the
+  new process checks whether that exact session survived: if it did and the task
+  is still running, the probe counts as a success; otherwise Kookr shuts the
+  session down and releases the task.
+- **A probe timed out before its session was confirmed.** The launch clock ran
+  out before the agent CLI reported back, so the task holds a session id with
+  possibly no session behind it yet. Here there is nothing to kill — Kookr waits
+  for that late callback, links the exact session it names, and shuts it down
+  then.
+- **A probe's session would not stop.** A failed probe created a session, but
+  the request to stop it was refused. Rather than guess, Kookr keeps holding
+  that exact session instead of parking the task again or starting a
+  replacement — the alternative risks either orphaning a live agent or running
+  two.
+
+In each case the hold clears once Kookr can prove that session is gone, which
+normally happens on the next reconciliation pass or server restart. If it does
+not clear, the underlying backend cleanup error is the thing to fix; see
+[dtach Problems](#dtach-problems).
+
+Once the hold clears, Kookr allows one new probe only if nothing is still
+confirmed degraded. If the dependency is still failing, it stays closed until a
+clean health check reopens it.
+
+**Do not hand-edit state to get past this.** A held marker is not proof that an
+agent is alive, and it is not stale data to be cleared: deleting the task
+returns `409 task_cleanup_in_progress`, and bulk cleanup deliberately skips the
+record. Wait for reconciliation and retry. If a task stays held for more than a
+few minutes with no dtach error to fix, file a bug report (see
+[Send A Bug Report](#send-a-bug-report)) rather than editing `~/.kookr/tasks.json`.
 
 The `kb` preflight runs `kb doctor --format=json` and sorts the result into one
 of the failure modes below. The **failure mode** tells you *what* is wrong; the

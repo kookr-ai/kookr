@@ -8,7 +8,9 @@ Kookr is a supervision surface for many AI coding agents. The main workflow is: 
 
 **Tasks** are the unit of work. A task has a prompt, working directory, agent session, lifecycle state, and optional completion criteria.
 
-**Terminal panel** is the live attach surface for the selected agent's managed dtach session. It replays recent output and streams live bytes.
+**Terminal panel** is the live attach surface for the selected agent's managed `dtach` session. It replays recent output and streams live bytes. (`dtach` is a small Unix tool, in the family of `screen` and `tmux`, that keeps a process running after whatever started it goes away — which is why an agent survives a browser refresh or a Kookr restart.)
+
+**Ralph loops** are tasks that repeat. Instead of running a playbook once, a Ralph loop relaunches it in a fresh agent iteration over and over until its completion criteria are met or it escalates for a human. Each pass is one iteration, recorded in the loop's iteration log.
 
 **Healthy agents** are still visible, but they are not the focus. Kookr keeps them out of the urgent queue until something changes.
 
@@ -33,7 +35,7 @@ Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their
 
 ### Pinning Model And Effort
 
-The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. The last pins you launched with are remembered locally and shown in those menus the next time you open Launch or Quick Launch. From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` and `grok-build` reject `--model` (set `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL` instead) and have their own effort rules. See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
+The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. The last pins you launched with are remembered locally and shown in those menus the next time you open Launch or **Quick Launch** (the compact launch bar for starting a task without the full dialog). From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` and `grok-build` reject `--model` (set `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL` instead) and have their own effort rules. See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
 
 To set a lasting default instead of pinning each launch, use **Settings → Task Management**, where each agent type has a reasoning-effort default that new tasks start at. A per-task `--effort` always wins over that default.
 
@@ -49,7 +51,7 @@ Prefer `--device-code` on the Kookr host; `grok login --oauth` also works on a m
 
 For Ralph loops that look stopped after a crash or show a **Replace with new** recovery dialog, see [Ralph Loop Stopped Or Shows "Replace With New"](troubleshooting.md#ralph-loop-stopped-or-shows-replace-with-new).
 
-### Protecting A Worktree From Automatic Cleanup
+## Protecting A Worktree From Automatic Cleanup
 
 When a task completes, Kookr normally removes its managed git worktree. The **Settings → Task Management → Clean worktrees on completion** toggle controls the default cleanup choice. The **Complete task** dialog shows that choice for each task, so you can uncheck it to keep a worktree for one completion or check it when the saved default is disabled.
 

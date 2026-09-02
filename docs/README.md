@@ -11,21 +11,27 @@ This README is the map. New readers should start at the top and follow the links
 - [Configuration](configuration.md) — common optional features and `.env` choices.
 - [Troubleshooting](troubleshooting.md) — setup and runtime fixes.
 - [Development](development.md) — commands, worktrees, hooks, and contributor docs layout.
+- [Testing](testing.md) — the test suites, what each one covers, and where to read live coverage numbers.
 - [Features & Functionality](features.md) — what Kookr does from the user's perspective.
 - [Architecture](architecture.md) — how the system is laid out (supervisor agent + GUI on top of managed terminal sessions).
 - [Roadmap](roadmap.md) — phased plan toward V1 and beyond.
 - [Requirements](requirements.md) — structured, testable requirements derived from the docs above and ADRs.
-- [Hooks setup](hooks-setup.md) — git/repo hooks every contributor needs.
+- [Hooks setup](hooks-setup.md) — the git hooks every contributor needs (the
+  pre-push gate). These are separate from the *agent* hooks Kookr listens to —
+  the event callbacks a coding-agent CLI fires when it stops or asks permission,
+  described in [Architecture](architecture.md).
+- [Codex CLI setup](codex-cli-setup.md) — the maintained fork required before Kookr can supervise Codex CLI agents.
+- [Playbook scoping](playbook-scoping.md) — which playbooks a project sees, and why.
 
 The repo's top-level [README](../README.md) is a short project entry point.
 
 ## Architecture decisions
 
-[`adr/`](adr/README.md) — 15 Architecture Decision Records covering language, deployment model, agent communication, terminal session backend, and more. ADRs are durable: they explain why a choice was made, the alternatives considered, and the status (Accepted, Superseded, Proposed). If you're trying to understand "why is it built this way?", start here.
+[`adr/`](adr/README.md) — Architecture Decision Records covering language, deployment model, agent communication, terminal session backend, and more. ADRs are durable: they explain why a choice was made, the alternatives considered, and the status (Accepted, Superseded, Proposed). If you're trying to understand "why is it built this way?", start here.
 
 ## System models
 
-[`system-models/`](system-models/INDEX.md) — MBSE-lite stable views of the V1 system: scope, system context, capability map, container view, runtime interactions, state machines, and decomposition candidates. Useful for understanding the system at multiple levels of detail without reading source.
+[`system-models/`](system-models/INDEX.md) — stable, structured views of the V1 system: scope, system context, capability map, container view, runtime interactions, state machines, and decomposition candidates. Useful for understanding the system at several levels of detail without reading source. The approach is MBSE-lite — Model-Based Systems Engineering applied loosely, keeping the layered models and diagrams without the full formal method.
 
 ## RFCs (in-flight design)
 
@@ -54,16 +60,16 @@ We publish drafts intentionally — the design history is part of the engineerin
 
 ## Reference
 
-[`reference/`](reference/) — canonical reference material:
+[`reference/`](reference/README.md) — precise, lookup-oriented pages: the HTTP
+and WebSocket API, the `kookr` CLI, every `KOOKR_*` environment variable, the
+`~/.kookr/` data directory, finding types, load-shedding mechanisms, and the
+unattended-operation runbooks. The reference index groups all of them by task
+and says what each page answers; the most-used starting points are
+[API](reference/api.md), [CLI](reference/cli.md), and
+[Environment Variables](reference/environment-variables.md).
 
-- [API Reference](reference/api.md)
-- [Auto-Close on Completion Signal](reference/auto-close-on-signal.md)
-- [Circuit Breakers](reference/circuit-breakers.md)
-- [CLI Reference](reference/cli.md)
-- [Environment Variables](reference/environment-variables.md)
-- [Playbooks Reference](reference/playbooks.md)
-- [Production Server Service](reference/production-server-service.md)
-- [Read-Only Shared View Setup](reference/shared-view-setup.md)
+[`runbooks/`](runbooks/low-downtime-redeploy.md) — step-by-step operator
+procedures. Currently one: planned low-downtime redeploys.
 
 ## A note on transparency
 

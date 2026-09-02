@@ -8,7 +8,7 @@
 
 ### ~~Gap 1: Hook configuration mechanism~~ — RESOLVED (2026-03-24)
 
-> **Resolution:** `--settings` flag confirmed. Hooks are additive. All payloads include `session_id` and `transcript_path`. See [PoC 001](poc/001-hook-mechanism-validation.md).
+> **Resolution:** `--settings` flag confirmed. Hooks are additive. All payloads include `session_id` and `transcript_path`. See [PoC 001](../poc/001-hook-mechanism-validation.md).
 
 <details>
 <summary>Original analysis (click to expand)</summary>
@@ -77,7 +77,7 @@ If `--settings` doesn't exist or hooks aren't additive, alternative approaches:
 
 ### ~~Gap 2: "Waiting for input" detection signal in interactive mode~~ — RESOLVED (2026-03-24)
 
-> **Resolution:** The `Stop` hook fires when the agent finishes its turn in interactive mode. Payload includes `last_assistant_message`. This is the reliable, structured signal — no heuristics needed. See [PoC 001](poc/001-hook-mechanism-validation.md).
+> **Resolution:** The `Stop` hook fires when the agent finishes its turn in interactive mode. Payload includes `last_assistant_message`. This is the reliable, structured signal — no heuristics needed. See [PoC 001](../poc/001-hook-mechanism-validation.md).
 
 <details>
 <summary>Original analysis (click to expand)</summary>
@@ -154,7 +154,7 @@ tmux send-keys -t kookr-input-test "Create a REST API for managing users" Enter
 
 ### ~~Gap 4: ADR-006 needs formal revisit~~ — RESOLVED (2026-03-24)
 
-> **Resolution:** The `PermissionRequest` hook fires in interactive mode with `tool_name`, `tool_input`, and `permission_suggestions`. F2.4 is feasible. ADR-006 updated. See [PoC 001](poc/001-hook-mechanism-validation.md).
+> **Resolution:** The `PermissionRequest` hook fires in interactive mode with `tool_name`, `tool_input`, and `permission_suggestions`. F2.4 is feasible. ADR-006 updated. See [PoC 001](../poc/001-hook-mechanism-validation.md).
 
 <details>
 <summary>Original analysis (click to expand)</summary>
@@ -226,7 +226,7 @@ This means "V1 done" = Phase 3 complete, not Phase 2. But the roadmap doesn't sa
 
 ## Suggested Resolution Order
 
-1. ~~**Gaps 1 + 2 + 4 together**~~ — **DONE (2026-03-24).** Validated via [PoC 001](poc/001-hook-mechanism-validation.md). ADRs 006, 007, 008 updated. Features.md and architecture.md updated.
+1. ~~**Gaps 1 + 2 + 4 together**~~ — **DONE (2026-03-24).** Validated via [PoC 001](../poc/001-hook-mechanism-validation.md). ADRs 006, 007, 008 updated. Features.md and architecture.md updated.
 2. ~~**Gap 5**~~ — **DONE (2026-03-24).** Roadmap updated: V1 = Phases 1+2+3, Phase 4 = V2.
 3. ~~**Gap 3**~~ — **DONE (2026-03-24).** React + Vite chosen. ADR-002 accepted.
 4. **Gaps 6-8** — Resolve inline during implementation.

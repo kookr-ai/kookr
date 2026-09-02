@@ -14,6 +14,7 @@ This document walks both newcomers through the setup, from the "I just want to c
 > - `hooks/oss-stale-scout-gate.sh` → `~/.claude/hooks/oss-stale-scout-gate.sh`
 > - `hooks/pr-workflow-gate.sh` → `~/.claude/hooks/pr-workflow-gate.sh`
 > - `hooks/oss-contribution-gate.sh` → `~/.claude/hooks/oss-contribution-gate.sh`
+> - `hooks/gh-pr-merge-gate.sh` → `~/.claude/hooks/gh-pr-merge-gate.sh`
 > - `hooks/post-merge-keyword-scan.sh` → `~/.claude/hooks/post-merge-keyword-scan.sh`
 > - `hooks/kb-context-inject.sh` → `~/.claude/hooks/kb-context-inject.sh` (RFC 018 M2; off by default)
 > - `plugin/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
@@ -29,7 +30,11 @@ This document walks both newcomers through the setup, from the "I just want to c
 ## KB context-injection hook (`kb-context-inject.sh`)
 
 `hooks/kb-context-inject.sh` is a `UserPromptSubmit` hook implementing the
-RFC 018 §11 consumer contract. Before an agent turn it runs a
+RFC 018 §11 consumer contract. RFC 018 lives in the companion
+`knowledge-base-mcp-server` repository, not this one; it defines how
+relevance-gated knowledge-base context is injected into an agent turn, and its
+milestones (M1, M2, M3) are referenced below as the staging plan for that
+rollout. Before an agent turn it runs a
 relevance-gated `kb search` and injects the post-gate knowledge-base context
 into the turn:
 
@@ -189,6 +194,7 @@ If your prompt or criteria contain strings that PreToolUse hooks match on (`gh p
    - `~/.claude/hooks/oss-stale-scout-gate.sh` → `$(repo-root)/hooks/oss-stale-scout-gate.sh`
    - `~/.claude/hooks/pr-workflow-gate.sh` → `$(repo-root)/hooks/pr-workflow-gate.sh`
    - `~/.claude/hooks/oss-contribution-gate.sh` → `$(repo-root)/hooks/oss-contribution-gate.sh`
+   - `~/.claude/hooks/gh-pr-merge-gate.sh` → `$(repo-root)/hooks/gh-pr-merge-gate.sh`
    - `~/.claude/hooks/post-merge-keyword-scan.sh` → `$(repo-root)/hooks/post-merge-keyword-scan.sh`
    - `~/.claude/hooks/kb-context-inject.sh` → `$(repo-root)/hooks/kb-context-inject.sh`
    - `~/.claude/skills/pre-pr-review` → `$(repo-root)/plugin/skills/pre-pr-review`
@@ -253,9 +259,9 @@ ls -l ~/.claude/skills/pre-pr-review
 # Expected: symlinks pointing to your kookr checkout's hooks/ and .claude/skills/ dirs
 
 # 3. Confirm settings.json entries exist
-jq '.hooks.PreToolUse[] | select(.hooks[0].command | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate"))' \
+jq '.hooks.PreToolUse[] | select(.hooks[0].command | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate|gh-pr-merge-gate"))' \
   ~/.claude/settings.json
-# Expected: three JSON objects (one per PreToolUse hook)
+# Expected: four JSON objects (one per PreToolUse hook)
 
 # 4. Run the hook tests
 pnpm test:hooks
@@ -291,12 +297,13 @@ This removes both hook symlinks, the `pre-pr-review` skill symlink, and the corr
 rm -f ~/.claude/hooks/oss-stale-scout-gate.sh
 rm -f ~/.claude/hooks/pr-workflow-gate.sh
 rm -f ~/.claude/hooks/oss-contribution-gate.sh
+rm -f ~/.claude/hooks/gh-pr-merge-gate.sh
 rm -f ~/.claude/skills/pre-pr-review
 
 # 2. Remove the settings.json entries
 tmp=$(mktemp)
 jq 'del(.hooks.PreToolUse[] | select(
-      (.hooks // [])[0].command // "" | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate")
+      (.hooks // [])[0].command // "" | test("oss-stale-scout-gate|pr-workflow-gate|oss-contribution-gate|gh-pr-merge-gate")
     ))' ~/.claude/settings.json > "$tmp" && mv "$tmp" ~/.claude/settings.json
 ```
 

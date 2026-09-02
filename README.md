@@ -24,7 +24,9 @@ You run several Claude Code, Codex CLI, or Grok Build agents in parallel. One lo
 
 ## What Kookr Does
 
-- **Monitors agent sessions in real time** through hooks, transcripts, and managed terminal sessions.
+- **Monitors agent sessions in real time** through agent hooks (the event callbacks a
+  coding-agent CLI fires when it stops or asks for permission), transcripts, and managed
+  terminal sessions.
 - **Detects common blockers** such as permission prompts, repeated errors, idle/stopped agents, and stuck work.
 - **Routes your attention** to the agent that most needs a human response.
 - **Lets you reply from one dashboard** without switching terminals.
@@ -64,7 +66,7 @@ For operating-system install commands and first-agent walkthroughs, see [Getting
 
 ## First Agent
 
-In the dashboard, click **Launch**, choose a working directory, and enter a task prompt (the Manual tab offers a few sample prompts that fill the box without launching). Kookr starts the agent in a persistent dtach session, streams the terminal, and queues findings when the agent needs attention.
+In the dashboard, click **Launch**, choose a working directory, and enter a task prompt (the Manual tab offers a few sample prompts that fill the box without launching). Kookr starts the agent in a persistent `dtach` session — a small Unix tool, in the family of `screen` and `tmux`, that keeps the agent process alive independently of your browser or terminal — then streams that terminal and queues findings when the agent needs attention.
 
 Terminal users can launch a task from any project:
 
