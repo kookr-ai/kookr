@@ -29,6 +29,24 @@ pnpm relay:stop
 pnpm relay:doctor
 ```
 
+`pnpm relay:doctor` prints the full JSON report and returns an exit status so
+unattended restart/recovery scripts can gate on it without parsing the text:
+
+- **Exit 0** — every required local subsystem is healthy. Optional external
+  subsystems may still be degraded (see below) without failing the check.
+- **Exit non-zero** — a required local subsystem is unhealthy. This covers the
+  relay process not running (`stopped`, `stale-pid`, `foreign-process`,
+  `foreign-port`), any non-ok env state (`missing-env`, `missing-admin-token`,
+  `restart-required`), and a non-writable state database (`db-write-failed`).
+  The failing subsystems are also summarized on stderr; the actionable
+  `nextActions` remain in the printed report.
+
+Optional external subsystems never fail the exit status, so a local-only
+recovery check does not break on network or remote-relay state: relay node
+reachability/pairing (`token-rejected`, `unreachable`, `error`) and admin
+policy diagnostics (`unavailable`, `unauthorized`) are reported but non-fatal.
+Their guidance still appears in `nextActions`.
+
 For a public self-hosted relay, use [self-hosted-relay-runbook.md](./self-hosted-relay-runbook.md).
 
 ## Collaborator Flow

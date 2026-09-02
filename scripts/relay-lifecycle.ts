@@ -6,6 +6,7 @@ import {
   stopRelay,
 } from '../src/server/relay-lifecycle.js';
 import { formatRelayDoctorReport } from '../src/server/relay-lifecycle-cli-format.js';
+import { relayDoctorExitPolicy } from '../src/server/relay-lifecycle-exit-policy.js';
 import { relayLifecyclePaths } from '../src/server/relay-lifecycle-paths.js';
 import { readRecentRelayLogs } from '../src/server/relay-log-reader.js';
 
@@ -31,9 +32,16 @@ async function main(): Promise<void> {
     case 'stop':
       console.log(await stopRelay());
       return;
-    case 'doctor':
-      console.log(formatRelayDoctorReport(await buildRelayDoctorReport()));
+    case 'doctor': {
+      const report = await buildRelayDoctorReport();
+      console.log(formatRelayDoctorReport(report));
+      const { exitCode, fatalReasons } = relayDoctorExitPolicy(report);
+      if (fatalReasons.length > 0) {
+        console.error(`relay:doctor found actionable unhealthy states:\n- ${fatalReasons.join('\n- ')}`);
+      }
+      process.exitCode = exitCode;
       return;
+    }
     default:
       console.error(`Unknown relay lifecycle command: ${command}`);
       console.error('Usage: pnpm relay:start|relay:status|relay:logs|relay:restart|relay:stop|relay:doctor');

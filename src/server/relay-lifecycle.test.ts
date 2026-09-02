@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -527,4 +527,25 @@ describe('relay lifecycle diagnostics', () => {
     expect(output).toContain('"state": "stopped"');
     expect(output).toContain(`"port": ${port}`);
   });
+
+  it('exits non-zero from relay:doctor when the relay is stopped, preserving actionable output', async () => {
+    const cwd = await tempDir('kookr-relay-script-doctor-');
+    const port = await freePort();
+    const result = spawnSync('pnpm', ['relay:doctor'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        KOOKR_DIR: join(cwd, '.kookr'),
+        KOOKR_RELAY_BIND_HOST: '127.0.0.1',
+        KOOKR_RELAY_PORT: String(port),
+      },
+    });
+
+    expect(result.status).not.toBe(0);
+    // The actionable report is still printed on the failing run.
+    expect(result.stdout).toContain('"state": "stopped"');
+    expect(result.stdout).toContain('pnpm relay:start');
+    expect(result.stderr).toContain('process:stopped');
+  }, 60_000);
 });
