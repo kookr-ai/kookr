@@ -45,6 +45,7 @@ describe('selectFindingPrChip', () => {
       status: 'draft',
       ciFailed: false,
       changesRequested: false,
+      conflicting: false,
     });
   });
 
@@ -61,6 +62,7 @@ describe('selectFindingPrChip', () => {
       status: 'open',
       ciFailed: true,
       changesRequested: false,
+      conflicting: false,
     });
     expect(selectFindingPrChip([failed, quiet, laterQuiet])?.number).toBe(11);
   });
@@ -83,5 +85,34 @@ describe('selectFindingPrChip', () => {
     const model = selectFindingPrChip([makePr({ reviewDecision: 'changes_requested' })]);
     expect(model?.changesRequested).toBe(true);
     expect(findingPrChipLabel(model!)).toBe('#42 · open · changes requested');
+  });
+
+  test('surfaces conflict in the model and label for a CONFLICTING PR', () => {
+    const model = selectFindingPrChip([makePr({ number: 42, mergeable: 'CONFLICTING' })]);
+    expect(model?.conflicting).toBe(true);
+    expect(findingPrChipLabel(model!)).toBe('#42 · open · conflict');
+  });
+
+  test('leaves conflict off for MERGEABLE and UNKNOWN PRs', () => {
+    expect(selectFindingPrChip([makePr({ mergeable: 'MERGEABLE' })])?.conflicting).toBe(false);
+    expect(selectFindingPrChip([makePr({ mergeable: 'UNKNOWN' })])?.conflicting).toBe(false);
+  });
+
+  test('ranks a conflicting open PR above a quiet open PR in either order', () => {
+    const quiet = makePr({ number: 10, status: 'open' });
+    const conflicting = makePr({ number: 11, status: 'open', mergeable: 'CONFLICTING' });
+    expect(selectFindingPrChip([quiet, conflicting])?.number).toBe(11);
+    expect(selectFindingPrChip([conflicting, quiet])?.number).toBe(11);
+  });
+
+  test('orders conflict ahead of CI failed and changes requested in the label', () => {
+    const model = selectFindingPrChip([makePr({
+      number: 42,
+      mergeable: 'CONFLICTING',
+      reviewDecision: 'changes_requested',
+      checks: [{ name: 'ci', status: 'completed', conclusion: 'failure' }],
+    })]);
+    expect(model).toMatchObject({ conflicting: true, ciFailed: true, changesRequested: true });
+    expect(findingPrChipLabel(model!)).toBe('#42 · open · conflict · CI failed · changes requested');
   });
 });
