@@ -556,4 +556,98 @@ describe('parseContinuationEnvelope', () => {
     });
     expect(parsed.authorization).toEqual({ real: true });
   });
+
+  test('rejects non-integer processedCount and remainingBudget', () => {
+    expect(() => parseContinuationEnvelope({
+      version: CONTINUATION_ENVELOPE_VERSION,
+      goal: 'g',
+      cursor: { repo: 'r', selector: 's', processedCount: -1 },
+    })).toThrow(/processedCount/);
+    expect(() => parseContinuationEnvelope({
+      version: CONTINUATION_ENVELOPE_VERSION,
+      goal: 'g',
+      cursor: { repo: 'r', selector: 's', remainingBudget: 1.5 },
+    })).toThrow(/remainingBudget/);
+  });
+});
+
+describe('batch progress on continuation envelopes', () => {
+  test('advanceEnvelope copies progress into the successor cursor', () => {
+    const current = envelope({
+      cursor: {
+        ...envelope().cursor,
+        processedCount: 4,
+        remainingBudget: 6,
+      },
+    });
+    const next = advanceEnvelope(
+      current,
+      {
+        selectedUnit: '#110',
+        outcome: 'eligible',
+        blockedUnits: [],
+        remainingUnits: ['#110', '#111'],
+        cursorWasStale: false,
+        sourceRevision: 'sha-def',
+        parentMissing: false,
+        notes: [],
+      },
+      { taskId: 'task-43', issue: '#109' },
+      { processedCount: 5, remainingBudget: 5 },
+    );
+    expect(next.cursor.processedCount).toBe(5);
+    expect(next.cursor.remainingBudget).toBe(5);
+    expect(areContinuationsDistinct(current, next)).toBe(true);
+    expect(renderContinuationPrompt(next)).toContain('processed units: 5');
+    expect(renderContinuationPrompt(next)).toContain('remaining budget: 5');
+  });
+
+  test('omitting progress preserves existing counters', () => {
+    const current = envelope({
+      cursor: {
+        ...envelope().cursor,
+        processedCount: 4,
+        remainingBudget: 6,
+      },
+    });
+    const next = advanceEnvelope(current, {
+      selectedUnit: '#110',
+      outcome: 'eligible',
+      blockedUnits: [],
+      remainingUnits: ['#110'],
+      cursorWasStale: false,
+      sourceRevision: 'sha-def',
+      parentMissing: false,
+      notes: [],
+    });
+    expect(next.cursor.processedCount).toBe(4);
+    expect(next.cursor.remainingBudget).toBe(6);
+  });
+
+  test('a budget-only advance is content-distinct even with the same next unit', () => {
+    const current = envelope({
+      cursor: {
+        ...envelope().cursor,
+        processedCount: 4,
+        remainingBudget: 6,
+      },
+    });
+    const next = advanceEnvelope(
+      current,
+      {
+        selectedUnit: '#109',
+        outcome: 'eligible',
+        blockedUnits: [],
+        remainingUnits: ['#109', '#110', '#111'],
+        cursorWasStale: false,
+        sourceRevision: 'sha-abc',
+        parentMissing: false,
+        notes: [],
+      },
+      undefined,
+      { processedCount: 5, remainingBudget: 5 },
+    );
+    expect(next.cursor.nextUnit).toBe('#109');
+    expect(areContinuationsDistinct(current, next)).toBe(true);
+  });
 });

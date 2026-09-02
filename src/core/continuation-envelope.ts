@@ -12,11 +12,11 @@
  * This module replaces that prose with a bounded, versioned **continuation
  * envelope**: only the *stable* parameters (goal, authorization toggles) plus a
  * durable **cursor** (repo, selector, parent refs, next-unit pointer, source
- * revision). The invariant safety rules live once in the shared skill/playbook,
- * not copied into each successor. At successor start the agent re-derives the
- * *current* GitHub/task state from durable sources via {@link
- * resolveContinuationState}, so a stale cursor self-heals instead of carrying a
- * wrong narrative forward.
+ * revision, and optional batch progress). The invariant safety rules live once
+ * in the shared skill/playbook, not copied into each successor. At successor
+ * start the agent re-derives the *current* GitHub/task state from durable
+ * sources via {@link resolveContinuationState}, so a stale cursor self-heals
+ * instead of carrying a wrong narrative forward.
  *
  * The module is pure and synchronous except for {@link resolveContinuationState},
  * whose only I/O is an injected {@link StateResolver}. That keeps GitHub / task
@@ -67,6 +67,17 @@ export interface ContinuationCursor {
   sourceRevision?: string;
   /** Mechanical per-unit attempt cap, checked before starting work. */
   attemptCap?: number;
+  /** Number of units completed before the successor starts. */
+  processedCount?: number;
+  /** Remaining finite total-limit budget. Omitted when the limit is unbounded. */
+  remainingBudget?: number;
+}
+
+/** Optional progress counters advanced at a batch handoff. */
+export interface ContinuationProgress {
+  processedCount: number;
+  /** Omit for an unbounded (`all`) workflow. */
+  remainingBudget?: number;
 }
 
 /** Durable references to the parent task / PR / issue, for tracing the chain. */
@@ -224,6 +235,18 @@ export function parseContinuationEnvelope(raw: unknown): ContinuationEnvelope {
     }
     cursor.attemptCap = resolveAutonomousReviewIterationCap(cursorObj.attemptCap).cap;
   }
+  if (cursorObj.processedCount !== undefined) {
+    if (!isNonNegativeInteger(cursorObj.processedCount)) {
+      throw new Error('continuation cursor processedCount must be a non-negative integer');
+    }
+    cursor.processedCount = cursorObj.processedCount;
+  }
+  if (cursorObj.remainingBudget !== undefined) {
+    if (!isNonNegativeInteger(cursorObj.remainingBudget)) {
+      throw new Error('continuation cursor remainingBudget must be a non-negative integer');
+    }
+    cursor.remainingBudget = cursorObj.remainingBudget;
+  }
 
   const parent: ParentRefs = {};
   const parentRaw = (obj.parent ?? {}) as Record<string, unknown>;
@@ -330,6 +353,8 @@ export async function resolveContinuationState(
  * Authorization toggles are copied **verbatim** — never re-derived — so delivery
  * and safety toggles survive continuation exactly. `parent` may be overridden to
  * point at the task doing the spawning; otherwise the current parent is carried.
+ * `progress` replaces the batch counters only when the caller has completed a
+ * batch; omitting it preserves counters from the current envelope.
  *
  * Only call this on an `eligible` resolution. This helper keys purely on
  * `resolved.selectedUnit`, so a `blocked` resolution (selectedUnit `null`,
@@ -343,6 +368,7 @@ export function advanceEnvelope(
   current: ContinuationEnvelope,
   resolved: ResolvedContinuation,
   parent?: ParentRefs,
+  progress?: ContinuationProgress,
 ): ContinuationEnvelope {
   const cursor: ContinuationCursor = {
     repo: current.cursor.repo,
@@ -352,6 +378,10 @@ export function advanceEnvelope(
   cursor.remainingUnits = [...resolved.remainingUnits];
   if (resolved.sourceRevision !== undefined) cursor.sourceRevision = resolved.sourceRevision;
   cursor.attemptCap = continuationAttemptCap(current);
+  const processedCount = progress?.processedCount ?? current.cursor.processedCount;
+  const remainingBudget = progress?.remainingBudget ?? current.cursor.remainingBudget;
+  if (processedCount !== undefined) cursor.processedCount = processedCount;
+  if (remainingBudget !== undefined) cursor.remainingBudget = remainingBudget;
 
   return {
     version: CONTINUATION_ENVELOPE_VERSION,
@@ -370,12 +400,12 @@ export function advanceEnvelope(
  * deduplicated into one task.
  *
  * The key folds in every cursor dimension — repo, selector, `nextUnit`, source
- * revision, and remaining units — so it changes when *any* of them moves, not
- * only when `nextUnit` does. A changed `nextUnit` always changes the key; a
- * moved `sourceRevision`/`remainingUnits` with the same `nextUnit` also changes
- * it (e.g. a retried unit after the source of truth shifted). The unit-level
- * "don't rework the same unit" guarantee is the skill's `attemptCap`, not this
- * key; this key only guarantees two content-identical cursors never spawn twice.
+ * revision, remaining units, and batch progress — so it changes when *any* of
+ * them moves, not only when `nextUnit` does. A changed `nextUnit` always changes
+ * the key; a moved revision, remaining set, or budget with the same `nextUnit`
+ * also changes it. The unit-level "don't rework the same unit" guarantee is the
+ * skill's `attemptCap`, not this key; this key only guarantees two
+ * content-identical cursors never spawn twice.
  */
 export function continuationCursorKey(envelope: ContinuationEnvelope): string {
   const c = envelope.cursor;
@@ -386,6 +416,8 @@ export function continuationCursorKey(envelope: ContinuationEnvelope): string {
     `next=${c.nextUnit ?? ''}`,
     `rev=${c.sourceRevision ?? ''}`,
     `rem=${(c.remainingUnits ?? []).join(',')}`,
+    `done=${c.processedCount ?? ''}`,
+    `budget=${c.remainingBudget ?? ''}`,
   ].join('|');
 }
 
@@ -426,6 +458,8 @@ export function renderContinuationPrompt(envelope: ContinuationEnvelope): string
   }
   if (c.sourceRevision) lines.push(`- source revision: ${c.sourceRevision}`);
   lines.push(`- attempt cap: ${continuationAttemptCap(envelope)}`);
+  if (c.processedCount !== undefined) lines.push(`- processed units: ${c.processedCount}`);
+  if (c.remainingBudget !== undefined) lines.push(`- remaining budget: ${c.remainingBudget}`);
 
   const parentBits: string[] = [];
   if (envelope.parent.taskId) parentBits.push(`task ${envelope.parent.taskId}`);
@@ -448,4 +482,8 @@ export function renderContinuationPrompt(envelope: ContinuationEnvelope): string
   lines.push('no longer eligible, recover the next eligible unit from the selector.');
 
   return lines.join('\n') + '\n';
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0;
 }

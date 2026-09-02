@@ -94,7 +94,8 @@ paragraphs copied into successor after successor with only the unit id changing.
 Instead, every successor carries a **compact, versioned continuation envelope**:
 only the *stable* parameters (overall goal, authorization toggles) plus a durable
 **cursor** (repo, selector, parent task/PR/issue, next-unit pointer, remaining
-units, source revision, attempt cap). The invariant safety rules stay in this
+units, source revision, attempt cap, and optional batch progress:
+`processedCount` / `remainingBudget`). The invariant safety rules stay in this
 skill; the successor references them rather than re-inlining them.
 
 The helper `src/core/continuation-envelope.ts` codifies this shape and the
@@ -107,8 +108,10 @@ successor-start logic:
   resolver. A stale cursor (the next unit already done, in-flight, blocked, or
   vanished) self-heals to the next eligible unit; missing parent state is flagged
   but does not stop the chain.
-- `advanceEnvelope(current, resolved, parent?)` — builds the next envelope after a
-  unit completes. **Authorization toggles are copied verbatim** so delivery and
+- `advanceEnvelope(current, resolved, parent?, progress?)` — builds the next
+  envelope after a unit completes. Optional `progress` replaces batch counters
+  after a completed batch; omitting it preserves counters from the current
+  envelope. **Authorization toggles are copied verbatim** so delivery and
   safety grants survive continuation exactly — they are never re-derived.
 - `continuationCursorKey` / `areContinuationsDistinct` — the content-distinct
   signal that keeps successive iterations from being deduplicated into one task.
@@ -270,6 +273,8 @@ Cursor:
 - remaining eligible: <capped id list>
 - source revision: <SHA/checksum/ETag>
 - attempt cap: <N>
+- processed units: <completed count across the chain>
+- remaining budget: <remaining total-limit budget; omit for unbounded limit>
 
 Parent: task <id>, PR <url>, issue <#N>
 
