@@ -3076,8 +3076,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   });
   // Issue #1995: bind the live resource sample for ops-status free-disk fields.
   getLatestResourceStatusForOps = () => resourceStatusService.getLatest();
-  getEventLoopDelayP95MsForSnapshotShed = () =>
-    resourceStatusService.getLatest()?.server.eventLoopDelayP95Ms ?? null;
+  // #2771: hold the snapshot-rebuild shed gate on a stale fallback sample — the
+  // delay is a held-over value, not a fresh measurement, so report it as
+  // missing (null) rather than let stale data drive the shed decision.
+  getEventLoopDelayP95MsForSnapshotShed = () => {
+    const latest = resourceStatusService.getLatest();
+    if (!latest || latest.stale) return null;
+    return latest.server.eventLoopDelayP95Ms ?? null;
+  };
 
   // Periodic memory ledger (issue #1612). Opt-in (KOOKR_MEMORY_LEDGER=1) so it
   // costs nothing by default; when enabled it logs a structured `[mem-ledger]`

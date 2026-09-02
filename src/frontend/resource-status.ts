@@ -114,5 +114,11 @@ export function formatResourceDetails(status: SystemResourceStatus, nowMs: numbe
   ];
   if (status.sampleGapMs !== null) lines.push(`CPU sample gap ${Math.round(status.sampleGapMs)} ms`);
   if (status.timerDriftMs !== null && status.timerDriftMs > 0) lines.push(`Sampler drift ${Math.round(status.timerDriftMs)} ms`);
+  // Issue #2771: the last probe failed, so these values are the last good
+  // sample held over. Make the reason explicit — the "Sampled N ago" line above
+  // already shows the growing age, but not why the numbers stopped advancing.
+  if (status.stale) {
+    lines.push(`Showing last good sample — current sampler probe failed (${status.stale.reason})`);
+  }
   return lines;
 }

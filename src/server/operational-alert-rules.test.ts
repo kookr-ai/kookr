@@ -36,6 +36,7 @@ interface SampleOverrides {
   sampledAt?: string;
   circuitBreakers?: CircuitBreakerSnapshot[];
   unavailable?: SystemResourceStatus['unavailable'];
+  stale?: SystemResourceStatus['stale'];
 }
 
 function status(overrides: SampleOverrides = {}): SystemResourceStatus {
@@ -64,7 +65,13 @@ function status(overrides: SampleOverrides = {}): SystemResourceStatus {
       processHeapTotalBytes: null,
     },
     unavailable: overrides.unavailable ?? [],
+    stale: overrides.stale,
   };
+}
+
+/** A stale fallback marker for a sample whose fields carry last-good values. */
+function staleMarker(ageMs = 5_000): NonNullable<SystemResourceStatus['stale']> {
+  return { reason: 'sampler_error', lastGoodAt: '2026-05-13T00:00:00.000Z', ageMs };
 }
 
 function breakerSnapshot(overrides: {
@@ -133,6 +140,131 @@ describe('OperationalAlertEvaluator', () => {
     // Further breaches while already firing do not re-alert.
     expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 300 }))).toEqual([]);
     expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 300 }))).toEqual([]);
+  });
+
+  describe('stale fallback tick (issue #2771)', () => {
+    test('a stale sample never clears an active alert, even when its last-good value reads below threshold', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        eventLoopDelayMs: 100,
+        sustainSamples: 2,
+      });
+
+      // Fire the alert with two sustained breaches.
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250 }))).toHaveLength(1);
+
+      // A stale tick whose (last-good) value now reads BELOW the threshold must
+      // NOT recover the alert — the sample is not a fresh reading. Without the
+      // hold this would emit a false "recovered" alert.
+      const staleBelow = alertsFor(
+        evaluator,
+        status({ eventLoopDelayP95Ms: 10, stale: staleMarker() }),
+      );
+      expect(staleBelow).toEqual([]);
+
+      // A genuine fresh sample below threshold then recovers normally.
+      const recovered = alertsFor(evaluator, status({ eventLoopDelayP95Ms: 10 }));
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0].severity).toBe('info');
+    });
+
+    test('a stale sample does not advance the breach counter toward a false fire', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        eventLoopDelayMs: 100,
+        sustainSamples: 3,
+      });
+
+      // One real breach, then a burst of stale ticks whose last-good value is
+      // above threshold. If stale ticks counted, three of them would fire.
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250, stale: staleMarker() }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250, stale: staleMarker() }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250, stale: staleMarker() }))).toEqual([]);
+
+      // Only the next two FRESH breaches complete the sustain window (1 + 2 = 3).
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ eventLoopDelayP95Ms: 250 }))).toHaveLength(1);
+    });
+
+    test('a stale sample holds a firing disk-pressure alert', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        dataDirectoryFreePercent: 10,
+        sustainSamples: 2,
+      });
+
+      // Fire the disk-free alert with two sustained low-free samples.
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5 }))).toHaveLength(1);
+
+      // A stale tick whose last-good free% reads healthy must not recover it.
+      expect(
+        alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 90, stale: staleMarker() })),
+      ).toEqual([]);
+
+      // A fresh healthy sample recovers normally.
+      const recovered = alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 90 }));
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0].severity).toBe('info');
+    });
+
+    test('a stale sample holds a firing process-RSS alert', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        processRssBytes: 1_000,
+        sustainSamples: 2,
+      });
+
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000 }))).toHaveLength(1);
+
+      // Stale tick whose last-good RSS reads low must not recover the alert.
+      expect(
+        alertsFor(evaluator, status({ processRssBytes: 10, stale: staleMarker() })),
+      ).toEqual([]);
+
+      const recovered = alertsFor(evaluator, status({ processRssBytes: 10 }));
+      expect(recovered).toHaveLength(1);
+      expect(recovered[0].severity).toBe('info');
+    });
+
+    // The disk and RSS rules live in their own evaluator functions with an
+    // independent `status.stale` gate (not the shared `this.rules` loop the
+    // event-loop false-breach test above exercises), so assert the false-breach
+    // direction directly for each of those separate code paths too.
+    test('a stale sample does not advance the disk-pressure breach counter toward a false fire', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        dataDirectoryFreePercent: 10,
+        sustainSamples: 3,
+      });
+
+      // One real breach, then stale breaching ticks that must NOT count.
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5, stale: staleMarker() }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5, stale: staleMarker() }))).toEqual([]);
+
+      // Only the next two FRESH breaches complete the sustain window (1 + 2 = 3).
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ dataDirectoryDiskFreePercent: 5 }))).toHaveLength(1);
+    });
+
+    test('a stale sample does not advance the process-RSS breach counter toward a false fire', () => {
+      const evaluator = createOperationalAlertEvaluator({
+        ...DISABLED,
+        processRssBytes: 1_000,
+        sustainSamples: 3,
+      });
+
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000, stale: staleMarker() }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000, stale: staleMarker() }))).toEqual([]);
+
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000 }))).toEqual([]);
+      expect(alertsFor(evaluator, status({ processRssBytes: 2_000 }))).toHaveLength(1);
+    });
   });
 
   test('values below the threshold never fire', () => {

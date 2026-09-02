@@ -260,6 +260,8 @@ Any sampler error must fail open:
 
 Stale is reserved for missing WebSocket/resource updates. An unavailable snapshot means the service is alive but metrics failed.
 
+> **Updated (issue #2771).** The failure behavior above now applies only when the sampler has *never once succeeded*. Once a good sample exists, a sampler error no longer broadcasts an all-null unavailable snapshot — it broadcasts the **last successful sample's values** carrying a server-side `stale` marker (`{ reason: 'sampler_error', lastGoodAt, ageMs }`), so pressure evidence stays visible instead of collapsing to null. On such a tick `sampledAt` is frozen to the last good sample (so the "Sampled N ago" line keeps ageing and timestamp-keyed consumers hold rather than double-count) and `unavailable` carries only the preserved sample's own reasons — `sampler_error` lives on `stale`, not in `unavailable`. This introduces a server-side notion of "stale" on the sample itself, distinct from the client-side WebSocket-freshness "stale" noted above. Sampler-derived operational-alert rules and the WebSocket load-shed gate are **held** (neither fire nor clear, streaks frozen) while a sample is stale, so one failed probe cannot cause a false recovery or a false breach; normal evaluation resumes on the next fresh sample. See `src/server/resource-status-service.ts` (`buildFailedSampleStatus`) and `src/server/operational-alert-rules.ts`.
+
 ### Frontend UX
 
 Render in the left side of the existing status bar, after task/finding count and before quota/STT:
