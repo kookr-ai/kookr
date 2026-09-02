@@ -2138,10 +2138,25 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // Uses saveTasksWithSnapshotPolicy with 'daily' so the first successful
   // save of each local day copies tasks.json to tasks.json.daily.YYYYMMDD.
   // Snapshot failures are logged inside the helper and never block the save.
+  //
+  // Re-entrancy guard (issue #2812 — same pattern as the tokenScan, watchdog,
+  // and liveness ticks above): a slow save (large tasks.json, a busy disk, or a
+  // stalled coalescing-scheduler flush) can still be awaiting I/O when the next
+  // interval fires. Without this single-flight guard, overlapping ticks stack
+  // concurrent task-state and detection-stats writes to the same files. The
+  // `finally` re-arms on both resolution and rejection, so one failed save
+  // never wedges the flag and suppresses all future saves.
   timerHealth?.register('save', saveIntervalMs);
+  let saveTickRunning = false;
   const saveInterval = setInterval(async () => {
+    if (saveTickRunning) return;
+    saveTickRunning = true;
     timerHealth?.recordFire('save', saveIntervalMs);
-    await runPersistenceSaveTick(deps);
+    try {
+      await runPersistenceSaveTick(deps);
+    } finally {
+      saveTickRunning = false;
+    }
   }, saveIntervalMs);
 
   // --- Periodic quota usage polling (optional) ---

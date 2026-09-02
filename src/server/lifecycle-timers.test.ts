@@ -1306,6 +1306,83 @@ describe('startLifecycleTimers token-scan-tick re-entrancy guard (issue #1620 ch
   });
 });
 
+describe('startLifecycleTimers save-tick re-entrancy guard (issue #2812)', () => {
+  function saveTickDeps(taskStateSaver: TimerDeps['taskStateSaver']): TimerDeps {
+    const taskStore = new TaskStore();
+    return {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: { captureDisplay: vi.fn(async () => ''), stop: vi.fn(async () => undefined) } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+      } as any,
+      watchdog: { getTrackedAgents: vi.fn(() => []), recordTokenActivity: vi.fn(), tick: vi.fn() } as any,
+      hookWatcher: { drainNow: vi.fn(async () => undefined) } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      // Short save cadence, long liveness/token cadence so only the save tick
+      // fires within the window we advance.
+      saveIntervalMs: 5_000,
+      livenessIntervalMs: 600_000,
+      broadcastToAll: vi.fn(),
+      taskStateSaver,
+    };
+  }
+
+  test('a slow in-flight save blocks the next tick from starting a second save', async () => {
+    vi.useFakeTimers();
+    // The save never resolves within this test — simulates a save still awaiting
+    // disk I/O when the next 5s interval fires.
+    const taskStateSaver = vi.fn(() => new Promise<void>(() => {}));
+    const handles = startLifecycleTimers(saveTickDeps(taskStateSaver as any));
+    try {
+      // Two 5s interval periods elapse while the first save is still pending —
+      // without the guard, a second save would fire on the next tick and stack a
+      // concurrent write to tasks.json.
+      await vi.advanceTimersByTimeAsync(11_000);
+      expect(taskStateSaver).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('re-arms later ticks after both a resolved save and a rejected one', async () => {
+    vi.useFakeTimers();
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    // First tick's save resolves cleanly; second tick's underlying save throws
+    // (runPersistenceSaveTick catches it, so the tick still settles). Both must
+    // re-arm the guard so the third tick runs a fresh save.
+    let call = 0;
+    const taskStateSaver = vi.fn(async () => {
+      call += 1;
+      if (call === 2) throw new Error('disk full');
+    });
+    const handles = startLifecycleTimers(saveTickDeps(taskStateSaver as any));
+    try {
+      // Three 5s intervals → three independent saves, proving the guard re-armed
+      // after the resolved save AND after the one whose write failed.
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(taskStateSaver).toHaveBeenCalledTimes(3);
+    } finally {
+      clearAllTimers(handles);
+      consoleError.mockRestore();
+    }
+  });
+});
+
 describe('startLifecycleTimers user input delivery retry sweep', () => {
   test('runs the sweep on watchdog cadence and broadcasts when it nudges input', async () => {
     vi.useFakeTimers();
