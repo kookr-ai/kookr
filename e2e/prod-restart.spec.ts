@@ -7,6 +7,7 @@
  */
 import { test, expect } from './fixtures.js';
 import { resetServer } from './reset-server.js';
+import { sanitizedChildServerEnv } from './child-server-env.js';
 import { execSync, spawn, type ChildProcess } from 'node:child_process';
 
 function sleep(ms: number): Promise<void> {
@@ -90,7 +91,7 @@ test.describe('Server restart via lsof kill', () => {
 
   function startServer(port: number | '0'): ChildProcess {
     return spawn('node', ['--import', 'tsx', 'e2e/test-server.ts'], {
-      env: { ...process.env, E2E_PORT: String(port) },
+      env: sanitizedChildServerEnv({ E2E_PORT: String(port) }),
       stdio: 'pipe',
     });
   }
