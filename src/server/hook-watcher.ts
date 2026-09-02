@@ -69,6 +69,22 @@ export interface HookWatcherSessionHealth {
   rotatedTailRecoveredCount: number;
   pollTickCount: number;
   pollChangeDetectedCount: number;
+  /**
+   * Backup-poll ticks suppressed because a prior tick was still in flight
+   * (issue #2776). A rising count means disk reads are overrunning the poll
+   * interval and overlap is being fenced instead of amplifying ingestion lag.
+   */
+  pollSkippedCount: number;
+  /**
+   * Backup-poll ticks whose body ran longer than the poll interval
+   * (issue #2776). Distinguishes a genuine overrun (slow read) from a merely
+   * late tick (event-loop drift), which `pollDrift*` already tracks.
+   */
+  pollOverrunCount: number;
+  /** Duration of the most recent overrun tick, ms (issue #2776); null if none. */
+  lastPollOverrunMs: number | null;
+  /** Longest observed overrun tick, ms (issue #2776); null if none. */
+  maxPollOverrunMs: number | null;
   drainNowCount: number;
   drainNowSkippedCount: number;
   lastPollDriftMs: number | null;
@@ -181,6 +197,10 @@ interface MutableHookWatcherSessionHealth {
   rotatedTailRecoveredCount: number;
   pollTickCount: number;
   pollChangeDetectedCount: number;
+  pollSkippedCount: number;
+  pollOverrunCount: number;
+  lastPollOverrunMs: number | null;
+  maxPollOverrunMs: number | null;
   drainNowCount: number;
   drainNowSkippedCount: number;
   lastPollTickAtMs: number | null;
@@ -206,13 +226,18 @@ const HEALTH_SAMPLE_LIMIT = 128;
  *
  * Uses dual-mode watching for resilience:
  * - Primary: fs.watch (low-latency, but unreliable on WSL2/macOS edge cases)
- * - Backup: interval poll every 3s (guaranteed delivery, catches missed fs.watch events)
+ * - Backup: self-scheduling poll (~3s cadence; guaranteed delivery, catches
+ *   missed fs.watch events). Re-armed only after each tick settles so a slow
+ *   read can't stack overlapping polls (issue #2776).
  *
  * Both run simultaneously. Offset tracking ensures each line is processed exactly once.
  */
 export class HookFileWatcher {
   private watchers = new Map<string, FSWatcher>();
-  private pollIntervals = new Map<string, ReturnType<typeof setInterval>>();
+  // Holds the currently-armed self-scheduling backup-poll timeout per session
+  // (issue #2776). Name kept for continuity; each entry is a `setTimeout`
+  // handle re-armed after every tick settles, not a fixed `setInterval`.
+  private pollIntervals = new Map<string, ReturnType<typeof setTimeout>>();
   /**
    * Byte offset into each session's active hook JSONL. Advanced only after
    * complete records are framed — partial trailing records stay unconsumed so
@@ -229,6 +254,21 @@ export class HookFileWatcher {
    */
   private inodes = new Map<string, number>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
+  /**
+   * Sessions whose backup poll is logically active (issue #2776). Gates the
+   * self-scheduling timer: a tick only re-arms the next timeout while its
+   * session is still in this set, so a body that settles after `stop()` does
+   * not resurrect the poll. Separate from `pollIntervals` (the armed handle),
+   * which briefly holds a spent handle mid-tick before the re-arm.
+   */
+  private pollActive = new Set<string>();
+  /**
+   * Sessions with a backup-poll body currently executing (issue #2776).
+   * In-flight guard: a second tick that fires while one is still running is
+   * suppressed and counted, so a slow disk read produces at most one in-flight
+   * backup poll per session instead of piling up concurrent reads.
+   */
+  private pollInFlight = new Set<string>();
   private healthBySession = new Map<string, MutableHookWatcherSessionHealth>();
   /**
    * Cumulative bytes pulled off disk by readNewLines (issue #1612).
@@ -376,11 +416,15 @@ export class HookFileWatcher {
       watcher.close();
       this.watchers.delete(tmuxName);
     }
+    // Deactivate first so an in-flight tick's `finally` cannot re-arm the poll
+    // after we clear its handle (issue #2776).
+    this.pollActive.delete(tmuxName);
     const poll = this.pollIntervals.get(tmuxName);
     if (poll) {
-      clearInterval(poll);
+      clearTimeout(poll);
       this.pollIntervals.delete(tmuxName);
     }
+    this.pollInFlight.delete(tmuxName);
     this.offsets.delete(tmuxName);
     this.inodes.delete(tmuxName);
     this.reading.delete(tmuxName);
@@ -403,10 +447,14 @@ export class HookFileWatcher {
       this.offsets.delete(name);
     }
     this.watchers.clear();
+    // Deactivate before clearing handles so any in-flight tick's `finally`
+    // cannot re-arm a poll (issue #2776).
+    this.pollActive.clear();
     for (const [, poll] of this.pollIntervals) {
-      clearInterval(poll);
+      clearTimeout(poll);
     }
     this.pollIntervals.clear();
+    this.pollInFlight.clear();
     this.inodes.clear();
     this.reading.clear();
     this.healthBySession.clear();
@@ -691,35 +739,89 @@ export class HookFileWatcher {
   }
 
   /**
-   * Start a backup polling interval for a hook file.
-   * Checks file size vs offset every pollIntervalMs — if they diverge,
-   * reads missed events. This catches fs.watch failures on all platforms.
+   * Start a backup poll for a hook file.
+   *
+   * Checks file size vs offset every pollIntervalMs — if they diverge, reads
+   * missed events. This catches fs.watch failures on all platforms.
+   *
+   * The poll is a **self-scheduling** timeout, not `setInterval` (issue #2776).
+   * A fixed interval fires again while a slow `stat`/`readNewLines` is still
+   * running, stacking concurrent poll bodies that compete for the same disk —
+   * amplifying the very ingestion lag the poll exists to heal. Here the next
+   * tick is armed only after the current one settles ({@link scheduleBackupPoll}
+   * runs from the tick's `finally`), so a transient slow disk delays the next
+   * poll instead of piling up. {@link pollInFlight} is the authoritative guard
+   * that also makes any residual overlap countable.
    */
   private startBackupPoll(tmuxName: string, filePath: string): void {
-    if (this.pollIntervals.has(tmuxName)) return;
-
-    const interval = setInterval(async () => {
-      try {
-        this.recordPollTick(tmuxName);
-        const fileStat = await stat(filePath);
-        const knownOffset = this.offsets.get(tmuxName) ?? 0;
-        if (fileStat.size !== knownOffset) {
-          // Both sides are byte offsets (issue #1612). Growth means fs.watch
-          // missed an append; shrink means the file was truncated, rotated, or
-          // replaced (issue #703), and fs.watch may not fire for an in-place
-          // truncate. Either way, defer to readNewLines — the single authority
-          // on framing: it range-reads from the offset and, when the offset now
-          // sits past EOF, resets to 0 first.
-          this.getOrCreateHealth(tmuxName).pollChangeDetectedCount += 1;
-          await this.readNewLines(tmuxName, filePath);
-        }
-      } catch {
-        // File doesn't exist or I/O error — not critical, will retry
-      }
-    }, this.pollIntervalMs);
-
-    this.pollIntervals.set(tmuxName, interval);
+    if (this.pollActive.has(tmuxName)) return;
+    this.pollActive.add(tmuxName);
     this.getOrCreateHealth(tmuxName).pollBackupActive = true;
+    this.scheduleBackupPoll(tmuxName, filePath);
+  }
+
+  /** Arm the next backup-poll tick, but only while the session is still active. */
+  private scheduleBackupPoll(tmuxName: string, filePath: string): void {
+    // Re-check on every re-arm, not just at start(): a tick whose body settled
+    // after stop() must not resurrect the poll (KB: guard timer callbacks on
+    // the active flag).
+    if (!this.pollActive.has(tmuxName)) return;
+    const handle = setTimeout(() => {
+      void this.runBackupPollTick(tmuxName, filePath);
+    }, this.pollIntervalMs);
+    this.pollIntervals.set(tmuxName, handle);
+  }
+
+  /**
+   * One backup-poll tick: skip-if-busy, read on divergence, record overrun,
+   * then re-arm the next tick (issue #2776).
+   */
+  private async runBackupPollTick(tmuxName: string, filePath: string): Promise<void> {
+    if (this.pollInFlight.has(tmuxName)) {
+      // A prior tick is still running — suppress the overlap and count it. The
+      // self-scheduling timer normally prevents this, so a non-zero count is a
+      // real signal that reads are overrunning the interval.
+      this.getOrCreateHealth(tmuxName).pollSkippedCount += 1;
+      return;
+    }
+    this.pollInFlight.add(tmuxName);
+    const startedAtMs = Date.now();
+    try {
+      this.recordPollTick(tmuxName);
+      const fileStat = await stat(filePath);
+      const knownOffset = this.offsets.get(tmuxName) ?? 0;
+      if (fileStat.size !== knownOffset) {
+        // Both sides are byte offsets (issue #1612). Growth means fs.watch
+        // missed an append; shrink means the file was truncated, rotated, or
+        // replaced (issue #703), and fs.watch may not fire for an in-place
+        // truncate. Either way, defer to readNewLines — the single authority
+        // on framing: it range-reads from the offset and, when the offset now
+        // sits past EOF, resets to 0 first.
+        this.getOrCreateHealth(tmuxName).pollChangeDetectedCount += 1;
+        await this.readNewLines(tmuxName, filePath);
+      }
+    } catch {
+      // File doesn't exist or I/O error — not critical, next tick retries.
+    } finally {
+      this.pollInFlight.delete(tmuxName);
+      const elapsedMs = Date.now() - startedAtMs;
+      if (elapsedMs > this.pollIntervalMs) {
+        // Update the existing entry only — never `getOrCreateHealth` here. A
+        // slow (overrunning) tick is exactly when stop() may have deleted this
+        // session's health mid-await; re-creating it would leave a phantom row
+        // in getHealthSnapshot with no live watcher behind it.
+        const health = this.healthBySession.get(tmuxName);
+        if (health) {
+          health.pollOverrunCount += 1;
+          health.lastPollOverrunMs = elapsedMs;
+          health.maxPollOverrunMs =
+            health.maxPollOverrunMs === null ? elapsedMs : Math.max(health.maxPollOverrunMs, elapsedMs);
+        }
+      }
+      // Re-arm only after this body settled — the source of the anti-overlap
+      // guarantee, independent of the in-flight guard above.
+      this.scheduleBackupPoll(tmuxName, filePath);
+    }
   }
 
   /**
@@ -776,6 +878,10 @@ export class HookFileWatcher {
       rotatedTailRecoveredCount: 0,
       pollTickCount: 0,
       pollChangeDetectedCount: 0,
+      pollSkippedCount: 0,
+      pollOverrunCount: 0,
+      lastPollOverrunMs: null,
+      maxPollOverrunMs: null,
       drainNowCount: 0,
       drainNowSkippedCount: 0,
       lastPollTickAtMs: null,
@@ -1010,6 +1116,10 @@ function projectWatcherHealth(
     rotatedTailRecoveredCount: health.rotatedTailRecoveredCount,
     pollTickCount: health.pollTickCount,
     pollChangeDetectedCount: health.pollChangeDetectedCount,
+    pollSkippedCount: health.pollSkippedCount,
+    pollOverrunCount: health.pollOverrunCount,
+    lastPollOverrunMs: health.lastPollOverrunMs,
+    maxPollOverrunMs: health.maxPollOverrunMs,
     drainNowCount: health.drainNowCount,
     drainNowSkippedCount: health.drainNowSkippedCount,
     lastPollDriftMs: health.lastPollDriftMs,
