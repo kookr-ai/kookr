@@ -1592,6 +1592,52 @@ describe('startLifecycleTimers schedules-paused residual wiring (issue #2426)', 
       clearAllTimers(handles);
     }
   });
+
+  test('issue #2897: a hungSuspect sweep rejection is contained — later legs run, residual page skipped, failure recorded', async () => {
+    vi.useFakeTimers();
+    // Force the hungSuspect TTL sweep to reject deterministically: recordSelection
+    // is invoked inside the sweep on every pass, before any later recovery leg.
+    const recordSweepFailure = vi.fn();
+    const recordSweepSuccess = vi.fn();
+    const metrics = {
+      recordReclaimed: vi.fn(),
+      recordAttempted: vi.fn(),
+      recordSelection: vi.fn(() => {
+        throw new Error('forced sweep selector failure');
+      }),
+      recordSweepFailure,
+      recordSweepSuccess,
+    };
+    const hungSuspectResidualEvaluate = vi.fn();
+    const schedulesEvaluate = vi.fn();
+    const snapshot = makePausedByFailureSnapshot({ names: ['orchestrator'] });
+
+    const handles = startLifecycleTimers(wiringDeps({
+      hungSuspectTtlReclaimMetrics:
+        metrics as unknown as TimerDeps['hungSuspectTtlReclaimMetrics'],
+      hungSuspectResidualAlerter: { evaluate: hungSuspectResidualEvaluate },
+      schedulesPausedResidualAlerter: { evaluate: schedulesEvaluate },
+      scheduleService: {
+        recordTaskTerminalOutcome: vi.fn(async () => undefined),
+        getStatusSnapshot: () => snapshot,
+      },
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(60);
+      // The boundary recorded a bounded failure — never a silent success.
+      expect(recordSweepFailure).toHaveBeenCalled();
+      expect(recordSweepSuccess).not.toHaveBeenCalled();
+      // The misleading residual page was skipped for the failed pass.
+      expect(hungSuspectResidualEvaluate).not.toHaveBeenCalled();
+      // A later seam that shares the tick's single outer try still ran — proof
+      // the sweep throw no longer escapes to that outer catch and short-circuits
+      // the rest of the tick (the schedules-paused pager sits well past the
+      // sweep, alongside the provider-pause reclaim and cleanup legs).
+      expect(schedulesEvaluate).toHaveBeenCalled();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
 });
 
 describe('resolveMaintenancePruneIntervalHours', () => {

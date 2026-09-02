@@ -721,6 +721,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           // can map hungSuspect candidates to skip/attempt classes.
           lastOutcomes: hungSuspectTtlReclaimSnapshot.lastOutcomes,
           lastAttemptedTaskIds: hungSuspectTtlReclaimSnapshot.lastAttemptedTaskIds,
+          // Issue #2897: bounded sweep-failure signal — cumulative count plus
+          // the sanitized category + timestamp of the current error state (both
+          // null after a later successful pass). No raw exception text.
+          sweepFailuresTotal: hungSuspectTtlReclaimSnapshot.sweepFailuresTotal,
+          lastFailureCategory: hungSuspectTtlReclaimSnapshot.lastFailureCategory,
+          lastFailureAtMs: hungSuspectTtlReclaimSnapshot.lastFailureAtMs,
           ...(openPrFailsafeByReason ? { openPrFailsafeByReason } : {}),
         }
       : undefined;

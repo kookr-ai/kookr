@@ -2918,6 +2918,46 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('issue #2897: exposes a bounded sweep-failure signal cleared by a later success', async () => {
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const baseDeps = {
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungSuspectTtlReclaimMetrics: metrics,
+      };
+
+      const before = await mkApp(baseDeps).request('/api/health');
+      const beforeBody = (await before.json()) as { hungSuspectTtlReclaim?: Record<string, unknown> };
+      expect(beforeBody.hungSuspectTtlReclaim).toMatchObject({
+        sweepFailuresTotal: 0,
+        lastFailureCategory: null,
+        lastFailureAtMs: null,
+      });
+
+      metrics.recordSweepFailure(new TypeError('raw exception text'), 1_700_000_000_000);
+      const failed = await mkApp(baseDeps).request('/api/health');
+      const failedBody = (await failed.json()) as { hungSuspectTtlReclaim?: Record<string, unknown> };
+      expect(failedBody.hungSuspectTtlReclaim).toMatchObject({
+        sweepFailuresTotal: 1,
+        lastFailureCategory: 'TypeError',
+        lastFailureAtMs: 1_700_000_000_000,
+      });
+      // No raw exception text is exposed anywhere in the block.
+      expect(JSON.stringify(failedBody.hungSuspectTtlReclaim)).not.toContain('raw exception text');
+
+      metrics.recordSweepSuccess();
+      const recovered = await mkApp(baseDeps).request('/api/health');
+      const recoveredBody = (await recovered.json()) as {
+        hungSuspectTtlReclaim?: Record<string, unknown>;
+      };
+      expect(recoveredBody.hungSuspectTtlReclaim).toMatchObject({
+        sweepFailuresTotal: 1,
+        lastFailureCategory: null,
+        lastFailureAtMs: null,
+      });
+    });
+
     test('issue #2225: exposes openPrFailsafeByReason with counts and sample taskIds', async () => {
       const metrics = new HungSuspectTtlReclaimMetrics();
       const openPrMetrics = new OpenPrFailsafeReasonMetrics();
