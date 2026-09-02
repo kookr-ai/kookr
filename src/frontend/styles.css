@@ -4648,6 +4648,29 @@ a.playbook-empty-docs-link:visited:hover {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
+.outcome-export-btn {
+  min-height: 26px;
+  border: 1px solid var(--border-dim);
+  border-radius: 4px;
+  background: var(--bg-input);
+  color: var(--text-secondary);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.outcome-export-btn:hover:not(:disabled) {
+  border-color: var(--border);
+  color: var(--text-primary);
+}
+.outcome-export-btn:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.outcome-export-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .outcome-readiness {
   display: grid;
   grid-template-columns: 72px minmax(0, 1fr);

@@ -4,7 +4,8 @@ import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { OutcomeLedgerPanel } from './OutcomeLedgerPanel.js';
+import { OutcomeLedgerPanel, buildOutcomeLedgerCsv } from './OutcomeLedgerPanel.js';
+import type { OutcomeLedgerResponse } from '../../shared/contracts/outcome-ledger.js';
 
 let root: Root | null;
 let container: HTMLDivElement;
@@ -26,6 +27,7 @@ function response(overrides: Record<string, unknown> = {}) {
       start: '2026-05-14T12:00:00.000Z',
       end: '2026-05-21T12:00:00.000Z',
     },
+    scope: { kind: 'all' },
     readiness: 'blocked',
     summary: {
       taskCount: 7,
@@ -904,6 +906,282 @@ describe('OutcomeLedgerPanel', () => {
 
     await flush();
 
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  // ---------- CSV export (#3000) ------------------------------------------------
+
+  /**
+   * Click Export CSV and capture the serialised blob. Stubs URL.createObjectURL
+   * (unimplemented in jsdom) so the download path runs without a real
+   * navigation. `csv`/`lines` come from `blob.text()`, which per spec strips the
+   * leading BOM; assert the BOM via `bytes` (raw, un-decoded).
+   */
+  async function clickExportAndRead(
+    el: HTMLElement,
+  ): Promise<{ csv: string; lines: string[]; bytes: Uint8Array; filename: string }> {
+    const blobs: Blob[] = [];
+    let filename = '';
+    const origCreate = URL.createObjectURL;
+    URL.createObjectURL = vi.fn((b: Blob) => { blobs.push(b); return 'blob:mock'; }) as typeof URL.createObjectURL;
+    // Leave a no-op revoke in place: the download path revokes on a deferred
+    // timer that may fire after this helper returns.
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL;
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(function (this: HTMLAnchorElement) {
+      filename = this.download;
+    });
+    const btn = el.querySelector('.outcome-export-btn') as HTMLButtonElement;
+    act(() => btn.click());
+    clickSpy.mockRestore();
+    URL.createObjectURL = origCreate;
+    const blob = blobs[0];
+    const csv = blob ? await blob.text() : '';
+    const bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array();
+    return { csv, lines: csv.split('\r\n'), bytes, filename };
+  }
+
+  test('Export CSV button is disabled before data loads and enabled once it does', async () => {
+    // A fetch that never resolves keeps the panel in the pre-data state.
+    vi.mocked(fetch).mockImplementation(() => new Promise<Response>(() => undefined));
+    const el = mount();
+    await flush();
+    const btn = el.querySelector('.outcome-export-btn') as HTMLButtonElement;
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(true);
+
+    // A second panel whose fetch resolves flips the button to enabled.
+    act(() => root?.unmount());
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response())));
+    const el2 = mount();
+    await flush();
+    expect((el2.querySelector('.outcome-export-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test('Export CSV downloads the summary, per-agent rows, and flagged task-audit rows', async () => {
+    const el = mount();
+    await flush();
+
+    const { bytes, lines, filename } = await clickExportAndRead(el);
+    // Excel-safe: the file's raw bytes lead with a UTF-8 BOM (EF BB BF).
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xEF, 0xBB, 0xBF]);
+
+    // Self-describing preamble drawn from the response's own window/scope.
+    expect(lines).toContain('Window,7d');
+    expect(lines).toContain('Project scope,all projects');
+    expect(lines).toContain('Readiness,blocked');
+
+    // Summary section: counts as bare numbers, rates as 0..1 fractions.
+    expect(lines).toContain('Summary');
+    expect(lines).toContain('Metric,Value');
+    expect(lines).toContain('Tasks,7');
+    expect(lines).toContain('Completion rate,0.5000');
+    expect(lines).toContain('PR tasks,3');
+    expect(lines).toContain('Review flags,2');
+
+    // Per-agent section: full row for each agent, headed and complete.
+    expect(lines).toContain('By agent');
+    expect(lines).toContain('Agent,Tasks,Completed,Terminal,Completion rate,Known cost (USD),Cost coverage,Median duration (ms),p95 duration (ms),Thumbs-up rate');
+    expect(lines).toContain('Claude Code,8,6,8,0.7500,4.2000,0.5000,120000,600000,0.8000');
+    expect(lines).toContain('Codex CLI,2,2,2,1.0000,0.5000,0.5000,30000,45000,1.0000');
+
+    // Task-audit section: the single flagged fixture row with its flags.
+    expect(lines).toContain('Task audit');
+    expect(lines).toContain('Task,Agent,Status,Started,Duration (ms),Known cost (USD),Feedback,Flags');
+    expect(lines).toContain('Cancelled after prompt,Claude Code,cancelled,2026-05-21T10:00:00.000Z,600000,0.0000,,zero_cost');
+
+    expect(filename).toMatch(/^kookr-outcome-scoreboard-7d-all-.*\.csv$/);
+  });
+
+  test('Task audit exports every flagged row, not just the five shown on screen', async () => {
+    // Seven flagged tasks: the on-screen "Rows to inspect first" list caps at 5,
+    // but the export must carry all seven so offline triage sees the full set.
+    const tasks = Array.from({ length: 7 }, (_, i) => ({
+      taskId: `task-${i}`,
+      label: `Flagged ${i}`,
+      agentType: 'claude-code',
+      status: 'cancelled',
+      launchSource: 'manual',
+      projectId: null,
+      playbookId: null,
+      startedAt: '2026-05-21T10:00:00.000Z',
+      finishedAt: '2026-05-21T10:10:00.000Z',
+      durationMs: 600_000,
+      knownCostUsd: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      interventionCount: 1,
+      hasCompletionDigest: false,
+      hasVerificationEvidence: false,
+      prCount: 0,
+      feedback: null,
+      flags: ['zero_cost'],
+    }));
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({ tasks }))));
+    const el = mount();
+    await flush();
+
+    // On screen: capped at 5 rows.
+    expect(el.querySelectorAll('.outcome-task-row').length).toBe(5);
+
+    const { lines } = await clickExportAndRead(el);
+    const auditRows = lines.filter((l) => l.startsWith('Flagged '));
+    expect(auditRows).toHaveLength(7);
+  });
+
+  test('Task audit omits tasks that carry no flags', async () => {
+    const tasks = [{
+      taskId: 'clean', label: 'Clean task', agentType: 'claude-code', status: 'completed',
+      launchSource: 'manual', projectId: null, playbookId: null,
+      startedAt: '2026-05-21T10:00:00.000Z', finishedAt: '2026-05-21T10:10:00.000Z',
+      durationMs: 1000, knownCostUsd: 1, inputTokens: 0, outputTokens: 0,
+      interventionCount: 0, hasCompletionDigest: true, hasVerificationEvidence: true,
+      prCount: 1, feedback: 'up', flags: [] as string[],
+    }];
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({ tasks }))));
+    const el = mount();
+    await flush();
+
+    const { lines } = await clickExportAndRead(el);
+    expect(lines).toContain('Task audit');
+    // Header present, but no row for the unflagged task.
+    expect(lines.some((l) => l.startsWith('Clean task,'))).toBe(false);
+  });
+
+  test('unknown (null) rates and durations export as empty cells, never a zero', () => {
+    const data = response({
+      summary: { ...response().summary, completionRate: null, thumbsUpRate: null, feedbackCoverage: null },
+      quality: { ...response().quality, costCoverage: null, verificationCoverage: null },
+      byAgent: [{
+        agentType: 'claude-code', taskCount: 3, completedTaskCount: 1, terminalTaskCount: 3,
+        completionRate: null, totalKnownCostUsd: 0, costCoverage: null,
+        medianDurationMs: null, p95DurationMs: null, thumbsUpRate: null,
+      }],
+    }) as unknown as OutcomeLedgerResponse;
+    const csv = buildOutcomeLedgerCsv(data);
+    expect(csv).toContain('Completion rate,\r\n');
+    expect(csv).toContain('Cost coverage,\r\n');
+    // Agent row: null rate/coverage/durations all render as empty cells.
+    expect(csv).toContain('Claude Code,3,1,3,,0.0000,,,,\r\n');
+  });
+
+  test('the export labels the preamble from an assigned project scope', () => {
+    const data = response({
+      window: { value: '30d', start: '2026-04-21T12:00:00.000Z', end: '2026-05-21T12:00:00.000Z' },
+      scope: { kind: 'assigned', projectId: 'kookr-ai/kookr' },
+    }) as unknown as OutcomeLedgerResponse;
+    const csv = buildOutcomeLedgerCsv(data);
+    expect(csv).toContain('Window,30d');
+    expect(csv).toContain('Project scope,kookr-ai/kookr');
+  });
+
+  test('the export preamble and slug describe the unassigned scope', () => {
+    const data = response({ scope: { kind: 'unassigned' } }) as unknown as OutcomeLedgerResponse;
+    expect(buildOutcomeLedgerCsv(data)).toContain('Project scope,unassigned');
+  });
+
+  test('the filename sanitises a slashed assigned project id and stamps the window/scope', async () => {
+    // The assigned-scope slug replaces every non-filename-safe run (the `/`) with a
+    // single dash, so `kookr-ai/kookr` becomes `kookr-ai-kookr` — verified through
+    // the real click path, the only place outcomeCsvFilename runs.
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      window: { value: '30d', start: '2026-04-21T12:00:00.000Z', end: '2026-05-21T12:00:00.000Z' },
+      scope: { kind: 'assigned', projectId: 'kookr-ai/kookr' },
+    }))));
+    const el = mount();
+    await flush();
+    const { filename } = await clickExportAndRead(el);
+    expect(filename).toMatch(/^kookr-outcome-scoreboard-30d-kookr-ai-kookr-.*\.csv$/);
+  });
+
+  test('the filename slug is the bare scope kind for the unassigned scope', async () => {
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({ scope: { kind: 'unassigned' } }))));
+    const el = mount();
+    await flush();
+    const { filename } = await clickExportAndRead(el);
+    expect(filename).toMatch(/^kookr-outcome-scoreboard-7d-unassigned-.*\.csv$/);
+  });
+
+  test('buildOutcomeLedgerCsv escapes commas and quotes in free-text fields', () => {
+    const tasks = [{
+      taskId: 't', label: 'Report, "weekly"', agentType: 'claude-code', status: 'cancelled',
+      launchSource: 'manual', projectId: null, playbookId: null,
+      startedAt: '2026-05-21T10:00:00.000Z', finishedAt: null,
+      durationMs: 1000, knownCostUsd: 0, inputTokens: 0, outputTokens: 0,
+      interventionCount: 0, hasCompletionDigest: false, hasVerificationEvidence: false,
+      prCount: 0, feedback: null, flags: ['zero_cost'],
+    }];
+    const csv = buildOutcomeLedgerCsv(response({ tasks }) as unknown as OutcomeLedgerResponse);
+    // Comma + quote force quoting; inner quotes are doubled.
+    expect(csv).toContain('"Report, ""weekly""",Claude Code,cancelled');
+  });
+
+  test('buildOutcomeLedgerCsv neutralizes every leading formula character in a task label', () => {
+    // The escaper is a local copy of CostComparison's, so it gets the same
+    // four-leader coverage: each forces an apostrophe prefix so spreadsheets treat
+    // the label as text. The label is the row's first cell, so the escaped value is
+    // line-leading (preceded by the row separator, not a comma).
+    for (const lead of ['=SUM(A1)', '+1', '-1', '@ref']) {
+      const tasks = [{
+        taskId: 't', label: lead, agentType: 'claude-code', status: 'cancelled',
+        launchSource: 'manual', projectId: null, playbookId: null,
+        startedAt: '2026-05-21T10:00:00.000Z', finishedAt: null,
+        durationMs: 1000, knownCostUsd: 0, inputTokens: 0, outputTokens: 0,
+        interventionCount: 0, hasCompletionDigest: false, hasVerificationEvidence: false,
+        prCount: 0, feedback: null, flags: ['zero_cost'],
+      }];
+      const csv = buildOutcomeLedgerCsv(response({ tasks }) as unknown as OutcomeLedgerResponse);
+      expect(csv).toContain(`\r\n'${lead},Claude Code,`);
+    }
+  });
+
+  test('a multi-flag task-audit row space-joins its flags', () => {
+    const tasks = [{
+      taskId: 't', label: 'Two flags', agentType: 'claude-code', status: 'cancelled',
+      launchSource: 'manual', projectId: null, playbookId: null,
+      startedAt: '2026-05-21T10:00:00.000Z', finishedAt: null,
+      durationMs: 1000, knownCostUsd: 0, inputTokens: 0, outputTokens: 0,
+      interventionCount: 0, hasCompletionDigest: false, hasVerificationEvidence: false,
+      prCount: 0, feedback: 'down', flags: ['zero_cost', 'missing_verification'],
+    }];
+    const csv = buildOutcomeLedgerCsv(response({ tasks }) as unknown as OutcomeLedgerResponse);
+    // Space-joined (not comma) so the flags stay a single unquoted CSV cell.
+    expect(csv).toContain('Two flags,Claude Code,cancelled,2026-05-21T10:00:00.000Z,1000,0.0000,down,zero_cost missing_verification');
+  });
+
+  test('rejects an otherwise-valid response whose byAgent is not an array (#3000)', async () => {
+    // byAgent is read only by the export, so the validator must reject a missing/
+    // malformed one up front — otherwise the panel renders and Export throws.
+    const { byAgent: _dropped, ...withoutByAgent } = response();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(withoutByAgent)));
+    const el = mount();
+    await flush();
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('rejects an otherwise-valid response that is missing the project scope (#3000)', async () => {
+    const { scope: _dropped, ...withoutScope } = response();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(withoutScope)));
+    const el = mount();
+    await flush();
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('rejects an assigned scope that carries no projectId (#3000)', async () => {
+    // The export reads scope.projectId for an assigned scope, so a scope missing
+    // it must fail validation up front rather than throw on Export click.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({ scope: { kind: 'assigned' } }))));
+    const el = mount();
+    await flush();
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('rejects a scope with an unrecognized kind (#3000)', async () => {
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(fetchResponse(response({ scope: { kind: 'everything' } }))));
+    const el = mount();
+    await flush();
     expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
   });
 });
