@@ -369,6 +369,15 @@ function toBugReportSessionHealth(health: SessionHealthSnapshot): BugReportSessi
       stallAgeMs: health.progress.stallAgeMs,
     },
     evidence: health.evidence.map(redactText),
+    // Bounded, secret-free reason codes + signal ages (issue #2793); no free
+    // text to redact, so it is copied through verbatim.
+    ...(health.unknownDetail ? {
+      unknownDetail: {
+        reason: health.unknownDetail.reason,
+        nextCheck: health.unknownDetail.nextCheck,
+        signalAgesMs: { ...health.unknownDetail.signalAgesMs },
+      },
+    } : {}),
     ...(health.coordinatedStall ? {
       coordinatedStall: {
         id: health.coordinatedStall.id,

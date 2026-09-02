@@ -4,10 +4,13 @@ import {
   type CoordinatedStallFinding,
   type SessionHealthBrowser,
   type SessionHealthClassification,
+  type SessionHealthNextCheck,
   type SessionHealthPtySignal,
   type SessionHealthSignal,
   type SessionHealthSnapshot,
   type SessionHealthTranscriptSignal,
+  type SessionHealthUnknownDetail,
+  type SessionHealthUnknownReason,
 } from '../shared/contracts/session-health.js';
 
 export interface SessionHealthPolicy {
@@ -121,6 +124,9 @@ export function classifySessionHealth(
     })();
 
   let classification: SessionHealthClassification;
+  // Set only on the branches that resolve to health-unknown, so a single stable
+  // reason code (issue #2793) tracks exactly which conservative fallback fired.
+  let unknownReason: SessionHealthUnknownReason | null = null;
   const evidence: string[] = [];
 
   // Transport loss/recovery is actionable even when the task's last turn was
@@ -133,18 +139,21 @@ export function classifySessionHealth(
     evidence.push(input.backend.socketPresent === false ? 'dtach socket is not present' : 'dtach master/socket identity could not be verified');
   } else if (noIndependentSignals) {
     classification = 'health-unknown';
+    unknownReason = 'no-independent-signals';
     evidence.push('insufficient independent signals to classify the session');
   } else if (backendAttachStalled) {
     classification = 'terminal-attach-stalled';
     evidence.push('dtach socket is live but Kookr attach child is not alive');
   } else if (backendAttachUnknown) {
     classification = 'health-unknown';
+    unknownReason = 'backend-attach-unavailable';
     evidence.push('backend attach health is unavailable');
   } else if (isTerminalStatus(taskStatus ?? 'open') || turnState === 'completed_turn' || turnState === 'waiting_for_input') {
     classification = 'healthy-idle';
     evidence.push(`task is ${taskStatus ?? 'active'} with turn state ${turnState ?? 'unknown'}`);
   } else if (turnState === 'unknown' || turnState === null) {
     classification = 'health-unknown';
+    unknownReason = 'turn-state-unknown';
     evidence.push('insufficient independent signals to classify the session');
   } else if (turnState === 'blocked') {
     classification = 'provider-or-agent-stalled';
@@ -154,6 +163,7 @@ export function classifySessionHealth(
     evidence.push('PTY progress is fresh but the open browser bridge has no recent live bytes');
   } else if (!providerSignalObserved) {
     classification = 'health-unknown';
+    unknownReason = 'provider-signals-unavailable';
     evidence.push('hook and transcript progress signals are unavailable');
   } else if (pty.state !== 'fresh' && providerFresh) {
     classification = 'terminal-attach-stalled';
@@ -183,6 +193,10 @@ export function classifySessionHealth(
   ]);
   const stallAgeMs = progressAt === null ? null : Math.max(0, input.now - progressAt);
 
+  const unknownDetail = unknownReason === null
+    ? undefined
+    : buildUnknownDetail(unknownReason, { pty, hooks, transcript });
+
   return {
     schemaVersion: SESSION_HEALTH_SCHEMA_VERSION,
     sessionId: input.sessionId,
@@ -198,6 +212,42 @@ export function classifySessionHealth(
       stallAgeMs,
     },
     evidence,
+    ...(unknownDetail ? { unknownDetail } : {}),
+  };
+}
+
+/**
+ * Maps each conservative health-unknown branch to a stable next-check hint and
+ * records the independent signal ages so remote automation can tell missing
+ * telemetry from a real stall (issue #2793). Kept as a pure lookup so the
+ * mapping is deterministic and exhaustively covered.
+ */
+const NEXT_CHECK_BY_UNKNOWN_REASON: Record<SessionHealthUnknownReason, SessionHealthNextCheck> = {
+  // No signal from any source — reattaching is the only way to re-establish
+  // telemetry before deciding whether the session is actually stalled.
+  'no-independent-signals': 'reattach',
+  // Backend attach liveness could not be read — reattach to resolve it.
+  'backend-attach-unavailable': 'reattach',
+  // Transport is verified and live; the turn state may still resolve on the
+  // next observation, so a bounded wait is the safe next step.
+  'turn-state-unknown': 'wait',
+  // Transport is live but the hook/transcript pipeline is producing nothing —
+  // inspect the hook stream rather than reattaching a healthy transport.
+  'provider-signals-unavailable': 'inspect-hooks',
+};
+
+function buildUnknownDetail(
+  reason: SessionHealthUnknownReason,
+  signals: { pty: SessionHealthSignal; hooks: SessionHealthSignal; transcript: SessionHealthSignal },
+): SessionHealthUnknownDetail {
+  return {
+    reason,
+    nextCheck: NEXT_CHECK_BY_UNKNOWN_REASON[reason],
+    signalAgesMs: {
+      pty: signals.pty.ageMs,
+      hooks: signals.hooks.ageMs,
+      transcript: signals.transcript.ageMs,
+    },
   };
 }
 

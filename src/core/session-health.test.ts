@@ -279,6 +279,93 @@ describe('session health classification', () => {
   });
 });
 
+describe('health-unknown reason codes and next-check hints (issue #2793)', () => {
+  test('TS-HEALTH-009 attaches no-independent-signals + reattach when nothing is observed', () => {
+    const health = classifySessionHealth(input({
+      turnState: undefined,
+      backend: {
+        socketPresent: null,
+        identityVerified: null,
+        masterPid: null,
+        agentPid: null,
+        attachChildAlive: null,
+        attachGeneration: 0,
+        reattachCount: 0,
+        lastAttachAt: null,
+      },
+      pty: { ringHead: 0, lastByteAt: null },
+      hooks: { lastEventAt: null },
+      transcript: { present: false, lastRecordAt: null },
+    }));
+
+    expect(health.classification).toBe('health-unknown');
+    expect(health.unknownDetail).toEqual({
+      reason: 'no-independent-signals',
+      nextCheck: 'reattach',
+      signalAgesMs: { pty: null, hooks: null, transcript: null },
+    });
+  });
+
+  test('attaches backend-attach-unavailable + reattach when only attach health is unknown', () => {
+    const health = classifySessionHealth(input({
+      backend: {
+        socketPresent: true,
+        identityVerified: true,
+        masterPid: 101,
+        agentPid: 202,
+        attachChildAlive: null,
+        attachGeneration: 3,
+        reattachCount: 1,
+        lastAttachAt: 94_000,
+      },
+    }));
+
+    expect(health.classification).toBe('health-unknown');
+    expect(health.unknownDetail?.reason).toBe('backend-attach-unavailable');
+    expect(health.unknownDetail?.nextCheck).toBe('reattach');
+    // Independent signals are still fresh (age 5_000ms) even though attach is unknown.
+    expect(health.unknownDetail?.signalAgesMs).toEqual({ pty: 5_000, hooks: 5_000, transcript: 5_000 });
+  });
+
+  test('attaches turn-state-unknown + wait when transport is verified but the turn is unknown', () => {
+    const health = classifySessionHealth(input({ turnState: 'unknown' }));
+
+    expect(health.classification).toBe('health-unknown');
+    expect(health.unknownDetail?.reason).toBe('turn-state-unknown');
+    expect(health.unknownDetail?.nextCheck).toBe('wait');
+  });
+
+  test('attaches provider-signals-unavailable + inspect-hooks when the hook/transcript pipeline is silent', () => {
+    const health = classifySessionHealth(input({
+      pty: { ringHead: 0, lastByteAt: null },
+      hooks: { lastEventAt: null },
+      transcript: { present: false, lastRecordAt: null },
+    }));
+
+    expect(health.classification).toBe('health-unknown');
+    expect(health.unknownDetail?.reason).toBe('provider-signals-unavailable');
+    expect(health.unknownDetail?.nextCheck).toBe('inspect-hooks');
+  });
+
+  test('reports per-signal ages independently when only some signals are present', () => {
+    const health = classifySessionHealth(input({
+      pty: { ringHead: 7, lastByteAt: 95_000 },
+      hooks: { lastEventAt: null },
+      transcript: { present: false, lastRecordAt: null },
+    }));
+
+    expect(health.classification).toBe('health-unknown');
+    expect(health.unknownDetail?.reason).toBe('provider-signals-unavailable');
+    // pty advanced 5_000ms ago; hooks/transcript never reported.
+    expect(health.unknownDetail?.signalAgesMs).toEqual({ pty: 5_000, hooks: null, transcript: null });
+  });
+
+  test('omits unknownDetail entirely for non-unknown classifications', () => {
+    expect(classifySessionHealth(input()).unknownDetail).toBeUndefined();
+    expect(classifySessionHealth(input({ turnState: 'completed_turn' })).unknownDetail).toBeUndefined();
+  });
+});
+
 describe('coordinated session stalls', () => {
   test('TS-HEALTH-005 emits one root finding for independent stalls in a narrow window', () => {
     const sessions = [

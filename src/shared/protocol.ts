@@ -6,7 +6,9 @@ export type { TaskStuckReason } from './contracts/task-stuck-reason.js';
 export {
   COORDINATED_STALL_ROOT_CAUSES,
   SESSION_HEALTH_CLASSIFICATIONS,
+  SESSION_HEALTH_NEXT_CHECKS,
   SESSION_HEALTH_SCHEMA_VERSION,
+  SESSION_HEALTH_UNKNOWN_REASONS,
 } from './contracts/session-health.js';
 export type {
   CoordinatedStallFinding,
@@ -15,6 +17,7 @@ export type {
   SessionHealthClassification,
   SessionHealthDiagnostics,
   SessionHealthAttachState,
+  SessionHealthNextCheck,
   SessionHealthProgress,
   SessionHealthPtySignal,
   SessionHealthSignal,
@@ -22,6 +25,8 @@ export type {
   SessionHealthSnapshot,
   SessionHealthTranscriptSignal,
   SessionHealthTransportState,
+  SessionHealthUnknownDetail,
+  SessionHealthUnknownReason,
 } from './contracts/session-health.js';
 export type {
   AgentType,
