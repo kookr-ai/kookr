@@ -233,4 +233,280 @@ describe('private-network shared task update poller', () => {
     await expect(poller.pollOnce()).resolves.toBe(1);
     expect(contactShare.listSharedTasks()).toEqual([]);
   });
+
+  it('reports a disabled health record when not polling', () => {
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: 'private-key',
+      },
+      contactShare: new ContactShareReadModel(),
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    expect(poller.status).toBe('disabled');
+    expect(poller.getStatus()).toEqual({
+      state: 'disabled',
+      lastSuccessAt: null,
+      lastFailureAt: null,
+      lastFailureReason: null,
+      consecutiveFailures: 0,
+      sinceLastAttemptMs: null,
+    });
+  });
+
+  it('drives the fetch abort signal from the configured request deadline', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+        schemaVersion: 'collaboration-shared-task-updates.v1',
+        updates: [],
+        removals: [],
+      }), { status: 200 }));
+      const poller = startPrivateNetworkSharedTaskUpdatePoller({
+        config: enabledConfig(),
+        env: {
+          KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+          KOOKR_COLLABORATION_UPDATE_POLL_TIMEOUT_MS: '7500',
+          KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+          KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+          KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+        },
+        contactShare: new ContactShareReadModel(),
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+      });
+
+      await poller.pollOnce();
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      // The signal must be the configured deadline, not just any AbortSignal:
+      // a never-firing signal would pass an instanceof check but leave a hung
+      // peer unbounded.
+      expect(timeoutSpy).toHaveBeenCalledWith(7500);
+      const init = fetchImpl.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect(init?.signal).toBe(timeoutSpy.mock.results[0]?.value);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('falls back to the default 10s deadline when none is configured', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const poller = startPrivateNetworkSharedTaskUpdatePoller({
+        config: enabledConfig(),
+        env: {
+          KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+          KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+          KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+          KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+        },
+        contactShare: new ContactShareReadModel(),
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+          schemaVersion: 'collaboration-shared-task-updates.v1',
+          updates: [],
+          removals: [],
+        }), { status: 200 })) as typeof fetch,
+        setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+      });
+
+      await poller.pollOnce();
+      expect(timeoutSpy).toHaveBeenCalledWith(10_000);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
+  it('records a healthy status after a successful poll', async () => {
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare: new ContactShareReadModel(),
+      now: () => new Date('2026-05-21T00:00:00.000Z'),
+      fetchImpl: vi.fn(async () => new Response(JSON.stringify({
+        schemaVersion: 'collaboration-shared-task-updates.v1',
+        updates: [],
+        removals: [],
+      }), { status: 200 })) as typeof fetch,
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    await poller.pollOnce();
+    const status = poller.getStatus();
+    expect(status.state).toBe('healthy');
+    expect(status.lastSuccessAt).toBe('2026-05-21T00:00:00.000Z');
+    expect(status.lastFailureAt).toBeNull();
+    expect(status.consecutiveFailures).toBe(0);
+    expect(status.sinceLastAttemptMs).toBe(0);
+  });
+
+  it('settles a timed-out peer request softly and reports timed-out health', async () => {
+    const contactShare = new ContactShareReadModel();
+    const applyRemoteTaskProjection = vi.spyOn(contactShare, 'applyRemoteTaskProjection');
+    const revokeRemoteSharedTask = vi.spyOn(contactShare, 'revokeRemoteSharedTask');
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_UPDATE_POLL_TIMEOUT_MS: '5000',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare,
+      fetchImpl: vi.fn(async () => {
+        throw Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' });
+      }) as unknown as typeof fetch,
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    // A hung peer must settle (resolve, not hang) and never revoke projections.
+    await expect(poller.pollOnce()).resolves.toBe(0);
+    expect(applyRemoteTaskProjection).not.toHaveBeenCalled();
+    expect(revokeRemoteSharedTask).not.toHaveBeenCalled();
+    const status = poller.getStatus();
+    expect(status.state).toBe('timed-out');
+    expect(status.lastFailureReason).toBe('timeout after 5000ms');
+    expect(status.consecutiveFailures).toBe(1);
+  });
+
+  it('aborts a genuinely hung peer request at the deadline', async () => {
+    // fetchImpl that never resolves on its own — it only rejects when the
+    // request signal fires, so this proves AbortSignal.timeout actually cuts
+    // off a hung peer rather than the poll hanging forever.
+    const fetchImpl = ((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init?.signal;
+      signal?.addEventListener('abort', () => reject(signal.reason));
+    })) as unknown as typeof fetch;
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_UPDATE_POLL_TIMEOUT_MS: '500',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare: new ContactShareReadModel(),
+      fetchImpl,
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    await expect(poller.pollOnce()).resolves.toBe(0);
+    const status = poller.getStatus();
+    expect(status.state).toBe('timed-out');
+    expect(status.lastFailureReason).toBe('timeout after 500ms');
+  });
+
+  it('reports a hard (non-timeout) error as failing immediately and recovers on success', async () => {
+    let ok = false;
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare: new ContactShareReadModel(),
+      fetchImpl: vi.fn(async () => ok
+        ? new Response(JSON.stringify({
+          schemaVersion: 'collaboration-shared-task-updates.v1',
+          updates: [],
+          removals: [],
+        }), { status: 200 })
+        : new Response('', { status: 503 })) as typeof fetch,
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    // A hard error is not a transient timeout — it reads as failing on the
+    // first hit, no tolerance window.
+    await poller.pollOnce();
+    expect(poller.getStatus().state).toBe('failing');
+    expect(poller.getStatus().consecutiveFailures).toBe(1);
+    expect(poller.getStatus().lastFailureReason).toBe('http 503');
+
+    ok = true;
+    await poller.pollOnce();
+    expect(poller.getStatus().state).toBe('healthy');
+    expect(poller.getStatus().consecutiveFailures).toBe(0);
+  });
+
+  it('tolerates a couple of timeouts as timed-out, then escalates to failing', async () => {
+    const poller = startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare: new ContactShareReadModel(),
+      fetchImpl: vi.fn(async () => {
+        throw Object.assign(new Error('The operation timed out'), { name: 'TimeoutError' });
+      }) as unknown as typeof fetch,
+      setIntervalImpl: vi.fn() as unknown as typeof setInterval,
+    });
+
+    await poller.pollOnce();
+    expect(poller.getStatus().state).toBe('timed-out');
+    await poller.pollOnce();
+    expect(poller.getStatus().state).toBe('timed-out'); // still within the tolerance window
+    await poller.pollOnce();
+    // Third consecutive timeout crosses FAILING_THRESHOLD -> sticky failing.
+    expect(poller.getStatus().consecutiveFailures).toBe(3);
+    expect(poller.getStatus().state).toBe('failing');
+  });
+
+  it('skips an interval tick while a previous poll is still in flight', async () => {
+    let capturedCallback: (() => void) | undefined;
+    const setIntervalImpl = vi.fn((cb: () => void) => {
+      capturedCallback = cb;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as unknown as typeof setInterval;
+
+    let resolveFetch: ((value: Response) => void) | undefined;
+    const fetchImpl = vi.fn(() => new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    }));
+
+    startPrivateNetworkSharedTaskUpdatePoller({
+      config: enabledConfig(),
+      env: {
+        KOOKR_COLLABORATION_UPDATE_POLLING: 'true',
+        KOOKR_COLLABORATION_LOCAL_CONTACT_ID: 'contact-1',
+        KOOKR_COLLABORATION_LOCAL_DEVICE_ID: 'device-1',
+        KOOKR_COLLABORATION_LOCAL_PRIVATE_KEY_PEM: privateKey(),
+      },
+      contactShare: new ContactShareReadModel(),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      setIntervalImpl,
+    });
+
+    expect(capturedCallback).toBeDefined();
+    // First tick starts a poll; the fetch never resolves yet.
+    capturedCallback?.();
+    // Second and third ticks must be suppressed while the poll is in flight.
+    capturedCallback?.();
+    capturedCallback?.();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Let the in-flight poll settle, then a later tick may poll again.
+    resolveFetch?.(new Response(JSON.stringify({
+      schemaVersion: 'collaboration-shared-task-updates.v1',
+      updates: [],
+      removals: [],
+    }), { status: 200 }));
+    // Flush the poll's remaining awaits (response.json(), apply loop, finally).
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    capturedCallback?.();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });

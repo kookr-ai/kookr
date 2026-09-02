@@ -112,6 +112,7 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_COLLABORATION_PROFILES',
   'KOOKR_COLLABORATION_TRANSPORT_SECURITY',
   'KOOKR_COLLABORATION_UPDATE_POLL_INTERVAL_MS',
+  'KOOKR_COLLABORATION_UPDATE_POLL_TIMEOUT_MS',
   'KOOKR_COLLABORATION_UPDATE_POLLING',
   // Standalone relay binary internals / client-pairing knobs documented in the
   // relay runbooks rather than the main environment reference.
