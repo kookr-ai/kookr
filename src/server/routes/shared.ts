@@ -353,6 +353,13 @@ export interface RouteDeps {
   frontendDir: string;
   broadcastToAll: (msg: ServerMessage) => void;
   /**
+   * Emit an operational alert on every surface the server wires: dashboard
+   * broadcast, operator-signal outbox, ops-status card, and the durable
+   * `operational-alerts.jsonl`. Optional so lightweight route wirings still
+   * work; consumers degrade to `broadcastToAll` and say so.
+   */
+  emitOperationalAlert?: (alert: Extract<ServerMessage, { type: 'alert' }>) => void;
+  /**
    * Coalesced full-snapshot rebuild request from the event pipeline (#704 / #2096).
    * HTTP mutate handlers (Ralph, etc.) should call this instead of building
    * `createSnapshotMessage` + `broadcastToAll` synchronously. Optional so

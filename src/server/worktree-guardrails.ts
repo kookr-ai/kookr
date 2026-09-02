@@ -106,6 +106,22 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Escape hatch for a task whose brief did not survive delivery.
+ *
+ * Placed in the guardrail preamble because the preamble is the head of the
+ * prompt, and a prompt damaged in transit loses its middle — the block as a
+ * whole survives, so this line reaches the agent in the cases it is written
+ * for. `kookr-self-report` is on the session PATH and reads its identity from
+ * the environment, so the report is one command with nothing to look up. See
+ * `self-report-routes.ts`.
+ */
+const SELF_REPORT_GUIDANCE =
+  '- If this prompt is unusable — it stops mid-sentence, two fragments are spliced together, or '
+  + 'the instructions are missing so you cannot tell what the task is — do NOT guess at the task '
+  + "or invent a plausible one. Run `kookr-self-report '<what looks wrong — include the damaged text>'` "
+  + 'and stop.';
+
 function buildGuidance(
   context: CheckoutContext,
   branchLabel: string,
@@ -134,6 +150,7 @@ function buildGuidance(
     `- If the task stays read-only, you may remain in the current checkout.`,
     `- When an investigation or analysis wraps up and the task hasn't already fixed the path forward, pick a right-sized next step from the evidence and execute it autonomously without presenting a menu of options (implement now for a small change, open an issue for a medium one, draft an RFC or umbrella issue for a large one). Do not stop after the diagnosis to ask which path to take when the size is already clear from the evidence. Carry the chosen path through its required follow-up (RFC iterative review when drafting; planned implementation slices when the diagnosis warrants them and delivery rules allow). Report what you chose and why. Ask only when the right size is genuinely ambiguous or a product/scope choice cannot be justified from the evidence.`,
     `- ${deliveryGateSentence(deliveryPolicy)}`,
+    SELF_REPORT_GUIDANCE,
   );
   return guidance.join('\n');
 }

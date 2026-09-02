@@ -73,6 +73,23 @@ describe('applyWorktreeGuardrails', () => {
       expect(prompt).not.toContain('ask the user whether to push the branch and open a PR');
       expect(prompt).toContain('git worktree add');
       expect(prompt).toContain('Do NOT commit to main');
+      // The escape hatch for a brief that did not survive delivery (#2977).
+      // It lives in the preamble precisely so it reaches an agent whose prompt
+      // was damaged, which makes its presence load-bearing, not decorative.
+      expect(prompt).toContain('kookr-self-report');
+    } finally {
+      await rm(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries the self-report escape hatch under every delivery policy (#2977)', async () => {
+    const repoDir = await mkdtemp(join(tmpdir(), 'guardrails-'));
+    try {
+      await initGitRepo(repoDir);
+      for (const policy of ['pre-authorized', 'ask-first', 'self-advancing'] as const) {
+        const prompt = await applyWorktreeGuardrails('Implement it.', repoDir, policy);
+        expect(prompt).toContain('kookr-self-report');
+      }
     } finally {
       await rm(repoDir, { recursive: true, force: true });
     }

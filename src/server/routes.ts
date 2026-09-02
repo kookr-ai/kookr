@@ -15,6 +15,7 @@ import { registerTaskRoutes } from './routes/task-routes.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
 import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
+import { registerSelfReportRoutes } from './routes/self-report-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerGrokAuthRoutes } from './routes/grok-auth-routes.js';
@@ -148,6 +149,14 @@ export function createRoutes(deps: RouteDeps): Hono {
   if (sharedDeps.environmentBlockerRegistry) {
     registerEnvironmentBlockerRoutes(app, { registry: sharedDeps.environmentBlockerRegistry });
   }
+  // Route the report onto the operational-alert channel the server already
+  // owns, rather than minting a second sink on the same file (see the
+  // single-instance rule in `index.ts`). Without that wiring — lightweight
+  // route-only test harnesses — a report still reaches a connected dashboard,
+  // and the route says so at registration.
+  registerSelfReportRoutes(app, sharedDeps.emitOperationalAlert
+    ? { emitOperationalAlert: sharedDeps.emitOperationalAlert }
+    : { emitOperationalAlert: sharedDeps.broadcastToAll, broadcastOnly: true });
   registerCostComparisonRoutes(app, sharedDeps);
   registerOutcomeLedgerRoutes(app, sharedDeps);
   // Issue #1715: batch blocked-empty → on-demand idea-scout + starvation alert.

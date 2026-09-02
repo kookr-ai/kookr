@@ -2572,6 +2572,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // instead of rebuilding full snapshots synchronously on every success.
     requestSnapshotBroadcast,
     getOperationalAlertHistory: () => resourceStatusService.getOperationalAlertHistory(),
+    // Agent self-reports (#2977) ride the same operational-alert channel as
+    // every detector: the durable JSONL sink the schedule runtime already owns
+    // (one instance per file, so status()/lastFailure stay unified), plus the
+    // dashboard broadcast, the operator-signal outbox, and the ops-status card.
+    emitOperationalAlert: bindOperationalAlertSink(operationalAlertSink, (alert) => {
+      detectorBroadcast(alert);
+      noteOpsStatusAlert(alert);
+    }),
     // issues #1590/#1992/#2926: feed the load-based POST /api/tasks admission
     // gates the same already-sampled resource snapshot (event-loop p95 plus
     // data-dir byte/inode capacity) and the sustain tracker on every tick.

@@ -1,0 +1,7 @@
+#!/bin/sh
+# kookr-self-report — PATH shim for Kookr-spawned agents (issue #2977).
+#
+# Extensionless dispatcher so the agent-facing command has no extension, same
+# shape as bin/kb and bin/kookr. Logic lives in kookr-self-report.js.
+dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "$dir/kookr-self-report.js" "$@"
