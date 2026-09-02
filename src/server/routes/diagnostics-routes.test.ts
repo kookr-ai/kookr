@@ -1802,6 +1802,41 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('reports launch-abandoned recovery separately without degrading health', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        terminalBackend: {
+          getStats: () => ({
+            attachedSessions: 0,
+            reattachCounts: {},
+            pendingWriters: 0,
+            maxPendingWriters: 0,
+            writeTimeoutCount: 0,
+            lastError: { kind: 'launch-abandoned-recovered', id: 'kookr-abandoned' },
+            errorCount: 0,
+            launchAbandonedRecoveredCount: 1,
+            launchAbandonedRecoveryFailureCount: 0,
+          }),
+        } as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        terminalBackend: {
+          status: string;
+          launchAbandonedRecoveredCount: number;
+          launchAbandonedRecoveryFailureCount: number;
+        };
+      };
+      expect(body.terminalBackend).toMatchObject({
+        status: 'ok',
+        launchAbandonedRecoveredCount: 1,
+        launchAbandonedRecoveryFailureCount: 0,
+      });
+    });
+
     test('terminalBackend health recovers to ok after a transient session fault clears (issue #2810)', async () => {
       const backend = new FakeTerminalBackend();
 

@@ -42,7 +42,7 @@ vi.mock('./crash-recovery.js', async (importOriginal) => {
 
 // Imported AFTER the mock is registered (vi.mock is hoisted above imports by
 // vitest, but keep the import here for readability of the dependency order).
-const { promotePendingStartupTasks, runStartupRecoveryPhase } = await import('./startup-recovery.js');
+const { promotePendingStartupTasks, recoverLaunchAbandonedMasters, runStartupRecoveryPhase } = await import('./startup-recovery.js');
 
 function reconciliationResult(overrides: Partial<ReconciliationResult> = {}): ReconciliationResult {
   return {
@@ -1268,5 +1268,61 @@ describe('runStartupRecoveryPhase — disposition ledger wiring (issue #1540)', 
     } finally {
       errorSpy.mockRestore();
     }
+  });
+});
+
+describe('recoverLaunchAbandonedMasters — restart window (issue #2762)', () => {
+  test('reaps a prior-process unowned master and preserves a live adopted session', async () => {
+    const deps = fakeDeps();
+    const liveTask = deps.taskStore.createTask({ prompt: 'live adopted launch', cwd: '/repo' });
+    deps.taskStore.addSession(liveTask.id, {
+      tmuxSession: 'kookr-live-adopted',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    const abandonedTask = deps.taskStore.createTask({ prompt: 'timed-out launch', cwd: '/repo' });
+    deps.taskStore.recordAbandonedLaunchSession(abandonedTask.id, {
+      tmuxSession: 'kookr-launch-abandoned',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+    deps.taskStore.setDisposition(abandonedTask.id, {
+      reason: 'launch_timeout',
+      at: new Date().toISOString(),
+      source: 'launch-service',
+    });
+    deps.taskStore.terminateTask(abandonedTask.id);
+
+    const recoverLaunchAbandonedSessions = vi.fn(async (adopted: ReadonlySet<string>) => ({
+      recoveredSessionIds: ['kookr-launch-abandoned'],
+      clearedSessionIds: [],
+      preservedSessionIds: [...adopted],
+      failures: [],
+    }));
+
+    const result = await recoverLaunchAbandonedMasters(deps.taskStore, {
+      recoverLaunchAbandonedSessions,
+    });
+
+    expect(recoverLaunchAbandonedSessions).toHaveBeenCalledTimes(1);
+    expect([...recoverLaunchAbandonedSessions.mock.calls[0]![0]].sort()).toEqual([
+      'kookr-live-adopted',
+    ]);
+    expect(result.recoveredSessionIds).toEqual(['kookr-launch-abandoned']);
+    expect(result.preservedSessionIds).toEqual(['kookr-live-adopted']);
+  });
+
+  test('is a no-op when the backend has no launch-abandoned recovery seam', async () => {
+    const deps = fakeDeps();
+    const result = await recoverLaunchAbandonedMasters(deps.taskStore, {});
+    expect(result).toEqual({
+      recoveredSessionIds: [],
+      clearedSessionIds: [],
+      preservedSessionIds: [],
+      failures: [],
+    });
   });
 });

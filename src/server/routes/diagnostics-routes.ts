@@ -352,6 +352,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ringFleetOverBudgetBytes: backendWriteStats.ringFleetOverBudgetBytes ?? 0,
         ringShrunkenSessions: backendWriteStats.ringShrunkenSessions ?? 0,
         ringShrinkCount: backendWriteStats.ringShrinkCount ?? 0,
+        // Launch recovery is an exact manifest/task handoff (#2762), distinct
+        // from the generic host-stale and orphan process reapers.
+        launchAbandonedRecoveredCount: backendWriteStats.launchAbandonedRecoveredCount ?? 0,
+        launchAbandonedRecoveryFailureCount:
+          backendWriteStats.launchAbandonedRecoveryFailureCount ?? 0,
       };
     }
     // Write-path saturation (issue #1776): mutex queue depth + coordinator
@@ -2015,10 +2020,11 @@ function deriveTerminalBackendStatus(stats: BackendStats): 'ok' | 'degraded' | '
   ) {
     return 'error';
   }
-  // A successful post-restart self-heal (kookr-ai/kookr#1345) is a benign
-  // success signal on the error bus, not a fault — it must not leave the backend
-  // pinned to `degraded` forever via the sticky `lastError` slot.
-  const benign = stats.lastError?.kind === 'session-recovery-repaired';
+  // Success signals on the error bus must not pin the backend to `degraded`
+  // via the sticky `lastError` slot: post-restart attach self-heal (#1345)
+  // and a completed launch-abandoned boot reap (#2762).
+  const benign = stats.lastError?.kind === 'session-recovery-repaired'
+    || stats.lastError?.kind === 'launch-abandoned-recovered';
   if (stats.pendingWriters > 0 || (stats.lastError && !benign)) return 'degraded';
   return 'ok';
 }

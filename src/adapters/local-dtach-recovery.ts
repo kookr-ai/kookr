@@ -9,6 +9,8 @@ import { join } from 'node:path';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import {
   type BackendError,
+  type LaunchAbandonedRecoveryResult,
+  type RecoverLaunchAbandonedOptions,
   type ReconnectTransportOptions,
   type ReconnectTransportReason,
   type ReconnectTransportResult,
@@ -54,6 +56,8 @@ export interface LocalDtachRecoveryHost {
   readonly reconnectCooldownMs: number;
   readonly instanceDir: string;
   readonly instanceId: string;
+  /** Unique to this server process generation, unlike stable `instanceId`. */
+  readonly launchCreatorId: string;
   readonly dtachBinary: string;
   isClosed(): boolean;
   emitError(err: BackendError): void;
@@ -71,10 +75,113 @@ export interface LocalDtachRecoveryHost {
     classifyFirstChunkAsReplay?: boolean,
   ): void;
   disposeAttachChildOnly(sess: AttachedSession): void;
+  killSession(id: SessionId): Promise<void>;
 }
+
+const DEFAULT_LAUNCH_ABANDONED_SETTLE_MS = 3_000;
+const MAX_LAUNCH_ABANDONED_SETTLE_MS = 10_000;
 
 export class LocalDtachRecovery {
   constructor(private readonly host: LocalDtachRecoveryHost) {}
+
+  /**
+   * Complete the durable launch handoff left by a prior server generation.
+   * Legacy entries and entries created by this process are out of scope.
+   * Every prior-process `unadopted` marker is resolved by exact session id:
+   * preserve a live task's durable match, otherwise wait a bounded interval
+   * for a mid-spawn master to appear and reap its process tree.
+   */
+  async recoverLaunchAbandonedSessions(
+    durablyAdoptedSessionIds: ReadonlySet<SessionId>,
+    options: RecoverLaunchAbandonedOptions = {},
+  ): Promise<LaunchAbandonedRecoveryResult> {
+    const result: LaunchAbandonedRecoveryResult = {
+      recoveredSessionIds: [],
+      clearedSessionIds: [],
+      preservedSessionIds: [],
+      failures: [],
+    };
+    const candidates: DtachManifestEntry[] = [];
+
+    await this.host.manifestStore.withLock(() => {
+      const recovery = this.host.manifestStore.readForRecovery();
+      if (recovery.kind !== 'valid') return;
+
+      let changed = false;
+      for (const entry of recovery.manifest.entries) {
+        if (
+          entry.launchState !== 'unadopted'
+          || entry.launchCreatorId === this.host.launchCreatorId
+        ) {
+          continue;
+        }
+        if (durablyAdoptedSessionIds.has(entry.sessionId)) {
+          entry.launchState = 'adopted';
+          result.preservedSessionIds.push(entry.sessionId);
+          changed = true;
+        } else {
+          candidates.push({ ...entry });
+        }
+      }
+      if (changed) this.host.manifestStore.writeAtomic(recovery.manifest);
+    });
+
+    const settleMs = Math.min(
+      MAX_LAUNCH_ABANDONED_SETTLE_MS,
+      Math.max(0, options.settleMs ?? DEFAULT_LAUNCH_ABANDONED_SETTLE_MS),
+    );
+    const outcomes = await Promise.all(candidates.map(async (entry) => {
+      try {
+        const masterPid = await this.waitForLaunchMaster(entry, settleMs);
+        // Across a restart the recorded pid may have been recycled, so replace
+        // it with the exact socket-bound scan (or -1, which forces one final
+        // exact scan inside killSession) before delegating.
+        await this.host.manifestStore.update((manifest) => {
+          const current = manifest.entries.find((candidate) => (
+            candidate.sessionId === entry.sessionId
+            && candidate.launchState === 'unadopted'
+            && candidate.launchCreatorId === entry.launchCreatorId
+          ));
+          if (current) current.pid = masterPid;
+        });
+        await this.host.killSession(entry.sessionId);
+        return { sessionId: entry.sessionId, observed: masterPid > 0 } as const;
+      } catch (err) {
+        return {
+          sessionId: entry.sessionId,
+          error: err instanceof Error ? err.message : String(err),
+        } as const;
+      }
+    }));
+
+    for (const outcome of outcomes) {
+      if ('error' in outcome && outcome.error !== undefined) {
+        result.failures.push({ sessionId: outcome.sessionId, error: outcome.error });
+      } else if (outcome.observed) {
+        result.recoveredSessionIds.push(outcome.sessionId);
+      } else {
+        result.clearedSessionIds.push(outcome.sessionId);
+      }
+    }
+    return result;
+  }
+
+  private async waitForLaunchMaster(entry: DtachManifestEntry, settleMs: number): Promise<number> {
+    const deadline = Date.now() + settleMs;
+    while (true) {
+      try {
+        const scannedPid = findDtachMasterPidSync(entry.sock, this.host.dtachBinary);
+        if (scannedPid > 0) return scannedPid;
+      } catch {
+        // Process-table inspection is best-effort; keep the bounded wait.
+      }
+      if (verifyMasterIdentity(entry.pid, entry.sock, this.host.dtachBinary)) return entry.pid;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return -1;
+      const waited = await this.host.raceWithClose(sleep(Math.min(100, remaining)));
+      if (waited === 'backend-closed') throw new Error('backend closed during launch recovery');
+    }
+  }
 
   async reconnectTransport(
     id: SessionId,
@@ -509,7 +616,10 @@ export class LocalDtachRecovery {
       manifest.entries = manifest.entries.flatMap((e) => {
         if (e.status === 'pending') {
           const age = now - new Date(e.startedAt).getTime();
-          if (age < PENDING_TTL_MS) return [e];
+          // A launch marker belongs to the restart handoff below. Preserve it
+          // even after the generic pending TTL so the exact owner decision is
+          // never discarded before the bounded launch recovery pass runs.
+          if (age < PENDING_TTL_MS || e.launchState === 'unadopted') return [e];
           // Pending entry that never flipped to active and aged out — drop
           // any ring snapshot that may have been left behind (otherwise a
           // future session reusing this id would inherit stale scrollback

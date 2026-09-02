@@ -9,6 +9,14 @@ export interface DtachManifestEntry {
   status: 'pending' | 'active' | 'recovered';
   /** Full socket path, absolute. */
   sock: string;
+  /**
+   * Durable launch handoff (issue #2762). Optional so pre-existing manifests
+   * stay inert: only entries explicitly stamped `unadopted` participate in
+   * restart recovery for launch-abandoned masters.
+   */
+  launchState?: 'unadopted' | 'adopted';
+  /** Unique id of the server process generation that began this launch. */
+  launchCreatorId?: string;
 }
 
 export interface DtachManifestFile {

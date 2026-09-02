@@ -591,6 +591,13 @@ session reaper only reaps backend-reported live sessions; host-stale masters are
 a different class (see also [offline-recovery-card.md](./offline-recovery-card.md)
 §5).
 
+A fourth class is launch-abandoned masters (issue #2762): restart in the
+abandon-before-`onSessionCreated` window. Boot recovery reaps those via
+`terminalBackend.launchAbandonedRecoveredCount`; failures show on
+`launchAbandonedRecoveryFailureCount`. They still have a socket, so
+`hostStaleDtachReaper` skips them (`skippedSocketPresent`). Do not treat that
+leftover as host-stale pressure.
+
 **Diagnosis (health fields only):**
 
 ```bash
@@ -604,6 +611,9 @@ print("sessionReaper.lastOrphanCount", reaper.get("lastOrphanCount"))
 print("sessionReaper.lastTerminalLeakCount", reaper.get("lastTerminalLeakCount"))
 print("sessionReaper.totalSessionsReaped", reaper.get("totalSessionsReaped"))
 print("hostStaleDtachReaper", h.get("hostStaleDtachReaper"))
+tb=h.get("terminalBackend") or {}
+print("terminalBackend.launchAbandonedRecoveredCount", tb.get("launchAbandonedRecoveredCount"))
+print("terminalBackend.launchAbandonedRecoveryFailureCount", tb.get("launchAbandonedRecoveryFailureCount"))
 print("resourceWatchdog.enabled", (h.get("resourceWatchdog") or {}).get("enabled"))
 PY
 ```

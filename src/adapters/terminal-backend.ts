@@ -62,6 +62,15 @@ export type BackendError =
   | { kind: 'write-timed-out'; id: SessionId; durationMs: number }
   | { kind: 'manifest-corrupt'; recoveredCount: number }
   /**
+   * A prior server process created a dtach master, but no live task durably
+   * adopted its exact session id before that process exited. Startup recovery
+   * reaped the abandoned master (kookr-ai/kookr#2762). Informational — distinct
+   * from the host-stale missing-socket janitor.
+   */
+  | { kind: 'launch-abandoned-recovered'; id: SessionId }
+  /** Startup recovery could not reap an exact launch-abandoned session. */
+  | { kind: 'launch-abandoned-recovery-failed'; id: SessionId; error: string }
+  /**
    * Post-restart recovery repaired a wedged attach transport by recycling only
    * the internal attach child (kookr-ai/kookr#1345). Informational — the agent
    * and its conversation were preserved.
@@ -87,21 +96,34 @@ export type BackendError =
   | { kind: 'startup-recovery-failed'; reason: string };
 
 /**
- * The backend's *success* signals on the error bus: a previously-faulted
- * session's transport was made observably live again — a lazy re-attach that
- * recovered (`session-attach-recovered`) or a post-restart repair that
- * succeeded (`session-recovery-repaired`). These are not faults; the backend
- * uses them to clear a resolved transient fault from its current-error
- * projection so a recovered backend stops reporting `degraded` from a stale
- * `lastError` (issue #2810).
+ * The backend's *success* signals on the error bus. They are not faults: they
+ * never increment `errorCount`, and they may clear a resolved transient
+ * session fault from `lastError` (issue #2810).
+ *
+ * Transport revival: a lazy re-attach (`session-attach-recovered`) or a
+ * post-restart attach repair (`session-recovery-repaired`) made a previously
+ * faulted session observably live again.
+ *
+ * Launch-abandoned boot reap (`launch-abandoned-recovered`, issue #2762): a
+ * prior-process master with no durable live-task owner was reaped. That is a
+ * successful cleanup, not a transport revival.
  */
 export function isBackendRecoverySignal(
   err: BackendError,
 ): err is Extract<
   BackendError,
-  { kind: 'session-attach-recovered' | 'session-recovery-repaired' }
+  {
+    kind:
+      | 'session-attach-recovered'
+      | 'session-recovery-repaired'
+      | 'launch-abandoned-recovered';
+  }
 > {
-  return err.kind === 'session-attach-recovered' || err.kind === 'session-recovery-repaired';
+  return (
+    err.kind === 'session-attach-recovered'
+    || err.kind === 'session-recovery-repaired'
+    || err.kind === 'launch-abandoned-recovered'
+  );
 }
 
 /**
@@ -209,6 +231,33 @@ export interface BackendStats {
    * unrelated `/api/health.startupRecovery` crash-recovery counts (issue #2351).
    */
   startupRecoveryState?: StartupRecoveryState;
+  /**
+   * Prior-process launch-abandoned masters reaped during this boot
+   * (issue #2762). Distinct from host-stale missing-socket reaps.
+   */
+  launchAbandonedRecoveredCount?: number;
+  /** Exact launch-abandoned candidates that the bounded boot pass could not reap. */
+  launchAbandonedRecoveryFailureCount?: number;
+}
+
+export interface RecoverLaunchAbandonedOptions {
+  /** Bounded wait for a just-spawned prior-process dtach master to appear. */
+  settleMs?: number;
+}
+
+export interface LaunchAbandonedRecoveryFailure {
+  sessionId: SessionId;
+  error: string;
+}
+
+export interface LaunchAbandonedRecoveryResult {
+  /** Exact prior-process masters found and reaped. */
+  recoveredSessionIds: SessionId[];
+  /** Stale launch markers cleared after no process or socket appeared. */
+  clearedSessionIds: SessionId[];
+  /** Exact sessions preserved because a live task durably owns them. */
+  preservedSessionIds: SessionId[];
+  failures: LaunchAbandonedRecoveryFailure[];
 }
 
 // Per-session transport diagnostics — the raw adapter shape and its accessor —
@@ -499,6 +548,19 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
    * result is treated conservatively as "too young to reap" by that caller.
    */
   getSessionStartedAt?(id: SessionId): Promise<number | null>;
+
+  /**
+   * Optional boot-only handoff for restart-safe launch abandonment (issue
+   * #2762). A backend compares its prior-process, not-yet-adopted launch
+   * markers with exact session ids durably owned by live tasks. It preserves
+   * matches and boundedly reaps only unmatched marked sessions. Distinct from
+   * post-restart live-attach repair (#1345 / #1361) and the host-stale
+   * missing-socket janitor (#2356 / #2384).
+   */
+  recoverLaunchAbandonedSessions?(
+    durablyAdoptedSessionIds: ReadonlySet<SessionId>,
+    options?: RecoverLaunchAbandonedOptions,
+  ): Promise<LaunchAbandonedRecoveryResult>;
 
   /**
    * Optional. Tear down any backend-owned background work (timers, final

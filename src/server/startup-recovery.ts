@@ -1,13 +1,18 @@
 import type { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { AttentionQueue } from '../core/attention-queue.js';
-import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import { nowISO, type DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { deserializeSnoozed, type LoadTasksResult } from '../core/task-persistence.js';
 import type { TaskStore } from '../core/tasks.js';
 import type { Monitor } from '../core/monitor.js';
 import type { SnoozeSuppressionTracker } from '../core/snooze-suppression.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { ServerMessage } from '../shared/protocol.js';
-import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import {
+  type LaunchAbandonedRecoveryResult,
+  type TerminalBackend,
+} from '../adapters/terminal-backend.js';
+import { collectDurablyAdoptedSessionIds } from '../core/session-registry.js';
+import { appendAuditRow } from '../core/audit-log.js';
 import {
   appendDispositionEntry,
   auditRecoveryDispositions,
@@ -92,6 +97,44 @@ interface PromotePendingStartupTasksDeps {
  */
 export interface StartupRecoverySummary extends CrashRecoveryResult {
   postRestartRecovery?: PostRestartRecoverySummary;
+}
+
+/**
+ * Resolve prior-process launch markers before generic session reconciliation.
+ * Ownership is an exact, durable task-session lookup: lifecycle classification
+ * stays with reconciliation and the session reaper. Distinct from host-stale
+ * missing-socket reaps (issue #2356 / #2384) and live-attach repair (#1345).
+ */
+export async function recoverLaunchAbandonedMasters(
+  taskStore: TaskStore,
+  backend: Pick<TerminalBackend, 'recoverLaunchAbandonedSessions'>,
+  options: { auditLogPath?: string } = {},
+): Promise<LaunchAbandonedRecoveryResult> {
+  if (!backend.recoverLaunchAbandonedSessions) {
+    return {
+      recoveredSessionIds: [],
+      clearedSessionIds: [],
+      preservedSessionIds: [],
+      failures: [],
+    };
+  }
+
+  const result = await backend.recoverLaunchAbandonedSessions(
+    collectDurablyAdoptedSessionIds(taskStore.viewTasks()),
+  );
+  for (const sessionId of result.recoveredSessionIds) {
+    await appendAuditRow(options.auditLogPath, {
+      type: 'session.reap',
+      timestamp: nowISO(),
+      actor: 'system:launch-abandoned-recovery',
+      sessionId,
+      kind: 'launch-abandoned',
+      signal: 'SIGTERM_then_SIGKILL',
+      reason:
+        'prior-process launch-abandoned dtach master recovered at boot (issue #2762)',
+    });
+  }
+  return result;
 }
 
 export async function runStartupRecoveryPhase({

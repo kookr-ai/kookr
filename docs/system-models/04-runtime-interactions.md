@@ -189,6 +189,12 @@ sequenceDiagram
   participant SPA as Browser SPA
 
   BE->>FS: Read tasks.json (includes inline session metadata)
+  BE->>TB: recoverLaunchAbandonedSessions(durablyAdoptedSessionIds)
+  alt prior-process unadopted + no live task id
+    BE->>TB: killSession (bounded settle)
+  else exact live task id
+    BE->>TB: stamp launchState=adopted
+  end
   BE->>TB: listSessions / isAlive
   BE->>BE: Reconcile: match session metadata to live sessions
 
@@ -201,7 +207,7 @@ sequenceDiagram
     BE->>BE: Transition parent task to Terminated if all sessions died without user ack
     BE->>FS: Update session metadata in tasks.json
     BE->>SPA: WS: {type: "update", taskId, agentId, taskState: "terminated"}
-  else Backend-owned session not in tasks.json (orphan)
+  else Unmarked / current-process live session not in tasks.json
     BE->>BE: Log warning (dtach orphan socket)
   end
 
