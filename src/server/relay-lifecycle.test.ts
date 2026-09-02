@@ -1,14 +1,15 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createRelayServer, type RelayServerHandle } from '../../relay/server.js';
 import {
+  backupAndResetRelayState,
   buildRelayDoctorReport,
   diagnoseRelayEnv,
   diagnoseRelayNode,
@@ -548,4 +549,59 @@ describe('relay lifecycle diagnostics', () => {
     expect(result.stdout).toContain('pnpm relay:start');
     expect(result.stderr).toContain('process:stopped');
   }, 60_000);
+});
+
+// chmod is a POSIX concept; the owner-only guarantee (issue #2779) only holds
+// where mode bits are meaningful.
+const describeResetModes = process.platform === 'win32' ? describe.skip : describe;
+
+describeResetModes('relay state reset owner-only backups (#2779)', () => {
+  // process.umask is process-global; these tests set/restore it in try/finally.
+  // Safe under Vitest's default `forks` pool (each file is its own process); a
+  // switch to `pool: 'threads'` would share one OS umask across files and could
+  // reintroduce cross-file flakiness here.
+  it('writes the backup directory, copied state, and manifest owner-only under a permissive umask', async () => {
+    const cwd = await tempDir('kookr-relay-reset-mode-');
+    const kookrDir = join(cwd, '.kookr');
+    const stateDbPath = join(kookrDir, 'relay-state.sqlite');
+    mkdirSync(kookrDir, { recursive: true });
+    // Seed a live DB and a WAL sidecar with permissive modes so the reset has
+    // real files to copy.
+    writeFileSync(stateDbPath, 'db-bytes', { encoding: 'utf8', mode: 0o644 });
+    writeFileSync(`${stateDbPath}-wal`, 'wal-bytes', { encoding: 'utf8', mode: 0o644 });
+
+    // Pre-create the backup directory world-readable so the reset's
+    // `mkdirSync(mode: 0o700)` — a no-op on an existing directory — cannot be
+    // what tightens it. This forces the `enforceOwnerOnlyDir` repair path to be
+    // the thing under test (a stale/inherited backup dir must still end 0o700).
+    const now = new Date('2026-09-02T12:00:00.000Z');
+    const timestamp = now.toISOString().replace(/[:.]/g, '-');
+    const backupDir = join(kookrDir, 'relay-state-backups', `reset-${timestamp}`);
+    mkdirSync(backupDir, { recursive: true });
+    chmodSync(backupDir, 0o777);
+
+    const env = {
+      KOOKR_DIR: kookrDir,
+      KOOKR_RELAY_STATE_DB_PATH: stateDbPath,
+      KOOKR_RELAY_PORT: String(await freePort()),
+    };
+
+    const previousUmask = process.umask(0o000);
+    let result: Awaited<ReturnType<typeof backupAndResetRelayState>>;
+    try {
+      result = await backupAndResetRelayState({ cwd, kookrDir, env, now: () => now });
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    expect(result.backupDir).toBe(backupDir);
+    expect(statSync(backupDir).mode & 0o777).toBe(0o700);
+
+    const backedUpNames = result.backedUpPaths.map((path) => basename(path)).sort();
+    expect(backedUpNames).toEqual(['relay-state.sqlite', 'relay-state.sqlite-wal']);
+    for (const backupPath of result.backedUpPaths) {
+      expect(statSync(backupPath).mode & 0o777, `${backupPath} should be owner-only`).toBe(0o600);
+    }
+    expect(statSync(join(backupDir, 'manifest.json')).mode & 0o777).toBe(0o600);
+  });
 });

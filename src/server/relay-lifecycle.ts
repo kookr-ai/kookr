@@ -21,6 +21,12 @@ import {
 import { relayLifecyclePaths } from './relay-lifecycle-paths.js';
 import { readRecentRelayLogs } from './relay-log-reader.js';
 import { redactRelaySecret } from './relay-secret-redaction.js';
+import {
+  enforceOwnerOnlyDir,
+  enforceOwnerOnlyFile,
+  OWNER_ONLY_DIR_MODE,
+  OWNER_ONLY_FILE_MODE,
+} from '../shared/owner-only-mode.js';
 
 interface RuntimeConfig {
   cwd: string;
@@ -402,7 +408,13 @@ export async function backupAndResetRelayState(opts: RelayLifecycleOptions = {})
   await stopRelay(opts);
   const timestamp = (opts.now ?? (() => new Date()))().toISOString().replace(/[:.]/g, '-');
   const backupDir = join(config.paths.kookrDir, 'relay-state-backups', `reset-${timestamp}`);
-  mkdirSync(backupDir, { recursive: true });
+  // Recovery artifacts hold the same sensitive relay state as the live
+  // database (node hashes, invitation verifiers, contact-share metadata,
+  // tenant controls); keep them owner-only even under a permissive umask
+  // (issue #2779). `mode` on mkdirSync is masked by the umask, so repair the
+  // final directory mode explicitly after creation.
+  mkdirSync(backupDir, { recursive: true, mode: OWNER_ONLY_DIR_MODE });
+  enforceOwnerOnlyDir(backupDir);
 
   const statePaths = [
     config.stateDbPath,
@@ -416,14 +428,19 @@ export async function backupAndResetRelayState(opts: RelayLifecycleOptions = {})
     if (!existsSync(path)) continue;
     const backupPath = join(backupDir, basename(path));
     copyFileSync(path, backupPath);
+    // copyFileSync does not carry the source mode; tighten each copy so a
+    // permissive umask cannot widen the backed-up state.
+    enforceOwnerOnlyFile(backupPath);
     backedUpPaths.push(backupPath);
   }
-  writeFileSync(join(backupDir, 'manifest.json'), JSON.stringify({
+  const manifestPath = join(backupDir, 'manifest.json');
+  writeFileSync(manifestPath, JSON.stringify({
     schemaVersion: 'relay-state-reset-backup.v1',
     createdAt: (opts.now ?? (() => new Date()))().toISOString(),
     sourcePaths: statePaths.filter((path) => existsSync(path)),
     backedUpPaths,
-  }, null, 2), 'utf8');
+  }, null, 2), { encoding: 'utf8', mode: OWNER_ONLY_FILE_MODE });
+  enforceOwnerOnlyFile(manifestPath);
 
   for (const path of statePaths) {
     if (!existsSync(path)) continue;
