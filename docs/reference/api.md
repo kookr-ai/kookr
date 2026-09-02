@@ -82,7 +82,7 @@ post-resume refill failure (`refill_blocked`).
 | `GET /api/diagnostics/lesson-yield` | Per-window lesson yield (`?days=1..30`): decided / completed tasks from hook-log scans. Cache-first / stale-while-revalidate — a fresh or stale snapshot returns immediately; a cold cache waits at most ~8s for a single-flight scan, then returns `503 lesson_yield_warming` (with `retryAfterMs`) while the bounded scan finishes in the background, so the request path never hangs. (`503 lesson_yield_scan_timeout` remains only for the rare case a scan aborts at its 30s bound inside that wait.) (issues #1538, #1553, #1585) |
 | `GET /api/health/stt` | Bundled speech-to-text container health |
 | `GET /api/startup-summary` | Full crash-recovery startup summary (entry lists) fetched once on UI mount. Compact counts also on `GET /api/health` → `startupRecovery` (issue #2351). |
-| `GET /metrics` | Prometheus text exposition for request durations, per-tool PreToolUse→PostToolUse latencies, terminal input write round-trip latency, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
+| `GET /metrics` | Prometheus text exposition for request durations, control-plane probe latencies, per-tool PreToolUse→PostToolUse latencies, terminal input write round-trip latency, circuit breakers, attention-queue suppressions, audit-sink health, aggregate auth-throttle counters, and outbound finding-webhook delivery outcomes |
 
 ### `GET /metrics`
 
@@ -105,6 +105,30 @@ bounded ring-buffer histogram (issue #1770):
 Tool-name cardinality and per-tool sample retention are bounded so the structure
 cannot grow with every event. Orphaned PostToolUse events (no matching
 PreToolUse) are not recorded.
+
+Control-plane probe latency — the `/api/health`, health subroutes, and
+`/api/ready` surfaces that the general request-duration histogram deliberately
+excludes — is exported from a separate bounded histogram (issue #2774) so an
+operator can distinguish a slow or failing control plane from a merely
+binary status. Series are omitted entirely until the first probe is recorded:
+
+- `kookr_control_plane_probe_observations_total{method,route}`: counter of
+  completed probe observations by route template.
+- `kookr_control_plane_probe_sample_count{method,route}`: gauge of retained
+  duration samples used for quantiles (capped per route).
+- `kookr_control_plane_probe_errors_total{method,route}`: counter of probe
+  responses with an HTTP status `>= 400` (e.g. a `503` not-ready).
+- `kookr_control_plane_probe_slow_total{method,route}`: counter of probe
+  observations at or above the fixed slow threshold (5000ms by default).
+- `kookr_control_plane_probe_duration_seconds{method,route,quantile}`: gauge of
+  p50 / p95 / p99 probe durations in seconds (`quantile="0.5"|"0.95"|"0.99"`).
+- `kookr_control_plane_probe_dropped_routes_total`: counter of route templates
+  discarded after the probe route cardinality cap was reached.
+
+Route cardinality and per-route sample retention are bounded. Recording runs
+after the probe response resolves and is isolated from it, so metrics collection
+cannot delay or fail the health response. The same snapshot is served as JSON at
+`/api/diagnostics/control-plane-latencies`.
 
 Circuit breakers are exported as:
 

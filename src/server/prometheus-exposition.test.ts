@@ -4,6 +4,7 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import type { Anomaly } from '../core/types.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
 import { renderPrometheusExposition } from './prometheus-exposition.js';
+import { ControlPlaneLatencyMetrics } from './control-plane-latency-metrics.js';
 import type { WebhookDeliveryCounts } from '../integrations/webhook/index.js';
 import type { ToolLatencyMetricsSnapshot } from '../core/tool-latency-metrics.js';
 
@@ -114,6 +115,68 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_webhook_deliveries_total{outcome="failed"} 0');
     expect(output).toContain('kookr_webhook_deliveries_total{outcome="dropped"} 0');
     expect(output.endsWith('\n')).toBe(true);
+  });
+
+  test('renders control-plane probe latency, error, and slow counters when wired', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      controlPlaneLatencies: {
+        schemaVersion: 'control-plane-latency-metrics.v1',
+        maxRoutes: 16,
+        maxSamplesPerRoute: 256,
+        slowThresholdMs: 5000,
+        routeCount: 1,
+        droppedRouteCount: 3,
+        routes: [{
+          method: 'GET',
+          route: '/api/health',
+          count: 9,
+          sampleCount: 4,
+          errorCount: 2,
+          slowCount: 1,
+          p50Ms: 12.5,
+          p95Ms: 25,
+          p99Ms: 30,
+        }],
+      },
+    });
+
+    expect(output).toContain('# TYPE kookr_control_plane_probe_observations_total counter');
+    expect(output).toContain('kookr_control_plane_probe_observations_total{method="GET",route="/api/health"} 9');
+    expect(output).toContain('kookr_control_plane_probe_sample_count{method="GET",route="/api/health"} 4');
+    expect(output).toContain('kookr_control_plane_probe_errors_total{method="GET",route="/api/health"} 2');
+    expect(output).toContain('kookr_control_plane_probe_slow_total{method="GET",route="/api/health"} 1');
+    expect(output).toContain('kookr_control_plane_probe_duration_seconds{method="GET",route="/api/health",quantile="0.5"} 0.0125');
+    expect(output).toContain('kookr_control_plane_probe_duration_seconds{method="GET",route="/api/health",quantile="0.99"} 0.03');
+    expect(output).toContain('kookr_control_plane_probe_dropped_routes_total 3');
+  });
+
+  test('pipes a real recorded control-plane snapshot through the exposition', () => {
+    const metrics = new ControlPlaneLatencyMetrics({ slowThresholdMs: 50 });
+    metrics.record({ method: 'GET', route: '/api/health', durationMs: 10, status: 200 });
+    metrics.record({ method: 'GET', route: '/api/health', durationMs: 100, status: 503 });
+
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      controlPlaneLatencies: metrics.snapshot(),
+    });
+
+    expect(output).toContain('kookr_control_plane_probe_observations_total{method="GET",route="/api/health"} 2');
+    expect(output).toContain('kookr_control_plane_probe_sample_count{method="GET",route="/api/health"} 2');
+    expect(output).toContain('kookr_control_plane_probe_errors_total{method="GET",route="/api/health"} 1');
+    expect(output).toContain('kookr_control_plane_probe_slow_total{method="GET",route="/api/health"} 1');
+    // p99 sample is 100ms → 0.1s via msToSeconds; the producer→exposition seam.
+    expect(output).toContain('kookr_control_plane_probe_duration_seconds{method="GET",route="/api/health",quantile="0.99"} 0.1');
+  });
+
+  test('omits the control-plane probe family when metrics are unwired', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+    });
+    expect(output).not.toContain('kookr_control_plane_probe_');
   });
 
   test('renders idempotency retention gauges and compaction counters', () => {

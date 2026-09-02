@@ -57,6 +57,7 @@ import type { SessionAuthConfig } from '../auth-session.js';
 import { bodyLimit } from 'hono/body-limit';
 import type { MiddlewareHandler } from 'hono';
 import type { RequestDurationMetrics } from '../request-duration-metrics.js';
+import type { ControlPlaneLatencyMetrics } from '../control-plane-latency-metrics.js';
 import type { HotPathSampler } from '../../core/hot-path-sampler.js';
 import type { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
 import type { TaskSaveMetricsRecorder } from '../../core/task-save-metrics.js';
@@ -851,6 +852,13 @@ export interface RouteDeps {
   requestBodyLimitBytes?: number;
   /** In-memory per-route request duration aggregation exposed through diagnostics. */
   requestDurationMetrics?: RequestDurationMetrics;
+  /**
+   * Bounded latency + completion-status histogram for control-plane probe
+   * surfaces (`/api/health`, health subroutes, `/api/ready`) that
+   * {@link requestDurationMetrics} excludes (issue #2774). Exposed through
+   * `GET /api/diagnostics/control-plane-latencies` and `/metrics`.
+   */
+  controlPlaneLatencyMetrics?: ControlPlaneLatencyMetrics;
   /**
    * Per-agent-type launch outcome counters (issue #1808) for
    * `GET /api/diagnostics/launch-outcomes`. Absent ⇒ empty snapshot.

@@ -34,6 +34,10 @@ import { ReviewLogStore } from '../review-log-store.js';
 import { buildDetectorProposalReportResponseV1 } from '../detector-proposal-report.js';
 import { REQUEST_LATENCIES_ROUTE } from '../request-duration-metrics.js';
 import {
+  CONTROL_PLANE_LATENCIES_ROUTE,
+  EMPTY_CONTROL_PLANE_LATENCY_SNAPSHOT,
+} from '../control-plane-latency-metrics.js';
+import {
   LAUNCH_OUTCOMES_ROUTE,
   emptyLaunchOutcomeMetricsSnapshot,
 } from '../../core/launch-outcome-metrics.js';
@@ -1287,6 +1291,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     }
     return c.json(deps.requestDurationMetrics.snapshot());
   });
+
+  // Control-plane probe latency + completion status (issue #2774): p50/p95/p99
+  // plus error/slow counts for `/api/health`, health subroutes, and `/api/ready`
+  // — the surfaces excluded from the general request-latency histogram so an
+  // unattended operator can see a slow or failing control plane, not just a
+  // binary status. Falls back to an empty snapshot when direct diagnostics-route
+  // tests register this module without the createRoutes middleware.
+  app.get(CONTROL_PLANE_LATENCIES_ROUTE, (c) =>
+    c.json(deps.controlPlaneLatencyMetrics?.snapshot() ?? EMPTY_CONTROL_PLANE_LATENCY_SNAPSHOT));
 
   // Hot-path ranking (issue #1781): top event-loop contributors over recent
   // windows (labeled timings around known heavy functions — snapshot rebuild,

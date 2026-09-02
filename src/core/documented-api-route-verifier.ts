@@ -145,6 +145,7 @@ export const INTERNAL_API_ROUTES: ReadonlySet<string> = new Set([
   // Extra diagnostics not yet in the human catalogue.
   'GET /api/diagnostics/agent-boot-latency',
   'GET /api/diagnostics/auth-throttle',
+  'GET /api/diagnostics/control-plane-latencies',
   'GET /api/diagnostics/delivery-trace',
   'GET /api/diagnostics/hook-ingestion',
   'GET /api/diagnostics/launch-outcomes',

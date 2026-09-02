@@ -27,6 +27,7 @@ import {
 } from './diagnostics-routes.js';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
+import { ControlPlaneLatencyMetrics } from '../control-plane-latency-metrics.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
 import { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
@@ -383,6 +384,52 @@ describe('diagnostics routes', () => {
           p50Ms: 10,
           p95Ms: 20,
           p99Ms: 20,
+        }],
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/diagnostics/control-plane-latencies (issue #2774)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/diagnostics/control-plane-latencies', () => {
+    test('returns an empty v1 snapshot when control-plane metrics are not wired', async () => {
+      const res = await mkApp({}).request('/api/diagnostics/control-plane-latencies');
+
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.schemaVersion).toBe('control-plane-latency-metrics.v1');
+      expect(body.routes).toEqual([]);
+      expect(body.routeCount).toBe(0);
+    });
+
+    test('exposes per-route latency percentiles with error and slow counts', async () => {
+      const metrics = new ControlPlaneLatencyMetrics({ slowThresholdMs: 50 });
+      metrics.record({ method: 'GET', route: '/api/health', durationMs: 5, status: 200 });
+      metrics.record({ method: 'GET', route: '/api/health', durationMs: 15, status: 200 });
+      metrics.record({ method: 'GET', route: '/api/health', durationMs: 100, status: 503 });
+
+      const res = await mkApp({ controlPlaneLatencyMetrics: metrics })
+        .request('/api/diagnostics/control-plane-latencies');
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        schemaVersion: 'control-plane-latency-metrics.v1',
+        maxRoutes: 16,
+        maxSamplesPerRoute: 256,
+        slowThresholdMs: 50,
+        routeCount: 1,
+        droppedRouteCount: 0,
+        routes: [{
+          method: 'GET',
+          route: '/api/health',
+          count: 3,
+          sampleCount: 3,
+          errorCount: 1,
+          slowCount: 1,
+          p50Ms: 15,
+          p95Ms: 100,
+          p99Ms: 100,
         }],
       });
     });
