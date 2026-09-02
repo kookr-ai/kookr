@@ -16,6 +16,7 @@ import {
   listViewerLinks,
   revokeViewerLink,
   type CreatedViewerLink,
+  type ViewerGrantSummary,
   type ViewerScope,
   type ViewerLinksResponse,
 } from '../viewer-share-api.js';
@@ -41,10 +42,41 @@ function grantStatus(grant: ViewerLinksResponse['grants'][number]): 'revoked' | 
   return 'active';
 }
 
-function describeScope(scope: ViewerScope, nameById: Map<string, string>): string {
+export function describeScope(scope: ViewerScope, nameById: Map<string, string>): string {
   if (scope.kind === 'all') return 'Whole dashboard';
   const names = scope.projectIds.map((id) => nameById.get(id) ?? id);
   return names.length ? `Project: ${names.join(', ')}` : 'No projects';
+}
+
+/** Human, coarse-grained duration for the created-link confirmation. */
+function humanizeDuration(ms: number): string {
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) {
+    const m = Math.max(1, minutes);
+    return `${m} minute${m === 1 ? '' : 's'}`;
+  }
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours} hour${hours === 1 ? '' : 's'}`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? '' : 's'}`;
+}
+
+/**
+ * Unambiguous lifetime text for the one-time created-link confirmation. Pairs a
+ * coarse relative lifetime with a locale-formatted absolute instant so a
+ * finite link is clear across locales; a link with no expiry reads "Never
+ * expires". Reads only `expiresAt` — the raw token is never touched.
+ */
+export function describeExpiry(grant: ViewerGrantSummary): string {
+  if (!grant.expiresAt) return 'Never expires';
+  const expiresMs = Date.parse(grant.expiresAt);
+  // A present-but-unparseable timestamp still means the link expires — we just
+  // can't say when. Don't mislead the owner into thinking it never expires.
+  if (Number.isNaN(expiresMs)) return 'Expiry unknown';
+  const absolute = new Date(expiresMs).toLocaleString();
+  const remainingMs = expiresMs - Date.now();
+  if (remainingMs <= 0) return `Expired (${absolute})`;
+  return `Expires in ${humanizeDuration(remainingMs)} (${absolute})`;
 }
 
 function timeAgo(iso: string): string {
@@ -288,6 +320,9 @@ export function ShareViewerDialog({ onClose }: Props) {
           <div className="share-viewer-dialog__created" role="status">
             <p>
               Copy this link now — the token is shown <strong>only once</strong>:
+            </p>
+            <p className="share-viewer-dialog__created-summary">
+              {describeScope(justCreated.grant.scope, nameById)} · {describeExpiry(justCreated.grant)}
             </p>
             <div className="share-viewer-dialog__url-row">
               <input type="text" readOnly value={justCreated.handoffUrl} aria-label="Viewer handoff URL" />
