@@ -809,6 +809,35 @@ export interface WorktreeCleanupSlice {
   clearWorktreeCleanupVerdicts: () => void;
 }
 
+/**
+ * Paginated older completed-task history from `GET /api/tasks/archive`
+ * (issue #2760). Lives beside the live snapshot so a refresh cannot drop
+ * pages the user already loaded, and so the default view never fetches the
+ * archive until they click Load older history.
+ */
+export interface CompletedHistorySlice {
+  /** Archive rows already paged in. Live snapshot rows are not stored here. */
+  archivedAgents: AgentState[];
+  /** Opaque continuation token for the next older page; null at the start or end. */
+  archiveNextCursor: string | null;
+  /**
+   * Exclusive `before` bound captured on the first page (oldest live completed
+   * finish time). Reused on later pages so a snapshot refresh cannot shift the
+   * window and duplicate rows.
+   */
+  archiveBeforeMs: number | null;
+  /** True until a page arrives with no `nextCursor` (or before the first click). */
+  archiveHasMore: boolean;
+  archiveLoading: boolean;
+  archiveError: string | null;
+  /** True after at least one attempt, success or failure. */
+  archiveLoadedOnce: boolean;
+  /** Monotonic in-flight generation so a stale page cannot clobber newer state. */
+  archiveRequestId: number;
+
+  loadOlderHistory: () => Promise<void>;
+}
+
 export type KookrStore =
   & TransportSessionSlice
   & TriageNavigationSlice
@@ -818,7 +847,8 @@ export type KookrStore =
   & OssAttemptsSlice
   & SystemStatusSlice
   & AutoAdvanceSlice
-  & WorktreeCleanupSlice;
+  & WorktreeCleanupSlice
+  & CompletedHistorySlice;
 
 export type StoreSet = (
   partial: Partial<KookrStore> | ((state: KookrStore) => Partial<KookrStore>),

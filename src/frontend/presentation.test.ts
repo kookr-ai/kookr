@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -683,5 +683,53 @@ describe('formatDuration (issue #2737)', () => {
     const startedAt = '2026-08-20T10:00:00.000Z';
     expect(formatDuration(startedAt, startedAt)).toBe('<1m');
     expect(formatDuration(startedAt, '2026-08-20T09:59:00.000Z')).toBe('<1m');
+  });
+});
+
+describe('archivedTaskToAgentState (issue #2760)', () => {
+  test('projects an archive record into a Completed-row AgentState', () => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-01T00:00:00.000Z',
+      lastActivityMs: Date.parse('2026-08-01T12:00:00.000Z'),
+      task: {
+        id: 'task-9',
+        name: 'Ship archive UI',
+        status: 'cancelled',
+        cwd: '/tmp/kookr',
+        createdAt: '2026-08-01T10:00:00.000Z',
+        finishedAt: '2026-08-01T12:00:00.000Z',
+        tokenUsage: { inputTokens: 10, outputTokens: 20, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02 },
+        sessions: [{ tmuxSession: 'sess-9', agentType: 'codex-cli', cwd: '/tmp/kookr' }],
+      },
+    });
+    expect(agent).toMatchObject({
+      agentId: 'done-task-9',
+      taskId: 'task-9',
+      taskName: 'Ship archive UI',
+      taskStatus: 'cancelled',
+      agentType: 'codex-cli',
+      finishedAt: '2026-08-01T12:00:00.000Z',
+    });
+  });
+
+  test('drops a completionDigest that has no bullets array', () => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-01T00:00:00.000Z',
+      lastActivityMs: 1,
+      task: {
+        id: 'task-9',
+        status: 'completed',
+        completionDigest: { filesChanged: [] },
+      },
+    });
+    expect(agent?.completionDigest).toBeUndefined();
+  });
+
+  test('returns null when the record has no task id', () => {
+    expect(archivedTaskToAgentState({
+      archivedAt: '2026-08-01T00:00:00.000Z',
+      lastActivityMs: 1,
+      task: { status: 'completed' },
+    })).toBeNull();
   });
 });

@@ -8918,6 +8918,39 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 .completed-section-header-row .btn-clear-completed {
   flex-shrink: 0;
 }
+.completed-history-control {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.completed-section-header-row .completed-history-control {
+  flex: 0 1 auto;
+}
+.btn-load-older-history {
+  background: none;
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 10px;
+  color: var(--text-secondary);
+  padding: 1px 6px;
+  opacity: 0.8;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.btn-load-older-history:hover {
+  opacity: 1;
+  border-color: rgba(255,255,255,0.3);
+}
+.completed-history-error {
+  color: var(--red);
+  max-width: 28ch;
+}
+.findings-panel > .completed-history-control {
+  padding: 8px 10px 4px;
+}
 .completed-section .clear-completed-confirm {
   flex-basis: 100%;
   flex-wrap: wrap;
