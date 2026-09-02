@@ -23,6 +23,7 @@
     "verify": "bash scripts/verify.sh",
     "check:cycles": "node --import tsx scripts/check-import-cycles.ts",
     "test:smoke": "pnpm build:frontend && node --import tsx scripts/check-remote-import-boundaries.ts && vitest run src/remote/__tests__/load-purity.test.ts src/server/session-bridge.test.ts && node --import tsx scripts/local-only-smoke.ts",
+    "repro:prompt-truncation": "node scripts/repro-prompt-truncation.mjs",
     "test:e2e:relay": "vitest run relay/__tests__/two-nodes.test.ts",
     "test:coverage": "vitest run --coverage",
     "test:watch": "vitest",

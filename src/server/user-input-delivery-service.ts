@@ -3,6 +3,7 @@ import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { isPaneBusyOrAwaitingDialog } from '../adapters/agent-launch-context.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import { nowISO } from '../core/interaction-log.js';
+import { normalizeUserPromptNewlines } from '../shared/contracts/user-prompt-text.js';
 import { stripTerminalControls, visibleLinesFromTerminalText } from '../shared/pane-semantics.js';
 import type {
   UserInputDeliverySnapshot,
@@ -42,9 +43,7 @@ const COMPOSER_TRAILING_DECORATION_RES = [
   /^\s{2}(?:gpt-[\w.-].*|Fast on\s*$|.*(?:% left|context left).*)$/i,
 ];
 
-function normalizePrompt(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '');
-}
+const normalizePrompt = normalizeUserPromptNewlines;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);

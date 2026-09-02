@@ -24,6 +24,19 @@ const SYSTEM_REMINDER_PREFIX = '<system-reminder';
  * event). Plain empty prompts return `""` so signal-only UserPromptSubmit
  * hooks still flow through (anomaly clear, delivery observe, etc.).
  */
+/**
+ * Fold CRLF/CR to LF and drop trailing newlines, leaving internal whitespace
+ * alone. Every user-prompt body that reaches Kookr through a provider hook has
+ * had this applied, so anything comparing its own text against a hook payload
+ * must apply it to its own side too — otherwise a CRLF prompt (a `gh`-fetched
+ * issue body, a Windows-authored playbook) reads as one character short per
+ * line. See the launch delivery-integrity check in `claude-code-adapter.ts`
+ * and the mid-session matcher in `user-input-delivery-service.ts`.
+ */
+export function normalizeUserPromptNewlines(text: string): string {
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '');
+}
+
 export function unwrapProviderUserPrompt(prompt: string): string | null {
   if (typeof prompt !== 'string') return '';
 
@@ -53,7 +66,7 @@ export function unwrapProviderUserPrompt(prompt: string): string | null {
   }
 
   // Normalize trailing newlines; preserve internal whitespace/newlines.
-  text = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n+$/g, '');
+  text = normalizeUserPromptNewlines(text);
   // Leading whitespace inside the envelope is almost always the newline after
   // the open tag (already stripped above); trim only a residual leading newline.
   text = text.replace(/^\n+/, '');

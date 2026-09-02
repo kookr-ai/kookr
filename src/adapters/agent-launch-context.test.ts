@@ -10,15 +10,25 @@ import {
   resolveGitCommonDirBounded,
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
+  isClaudeComposerReady,
   isBracketedPasteModeEnabled,
   isClaudeBusyOrResponding,
   PROMPT_BRACKETED_PASTE_ENV,
   DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   DEFAULT_PROMPT_SUBMIT_RETRIES,
+  DEFAULT_PROMPT_READY_SETTLE_MS,
   DEFAULT_PROMPT_READY_TIMEOUT_MS,
   INITIAL_PROMPT_CHUNK_BYTES,
 } from './agent-launch-context.js';
+
+/**
+ * Composer chrome as Claude Code actually paints it: every word positioned by
+ * its own cursor-forward escape, so the footer text contains no spaces once
+ * the escapes are stripped. Readiness detection must survive that shape.
+ */
+const COMPOSER_PAINT =
+  '\r\x1b[2C\x1b[1B⏵⏵\x1b[6Gbypass\x1b[13Gpermissions\x1b[25Gon\x1b[28G(shift+tab\x1b[39Gto\x1b[42Gcycle)';
 
 const decoder = new TextDecoder();
 
@@ -476,7 +486,7 @@ describe('deliverInitialPromptToSession', () => {
       if (sleepCalls === 1) {
         // The composer can paint before Claude Code enables bracketed-paste
         // handling; this must not release the paste block.
-        backend.emit('s6', '\x1b]0;Claude Code\x07ClaudeCode\n❯ ');
+        backend.emit('s6', COMPOSER_PAINT);
       } else if (sleepCalls === 2) {
         backend.emit('s6', '\x1b[?2004h');
       }
@@ -506,7 +516,7 @@ describe('deliverInitialPromptToSession', () => {
     await backend.createSession('s-timeout', 'claude');
     const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
     const sleep = vi.fn(async (_ms: number) => {
-      backend.emit('s-timeout', '\x1b]0;Claude Code\x07ClaudeCode\n❯ ');
+      backend.emit('s-timeout', COMPOSER_PAINT);
     });
 
     await deliverInitialPromptToSession(backend, 's-timeout', 'timeout submit', {
@@ -759,20 +769,35 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
   test('exposes documented defaults for submit confirmation tuning', () => {
     expect(DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS).toBe(2_000);
     expect(DEFAULT_PROMPT_SUBMIT_RETRIES).toBe(2);
+    expect(DEFAULT_PROMPT_READY_SETTLE_MS).toBe(1_500);
   });
 });
 
-describe('deliverInitialPromptToSession waitForReady covers paste-mode-enable too', () => {
-  test('waitForReady resolves on the ESC[?2004h DECSET in raw bytes', async () => {
+describe('waitForReady needs paste-mode AND a painted composer (#2977)', () => {
+  test('the ESC[?2004h DECSET alone does not release the paste block', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession('s-pasteready', 'claude');
-    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    // Record the state of the world at the moment the paste is written, so the
+    // assertion is about intent — "the composer was up first" — rather than
+    // about how many times the ready loop happened to poll.
+    let composerPainted = false;
+    let composerPaintedAtWrite: boolean | undefined;
+    const originalWriteSequence = backend.writeSequence.bind(backend);
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence').mockImplementation(async (...args) => {
+      composerPaintedAtWrite ??= composerPainted;
+      return originalWriteSequence(...args);
+    });
     let polls = 0;
     const sleep = vi.fn(async (_ms: number) => {
       polls += 1;
-      // After the first poll, emit ONLY the DECSET (no visible composer
-      // text) — proves the wait succeeds on the precise paste-mode signal.
+      // Claude Code emits the DECSET during terminal setup and then spends
+      // seconds loading, dropping everything written in that window. Emit it
+      // alone first, and only paint the composer later.
       if (polls === 1) backend.emit('s-pasteready', '\x1b[?2004h');
+      if (polls === 4) {
+        composerPainted = true;
+        backend.emit('s-pasteready', COMPOSER_PAINT);
+      }
     });
 
     await deliverInitialPromptToSession(backend, 's-pasteready', 'go', {
@@ -780,15 +805,76 @@ describe('deliverInitialPromptToSession waitForReady covers paste-mode-enable to
       waitForReady: true,
       readyTimeoutMs: DEFAULT_PROMPT_READY_TIMEOUT_MS,
       readyPollMs: 10,
+      readySettleMs: 0,
       submitDelayMs: 0,
       sleep,
     });
 
     expect(writeSeqSpy).toHaveBeenCalledTimes(1);
-    // Sanity: paste block was delivered AFTER at least one ready-poll sleep.
+    expect(composerPaintedAtWrite).toBe(true);
+  });
+
+  test('the settle cushion is awaited after both signals, before the paste', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-settle', 'claude');
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const sleep = vi.fn(async (_ms: number) => {
+      backend.emit('s-settle', `\x1b[?2004h${COMPOSER_PAINT}`);
+    });
+
+    await deliverInitialPromptToSession(backend, 's-settle', 'go', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: DEFAULT_PROMPT_READY_TIMEOUT_MS,
+      readyPollMs: 10,
+      readySettleMs: 1234,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(sleep).toHaveBeenCalledWith(1234);
+    const settleCall = sleep.mock.calls.findIndex(([ms]) => ms === 1234);
     expect(writeSeqSpy.mock.invocationCallOrder[0]).toBeGreaterThan(
-      sleep.mock.invocationCallOrder[0],
+      sleep.mock.invocationCallOrder[settleCall],
     );
+  });
+
+  test('a timed-out ready wait skips the settle cushion and still delivers', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-nosettle', 'claude');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await deliverInitialPromptToSession(backend, 's-nosettle', 'go', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: 25,
+      readyPollMs: 10,
+      readySettleMs: 9_999,
+      submitDelayMs: 0,
+      sleep,
+    });
+
+    expect(sleep).not.toHaveBeenCalledWith(9_999);
+    expect(backend.getWrittenText('s-nosettle')).toBe('\x1b[200~go\x1b[201~\r');
+  });
+});
+
+describe('isClaudeComposerReady (#2977)', () => {
+  const encode = (text: string) => new TextEncoder().encode(text);
+
+  test('matches the footer even though each word carries its own cursor escape', () => {
+    // Verbatim shape of a real Claude Code footer capture.
+    expect(isClaudeComposerReady(encode(COMPOSER_PAINT))).toBe(true);
+  });
+
+  test('matches the default "? for shortcuts" footer', () => {
+    expect(isClaudeComposerReady(encode('❯ \n  ?\x1b[5Gfor\x1b[9Gshortcuts'))).toBe(true);
+  });
+
+  test('is false for the boot window — setup escapes with no composer painted', () => {
+    expect(isClaudeComposerReady(encode(
+      '\x1b[H\x1b[J\x1b7\x1b[r\x1b8\x1b[?25h\x1b[?25l\x1b[?2004h\x1b[?1004h\x1b[?2031h\x1b[>0q\x1b[c',
+    ))).toBe(false);
   });
 });
 

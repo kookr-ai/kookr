@@ -35,8 +35,10 @@ import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { isValidEffortForAgent, isValidModelForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
+  DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   deliverInitialPromptToSession,
+  stripBracketedPasteMarkers,
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
 } from './agent-launch-context.js';
@@ -45,6 +47,7 @@ import { effectiveHookSettingsPath, readPersistedHookSettings } from './effectiv
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
+import { normalizeUserPromptNewlines } from '../shared/contracts/user-prompt-text.js';
 import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -132,6 +135,8 @@ export interface ClaudeCodeAdapterOptions {
    */
   promptReadyTimeoutMs?: number;
   promptReadyPollMs?: number;
+  /** Settle cushion after both readiness signals, before the paste (#2977). */
+  promptReadySettleMs?: number;
   /**
    * Live getter for the configured per-agent-type effort default for
    * claude-code (#681). Called on every launch; returning a value pushes
@@ -164,6 +169,25 @@ export class InitialPromptSubmissionNotConfirmedError extends Error {
   }
 }
 
+/**
+ * The agent submitted a prompt that is not the one Kookr delivered. Raised
+ * when the `UserPromptSubmit` hook reports fewer characters than were
+ * written to the terminal — the signature of bytes dropped during delivery
+ * (kookr-ai/kookr#2977). Failing the launch is deliberate: a truncated
+ * prompt produces an agent working from a corrupted brief, which is strictly
+ * worse than a launch the operator can retry.
+ */
+export class InitialPromptTruncatedError extends Error {
+  constructor(sessionId: string, sentChars: number, receivedChars: number) {
+    super(
+      `Initial prompt was truncated in transit for session ${sessionId}: `
+      + `sent ${sentChars} chars, agent received ${receivedChars} `
+      + `(${sentChars - receivedChars} lost)`,
+    );
+    this.name = 'InitialPromptTruncatedError';
+  }
+}
+
 export class ClaudeCodeAdapter implements AgentAdapter {
   readonly agentType = 'claude-code';
   private eventHandlers: Array<AdapterEventHandler> = [];
@@ -186,7 +210,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
    * the resolver when the matching hook arrives. Cleared on first fire and
    * on `stop()`. See `launch()` for usage.
    */
-  private initialPromptSubmitResolvers = new Map<string, () => void>();
+  private initialPromptSubmitResolvers = new Map<string, (submittedPrompt?: string) => void>();
   private hooksDir: string;
   private settingsDir: string;
   private writeFile?: (path: string, content: string) => Promise<void>;
@@ -202,6 +226,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptSubmitRetries?: number;
   private promptReadyTimeoutMs?: number;
   private promptReadyPollMs?: number;
+  private promptReadySettleMs?: number;
   private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
@@ -226,6 +251,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.promptSubmitRetries = options?.promptSubmitRetries;
     this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs;
     this.promptReadyPollMs = options?.promptReadyPollMs;
+    this.promptReadySettleMs = options?.promptReadySettleMs;
     this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
@@ -395,6 +421,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             submitRetries: this.promptSubmitRetries,
             readyTimeoutMs: this.promptReadyTimeoutMs,
             readyPollMs: this.promptReadyPollMs,
+            readySettleMs: this.promptReadySettleMs,
           }),
           opts?.signal,
           tmuxName,
@@ -419,6 +446,51 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         }
         if (deliveryResult.status === 'unconfirmed') {
           throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
+        }
+        // Delivery-integrity check (#2977). `confirmed` only proves that *a*
+        // prompt left the composer, not that it is the one we wrote: bytes
+        // dropped in transit still submit, just short. The UserPromptSubmit
+        // hook carries the text the agent accepted, so compare it with what we
+        // sent and fail the launch rather than hand the task to an agent
+        // working from a mutilated brief.
+        //
+        // Only `confirmed` is verified, and it costs nothing to check: that
+        // status is reached *because* the hook resolved the deferred, so the
+        // await below is already settled. The other statuses have no hook text
+        // to compare against — `assumed-submitted` inferred submission from the
+        // display, `open-loop` never wired a confirmation signal at all — and
+        // waiting on a deferred that will never resolve would add the full
+        // confirm timeout to every such launch.
+        const submittedPrompt = deliveryResult.status === 'confirmed'
+          ? await withTimeout(
+            submitConfirmed,
+            this.promptSubmitConfirmTimeoutMs ?? DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
+            undefined,
+          )
+          : undefined;
+        // Both sides need the same normalization or the check fires on healthy
+        // launches. The hook body arrives folded to LF with surrounding
+        // newlines stripped (`unwrapProviderUserPrompt`), so a CRLF brief — a
+        // `gh`-fetched issue body, a Windows-authored playbook — would read as
+        // one character short per line. What was actually written also had any
+        // bracketed-paste markers stripped out of it. An empty body carries no
+        // text to verify (the hook's documented shape for a signal-only
+        // UserPromptSubmit) and is not evidence of loss.
+        const received = normalizeUserPromptNewlines(submittedPrompt ?? '').trim();
+        if (received.length > 0) {
+          const sent = normalizeUserPromptNewlines(stripBracketedPasteMarkers(prompt)).trim();
+          if (received.length < sent.length) {
+            throw new InitialPromptTruncatedError(tmuxName, sent.length, received.length);
+          }
+          if (received !== sent) {
+            // Not the truncation signature — the agent expanded or annotated
+            // the prompt (launch warnings, file refs). Worth a breadcrumb,
+            // not worth failing a launch that carries the full brief.
+            console.warn(
+              `[claude-code-adapter] submitted prompt differs from delivered prompt for ${tmuxName} `
+              + `(sent ${sent.length} chars, received ${received.length}); not a truncation`,
+            );
+          }
         }
       } catch (err) {
         await this.cleanupFailedLaunch(tmuxName);
@@ -527,10 +599,10 @@ export class ClaudeCodeAdapter implements AgentAdapter {
    * cancelled (resolved) before being replaced, so a re-launch on the same
    * tmuxName cannot leak a never-resolved promise.
    */
-  private armInitialPromptSubmitSignal(tmuxName: string): Promise<void> {
+  private armInitialPromptSubmitSignal(tmuxName: string): Promise<string | undefined> {
     const existing = this.initialPromptSubmitResolvers.get(tmuxName);
     if (existing) existing();
-    return new Promise<void>((resolve) => {
+    return new Promise<string | undefined>((resolve) => {
       this.initialPromptSubmitResolvers.set(tmuxName, resolve);
     });
   }
@@ -700,7 +772,16 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       const resolver = this.initialPromptSubmitResolvers.get(tmuxName);
       if (resolver) {
         this.initialPromptSubmitResolvers.delete(tmuxName);
-        resolver();
+        // The hook payload is the ground truth for what the agent actually
+        // received, and the launch path compares it against what it sent —
+        // but only a definitively-`parent` prompt is safe to compare. The
+        // `unknown` window above exists because a UserPromptSubmit POST can
+        // beat its SessionStart, and a subagent's prompt can land in it; that
+        // prompt is almost always shorter than a task brief, so treating it as
+        // the agent's report would fail the launch and reap a healthy session.
+        // Unknown parentage still confirms submission, it just carries no text
+        // to verify.
+        resolver(parentage === 'parent' ? event.prompt : undefined);
       }
     }
 
