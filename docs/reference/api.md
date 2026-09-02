@@ -39,6 +39,23 @@ Health reads this in-memory sample once and never calls `statfs`. The first
 last-good truncation tier retains the block for offline ops digests, while its
 fluctuating values do not force extra mirror writes (issue #2896).
 
+The always-present `resourceStatus` block projects the SAME latest resource
+sample the dashboard receives over WebSocket onto the HTTP probe, so a remote
+health check gets the gauges without opening a WebSocket (issue #2791). It is
+`{ status, sampledAt, ageMs, sampleGapMs, timerDriftMs, host: { cpuUsagePercent,
+memoryUsedPercent, memoryFreeBytes, memoryTotalBytes, dataDirectory: {
+diskFreeBytes, diskTotalBytes, diskFreePercent, diskFreeInodes, diskTotalInodes }
+}, server: { eventLoopDelayP95Ms, processRssBytes, processHeapUsedBytes,
+processHeapTotalBytes }, unavailable } }`. `status` is `known` once a sample
+exists and `unknown` before the first tick (all gauges `null`). `ageMs` is the
+sample-freshness field — how stale the gauges are relative to the health
+assembly (clamped at `0`, `null` when the sample carries no parseable
+timestamp). This reuses the single already-fetched sample — no re-sample, no
+`statfs`/`/proc` walk on the health path — and is kept path-free like
+`dataDirectory` above: the data-directory `path` is never exposed on
+operator-visible health. `unavailable` is the sampler's fixed enum of
+degraded-field reasons, never unbounded history.
+
 When post-recovery queue fill is wired, `GET /api/health` includes the optional
 `postRecoveryQueueFill` block. It reports the last process-local evaluation's
 lifecycle `state`, `evaluatedAt`/`ageMs` freshness, stable path-free reasons,
