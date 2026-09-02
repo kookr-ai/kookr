@@ -99,3 +99,149 @@ async function runSync(cwd: string): Promise<CheckoutAutoSyncResult> {
   console.log(`[checkout-auto-sync] synced ${cwd} (${branch}) with origin`);
   return { attempted: true, synced: true };
 }
+
+/**
+ * Git provenance of the playbook text a schedule fire actually read (issue
+ * #2945). Surfaces on the schedule receipt so a silent stale checkout cannot
+ * hide that the agent ran old instructions.
+ */
+export interface PlaybookCheckoutDrift {
+  /** HEAD commit SHA of the playbook source checkout. */
+  ref: string;
+  /** Upstream tracking ref, e.g. `origin/main`. */
+  upstreamRef: string;
+  /** Commits HEAD is behind `@{u}`. Zero when current or ahead. */
+  behindBy: number;
+  /**
+   * True when the playbook blob at HEAD differs from the same path at `@{u}`,
+   * or when HEAD is behind upstream even if that file currently matches.
+   */
+  drifted: boolean;
+  /** True when the playbook blob at HEAD differs from the same path at `@{u}`. */
+  blobDiffers: boolean;
+  /** Agent-facing warning. Present only when `drifted` is true. */
+  warning?: string;
+}
+
+/** Shape persisted on a schedule execution receipt / ledger row (issue #2945). */
+export interface SchedulePlaybookSource {
+  ref: string;
+  upstreamRef?: string;
+  behindBy: number;
+  drifted: boolean;
+}
+
+export function toSchedulePlaybookSource(drift: PlaybookCheckoutDrift): SchedulePlaybookSource {
+  return {
+    ref: drift.ref,
+    upstreamRef: drift.upstreamRef,
+    behindBy: drift.behindBy,
+    drifted: drift.drifted,
+  };
+}
+
+/**
+ * Compare a project-tier playbook file in `cwd` against the checkout's
+ * upstream tracking ref (issue #2945).
+ *
+ * Fetch-free against the already-known remote-tracking ref is enough to catch
+ * a checkout that has not been fast-forwarded after a local fetch. An
+ * opportunistic `git fetch --quiet` of the tracked branch is attempted first
+ * so a checkout that has not fetched recently still sees upstream playbook
+ * edits — bounded to one attempt and {@link SYNC_GIT_TIMEOUT_MS} so a hung
+ * origin cannot stall the schedule hot path. Fetch failure is fail-open: the
+ * comparison still runs against the last-known remote ref.
+ *
+ * Returns `null` when `cwd` is not a git worktree, has no upstream, or git
+ * itself fails — never throws, never blocks a run.
+ */
+export async function inspectPlaybookCheckoutDrift(
+  cwd: string,
+  playbookGitPath: string,
+): Promise<PlaybookCheckoutDrift | null> {
+  const inside = await driftGit(cwd, ['rev-parse', '--is-inside-work-tree']);
+  if (inside !== 'true') return null;
+
+  const headSha = await driftGit(cwd, ['rev-parse', 'HEAD']);
+  if (!headSha) return null;
+
+  const upstreamRef = await driftGit(cwd, ['rev-parse', '--abbrev-ref', '@{u}']);
+  if (!upstreamRef) return null;
+
+  const slash = upstreamRef.indexOf('/');
+  if (slash > 0) {
+    const remote = upstreamRef.slice(0, slash);
+    const branch = upstreamRef.slice(slash + 1);
+    // Best-effort: refresh the tracking ref so a checkout that has not
+    // fetched recently still sees playbook edits already on origin. One
+    // attempt, short timeout; ignore the result.
+    await runGitIn(cwd, ['fetch', '--quiet', remote, branch], SYNC_GIT_OPTIONS);
+  }
+
+  const upstreamSha = await driftGit(cwd, ['rev-parse', '@{u}']);
+  if (!upstreamSha) return null;
+
+  const behindRaw = await driftGit(cwd, ['rev-list', '--count', 'HEAD..@{u}']);
+  const behindBy = behindRaw !== null && /^\d+$/.test(behindRaw) ? Number(behindRaw) : 0;
+
+  const headBlob = await driftGit(cwd, ['rev-parse', `HEAD:${playbookGitPath}`]);
+  const upstreamBlob = await driftGit(cwd, ['rev-parse', `@{u}:${playbookGitPath}`]);
+  const blobDiffers = headBlob === null || upstreamBlob === null || headBlob !== upstreamBlob;
+  const drifted = blobDiffers || behindBy > 0;
+
+  if (!drifted) {
+    return { ref: headSha, upstreamRef, behindBy: 0, drifted: false, blobDiffers: false };
+  }
+
+  return {
+    ref: headSha,
+    upstreamRef,
+    behindBy,
+    drifted: true,
+    blobDiffers,
+    warning: formatPlaybookCheckoutDriftWarning({
+      ref: headSha,
+      upstreamRef,
+      behindBy,
+      blobDiffers,
+      playbookGitPath,
+    }),
+  };
+}
+
+export function formatPlaybookCheckoutDriftWarning(input: {
+  ref: string;
+  upstreamRef: string;
+  behindBy: number;
+  blobDiffers: boolean;
+  playbookGitPath: string;
+  failClosed?: boolean;
+}): string {
+  const head = shortenSha(input.ref);
+  const behindClause = input.behindBy > 0
+    ? `HEAD ${head} is ${input.behindBy === 1 ? '1 commit' : `${input.behindBy} commits`} behind \`${input.upstreamRef}\`.`
+    : `HEAD ${head} has a different playbook blob than \`${input.upstreamRef}\`.`;
+  const fileNote = input.blobDiffers
+    ? `The playbook file \`${input.playbookGitPath}\` differs from upstream.`
+    : `The playbook file \`${input.playbookGitPath}\` currently matches upstream, but the checkout is still behind — later playbook edits may be missing.`;
+  const closer = input.failClosed
+    ? 'This schedule is configured to fail closed on playbook cwd lag, so the run was skipped.'
+    : 'This warning does not block the run.';
+  return (
+    `WARNING: This scheduled playbook's cwd checkout lags its upstream. `
+    + `${behindClause} `
+    + `${fileNote} `
+    + `A fix already merged upstream may not be in effect. `
+    + `Fast-forward this checkout before re-deriving a local fix. `
+    + closer
+  );
+}
+
+function shortenSha(sha: string): string {
+  return sha.length > 12 ? sha.slice(0, 12) : sha;
+}
+
+async function driftGit(cwd: string, args: string[]): Promise<string | null> {
+  const result = await runGitIn(cwd, args, SYNC_GIT_OPTIONS);
+  return result.kind === 'ok' ? result.stdout : null;
+}

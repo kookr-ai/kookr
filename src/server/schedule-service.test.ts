@@ -1773,7 +1773,7 @@ describe('isGenuineExecutionFailure (issue #2521 — the single classifier)', ()
       'completed', 'running', 'queued', 'queued_capacity', 'parked_dependency', 'deduplicated',
       'skipped_capacity', 'skipped_draining', 'skipped_server_restarting',
       'skipped_safe_mode', 'skipped_manual', 'skipped_stale',
-      'skipped_relaunch_locked', 'skipped_provider_paused', 'unknown_after_restart',
+      'skipped_relaunch_locked', 'skipped_provider_paused', 'skipped_playbook_drift', 'unknown_after_restart',
     ];
     for (const outcome of lifecycle) {
       expect(isGenuineExecutionFailure(outcome)).toBe(false);

@@ -151,6 +151,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: relaunch locked';
     case 'skipped_provider_paused':
       return 'skipped: provider paused';
+    case 'skipped_playbook_drift':
+      return 'skipped: playbook cwd lag';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -206,6 +208,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'probe completed (no agent)';
     case 'probe_blip':
       return 'probe failed (no agent)';
+    case 'playbook_cwd_lag':
+      return 'playbook cwd lags upstream';
   }
 }
 
