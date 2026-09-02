@@ -29,6 +29,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { readLastGoodHealth, type LastGoodHealthRead } from '../server/last-good-health.js';
+import type { SystemdNotifierArming } from '../server/systemd-notify.js';
 
 const PORTS_TO_TRY = [4800, 4801] as const;
 /** Health payloads can be large on busy prod instances; keep headroom over status's 2s. */
@@ -196,7 +197,7 @@ export interface OpsDigestSnapshot {
      * systemd notifier arming (issue #2853): three-way process-local state, or
      * `null` when the server does not project a `systemdNotifier` block.
      */
-    systemdNotifierArming: 'watchdog-armed' | 'notifier-only' | 'absent' | null;
+    systemdNotifierArming: SystemdNotifierArming | null;
   };
   serverStartedAt: string | null;
   sha: string | null;
@@ -830,7 +831,7 @@ export function collectOpsDigestWarnings(
   // block reports process-local arming only, so we never claim the external
   // unit is active or that restart is guaranteed.
   const systemdNotifier = asRecord(h.systemdNotifier);
-  let systemdNotifierArming: OpsDigestSnapshot['signals']['systemdNotifierArming'] = null;
+  let systemdNotifierArming: SystemdNotifierArming | null = null;
   if (systemdNotifier) {
     const armingRaw = typeof systemdNotifier.arming === 'string' ? systemdNotifier.arming : null;
     const watchdogArmed = systemdNotifier.watchdogArmed === true;

@@ -3244,6 +3244,25 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('projects "notifier-only" when readiness is armed but the watchdog is not', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        systemdNotifier: { enabled: true, watchdogEnabled: false, watchdogIntervalMs: 0 },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
+      expect(body.systemdNotifier).toEqual({
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'notifier-only',
+        notificationEnabled: true,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      });
+    });
+
     test('projects "watchdog-armed" with the heartbeat interval', async () => {
       const res = await mkApp({
         taskStore: new TaskStore(),

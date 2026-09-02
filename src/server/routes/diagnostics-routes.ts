@@ -810,13 +810,6 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // summary block and the control-plane hook-lag freshness reading (#2798).
     const hookIngestionSnapshot = deps.hookIngestion?.getDiagnosticsSnapshot();
 
-    // Control-plane collection provenance (issue #2798). This live assembly
-    // stamps `source: "live"` and its own collection time; a degraded round
-    // (one of the bounded components above timed out or failed) flips
-    // collectionStatus to `degraded` while still serving the live gauges. The
-    // cold-cache deadline fallback in getCachedHealthBody overwrites this block
-    // with a `last-good` / `unavailable` verdict when it serves a preserved
-    // snapshot instead.
     // systemd notifier arming (issue #2853): project the process-local
     // readiness/watchdog arming state so a remote operator can tell whether
     // process-level watchdog integration is disabled — a cheap in-memory read
@@ -828,6 +821,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ? buildSystemdNotifierHealthBlock(deps.systemdNotifier)
       : undefined;
 
+    // Control-plane collection provenance (issue #2798). This live assembly
+    // stamps `source: "live"` and its own collection time; a degraded round
+    // (one of the bounded components above timed out or failed) flips
+    // collectionStatus to `degraded` while still serving the live gauges. The
+    // cold-cache deadline fallback in getCachedHealthBody overwrites this block
+    // with a `last-good` / `unavailable` verdict when it serves a preserved
+    // snapshot instead.
     const controlPlaneNowMs = deps.nowMs?.() ?? Date.now();
     const controlPlaneBlock: ControlPlaneCollectionBlock = buildControlPlaneCollectionBlock({
       source: 'live',

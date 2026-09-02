@@ -263,7 +263,11 @@ describe('collectOpsDigestWarnings', () => {
     });
 
     expect(signals.systemdNotifierArming).toBe('notifier-only');
-    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
+    const warning = warnings.find((w) => w.path === 'systemdNotifier.watchdogArmed');
+    expect(warning?.summary).toContain('systemdNotifier.arming=notifier-only');
+    expect(warning?.summary).toContain('watchdog heartbeat not armed');
+    // Must never imply the external unit is active/supervised.
+    expect(warning?.summary).toContain('external unit status unknown');
   });
 
   it('stays quiet (no warning) when the watchdog is armed', () => {
@@ -293,6 +297,22 @@ describe('collectOpsDigestWarnings', () => {
       systemdNotifier: { notificationEnabled: true, watchdogArmed: false },
     });
     expect(signals.systemdNotifierArming).toBe('notifier-only');
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
+  });
+
+  it('derives "watchdog-armed" from booleans (no discriminator) and stays quiet', () => {
+    const { signals, warnings } = collectOpsDigestWarnings({
+      systemdNotifier: { notificationEnabled: true, watchdogArmed: true },
+    });
+    expect(signals.systemdNotifierArming).toBe('watchdog-armed');
+    expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(false);
+  });
+
+  it('derives "absent" from booleans (no discriminator) and warns', () => {
+    const { signals, warnings } = collectOpsDigestWarnings({
+      systemdNotifier: { notificationEnabled: false, watchdogArmed: false },
+    });
+    expect(signals.systemdNotifierArming).toBe('absent');
     expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
   });
 
