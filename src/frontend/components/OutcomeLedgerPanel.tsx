@@ -214,6 +214,13 @@ export function OutcomeLedgerPanel({
                 <Metric label="tokens" value={formatTokens(data.summary.totalInputTokens + data.summary.totalOutputTokens)} detail={`${formatTokens(data.summary.totalInputTokens)} in / ${formatTokens(data.summary.totalOutputTokens)} out`} />
                 <Metric label="feedback" value={formatRate(data.summary.thumbsUpRate)} detail={`${pct(data.summary.feedbackCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'thumbsUpRate')} timeWindow={data.window.value} />
                 <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} delta={comparisonDelta(data.comparison, 'verificationCoverage')} timeWindow={data.window.value} />
+                {/*
+                  Close-out coverage (#2755): the share of completed tasks that
+                  left a completion digest, in the same format as `verified`.
+                  The comparison contract carries no digest delta, so this cell
+                  shows the current figure only — no DeltaBadge.
+                */}
+                <Metric label="digests" value={pct(data.quality.digestCoverage)} detail={`${data.quality.digestKnownCompletedTasks}/${data.summary.completedTaskCount}`} />
                 <Metric label="review flags" value={String(data.findings.length)} />
               </div>
               <ComparisonNote comparison={data.comparison} timeWindow={data.window.value} />
@@ -691,6 +698,7 @@ export function buildOutcomeLedgerCsv(data: OutcomeLedgerResponse): string {
   rows.push(['Thumbs-up rate', csvRate(data.summary.thumbsUpRate)]);
   rows.push(['Feedback coverage', csvRate(data.summary.feedbackCoverage)]);
   rows.push(['Verification coverage', csvRate(data.quality.verificationCoverage)]);
+  rows.push(['Digest coverage', csvRate(data.quality.digestCoverage)]);
   rows.push(['Review flags', String(data.findings.length)]);
   rows.push([]);
 
