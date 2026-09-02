@@ -1554,6 +1554,17 @@ The system SHOULD expose the same structured session-health data through the dia
 
 **Evidence:** `src/server/session-health-service.ts`, `src/server/routes/diagnostics-routes.ts`, `src/frontend/components/SessionHealthPanel.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/bug-report-bundle.ts`, `src/server/session-health-service.test.ts` (`TS-HEALTH-006`), `src/server/routes/session-health-route.test.ts` (`TS-HEALTH-007`), `src/frontend/bug-report-bundle.test.ts` (`TS-HEALTH-008`).
 
+### R12.4: Explain Health-Unknown With Machine-Readable Reason Codes [#2793] — SHOULD — `done`
+
+The system SHOULD attach a stable, machine-readable reason code, a bounded next-check hint, and the independent signal ages to every `health-unknown` classification so remote automation can distinguish missing telemetry from a real stall without parsing free-form evidence.
+
+**Acceptance criteria:**
+- Each `health-unknown` snapshot carries an `unknownDetail` with a reason code drawn from a fixed vocabulary (`no-independent-signals`, `backend-attach-unavailable`, `turn-state-unknown`, `provider-signals-unavailable`), a `nextCheck` hint from a bounded set (`wait`, `reattach`, `inspect-hooks`, `escalate`), and the pty/hooks/transcript ages in milliseconds.
+- The mapping is deterministic; the conservative classification itself is unchanged and no `unknownDetail` is attached to any non-unknown classification.
+- The detail carries only bounded, secret-free values and flows through the redacted support-capture bundle intact.
+
+**Evidence:** `src/shared/contracts/session-health.ts`, `src/core/session-health.ts`, `src/frontend/bug-report-bundle.ts`, `src/core/session-health.test.ts` (`TS-HEALTH-009`).
+
 ---
 
 ## R13: Accurate Cost Metering
@@ -1798,6 +1809,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |
 | R12.2 | F15.3 | SHALL | done | session-health, SessionHealthService, diagnostics-routes |
 | R12.3 | F15.3 | SHOULD | done | diagnostics-routes, SessionHealthPanel, FindingsPanel, bug-report-bundle |
+| R12.4 | #2793 | SHOULD | done | session-health contract, session-health, bug-report-bundle |
 | R13.1 | F4.9 | SHALL | done | pricing-tables, token-tracker, usage-types, tasks |
 | R13.2 | F4.9 | SHALL | done | presentation formatCostRate, DetailPanel, FindingCard |
 | R14.1 | #1445 | SHALL | done | TTS server input validation |
