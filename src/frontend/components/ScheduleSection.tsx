@@ -54,6 +54,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'skipped: relaunch locked';
     case 'skipped_provider_paused':
       return 'skipped: provider paused';
+    case 'skipped_playbook_drift':
+      return 'skipped: playbook cwd lag';
     case 'unknown_after_restart':
       return 'unknown after restart';
   }
@@ -82,6 +84,7 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_stale':
     case 'skipped_relaunch_locked':
     case 'skipped_provider_paused':
+    case 'skipped_playbook_drift':
     case 'unknown_after_restart':
       return 'schedule-status-fail';
     default:

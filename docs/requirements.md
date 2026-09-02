@@ -1487,6 +1487,28 @@ The system SHALL preserve the executed playbook configuration when a developer s
 
 **Evidence:** `src/core/tasks.ts`, `src/core/playbook-discovery.ts`, `src/server/use-cases/playbook-launch.ts`, `src/server/use-cases/snapshot-projection.ts`, `src/server/umbrella-decompose-launch.ts`, `src/server/idle-refinery-runner.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/FindingsPanel/SchedulePlaybookButton.tsx`, `src/frontend/components/SchedulesDialog.tsx`, and focused tests beside those modules.
 
+### R10.9: Warn When a Scheduled Playbook Cwd Lags Upstream [F11.3, #2945] — SHALL — `done`
+
+The system SHALL detect when a scheduled project-tier playbook's cwd checkout
+lags its upstream tracking ref, record the playbook commit on the fire
+receipt, and warn without blocking unless the schedule opts into fail-closed.
+
+**Acceptance criteria:**
+- A schedule whose `cwd` checkout is behind its upstream on the playbook path
+  records `playbookSource` `{ ref, upstreamRef?, behindBy, drifted }` on the
+  execution receipt / ledger / latestExecution
+- A current checkout produces no warning and no behavior change
+- Drift detection never blocks the run unless `failOnPlaybookDrift` is true;
+  that opt-in records `skipped_playbook_drift` / `playbook_cwd_lag`
+- Detection is bounded: at most one timed `git fetch` on the schedule hot
+  path; git failure is fail-open
+
+**Evidence:** `src/server/checkout-auto-sync.ts`, `src/server/schedule-runner.ts`,
+`src/core/schedule.ts`, `src/shared/contracts/schedule.ts`,
+`src/server/schedule-service.ts`, `src/frontend/components/ScheduleSection.tsx`,
+`src/frontend/components/SchedulesDialog.tsx`, and focused tests beside those
+modules.
+
 ---
 
 ## R11: Self-Diagnostic Telemetry
@@ -1805,6 +1827,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R10.6 | #2904 | SHALL | done | schedule-validator and schedule-runner completion-policy propagation |
 | R10.7 | F11.8, #2900 | SHALL | done | post-recovery-service bounded critical re-arm retries |
 | R10.8 | F11.9, #2887 | SHALL | done | task playbook identity, scoped catalog, schedule prefill and fire fidelity |
+| R10.9 | F11.3, #2945 | SHALL | done | schedule playbook cwd lag warning, failOnPlaybookDrift |
 | R11.1 | F15.3 | SHALL | done | anomaly-detector, monitor, DetectionStatsPanel |
 | R11.2 | #2896 | SHALL | done | diagnostics-routes, last-good-health, kookr-ops-digest |
 | R12.1 | F15.3 | SHALL | done | session-health, local-dtach-backend, dtach-ring-store, session-bridge, Monitor |

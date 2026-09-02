@@ -100,6 +100,56 @@ Loop {{target}}.
     });
   });
 
+  it('prepends promptPrefix onto the launch prompt (issue #2945)', async () => {
+    await withPlaybook(`---
+name: Loopable
+tags: [workflow, loopable]
+loop:
+  iterationCap: 3
+---
+
+Loop body.
+`, async (cwd) => {
+      const taskStore = new TaskStore();
+      const startLoop = vi.fn(async (task, input) => {
+        taskStore.getTaskForMutation(task.id)!.ralphLoop = {
+          prompt: input.prompt,
+          iterationCap: input.iterationCap,
+          currentIteration: 0,
+          status: 'running',
+          lastIterationStartedAt: 0,
+          cumulativeIterations: 0,
+        };
+        return { ok: true, changed: true, value: taskStore.getTask(task.id)!.ralphLoop };
+      });
+      const launchTask = vi.fn(async (opts) => {
+        const task = taskStore.createTask({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          playbookId: opts.playbookId,
+        });
+        return { task, queued: false };
+      });
+      const prefix = 'WARNING: This scheduled playbook\'s cwd checkout lags its upstream.';
+
+      await launchLoopedPlaybook({
+        taskStore,
+        launchTask,
+        ralphLoopService: { startLoop } as unknown as RalphLoopService,
+      }, {
+        cwd,
+        playbookPath: 'workflow.md',
+        parameterValues: {},
+        promptPrefix: prefix,
+      });
+
+      const launchPrompt = launchTask.mock.calls[0][0].prompt as string;
+      expect(launchPrompt).toContain(prefix);
+      expect(launchPrompt).toContain('Loop body.');
+      expect(launchPrompt.indexOf(prefix)).toBeLessThan(launchPrompt.indexOf('Loop body.'));
+    });
+  });
+
   it('forwards stopPredicate from playbook frontmatter into the Ralph loop request', async () => {
     await withPlaybook(`---
 name: Predicate loop

@@ -3,7 +3,10 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
+import {
+  autoSyncCheckoutForManualLaunch,
+  inspectPlaybookCheckoutDrift,
+} from './checkout-auto-sync.js';
 
 function cleanGitEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
@@ -194,6 +197,111 @@ describe('autoSyncCheckoutForManualLaunch', () => {
       const third = await autoSyncCheckoutForManualLaunch(cloneDir);
       expect(third).not.toBe(first);
       expect(third).toEqual({ attempted: true, synced: true }); // already up to date
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('inspectPlaybookCheckoutDrift (issue #2945)', () => {
+  const playbookRel = '.kookr/playbooks/workflow.md';
+
+  async function writePlaybook(repoDir: string, body: string) {
+    await mkdir(join(repoDir, '.kookr', 'playbooks'), { recursive: true });
+    await writeFile(join(repoDir, playbookRel), body);
+  }
+
+  it('returns null when cwd is not a git worktree', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'drift-nongit-'));
+    try {
+      await writePlaybook(dir, '# not a git repo\n');
+      expect(await inspectPlaybookCheckoutDrift(dir, playbookRel)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a current checkout as not drifted, with no warning', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'drift-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'drift-'));
+    try {
+      await initGitRepo(remoteDir);
+      await writePlaybook(remoteDir, '# playbook v1\n');
+      git(remoteDir, 'add', playbookRel);
+      git(remoteDir, 'commit', '-m', 'add playbook');
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      const head = gitOutput(cloneDir, 'rev-parse', 'HEAD');
+
+      const result = await inspectPlaybookCheckoutDrift(cloneDir, playbookRel);
+
+      expect(result).toEqual({
+        ref: head,
+        upstreamRef: 'origin/main',
+        behindBy: 0,
+        drifted: false,
+        blobDiffers: false,
+      });
+      expect(result?.warning).toBeUndefined();
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when HEAD is behind upstream on the playbook path', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'drift-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'drift-'));
+    try {
+      await initGitRepo(remoteDir);
+      await writePlaybook(remoteDir, '# playbook v1\n');
+      git(remoteDir, 'add', playbookRel);
+      git(remoteDir, 'commit', '-m', 'add playbook');
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+      const staleHead = gitOutput(cloneDir, 'rev-parse', 'HEAD');
+
+      await writePlaybook(remoteDir, '# playbook v2 — drain-floor moved to config\n');
+      git(remoteDir, 'add', playbookRel);
+      git(remoteDir, 'commit', '-m', 'fix playbook');
+
+      const result = await inspectPlaybookCheckoutDrift(cloneDir, playbookRel);
+
+      expect(result).not.toBeNull();
+      expect(result!.ref).toBe(staleHead);
+      expect(result!.upstreamRef).toBe('origin/main');
+      expect(result!.behindBy).toBe(1);
+      expect(result!.drifted).toBe(true);
+      expect(result!.blobDiffers).toBe(true);
+      expect(result!.warning).toContain('lags its upstream');
+      expect(result!.warning).toContain(playbookRel);
+      expect(result!.warning).toContain('does not block the run');
+    } finally {
+      await rm(remoteDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  });
+
+  it('warns when the checkout is behind even if the playbook blob currently matches', async () => {
+    const remoteDir = await mkdtemp(join(tmpdir(), 'drift-origin-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'drift-'));
+    try {
+      await initGitRepo(remoteDir);
+      await writePlaybook(remoteDir, '# playbook v1\n');
+      git(remoteDir, 'add', playbookRel);
+      git(remoteDir, 'commit', '-m', 'add playbook');
+      const cloneDir = await cloneAndTrack(remoteDir, workDir);
+
+      await writeFile(join(remoteDir, 'UNRELATED.md'), 'other\n');
+      git(remoteDir, 'add', 'UNRELATED.md');
+      git(remoteDir, 'commit', '-m', 'unrelated advance');
+
+      const result = await inspectPlaybookCheckoutDrift(cloneDir, playbookRel);
+
+      expect(result).not.toBeNull();
+      expect(result!.behindBy).toBe(1);
+      expect(result!.blobDiffers).toBe(false);
+      expect(result!.drifted).toBe(true);
+      expect(result!.warning).toContain('currently matches upstream');
     } finally {
       await rm(remoteDir, { recursive: true, force: true });
       await rm(workDir, { recursive: true, force: true });

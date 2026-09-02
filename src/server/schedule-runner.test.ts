@@ -3818,3 +3818,307 @@ Custom body.
     expect(result.exitCode).toBe(2);
   });
 });
+
+describe('playbook cwd lag warning (issue #2945)', () => {
+  let dir: string;
+  let store: ScheduleStore;
+  let service: ScheduleService;
+  let validator: ScheduleValidator;
+  let launched: Array<{
+    prompt: string;
+    playbookSource?: {
+      id: string;
+      scope: string;
+      sourceCwd: string;
+      sourceDigest: string;
+      ref?: string;
+      upstreamRef?: string;
+      behindBy?: number;
+      drifted?: boolean;
+    };
+  }>;
+  let runners: Set<ScheduleRunner>;
+
+  const driftedInspect = async () => ({
+    ref: 'aaa111bbb222ccc333ddd444eee555fff666000',
+    upstreamRef: 'origin/main',
+    behindBy: 2,
+    drifted: true as const,
+    blobDiffers: true,
+    warning: 'WARNING: This scheduled playbook\'s cwd checkout lags its upstream. HEAD aaa111bbb222 is 2 commits behind `origin/main`. The playbook file `.kookr/playbooks/test.md` differs from upstream. A fix already merged upstream may not be in effect. Fast-forward this checkout before re-deriving a local fix. This warning does not block the run.',
+  });
+
+  const currentInspect = async () => ({
+    ref: 'fff000eee555ddd444ccc333bbb222aaa111999',
+    upstreamRef: 'origin/main',
+    behindBy: 0,
+    drifted: false as const,
+    blobDiffers: false,
+  });
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'runner-cwd-lag-'));
+    store = new ScheduleStore(dir);
+    validator = new ScheduleValidator();
+    service = new ScheduleService({ store, validator });
+    launched = [];
+    runners = new Set();
+    await mkdir(join(dir, '.kookr', 'playbooks'), { recursive: true });
+    await writeFile(join(dir, '.kookr', 'playbooks', 'test.md'), `---
+name: Test Playbook
+description: A test playbook
+parameters: []
+checklist:
+  - Step 1
+---
+
+Do the test thing.
+`);
+  });
+
+  afterEach(async () => {
+    await Promise.all([...runners].map((runner) => runner.stop()));
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  function createRunner(overrides: Partial<ScheduleRunnerDeps> = {}) {
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async (opts) => {
+        launched.push({
+          prompt: opts.prompt,
+          playbookSource: opts.playbookSource,
+        });
+        return { task: aTask({ id: `task-${launched.length}`, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      inspectPlaybookCheckoutDrift: driftedInspect,
+      ...overrides,
+    });
+    runners.add(runner);
+    return runner;
+  }
+
+  function markDue(id: string): void {
+    store.replace({
+      ...store.get(id)!,
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+  }
+
+  it('injects a drift warning into the spawn briefing and records provenance on the receipt', async () => {
+    const inspect = vi.fn(driftedInspect);
+    const schedule = store.create({
+      name: 'Lucy Workflow Reflection',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    await createRunner({ inspectPlaybookCheckoutDrift: inspect }).tick();
+    expect(inspect).toHaveBeenCalledWith(dir, '.kookr/playbooks/test.md');
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]!.prompt).toContain('lags its upstream');
+    expect(launched[0]!.prompt).toContain('Do the test thing.');
+    expect(launched[0]!.playbookSource).toMatchObject({
+      id: 'test.md',
+      scope: 'project',
+      sourceCwd: dir,
+    });
+    expect(launched[0]!.playbookSource).not.toHaveProperty('behindBy');
+    expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+      outcome: 'running',
+      playbookSource: {
+        ref: 'aaa111bbb222ccc333ddd444eee555fff666000',
+        upstreamRef: 'origin/main',
+        behindBy: 2,
+        drifted: true,
+      },
+    });
+    expect(store.get(schedule.id)!.executionLedger[0]).toMatchObject({
+      playbookSource: {
+        ref: 'aaa111bbb222ccc333ddd444eee555fff666000',
+        behindBy: 2,
+        drifted: true,
+      },
+    });
+    expect(store.get(schedule.id)!.currentExecution?.playbookSource).toEqual({
+      ref: 'aaa111bbb222ccc333ddd444eee555fff666000',
+      upstreamRef: 'origin/main',
+      behindBy: 2,
+      drifted: true,
+    });
+  });
+
+  it('does not warn or change the prompt when the checkout is current', async () => {
+    const schedule = store.create({
+      name: 'Current',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    await createRunner({ inspectPlaybookCheckoutDrift: currentInspect }).tick();
+
+    expect(launched).toHaveLength(1);
+    expect(launched[0]!.prompt).toBe('Do the test thing.');
+    expect(launched[0]!.prompt).not.toContain('WARNING');
+    expect(launched[0]!.playbookSource).not.toHaveProperty('behindBy');
+    expect(store.get(schedule.id)!.latestExecution?.playbookSource).toMatchObject({
+      ref: 'fff000eee555ddd444ccc333bbb222aaa111999',
+      behindBy: 0,
+      drifted: false,
+    });
+  });
+
+  it('does not launch when failOnPlaybookDrift is set and the checkout lags', async () => {
+    const schedule = store.create({
+      name: 'Fail closed',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      failOnPlaybookDrift: true,
+    });
+    markDue(schedule.id);
+
+    await createRunner().tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+      outcome: 'skipped_playbook_drift',
+      reasonCode: 'playbook_cwd_lag',
+      playbookSource: {
+        behindBy: 2,
+        drifted: true,
+      },
+    });
+    expect(store.get(schedule.id)!.latestExecution?.message).toContain('fail closed');
+    expect(store.get(schedule.id)!.lastRunStatus).toBe('skipped');
+  });
+
+  it('still launches when failOnPlaybookDrift is set but the checkout is current', async () => {
+    const schedule = store.create({
+      name: 'Fail closed but current',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      failOnPlaybookDrift: true,
+    });
+    markDue(schedule.id);
+
+    await createRunner({ inspectPlaybookCheckoutDrift: currentInspect }).tick();
+
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
+  });
+
+  it('still launches when the inspector throws', async () => {
+    const schedule = store.create({
+      name: 'Inspector boom',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    await createRunner({
+      inspectPlaybookCheckoutDrift: async () => {
+        throw new Error('git hung');
+      },
+    }).tick();
+
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.playbookSource).toBeUndefined();
+  });
+
+  it('persists failOnPlaybookDrift across reload', async () => {
+    const schedule = store.create({
+      name: 'Persist flag',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      failOnPlaybookDrift: true,
+    });
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.get(schedule.id)!.failOnPlaybookDrift).toBe(true);
+
+    reloaded.updateDefinition(schedule.id, { failOnPlaybookDrift: null });
+    await reloaded.persist();
+    const again = new ScheduleStore(dir);
+    await again.load();
+    expect(again.get(schedule.id)!.failOnPlaybookDrift).toBeUndefined();
+  });
+
+  it('forwards the drift warning as a promptPrefix to a looped launcher', async () => {
+    const schedule = store.create({
+      name: 'Looped lag',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      loop: {},
+    });
+    markDue(schedule.id);
+
+    let prefix: string | undefined;
+    await createRunner({
+      launcher: async () => {
+        throw new Error('one-shot launcher must not be used for loop-configured schedules');
+      },
+      loopedLauncher: async (_s, extras) => {
+        prefix = extras?.promptPrefix;
+        return { task: aTask({ id: 'loop-lag-task' }), queued: false };
+      },
+    }).tick();
+
+    expect(prefix).toContain('lags its upstream');
+    expect(store.get(schedule.id)!.latestExecution?.playbookSource?.drifted).toBe(true);
+  });
+
+  it('skips inspection for plugin-tier playbooks', async () => {
+    const inspect = vi.fn(driftedInspect);
+    const schedule = store.create({
+      name: 'Plugin playbook',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {}, scope: 'plugin' },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+
+    // Plugin-tier resolution needs the file in the plugin dir, which this
+    // isolated temp cwd does not have — fire will fail validation. Stub the
+    // inspector anyway and assert it is never consulted.
+    await createRunner({ inspectPlaybookCheckoutDrift: inspect }).tick();
+
+    expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it('survives a persist/reload so the receipt still names the playbook commit', async () => {
+    const schedule = store.create({
+      name: 'Persist',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    markDue(schedule.id);
+    await createRunner().tick();
+
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.get(schedule.id)!.executionLedger[0]?.playbookSource).toEqual({
+      ref: 'aaa111bbb222ccc333ddd444eee555fff666000',
+      upstreamRef: 'origin/main',
+      behindBy: 2,
+      drifted: true,
+    });
+    expect(reloaded.get(schedule.id)!.failOnPlaybookDrift).toBeUndefined();
+  });
+});

@@ -187,6 +187,12 @@ export type ScheduleExecutionOutcome =
    * guard rather than recorded as `dispatch_failed`.
    */
   | 'skipped_provider_paused'
+  /**
+   * Opt-in fail-closed skip when the playbook cwd checkout lags its upstream
+   * (issue #2945). Default fires still launch with a briefing warning; this
+   * outcome is only recorded when `failOnPlaybookDrift` is set.
+   */
+  | 'skipped_playbook_drift'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -254,7 +260,13 @@ export type ScheduleExecutionReasonCode =
    * exit 1 or a probe exec failure — logged, not escalated.
    */
   | 'probe_quiet'
-  | 'probe_blip';
+  | 'probe_blip'
+  /**
+   * Reason code for {@link ScheduleExecutionOutcome.skipped_playbook_drift}
+   * (issue #2945): the playbook cwd checkout is behind its upstream tracking
+   * ref, or the playbook blob at HEAD differs from the same path upstream.
+   */
+  | 'playbook_cwd_lag';
 
 /**
  * Classified task terminal cause carried onto a schedule execution receipt
@@ -329,6 +341,12 @@ export interface ScheduleExecutionLedgerEntry {
    * `shared/contracts/schedule`.
    */
   terminalReason?: ScheduleTerminalReason;
+  /**
+   * Git provenance of the playbook text this fire read (issue #2945). Absent
+   * when the playbook is not project-tier, the cwd is not a git worktree, or
+   * detection could not run.
+   */
+  playbookSource?: SchedulePlaybookCheckoutSource;
 }
 
 /**
@@ -392,6 +410,22 @@ export function pruneExecutionLedger(
   return survivingPending.length === 0 ? tail : [...survivingPending, ...tail];
 }
 
+/**
+ * Git provenance of the playbook text a fire actually read (issue #2945).
+ * Recorded on the schedule receipt so a silent stale checkout cannot hide
+ * that the agent ran old instructions.
+ */
+export interface SchedulePlaybookCheckoutSource {
+  /** HEAD commit SHA of the playbook source checkout. */
+  ref: string;
+  /** Upstream tracking ref, e.g. `origin/main`. */
+  upstreamRef?: string;
+  /** Commits HEAD is behind `@{u}`. Zero when current. */
+  behindBy: number;
+  /** True when the playbook blob differs from upstream, or HEAD is behind. */
+  drifted: boolean;
+}
+
 export interface ScheduleExecutionReceipt {
   id: string;
   scheduleId: string;
@@ -402,6 +436,7 @@ export interface ScheduleExecutionReceipt {
   evaluatedAt: string;
   taskId?: string;
   status: 'reserved' | 'accepted' | 'terminal' | 'unknown_after_restart';
+  playbookSource?: SchedulePlaybookCheckoutSource;
 }
 
 export interface ScheduleLatestExecutionStatus {
@@ -422,6 +457,11 @@ export interface ScheduleLatestExecutionStatus {
    * `shared/contracts/schedule`.
    */
   terminalReason?: ScheduleTerminalReason;
+  /**
+   * Git provenance of the playbook text the most recent fire read (issue
+   * #2945). Absent when detection did not run.
+   */
+  playbookSource?: SchedulePlaybookCheckoutSource;
 }
 
 export interface Schedule {
@@ -507,6 +547,14 @@ export interface Schedule {
    * iteration budget and stop conditions.
    */
   loop?: ScheduleLoopConfig;
+  /**
+   * Opt-in fail-closed on playbook cwd lag (issue #2945). Default is warn-and-
+   * still-launch: drift is legitimate while iterating in a worktree. When
+   * true, a fire whose project-tier playbook checkout is behind its upstream
+   * (or whose playbook blob differs from upstream) records
+   * `skipped_playbook_drift` and does not launch.
+   */
+  failOnPlaybookDrift?: boolean;
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -633,6 +681,11 @@ export interface CreateScheduleInput {
    */
   loop?: ScheduleLoopConfig;
   enabled?: boolean;
+  /**
+   * Opt-in fail-closed on playbook cwd lag (issue #2945). Default is
+   * warn-and-still-launch.
+   */
+  failOnPlaybookDrift?: boolean;
 }
 
 export interface UpdateScheduleDefinitionInput {
@@ -658,6 +711,11 @@ export interface UpdateScheduleDefinitionInput {
    * also accepted and merges onto the top-level field.
    */
   loop?: ScheduleLoopConfig | null;
+  /**
+   * Set to opt into fail-closed playbook cwd lag; pass `null` to clear
+   * (issue #2945). Omit to leave unchanged.
+   */
+  failOnPlaybookDrift?: boolean | null;
 }
 
 
@@ -897,6 +955,7 @@ export class ScheduleStore {
       ...(input.effort !== undefined ? { effort: input.effort } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(loop ? { loop } : {}),
+      ...(input.failOnPlaybookDrift === true ? { failOnPlaybookDrift: true } : {}),
       executionLedger: [],
       createdAt: now,
       updatedAt: now,
@@ -952,6 +1011,7 @@ export class ScheduleStore {
       playbook: patchPlaybook,
       agentType: patchAgentType,
       modelTier: patchModelTier,
+      failOnPlaybookDrift: patchFailOnPlaybookDrift,
       ...rest
     } = patch;
     const nextTriggerState = computeUpdatedTriggerState(existing, maxTriggers, new Date().toISOString());
@@ -992,6 +1052,9 @@ export class ScheduleStore {
       ...(nextLoop !== undefined
         ? (nextLoop === null ? { loop: undefined } : { loop: nextLoop })
         : {}),
+      ...(patchFailOnPlaybookDrift === true
+        ? { failOnPlaybookDrift: true }
+        : {}),
       updatedAt: new Date().toISOString(),
     };
     // Explicit clear: spreading `{ loop: undefined }` leaves a key behind on
@@ -1004,6 +1067,9 @@ export class ScheduleStore {
     }
     if (patchModelTier === null) {
       delete updated.modelTier;
+    }
+    if (patchFailOnPlaybookDrift === false || patchFailOnPlaybookDrift === null) {
+      delete updated.failOnPlaybookDrift;
     }
     this.schedules.set(id, updated);
     this.syncRollup(updated);
@@ -1246,6 +1312,7 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       );
       return loop ? { loop } : {};
     })(),
+    ...(candidate.failOnPlaybookDrift === true ? { failOnPlaybookDrift: true } : {}),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),
@@ -1305,6 +1372,7 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
   // predate it, so it must load cleanly when absent and be dropped when
   // malformed rather than trusted — the enriched receipt survives a restart.
   const terminalReason = normalizeScheduleTerminalReason(candidate.terminalReason);
+  const playbookSource = normalizePlaybookCheckoutSource(candidate.playbookSource);
   return {
     id: String(candidate.id),
     scheduleId: String(candidate.scheduleId),
@@ -1324,6 +1392,7 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
     ...(artifacts ? { artifacts } : {}),
     ...(mergeCommit ? { mergeCommit } : {}),
     ...(terminalReason ? { terminalReason } : {}),
+    ...(playbookSource ? { playbookSource } : {}),
   };
 }
 
@@ -1401,6 +1470,7 @@ function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus |
     return undefined;
   }
   const terminalReason = normalizeScheduleTerminalReason(candidate.terminalReason);
+  const playbookSource = normalizePlaybookCheckoutSource(candidate.playbookSource);
   return {
     executionToken: candidate.executionToken,
     evaluatedAt: candidate.evaluatedAt,
@@ -1413,6 +1483,7 @@ function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus |
     ...(candidate.reasonCode ? { reasonCode: candidate.reasonCode } : {}),
     ...(candidate.message ? { message: candidate.message } : {}),
     ...(terminalReason ? { terminalReason } : {}),
+    ...(playbookSource ? { playbookSource } : {}),
   };
 }
 
@@ -1422,6 +1493,7 @@ function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | und
   if (!candidate.id || !candidate.executionToken || !candidate.scheduleId || !candidate.trigger || !candidate.evaluatedAt || !candidate.status) {
     return undefined;
   }
+  const playbookSource = normalizePlaybookCheckoutSource(candidate.playbookSource);
   return {
     id: candidate.id,
     executionToken: candidate.executionToken,
@@ -1432,6 +1504,21 @@ function normalizeCurrentExecution(raw: unknown): ScheduleExecutionReceipt | und
     status: candidate.status,
     ...(candidate.scheduledFor ? { scheduledFor: candidate.scheduledFor } : {}),
     ...(candidate.taskId ? { taskId: candidate.taskId } : {}),
+    ...(playbookSource ? { playbookSource } : {}),
+  };
+}
+
+function normalizePlaybookCheckoutSource(raw: unknown): SchedulePlaybookCheckoutSource | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const c = raw as Partial<SchedulePlaybookCheckoutSource>;
+  if (typeof c.ref !== 'string' || c.ref.length === 0) return undefined;
+  if (typeof c.behindBy !== 'number' || !Number.isFinite(c.behindBy) || c.behindBy < 0) return undefined;
+  if (typeof c.drifted !== 'boolean') return undefined;
+  return {
+    ref: c.ref,
+    behindBy: Math.floor(c.behindBy),
+    drifted: c.drifted,
+    ...(typeof c.upstreamRef === 'string' && c.upstreamRef.length > 0 ? { upstreamRef: c.upstreamRef } : {}),
   };
 }
 

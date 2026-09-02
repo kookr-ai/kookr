@@ -10,6 +10,7 @@ import {
   type ScheduleExecutionLedgerEntry,
   type ScheduleExecutionOutcome,
   type ScheduleExecutionReasonCode,
+  type SchedulePlaybookCheckoutSource,
   type ScheduleListResponse,
   type ScheduleResponse,
   type ScheduleLatestExecutionStatus,
@@ -1158,6 +1159,7 @@ export class ScheduleService {
       reasonCode?: ScheduleExecutionReasonCode;
       message?: string;
       dependencyParked?: boolean;
+      playbookSource?: SchedulePlaybookCheckoutSource;
     } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
@@ -1180,6 +1182,7 @@ export class ScheduleService {
       outcome,
       reasonCode,
       ...(details.message ? { message: details.message } : {}),
+      ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
     };
     this.store.replace({
       ...schedule,
@@ -1196,12 +1199,14 @@ export class ScheduleService {
           completedAt: triggeredAt,
           taskId,
           ...(details.message ? { message: details.message } : {}),
+          ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
         },
       )),
       currentExecution: {
         ...receipt,
         taskId,
         status: 'accepted',
+        ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
       },
     });
     await this.store.persist();
@@ -1214,7 +1219,11 @@ export class ScheduleService {
     outcome: Exclude<ScheduleExecutionOutcome, 'completed' | 'cancelled' | 'running' | 'queued' | 'queued_capacity' | 'parked_dependency'>,
     reasonCode: ScheduleExecutionReasonCode,
     message?: string,
-    details: { blockingTaskId?: string; launchPhaseTimings?: LaunchPhaseTimings } = {},
+    details: {
+      blockingTaskId?: string;
+      launchPhaseTimings?: LaunchPhaseTimings;
+      playbookSource?: SchedulePlaybookCheckoutSource;
+    } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
     const receipt = this.requireReceipt(schedule, receiptId);
@@ -1274,6 +1283,7 @@ export class ScheduleService {
         outcome,
         reasonCode,
         ...(message ? { message } : {}),
+        ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
       },
       executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
         schedule,
@@ -1286,11 +1296,13 @@ export class ScheduleService {
           ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
           ...(message ? { message } : {}),
           ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
+          ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
         },
       )),
       currentExecution: {
         ...receipt,
         status: outcome === 'unknown_after_restart' ? 'unknown_after_restart' : 'terminal',
+        ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
       },
     });
     await this.store.persist();
@@ -1765,6 +1777,7 @@ function ledgerEntryFromReceipt(
     blockingTaskId?: string;
     message?: string;
     launchPhaseTimings?: LaunchPhaseTimings;
+    playbookSource?: SchedulePlaybookCheckoutSource;
   },
 ): ScheduleExecutionLedgerEntry {
   return {
@@ -1783,6 +1796,7 @@ function ledgerEntryFromReceipt(
     ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
     ...(details.message ? { message: details.message } : {}),
     ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
+    ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
   };
 }
 

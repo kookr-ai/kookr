@@ -149,6 +149,9 @@ const DELIBERATE_SUPPRESSION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = n
   // issue #1895: parked because the pin has no launchable substitute — not
   // starvation of the launch pipeline; the fire intentionally did not run.
   'skipped_provider_paused',
+  // issue #2945: opt-in fail-closed skip when the playbook cwd checkout lags
+  // its upstream — the fire intentionally did not run.
+  'skipped_playbook_drift',
 ]);
 
 export interface ScheduleDeadManDeps {

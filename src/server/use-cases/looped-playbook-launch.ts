@@ -53,6 +53,12 @@ export interface LaunchLoopedPlaybookInput extends PreparePlaybookLaunchInput {
   model?: string;
   /** Portable model intent forwarded by a schedule-armed loop. */
   modelTier?: ModelTier;
+  /**
+   * Optional prefix prepended to the playbook prompt (issue #2945). Used by
+   * the schedule runner to surface a cwd-lag warning in the spawn briefing
+   * of a loop-armed fire, matching the one-shot path.
+   */
+  promptPrefix?: string;
 }
 
 export interface ReplaceLoopedPlaybookDeps extends LaunchLoopedPlaybookDeps {
@@ -143,8 +149,11 @@ export async function launchLoopedPlaybook(
     if (!effectiveLoop) {
       throw new LoopedPlaybookLaunchError('playbook does not have valid loop defaults', 400);
     }
+    const briefedPrompt = input.promptPrefix
+      ? `${input.promptPrefix}\n\n${prepared.launchOpts.prompt}`
+      : prepared.launchOpts.prompt;
     const loopPrompt = buildLoopedPlaybookRuntimePrompt(
-      prepared.launchOpts.prompt,
+      briefedPrompt,
       effectiveLoop.iterationCap,
     );
     const result = await deps.launchTask({

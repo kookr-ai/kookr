@@ -92,6 +92,11 @@ export type ScheduleExecutionOutcome =
    * Mirrors `core/schedule`.
    */
   | 'skipped_provider_paused'
+  /**
+   * Opt-in fail-closed skip when the playbook cwd checkout lags its upstream
+   * (issue #2945). Mirrors `core/schedule`.
+   */
+  | 'skipped_playbook_drift'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -135,7 +140,12 @@ export type ScheduleExecutionReasonCode =
   /** Cheap probe completed without an agent (issue #2569) — exit 0. */
   | 'probe_quiet'
   /** Cheap probe failed/blipped without an agent (issue #2569) — exit 1. */
-  | 'probe_blip';
+  | 'probe_blip'
+  /**
+   * Reason code for `skipped_playbook_drift` (issue #2945). Mirrors
+   * `core/schedule`.
+   */
+  | 'playbook_cwd_lag';
 
 /**
  * Classified task terminal cause carried onto a schedule execution receipt
@@ -206,6 +216,22 @@ export interface ScheduleExecutionLedgerEntry {
    * `core/schedule` definition.
    */
   terminalReason?: ScheduleTerminalReason;
+  /**
+   * Git provenance of the playbook text this fire read (issue #2945). Mirrors
+   * `core/schedule`.
+   */
+  playbookSource?: SchedulePlaybookCheckoutSource;
+}
+
+/**
+ * Git provenance of the playbook text a fire actually read (issue #2945).
+ * Mirrors `core/schedule`.
+ */
+export interface SchedulePlaybookCheckoutSource {
+  ref: string;
+  upstreamRef?: string;
+  behindBy: number;
+  drifted: boolean;
 }
 
 export interface ScheduleExecutionReceipt {
@@ -218,6 +244,7 @@ export interface ScheduleExecutionReceipt {
   evaluatedAt: string;
   taskId?: string;
   status: 'reserved' | 'accepted' | 'terminal' | 'unknown_after_restart';
+  playbookSource?: SchedulePlaybookCheckoutSource;
 }
 
 export interface ScheduleLatestExecutionStatus {
@@ -238,6 +265,11 @@ export interface ScheduleLatestExecutionStatus {
    * `core/schedule`.
    */
   terminalReason?: ScheduleTerminalReason;
+  /**
+   * Git provenance of the playbook text the most recent fire read (issue
+   * #2945). Mirrors `core/schedule`.
+   */
+  playbookSource?: SchedulePlaybookCheckoutSource;
 }
 
 export interface Schedule {
@@ -294,6 +326,11 @@ export interface Schedule {
   effort?: string;
   /** Optional per-schedule model pin (#1518). */
   model?: string;
+  /**
+   * Opt-in fail-closed on playbook cwd lag (issue #2945). Default is
+   * warn-and-still-launch. Mirrors `core/schedule`.
+   */
+  failOnPlaybookDrift?: boolean;
   lastRunAt?: string;
   lastRunTaskId?: string;
   /**

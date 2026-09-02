@@ -263,7 +263,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // duplicate-loop check runs as a second line of defence behind the arbiter.
     ...(deps.ralphLoopService
       ? {
-          loopedLauncher: (schedule: Schedule) =>
+          loopedLauncher: (schedule: Schedule, extras?: { promptPrefix?: string }) =>
             (deps.launchLoopedPlaybookFn ?? launchLoopedPlaybook)(
               {
                 taskStore: deps.taskStore,
@@ -285,6 +285,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
                 ...(schedule.effort ? { effort: schedule.effort } : {}),
                 ...(schedule.model ? { model: schedule.model } : {}),
                 ...(schedule.modelTier ? { modelTier: schedule.modelTier } : {}),
+                ...(extras?.promptPrefix ? { promptPrefix: extras.promptPrefix } : {}),
               },
             ),
         }

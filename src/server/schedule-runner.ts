@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
+import { posix } from 'node:path';
 import { nextRun } from '../core/cron.js';
 import {
   type ScheduleStore,
@@ -24,7 +25,7 @@ import {
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { ScheduleService } from './schedule-service.js';
-import { ScheduleValidator, resolveSchedulePlaybookSync } from './schedule-validator.js';
+import { ScheduleValidator, resolveSchedulePlaybookSync, type ResolvedScheduleLaunch } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
 import { isSafeModeExemptSchedule } from '../core/automation-kill-switch.js';
 import { withTimeout } from '../core/with-timeout.js';
@@ -54,6 +55,12 @@ import {
   type ProbeExecResult,
   type ResolvedScheduleProbe,
 } from '../core/schedule-probe.js';
+import {
+  formatPlaybookCheckoutDriftWarning,
+  inspectPlaybookCheckoutDrift,
+  toSchedulePlaybookSource,
+  type PlaybookCheckoutDrift,
+} from './checkout-auto-sync.js';
 
 /**
  * Synthetic relaunch-arbiter identity for a schedule unit (issue #1900 catch-up
@@ -371,7 +378,19 @@ export interface ScheduleRunnerDeps {
    * absent, the fire records `dispatch_failed` rather than falling through to
    * a one-shot launch (a one-shot would silently drop the loop intent).
    */
-  loopedLauncher?: (schedule: Schedule) => Promise<LaunchResult>;
+  loopedLauncher?: (
+    schedule: Schedule,
+    extras?: { promptPrefix?: string },
+  ) => Promise<LaunchResult>;
+  /**
+   * Inspect a project-tier playbook's cwd checkout against its upstream
+   * tracking ref (issue #2945). Defaults to {@link inspectPlaybookCheckoutDrift}.
+   * Tests inject a stub so fire-path wiring does not need a real git repo.
+   */
+  inspectPlaybookCheckoutDrift?: (
+    cwd: string,
+    playbookGitPath: string,
+  ) => Promise<PlaybookCheckoutDrift | null>;
 }
 
 export class ScheduleRunner {
@@ -983,6 +1002,29 @@ export class ScheduleRunner {
       );
     }
 
+    const drift = await this.inspectSchedulePlaybookDrift(schedule);
+    if (drift?.drifted && schedule.failOnPlaybookDrift) {
+      const playbookSource = toSchedulePlaybookSource(drift);
+      const message = formatPlaybookCheckoutDriftWarning({
+        ref: drift.ref,
+        upstreamRef: drift.upstreamRef,
+        behindBy: drift.behindBy,
+        blobDiffers: drift.blobDiffers,
+        playbookGitPath: playbookGitPath(schedule.playbook.path),
+        failClosed: true,
+      });
+      console.warn(`[schedule] Skipping "${schedule.name}" — playbook cwd lags upstream (issue #2945)`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_playbook_drift',
+        'playbook_cwd_lag',
+        message,
+        { playbookSource },
+      );
+      return { error: message };
+    }
+
     // issue #2194: refresh Grok session-auth cache before agent resolution so
     // a re-login is visible within one tick and expired auth does not keep
     // selecting grok-build when a healthy non-Grok backend is registered.
@@ -993,7 +1035,7 @@ export class ScheduleRunner {
     // behind the WS0.5 relaunch arbiter so concurrent actuators cannot arm
     // duplicate loops for the same schedule unit.
     if (hasScheduleLoopConfig(schedule)) {
-      return this.fireLooped(schedule, receipt);
+      return this.fireLooped(schedule, receipt, drift);
     }
 
     // issue #1895 / #1699 WS1.3: pinned-agent availability. Round-robin is
@@ -1031,14 +1073,15 @@ export class ScheduleRunner {
       // Preserve each opaque pin independently when the substitute accepts it.
       // A pin that the replacement cannot honor is dropped on its own; model
       // and effort must never be treated as one shared vocabulary.
+      const driftedLaunch = this.applyPlaybookCheckoutDrift(launch, drift);
       const result = await this.deps.launcher({
-        prompt: launch.prompt,
-        cwd: launch.cwd,
-        criteria: launch.criteria,
-        name: launch.name,
-        playbookId: launch.playbookId,
-        playbookParameterValues: launch.playbookParameterValues,
-        playbookSource: launch.playbookSource,
+        prompt: driftedLaunch.prompt,
+        cwd: driftedLaunch.cwd,
+        criteria: driftedLaunch.criteria,
+        name: driftedLaunch.name,
+        playbookId: driftedLaunch.playbookId,
+        playbookParameterValues: driftedLaunch.playbookParameterValues,
+        playbookSource: driftedLaunch.playbookSource,
         projectId: launch.projectId,
         ...(launch.dependencies ? { dependencies: [...launch.dependencies] } : {}),
         ...(launch.autoCloseOnSignal === undefined ? {} : { autoCloseOnSignal: launch.autoCloseOnSignal }),
@@ -1098,7 +1141,11 @@ export class ScheduleRunner {
         receipt.id,
         result.task.id,
         result.queued,
-        { ...acceptDetails, ...(result.parked ? { dependencyParked: true } : {}) },
+        {
+          ...acceptDetails,
+          ...(result.parked ? { dependencyParked: true } : {}),
+          ...(drift ? { playbookSource: toSchedulePlaybookSource(drift) } : {}),
+        },
       );
       console.log(
         `[schedule] Fired "${schedule.name}" → task ${result.task.id}`
@@ -1134,6 +1181,7 @@ export class ScheduleRunner {
   private async fireLooped(
     schedule: Schedule,
     receipt: { id: string },
+    drift: PlaybookCheckoutDrift | null = null,
   ): Promise<ScheduleRunResult> {
     const arbiter = this.deps.relaunchArbiter;
     const claimKey = scheduleRelaunchClaimKey(schedule);
@@ -1191,7 +1239,10 @@ export class ScheduleRunner {
     }
 
     try {
-      const result = await this.deps.loopedLauncher(scheduleForLaunch);
+      const result = await this.deps.loopedLauncher(
+        scheduleForLaunch,
+        drift?.warning ? { promptPrefix: drift.warning } : undefined,
+      );
       // Looped launcher may not surface substitution chains; ledger at least
       // the schedule hop (issue #2001).
       const scheduleChain: AgentSubstitutionHop[] | undefined =
@@ -1219,7 +1270,11 @@ export class ScheduleRunner {
         receipt.id,
         result.task.id,
         result.queued,
-        { ...acceptDetails, ...(result.parked ? { dependencyParked: true } : {}) },
+        {
+          ...acceptDetails,
+          ...(result.parked ? { dependencyParked: true } : {}),
+          ...(drift ? { playbookSource: toSchedulePlaybookSource(drift) } : {}),
+        },
       );
       console.log(
         `[schedule] Armed loop for "${schedule.name}" → task ${result.task.id}`
@@ -1515,6 +1570,47 @@ export class ScheduleRunner {
     if (!spec) return null;
     return { spec, cwd };
   }
+
+  /**
+   * Compare a project-tier playbook against the source checkout's upstream
+   * (issue #2945). Plugin/user-tier playbooks are not read from the cwd
+   * worktree, so they skip this check. Fail-open: any inspector error is
+   * swallowed so a hung git cannot stall the fire.
+   */
+  private async inspectSchedulePlaybookDrift(
+    schedule: Schedule,
+  ): Promise<PlaybookCheckoutDrift | null> {
+    const scope = schedule.playbook.scope ?? 'project';
+    if (scope !== 'project') return null;
+    const inspect = this.deps.inspectPlaybookCheckoutDrift ?? inspectPlaybookCheckoutDrift;
+    const sourceCwd = schedule.playbook.sourceCwd ?? schedule.cwd;
+    try {
+      return await inspect(sourceCwd, playbookGitPath(schedule.playbook.path));
+    } catch (err) {
+      console.warn('[schedule] playbook cwd lag inspect failed (issue #2945)', err);
+      return null;
+    }
+  }
+
+  /**
+   * Prepend a drift warning to the one-shot spawn prompt. Receipt provenance
+   * is stamped separately via {@link toSchedulePlaybookSource}.
+   */
+  private applyPlaybookCheckoutDrift(
+    launch: ResolvedScheduleLaunch,
+    drift: PlaybookCheckoutDrift | null,
+  ): ResolvedScheduleLaunch {
+    if (!drift?.warning) return launch;
+    console.warn(`[schedule] Playbook cwd lags upstream (issue #2945): ${drift.warning}`);
+    return {
+      ...launch,
+      prompt: `${drift.warning}\n\n${launch.prompt}`,
+    };
+  }
+}
+
+function playbookGitPath(playbookPath: string): string {
+  return posix.join('.kookr', 'playbooks', playbookPath);
 }
 
 /** Default probe exec — `execFile` with array args, no shell (issue #2569). */
