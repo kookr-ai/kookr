@@ -11,7 +11,7 @@ stateDiagram-v2
   [*] --> Creating: launch() called
 
   Creating --> Active: Terminal session created + agent launched
-  Creating --> Failed: Launch preflight or session creation error (Grok auth cache, dtach not found, socket path too long, spawn failure, etc.)
+  Creating --> Failed: Launch preflight, session creation, or initial-prompt delivery error (Grok auth cache, dtach not found, socket path too long, spawn failure, prompt submission unconfirmed, prompt truncated in transit)
 
   Active --> Exited: Process exit detected in terminal session
 
@@ -32,7 +32,7 @@ stateDiagram-v2
 | -> Creating | Backend calls `adapter.launch()` (manifest status = `'pending'`) |
 | Creating -> Active | Terminal session created, agent process started, manifest status flipped to `'active'` (`local-dtach-backend.ts:296-304`) |
 | Active -> Exited | Process exit detected in terminal session |
-| Any -> Failed | Launch preflight (including Grok auth-cache validation), terminal session creation, or system error (no manifest status for this; entry is deleted and an error is thrown) |
+| Any -> Failed | Launch preflight (including Grok auth-cache validation), terminal session creation, or system error (no manifest status for this; entry is deleted and an error is thrown). Also covers a post-creation initial-prompt failure — submission unconfirmed, or a prompt truncated in transit (#2977) — where the session exists and the agent is running, and is reaped before the throw |
 | -> Recovered | Startup scan (`local-dtach-backend.ts:882-933`) finds an existing dtach socket but cannot verify pid ownership; manifest entry is promoted to `'recovered'`. `listSessions()` and `isAlive()` treat `Recovered` as live. No transition back to `Active` exists — the session runs in `Recovered` until it exits or is killed |
 
 ## Edge-Case Transitions

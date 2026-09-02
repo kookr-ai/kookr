@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { ClaudeCodeAdapter, resolvePluginDir } from './claude-code-adapter.js';
+import { ClaudeCodeAdapter, InitialPromptTruncatedError, resolvePluginDir } from './claude-code-adapter.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import { DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { TaskStore } from '../core/tasks.js';
@@ -23,16 +23,32 @@ vi.mock('./git-info.js', async (importOriginal) => {
 import { getGitInfo } from './git-info.js';
 const mockGetGitInfo = vi.mocked(getGitInfo);
 
+/**
+ * Captured bytes that satisfy the launch readiness gate (#2977): the
+ * bracketed-paste DECSET plus painted composer chrome. Tests that drive a
+ * bracketed-paste launch by hand must emit this, or the ready wait polls until
+ * its timeout.
+ */
+const COMPOSER_READY_PANE = '\x1b[?2004hClaudeCode\n❯ ? for shortcuts';
+
 describe('ClaudeCodeAdapter', () => {
   let backend: FakeTerminalBackend;
   let taskStore: TaskStore;
   let adapter: ClaudeCodeAdapter;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     backend = new FakeTerminalBackend();
     taskStore = new TaskStore();
     adapter = new ClaudeCodeAdapter(backend, taskStore);
+    // The delivery-integrity check reports a non-truncating difference through
+    // console.warn, so several tests assert on its presence or absence.
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     mockGetGitInfo.mockReset().mockResolvedValue(null);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   test('launch creates a session with correct SessionSpec', async () => {
@@ -86,6 +102,7 @@ describe('ClaudeCodeAdapter', () => {
     // deliverInitialPromptToSession.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 5_000,
       promptSubmitRetries: 0,
     });
@@ -97,7 +114,7 @@ describe('ClaudeCodeAdapter', () => {
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
     expect(backend.getWrittenText(pendingSessionId)).toBe('');
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
     bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
       session_id: 'shape-test-session',
@@ -119,6 +136,215 @@ describe('ClaudeCodeAdapter', () => {
     );
   });
 
+  test('launch fails when the agent reports a truncated prompt (#2977)', async () => {
+    // Bytes dropped in transit still submit — just short. `confirmed` alone
+    // therefore proves nothing about content, so the launch compares the
+    // UserPromptSubmit payload against what it delivered.
+    const guardAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+      promptReadySettleMs: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('long brief', '/cwd');
+    const prompt = 'Fix the bug in the parser and add a regression test';
+    const launchPromise = guardAdapter.launch(task.id, prompt, '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    // SessionStart first: only a definitively-`parent` UserPromptSubmit
+    // carries text the integrity check will compare against.
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977aaaaaaaa',
+      transcript_path: '/tmp/claude/transcripts/truncated.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977aaaaaaaa',
+      transcript_path: '/tmp/claude/transcripts/truncated.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      // Head + tail with the middle dropped — the observed corruption shape.
+      prompt: 'Fix the bugregression test',
+    }));
+
+    await expect(launchPromise).rejects.toThrow(InitialPromptTruncatedError);
+    // The half-launched session is reaped rather than left running on a
+    // corrupted brief.
+    expect(backend.sessions.get(pendingSessionId)?.alive).toBe(false);
+  });
+
+  test('launch accepts a prompt the agent echoes back verbatim (#2977)', async () => {
+    const guardAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+      promptReadySettleMs: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('intact brief', '/cwd');
+    const prompt = 'Fix the bug in the parser and add a regression test';
+    const launchPromise = guardAdapter.launch(task.id, prompt, '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    // SessionStart first: only a definitively-`parent` UserPromptSubmit
+    // carries text the integrity check will compare against.
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977bbbbbbbb',
+      transcript_path: '/tmp/claude/transcripts/intact.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977bbbbbbbb',
+      transcript_path: '/tmp/claude/transcripts/intact.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      // Claude Code reports the prompt with a trailing newline and folds CRLF
+      // to LF; normalizing both sides is deliberate so neither is read as loss.
+      prompt: `${prompt}\n`,
+    }));
+
+    await expect(launchPromise).resolves.toBe(pendingSessionId);
+    // Silence is the assertion: a warn here would mean the two sides compared
+    // unequal and the launch survived only because it was not *shorter*.
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('a CRLF prompt is not read as truncation (#2977)', async () => {
+    // The hook body arrives folded to LF, so an unnormalized comparison makes
+    // every CRLF brief — a `gh`-fetched issue body, a Windows-authored playbook
+    // — look one character short per line and fails a healthy launch.
+    const guardAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('crlf brief', '/cwd');
+    const prompt = 'Fix the parser.\r\nAdd a regression test.\r\nOpen a PR.';
+    const launchPromise = guardAdapter.launch(task.id, prompt, '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    // SessionStart first: only a definitively-`parent` UserPromptSubmit
+    // carries text the integrity check will compare against.
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977cccccccc',
+      transcript_path: '/tmp/claude/transcripts/crlf.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977cccccccc',
+      transcript_path: '/tmp/claude/transcripts/crlf.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: prompt.replace(/\r\n/g, '\n'),
+    }));
+
+    await expect(launchPromise).resolves.toBe(pendingSessionId);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('a prompt the agent annotated warns but does not fail the launch (#2977)', async () => {
+    // Longer-than-sent is not the truncation signature: the agent added to the
+    // brief rather than losing part of it, so the launch carries a full brief.
+    const guardAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('annotated brief', '/cwd');
+    const prompt = 'Fix the bug in the parser';
+    const launchPromise = guardAdapter.launch(task.id, prompt, '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    // SessionStart first: only a definitively-`parent` UserPromptSubmit
+    // carries text the integrity check will compare against.
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977dddddddd',
+      transcript_path: '/tmp/claude/transcripts/annotated.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    }));
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977dddddddd',
+      transcript_path: '/tmp/claude/transcripts/annotated.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: `${prompt}\n\n[Kookr launch warning] advisory dependency degraded`,
+    }));
+
+    await expect(launchPromise).resolves.toBe(pendingSessionId);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('differs from delivered prompt'),
+    );
+  });
+
+  test('an unknown-parentage prompt confirms submission but is not verified (#2977)', async () => {
+    // A UserPromptSubmit POST can beat its SessionStart under load, and a
+    // subagent's prompt can land in that window. Such a prompt is almost always
+    // shorter than a task brief, so comparing it would fail a healthy launch.
+    const guardAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('unknown parentage', '/cwd');
+    const prompt = 'Fix the bug in the parser and add a regression test';
+    const launchPromise = guardAdapter.launch(task.id, prompt, '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    // No SessionStart first — parentage is 'unknown'.
+    guardAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-2977eeeeeeee',
+      transcript_path: '/tmp/claude/transcripts/unknown.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'a much shorter subagent prompt',
+    }));
+
+    await expect(launchPromise).resolves.toBe(pendingSessionId);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  test('a launch with no confirmation signal does not wait on the integrity check (#2977)', async () => {
+    // The plain-delivery path wires no `awaitSubmit`, so its submit deferred is
+    // never resolved. Verification must skip it rather than block until the
+    // confirm timeout — a 12-launch loop would otherwise pay 12x that wait.
+    const plainAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: false,
+      promptSubmitConfirmTimeoutMs: 30_000,
+    });
+    const task = taskStore.createTask('Fix bug', '/cwd');
+
+    const startedAt = Date.now();
+    const sessionId = await plainAdapter.launch(task.id, 'Fix bug', '/cwd');
+
+    expect(sessionId).toBeTruthy();
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+
   test('launch defaults to bracketed-paste submission when no env override is set', async () => {
     // Production default: with no explicit option and the env var unset,
     // the adapter opts into bracketed paste. (The unit suite otherwise sets
@@ -129,6 +355,7 @@ describe('ClaudeCodeAdapter', () => {
       const defaultAdapter = new ClaudeCodeAdapter(backend, taskStore, {
         promptSubmitConfirmTimeoutMs: 5_000,
         promptSubmitRetries: 0,
+        promptReadySettleMs: 0,
       });
       const writeSpy = vi.spyOn(backend, 'write');
       const task = taskStore.createTask('Fix bug', '/cwd');
@@ -136,7 +363,7 @@ describe('ClaudeCodeAdapter', () => {
       await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
       const pendingSessionId = [...backend.sessions.keys()][0]!;
       expect(backend.getWrittenText(pendingSessionId)).toBe('');
-      backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+      backend.emit(pendingSessionId, COMPOSER_READY_PANE);
       await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
       defaultAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
         session_id: 'default-test-session',
@@ -161,6 +388,7 @@ describe('ClaudeCodeAdapter', () => {
     // "prompt visible in input box, never submitted" stall.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 5_000,
       promptSubmitRetries: 3,
     });
@@ -169,7 +397,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
 
     // Wait for delivery to have written the Enter — by that point the launch
     // is inside its awaitSubmit loop, so the next two injected hooks resolve
@@ -211,6 +439,7 @@ describe('ClaudeCodeAdapter', () => {
     // exercised at this layer.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 200,
       promptSubmitRetries: 2,
     });
@@ -219,7 +448,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
 
     // Wait for the first retry to land (writes = initial + 1 retry = 2).
     // Timeout budget covers paste→Enter cushion (DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -259,6 +488,7 @@ describe('ClaudeCodeAdapter', () => {
     // confirm that fallback submission.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 500,
       promptSubmitRetries: 0,
     });
@@ -268,7 +498,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
 
     // First writeSequence is bracketed paste; after its single confirm
     // timeout, fallback sends a second writeSequence with plain text+Enter.
@@ -307,6 +537,7 @@ describe('ClaudeCodeAdapter', () => {
     // when no UserPromptSubmit confirms the bracketed attempt.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptReadyTimeoutMs: 20,
       promptReadyPollMs: 5,
       promptSubmitConfirmTimeoutMs: 500,
@@ -347,6 +578,7 @@ describe('ClaudeCodeAdapter', () => {
     // `parent` would silently force every launch to ride the retry path.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 5_000,
       promptSubmitRetries: 3,
     });
@@ -355,7 +587,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
 
     // Inject UserPromptSubmit WITHOUT a preceding SessionStart so the
@@ -378,6 +610,7 @@ describe('ClaudeCodeAdapter', () => {
     // falsely declare the launch complete before the user's prompt landed.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 5_000,
       promptSubmitRetries: 3,
     });
@@ -386,7 +619,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
 
     // Register parent identity via a parent SessionStart.
@@ -438,6 +671,7 @@ describe('ClaudeCodeAdapter', () => {
     // unblocks rather than racing the timeout.
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 60_000,
       promptSubmitRetries: 0,
     });
@@ -446,7 +680,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
     await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
 
     await bracketAdapter.stop(pendingSessionId);
@@ -457,6 +691,7 @@ describe('ClaudeCodeAdapter', () => {
   test('bracketed-paste launch resends Enter then fails when the UserPromptSubmit hook never arrives', async () => {
     const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
       promptBracketedPaste: true,
+      promptReadySettleMs: 0,
       promptSubmitConfirmTimeoutMs: 5,
       promptSubmitRetries: 2,
     });
@@ -467,7 +702,7 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = bracketAdapter.launch(task.id, 'Submit me', '/cwd');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const pendingSessionId = [...backend.sessions.keys()][0]!;
-    backend.emit(pendingSessionId, '\x1b[?2004hClaudeCode\n❯ ');
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
 
     await expect(launchPromise).rejects.toThrow(/Initial prompt submission was not confirmed/);
     // Bracketed attempt: initial Enter + 2 retries. Plain fallback:

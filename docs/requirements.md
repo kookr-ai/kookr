@@ -429,8 +429,9 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 - Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`
 - WebSocket client and server schemas validate concrete agent types consistently with the shared `AgentType` contract
 - An admitted task is created as `open` and transitions to `inProgress` on agent start; a confirmed-degraded task is persisted as `pending` until R4b.12 recovery admission succeeds
+- The initial prompt is delivered only once the agent TUI is genuinely accepting input, and is then verified against the agent's own `UserPromptSubmit` report; a launch whose agent received fewer characters than were delivered fails and its session is reaped, rather than proceeding on a truncated brief ([#2977](https://github.com/kookr-ai/kookr/issues/2977))
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks).
+**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (dialog UI), `src/server/ws.ts` (launch handler), `src/shared/contracts/agent-types.ts` (concrete agent contract), `src/shared/contracts/client-message-schema.ts` and `src/shared/contracts/server-message-schema.ts` (WebSocket validation), `src/adapters/claude-code-adapter.ts` (settings generation, launch wiring, delivery-integrity check), `src/adapters/agent-launch-context.ts` (bracketed-paste readiness gate: paste-mode DECSET + painted composer chrome + settle cushion), `src/adapters/local-dtach-backend.ts` (dtach session creation), `src/server/ws.test.ts` ("client sends launch - new task started"), `src/shared/contracts/client-message-schema.test.ts` and `src/shared/contracts/server-message-schema.test.ts` (agent-type validation), `src/adapters/claude-code-adapter.test.ts` (settings with hooks, prompt-truncation guard), `src/adapters/agent-launch-context.test.ts` (readiness gate).
 
 ### R4.1a: Actionable Grok Launch Authentication Preflight [F4.1] — SHALL — `done`
 
@@ -1717,7 +1718,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R3.9 | — | SHOULD | done | group-findings, FindingsPanel |
 | R3.10 | F5.1 | SHOULD | done | finding-type-filter, FindingsPanel |
 | R3.11 | F3.1 | SHOULD | done | activity-role-filter, ActivityPanel |
-| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, local-dtach-backend |
+| R4.1 | F4.1 | SHALL | done | LaunchTaskDialog, ws, agent-types, client-message-schema, server-message-schema, claude-code-adapter, agent-launch-context, local-dtach-backend |
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog, QuickLaunch |
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |

@@ -41,6 +41,35 @@ const PASTE_END = promptEncoder.encode(PASTE_END_TEXT);
 const BRACKETED_PASTE_MODE_ENABLE_TEXT = '\x1b[?2004h';
 
 /**
+ * Composer-chrome markers proving the agent TUI has finished its first paint
+ * and is accepting keyboard input. Matched against the captured pane with
+ * every escape sequence AND every whitespace run removed, because the TUI
+ * positions each word with its own cursor-forward escape — the raw bytes of
+ * the footer read `bypass\x1b[13Gpermissions`, so a marker containing a
+ * space would never match.
+ *
+ * `ESC[?2004h` alone is not enough: Claude Code emits it while still booting
+ * (~2-3s before the first paint on a loaded machine) and silently discards
+ * everything written in that window. See {@link waitForPasteReady}.
+ */
+const CLAUDE_COMPOSER_READY_MARKERS: readonly string[] = [
+  // Footer shown in bypass-permissions mode: "⏵⏵ bypass permissions on
+  // (shift+tab to cycle)".
+  'shift+tab',
+  'bypasspermissions',
+  // Default footer: "? for shortcuts".
+  'forshortcuts',
+];
+
+/**
+ * Settle cushion (ms) after both readiness signals before the paste block is
+ * written. The first paint lands slightly before the input reader is stable;
+ * 1500ms delivered 12KB and 80KB prompts byte-perfect in live repro, while
+ * writing at first paint still lost bytes.
+ */
+export const DEFAULT_PROMPT_READY_SETTLE_MS = 1_500;
+
+/**
  * Default cushion (ms) between prompt text and the submitting Enter. Agent
  * TUIs can finalise injected composer text asynchronously under dtach; 150ms
  * left the prompt visible but unsubmitted in live repro, while 500ms reliably
@@ -371,6 +400,13 @@ export interface DeliverInitialPromptOptions {
   /** Bracketed-paste ready wait poll interval. */
   readyPollMs?: number;
   /**
+   * Bracketed-paste mode only: cushion (ms) after the readiness signals are
+   * observed and before the paste block is written. Defaults to
+   * {@link DEFAULT_PROMPT_READY_SETTLE_MS}. Skipped entirely when the
+   * readiness wait times out, so a fail-open delivery is no slower than before.
+   */
+  readySettleMs?: number;
+  /**
    * Bracketed-paste mode only: cushion (ms) between the wrapped prompt
    * block and the submitting Enter. Defaults to
    * {@link DEFAULT_PROMPT_SUBMIT_DELAY_MS}.
@@ -425,8 +461,33 @@ function realSleep(ms: number): Promise<void> {
  * display) because the escape sequence is exactly what
  * {@link stripTerminalControls} would remove.
  */
+/**
+ * Remove any bracketed-paste markers already present in a prompt body. Applied
+ * before wrapping so agent-authored content cannot prematurely close the
+ * synthetic paste; exported because the launch delivery-integrity check must
+ * compare the agent's report against the body that was actually written, not
+ * the body it started from.
+ */
+export function stripBracketedPasteMarkers(prompt: string): string {
+  return prompt.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+}
+
 export function isBracketedPasteModeEnabled(rawBytes: Uint8Array): boolean {
   return promptDecoder.decode(rawBytes).includes(BRACKETED_PASTE_MODE_ENABLE_TEXT);
+}
+
+/**
+ * Detect whether the agent TUI has painted its composer chrome — the signal
+ * that it is past the boot window in which keyboard input is dropped.
+ * Complements {@link isBracketedPasteModeEnabled}: paste-mode parsing is
+ * advertised first, the composer appears seconds later, and only after both
+ * is a written prompt actually retained. See {@link waitForPasteReady}.
+ */
+export function isClaudeComposerReady(rawBytes: Uint8Array): boolean {
+  const compact = stripTerminalControls(promptDecoder.decode(rawBytes))
+    .replace(/\s+/g, '')
+    .toLowerCase();
+  return CLAUDE_COMPOSER_READY_MARKERS.some((marker) => compact.includes(marker));
 }
 
 /**
@@ -471,27 +532,53 @@ export function stripTerminalControls(text: string): string {
 }
 
 /**
- * Wait until the session is ready to receive a bracketed paste. The only
- * ready signal is the raw `ESC[?2004h` DECSET — proof that the TUI has
- * enabled bracketed-paste parsing. The visual `Claude Code + ❯` composer
- * indicator is deliberately not enough because Claude Code can paint it
- * before paste-mode handling is active. On timeout this still returns
- * without throwing so delivery proceeds fail-open.
+ * Wait until the session is ready to receive a bracketed paste. Readiness
+ * needs BOTH signals, then a settle cushion:
+ *
+ * 1. `ESC[?2004h` — the TUI advertises bracketed-paste parsing.
+ * 2. Composer chrome painted ({@link isClaudeComposerReady}).
+ *
+ * Signal 1 alone was the previous gate and is not sufficient: Claude Code
+ * emits the DECSET during terminal setup and then spends seconds loading
+ * (settings, plugins, MCP) before its input reader is live, silently
+ * discarding everything written in that window. In live repro, a prompt
+ * written at the DECSET was lost in full 3/3 times; the same prompt written
+ * after composer chrome + a settle cushion arrived byte-perfect 3/3 times at
+ * 3KB, 12KB and 80KB. Delivering into the boot window is the root cause of
+ * the truncated task prompts tracked in kookr-ai/kookr#2977.
+ *
+ * On timeout this still returns without throwing so delivery proceeds
+ * fail-open — and skips the settle cushion, so a timed-out wait costs no
+ * more than before.
  */
 async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
-  options: Required<Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'sleep'>>,
+  options: Required<
+    Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'readySettleMs' | 'sleep'>
+  >,
 ): Promise<void> {
   const deadline = Date.now() + options.readyTimeoutMs;
   while (Date.now() <= deadline) {
     const bytes = await backend.captureBytes(sessionId);
-    if (isBracketedPasteModeEnabled(bytes)) return;
+    if (isBracketedPasteModeEnabled(bytes) && isClaudeComposerReady(bytes)) {
+      await options.sleep(options.readySettleMs);
+      return;
+    }
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
     await options.sleep(Math.min(options.readyPollMs, remainingMs));
   }
+  // Fail-open, but not silently: if the composer markers ever stop matching
+  // (a footer reword, an agent parked on a trust-folder or login screen), every
+  // launch pays the full timeout and then delivers into an unknown state. That
+  // is the old, lossy behaviour, and it should be visible in the log rather
+  // than inferred from truncated prompts.
+  console.warn(
+    `[agent-launch] paste-readiness wait timed out for ${sessionId} after ${options.readyTimeoutMs}ms; `
+    + 'delivering anyway (prompt loss is possible — see #2977)',
+  );
 }
 
 /** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */
@@ -591,14 +678,15 @@ export async function deliverInitialPromptToSession(
   // prematurely close the synthetic paste and turn trailing bytes into
   // terminal commands — the standard bracketed-paste injection guard
   // (terminal multiplexers strip these from clipboard content too).
-  const safeBody = prompt.replaceAll(PASTE_START_TEXT, '').replaceAll(PASTE_END_TEXT, '');
+  const safeBody = stripBracketedPasteMarkers(prompt);
   const chunks = chunkPromptBytes(promptEncoder.encode(safeBody));
   const submitDelayMs = options.submitDelayMs ?? DEFAULT_PROMPT_SUBMIT_DELAY_MS;
   const readyTimeoutMs = options.readyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS;
   const readyPollMs = options.readyPollMs ?? DEFAULT_PROMPT_READY_POLL_MS;
+  const readySettleMs = options.readySettleMs ?? DEFAULT_PROMPT_READY_SETTLE_MS;
   const sleep = options.sleep ?? realSleep;
   if (options.waitForReady) {
-    await waitForPasteReady(backend, sessionId, { readyTimeoutMs, readyPollMs, sleep });
+    await waitForPasteReady(backend, sessionId, { readyTimeoutMs, readyPollMs, readySettleMs, sleep });
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own
   // write so it is parsed as a keystroke, not paste content.

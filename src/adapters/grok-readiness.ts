@@ -5,11 +5,16 @@
  * authentication, update, or other unexpected startup UI").
  *
  * POC-A (pty-interactive.redacted.json) captured Grok's startup bytes: it emits
- * the DECSET `ESC[?2004h` (bracketed-paste enable) once its TUI is ready, the
- * same signal Kookr already keys on for Claude Code. So {@link
- * isBracketedPasteModeEnabled} from the shared launch context is the ready
- * probe; this module adds the negative guard that aborts delivery when the
- * captured screen is an auth/update screen rather than the composer.
+ * the DECSET `ESC[?2004h` (bracketed-paste enable) once its TUI is ready, so
+ * {@link isBracketedPasteModeEnabled} from the shared launch context is the
+ * ready probe; this module adds the negative guard that aborts delivery when
+ * the captured screen is an auth/update screen rather than the composer.
+ *
+ * Claude Code's gate is no longer the same (#2977): it emits that DECSET during
+ * terminal setup and then drops input for seconds, so its readiness needs the
+ * DECSET *plus* painted composer chrome plus a settle cushion. If Grok is ever
+ * observed dropping input after the DECSET, that is the fix to copy — see
+ * `waitForPasteReady` in `agent-launch-context.ts`.
  */
 import { stripTerminalControls } from './agent-launch-context.js';
 import { analyzePaneSemantics } from '../shared/pane-semantics.js';
