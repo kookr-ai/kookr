@@ -88,6 +88,98 @@ describe('parseServerMessageForClient snapshot tolerance', () => {
     });
   });
 
+  it('stamps lastInboundAt on a valid frame but not on a malformed one (#2803)', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ lastInboundAt: null });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    // Malformed JSON: dropped before the freshness stamp, so it stays null.
+    act(() => {
+      socket.onmessage?.({ data: '{not-json' });
+    });
+    expect(useKookrStore.getState().lastInboundAt).toBeNull();
+
+    // A well-formed, typed frame advances the freshness clock.
+    const before = Date.now();
+    act(() => {
+      socket.onmessage?.({
+        data: JSON.stringify({ type: 'snapshot', agents: [], serverCwd: '/repo' }),
+      });
+    });
+    const stamped = useKookrStore.getState().lastInboundAt;
+    expect(stamped).not.toBeNull();
+    expect(stamped as number).toBeGreaterThanOrEqual(before);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('coalesces sub-second inbound frames into one lastInboundAt stamp (#2803)', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ lastInboundAt: null });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+
+    const frame = JSON.stringify({ type: 'snapshot', agents: [], serverCwd: '/repo' });
+    act(() => {
+      socket.onmessage?.({ data: frame });
+    });
+    const first = useKookrStore.getState().lastInboundAt;
+    expect(first).not.toBeNull();
+
+    // A second valid frame arriving within the same second must not re-stamp:
+    // freshness is minute-grained, so bursts are coalesced to spare re-renders.
+    act(() => {
+      socket.onmessage?.({ data: frame });
+    });
+    expect(useKookrStore.getState().lastInboundAt).toBe(first);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it('does not stamp lastInboundAt for a parsed but type-less frame (#2803)', async () => {
+    RuntimeWebSocket.instances = [];
+    vi.stubGlobal('WebSocket', RuntimeWebSocket);
+    const container = document.createElement('div');
+    const root: Root = createRoot(container);
+    useKookrStore.setState({ lastInboundAt: null });
+
+    await act(async () => {
+      root.render(React.createElement(WebSocketProbe, { onReady: () => {} }));
+    });
+
+    const socket = RuntimeWebSocket.instances[0];
+    expect(socket).toBeDefined();
+    act(() => {
+      socket.onmessage?.({ data: JSON.stringify({ noType: true }) });
+    });
+    expect(useKookrStore.getState().lastInboundAt).toBeNull();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it('updates bypass permission state through the mounted snapshot runtime path', async () => {
     RuntimeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', RuntimeWebSocket);

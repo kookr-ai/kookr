@@ -4239,6 +4239,21 @@ a.playbook-empty-docs-link:visited:hover {
   font-size: 13px;
 }
 
+/*
+ * Freshness notice for a still-connected but quiet/stalled stream (#2803).
+ * Neutral amber, not the incident red above, so an idle-but-healthy fleet is
+ * not presented as failed.
+ */
+.connection-banner--stale {
+  background: rgba(251, 191, 36, 0.14);
+  border-bottom-color: rgba(251, 191, 36, 0.42);
+}
+
+.connection-banner--stale .connection-banner__badge {
+  background: rgba(251, 191, 36, 0.18);
+  color: var(--amber);
+}
+
 .connection-banner__badge {
   flex: 0 0 auto;
   text-transform: uppercase;

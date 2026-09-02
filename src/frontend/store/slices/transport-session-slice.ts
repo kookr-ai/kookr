@@ -12,6 +12,14 @@ import { loadDeployIntentActive, saveDeployIntent } from '../deploy-intent-stora
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../../shared/quota-headroom-admission.js';
 
+/**
+ * Minimum gap between `lastInboundAt` stamps (#2803). The freshness banner is
+ * minute-grained, so sub-second precision buys nothing — coalescing stamps here
+ * keeps a high-throughput stream (e.g. streaming terminal output) from writing
+ * the store and re-rendering ConnectionBanner on every single frame.
+ */
+export const INBOUND_STAMP_THROTTLE_MS = 1_000;
+
 function isTerminalTaskStatus(status: AgentState['taskStatus']): boolean {
   return status === 'completed' || status === 'cancelled' || status === 'terminated';
 }
@@ -191,6 +199,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     agents: [],
     agentsHydrated: false,
     connected: false,
+    lastInboundAt: null,
     // Hydrate sticky intent so a remount mid-prod:update still shows redeploy copy.
     deploying: loadDeployIntentActive(),
     terminalOutput: {},
@@ -372,6 +381,17 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
 
     setConnected: (connected) => {
       set({ connected });
+    },
+
+    recordInboundReceived: (at) => {
+      const stamp = at ?? Date.now();
+      const prev = get().lastInboundAt;
+      // Coalesce sub-second bursts: skip the write entirely (no set() → no
+      // subscriber notification) when the last stamp is younger than the
+      // throttle window. A reconnect always has a much larger gap, so the first
+      // post-reconnect frame still stamps immediately.
+      if (prev !== null && stamp - prev < INBOUND_STAMP_THROTTLE_MS) return;
+      set({ lastInboundAt: stamp });
     },
 
     setDeploying: (deploying, preDeployCommit) => {

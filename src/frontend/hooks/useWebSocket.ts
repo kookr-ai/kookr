@@ -225,6 +225,14 @@ export function useWebSocket() {
         try {
           const msg = parsed as Record<string, any>;
           const store = useKookrStore.getState();
+          // Freshness clock (#2803): a well-formed, typed frame just arrived, so
+          // the inbound stream is demonstrably live. Stamp it here — after the
+          // malformed-frame guard above — so ConnectionBanner can show a coarse
+          // "last update Xm ago" and distinguish a quiet stream from a stalled
+          // one. Malformed frames return early and never refresh this. Any typed
+          // frame counts as liveness, including an unknown `type` the switch
+          // below no-ops on — receiving it is still evidence the pipe is open.
+          store.recordInboundReceived();
           switch (msg.type) {
             case 'snapshot':
               // #1754 Stage 1: adopt the snapshot's `(epoch, seq)`. A snapshot
