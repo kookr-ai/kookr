@@ -6,6 +6,8 @@ import type { TimeWindow } from '../shared/contracts/cost-comparison.js';
 import type {
   OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
+  OutcomeLedgerLaunchSource,
+  OutcomeLedgerLaunchSourceMix,
   OutcomeLedgerProjectScope,
   OutcomeLedgerQualityFlag,
   OutcomeLedgerQualitySummary,
@@ -14,6 +16,7 @@ import type {
   OutcomeLedgerSummary,
   OutcomeLedgerTaskRow,
 } from '../shared/contracts/outcome-ledger.js';
+import { OUTCOME_LEDGER_LAUNCH_SOURCES } from '../shared/contracts/outcome-ledger.js';
 
 export interface OutcomeLedgerInput {
   tasks: Task[];
@@ -59,6 +62,7 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
     .map((task) => projectTask(task, input));
 
   const summary = summarize(taskRows);
+  const launchSourceMix = summarizeLaunchSourceMix(taskRows);
   const quality = summarizeQuality(taskRows);
   const byAgent = summarizeByAgent(taskRows);
   const findings = buildFindings(taskRows);
@@ -75,6 +79,7 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
     scope,
     readiness,
     summary,
+    launchSourceMix,
     quality,
     byAgent,
     findings,
@@ -134,6 +139,7 @@ function projectTask(task: Task, input: OutcomeLedgerInput): OutcomeLedgerTaskRo
     label: labelTask(task, input.liveTaskIds),
     agentType: task.agentType,
     status: task.status,
+    launchSource: normalizeLaunchSource(task),
     projectId: task.projectId ?? null,
     playbookId: task.playbookId ?? null,
     startedAt: new Date(Number.isFinite(startedMs) ? startedMs : input.windowEndMs).toISOString(),
@@ -263,6 +269,48 @@ function summarize(rows: OutcomeLedgerTaskRow[]): OutcomeLedgerSummary {
     totalInputTokens,
     totalOutputTokens,
   };
+}
+
+/**
+ * Collapse a task's immutable launch provenance (issue #1583) into the
+ * scoreboard's normalized launch-source bucket (issue #2801). A `schedule`
+ * provenance becomes `scheduled`; `manual` and `parent` pass through; a missing
+ * provenance (legacy tasks predating the field) and the explicit `unknown` kind
+ * both resolve to `unknown` so older tasks always land in a real bucket.
+ */
+function normalizeLaunchSource(task: Task): OutcomeLedgerLaunchSource {
+  const kind = task.provenance?.kind;
+  switch (kind) {
+    case 'schedule':
+      return 'scheduled';
+    case 'manual':
+      return 'manual';
+    case 'parent':
+      return 'parent';
+    case 'unknown':
+    case undefined:
+      return 'unknown';
+    default:
+      // A future TaskProvenanceKind must gain a bucket here rather than silently
+      // returning undefined and corrupting the mix — make that a compile error.
+      return assertNever(kind);
+  }
+}
+
+function summarizeLaunchSourceMix(rows: OutcomeLedgerTaskRow[]): OutcomeLedgerLaunchSourceMix {
+  const counts = Object.fromEntries(
+    OUTCOME_LEDGER_LAUNCH_SOURCES.map((source) => [source, 0]),
+  ) as Record<OutcomeLedgerLaunchSource, number>;
+  for (const row of rows) {
+    counts[row.launchSource]++;
+  }
+  const total = rows.length;
+  const shares = total === 0
+    ? null
+    : Object.fromEntries(
+        OUTCOME_LEDGER_LAUNCH_SOURCES.map((source) => [source, counts[source] / total]),
+      ) as Record<OutcomeLedgerLaunchSource, number>;
+  return { total, counts, shares };
 }
 
 function summarizeQuality(rows: OutcomeLedgerTaskRow[]): OutcomeLedgerQualitySummary {

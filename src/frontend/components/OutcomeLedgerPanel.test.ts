@@ -45,6 +45,11 @@ function response(overrides: Record<string, unknown> = {}) {
       totalInputTokens: 0,
       totalOutputTokens: 0,
     },
+    launchSourceMix: {
+      total: 7,
+      counts: { manual: 4, scheduled: 2, parent: 0, unknown: 1 },
+      shares: { manual: 4 / 7, scheduled: 2 / 7, parent: 0, unknown: 1 / 7 },
+    },
     quality: {
       costKnownTasks: 1,
       zeroCostTasks: 1,
@@ -691,6 +696,18 @@ describe('OutcomeLedgerPanel', () => {
 
   test('renders an error for invalid response payloads', async () => {
     vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse({ schemaVersion: 'wrong' })));
+    const el = mount();
+
+    await flush();
+
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('rejects an otherwise-valid response that is missing the launch-source mix', async () => {
+    // A response with the right schemaVersion but no launchSourceMix must fail
+    // the type guard rather than reach the panel and throw on mix.counts.
+    const { launchSourceMix: _dropped, ...withoutMix } = response();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(withoutMix)));
     const el = mount();
 
     await flush();

@@ -3,10 +3,13 @@ import type {
   OutcomeLedgerByAgentRow,
   OutcomeLedgerFinding,
   OutcomeLedgerFindingKind,
+  OutcomeLedgerLaunchSource,
+  OutcomeLedgerLaunchSourceMix,
   OutcomeLedgerProjectScope,
   OutcomeLedgerResponse,
   OutcomeLedgerTaskRow,
 } from '../../shared/contracts/outcome-ledger.js';
+import { OUTCOME_LEDGER_LAUNCH_SOURCES } from '../../shared/contracts/outcome-ledger.js';
 import type { TimeWindow } from '../../shared/contracts/cost-comparison.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/contracts/agent-types.js';
 import { getOutcomeLedger } from '../api/index.js';
@@ -176,6 +179,7 @@ export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = 
                 <span>{data.summary.terminatedTaskCount} terminated</span>
                 <span>{data.summary.activeTaskCount} active</span>
               </div>
+              <LaunchSourceStrip mix={data.launchSourceMix} />
               <div className="outcome-quality-strip">
                 <span>{data.quality.missingCostTasks} missing cost</span>
                 <span>{data.quality.zeroCostTasks} zero-cost</span>
@@ -214,6 +218,40 @@ function Metric({ label, value, detail }: { label: string; value: string; detail
       <span className="outcome-metric-label">{label}</span>
       <strong>{value}</strong>
       {detail && <span className="outcome-metric-detail">{detail}</span>}
+    </div>
+  );
+}
+
+// Descriptive origin labels for each normalized launch source (issue #2801).
+// These name where work came from and imply no quality ranking between sources.
+const LAUNCH_SOURCE_LABELS: Record<OutcomeLedgerLaunchSource, string> = {
+  manual: 'manual',
+  scheduled: 'scheduled',
+  parent: 'child',
+  unknown: 'unknown',
+};
+
+/**
+ * One compact strip breaking the window's tasks down by launch origin so an
+ * operator can see at a glance whether scheduled automation is a meaningful
+ * share of the work (issue #2801). Each bucket shows its task count and, once
+ * there is at least one task, its share of the window; the `unknown` bucket is
+ * always present so legacy tasks without provenance are visible rather than
+ * silently dropped.
+ */
+export function LaunchSourceStrip({ mix }: { mix: OutcomeLedgerLaunchSourceMix }): React.ReactElement {
+  return (
+    <div className="outcome-quality-strip outcome-launch-source-strip" role="group" aria-label="Task launch-source mix">
+      {OUTCOME_LEDGER_LAUNCH_SOURCES.map((source) => {
+        const count = mix.counts[source];
+        const share = mix.shares?.[source] ?? null;
+        return (
+          <span key={source}>
+            {count} {LAUNCH_SOURCE_LABELS[source]}
+            {share != null && <span className="outcome-launch-source-share"> {pct(share)}</span>}
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -452,6 +490,7 @@ function isOutcomeLedgerResponse(value: unknown): value is OutcomeLedgerResponse
   return candidate.schemaVersion === 'outcome-ledger.v1'
     && Boolean(candidate.summary)
     && Boolean(candidate.quality)
+    && Boolean(candidate.launchSourceMix?.counts)
     && Array.isArray(candidate.findings)
     && Array.isArray(candidate.tasks)
     && Array.isArray(candidate.notes);
