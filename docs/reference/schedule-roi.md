@@ -28,6 +28,13 @@ attribution basis.
   aggregates belong to the task dashboard and are not schedule ROI.
 - Budget-burn peaks remain diagnostics-only until an operator approves a
   separately named and persisted ROI field.
+- An archived schedule (issue #2981) has no rollup at all. Archiving drops it,
+  and every later write to the retired row — including the close-out of a run
+  that was still in flight when it was archived — keeps it dropped, so a
+  retired loop contributes nothing to fleet attribution. Un-archiving rebuilds
+  the rollup from the retained ledger, so those post-archive fires reappear in
+  the counts. This is why a schedule's ROI can vanish and later return with
+  more fires than it had when it disappeared.
 
 These boundaries keep the scorecard honest while the operator decision is
 pending. They also mean that a schedule rollup is not a billing ledger and

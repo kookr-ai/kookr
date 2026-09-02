@@ -65,26 +65,26 @@ afterEach(() => {
 
 describe('kookr schedule parseArgs', () => {
   it('parses list with --json', () => {
-    expect(parseArgs(['list', '--json'])).toEqual({ verb: 'list', id: null, json: true, help: false, heldBy: null, stopReason: null, heldBefore: null });
+    expect(parseArgs(['list', '--json'])).toEqual({ verb: 'list', id: null, json: true, help: false, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false });
   });
 
   it('parses run with an id', () => {
-    expect(parseArgs(['run', 'sched-a'])).toEqual({ verb: 'run', id: 'sched-a', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null });
+    expect(parseArgs(['run', 'sched-a'])).toEqual({ verb: 'run', id: 'sched-a', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false });
   });
 
   it('parses enable/disable with an id and --json', () => {
-    expect(parseArgs(['enable', 'sched-a', '--json'])).toEqual({ verb: 'enable', id: 'sched-a', json: true, help: false, heldBy: null, stopReason: null, heldBefore: null });
-    expect(parseArgs(['disable', 'sched-b'])).toEqual({ verb: 'disable', id: 'sched-b', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null });
+    expect(parseArgs(['enable', 'sched-a', '--json'])).toEqual({ verb: 'enable', id: 'sched-a', json: true, help: false, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false });
+    expect(parseArgs(['disable', 'sched-b'])).toEqual({ verb: 'disable', id: 'sched-b', json: false, help: false, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false });
   });
 
   it('parses --help', () => {
-    expect(parseArgs(['--help'])).toEqual({ verb: null, id: null, json: false, help: true, heldBy: null, stopReason: null, heldBefore: null });
+    expect(parseArgs(['--help'])).toEqual({ verb: null, id: null, json: false, help: true, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false });
   });
 
   it('parses enable --held-by cascade (space and = forms, plus alias)', () => {
-    expect(parseArgs(['enable', '--held-by', 'cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
-    expect(parseArgs(['enable', '--held-by=cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
-    expect(parseArgs(['enable', '--held-by', 'consecutive-failures'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null });
+    expect(parseArgs(['enable', '--held-by', 'cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null, reason: null, archived: false });
+    expect(parseArgs(['enable', '--held-by=cascade'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null, reason: null, archived: false });
+    expect(parseArgs(['enable', '--held-by', 'consecutive-failures'])).toEqual({ verb: 'enable', id: null, json: false, help: false, heldBy: 'cascade', stopReason: null, heldBefore: null, reason: null, archived: false });
   });
 
   it('throws UsageError on an unknown --held-by value or a missing value', () => {
@@ -94,10 +94,10 @@ describe('kookr schedule parseArgs', () => {
 
   it('parses bulk-recovery flags (issue #2520)', () => {
     expect(parseArgs(['enable', '--stop-reason', 'consecutive_failures'])).toEqual({
-      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: null,
+      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: null, reason: null, archived: false,
     });
     expect(parseArgs(['enable', '--stop-reason=consecutive_failures', '--held-before', '2026-08-14T02:16:00Z'])).toEqual({
-      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: '2026-08-14T02:16:00Z',
+      verb: 'enable', id: null, json: false, help: false, heldBy: null, stopReason: 'consecutive_failures', heldBefore: '2026-08-14T02:16:00Z', reason: null, archived: false,
     });
   });
 
@@ -346,6 +346,93 @@ describe('kookr schedule enable / disable', () => {
     await main({ argv: ['enable', 'sched-a'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
     expect(exit.calls).toEqual([EXIT_SERVER_ERROR]);
     expect(io.errs.join('\n')).toContain('Scheduling not configured');
+  });
+});
+
+describe('kookr schedule archive / unarchive (issue #2981)', () => {
+  it('parses archive flags', () => {
+    expect(parseArgs(['archive', 'sched-a', '--reason', 'no supply'])).toMatchObject({
+      verb: 'archive', id: 'sched-a', reason: 'no supply', archived: false,
+    });
+    expect(parseArgs(['archive', 'sched-a', '--reason=dead loop'])).toMatchObject({ reason: 'dead loop' });
+    expect(parseArgs(['list', '--archived'])).toMatchObject({ verb: 'list', archived: true });
+  });
+
+  it('POSTs to /:id/archive with the reason and confirms', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'sched-a', name: 'Dead Loop', archived: true, archivedReason: 'no supply' }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['archive', 'sched-a', '--reason', 'no supply'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs.join('\n')).toContain('Archived schedule sched-a (Dead Loop)');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:4800/api/schedules/sched-a/archive');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body as string)).toEqual({ reason: 'no supply' });
+  });
+
+  it('POSTs to /:id/archive with no body when --reason is omitted', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'sched-a', name: 'Dead Loop', archived: true }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['archive', 'sched-a'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe('POST');
+    expect(init.body).toBeUndefined();
+  });
+
+  it('POSTs to /:id/unarchive and confirms', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ id: 'sched-a', name: 'Restored', enabled: false }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['unarchive', 'sched-a'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    expect(io.logs.join('\n')).toContain('Un-archived schedule sched-a (Restored)');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:4800/api/schedules/sched-a/unarchive');
+    expect(init.method).toBe('POST');
+  });
+
+  it('list --archived reads the archived collection endpoint', async () => {
+    const fetchMock = vi.fn(async () => jsonResponse({ schedules: [{ id: 'sched-x', name: 'Retired', archived: true, cron: '0 0 * * *' }] }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['list', '--archived'], env: { ...BASE_ENV }, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_OK]);
+    const [url] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://127.0.0.1:4800/api/schedules/archived');
+    expect(io.logs.join('\n')).toContain('archived');
+  });
+
+  it('exits 2 when archive/unarchive is missing an id', async () => {
+    for (const verb of ['archive', 'unarchive']) {
+      const io = mkIO();
+      const exit = mkExit();
+      await main({ argv: [verb], env: {}, out: io.out, err: io.err, exit });
+      expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+      expect(io.errs.join('\n')).toMatch(new RegExp(`kookr schedule ${verb} <id>`));
+    }
+  });
+
+  it('exits 2 when --reason is used without the archive verb', async () => {
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['disable', 'sched-a', '--reason', 'x'], env: {}, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(io.errs.join('\n')).toMatch(/--reason is only valid with "archive"/);
+  });
+
+  it('exits 2 when --archived is used without the list verb', async () => {
+    const io = mkIO();
+    const exit = mkExit();
+    await main({ argv: ['archive', 'sched-a', '--archived'], env: {}, out: io.out, err: io.err, exit });
+    expect(exit.calls).toEqual([EXIT_USER_ERROR]);
+    expect(io.errs.join('\n')).toMatch(/--archived is only valid with "list"/);
   });
 });
 

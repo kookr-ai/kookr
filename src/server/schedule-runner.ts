@@ -843,6 +843,16 @@ export class ScheduleRunner {
     scheduledNextRun?: Date,
     decision: 'cron_due' | 'manual_run' | 'catch_up' = trigger === 'manual' ? 'manual_run' : 'cron_due',
   ): Promise<ScheduleRunResult> {
+    // An archived schedule is retired and must never fire (issue #2981). The
+    // automatic loops (cron, catch-up, dead-man, stale-alarm) already exclude
+    // archived rows because they iterate `store.list()`, but `runNow` /
+    // `forceRefire` resolve a schedule by id via `store.get()` (which returns
+    // archived rows), so guard here — the single fire chokepoint — before
+    // `reserveExecution` so a manual Run Now cannot launch work OR re-materialize
+    // the ROI rollup that archiving deliberately dropped.
+    if (schedule.archived) {
+      return { error: 'Schedule is archived' };
+    }
     if (trigger === 'cron' && isTriggerLimitExhausted(schedule)) {
       await this.deps.service.markCronLimitExhausted(schedule.id);
       return { error: 'Schedule trigger limit reached' };

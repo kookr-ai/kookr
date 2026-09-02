@@ -7,7 +7,7 @@ export const HELP_TEXT: string;
 
 export class UsageError extends Error {}
 
-export type Verb = 'list' | 'run' | 'enable' | 'disable';
+export type Verb = 'list' | 'run' | 'enable' | 'disable' | 'archive' | 'unarchive';
 
 export interface ParsedArgs {
   verb: Verb | string | null;
@@ -20,6 +20,10 @@ export interface ParsedArgs {
   stopReason: string | null;
   /** Optional ISO watermark for bulk recovery (issue #2520). */
   heldBefore: string | null;
+  /** Optional archive note for `archive` (issue #2981). `null` when absent. */
+  reason: string | null;
+  /** `list --archived` selector (issue #2981). */
+  archived: boolean;
 }
 
 export interface RequestJsonArgs {
@@ -47,6 +51,12 @@ export interface ScheduleLike {
   remainingTriggers?: number;
   /** Auto-pause provenance (issue #2353) — cascade holds carry this value. */
   stopReason?: string;
+  /** Retired-but-retained tombstone (issue #2981). */
+  archived?: boolean;
+  /** ISO timestamp when archived (issue #2981). */
+  archivedAt?: string;
+  /** Optional operator note recorded at archive time (issue #2981). */
+  archivedReason?: string;
   [k: string]: unknown;
 }
 

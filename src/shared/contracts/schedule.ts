@@ -264,6 +264,18 @@ export interface Schedule {
    * alongside {@link operatorHold}; cleared on re-enable. Mirrors `core/schedule`.
    */
   heldAt?: string;
+  /**
+   * Retired-but-retained flag (issue #2981). An archived schedule never fires
+   * and is excluded from the active fleet — so it drops off `kookr status`,
+   * health checks and ROI attribution — yet is preserved for audit / un-archive.
+   * Distinct from `enabled:false` + `operatorHold` (which stays "active").
+   * Mirrors `core/schedule`.
+   */
+  archived?: boolean;
+  /** ISO timestamp when the schedule was archived (issue #2981). Mirrors `core/schedule`. */
+  archivedAt?: string;
+  /** Optional operator note recorded at archive time (issue #2981). Mirrors `core/schedule`. */
+  archivedReason?: string;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;

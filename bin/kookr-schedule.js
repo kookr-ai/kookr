@@ -13,14 +13,20 @@
 //   kookr schedule enable <id> [--json]
 //   kookr schedule enable --held-by cascade [--json]   (issue #2531)
 //   kookr schedule disable <id> [--json]
+//   kookr schedule archive <id> [--reason <text>] [--json]   (issue #2981)
+//   kookr schedule unarchive <id> [--json]                   (issue #2981)
+//   kookr schedule list --archived [--json]                  (issue #2981)
 //
 // Endpoints wrapped:
 //   list                    GET   /api/schedules
+//   list --archived         GET   /api/schedules/archived    (#2981)
 //   run <id>                POST  /api/schedules/:id/run
 //   enable <id>             PATCH /api/schedules/:id   {"enabled": true}
 //   enable --held-by cascade  GET /api/schedules, then PATCH each cascade-held
 //                             schedule {"enabled": true} in one batch (#2531)
 //   disable <id>            PATCH /api/schedules/:id   {"enabled": false}
+//   archive <id>            POST  /api/schedules/:id/archive   (#2981)
+//   unarchive <id>          POST  /api/schedules/:id/unarchive (#2981)
 //
 // Exit codes (distinct on purpose, so a wrong outcome is visible to a script
 // rather than silently swallowed — same convention as kookr-issue):
@@ -44,7 +50,7 @@ import {
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const API_PATH = '/api/schedules';
-const VERBS = new Set(['list', 'run', 'enable', 'disable']);
+const VERBS = new Set(['list', 'run', 'enable', 'disable', 'archive', 'unarchive']);
 
 // Provenance selectors for the batch re-enable (issue #2531). Both name the
 // same set: schedules the fail-closed auto-pause (#2353) parked with
@@ -55,17 +61,23 @@ const HELD_BY_VALUES = new Map([
   ['consecutive-failures', 'cascade'],
 ]);
 
-const HELP_TEXT = `kookr schedule — list / run / enable / disable schedules.
+const HELP_TEXT = `kookr schedule — list / run / enable / disable / archive / unarchive schedules.
 
 Usage:
-  kookr schedule list [OPTIONS]
+  kookr schedule list [--archived] [OPTIONS]
   kookr schedule run <id> [OPTIONS]
   kookr schedule enable <id> [OPTIONS]
   kookr schedule enable --held-by cascade [OPTIONS]
   kookr schedule enable --stop-reason consecutive_failures [--held-before <ISO>] [OPTIONS]
   kookr schedule disable <id> [OPTIONS]
+  kookr schedule archive <id> [--reason <text>] [OPTIONS]
+  kookr schedule unarchive <id> [OPTIONS]
 
 Options:
+      --archived   With "list": show archived (retired-but-retained) schedules
+                   instead of the active fleet (issue #2981).
+      --reason <text>  With "archive": record an operator note explaining why the
+                       schedule was retired (issue #2981).
       --held-by <who>  Batch-enable held schedules by hold provenance instead of
                        by <id>. Only "cascade" (alias "consecutive-failures") is
                        supported: re-enables every schedule the fail-closed
@@ -105,13 +117,23 @@ function normalizeHeldBy(raw) {
 }
 
 function parseArgs(argv) {
-  const out = { verb: null, id: null, json: false, help: false, heldBy: null, stopReason: null, heldBefore: null };
+  const out = { verb: null, id: null, json: false, help: false, heldBy: null, stopReason: null, heldBefore: null, reason: null, archived: false };
   for (let i = 0; i < argv.length; i++) {
     const tok = argv[i];
     if (tok === '-h' || tok === '--help') {
       out.help = true;
     } else if (tok === '--json') {
       out.json = true;
+    } else if (tok === '--archived') {
+      // `list --archived` — show retired-but-retained schedules (issue #2981).
+      out.archived = true;
+    } else if (tok === '--reason') {
+      // Optional operator note recorded at archive time (issue #2981).
+      const value = argv[++i];
+      if (value === undefined) throw new UsageError('--reason requires a value');
+      out.reason = value;
+    } else if (tok.startsWith('--reason=')) {
+      out.reason = tok.slice('--reason='.length);
     } else if (tok === '--held-by') {
       const val = argv[++i];
       if (val === undefined) throw new UsageError('--held-by requires a value (cascade)');
@@ -209,7 +231,9 @@ async function attemptOnce({ env, invoke }) {
 
 function formatScheduleLine(schedule) {
   const id = schedule?.id ?? '?';
-  const state = schedule?.enabled ? 'enabled ' : 'disabled';
+  // Archived (issue #2981) is a retired-but-retained state distinct from a live
+  // enabled/disabled toggle — label it explicitly so it reads unambiguously.
+  const state = schedule?.archived ? 'archived' : schedule?.enabled ? 'enabled ' : 'disabled';
   const name = schedule?.name ?? '(unnamed)';
   const cron = schedule?.cron ?? '?';
   const next = schedule?.nextRunAt ?? '-';
@@ -302,7 +326,10 @@ function serverError({ args, out, err, exit, status, json, text }) {
 // ---------- verb handlers ----------
 
 async function handleList({ args, env, out, err, exit }) {
-  const outcome = await attemptOnce({ env, invoke: (baseUrl) => requestJson({ baseUrl, method: 'GET', path: API_PATH }) });
+  // `list --archived` reads the archived collection (issue #2981); plain `list`
+  // reads the active fleet (archived schedules are excluded there by design).
+  const listPath = args.archived ? `${API_PATH}/archived` : API_PATH;
+  const outcome = await attemptOnce({ env, invoke: (baseUrl) => requestJson({ baseUrl, method: 'GET', path: listPath }) });
   if (outcome.kind === 'invalid_port') return invalidPort({ args, out, err, exit, raw: outcome.raw });
   if (outcome.kind === 'unreachable') return noServer({ args, out, err, exit });
 
@@ -465,6 +492,47 @@ async function handleSetEnabled({ args, env, out, err, exit, enabled }) {
   return exit(EXIT_OK);
 }
 
+// Archive / un-archive a schedule (issue #2981). Archiving retires an
+// abandoned loop without deleting it: the row is kept but excluded from the
+// active fleet, so it stops firing and drops off status/health/attribution.
+// Prefer this over leaving a schedule disabled-but-active (still costs health
+// checks) when a loop has no live supply or demand.
+async function handleArchive({ args, env, out, err, exit, archived }) {
+  const id = resolveId(args.id);
+  const verb = archived ? 'archive' : 'unarchive';
+  if (id === null) return userError({ args, out, err, exit, message: `a schedule id is required (e.g. \`kookr schedule ${verb} <id>\`).` });
+  // `--reason` on a non-archive verb is already rejected in main() before
+  // dispatch, so by here `args.reason` is only set for the archive verb.
+
+  const path = `${API_PATH}/${encodeURIComponent(id)}/${verb}`;
+  const body = archived && args.reason !== null ? { reason: args.reason } : undefined;
+  const outcome = await attemptOnce({
+    env,
+    invoke: (baseUrl) => requestJson({ baseUrl, method: 'POST', path, body }),
+  });
+  if (outcome.kind === 'invalid_port') return invalidPort({ args, out, err, exit, raw: outcome.raw });
+  if (outcome.kind === 'unreachable') return noServer({ args, out, err, exit });
+
+  const { status, json, text } = outcome.result;
+  if (status !== 200) return serverError({ args, out, err, exit, status, json, text });
+
+  const name = json?.name ?? null;
+  if (args.json) {
+    return exitJson({
+      out,
+      exit,
+      exitCode: EXIT_OK,
+      ok: true,
+      code: 'OK',
+      message: archived ? 'Archived.' : 'Un-archived.',
+      details: { id, name, archived: json?.archived === true, ...(json?.archivedReason ? { reason: json.archivedReason } : {}) },
+    });
+  }
+  const label = archived ? 'Archived' : 'Un-archived';
+  out.log(`✓ ${label} schedule ${id}${name ? ` (${name})` : ''}`);
+  return exit(EXIT_OK);
+}
+
 // Batch, provenance-filtered re-enable (issue #2531). Collapses the "re-enable
 // all N cascade-held schedules" recovery from N `kookr schedule enable <id>`
 // calls to one command. Fetches the list, selects cascade-origin holds, and
@@ -606,7 +674,7 @@ async function main({
   }
 
   if (args.verb === null) {
-    return userError({ args, out, err, exit, message: 'a verb is required (list, run, enable, disable).' });
+    return userError({ args, out, err, exit, message: 'a verb is required (list, run, enable, disable, archive, unarchive).' });
   }
   if (!VERBS.has(args.verb)) {
     return userError({ args, out, err, exit, message: `unknown verb "${args.verb}". Known verbs: ${[...VERBS].join(', ')}.` });
@@ -632,8 +700,19 @@ async function main({
     return userError({ args, out, err, exit, message: `--stop-reason / --held-before are only valid with "enable".` });
   }
 
+  // `--reason` only annotates an archive; `--archived` only filters `list`.
+  // Reject misuse up front rather than silently ignoring the flag.
+  if (args.reason !== null && args.verb !== 'archive') {
+    return userError({ args, out, err, exit, message: `--reason is only valid with "archive" (got verb "${args.verb}").` });
+  }
+  if (args.archived && args.verb !== 'list') {
+    return userError({ args, out, err, exit, message: `--archived is only valid with "list" (got verb "${args.verb}").` });
+  }
+
   if (args.verb === 'list') return handleList({ args, env, out, err, exit });
   if (args.verb === 'run') return handleRun({ args, env, out, err, exit });
+  if (args.verb === 'archive') return handleArchive({ args, env, out, err, exit, archived: true });
+  if (args.verb === 'unarchive') return handleArchive({ args, env, out, err, exit, archived: false });
   if (args.verb === 'enable') {
     // Bulk-recovery form (issue #2520): `enable --stop-reason <reason>` with no
     // id re-enables every matching hold. A `--stop-reason` with an explicit id

@@ -680,6 +680,194 @@ describe('ScheduleStore', () => {
     expect(store.list()).toHaveLength(0);
   });
 
+  describe('archive / unarchive (issue #2981)', () => {
+    function makeSchedule(name = 'Abandoned Loop') {
+      return store.create({
+        name,
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+    }
+
+    it('excludes an archived schedule from list() but keeps it in listArchived() and get()', () => {
+      const s = makeSchedule();
+      const updated = store.archive(s.id, 'no live supply or demand');
+
+      expect(updated.archived).toBe(true);
+      expect(updated.archivedReason).toBe('no live supply or demand');
+      expect(typeof updated.archivedAt).toBe('string');
+
+      // Dark on the active fleet (drives status/health/attribution exclusion)…
+      expect(store.list().map((x) => x.id)).not.toContain(s.id);
+      expect(store.listWithComputed().map((x) => x.id)).not.toContain(s.id);
+      // …but retained and reachable for audit / un-archive.
+      expect(store.get(s.id)?.archived).toBe(true);
+      expect(store.listArchived().map((x) => x.id)).toEqual([s.id]);
+      expect(store.listArchivedWithComputed().map((x) => x.id)).toEqual([s.id]);
+    });
+
+    it('trims a blank reason to undefined rather than storing empty text', () => {
+      const s = makeSchedule();
+      const updated = store.archive(s.id, '   ');
+      expect(updated.archived).toBe(true);
+      expect(updated.archivedReason).toBeUndefined();
+    });
+
+    it('un-archive returns the schedule to the active fleet and clears the tombstone', () => {
+      const s = makeSchedule();
+      store.archive(s.id, 'retired');
+      const restored = store.unarchive(s.id);
+
+      expect(restored.archived).toBeUndefined();
+      expect(restored.archivedAt).toBeUndefined();
+      expect(restored.archivedReason).toBeUndefined();
+      expect(store.list().map((x) => x.id)).toContain(s.id);
+      expect(store.listArchived()).toHaveLength(0);
+    });
+
+    it('persists an archived schedule across reload — it is never dropped on write', async () => {
+      const s = makeSchedule();
+      store.archive(s.id, 'frozen template');
+      await store.persist();
+
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+
+      // Absent from the active fleet…
+      expect(reloaded.list().map((x) => x.id)).not.toContain(s.id);
+      // …but the row survived the round-trip with its metadata intact.
+      const archivedRow = reloaded.listArchived().find((x) => x.id === s.id);
+      expect(archivedRow?.archived).toBe(true);
+      expect(archivedRow?.archivedReason).toBe('frozen template');
+      expect(typeof archivedRow?.archivedAt).toBe('string');
+    });
+
+    it('excludes an archived schedule from the persisted active-fleet serialization but keeps the file row', async () => {
+      const active = makeSchedule('Live Loop');
+      const dead = makeSchedule('Dead Loop');
+      store.archive(dead.id);
+      await store.persist();
+
+      const raw = JSON.parse(await readFile(join(dir, 'schedules.json'), 'utf-8')) as Array<{ id: string; archived?: boolean }>;
+      const ids = raw.map((r) => r.id);
+      // Both rows are on disk (no data loss)…
+      expect(ids).toContain(active.id);
+      expect(ids).toContain(dead.id);
+      // …with the archived row tagged.
+      expect(raw.find((r) => r.id === dead.id)?.archived).toBe(true);
+      expect(raw.find((r) => r.id === active.id)?.archived).toBeUndefined();
+    });
+
+    it('drops an archived schedule from ROI rollups and rematerializes on un-archive', () => {
+      const s = makeSchedule();
+      // A schedule has a rollup once it exists.
+      expect(store.getRollup(s.id)).toBeDefined();
+      store.archive(s.id);
+      expect(store.getRollup(s.id)).toBeUndefined();
+      store.unarchive(s.id);
+      expect(store.getRollup(s.id)).toBeDefined();
+    });
+
+    it('computes no nextRunAt for an archived schedule even if it was enabled', () => {
+      const s = makeSchedule();
+      expect(store.getWithComputed(s.id)?.nextRunAt).not.toBeNull();
+      store.archive(s.id);
+      // Reachable via the archived computed view — and shows no next fire.
+      const enriched = store.listArchivedWithComputed().find((x) => x.id === s.id);
+      expect(enriched?.nextRunAt).toBeNull();
+    });
+
+    it('re-archiving refreshes archivedAt and clears a now-omitted reason', () => {
+      const s = makeSchedule();
+      const first = store.archive(s.id, 'first reason');
+      expect(first.archivedReason).toBe('first reason');
+      // Re-archive without a reason: the stale reason must not linger, and the
+      // timestamp advances (documented behavior).
+      const second = store.archive(s.id);
+      expect(second.archived).toBe(true);
+      expect(second.archivedReason).toBeUndefined();
+      expect(Date.parse(second.archivedAt!)).toBeGreaterThanOrEqual(Date.parse(first.archivedAt!));
+    });
+
+    it('a close-out write (replace) to an archived schedule does not re-materialize its ROI rollup', () => {
+      const s = makeSchedule();
+      store.archive(s.id);
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      // The close-out write path for a run archived mid-flight goes through
+      // `replace()`, carrying a REAL terminal ledger row. It must not resurrect
+      // the rollup archiving dropped, or a retired loop silently re-enters
+      // fleet ROI carrying that run's attribution.
+      store.replace({
+        ...store.get(s.id)!,
+        lastRunStatus: 'completed',
+        executionLedger: [{
+          id: 'ledger-1',
+          scheduleId: s.id,
+          taskId: 'task-1',
+          trigger: 'cron',
+          decision: 'cron_due',
+          evaluatedAt: '2026-01-01T09:00:00.000Z',
+          completedAt: '2026-01-01T09:05:00.000Z',
+          outcome: 'completed',
+          reasonCode: 'none',
+        }],
+      });
+
+      expect(store.getRollup(s.id)).toBeUndefined();
+      expect(store.get(s.id)?.archived).toBe(true);
+      expect(store.list().map((x) => x.id)).not.toContain(s.id);
+
+      // Un-archiving is what rebuilds the rollup — from that same real row.
+      store.unarchive(s.id);
+      expect(store.getRollup(s.id)?.fires).toBe(1);
+      expect(store.getRollup(s.id)?.outcomes.completed).toBe(1);
+    });
+
+    it('listAll() exposes archived rows so terminal bookkeeping can still reach them', () => {
+      const active = makeSchedule('Active');
+      const dead = makeSchedule('Dead');
+      store.archive(dead.id);
+
+      expect(store.list().map((x) => x.id)).toEqual([active.id]);
+      expect(store.listAll().map((x) => x.id).sort()).toEqual([active.id, dead.id].sort());
+    });
+
+    it('editing or toggling an archived schedule does not re-materialize its ROI rollup either', () => {
+      const s = makeSchedule();
+      store.archive(s.id);
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      // `updateDefinition` / `setEnabled` resolve by id, so they reach an
+      // archived row (`PATCH /api/schedules/:id`, `kookr schedule disable`).
+      // Neither may put a retired loop back into fleet ROI.
+      store.updateDefinition(s.id, { name: 'Renamed While Archived' });
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      store.setEnabled(s.id, false);
+      expect(store.getRollup(s.id)).toBeUndefined();
+      expect(store.listRollups()).toHaveLength(0);
+
+      // Still archived throughout — a write is not an un-archive.
+      expect(store.get(s.id)?.archived).toBe(true);
+      expect(store.list()).toHaveLength(0);
+    });
+
+    it('un-archiving a schedule that was never archived is a no-op', () => {
+      const s = makeSchedule();
+      const result = store.unarchive(s.id);
+      expect(result.archived).toBeUndefined();
+      expect(store.list().map((x) => x.id)).toContain(s.id);
+      expect(store.listArchived()).toHaveLength(0);
+    });
+
+    it('throws for an unknown id', () => {
+      expect(() => store.archive('missing')).toThrow(ScheduleValidationError);
+      expect(() => store.unarchive('missing')).toThrow(ScheduleValidationError);
+    });
+  });
+
   it('persists and loads runtime schedule state atomically', async () => {
     const created = store.create({
       name: 'Persist Test',

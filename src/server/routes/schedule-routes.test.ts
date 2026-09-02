@@ -475,6 +475,94 @@ Do not schedule.
   });
 
   // ---------------------------------------------------------------------------
+  // Archive management (issue #2981)
+  // ---------------------------------------------------------------------------
+  describe('archive routes (issue #2981)', () => {
+    test('POST /:id/archive archives and returns the schedule, dropping it from the list', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}/archive`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: 'no live supply or demand' }),
+        },
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { archived?: boolean; archivedReason?: string };
+      expect(body.archived).toBe(true);
+      expect(body.archivedReason).toBe('no live supply or demand');
+      expect(store.list()).toHaveLength(0);
+      expect(store.listArchived()).toHaveLength(1);
+    });
+
+    test('POST /:id/archive works with no body', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}/archive`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(200);
+      expect(store.listArchived()).toHaveLength(1);
+    });
+
+    test('POST /:id/unarchive returns the schedule to the active fleet', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      await service.archive(schedule.id);
+      expect(store.list()).toHaveLength(0);
+
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}/unarchive`,
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as { archived?: boolean };
+      expect(body.archived).toBeUndefined();
+      expect(store.list()).toHaveLength(1);
+    });
+
+    test('GET /api/schedules/archived lists only archived schedules', async () => {
+      const live = await seedSchedule(service, tempDir, 'Live Loop');
+      const dead = await seedSchedule(service, tempDir, 'Dead Loop');
+      await service.archive(dead.id);
+
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules/archived');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { schedules: Array<{ id: string }> };
+      expect(body.schedules.map((s) => s.id)).toEqual([dead.id]);
+      expect(body.schedules.map((s) => s.id)).not.toContain(live.id);
+
+      // And the archived row is absent from the active list.
+      const activeRes = await mkApp({ scheduleService: service }).request('/api/schedules');
+      const active = await activeRes.json() as { schedules: Array<{ id: string }> };
+      expect(active.schedules.map((s) => s.id)).toEqual([live.id]);
+    });
+
+    test('POST /:id/archive returns 404 for an unknown id', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules/does-not-exist/archive',
+        { method: 'POST' },
+      );
+      expect(res.status).toBe(404);
+    });
+
+    test('archive/unarchive routes return 500 when scheduling is not configured', async () => {
+      for (const verb of ['archive', 'unarchive']) {
+        const res = await mkApp({}).request(`/api/schedules/anything/${verb}`, { method: 'POST' });
+        expect(res.status).toBe(500);
+        expect(await res.json()).toEqual({ error: 'Scheduling not configured' });
+      }
+    });
+
+    test('GET /api/schedules/archived returns an empty list when scheduling is not configured', async () => {
+      const res = await mkApp({}).request('/api/schedules/archived');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ schedules: [] });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // POST /api/schedules/:id/run
   // ---------------------------------------------------------------------------
   describe('POST /api/schedules/:id/run', () => {

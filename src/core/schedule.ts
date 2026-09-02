@@ -453,6 +453,23 @@ export interface Schedule {
    * legacy holds (age unknown → treated as old).
    */
   heldAt?: string;
+  /**
+   * Retired-but-retained flag (issue #2981). An archived schedule is dark
+   * everywhere it costs: it never fires (excluded from every {@link
+   * ScheduleStore.list} the runner, dead-man, stale-alarm, ops aggregation and
+   * status snapshot iterate), so it stops inflating failed/paused counts and
+   * drops off `kookr status` — yet it is preserved in the store (persisted, and
+   * reachable via {@link ScheduleStore.listArchived} / `get`) so a frozen
+   * template or example survives and can be un-archived. This is deliberately
+   * distinct from `enabled:false` + `operatorHold`, which leaves the schedule
+   * "active": still counted by health checks and still surfaced as paused.
+   * Cleared by {@link ScheduleStore.unarchive}.
+   */
+  archived?: boolean;
+  /** ISO timestamp when the schedule was archived (issue #2981). */
+  archivedAt?: string;
+  /** Optional operator note recorded at archive time (issue #2981). */
+  archivedReason?: string;
   cron: string;
   maxTriggers?: number;
   remainingTriggers?: number;
@@ -772,12 +789,43 @@ export class ScheduleStore {
     return this.loadError;
   }
 
+  /**
+   * Active (non-archived) schedules. This is the fleet the runner fires and
+   * that health checks, the status snapshot and ROI/attribution aggregation
+   * iterate — archived schedules are dark and excluded here by design (issue
+   * #2981), so retiring a loop drops it off every one of those surfaces at
+   * once. Persistence and archive management read the full set separately
+   * ({@link listAll} / {@link listArchived}) so archived rows are never
+   * lost on the next write.
+   */
   list(): Schedule[] {
+    return Array.from(this.schedules.values()).filter((s) => !s.archived);
+  }
+
+  /**
+   * Every schedule, archived rows included. Use this — never {@link list} —
+   * for work that must still reach a retired row: persistence, admin views,
+   * and terminal bookkeeping for a run that was ALREADY launched (closing out
+   * its ledger entry and receipt). A run archived mid-flight must still be
+   * closed out, otherwise its ledger row stays `running` forever and poisons
+   * the rollup that un-archiving rematerializes (issue #2981).
+   */
+  listAll(): Schedule[] {
     return Array.from(this.schedules.values());
+  }
+
+  /** Archived (retired-but-retained) schedules only (issue #2981). */
+  listArchived(): Schedule[] {
+    return Array.from(this.schedules.values()).filter((s) => s.archived === true);
   }
 
   listWithComputed(): ScheduleResponse[] {
     return this.list().map((s) => enrichSchedule(s, this.resolutionStateFor(s)));
+  }
+
+  /** Archived schedules enriched for API/CLI display (issue #2981). */
+  listArchivedWithComputed(): ScheduleResponse[] {
+    return this.listArchived().map((s) => enrichSchedule(s, this.resolutionStateFor(s)));
   }
 
   get(id: string): Schedule | undefined {
@@ -855,9 +903,25 @@ export class ScheduleStore {
     };
 
     this.schedules.set(schedule.id, schedule);
-    this.rollupStore.updateFromSchedule(schedule);
+    this.syncRollup(schedule);
     this.bumpRevision();
     return schedule;
+  }
+
+  /**
+   * Bring one schedule's ROI rollup in line with the row just written. THE
+   * single place the "an archived schedule carries no rollup" invariant lives
+   * (issue #2981) — every write path routes through here so no door is left
+   * open. An archived row contributes nothing to fleet ROI, so any write to it
+   * (an operator edit, an enable/disable toggle, or the close-out of a run that
+   * was in flight when it was archived) keeps its rollup dropped rather than
+   * re-materializing the one `archive()` deliberately removed. For a live row
+   * this is the incremental, bounded write-path update: recompute only THIS
+   * schedule's rollup from its ledger — never a full-fleet rescan (issue #1584).
+   */
+  private syncRollup(schedule: Schedule): void {
+    if (schedule.archived) this.rollupStore.remove(schedule.id);
+    else this.rollupStore.updateFromSchedule(schedule);
   }
 
   updateDefinition(id: string, patch: UpdateScheduleDefinitionInput): Schedule {
@@ -942,7 +1006,7 @@ export class ScheduleStore {
       delete updated.modelTier;
     }
     this.schedules.set(id, updated);
-    this.rollupStore.updateFromSchedule(updated);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -996,7 +1060,59 @@ export class ScheduleStore {
       updated.heldAt = updated.updatedAt;
     }
     this.schedules.set(id, updated);
-    this.rollupStore.updateFromSchedule(updated);
+    this.syncRollup(updated);
+    this.bumpRevision();
+    return updated;
+  }
+
+  /**
+   * Archive a schedule (issue #2981) — retire it without deleting it. Sets the
+   * {@link Schedule.archived} tombstone so it is excluded from {@link list}
+   * (and therefore from firing, health checks, the status snapshot and ROI
+   * attribution) while the row itself is kept for audit / un-archive. An
+   * archived schedule contributes nothing to fleet ROI, so its rollup is
+   * dropped to keep attribution clean; the rollup rematerializes from the
+   * ledger on un-archive. Idempotent-ish: re-archiving refreshes `archivedAt`.
+   *
+   * Archiving mid-run is allowed and does NOT abandon the in-flight run: the
+   * terminal-outcome and boot-reconcile paths resolve schedules through
+   * {@link listAll}, so an already-launched task still closes out its
+   * ledger row and receipt after the archive. Only *firing* is gated on
+   * archive state.
+   */
+  archive(id: string, reason?: string): Schedule {
+    const existing = this.schedules.get(id);
+    if (!existing) throw new ScheduleValidationError(`Schedule not found: ${id}`);
+    const now = new Date().toISOString();
+    const trimmedReason = reason?.trim();
+    const updated: Schedule = {
+      ...existing,
+      archived: true,
+      archivedAt: now,
+      ...(trimmedReason ? { archivedReason: trimmedReason } : {}),
+      updatedAt: now,
+    };
+    if (!trimmedReason) delete updated.archivedReason;
+    this.schedules.set(id, updated);
+    this.syncRollup(updated);
+    this.bumpRevision();
+    return updated;
+  }
+
+  /**
+   * Un-archive a schedule (issue #2981) — clear the {@link Schedule.archived}
+   * tombstone so it returns to the active fleet in whatever enabled/hold state
+   * it carried before. Its ROI rollup rematerializes from the retained ledger.
+   */
+  unarchive(id: string): Schedule {
+    const existing = this.schedules.get(id);
+    if (!existing) throw new ScheduleValidationError(`Schedule not found: ${id}`);
+    const updated: Schedule = { ...existing, updatedAt: new Date().toISOString() };
+    delete updated.archived;
+    delete updated.archivedAt;
+    delete updated.archivedReason;
+    this.schedules.set(id, updated);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -1017,9 +1133,7 @@ export class ScheduleStore {
       updatedAt: new Date().toISOString(),
     };
     this.schedules.set(schedule.id, stored);
-    // Incremental, bounded write-path update: recompute only THIS schedule's
-    // rollup from its ledger — never a full-fleet rescan (issue #1584).
-    this.rollupStore.updateFromSchedule(stored);
+    this.syncRollup(stored);
     this.bumpRevision();
   }
 
@@ -1039,7 +1153,10 @@ export class ScheduleStore {
   private async writeSchedules(): Promise<void> {
     // Compact JSON — persist is on a hot path (every replace/update chains here).
     // Load still accepts pretty-printed legacy files via JSON.parse (#2217).
-    const data = JSON.stringify(this.list());
+    // Serialize the FULL set, not `list()` — archived schedules (issue #2981)
+    // are excluded from `list()` but must survive the write, else retiring a
+    // loop would silently delete it on the next persist.
+    const data = JSON.stringify(this.listAll());
     const tmpPath = join(dirname(this.filePath), `.schedules-${randomUUID()}.tmp`);
     await mkdir(dirname(this.filePath), { recursive: true });
     let renamed = false;
@@ -1085,6 +1202,16 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       : {}),
     ...(candidate.operatorHold === true && typeof candidate.heldAt === 'string'
       ? { heldAt: candidate.heldAt }
+      : {}),
+    // Archived tombstone (issue #2981) — only rehydrate an explicit true, and
+    // carry its metadata so a retired loop stays retired (and auditable) across
+    // a restart. Absent metadata degrades gracefully.
+    ...(candidate.archived === true ? { archived: true } : {}),
+    ...(candidate.archived === true && typeof candidate.archivedAt === 'string'
+      ? { archivedAt: candidate.archivedAt }
+      : {}),
+    ...(candidate.archived === true && typeof candidate.archivedReason === 'string'
+      ? { archivedReason: candidate.archivedReason }
       : {}),
     cron: String(candidate.cron),
     ...normalizeTriggerState(candidate),
@@ -1455,7 +1582,9 @@ function enrichSchedule(
   playbookResolution: PlaybookResolutionState = 'unknown',
 ): ScheduleResponse {
   const after = s.lastScheduledFor ? new Date(s.lastScheduledFor) : new Date(s.createdAt);
-  const next = s.enabled && !isTriggerLimitExhausted(s) ? nextRun(s.cron, after) : null;
+  // Archived schedules never fire (issue #2981), so they have no next run even
+  // if they were archived while still enabled.
+  const next = s.enabled && !s.archived && !isTriggerLimitExhausted(s) ? nextRun(s.cron, after) : null;
   const effectiveNext = next && next.getTime() <= Date.now()
     ? nextRun(s.cron, new Date())
     : next;
