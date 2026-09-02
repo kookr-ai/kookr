@@ -1,5 +1,5 @@
 import { basename } from 'node:path';
-import { completeLlmDetailed } from './llm-client.js';
+import { classifyLlmProviderFailure, completeLlmDetailed } from './llm-client.js';
 import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
 import { stripWorktreeGuardrailPrefix } from './prompt-display.js';
 import { logTaskNaming } from './training-data-logger.js';
@@ -218,6 +218,14 @@ export async function generateTaskName(
     } catch (err) {
       if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
+      // A permanent/cooldown-class provider failure (the 'auth' category, which
+      // covers 401/403/410 Gone) fails identically for every mode: they share
+      // one client, so a dead or deprecated provider will reject the remaining
+      // modes the same way. Stop after the first — like a returned circuit_open
+      // — instead of paying two more dead round-trips per spawn (issue #2960).
+      // Transient failures (network/timeout/429/5xx ⇒ non-auth category) keep
+      // the per-mode retry.
+      if (classifyLlmProviderFailure(err) === 'auth') break;
     }
   }
 

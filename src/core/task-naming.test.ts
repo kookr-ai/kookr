@@ -244,6 +244,70 @@ describe('generateTaskName', () => {
     expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
     expect(warn.mock.calls[0][0]).toContain('circuit_open');
   });
+
+  // Issue #2960: a THROWN permanent provider error (e.g. 410 Gone for a
+  // deprecated model) fails identically for every mode — the modes share one
+  // client. Stop after the first attempt instead of paying two more dead
+  // round-trips (and two more 410 log lines) per spawn.
+  test('short-circuits the chain on a thrown permanent provider error (410)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw Object.assign(new Error('Baseten request failed: 410 Gone - the model version you are trying to access has been deprecated.'), { status: 410 });
+    });
+
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+
+    expect(result).toBeNull();
+    // One attempt, not three.
+    expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect(warn.mock.calls[0][0]).toContain('410 Gone');
+  });
+
+  // The permanence short-circuit must not swallow transient failures: a 429 /
+  // timeout can succeed on a later mode, so the chain still retries all three.
+  test('keeps retrying every mode on a thrown transient error (429)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw Object.assign(new Error('429 Too Many Requests'), { status: 429 });
+    });
+
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+
+    expect(result).toBeNull();
+    expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(3);
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  // The real single-provider adapter throws an LlmProviderFailureError carrying
+  // providerFailureCategory, which classifyLlmProviderFailure reads directly
+  // (ahead of the status/message branches). Mirror that production shape so the
+  // short-circuit is pinned to the actual thrown error, not just a status code.
+  test('short-circuits on a thrown error carrying providerFailureCategory=auth', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw Object.assign(new Error('provider auth failure'), { providerFailureCategory: 'auth' });
+    });
+
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+
+    expect(result).toBeNull();
+    expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
+
+  // An auth error with no numeric status still classifies as permanent via the
+  // classifier's message-regex branch — so a provider throwing a plain Error
+  // ('invalid api key') short-circuits too.
+  test('short-circuits on a message-only auth error (no status field)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const client = detailedClient(() => {
+      throw new Error('401 Unauthorized: invalid api key');
+    });
+
+    const result = await generateTaskName(client, 'Fix bug', '/project');
+
+    expect(result).toBeNull();
+    expect((client.completeDetailed as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+  });
 });
 
 describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unnamed)', () => {
