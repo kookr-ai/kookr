@@ -1,20 +1,34 @@
 /**
  * `kookr emission` — drain-coupled issue-filing budget + mandatory dedupe
- * (issue #1607).
+ * (issues #1607, #1657, #1703, #2804).
  *
- *   kookr emission plan    --repo owner/repo --requested N [--json]
- *   kookr emission dedupe  --repo owner/repo --title "..." [--json]
- *   kookr emission metrics --repo owner/repo [--json]
- *   kookr emission defer   --repo owner/repo --title "..." --source <playbook> [--json]
+ *   kookr emission plan     --repo owner/repo --requested N [--json]
+ *   kookr emission override --repo owner/repo --requested N --count N
+ *                           --reason "..." --expires-at ISO --override-id UUID [--json]
+ *   kookr emission dedupe   --repo owner/repo --title "..." [--json]
+ *   kookr emission metrics  --repo owner/repo [--json]
+ *   kookr emission defer    --repo owner/repo --title "..." --source <playbook> [--json]
  *
  * Playbooks (idea-scout, architecture-health-check, reflection/retro) call
  * these before any `gh issue create`. Pure budget/dedupe math lives in
  * `core/emission-budget.ts`; this CLI shells out to `gh` for live counts and
- * writes the deferred-ideas JSONL.
+ * writes deferred-ideas JSONL, the emission audit stream, and (for override)
+ * exclusive operator-override claims.
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
+import {
+  appendFileSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
@@ -25,19 +39,29 @@ import {
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
   DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
+  EMISSION_AUDIT_SCHEMA_VERSION,
+  MAX_OPERATOR_OVERRIDE_COUNT,
+  MAX_OPERATOR_OVERRIDE_TTL_MS,
+  MIN_OPERATOR_OVERRIDE_REASON_LENGTH,
   NET_BACKLOG_DELTA_WINDOW_DAYS,
+  OPERATOR_OVERRIDE_SCHEMA_VERSION,
   budgetLogicVersionStatus,
   buildDeferredIdeaRecord,
   checkDedupe,
   computeNetBacklogDelta7d,
   deferredIdeasPath,
+  emissionAuditPath,
   extractSchemaVersion,
   resolveEmissionBudget,
+  operatorOverrideStatePath,
   shouldBurstDrainBeforeEmission,
   utcDayKeyDaysAgo,
   type EmissionBudgetPlan,
+  type EmissionAuditRecord,
   type IssueRef,
   type NetBacklogDelta7d,
+  type OperatorEmissionOverride,
+  type OperatorOverrideState,
 } from '../core/emission-budget.js';
 import {
   computeCiBlindDebt,
@@ -56,10 +80,12 @@ import {
 } from '../core/project-config-store.js';
 import { UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT } from '../shared/contracts/project-config.js';
 
-export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
+export const USAGE = `kookr emission — drain-coupled issue filing budget + bounded override + dedupe (#1607, #1657, #1703, #2804).
 
 Usage:
   kookr emission plan    --repo <owner/repo> --requested <N> [OPTIONS]
+  kookr emission override --repo <owner/repo> --requested <N> --count <N>
+                          --reason <text> --expires-at <ISO> --override-id <UUID> [OPTIONS]
   kookr emission dedupe  --repo <owner/repo> --title <text> [OPTIONS]
   kookr emission metrics --repo <owner/repo> [OPTIONS]
   kookr emission defer   --repo <owner/repo> --title <text> --source <name> [OPTIONS]
@@ -68,6 +94,8 @@ Usage:
 plan     Resolve how many new issues this run may file given live open backlog,
          the target repo's drain rate (closed issues in the window, #1657), and
          the retro-verify / ci_blind_debt queue depth (#1703).
+override Run one authorized, single-use plan that may lift only an explicit
+         zero-drain refusal. All other emission gates remain authoritative.
 dedupe   Mandatory pre-filing duplicate check; always prints a log line.
 metrics  Open backlog + 7-day netBacklogDelta7d + ci_blind_debt + budget.
 defer    Append a candidate to the deferred-ideas JSONL instead of filing.
@@ -75,13 +103,16 @@ version  Report the running budget-logic version and warn if it lags origin/main
 
 Options:
   --repo <owner/repo>     Target GitHub repository (required).
-  --requested <N>         How many issues this run wants to file (plan).
+  --requested <N>         How many issues this run wants to file (plan / override).
+  --count <N>             Override batch size (override; 1-${MAX_OPERATOR_OVERRIDE_COUNT}).
+  --reason <text>         Operator justification (override) or defer reason.
+  --expires-at <ISO>      Absolute override expiry, at most 15 minutes ahead.
+  --override-id <UUID>    Single-use invocation id (override; link dedupe/defer audit).
   --title <text>          Candidate issue title (dedupe / defer).
   --source <name>         Emitting playbook id (defer).
-  --reason <text>         Defer reason (default: over emission budget).
   --threshold <N>         Open-backlog threshold (default: ${DEFAULT_OPEN_BACKLOG_THRESHOLD}).
   --constrained <N>       Budget when over threshold (default: ${DEFAULT_CONSTRAINED_BUDGET}).
-  --drain-window <N>      Drain-rate window in days (plan; default: ${NET_BACKLOG_DELTA_WINDOW_DAYS}).
+  --drain-window <N>      Drain-rate window in days (plan / override; default: ${NET_BACKLOG_DELTA_WINDOW_DAYS}).
   --drain-ratio <N>       New issues earned per drained issue (default: ${DEFAULT_DRAIN_COUPLING_RATIO}).
   --drain-floor <N>       Internal compatibility option; must remain ${DEFAULT_DRAIN_FLOOR_BUDGET}.
   --retro-verify-threshold <N>
@@ -91,11 +122,11 @@ Options:
                           Disable ci_blind_debt gate (do not read the queue).
   --tolerance-blocker <type:scope>
                           Mark this run's candidates as tolerance machinery for
-                          the given external blocker (plan). If that blocker
+                          the given external blocker (plan / override). If that blocker
                           already has a tolerance regime in the env-blocker
                           registry, emission is refused (#1702).
   --body-preview <text>   Optional body snippet stored on defer.
-  --kookr-dir <PATH>      State root for deferred-ideas (default: ~/.kookr).
+  --kookr-dir <PATH>      State root for audit, override and deferred state (default: ~/.kookr).
   --retro-verify-dir <PATH>
                           Retro-verify queue dir (default: ~/.kookr/playbook-state/retro-verify-queue
                           or KOOKR_RETRO_VERIFY_QUEUE_DIR).
@@ -104,14 +135,17 @@ Options:
   -h, --help              Show this help.
 
 Environment:
-  GH_TOKEN / gh auth      Required for live GitHub counts (plan/dedupe/metrics).
+  GH_TOKEN / gh auth      Required for live GitHub counts (plan/override/dedupe/metrics).
   KOOKR_RETRO_VERIFY_QUEUE_DIR  Override retro-verify queue path.
   KOOKR_MAX_ZERO_DRAIN_ISSUE_LIMIT  Optional deployment-wide ceiling for repository zero-drain limits.
+  KOOKR_EMISSION_OVERRIDE_SECRET  Configured capability secret (minimum 16 characters).
+  KOOKR_EMISSION_OVERRIDE_AUTHORIZATION
+                          Command-scoped capability presented by the operator.
 
 Exit codes:
   0  Success.
-  2  User error (bad flags / missing required args).
-  4  GitHub query failed.
+  2  User/policy error (bad flags, authorization, expiry, replay, applicability).
+  4  GitHub query or durable audit/state write failed.
 `;
 
 export interface EmissionCliIo {
@@ -125,6 +159,8 @@ export interface EmissionCliIo {
   runGit?: (args: string[]) => string;
   /** Injectable append for defer (tests). */
   appendLine?: (path: string, line: string) => void;
+  /** Injectable durable emission-audit append (tests). */
+  appendAudit?: (path: string, line: string) => void;
   /**
    * Injectable retro-verify depth reader (tests). When omitted, the CLI reads
    * the durable queue from disk (or returns 0 / empty debt on ENOENT).
@@ -143,6 +179,9 @@ interface ParsedArgs {
   verb: string | null;
   repo: string | null;
   requested: number | null;
+  overrideCount: number | null;
+  expiresAt: string | null;
+  overrideId: string | null;
   title: string | null;
   source: string | null;
   reason: string | null;
@@ -165,11 +204,26 @@ interface ParsedArgs {
 
 export class EmissionUsageError extends Error {}
 
+class OperatorOverrideUsageError extends EmissionUsageError {
+  constructor(
+    message: string,
+    readonly refusalCode: string,
+  ) {
+    super(message);
+  }
+}
+
+export const OPERATOR_OVERRIDE_SECRET_ENV = 'KOOKR_EMISSION_OVERRIDE_SECRET';
+export const OPERATOR_OVERRIDE_AUTHORIZATION_ENV = 'KOOKR_EMISSION_OVERRIDE_AUTHORIZATION';
+
 export function parseEmissionArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = {
     verb: null,
     repo: null,
     requested: null,
+    overrideCount: null,
+    expiresAt: null,
+    overrideId: null,
     title: null,
     source: null,
     reason: null,
@@ -215,6 +269,15 @@ export function parseEmissionArgs(argv: string[]): ParsedArgs {
         ? Number(tok.slice('--requested='.length))
         : eatNum('--requested');
       if (!Number.isFinite(out.requested)) throw new EmissionUsageError('--requested must be a number');
+    } else if (tok === '--count' || tok.startsWith('--count=')) {
+      out.overrideCount = tok.includes('=')
+        ? Number(tok.slice('--count='.length))
+        : eatNum('--count');
+      if (!Number.isFinite(out.overrideCount)) throw new EmissionUsageError('--count must be a number');
+    } else if (tok === '--expires-at' || tok.startsWith('--expires-at=')) {
+      out.expiresAt = tok.includes('=') ? tok.slice('--expires-at='.length) : eat();
+    } else if (tok === '--override-id' || tok.startsWith('--override-id=')) {
+      out.overrideId = tok.includes('=') ? tok.slice('--override-id='.length) : eat();
     } else if (tok === '--title' || tok.startsWith('--title=')) {
       out.title = tok.includes('=') ? tok.slice('--title='.length) : eat();
     } else if (tok === '--source' || tok.startsWith('--source=')) {
@@ -322,10 +385,193 @@ function defaultRunGit(args: string[], repoDir: string): string {
 }
 
 function requireRepo(repo: string | null): string {
-  if (!repo || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)) {
+  const parts = repo?.split('/') ?? [];
+  if (
+    !repo
+    || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo)
+    || parts.some((part) => part === '.' || part === '..')
+  ) {
     throw new EmissionUsageError('--repo must be owner/repo');
   }
   return repo;
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = Buffer.from(left);
+  const rightBytes = Buffer.from(right);
+  if (leftBytes.length !== rightBytes.length) {
+    // Compare same-length dummy buffers so length mismatch is not the only
+    // observable work performed. The boolean still rejects the mismatch.
+    const width = Math.max(leftBytes.length, rightBytes.length, 1);
+    timingSafeEqual(Buffer.alloc(width), Buffer.alloc(width));
+    return false;
+  }
+  return timingSafeEqual(leftBytes, rightBytes);
+}
+
+function validateOperatorOverride(
+  args: ParsedArgs,
+  env: NodeJS.ProcessEnv,
+  invokedAt: Date,
+): OperatorEmissionOverride {
+  if (!Number.isSafeInteger(args.requested) || args.requested === null || args.requested <= 0) {
+    throw new OperatorOverrideUsageError(
+      '--requested must be a positive safe integer for override',
+      'invalid_requested_budget',
+    );
+  }
+  if (
+    !Number.isSafeInteger(args.overrideCount)
+    || args.overrideCount === null
+    || args.overrideCount <= 0
+    || args.overrideCount > MAX_OPERATOR_OVERRIDE_COUNT
+  ) {
+    throw new OperatorOverrideUsageError(
+      `--count must be a positive safe integer no greater than ${MAX_OPERATOR_OVERRIDE_COUNT}`,
+      'invalid_count',
+    );
+  }
+  const reason = args.reason?.trim() ?? '';
+  if (reason.length < MIN_OPERATOR_OVERRIDE_REASON_LENGTH || reason.length > 500) {
+    throw new OperatorOverrideUsageError(
+      `--reason must contain ${MIN_OPERATOR_OVERRIDE_REASON_LENGTH}-500 characters`,
+      'invalid_reason',
+    );
+  }
+  if (!args.expiresAt) {
+    throw new OperatorOverrideUsageError('--expires-at is required for override', 'missing_expiry');
+  }
+  const expiresAtMs = Date.parse(args.expiresAt);
+  if (!Number.isFinite(expiresAtMs) || new Date(expiresAtMs).toISOString() !== args.expiresAt) {
+    throw new OperatorOverrideUsageError(
+      '--expires-at must be a canonical ISO-8601 timestamp',
+      'invalid_expiry',
+    );
+  }
+  const ttlMs = expiresAtMs - invokedAt.getTime();
+  if (ttlMs <= 0 || ttlMs > MAX_OPERATOR_OVERRIDE_TTL_MS) {
+    throw new OperatorOverrideUsageError(
+      '--expires-at must be in the future and no more than 15 minutes ahead',
+      ttlMs <= 0 ? 'expired' : 'expiry_too_long',
+    );
+  }
+  if (!args.overrideId || !UUID_PATTERN.test(args.overrideId)) {
+    throw new OperatorOverrideUsageError(
+      '--override-id must be a UUID',
+      'invalid_invocation_id',
+    );
+  }
+  const expected = env[OPERATOR_OVERRIDE_SECRET_ENV];
+  const provided = env[OPERATOR_OVERRIDE_AUTHORIZATION_ENV];
+  if (!expected || expected.length < 16) {
+    throw new OperatorOverrideUsageError(
+      `${OPERATOR_OVERRIDE_SECRET_ENV} must configure a secret of at least 16 characters`,
+      'authorization_not_configured',
+    );
+  }
+  if (!provided || !constantTimeEqual(expected, provided)) {
+    throw new OperatorOverrideUsageError(
+      `invalid or missing ${OPERATOR_OVERRIDE_AUTHORIZATION_ENV}`,
+      'invalid_authorization',
+    );
+  }
+
+  return {
+    invocationId: args.overrideId,
+    count: args.overrideCount,
+    reason,
+    expiresAt: args.expiresAt,
+  };
+}
+
+function syncParentDirectory(path: string): void {
+  const fd = openSync(dirname(path), 'r');
+  try {
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function appendAuditDurably(path: string, line: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const fd = openSync(path, 'a', 0o600);
+  try {
+    writeFileSync(fd, line.endsWith('\n') ? line : `${line}\n`, 'utf8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  syncParentDirectory(path);
+}
+
+function createOperatorOverrideState(path: string, state: OperatorOverrideState): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const fd = openSync(path, 'wx', 0o600);
+  try {
+    writeFileSync(fd, `${JSON.stringify(state)}\n`, 'utf8');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
+  syncParentDirectory(path);
+}
+
+function replaceOperatorOverrideState(path: string, state: OperatorOverrideState): void {
+  const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let renamed = false;
+  try {
+    const fd = openSync(temp, 'wx', 0o600);
+    try {
+      writeFileSync(fd, `${JSON.stringify(state)}\n`, 'utf8');
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temp, path);
+    renamed = true;
+    syncParentDirectory(path);
+  } finally {
+    if (!renamed) {
+      try { unlinkSync(temp); } catch { /* best-effort temp cleanup */ }
+    }
+  }
+}
+
+function readOperatorOverrideState(path: string): OperatorOverrideState {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  } catch {
+    throw new OperatorOverrideUsageError(
+      `override state is missing or unreadable: ${path}`,
+      'override_state_unavailable',
+    );
+  }
+  if (
+    !parsed
+    || typeof parsed !== 'object'
+    || (parsed as { schemaVersion?: unknown }).schemaVersion !== OPERATOR_OVERRIDE_SCHEMA_VERSION
+  ) {
+    throw new OperatorOverrideUsageError(
+      `override state has an unsupported schema: ${path}`,
+      'override_state_invalid',
+    );
+  }
+  return parsed as OperatorOverrideState;
+}
+
+function auditRecord(
+  now: Date,
+  record: Omit<EmissionAuditRecord, 'schemaVersion' | 'at'>,
+): EmissionAuditRecord {
+  return {
+    schemaVersion: EMISSION_AUDIT_SCHEMA_VERSION,
+    at: now.toISOString(),
+    ...record,
+  };
 }
 
 function readConfiguredZeroDrainIssueLimit(
@@ -442,6 +688,14 @@ function printPlanHuman(out: { log: (...a: unknown[]) => void }, plan: EmissionB
     out.log(`toleranceRegimeBlockerKey=${plan.toleranceRegimeBlockerKey}`);
   }
   out.log(`toleranceRegimeBlocked=${plan.toleranceRegimeBlocked}`);
+  out.log(`operatorOverrideCoupled=${plan.operatorOverrideCoupled}`);
+  out.log(`operatorOverrideApplied=${plan.operatorOverrideApplied}`);
+  if (plan.operatorOverrideInvocationId !== undefined) {
+    out.log(`operatorOverrideInvocationId=${plan.operatorOverrideInvocationId}`);
+  }
+  if (plan.operatorOverrideCount !== undefined) {
+    out.log(`operatorOverrideCount=${plan.operatorOverrideCount}`);
+  }
   out.log(`action=${plan.action}`);
   out.log(`reason=${plan.reason}`);
 }
@@ -517,6 +771,7 @@ export async function runEmissionCli(
       mkdirSync(dirname(path), { recursive: true });
       appendFileSync(path, line.endsWith('\n') ? line : `${line}\n`, 'utf8');
     });
+  const appendAudit = io.appendAudit ?? appendAuditDurably;
 
   let args: ParsedArgs;
   try {
@@ -539,9 +794,78 @@ export async function runEmissionCli(
     args.kookrDir = resolveKookrDataDir(env);
   }
 
+  let pendingOverride: {
+    statePath: string;
+    state: OperatorOverrideState;
+  } | undefined;
+  let overrideFinalized = false;
+
   try {
-    if (args.verb === 'plan') {
-      const repo = requireRepo(args.repo);
+    if (args.verb === 'plan' || args.verb === 'override') {
+      const invokedAt = now();
+      let repo: string;
+      let operatorOverride: OperatorEmissionOverride | undefined;
+      if (args.verb === 'override') {
+        try {
+          repo = requireRepo(args.repo);
+          operatorOverride = validateOperatorOverride(args, env, invokedAt);
+        } catch (error) {
+          const refusalCode = error instanceof OperatorOverrideUsageError
+            ? error.refusalCode
+            : 'invalid_repository';
+          appendAudit(
+            emissionAuditPath(args.kookrDir),
+            JSON.stringify(auditRecord(invokedAt, {
+              event: 'operator_override',
+              outcome: 'refused',
+              ...(args.repo ? { repo: args.repo.slice(0, 200) } : {}),
+              ...(args.overrideId ? { invocationId: args.overrideId.slice(0, 100) } : {}),
+              ...(args.reason ? { reason: args.reason.slice(0, 500) } : {}),
+              refusalCode,
+            })),
+          );
+          throw error;
+        }
+
+        const statePath = operatorOverrideStatePath(args.kookrDir, operatorOverride.invocationId);
+        const state: OperatorOverrideState = {
+          schemaVersion: OPERATOR_OVERRIDE_SCHEMA_VERSION,
+          invocationId: operatorOverride.invocationId,
+          repo,
+          requestedBudget: args.requested!,
+          count: operatorOverride.count,
+          reason: operatorOverride.reason,
+          expiresAt: operatorOverride.expiresAt,
+          invokedAt: invokedAt.toISOString(),
+          status: 'claimed',
+        };
+        try {
+          createOperatorOverrideState(statePath, state);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          appendAudit(
+            emissionAuditPath(args.kookrDir),
+            JSON.stringify(auditRecord(invokedAt, {
+              event: 'operator_override',
+              outcome: 'refused',
+              repo,
+              invocationId: operatorOverride.invocationId,
+              requestedBudget: args.requested!,
+              overrideCount: operatorOverride.count,
+              expiresAt: operatorOverride.expiresAt,
+              reason: operatorOverride.reason,
+              refusalCode: 'invocation_replay',
+            })),
+          );
+          throw new OperatorOverrideUsageError(
+            `override invocation ${operatorOverride.invocationId} is already claimed; replay refused`,
+            'invocation_replay',
+          );
+        }
+        pendingOverride = { statePath, state };
+      } else {
+        repo = requireRepo(args.repo);
+      }
       if (args.requested === null) throw new EmissionUsageError('--requested is required for plan');
       const zeroDrainIssueLimit = readConfiguredZeroDrainIssueLimit(repo, args.kookrDir, env);
       // Prefer search total_count so backlog >200 is not under-counted by list --limit.
@@ -556,7 +880,7 @@ export async function runEmissionCli(
       // closed-issue count, so a high-drain actor filing into a low-drain repo
       // is budgeted by the low-drain target, never the actor's home repo.
       let drainCount: number | undefined;
-      const since = utcDayKeyDaysAgo(args.drainWindow, now());
+      const since = utcDayKeyDaysAgo(args.drainWindow, invokedAt);
       try {
         drainCount = searchTotalCount(
           runGh,
@@ -592,6 +916,12 @@ export async function runEmissionCli(
           io.readToleranceRegime,
         );
       }
+      if (operatorOverride && Date.parse(operatorOverride.expiresAt) <= now().getTime()) {
+        throw new OperatorOverrideUsageError(
+          `override ${operatorOverride.invocationId} expired during live planning`,
+          'expired_during_plan',
+        );
+      }
       const plan = resolveEmissionBudget({
         openBacklogCount,
         requestedBudget: args.requested,
@@ -616,7 +946,47 @@ export async function runEmissionCli(
               toleranceRegimeBlockerKey: args.toleranceBlocker!,
             }
           : {}),
+        ...(operatorOverride ? { operatorOverride } : {}),
       });
+      if (operatorOverride && pendingOverride) {
+        const granted = plan.operatorOverrideApplied && plan.allowedBudget > 0;
+        const refusalCode = !plan.operatorOverrideApplied
+          ? 'override_not_applicable'
+          : plan.allowedBudget === 0
+            ? 'stricter_gate_refusal'
+            : undefined;
+        const finalState: OperatorOverrideState = {
+          ...pendingOverride.state,
+          status: granted ? 'granted' : 'refused',
+          ...(granted ? { effectiveCount: plan.allowedBudget } : {}),
+          ...(refusalCode ? { refusalCode } : {}),
+        };
+        appendAudit(
+          emissionAuditPath(args.kookrDir),
+          JSON.stringify(auditRecord(invokedAt, {
+            event: 'operator_override',
+            outcome: granted ? 'granted' : 'refused',
+            repo,
+            invocationId: operatorOverride.invocationId,
+            requestedBudget: args.requested,
+            overrideCount: operatorOverride.count,
+            ...(granted ? { effectiveCount: plan.allowedBudget } : {}),
+            expiresAt: operatorOverride.expiresAt,
+            reason: operatorOverride.reason,
+            ...(refusalCode ? { refusalCode } : {}),
+          })),
+        );
+        replaceOperatorOverrideState(pendingOverride.statePath, finalState);
+        overrideFinalized = true;
+        if (!granted) {
+          throw new OperatorOverrideUsageError(
+            refusalCode === 'override_not_applicable'
+              ? 'override applies only to an explicit zero-drain refusal'
+              : 'override could not grant a budget because a stricter emission gate refused it',
+            refusalCode!,
+          );
+        }
+      }
       const payload = {
         ok: true,
         repo,
@@ -652,8 +1022,84 @@ export async function runEmissionCli(
     if (args.verb === 'dedupe') {
       const repo = requireRepo(args.repo);
       if (!args.title) throw new EmissionUsageError('--title is required for dedupe');
-      const openIssues = listOpenIssues(runGh, repo);
+      const attemptedAt = now();
+      if (args.overrideId) {
+        try {
+          if (!UUID_PATTERN.test(args.overrideId)) {
+            throw new OperatorOverrideUsageError(
+              '--override-id must be a UUID',
+              'invalid_invocation_id',
+            );
+          }
+          const state = readOperatorOverrideState(
+            operatorOverrideStatePath(args.kookrDir, args.overrideId),
+          );
+          if (state.repo.toLowerCase() !== repo.toLowerCase()) {
+            throw new OperatorOverrideUsageError(
+              `override ${args.overrideId} is bound to ${state.repo}, not ${repo}`,
+              'repository_mismatch',
+            );
+          }
+          if (state.status !== 'granted' || !state.effectiveCount || state.effectiveCount <= 0) {
+            throw new OperatorOverrideUsageError(
+              `override ${args.overrideId} is not a granted filing batch`,
+              'override_not_granted',
+            );
+          }
+          const expiresAtMs = Date.parse(state.expiresAt);
+          if (!Number.isFinite(expiresAtMs) || expiresAtMs <= attemptedAt.getTime()) {
+            throw new OperatorOverrideUsageError(
+              `override ${args.overrideId} expired at ${state.expiresAt}`,
+              'expired',
+            );
+          }
+        } catch (error) {
+          appendAudit(
+            emissionAuditPath(args.kookrDir),
+            JSON.stringify(auditRecord(attemptedAt, {
+              event: 'filing_attempt',
+              outcome: 'refused',
+              repo,
+              invocationId: args.overrideId,
+              candidateTitle: args.title.slice(0, 500),
+              refusalCode: error instanceof OperatorOverrideUsageError
+                ? error.refusalCode
+                : 'override_state_unavailable',
+            })),
+          );
+          throw error;
+        }
+      }
+      let openIssues: IssueRef[];
+      try {
+        openIssues = listOpenIssues(runGh, repo);
+      } catch (error) {
+        appendAudit(
+          emissionAuditPath(args.kookrDir),
+          JSON.stringify(auditRecord(attemptedAt, {
+            event: 'filing_attempt',
+            outcome: 'refused',
+            repo,
+            ...(args.overrideId ? { invocationId: args.overrideId } : {}),
+            candidateTitle: args.title.slice(0, 500),
+            refusalCode: 'dedupe_query_failed',
+          })),
+        );
+        throw error;
+      }
       const result = checkDedupe(args.title, openIssues, DEFAULT_DEDUPE_SIMILARITY_THRESHOLD);
+      appendAudit(
+        emissionAuditPath(args.kookrDir),
+        JSON.stringify(auditRecord(attemptedAt, {
+          event: 'filing_attempt',
+          outcome: result.isDuplicate ? 'duplicate' : 'dedupe_clear',
+          repo,
+          ...(args.overrideId ? { invocationId: args.overrideId } : {}),
+          candidateTitle: args.title.slice(0, 500),
+          ...(result.match ? { matchNumber: result.match.number } : {}),
+          similarity: result.similarity,
+        })),
+      );
       // Always surface the audit line: stderr when --json (so stdout stays one
       // JSON document), otherwise stdout. Playbooks must keep the line in logs.
       if (args.json) {
@@ -745,6 +1191,19 @@ export async function runEmissionCli(
       const repo = requireRepo(args.repo);
       if (!args.title) throw new EmissionUsageError('--title is required for defer');
       if (!args.source) throw new EmissionUsageError('--source is required for defer');
+      appendAudit(
+        emissionAuditPath(args.kookrDir),
+        JSON.stringify(auditRecord(now(), {
+          event: 'filing_attempt',
+          outcome: 'refused',
+          repo,
+          ...(args.overrideId ? { invocationId: args.overrideId } : {}),
+          candidateTitle: args.title.slice(0, 500),
+          source: args.source.slice(0, 200),
+          reason: (args.reason ?? 'over emission budget').slice(0, 500),
+          refusalCode: 'deferred',
+        })),
+      );
       const path = deferredIdeasPath(repo, args.kookrDir);
       const record = buildDeferredIdeaRecord({
         repo,
@@ -791,12 +1250,45 @@ export async function runEmissionCli(
 
     throw new EmissionUsageError(`unknown verb: ${args.verb}`);
   } catch (e) {
-    if (e instanceof EmissionUsageError) {
-      err.error(`[kookr emission] ${e.message}`);
+    let reportedError: unknown = e;
+    if (pendingOverride && !overrideFinalized) {
+      const refusalCode = e instanceof OperatorOverrideUsageError
+        ? e.refusalCode
+        : 'operation_failed';
+      try {
+        appendAudit(
+          emissionAuditPath(args.kookrDir),
+          JSON.stringify(auditRecord(now(), {
+            event: 'operator_override',
+            outcome: 'refused',
+            repo: pendingOverride.state.repo,
+            invocationId: pendingOverride.state.invocationId,
+            requestedBudget: pendingOverride.state.requestedBudget,
+            overrideCount: pendingOverride.state.count,
+            expiresAt: pendingOverride.state.expiresAt,
+            reason: pendingOverride.state.reason,
+            refusalCode,
+          })),
+        );
+      } catch (auditError) {
+        reportedError = auditError;
+      }
+      try {
+        replaceOperatorOverrideState(pendingOverride.statePath, {
+          ...pendingOverride.state,
+          status: 'refused',
+          refusalCode,
+        });
+      } catch (stateError) {
+        reportedError = stateError;
+      }
+    }
+    if (reportedError instanceof EmissionUsageError) {
+      err.error(`[kookr emission] ${reportedError.message}`);
       err.error('Run `kookr emission --help` for usage.');
       return 2;
     }
-    err.error(`[kookr emission] ${e instanceof Error ? e.message : String(e)}`);
+    err.error(`[kookr emission] ${reportedError instanceof Error ? reportedError.message : String(reportedError)}`);
     return 4;
   }
 }
