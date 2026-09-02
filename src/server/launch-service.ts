@@ -10,6 +10,8 @@ import {
   ROUND_ROBIN_AGENT_TYPE,
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
+  excludeBlacklistedAgents,
+  isAgentType,
   isValidEffortForAgent,
   effortLevelsForAgent,
   isValidModelForAgent,
@@ -166,6 +168,12 @@ export interface LaunchServiceDeps {
    * from `settings.disallowAgentFallback` / `settings.agentFallbackAllowlist`.
    */
   getAgentFallbackPolicy?: () => AgentFallbackPolicy;
+  /**
+   * Operator blacklist (issue #3025). Listed agents must never spawn — explicit
+   * pins, round-robin, default, and plan-quota rotation. Absent (older wiring
+   * / tests) means nothing is blacklisted.
+   */
+  getBlacklistedAgentTypes?: () => readonly AgentType[];
   /**
    * Feed one launch's boot latency (from the #1589 phase timings) into the
    * boot-reliability monitor, at every launch finalization (success or
@@ -433,6 +441,30 @@ export class AutomationKillSwitchError extends Error {
     super('SAFE MODE — automation kill-switch engaged; autonomous launches halted');
     this.name = 'AutomationKillSwitchError';
   }
+}
+
+/**
+ * Thrown by {@link launchTask} when the resolved agent is on the operator
+ * blacklist (issue #3025). No task record is created. The API maps this to
+ * HTTP 403 with `code: 'agent_blacklisted'`.
+ */
+export class AgentBlacklistedError extends Error {
+  readonly code = 'agent_blacklisted';
+  readonly agentType: AgentType;
+  constructor(agentType: AgentType, options?: { noneRemain?: boolean; blacklisted?: readonly AgentType[] }) {
+    super(
+      options?.noneRemain
+        ? `No launchable coding agents remain (blacklisted: ${(options.blacklisted ?? [agentType]).join(', ')})`
+        : `Agent "${agentType}" is blacklisted and cannot be launched`,
+    );
+    this.name = 'AgentBlacklistedError';
+    this.agentType = agentType;
+  }
+}
+
+/** Type guard for {@link AgentBlacklistedError}, for callers mapping to 403. */
+export function isAgentBlacklistedError(err: unknown): err is AgentBlacklistedError {
+  return err instanceof AgentBlacklistedError;
 }
 
 /**
@@ -1206,11 +1238,38 @@ async function launchTaskCore(
     adapterRegistry.getDefaultType() ??
     DEFAULT_AGENT_TYPE;
   const isRoundRobin = requestedAgent === ROUND_ROBIN_AGENT_TYPE;
+  const blacklistedTypes = deps.getBlacklistedAgentTypes?.() ?? [];
   // Registered ∩ Grok-auth-launchable (issue #2194): an expired session must
   // not consume a round-robin slot when a healthy non-Grok backend remains.
-  const launchableTypes = filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
-    grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
-  });
+  // Issue #3025: the operator blacklist is applied after that, so a banned
+  // agent is never a rotation candidate either.
+  const launchableTypes = excludeBlacklistedAgents(
+    filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
+      grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
+    }),
+    blacklistedTypes,
+  );
+  if (
+    opts.agentType !== undefined
+    && opts.agentType !== ROUND_ROBIN_AGENT_TYPE
+    && isAgentType(opts.agentType)
+    && blacklistedTypes.includes(opts.agentType)
+  ) {
+    throw new AgentBlacklistedError(opts.agentType);
+  }
+  // Empty launchable set is only a blacklist failure for round-robin /
+  // implicit default. An explicit pin that is *not* blacklisted must still
+  // reach the adapter (e.g. grok-build with expired session auth — issue
+  // #2194 strips it from rotation, not from an operator pin).
+  const explicitConcretePin = opts.agentType !== undefined
+    && opts.agentType !== ROUND_ROBIN_AGENT_TYPE;
+  if (launchableTypes.length === 0 && !explicitConcretePin) {
+    const refused = isAgentType(requestedAgent) ? requestedAgent : DEFAULT_AGENT_TYPE;
+    throw new AgentBlacklistedError(refused, {
+      noneRemain: true,
+      blacklisted: blacklistedTypes,
+    });
+  }
   // `peek` (not advance): the rotation cursor must only move once a task is
   // actually committed, so a deduplicated or rejected launch does not consume
   // a rotation slot. The matching `advance()` calls fire after `createTask`.
@@ -1223,6 +1282,19 @@ async function launchTaskCore(
         deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
       )
     : requestedAgent;
+  // Implicit default landed on a blacklisted agent: skip to a remaining
+  // launchable type instead of spawning the banned one. Explicit pins already
+  // threw above.
+  if (!isRoundRobin && blacklistedTypes.includes(agentType)) {
+    agentType = resolveRoundRobinAgent(
+      deps.roundRobinCursor?.peek() ?? 0,
+      launchableTypes,
+      deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
+    );
+  }
+  if (blacklistedTypes.includes(agentType)) {
+    throw new AgentBlacklistedError(agentType);
+  }
   if (opts.modelTier !== undefined && !isModelTier(opts.modelTier)) {
     throw new ModelTierValidationError(
       'invalid_model_tier',
@@ -1472,9 +1544,12 @@ async function launchTaskCore(
       // "available"). Walk remaining candidates if a substitute fails the R19
       // remote-chat trust boundary so we never rotate onto a forbidden agent.
       // issue #2194: also strip auth-expired grok-build from rotation candidates.
-      const available = filterLaunchableAgentTypes(
-        adapterRegistry.getTypes().filter((t) => t !== 'claude-code'),
-        { grokAuthUsable: deps.isGrokAuthUsable?.() ?? true },
+      const available = excludeBlacklistedAgents(
+        filterLaunchableAgentTypes(
+          adapterRegistry.getTypes().filter((t) => t !== 'claude-code'),
+          { grokAuthUsable: deps.isGrokAuthUsable?.() ?? true },
+        ),
+        blacklistedTypes,
       );
       const deprioritized = deps.getDeprioritizedAgentTypes?.(available) ?? [];
       const fallbackPolicy = deps.getAgentFallbackPolicy?.();

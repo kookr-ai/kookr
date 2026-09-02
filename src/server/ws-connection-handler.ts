@@ -132,6 +132,7 @@ export interface WsConnectionDeps {
   getCleanupWorktreeOnComplete?: () => boolean;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
+  getAvailableAgentTypes?: () => AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
   bypassAllPermissions?: boolean;
@@ -258,6 +259,7 @@ export function handleWsConnection(
     getCleanupWorktreeOnComplete: deps.getCleanupWorktreeOnComplete,
     suppressionTracker: deps.suppressionTracker,
     availableAgentTypes: deps.availableAgentTypes,
+    getAvailableAgentTypes: deps.getAvailableAgentTypes,
     defaultAgentType: deps.defaultAgentType,
     getDefaultAgentType: deps.getDefaultAgentType,
     bypassAllPermissions: deps.bypassAllPermissions,

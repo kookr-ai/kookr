@@ -587,6 +587,36 @@ describe('validateSettings', () => {
     });
   });
 
+  it('defaults blacklistedAgentTypes to empty (issue #3025)', () => {
+    expect(DEFAULT_SETTINGS.blacklistedAgentTypes).toEqual([]);
+    expect(validateSettings({}).blacklistedAgentTypes).toEqual([]);
+  });
+
+  it('parses blacklistedAgentTypes and drops unknown strings', () => {
+    expect(
+      validateSettings({
+        blacklistedAgentTypes: ['claude-code', 'gemini-cli', 'claude-code'],
+      }).blacklistedAgentTypes,
+    ).toEqual(['claude-code']);
+  });
+
+  it('accepts an explicit empty blacklist', () => {
+    expect(validateSettings({ blacklistedAgentTypes: [] })).toEqual({
+      ...DEFAULT_SETTINGS,
+      blacklistedAgentTypes: [],
+    });
+  });
+
+  it('switches a blacklisted concrete default to round-robin', () => {
+    const { settings, warnings } = validateSettingsWithWarnings({
+      defaultAgentType: 'claude-code',
+      blacklistedAgentTypes: ['claude-code'],
+    });
+    expect(settings.defaultAgentType).toBe('round-robin');
+    expect(settings.blacklistedAgentTypes).toEqual(['claude-code']);
+    expect(warnings.some((warning) => warning.includes('blacklisted'))).toBe(true);
+  });
+
   it('defaults roundRobinIndex to 0', () => {
     expect(validateSettings({}).roundRobinIndex).toBe(0);
   });
@@ -788,6 +818,7 @@ describe('loadSettings / saveSettings', () => {
       idleRefineryCooldownMinutes: 90,
       disallowAgentFallback: ['codex-cli'],
       agentFallbackAllowlist: ['claude-code'],
+      blacklistedAgentTypes: ['grok-build'],
       quotaHeadroomThreshold: 85,
     };
     await saveSettings(filePath, settings);

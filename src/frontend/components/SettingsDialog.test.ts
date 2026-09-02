@@ -263,6 +263,47 @@ describe('SettingsDialog tabs', () => {
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
   });
 
+  test('blacklists an agent with a struck-through label and persists the list', async () => {
+    await flush();
+
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (init && init.method === 'PUT') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => JSON.parse(String(init.body)),
+        };
+      }
+      return { ok: true, status: 200, json: async () => DEFAULT_SETTINGS };
+    });
+
+    expect(container.textContent).toContain('Blacklisted agents');
+    const checkbox = container.querySelector<HTMLInputElement>(
+      'input[aria-label="Blacklist Claude Code"]',
+    );
+    expect(checkbox).not.toBeNull();
+    expect(checkbox!.checked).toBe(false);
+
+    await act(async () => {
+      checkbox!.closest('label')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    const fetchMock = vi.mocked(fetch);
+    const putCall = fetchMock.mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({
+      blacklistedAgentTypes: ['claude-code'],
+      defaultAgentType: 'round-robin',
+    });
+    expect(container.querySelector('.settings-agent-blacklist-item.is-blacklisted')).not.toBeNull();
+    expect(container.querySelector<HTMLInputElement>(
+      'input[aria-label="Blacklist Claude Code"]',
+    )?.checked).toBe(true);
+  });
+
   test('persists the task completion cleanup default', async () => {
     await flush();
 

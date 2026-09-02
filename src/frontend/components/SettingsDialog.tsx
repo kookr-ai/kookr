@@ -2,7 +2,9 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   buildAgentSelectionOptions,
   AVAILABLE_AGENT_TYPES,
+  ROUND_ROBIN_AGENT_TYPE,
   effortLevelsForAgent,
+  isAgentType,
   type AgentSelection,
   type AgentType,
   type AgentEffortMap,
@@ -54,6 +56,8 @@ interface ServerSettings {
   maxActiveTasks: number;
   cleanupWorktreeOnComplete: boolean;
   defaultAgentType: AgentSelection;
+  /** Agents that must never spawn (issue #3025). */
+  blacklistedAgentTypes?: AgentType[];
   roundRobinIndex?: number;
   /** Live Claude plan-quota gate; Launch dialog reuses this without changing it. */
   quotaHeadroomThreshold?: number;
@@ -126,7 +130,7 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
     'notifications & alerts', 'sound alerts', 'alert volume', 'chime sound',
     'spoken summary length', 'quiet hours', 'detection sensitivity',
     'stale agent timeout', 'repeated error threshold', 'task management',
-    'default agent', 'max concurrent tasks', 'auto-close delay',
+    'default agent', 'blacklisted agents', 'blacklist', 'max concurrent tasks', 'auto-close delay',
     'completion-ready ttl escalation', 'hung-task reaper', 'hung-task reap threshold',
     'clean worktrees on completion', 'effort', 'reply snippets', 'saved replies',
     'keyboard shortcuts', 'platform defaults', 'github polling', 'enable polling',
@@ -595,7 +599,6 @@ function readNotificationPermission(): NotificationPermission | null {
 export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) {
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
-  const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [settings, setSettings] = useState<ServerSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -605,6 +608,9 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const [noSearchResults, setNoSearchResults] = useState(false);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | null>(
     () => readNotificationPermission(),
+  );
+  const agentOptions = buildAgentSelectionOptions(
+    availableAgentTypes.filter((item) => !(settings?.blacklistedAgentTypes ?? []).includes(item.type)),
   );
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -808,6 +814,20 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   function handleDefaultAgentChange(agentType: AgentSelection) {
     if (!settings) return;
     const updated = { ...settings, defaultAgentType: agentType };
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
+  function handleBlacklistToggle(agent: AgentType) {
+    if (!settings) return;
+    const current = settings.blacklistedAgentTypes ?? [];
+    const next = current.includes(agent)
+      ? current.filter((type) => type !== agent)
+      : [...current, agent];
+    const updated: ServerSettings = { ...settings, blacklistedAgentTypes: next };
+    if (isAgentType(updated.defaultAgentType) && next.includes(updated.defaultAgentType)) {
+      updated.defaultAgentType = ROUND_ROBIN_AGENT_TYPE;
+    }
     setSettings(updated);
     void saveSettings(updated);
   }
@@ -1368,6 +1388,37 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           compact
                           roundRobinIndex={settings.roundRobinIndex}
                         />
+                      </div>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Blacklisted agents</span>
+                        <span className="settings-desc">
+                          Blacklisted coding agents cannot be launched from the dashboard, CLI,
+                          scheduled tasks, or child spawns. They stay hidden from launch pickers
+                          until you uncheck them here. Running sessions are not auto-killed.
+                        </span>
+                      </div>
+                      <div className="settings-agent-blacklist" role="group" aria-label="Blacklisted agents">
+                        {AVAILABLE_AGENT_TYPES.map((agent) => {
+                          const banned = (settings.blacklistedAgentTypes ?? []).includes(agent.type);
+                          return (
+                            <label
+                              key={agent.type}
+                              className={banned
+                                ? 'settings-agent-blacklist-item is-blacklisted'
+                                : 'settings-agent-blacklist-item'}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={banned}
+                                aria-label={`Blacklist ${agent.label}`}
+                                onChange={() => handleBlacklistToggle(agent.type)}
+                              />
+                              <span className="settings-agent-blacklist-label">{agent.label}</span>
+                            </label>
+                          );
+                        })}
                       </div>
                     </div>
                     <div className="settings-row">

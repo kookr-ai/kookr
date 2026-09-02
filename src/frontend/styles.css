@@ -11024,6 +11024,45 @@ button.project-drawer-link:focus-visible {
 
 .settings-row-info { display: flex; flex-direction: column; gap: 2px; }
 
+.settings-agent-blacklist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 160px;
+}
+
+.dialog label.settings-agent-blacklist-item,
+.settings-agent-blacklist-item {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  margin-bottom: 0;
+  font-size: 13px;
+  color: var(--text-bright);
+  cursor: pointer;
+}
+
+.settings-agent-blacklist-item.is-blacklisted .settings-agent-blacklist-label {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.dialog .settings-agent-blacklist-item input[type='checkbox'] {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+  width: auto;
+  color: inherit;
+}
+
+.dialog .settings-agent-blacklist-item input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
+
 .settings-label {
   font-size: 13px;
   color: var(--text-bright);

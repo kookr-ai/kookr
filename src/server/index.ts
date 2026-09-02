@@ -101,7 +101,7 @@ import { DrainController } from './drain-state.js';
 import { handleWsConnection, type WsConnectionDeps } from './ws-connection-handler.js';
 import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
-import { AVAILABLE_AGENT_TYPES } from '../core/agent-types.js';
+import { advertisedAgentTypes } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
 import { applyKillSwitchTransition, resolveSafeModeStatus } from '../core/automation-kill-switch.js';
 import { OpsStatusWriter, opsStatusPath } from '../core/ops-status.js';
@@ -998,6 +998,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getRegistryActiveRepos,
     ossAttemptStore,
     getDefaultAgentType,
+    getBlacklistedAgentTypes: () => currentSettings.blacklistedAgentTypes,
     bypassAllPermissions,
     getDrainStatus: () => drainController.status(),
     getSafeModeStatus,
@@ -1766,6 +1767,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       disallow: currentSettings.disallowAgentFallback,
       allowlist: currentSettings.agentFallbackAllowlist,
     }),
+    getBlacklistedAgentTypes: () => currentSettings.blacklistedAgentTypes,
     recordLaunchBootLatency: (agentType, timings) => agentBootLatency.record(agentType, timings),
     projectConfigStore,
     interactionLog,
@@ -3298,7 +3300,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getQuotaStatus: () => quotaAdapter.getLatest(),
     circuitBreakerRegistry,
     getMaxActiveTasks, getCleanupWorktreeOnComplete, suppressionTracker,
-    availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => adapterRegistry.getTypes().includes(item.type)),
+    availableAgentTypes: advertisedAgentTypes(
+      adapterRegistry.getTypes(),
+      currentSettings.blacklistedAgentTypes,
+    ),
+    getAvailableAgentTypes: () => advertisedAgentTypes(
+      adapterRegistry.getTypes(),
+      currentSettings.blacklistedAgentTypes,
+    ),
     defaultAgentType: getDefaultAgentType(),
     getDefaultAgentType,
     bypassAllPermissions,

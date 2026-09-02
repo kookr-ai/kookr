@@ -1085,6 +1085,16 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job. On success, broadcasts WebSocket `deployLifecycle` with `phase: "starting"` before the child process starts (issue #1980). |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 
+#### Agent blacklist
+
+`GET`/`PUT /api/settings` persist `blacklistedAgentTypes` (an array of concrete
+agent types such as `claude-code`). A listed agent cannot be spawned from the
+dashboard, CLI, schedules, child tasks, round-robin, or migration until it is
+removed. The launch API refuses an explicit request with HTTP 403 and
+`code: agent_blacklisted`. Launch pickers hide blacklisted agents; Settings
+shows them struck through so they can be un-blacklisted. In-flight sessions
+are not auto-killed.
+
 #### Idempotency ledger retention
 
 The `GET`/`PUT /api/settings` surface accepts these retention settings. They

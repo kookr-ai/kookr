@@ -90,6 +90,8 @@ export interface MessageRouterDeps {
   getCleanupWorktreeOnComplete?: () => boolean;
   suppressionTracker?: SnoozeSuppressionTracker;
   availableAgentTypes?: AvailableAgentType[];
+  /** Live picker list (issue #3025). Preferred over the static snapshot array. */
+  getAvailableAgentTypes?: () => AvailableAgentType[];
   defaultAgentType?: AgentSelection;
   getDefaultAgentType?: () => AgentSelection;
   bypassAllPermissions?: boolean;
@@ -317,7 +319,7 @@ export class MessageRouter {
       buildInfo: this.deps.buildInfo,
       serverStartedAt: this.deps.serverStartedAt,
       totalSpendUsd: this.deps.taskStore.getLifetimeSpendUsd(),
-      availableAgentTypes: this.deps.availableAgentTypes,
+      availableAgentTypes: this.deps.getAvailableAgentTypes?.() ?? this.deps.availableAgentTypes,
       defaultAgentType: this.deps.getDefaultAgentType?.() ?? this.deps.defaultAgentType,
       bypassAllPermissions: this.deps.bypassAllPermissions,
       drainStatus: this.deps.getDrainStatus?.(),

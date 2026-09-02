@@ -17,6 +17,7 @@ import {
   isValidModelForAgent,
   ROUND_ROBIN_AGENT_TYPE,
   resolvePinnedAgentFallback,
+  excludeBlacklistedAgents,
   type AgentFallbackPolicy,
   type AgentSelection,
   type AgentType,
@@ -287,6 +288,11 @@ export interface ScheduleRunnerDeps {
    * a registered-but-auth-expired `grok-build` is not treated as launchable.
    */
   getAvailableAgentTypes?: () => readonly AgentType[];
+  /**
+   * Operator blacklist (issue #3025). Stripped from the launchable set so a
+   * pin to a banned agent parks or substitutes instead of spawning it.
+   */
+  getBlacklistedAgentTypes?: () => readonly AgentType[];
   /**
    * Boot-reliability deprioritization (issue #1898) consulted when resolving a
    * pinned schedule agent. Same shape as launch-service's dep. Absent means no
@@ -1373,9 +1379,12 @@ export class ScheduleRunner {
     if (selection === ROUND_ROBIN_AGENT_TYPE) return null;
     if (!isAgentType(selection)) return null;
     const registered = this.deps.getAvailableAgentTypes();
-    const available = filterLaunchableAgentTypes(registered, {
-      grokAuthUsable: this.deps.isGrokAuthUsable?.() ?? true,
-    });
+    const available = excludeBlacklistedAgents(
+      filterLaunchableAgentTypes(registered, {
+        grokAuthUsable: this.deps.isGrokAuthUsable?.() ?? true,
+      }),
+      this.deps.getBlacklistedAgentTypes?.() ?? [],
+    );
     const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
     const policy = this.deps.getAgentFallbackPolicy?.();
     return resolvePinnedAgentFallback(selection, available, deprioritized, policy);

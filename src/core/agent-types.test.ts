@@ -4,6 +4,8 @@ import {
   normalizeAgentSelection,
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
+  excludeBlacklistedAgents,
+  advertisedAgentTypes,
   buildAgentSelectionOptions,
   previewRoundRobinNextLabel,
   agentSelectionHint,
@@ -464,5 +466,44 @@ describe('per-task model allowlist (#1518)', () => {
     expect(isKnownModelId('claude-haiku-4-5-20251001')).toBe(true);
     expect(isKnownModelId('not-a-model')).toBe(false);
     expect(ALL_MODEL_IDS).toEqual(expect.arrayContaining([...CLAUDE_CODE_MODEL_IDS]));
+  });
+});
+
+describe('excludeBlacklistedAgents (issue #3025)', () => {
+  test('returns a copy when the blacklist is empty', () => {
+    const agents: Array<'claude-code' | 'codex-cli'> = ['claude-code', 'codex-cli'];
+    expect(excludeBlacklistedAgents(agents, [])).toEqual(['claude-code', 'codex-cli']);
+    expect(excludeBlacklistedAgents(agents, [])).not.toBe(agents);
+  });
+
+  test('drops every listed type and preserves canonical order of the rest', () => {
+    expect(
+      excludeBlacklistedAgents(
+        ['claude-code', 'codex-cli', 'grok-build'],
+        ['claude-code'],
+      ),
+    ).toEqual(['codex-cli', 'grok-build']);
+  });
+
+  test('can drop every agent', () => {
+    expect(
+      excludeBlacklistedAgents(['claude-code', 'codex-cli'], ['claude-code', 'codex-cli']),
+    ).toEqual([]);
+  });
+});
+
+describe('advertisedAgentTypes (issue #3025)', () => {
+  test('intersects registered adapters with AVAILABLE_AGENT_TYPES', () => {
+    expect(advertisedAgentTypes(['codex-cli', 'claude-code']).map((item) => item.type))
+      .toEqual(['claude-code', 'codex-cli']);
+  });
+
+  test('hides blacklisted agents from the picker list', () => {
+    expect(
+      advertisedAgentTypes(
+        ['claude-code', 'codex-cli', 'grok-build'],
+        ['claude-code'],
+      ).map((item) => item.type),
+    ).toEqual(['codex-cli', 'grok-build']);
   });
 });

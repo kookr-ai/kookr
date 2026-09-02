@@ -17,6 +17,7 @@ import { TaskLifecycleCommands } from '../use-cases/task-lifecycle-commands.js';
 import {
   launchTask,
   DrainModeError,
+  isAgentBlacklistedError,
   isCwdValidationError,
   isEffortValidationError,
   isModelValidationError,
@@ -75,7 +76,7 @@ import {
 } from '../use-cases/migrate-tasks.js';
 import { applyDefaultAgentUpdate } from '../settings-service.js';
 import { filterLaunchableAgentTypes } from '../../adapters/grok-auth-availability.js';
-import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
+import { excludeBlacklistedAgents, isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 import { isModelTier } from '../../shared/contracts/model-tier.js';
 import { SUPERVISOR_AUTH_HEADER } from '../../shared/contracts/supervisor-actions.js';
 import {
@@ -800,6 +801,13 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       if (isLaunchDependencyValidationError(err)) {
         return c.json({ error: err.message }, 400);
       }
+      if (isAgentBlacklistedError(err)) {
+        return c.json({
+          error: err.message,
+          code: err.code,
+          agentType: err.agentType,
+        }, 403);
+      }
       if (isEffortValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
@@ -968,9 +976,12 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
     taskStore,
     launchTask: (opts) => launchTask(deps.launchServiceDeps, opts),
     availableAgentTypes: () =>
-      filterLaunchableAgentTypes(deps.launchServiceDeps.adapterRegistry.getTypes(), {
-        grokAuthUsable: deps.launchServiceDeps.isGrokAuthUsable?.() ?? true,
-      }),
+      excludeBlacklistedAgents(
+        filterLaunchableAgentTypes(deps.launchServiceDeps.adapterRegistry.getTypes(), {
+          grokAuthUsable: deps.launchServiceDeps.isGrokAuthUsable?.() ?? true,
+        }),
+        deps.launchServiceDeps.getBlacklistedAgentTypes?.() ?? [],
+      ),
     hasLiveSession: async (task) => {
       const backend = deps.terminalBackend;
       if (!backend) return false;
