@@ -19,6 +19,7 @@ import type { ServerMessage } from '../shared/protocol.js';
 import type { RemoteLaunchBroker } from '../remote/launch-broker.js';
 import type { ControllerLeaseManager } from '../remote/controller-lease.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
+import type { ActivityLedger } from '../core/activity-ledger.js';
 
 /** Full server surface for tests and local helpers. */
 export interface KookrServerInternal {
@@ -43,4 +44,5 @@ export interface KookrServerInternal {
   controllerLeaseManager?: ControllerLeaseManager | null;
   remoteInputAdapter?: RemoteInputAdapter | null;
   app: Hono;
+  activityLedger: ActivityLedger;
 }

@@ -14,6 +14,7 @@ import {
 } from './system-resource-sampler.js';
 import { createRelayServer } from '../../relay/server.js';
 import { resolveTaskSqlitePath } from '../core/task-sqlite-store.js';
+import type { ActivityLedgerRow } from '../core/activity-ledger.js';
 
 const RELAY_TRUSTED_ENV = 'KOOKR_RELAY_' + 'TRUSTED';
 
@@ -305,6 +306,100 @@ describe('createKookrServer', () => {
         },
         projection: 'diagnostic_only',
       });
+    });
+
+    // Issue #2813: activity-ledger appends are fire-and-forget so a graceful
+    // close must await activityLedger.flush() before releasing the writer lock,
+    // or startup recovery hydrates from a ledger missing the last records.
+    test('graceful close drains a pending activity-ledger append before releasing (issue #2813)', async () => {
+      const ledger = server.activityLedger;
+      const sessionId = 'ledger-flush-shutdown';
+      type AppendOnce = { appendOnce: (row: ActivityLedgerRow) => Promise<void> };
+      const ledgerPath = join(tempDir, 'activity', `${sessionId}.jsonl`);
+
+      // Drain any boot-time appends so the gate below only holds our own write.
+      await ledger.flush();
+
+      // Gate the underlying disk write so a real enqueued append stays in flight
+      // when shutdown begins — append() registers the queue entry synchronously,
+      // but appendOnce (the write) blocks until we release it.
+      const gated = ledger as unknown as AppendOnce;
+      const origAppendOnce = gated.appendOnce.bind(ledger);
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+      gated.appendOnce = (row: ActivityLedgerRow) =>
+        writeGate.then(() => origAppendOnce(row));
+
+      // Observe when close reaches the flush await (calling through to the real
+      // flush) so the test is deterministic without racing close's own latency.
+      const realFlush = ledger.flush.bind(ledger);
+      let flushEntered = false;
+      const flushSpy = vi.spyOn(ledger, 'flush').mockImplementation((id) => {
+        flushEntered = true;
+        return realFlush(id);
+      });
+
+      const row: ActivityLedgerRow = {
+        envelope: {
+          schemaVersion: 'hook-envelope.v1',
+          kookrSessionId: sessionId,
+          provider: 'claude-code',
+          source: 'http',
+          observedAt: new Date().toISOString(),
+          sequence: 1,
+          contentHash: 'deadbeef',
+          parentage: 'unknown',
+          parseStatus: 'ok',
+          rawBytes: 2,
+        },
+        rawJson: '{}',
+        projection: 'diagnostic_only',
+      };
+      // Fire-and-forget exactly as hook ingestion does; the write is now gated.
+      void ledger.append(row).catch(() => {});
+
+      let closeResolved = false;
+      const closing = server.close().then(() => { closeResolved = true; });
+      serverClosed = true;
+
+      // Close blocks inside the awaited flush, which is itself awaiting the gated
+      // write — so the row is not yet on disk and close cannot have resolved.
+      // releaseWrite runs in finally so a failing assertion can't leave close
+      // (and the gated append) hung forever.
+      try {
+        await waitForCondition(() => flushEntered);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(existsSync(ledgerPath)).toBe(false);
+        expect(closeResolved).toBe(false);
+      } finally {
+        releaseWrite();
+      }
+      await closing;
+
+      // The pending append was drained (durable on disk) before close resolved.
+      expect(flushSpy).toHaveBeenCalled();
+      expect(readFileSync(ledgerPath, 'utf-8')).toContain(sessionId);
+
+      flushSpy.mockRestore();
+    });
+
+    // Issue #2813: a flush rejection must not skip the mandatory writer-lock
+    // release (or any remaining teardown) that follows it.
+    test('graceful close completes even when the activity-ledger flush rejects (issue #2813)', async () => {
+      const ledger = server.activityLedger;
+      const flushSpy = vi
+        .spyOn(ledger, 'flush')
+        .mockRejectedValue(new Error('ledger flush boom'));
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+      await expect(server.close()).resolves.toBeUndefined();
+      serverClosed = true;
+
+      expect(flushSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy.mock.calls.some(([msg]) => String(msg).includes('flushing activity ledger'))).toBe(true);
+
+      flushSpy.mockRestore();
+      errorSpy.mockRestore();
     });
 
     test('env-configured webhook observer posts findings and clears dedupe on resolution', { timeout: 15_000 }, async () => {

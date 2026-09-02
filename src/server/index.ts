@@ -3779,6 +3779,21 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     await closeHttpRuntime();
 
+    // Issue #2813: hook-event appends to the activity ledger are fire-and-forget
+    // (ledger latency must not sit in front of hook delivery), so a graceful
+    // close can otherwise race enqueued-but-unwritten rows and startup recovery
+    // then hydrates from a truncated ledger. By here every ingestion source is
+    // stopped (hookWatcher.stopAll + connectionRegistry.closeAll above), so
+    // flush drains the last pending appends with no new work racing it. Guard
+    // it so a flush failure still can't skip the mandatory lock release below —
+    // flush() already swallows per-write rejections, but the try/catch keeps
+    // cleanup fault-isolated if that ever changes.
+    try {
+      await activityLedger.flush();
+    } catch (err) {
+      console.error('Error flushing activity ledger on shutdown:', err);
+    }
+
     // Release the R27 single-writer pid lock last, after all writes are done.
     releaseSingleWriterLock();
   }
@@ -3819,6 +3834,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     controllerLeaseManager: remoteRelayRuntime?.controllerLeaseManager ?? null,
     remoteInputAdapter: remoteRelayRuntime?.remoteInputAdapter ?? null,
     app,
+    activityLedger,
     broadcastToAll,
     close,
   };
