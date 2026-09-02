@@ -137,6 +137,18 @@ export function OutcomeLedgerPanel({
   const visibleFindings = useMemo(() => findings.slice(0, 5), [findings]);
   const visibleTasks = useMemo(() => tasks.filter((task) => task.flags.length > 0).slice(0, 5), [tasks]);
 
+  // Client-side CSV export of the scoreboard's headline summary, per-agent
+  // rows, and flagged task-audit rows (#3000) — no new server route, mirroring
+  // the Cost Comparison panel's export plumbing. The file is labelled from the
+  // response's own `window`/`scope`/`generatedAt`, so an export triggered while
+  // a window/project change is still in flight (when `data` still holds the
+  // previous payload) always describes the rows it actually contains.
+  function handleExportCsv(): void {
+    if (!data) return;
+    const csv = buildOutcomeLedgerCsv(data);
+    downloadCsv(csv, outcomeCsvFilename(data.window.value, data.scope));
+  }
+
   return (
     <section className="outcome-ledger-section" aria-labelledby="outcome-ledger-title">
       <div className="section-header">
@@ -173,6 +185,15 @@ export function OutcomeLedgerPanel({
               <option key={option.value} value={option.value}>{option.label}</option>
             ))}
           </select>
+          <button
+            type="button"
+            className="outcome-export-btn"
+            onClick={handleExportCsv}
+            disabled={!data}
+            aria-label="Export CSV of outcome scoreboard"
+          >
+            Export CSV
+          </button>
         </div>
       </div>
       {expanded && (
@@ -623,6 +644,172 @@ function agentLabel(agentType: OutcomeLedgerByAgentRow['agentType']): string {
   return AGENT_LABELS.get(agentType) ?? agentType;
 }
 
+// ---------- CSV export (#3000) --------------------------------------------------
+
+/**
+ * Serialise the scoreboard's currently displayed numbers to a single CSV
+ * document (#3000) — no new server route. Three labelled sections separated by
+ * blank lines:
+ *
+ *   1. "Summary" — the headline metric grid plus the disposition/coverage
+ *      strips, as `Metric,Value` pairs.
+ *   2. "By agent" — one row per agent, mirroring the per-agent scoreboard table.
+ *   3. "Task audit" — every flagged task (the "Rows to inspect first" list). The
+ *      on-screen list caps at 5 for scannability; the export includes all
+ *      flagged rows so an operator can triage the full set offline.
+ *
+ * Counts, cost, and token totals are emitted as bare numbers, rates as their
+ * raw 0..1 fraction, durations in milliseconds, and timestamps as ISO 8601, so
+ * a spreadsheet can aggregate every column rather than parse a display string.
+ * A short preamble records the window, project scope, and generation time from
+ * the response itself, so the file is self-describing.
+ */
+export function buildOutcomeLedgerCsv(data: OutcomeLedgerResponse): string {
+  const rows: string[][] = [];
+
+  rows.push(['Outcome Scoreboard export']);
+  rows.push(['Window', data.window.value]);
+  rows.push(['Project scope', describeScope(data.scope)]);
+  rows.push(['Generated', csvIsoDate(data.generatedAt)]);
+  rows.push(['Readiness', data.readiness]);
+  rows.push([]);
+
+  rows.push(['Summary']);
+  rows.push(['Metric', 'Value']);
+  rows.push(['Tasks', String(data.summary.taskCount)]);
+  rows.push(['Terminal tasks', String(data.summary.terminalTaskCount)]);
+  rows.push(['Completed tasks', String(data.summary.completedTaskCount)]);
+  rows.push(['Completion rate', csvRate(data.summary.completionRate)]);
+  rows.push(['Cancelled tasks', String(data.summary.cancelledTaskCount)]);
+  rows.push(['Terminated tasks', String(data.summary.terminatedTaskCount)]);
+  rows.push(['Active tasks', String(data.summary.activeTaskCount)]);
+  rows.push(['PR tasks', String(data.summary.prTaskCount)]);
+  rows.push(['Known cost (USD)', csvUsd(data.summary.totalKnownCostUsd)]);
+  rows.push(['Cost coverage', csvRate(data.quality.costCoverage)]);
+  rows.push(['Input tokens', String(data.summary.totalInputTokens)]);
+  rows.push(['Output tokens', String(data.summary.totalOutputTokens)]);
+  rows.push(['Thumbs-up rate', csvRate(data.summary.thumbsUpRate)]);
+  rows.push(['Feedback coverage', csvRate(data.summary.feedbackCoverage)]);
+  rows.push(['Verification coverage', csvRate(data.quality.verificationCoverage)]);
+  rows.push(['Review flags', String(data.findings.length)]);
+  rows.push([]);
+
+  rows.push(['By agent']);
+  rows.push([
+    'Agent', 'Tasks', 'Completed', 'Terminal', 'Completion rate',
+    'Known cost (USD)', 'Cost coverage', 'Median duration (ms)', 'p95 duration (ms)', 'Thumbs-up rate',
+  ]);
+  for (const row of data.byAgent) {
+    rows.push([
+      agentLabel(row.agentType),
+      String(row.taskCount),
+      String(row.completedTaskCount),
+      String(row.terminalTaskCount),
+      csvRate(row.completionRate),
+      csvUsd(row.totalKnownCostUsd),
+      csvRate(row.costCoverage),
+      csvMs(row.medianDurationMs),
+      csvMs(row.p95DurationMs),
+      csvRate(row.thumbsUpRate),
+    ]);
+  }
+  rows.push([]);
+
+  rows.push(['Task audit']);
+  rows.push(['Task', 'Agent', 'Status', 'Started', 'Duration (ms)', 'Known cost (USD)', 'Feedback', 'Flags']);
+  for (const task of data.tasks) {
+    if (task.flags.length === 0) continue;
+    rows.push([
+      task.label,
+      agentLabel(task.agentType),
+      task.status,
+      csvIsoDate(task.startedAt),
+      csvMs(task.durationMs),
+      csvUsd(task.knownCostUsd),
+      task.feedback ?? '',
+      task.flags.join(' '),
+    ]);
+  }
+
+  return `${rows.map((cells) => cells.map(escapeCsvField).join(',')).join('\r\n')}\r\n`;
+}
+
+function describeScope(scope: OutcomeLedgerProjectScope): string {
+  switch (scope.kind) {
+    case 'all': return 'all projects';
+    case 'unassigned': return 'unassigned';
+    case 'assigned': return scope.projectId;
+  }
+}
+
+// Rates are carried as a 0..1 fraction; a null (unknown) rate stays an empty
+// cell so a spreadsheet reads it as blank, never as a misleading zero.
+function csvRate(value: number | null): string {
+  return value == null ? '' : value.toFixed(4);
+}
+
+// Kept separate from csvRate despite the identical 4-dp body: a rate and a USD
+// amount are distinct quantities, and only one is likely to change format later.
+function csvUsd(value: number | null): string {
+  return value == null ? '' : value.toFixed(4);
+}
+
+function csvMs(value: number | null): string {
+  return value == null || !Number.isFinite(value) ? '' : String(Math.round(value));
+}
+
+function csvIsoDate(value: string): string {
+  const date = new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : value;
+}
+
+/**
+ * RFC-4180 field escaping plus leading-formula neutralisation, mirroring the
+ * Cost Comparison panel's escaper. Kept local to the frontend so the bundle
+ * stays free of server modules; the two paths are covered by their own tests.
+ */
+function escapeCsvField(value: string): string {
+  const safe = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  if (!/[",\n\r]/.test(safe)) return safe;
+  return `"${safe.replaceAll('"', '""')}"`;
+}
+
+function outcomeCsvFilename(window: TimeWindow, scope: OutcomeLedgerProjectScope): string {
+  const scopeSlug = scope.kind === 'assigned'
+    ? scope.projectId.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'project'
+    : scope.kind;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `kookr-outcome-scoreboard-${window}-${scopeSlug}-${stamp}.csv`;
+}
+
+function downloadCsv(csv: string, filename: string): void {
+  // Lead with a UTF-8 BOM so Excel decodes any non-ASCII glyphs in task labels
+  // instead of mojibake.
+  const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoke on the next tick: some WebKit builds cancel the download when the
+  // object URL is revoked synchronously in the same tick as the click.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+// A well-formed scope discriminant. `assigned` must additionally carry a string
+// `projectId`, because the CSV export dereferences it (describeScope /
+// outcomeCsvFilename); validating the full shape here keeps describeScope's
+// exhaustive switch total and stops a malformed scope from throwing on Export.
+function isOutcomeLedgerScope(value: unknown): value is OutcomeLedgerProjectScope {
+  if (!value || typeof value !== 'object') return false;
+  const kind = (value as { kind?: unknown }).kind;
+  if (kind === 'all' || kind === 'unassigned') return true;
+  if (kind === 'assigned') return typeof (value as { projectId?: unknown }).projectId === 'string';
+  return false;
+}
+
 function isOutcomeLedgerResponse(value: unknown): value is OutcomeLedgerResponse {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as Partial<OutcomeLedgerResponse>;
@@ -631,6 +818,11 @@ function isOutcomeLedgerResponse(value: unknown): value is OutcomeLedgerResponse
     && Boolean(candidate.quality)
     && Boolean(candidate.launchSourceMix?.counts)
     && typeof candidate.comparison?.available === 'boolean'
+    // byAgent and scope are read only by the CSV export (#3000), never by the
+    // render path — so the guard must vouch for them here or a validated-but-
+    // malformed payload would render fine and then throw on Export click.
+    && Array.isArray(candidate.byAgent)
+    && isOutcomeLedgerScope(candidate.scope)
     && Array.isArray(candidate.findings)
     && Array.isArray(candidate.tasks)
     && Array.isArray(candidate.notes);

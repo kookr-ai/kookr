@@ -98,6 +98,7 @@ function outcomeLedger(overrides: Record<string, unknown> = {}) {
       start: '2026-05-14T12:00:00.000Z',
       end: '2026-05-21T12:00:00.000Z',
     },
+    scope: { kind: 'all' },
     readiness: 'caution',
     summary: {
       taskCount: 2,
