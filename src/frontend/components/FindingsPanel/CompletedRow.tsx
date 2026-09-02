@@ -38,6 +38,9 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
   // delivery isn't read as failure.
   const isDeliveredThenHung = isTerminated && agent.reapOutcome === 'delivered_then_hung';
   const coordinatorChip = coordinatorChipForTask(useKookrStore((s) => s.coordinator), agent.taskId);
+  // Archive-only rows are not in the live task store. Reopen/Delete would 404
+  // after prune, so they stay on live snapshot rows.
+  const isLiveTask = useKookrStore((s) => Boolean(agent.taskId && s.agents.some((live) => live.taskId === agent.taskId)));
   // The row's style variant: cancelled (user stopped), terminated (session died
   // without ack), or completed (default / user acknowledged). Keep CSS variants
   // aligned with rfc-task-loss-prevention D1. AgentProviderMark only knows the
@@ -99,14 +102,14 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
             <span className="completed-row-status-label">{terminalLabel}</span>
             {finishedAt && <time dateTime={agent.finishedAt}>{finishedAt}</time>}
           </span>
-          {agent.taskId && (
+          {agent.taskId && isLiveTask && (
             <button className="btn-xs" disabled={pendingDeletion} onClick={(e) => {
               e.stopPropagation();
               send({ type: 'reopenTask', taskId: agent.taskId! });
             }}>Reopen</button>
           )}
           <SchedulePlaybookButton agent={agent} onSchedule={onSchedulePlaybook} />
-          {agent.taskId && (
+          {agent.taskId && isLiveTask && (
             <button
               className="btn-xs btn-danger-xs"
               disabled={pendingDeletion}

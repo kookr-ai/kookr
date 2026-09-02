@@ -46,21 +46,31 @@ function nextActionableFindingId(agents: AgentState[], excludingAgentId: string)
   return findings[0]?.agentId ?? null;
 }
 
+function findAgent(
+  agents: readonly AgentState[],
+  selectedAgentId: string,
+  selectedTaskId: string | null,
+): AgentState | undefined {
+  return selectedTaskId
+    ? agents.find((agent) => agent.agentId === selectedAgentId && agent.taskId === selectedTaskId)
+    : agents.find((agent) => agent.agentId === selectedAgentId);
+}
+
 function selectedAgentUpdateAfterServerState(
   selectedAgentId: string | null,
   selectedTaskId: string | null,
   previousAgents: AgentState[],
   nextAgents: AgentState[],
+  archivedAgents: readonly AgentState[] = [],
 ): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; focusZone?: FocusZone; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
   if (!selectedAgentId) return {};
 
-  const previousSelected = selectedTaskId
-    ? previousAgents.find((agent) => agent.agentId === selectedAgentId && agent.taskId === selectedTaskId)
-    : previousAgents.find((agent) => agent.agentId === selectedAgentId);
-  const nextSelected = selectedTaskId
-    ? nextAgents.find((agent) => agent.agentId === selectedAgentId && agent.taskId === selectedTaskId)
-    : nextAgents.find((agent) => agent.agentId === selectedAgentId);
+  const previousSelected = findAgent(previousAgents, selectedAgentId, selectedTaskId);
+  const nextSelected = findAgent(nextAgents, selectedAgentId, selectedTaskId);
   if (!nextSelected) {
+    // An archive-only row is not in the live snapshot. Keep the selection so a
+    // refresh cannot yank the user off older history they just opened.
+    if (findAgent(archivedAgents, selectedAgentId, selectedTaskId)) return {};
     // Server evicted the agent. Tag as 'manual' so the engagement guard isn't
     // confused into thinking the (now null) selection is an auto-advance landing.
     return { selectedAgentId: null, selectedTaskId: null, selectedAgentSource: 'manual', focusZone: 'none', respondAllAgentIds: null };
@@ -257,7 +267,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           restoreMissed = restoredSelection.missed;
           return {
             agents: mergedAgents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, mergedAgents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, mergedAgents, prev.archivedAgents),
             ...restoredSelection.update,
             agentsHydrated: true,
             ...(serverCwd !== undefined ? { serverCwd } : {}),
@@ -303,7 +313,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           ));
           return {
             agents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents),
           };
         });
       });
@@ -348,7 +358,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           const aggregates = delta.aggregates ?? {};
           return {
             agents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents),
             ...(delta.taskRelations !== undefined ? { taskRelations: delta.taskRelations } : {}),
             ...(aggregates.totalSpendUsd !== undefined ? { totalSpendUsd: aggregates.totalSpendUsd } : {}),
             ...(aggregates.maxActiveTasks !== undefined ? { maxActiveTasks: aggregates.maxActiveTasks } : {}),

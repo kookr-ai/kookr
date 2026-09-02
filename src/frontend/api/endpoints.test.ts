@@ -5,7 +5,7 @@ import {
   formatBlackoutSeconds,
   getDeployStatus,
 } from './deploy.js';
-import { getMigratableTasks, getTaskVerificationCommands, migrateTasks, patchTaskEdges } from './tasks.js';
+import { getArchivedTasks, getMigratableTasks, getTaskVerificationCommands, migrateTasks, patchTaskEdges } from './tasks.js';
 import { createTaskShare, getTaskShares, SHARE_CSRF_HEADER } from './sharing.js';
 
 function stubFetch() {
@@ -129,6 +129,55 @@ describe('getMigratableTasks', () => {
     const spy = stubFetch();
     await getMigratableTasks({ targetAgent: 'grok-build' });
     expect(spy).toHaveBeenCalledWith('/api/tasks/migratable?targetAgent=grok-build');
+  });
+});
+
+describe('getArchivedTasks (issue #2760)', () => {
+  test('builds limit/before/cursor query string and parses the page', async () => {
+    const spy = vi.fn((_path: string, _init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          schemaVersion: 'task-archive.v1',
+          count: 0,
+          records: [],
+          nextCursor: 'c1',
+        }),
+      } as Response),
+    );
+    vi.stubGlobal('fetch', spy);
+    const signal = new AbortController().signal;
+    const page = await getArchivedTasks({ limit: 20, before: 1_700_000_000_000, cursor: 'abc+' }, signal);
+    expect(spy).toHaveBeenCalledWith(
+      '/api/tasks/archive?limit=20&before=1700000000000&cursor=abc%2B',
+      { signal },
+    );
+    expect(page.nextCursor).toBe('c1');
+  });
+
+  test('omits optional params on the default (no-archive-by-default) request', async () => {
+    const spy = vi.fn((_path: string, _init?: RequestInit) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ schemaVersion: 'task-archive.v1', count: 0, records: [] }),
+      } as Response),
+    );
+    vi.stubGlobal('fetch', spy);
+    await getArchivedTasks();
+    expect(spy).toHaveBeenCalledWith('/api/tasks/archive');
+  });
+
+  test('rejects a 2xx body that is not a task-archive page', async () => {
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ error: 'Task not found' }),
+      } as Response),
+    ));
+    await expect(getArchivedTasks()).rejects.toThrow(/task-archive page/);
   });
 });
 

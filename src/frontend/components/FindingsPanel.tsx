@@ -27,7 +27,8 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import type { SchedulePrefill } from './SchedulesDialog.js';
 import { usePersistedCollapsed, useAutoExpandOnItemGain } from '../hooks/usePersistedCollapsed.js';
-import { compareCompletedAgents } from '../agent-buckets.js';
+import { mergeCompletedHistory, scopeArchivedAgents } from '../completed-history.js';
+import { LoadOlderHistoryControl } from './FindingsPanel/LoadOlderHistory.js';
 import {
   HEALTHY_SECTION_COLLAPSED_KEY,
   PENDING_SECTION_COLLAPSED_KEY,
@@ -154,7 +155,27 @@ export function FindingsPanel({
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
-  const totalAgents = findings.length + healthy.length + pending.length + completed.length + snoozed.length;
+  const archivedAgents = useKookrStore((s) => s.archivedAgents);
+  const archiveHasMore = useKookrStore((s) => s.archiveHasMore);
+  const archiveLoading = useKookrStore((s) => s.archiveLoading);
+  const archiveError = useKookrStore((s) => s.archiveError);
+  const archiveLoadedOnce = useKookrStore((s) => s.archiveLoadedOnce);
+  const loadOlderHistory = useKookrStore((s) => s.loadOlderHistory);
+  const selectedProject = useKookrStore((s) => s.selectedProject);
+  const scopedArchived = useMemo(
+    () => scopeArchivedAgents(archivedAgents, selectedProject),
+    [archivedAgents, selectedProject],
+  );
+  const visibleCompleted = useMemo(
+    () => mergeCompletedHistory(completed, scopedArchived),
+    [completed, scopedArchived],
+  );
+  const archiveEmpty = archiveLoadedOnce
+    && visibleCompleted.length === completed.length
+    && !archiveHasMore
+    && !archiveError
+    && !archiveLoading;
+  const totalAgents = findings.length + healthy.length + pending.length + visibleCompleted.length + snoozed.length;
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const bottomSectionsRef = useRef<HTMLDivElement>(null);
@@ -199,23 +220,21 @@ export function FindingsPanel({
   const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
   const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
-  const [completedCollapsed, toggleCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
-  // The Pending group is where "waiting on you" tasks live (taskStatus
-  // 'pending' — e.g. an agent that signaled complete and needs the user's
-  // input). When it gains items, auto-expand so the thing blocking the user
-  // is never hidden inside a collapsed group; the user can still re-collapse
-  // afterwards. needs_input findings render in the always-visible findings
-  // list above, which is not collapsible, so this is the only group needing
-  // the treatment. (F19)
+  const [completedCollapsed, toggleCompleted, expandCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
+  // Pending auto-expands when it gains items so a "waiting on you" task is
+  // never hidden (F19). Completed auto-expands when archive pages arrive so
+  // Load older history results are visible without a second click.
   useAutoExpandOnItemGain(pending.length, expandPending);
+  useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
   const [selectedFindingTypes, toggleFindingType] = useFindingTypeFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
-  const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || completed.length > 0;
+  const showCompletedSection = visibleCompleted.length > 0;
+  const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || showCompletedSection;
   const renderedSectionCollapsedStates = [
     ...(healthy.length > 0 ? [healthyCollapsed] : []),
     ...(pending.length > 0 ? [pendingCollapsed] : []),
     ...(snoozed.length > 0 ? [snoozedCollapsed] : []),
-    ...(completed.length > 0 ? [completedCollapsed] : []),
+    ...(showCompletedSection ? [completedCollapsed] : []),
   ];
   const allRenderedSectionsCollapsed = renderedSectionCollapsedStates.length > 0
     && renderedSectionCollapsedStates.every(Boolean);
@@ -266,13 +285,18 @@ export function FindingsPanel({
     () => buildFindingDisplayItems(visibleFindings),
     [visibleFindings],
   );
-  const sortedCompleted = useMemo(
-    () => [...completed].sort(compareCompletedAgents),
-    [completed],
-  );
-  const latestCompletedLabel = sortedCompleted[0]?.finishedAt
-    ? formatCompactDateTime(sortedCompleted[0].finishedAt)
+  const latestCompletedLabel = visibleCompleted[0]?.finishedAt
+    ? formatCompactDateTime(visibleCompleted[0].finishedAt)
     : '';
+  const olderHistoryControl = (
+    <LoadOlderHistoryControl
+      canLoad={archiveHasMore}
+      loading={archiveLoading}
+      error={archiveError}
+      empty={archiveEmpty}
+      onLoad={() => { void loadOlderHistory(); }}
+    />
+  );
 
   function handlePanelClick(e: React.MouseEvent) {
     if (isInitialLoad) setIsInitialLoad(false);
@@ -485,19 +509,20 @@ export function FindingsPanel({
               ))}
             </div>
           )}
-          {completed.length > 0 && (
+          {showCompletedSection && (
             <div className="completed-section">
               <div className="completed-section-header-row">
                 <SectionToggleButton
                   collapsed={completedCollapsed}
                   label="Completed"
-                  count={completed.length}
+                  count={visibleCompleted.length}
                   labelClassName="completed-label"
                   onToggle={toggleCompleted}
                 />
                 <span className="completed-sort-hint">
                   Newest first{latestCompletedLabel ? ` · latest ${latestCompletedLabel}` : ''}
                 </span>
+                {olderHistoryControl}
                 <ClearCompletedButton
                   finishedCount={clearCompletedFinishedCount}
                   terminatedCount={clearCompletedTerminatedCount}
@@ -507,7 +532,7 @@ export function FindingsPanel({
                   onQueueClearCompleted={onQueueClearCompleted}
                 />
               </div>
-              {!completedCollapsed && sortedCompleted.map((agent) => (
+              {!completedCollapsed && visibleCompleted.map((agent) => (
                 <CompletedRow
                   key={agentRowKey(agent)}
                   agent={agent}
@@ -523,6 +548,7 @@ export function FindingsPanel({
           </>
         )}
       </div>
+      {!showCompletedSection && olderHistoryControl}
       <ScheduleSection schedules={useKookrStore((s) => s.schedules)} />
     </div>
   );

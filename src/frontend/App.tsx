@@ -473,6 +473,7 @@ export function App() {
     cleanupVerdictsRefreshing,
     beginWorktreeCleanupInspect,
     clearWorktreeCleanupVerdicts,
+    archivedAgents,
   } = useKookrStore(useShallow((state) => ({
     agents: state.agents,
     agentsHydrated: state.agentsHydrated,
@@ -514,6 +515,7 @@ export function App() {
     cleanupVerdictsRefreshing: state.cleanupVerdictsRefreshing,
     beginWorktreeCleanupInspect: state.beginWorktreeCleanupInspect,
     clearWorktreeCleanupVerdicts: state.clearWorktreeCleanupVerdicts,
+    archivedAgents: state.archivedAgents,
   })));
 
   useEffect(() => {
@@ -718,7 +720,11 @@ export function App() {
     ? agents.find((a) => (
         a.agentId === selectedAgentId
         && selectedTaskId === a.taskId
-      )) ?? agents.find((a) => a.agentId === selectedAgentId) ?? null
+      )) ?? agents.find((a) => a.agentId === selectedAgentId)
+      ?? archivedAgents.find((a) => (
+        a.agentId === selectedAgentId
+        && (selectedTaskId === null || selectedTaskId === a.taskId)
+      )) ?? archivedAgents.find((a) => a.agentId === selectedAgentId) ?? null
     : null;
   // Read from the live agent rather than snapshotting at dialog-open: a loop can
   // finish while the dialog sits there, and a stale snapshot would make the

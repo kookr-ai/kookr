@@ -1,6 +1,7 @@
 import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
-import { isTerminalStatus } from '../shared/contracts/task-status.js';
-import { AGENT_TYPES } from '../shared/contracts/agent-types.js';
+import { isTerminalStatus, type TaskStatus } from '../shared/contracts/task-status.js';
+import { AGENT_TYPES, isAgentType } from '../shared/contracts/agent-types.js';
+import type { ArchivedTaskRecordJson } from './completed-history.js';
 import { toolLabel } from '../shared/contracts/activity-summary.js';
 
 /**
@@ -598,4 +599,153 @@ export function ageColor(detectedAt: Date | string | undefined): string {
   if (mins < 30) return 'fresh';
   if (mins < 120) return 'aging';
   return 'stale';
+}
+
+/**
+ * Project one archive record into the AgentState shape CompletedRow already
+ * renders. Returns null when the record has no task id — those rows cannot be
+ * keyed or deduplicated, so the load path skips them rather than inventing an
+ * identity.
+ */
+export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentState | null {
+  const task = record.task;
+  const taskId = asNonEmptyString(task.id) ?? asNonEmptyString(task.taskId);
+  if (!taskId) return null;
+
+  const sessions = Array.isArray(task.sessions) ? task.sessions : [];
+  const lastSession = lastObject(sessions);
+  const cwd = asNonEmptyString(lastSession?.cwd) ?? asNonEmptyString(task.cwd);
+  const displayPrompt = asString(task.userPrompt) || asString(task.prompt);
+  const startedAt = toIsoTimestamp(task.createdAt) ?? toIsoTimestamp(record.lastActivityMs);
+  const finishedAt = toIsoTimestamp(task.finishedAt)
+    ?? toIsoTimestamp(task.terminatedAt)
+    ?? toIsoTimestamp(record.lastActivityMs);
+  const agentType = asAgentType(lastSession?.agentType) ?? asAgentType(task.agentType);
+  const agent: AgentState = {
+    agentId: `done-${taskId}`,
+    events: [],
+    anomaly: null,
+    lastEventSeq: 0,
+    taskId,
+    taskName: asNonEmptyString(task.name) ?? archivePromptTitle(displayPrompt),
+    taskStatus: asTerminalTaskStatus(task.status),
+    description: displayPrompt || undefined,
+    cwd,
+    startedAt,
+    finishedAt,
+    projectId: asNonEmptyString(task.projectId),
+    projectDisplayLabel: cwd ? projectLabel(cwd) : undefined,
+  };
+  if (agentType) agent.agentType = agentType;
+  const playbookId = asNonEmptyString(task.playbookId);
+  if (playbookId) agent.playbookId = playbookId;
+  if (isRecord(task.playbookParameterValues)) {
+    agent.playbookParameterValues = stringMap(task.playbookParameterValues);
+  }
+  const tokenUsage = asTokenUsage(task.tokenUsage);
+  if (tokenUsage) agent.tokenUsage = tokenUsage;
+  const gitBranch = asNonEmptyString(lastSession?.gitBranch);
+  if (gitBranch) agent.gitBranch = gitBranch;
+  const gitCommit = asNonEmptyString(lastSession?.gitCommit);
+  if (gitCommit) agent.gitCommit = gitCommit;
+  if (typeof lastSession?.gitIsWorktree === 'boolean') agent.gitIsWorktree = lastSession.gitIsWorktree;
+  const parentTaskId = asNonEmptyString(task.parentTaskId);
+  if (parentTaskId) agent.parentTaskId = parentTaskId;
+  if (task.unattended === true) agent.unattended = true;
+  const reapOutcome = asReapOutcome(task.disposition);
+  if (reapOutcome) agent.reapOutcome = reapOutcome;
+  if (hasCompletionDigest(task.completionDigest)) {
+    agent.completionDigest = task.completionDigest;
+  }
+  if (task.ralphLoop && typeof task.ralphLoop === 'object') {
+    agent.ralphLoop = task.ralphLoop as AgentState['ralphLoop'];
+  }
+  return agent;
+}
+
+function asNonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asAgentType(value: unknown): AgentType | undefined {
+  return isAgentType(value) ? value : undefined;
+}
+
+function asTerminalTaskStatus(value: unknown): TaskStatus {
+  if (value === 'completed' || value === 'cancelled' || value === 'terminated') return value;
+  return 'completed';
+}
+
+function toIsoTimestamp(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+  }
+  return undefined;
+}
+
+function lastObject(values: unknown[]): Record<string, unknown> | undefined {
+  for (let i = values.length - 1; i >= 0; i -= 1) {
+    const value = values[i];
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      return value as Record<string, unknown>;
+    }
+  }
+  return undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringMap(value: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') out[key] = entry;
+  }
+  return out;
+}
+
+function asTokenUsage(value: unknown): TokenUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const inputTokens = asFiniteNumber(value.inputTokens);
+  const outputTokens = asFiniteNumber(value.outputTokens);
+  const cacheReadTokens = asFiniteNumber(value.cacheReadTokens) ?? 0;
+  const cacheWriteTokens = asFiniteNumber(value.cacheWriteTokens) ?? 0;
+  const costUsd = asFiniteNumber(value.costUsd) ?? 0;
+  if (inputTokens === undefined || outputTokens === undefined) return undefined;
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd };
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function hasCompletionDigest(value: unknown): value is NonNullable<AgentState['completionDigest']> {
+  if (!isRecord(value) || !Array.isArray(value.bullets)) return false;
+  return value.bullets.every((bullet) => typeof bullet === 'string');
+}
+
+function asReapOutcome(value: unknown): AgentState['reapOutcome'] | undefined {
+  if (!isRecord(value)) return undefined;
+  const outcome = value.outcome;
+  if (outcome === 'delivered_then_hung' || outcome === 'terminated') return outcome;
+  return undefined;
+}
+
+function archivePromptTitle(prompt: string, maxLen = 200): string {
+  const collapsed = prompt.replace(/\s+/g, ' ').trim();
+  if (!collapsed) return 'Completed task';
+  if (collapsed.length <= maxLen) return collapsed;
+  const cut = collapsed.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${lastSpace > 0 ? cut.slice(0, lastSpace) : cut}…`;
 }

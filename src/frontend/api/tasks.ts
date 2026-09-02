@@ -1,5 +1,6 @@
 import { apiFetch, fetchJson, fetchResult, getJson, type ApiResult } from './client.js';
 import type { AgentType } from '../../shared/contracts/agent-types.js';
+import { parseTaskArchivePage, type TaskArchivePage } from '../completed-history.js';
 
 /**
  * GET one task's full detail (prompt/criteria bodies), the payload the compact
@@ -172,4 +173,33 @@ export function migrateTasks(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+export interface ArchivedTasksQuery {
+  limit?: number;
+  /** ISO timestamp or epoch-ms; exclusive upper bound on lastActivityMs. */
+  before?: string | number;
+  cursor?: string;
+}
+
+/**
+ * GET one page of durable terminal-task history (issue #2765/#2760). Throws
+ * {@link ApiError} on a non-2xx, or an Error when the 2xx body is not a
+ * `task-archive.v1` page — the Completed-history UI treats either as the
+ * visible archive-error state.
+ */
+export async function getArchivedTasks(
+  query: ArchivedTasksQuery = {},
+  signal?: AbortSignal,
+): Promise<TaskArchivePage> {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set('limit', String(query.limit));
+  if (query.before !== undefined) params.set('before', String(query.before));
+  if (query.cursor) params.set('cursor', query.cursor);
+  const qs = params.toString();
+  const path = qs ? `/api/tasks/archive?${qs}` : '/api/tasks/archive';
+  const body = await getJson<unknown>(path, signal ? { signal } : undefined);
+  const parsed = parseTaskArchivePage(body);
+  if (parsed instanceof Error) throw parsed;
+  return parsed;
 }
