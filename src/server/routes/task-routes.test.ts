@@ -36,6 +36,7 @@ import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, 
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
+import { archiveTerminalTasks } from '../use-cases/task-archive.js';
 
 function mkApp(deps: Partial<TaskRouteDeps>): Hono {
   const app = new Hono();
@@ -4017,5 +4018,118 @@ describe('GET /api/tasks list filters & pagination (issue #1526 Phase C / C2)', 
       const body = await res.json();
       expect(body.error, qs).toBeDefined();
     }
+  });
+});
+
+describe('GET /api/tasks/archive (issue #2765)', () => {
+  let kookrDir: string;
+
+  beforeEach(() => {
+    kookrDir = mkdtempSync(join(tmpdir(), 'kookr-archive-route-'));
+  });
+
+  afterEach(() => {
+    rmSync(kookrDir, { recursive: true, force: true });
+  });
+
+  function makeArchivedTask(taskStore: TaskStore, id: string, lastActivity: Date) {
+    const task = taskStore.createTask('archived work', '/repo');
+    taskStore.addSession(task.id, {
+      tmuxSession: `sess-${id}`,
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(lastActivity.getTime() - 60_000),
+    });
+    taskStore.completeTask(task.id);
+    const mut = taskStore.getTaskForMutation(task.id)!;
+    mut.id = id;
+    mut.updatedAt = lastActivity;
+    mut.finishedAt = lastActivity;
+    return mut;
+  }
+
+  test('pages archived terminal records newest-first with a cursor', async () => {
+    const taskStore = new TaskStore();
+    const now = Date.now();
+    const tasks = [0, 1, 2].map((i) =>
+      makeArchivedTask(taskStore, `t${i}`, new Date(now - (i + 1) * 24 * 60 * 60 * 1000)),
+    );
+    await archiveTerminalTasks(join(kookrDir, 'task-archive'), tasks);
+
+    const deps = { ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps;
+    const app = mkApp(deps);
+
+    const page1 = await (await app.request('/api/tasks/archive?limit=2')).json();
+    expect(page1.schemaVersion).toBe('task-archive.v1');
+    expect(page1.records.map((r: { task: { id: string } }) => r.task.id)).toEqual(['t0', 't1']);
+    expect(page1.nextCursor).toBeDefined();
+
+    const page2 = await (
+      await app.request(`/api/tasks/archive?limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`)
+    ).json();
+    expect(page2.records.map((r: { task: { id: string } }) => r.task.id)).toEqual(['t2']);
+    expect(page2.nextCursor).toBeUndefined();
+  });
+
+  test('filters by before (epoch ms and ISO)', async () => {
+    const taskStore = new TaskStore();
+    const now = Date.now();
+    const recent = makeArchivedTask(taskStore, 'recent', new Date(now - 24 * 60 * 60 * 1000));
+    const old = makeArchivedTask(taskStore, 'old', new Date(now - 30 * 24 * 60 * 60 * 1000));
+    await archiveTerminalTasks(join(kookrDir, 'task-archive'), [recent, old]);
+
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const beforeMs = now - 5 * 24 * 60 * 60 * 1000;
+    const body = await (await app.request(`/api/tasks/archive?before=${beforeMs}`)).json();
+    expect(body.records.map((r: { task: { id: string } }) => r.task.id)).toEqual(['old']);
+  });
+
+  test('returns an empty page when no archive exists yet', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request('/api/tasks/archive')).json();
+    expect(body.records).toEqual([]);
+    expect(body.count).toBe(0);
+  });
+
+  test('rejects malformed params with 400', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    for (const qs of ['limit=0', 'limit=abc', 'before=not-a-date']) {
+      const res = await app.request(`/api/tasks/archive?${qs}`);
+      expect(res.status, qs).toBe(400);
+    }
+  });
+
+  test('a corrupt-but-parseable record does not 500 the page (returns good records)', async () => {
+    const { appendFileSync, readdirSync } = await import('node:fs');
+    const taskStore = new TaskStore();
+    const good = makeArchivedTask(taskStore, 'good', new Date(Date.now() - 24 * 60 * 60 * 1000));
+    await archiveTerminalTasks(join(kookrDir, 'task-archive'), [good]);
+    // A terminal record missing every date field: with the reviveTask coercion
+    // this reads back with valid fallback dates and must NOT 500 the endpoint.
+    const seg = readdirSync(join(kookrDir, 'task-archive')).find((f) => f.endsWith('.jsonl'))!;
+    appendFileSync(
+      join(kookrDir, 'task-archive', seg),
+      `${JSON.stringify({ archivedAt: new Date().toISOString(), lastActivityMs: Date.now() - 2 * 24 * 60 * 60 * 1000, task: { id: 'dateless', status: 'completed' } })}\n`,
+    );
+
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const res = await app.request('/api/tasks/archive');
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const ids = body.records.map((r: { task: { id: string } }) => r.task.id);
+    expect(ids).toContain('good');
+    expect(ids).toContain('dateless');
+  });
+
+  test('archive segment is not captured by the /api/tasks/:id route', async () => {
+    const taskStore = new TaskStore();
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const res = await app.request('/api/tasks/archive');
+    const body = await res.json();
+    // A :id capture would 404 with { error: 'Task not found' }.
+    expect(body.error).toBeUndefined();
+    expect(body.schemaVersion).toBe('task-archive.v1');
   });
 });

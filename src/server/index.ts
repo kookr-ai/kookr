@@ -147,6 +147,11 @@ import {
   resolveHostStaleDtachReapIntervalMinutes,
 } from './host-stale-dtach-reaper.js';
 import { pruneAgedTaskRecords } from './use-cases/prune-aged-task-records.js';
+import {
+  archiveTerminalTasks,
+  compactTaskArchive,
+  TASK_ARCHIVE_DIRNAME,
+} from './use-cases/task-archive.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
@@ -2977,9 +2982,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       taskStore,
       monitor,
       takePredeleteSnapshot,
+      // Durable append-only terminal-task archive (issue #2765): every record is
+      // archived before it is deleted, so history outlives the bounded
+      // daily/predelete snapshots and stays retrievable via GET /api/tasks/archive.
+      archiveTerminalTasks: async (tasks) => {
+        await archiveTerminalTasks(join(kookrDir, TASK_ARCHIVE_DIRNAME), tasks);
+      },
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       githubStateStore,
     }),
+    compactTaskArchive: async () => {
+      await compactTaskArchive(join(kookrDir, TASK_ARCHIVE_DIRNAME));
+    },
     onTaskRecordsPruned: () => {
       broadcastToAll(createSnapshotMessage({
         monitor,
