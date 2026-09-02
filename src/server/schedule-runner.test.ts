@@ -10,6 +10,7 @@ import {
   isTaskBlockingSchedule,
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
   FIRE_WALL_CLOCK_CAP_MS,
+  SCHEDULE_MAX_FIRES_PER_TICK,
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
@@ -2548,6 +2549,250 @@ Do the plugin thing.
       expect(unwound).toEqual([
         { taskId: 'loop-dup-1', detail: 'relaunch lease taken mid-fire by other-actuator' },
       ]);
+    });
+  });
+
+  describe('fair, bounded due-fire selection (issue #2773)', () => {
+    /** Create a schedule that is due now (backdated one cron interval). */
+    function makeDue(name: string, extra: Partial<Parameters<ScheduleStore['create']>[0]> = {}) {
+      const s = store.create({
+        name,
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        ...extra,
+      });
+      replaceSchedule(s.id, { createdAt: new Date(Date.now() - 2 * 60_000).toISOString() });
+      return store.get(s.id)!;
+    }
+
+    /** Re-arm a schedule so it is due again (clears the advanced cron watermark). */
+    function rearm(id: string) {
+      const s = store.get(id)!;
+      store.replace({
+        ...s,
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+        lastScheduledFor: undefined,
+      });
+    }
+
+    /** The task id of a schedule's latest execution, or undefined if it never fired. */
+    const taskOf = (id: string) => store.get(id)!.latestExecution?.taskId;
+
+    it('caps due fires at the per-tick budget and defers the rest WITHOUT reserving', async () => {
+      const scheds = [0, 1, 2, 3, 4].map((i) => makeDue(`S${i}`));
+
+      await createRunner({ maxFiresPerTick: 2 }).tick();
+
+      // Exactly the budget fired, and they are the head of the (un-rotated) list.
+      expect(launched).toHaveLength(2);
+      const fired = scheds.filter((x) => store.get(x.id)!.latestExecution?.taskId);
+      expect(fired.map((x) => x.name)).toEqual(['S0', 'S1']);
+
+      // The deferred schedules were never reserved: no ledger row, no current
+      // execution, and — crucially — the cron watermark is untouched so the
+      // occurrence is preserved (no duplicate reservation) for a later tick.
+      for (const x of scheds.slice(2)) {
+        const after = store.get(x.id)!;
+        expect(after.currentExecution).toBeUndefined();
+        expect(after.latestExecution).toBeUndefined();
+        expect(after.lastScheduledFor).toBeUndefined();
+        expect(after.executionLedger ?? []).toHaveLength(0);
+      }
+    });
+
+    it('gives deferred-due schedules priority next tick and eventually fires every schedule once', async () => {
+      const scheds = [0, 1, 2, 3].map((i) => makeDue(`S${i}`));
+      const runner = createRunner({ maxFiresPerTick: 2 });
+
+      await runner.tick(); // fires S0, S1; defers S2, S3
+      expect(launched).toHaveLength(2);
+      const afterFirst = scheds.map((x) => taskOf(x.id));
+      // Order-agnostic (fires run concurrently): the first two fired, the last
+      // two did not.
+      expect(afterFirst.slice(0, 2).every(Boolean)).toBe(true);
+      expect(afterFirst.slice(2).every((t) => t === undefined)).toBe(true);
+
+      await runner.tick(); // cursor starts at the first deferred (S2): fires S2, S3
+      expect(launched).toHaveLength(4);
+      const afterSecond = scheds.map((x) => taskOf(x.id));
+      // Every schedule has now fired exactly once, and the already-fired pair
+      // was NOT re-fired — their own task ids are unchanged (fair, single-shot).
+      expect(afterSecond.every(Boolean)).toBe(true);
+      expect(afterSecond[0]).toBe(afterFirst[0]);
+      expect(afterSecond[1]).toBe(afterFirst[1]);
+    });
+
+    it('rotates the leading schedule across ticks and wraps past the end of the list', async () => {
+      const a = makeDue('A');
+      const b = makeDue('B');
+      const c = makeDue('C');
+      // Disable the previous-run gate so a re-armed schedule can fire again on a
+      // later tick (the mock launcher keeps every task "active" forever); this
+      // test exercises cursor rotation, not the coalesce gate.
+      const runner = createRunner({ maxFiresPerTick: 1, isTaskBlockingSchedule: () => false });
+
+      // Budget 1 over three always-due schedules: exactly one fires per tick,
+      // and the deferred backlog makes the next-in-order schedule lead the next
+      // tick. The winner must rotate A → B → C and then WRAP back to A — not
+      // stick on the head, and not run off the end of the list.
+      const leaders: string[] = [];
+      let prev: Record<string, string | undefined> = { [a.id]: undefined, [b.id]: undefined, [c.id]: undefined };
+      for (let i = 0; i < 4; i++) {
+        await runner.tick();
+        const now: Record<string, string | undefined> = { [a.id]: taskOf(a.id), [b.id]: taskOf(b.id), [c.id]: taskOf(c.id) };
+        const changed = [a, b, c].filter((s) => now[s.id] !== prev[s.id]);
+        expect(changed).toHaveLength(1); // exactly one fired this tick (budget 1)
+        leaders.push(changed[0]!.name);
+        prev = now;
+        rearm(a.id);
+        rearm(b.id);
+        rearm(c.id);
+      }
+      expect(leaders).toEqual(['A', 'B', 'C', 'A']);
+    });
+
+    it('clamps a below-1 budget to 1 rather than firing nothing', async () => {
+      makeDue('A');
+      makeDue('B');
+
+      // A misconfigured budget of 0 must not wedge the scheduler into firing
+      // nothing — it is clamped to 1 so at least one due schedule still fires.
+      await createRunner({ maxFiresPerTick: 0 }).tick();
+
+      expect(launched).toHaveLength(1);
+    });
+
+    it('degrades to head-of-list order when the cursor schedule is deleted between ticks', async () => {
+      const a = makeDue('A');
+      const b = makeDue('B');
+      const c = makeDue('C');
+      // Disable the previous-run gate so A can fire again on the second tick
+      // (the mock launcher keeps every task "active" forever).
+      const runner = createRunner({ maxFiresPerTick: 1, isTaskBlockingSchedule: () => false });
+
+      await runner.tick(); // fires A; defers B, C; cursor → B (first deferred)
+      const aAfterFirst = taskOf(a.id);
+
+      // Delete the schedule the cursor points at before the next tick; the
+      // rotation must degrade to head-of-list order rather than throw.
+      await service.delete(b.id);
+      rearm(a.id);
+      rearm(c.id);
+
+      await runner.tick(); // cursor "B" is gone → start from the head (A)
+      expect(taskOf(a.id)).not.toBe(aAfterFirst); // A led again (head), no throw
+    });
+
+    it('defaults the per-tick fire budget to 16', () => {
+      expect(SCHEDULE_MAX_FIRES_PER_TICK).toBe(16);
+    });
+
+    it('a slow (hung) fire cannot prevent other due schedules from being selected on later ticks', async () => {
+      const hangDir = join(dir, 'hang');
+      await mkdir(hangDir, { recursive: true });
+      // Distinct cwd so the launcher can key on it, but resolve the shared
+      // playbook from the project tier at `dir` (sourceCwd), not the empty cwd.
+      const slow = makeDue('Slow', {
+        cwd: hangDir,
+        playbook: { path: 'test.md', parameters: {}, scope: 'project', sourceCwd: dir },
+      });
+      const b = makeDue('B');
+      const c = makeDue('C');
+
+      const runner = createRunner({
+        maxFiresPerTick: 1,
+        fireTimeoutMs: 300,
+        launcher: async (opts) => {
+          const taskId = `task-${++taskIdCounter}`;
+          launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+          if (opts.cwd === hangDir) {
+            return new Promise<never>(() => {}); // hang forever — never settles
+          }
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+        },
+      });
+
+      // Tick 1: Slow is dispatched (budget 1), hangs, and the tick releases at
+      // its wall-clock cap with Slow stuck in flight; B and C are deferred.
+      await runner.tick();
+      // Tick 2 + 3: the deferred B and C are selected in fair order despite Slow
+      // still being stuck — the slow fire never blocks their selection.
+      await runner.tick();
+      await runner.tick();
+      await runner.stop();
+
+      expect(store.get(b.id)!.latestExecution?.taskId).toBeTruthy();
+      expect(store.get(c.id)!.latestExecution?.taskId).toBeTruthy();
+      // Slow's launcher was invoked exactly once and its reservation is still
+      // pending: the in-flight guard kept the stuck fire from re-firing, so the
+      // occurrence was never duplicated while B and C made progress.
+      expect(launched.filter((l) => l.cwd === hangDir)).toHaveLength(1);
+      expect(store.get(slow.id)!.currentExecution?.status).toBe('reserved');
+    });
+
+    it('a repeatedly failing schedule does not starve other due schedules across ticks', async () => {
+      const failDir = join(dir, 'fail');
+      await mkdir(failDir, { recursive: true });
+      // Distinct cwd so the launcher can key on it, but resolve the shared
+      // playbook from the project tier at `dir` (sourceCwd), not the empty cwd.
+      const bad = makeDue('Bad', {
+        cwd: failDir,
+        playbook: { path: 'test.md', parameters: {}, scope: 'project', sourceCwd: dir },
+      });
+      const b = makeDue('B');
+      const c = makeDue('C');
+
+      let badAttempts = 0;
+      const runner = createRunner({
+        maxFiresPerTick: 2,
+        launcher: async (opts) => {
+          const taskId = `task-${++taskIdCounter}`;
+          launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+          if (opts.cwd === failDir) {
+            badAttempts += 1;
+            throw new Error('boom');
+          }
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+        },
+      });
+
+      // Tick 1: [Bad, B, C] with budget 2 → Bad fires+fails, B fires; C deferred.
+      await runner.tick();
+      rearm(bad.id); // Bad comes due again — it keeps failing on every occurrence.
+      // Tick 2: cursor starts at the deferred C → C fires, and Bad fires+fails
+      // again (2nd failure). B already fired this occurrence.
+      await runner.tick();
+
+      // Bad failed on more than one tick, yet both B and C still fired: the
+      // failing schedule never monopolized the budget nor starved its peers.
+      expect(badAttempts).toBeGreaterThanOrEqual(2);
+      expect(store.get(bad.id)!.latestExecution?.outcome).toBe('dispatch_failed');
+      expect(store.get(b.id)!.latestExecution?.taskId).toBeTruthy();
+      expect(store.get(c.id)!.latestExecution?.taskId).toBeTruthy();
+    });
+
+    it('startup catch-up is NOT bounded by the per-tick fire budget (all missed runs fire)', async () => {
+      const scheds = [0, 1, 2, 3].map((i) => makeDue(`Missed${i}`));
+
+      // A tiny per-tick budget must not throttle catch-up: every missed run is a
+      // one-shot recovery fire, independent of the steady-state tick budget.
+      const runner = createRunner({ maxFiresPerTick: 1 });
+      runner.start();
+      await vi.waitFor(() => {
+        expect(launched).toHaveLength(scheds.length);
+      });
+      await runner.stop();
+
+      for (const x of scheds) {
+        expect(store.get(x.id)!.executionLedger[0]).toEqual(expect.objectContaining({
+          decision: 'catch_up',
+        }));
+      }
     });
   });
 

@@ -104,6 +104,28 @@ const CATCHUP_MAX_STALENESS_MS = 24 * 60 * 60 * 1000; // 24 hours
  */
 export const FIRE_WALL_CLOCK_CAP_MS = 45_000;
 
+/**
+ * Default per-tick cap on how many due schedules a single scheduler tick
+ * dispatches to fire (issue #2773). Paired with the rotating fairness cursor
+ * (see {@link ScheduleRunner}'s `tickCursorId`), a bounded budget guarantees
+ * that a synchronized due-burst is drained fairly across ticks — deferred-due
+ * schedules are attempted first on the next tick — instead of one tick
+ * dispatching an unbounded launch storm. Generous enough to be transparent for
+ * ordinary fleets (a burst larger than this is rare), and overridable via the
+ * `KOOKR_MAX_FIRES_PER_TICK` env var or the
+ * {@link ScheduleRunnerDeps.maxFiresPerTick} injection point (tests).
+ */
+export const SCHEDULE_MAX_FIRES_PER_TICK = resolveMaxFiresPerTick();
+
+function resolveMaxFiresPerTick(): number {
+  const raw = process.env.KOOKR_MAX_FIRES_PER_TICK;
+  if (raw !== undefined) {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+  }
+  return 16;
+}
+
 // A task is treated as still blocking its schedule only if its `updatedAt` is
 // within this window. Beyond it, the prior run is presumed abandoned and the
 // next cron tick is allowed to fire — preventing a hung task from permanently
@@ -310,6 +332,13 @@ export interface ScheduleRunnerDeps {
    */
   fireTimeoutMs?: number;
   /**
+   * Per-tick cap on how many due schedules are dispatched to fire (issue
+   * #2773). Parameterized for tests; defaults to
+   * {@link SCHEDULE_MAX_FIRES_PER_TICK}. Values below 1 are clamped to 1 so a
+   * misconfiguration cannot wedge the scheduler into firing nothing.
+   */
+  maxFiresPerTick?: number;
+  /**
    * WS0.5 relaunch arbiter (issue #1900 / #1711 / #1699 WS2 / #1899). When
    * provided:
    * - startup catch-up fires are gated behind it (a missed run is admitted
@@ -370,6 +399,17 @@ export class ScheduleRunner {
    * the dead-man switch flags the resulting starvation.
    */
   private inFlightFires = new Set<string>();
+
+  /**
+   * Fair-firing rotation cursor (issue #2773): the schedule id the next tick's
+   * due-selection walk starts from. It is set to the first schedule the per-tick
+   * fire budget deferred, so the deferred backlog is drained in fair,
+   * starvation-free order — one slow or repeatedly failing schedule early in
+   * store order can no longer monopolize the budget and starve schedules later
+   * in the list. `undefined` (the value when nothing was deferred) starts the
+   * next tick from the head of the enabled list.
+   */
+  private tickCursorId: string | undefined = undefined;
 
   /**
    * Latches true once the bounded self-heal has acted at least once (issue
@@ -537,9 +577,26 @@ export class ScheduleRunner {
       }
 
       const now = new Date();
+      // Fair, bounded due-fire selection (issue #2773). Cap how many due
+      // schedules are dispatched per tick, and rotate which ones lead via a
+      // persistent cursor. Without a cap, every due schedule is dispatched in
+      // fixed store-list order each tick; if the launcher's capacity is the
+      // binding constraint, the schedules early in the list always win and the
+      // rest are perpetually starved. A schedule that is due but past the
+      // budget is DEFERRED: it is not reserved (its occurrence is preserved,
+      // no duplicate reservation), it is left due, and the cursor makes it a
+      // leading candidate on the next tick — so the deferred backlog drains in
+      // fair, starvation-free order. Operators who want fairness under launcher
+      // capacity pressure set the budget at or below their active-task capacity
+      // (see KOOKR_MAX_FIRES_PER_TICK) so the surplus defers and rotates rather
+      // than racing concurrently for the same slots.
+      const enabled = this.deps.store.list().filter((s) => s.enabled);
+      const ordered = rotateFromCursor(enabled, this.tickCursorId);
+      const budget = Math.max(1, this.deps.maxFiresPerTick ?? SCHEDULE_MAX_FIRES_PER_TICK);
       const fires: Array<Promise<void>> = [];
-      for (const schedule of this.deps.store.list()) {
-        if (!schedule.enabled) continue;
+      const fired: Schedule[] = [];
+      const deferred: Schedule[] = [];
+      for (const schedule of ordered) {
         if (isTriggerLimitExhausted(schedule)) {
           await this.deps.service.markCronLimitExhausted(schedule.id);
           continue;
@@ -556,13 +613,34 @@ export class ScheduleRunner {
           console.warn(`[schedule] Skipping "${schedule.name}" — previous fire still in flight past its wall-clock cap (issue #1708)`);
           continue;
         }
+        // Due and eligible. Past the per-tick budget, defer WITHOUT reserving
+        // (issue #2773) so the occurrence is preserved and re-selected next
+        // tick; the cursor below gives deferred schedules priority.
+        if (fired.length >= budget) {
+          deferred.push(schedule);
+          continue;
+        }
         // Fire concurrently and wall-clock-bound each (issue #1708): a single
         // hung fire() no longer blocks the other due schedules, and each fire
         // is capped so the tick as a whole settles within the cap. Fires touch
         // only their own schedule's ledger, so concurrency is safe; the
         // launcher still serializes capacity decisions (queues at capacity).
+        fired.push(schedule);
         fires.push(this.fireBounded(schedule, 'cron', scheduledNextRun));
       }
+      if (deferred.length > 0) {
+        console.warn(
+          `[schedule] Deferred ${deferred.length} due schedule(s) past this tick's fire `
+          + `budget (${budget}); they keep priority next tick (issue #2773): `
+          + deferred.map((s) => `"${s.name}"`).join(', '),
+        );
+      }
+      // Advance the fairness cursor for the next tick (issue #2773): start at
+      // the first deferred schedule when the budget held some back, so the
+      // deferred backlog is drained in fair order; otherwise reset to the head
+      // (nothing was deferred, so every due schedule already fired and there is
+      // no carried-over priority to preserve).
+      this.tickCursorId = nextTickCursorId(deferred);
       await Promise.allSettled(fires);
       this.deps.service.recordTickCompleted();
     } finally {
@@ -1558,6 +1636,36 @@ function isGrokAuthPreflightError(err: unknown): boolean {
     );
   }
   return false;
+}
+
+/**
+ * Rotate `schedules` so the due-selection walk starts at `cursorId` (issue
+ * #2773). Returns the list unchanged when the cursor is unset or its schedule
+ * is gone (e.g. deleted between ticks), so a stale cursor degrades to
+ * head-of-list order rather than throwing.
+ */
+function rotateFromCursor(schedules: Schedule[], cursorId: string | undefined): Schedule[] {
+  if (schedules.length === 0 || cursorId === undefined) return schedules;
+  const idx = schedules.findIndex((s) => s.id === cursorId);
+  if (idx <= 0) return schedules;
+  return [...schedules.slice(idx), ...schedules.slice(0, idx)];
+}
+
+/**
+ * Pick the schedule id the next tick's fair-selection cursor should start from
+ * (issue #2773).
+ *
+ * When the per-tick budget held some due schedules back, the first deferred one
+ * leads the next tick — this is the mechanism that guarantees a fair,
+ * starvation-free rotation: a deferred schedule is never reserved, so it stays
+ * due and is attempted first next turn, and the cursor walks the deferred
+ * backlog in order until it drains. When nothing was deferred, every due
+ * schedule already fired this tick (the budget was not the binding
+ * constraint), so there is no carried-over priority to preserve and the next
+ * tick starts from the head of the list.
+ */
+function nextTickCursorId(deferred: Schedule[]): string | undefined {
+  return deferred.length > 0 ? deferred[0]!.id : undefined;
 }
 
 function computeNextRunFor(schedule: Schedule): Date | null {
