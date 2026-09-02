@@ -313,6 +313,14 @@ export interface KookrSettings {
   /** Sliding-window size (minutes) for {@link spawnBurstLimit}. */
   spawnBurstWindowMinutes: number;
   /**
+   * How long a finalized idempotency key protects against a duplicate launch.
+   * The persisted ledger stores the original creation timestamp, so changing
+   * this setting never requires rewriting or interpreting expiry metadata.
+   */
+  idempotencyLedgerTtlMinutes: number;
+  /** Maximum number of finalized idempotency entries retained on disk. */
+  idempotencyLedgerMaxEntries: number;
+  /**
    * Reserved self-maintenance capacity (issue #1564). Number of
    * {@link maxActiveTasks} concurrency slots held back for privileged
    * launch sources listed in {@link reservedSlotSources}. A launch whose
@@ -424,6 +432,8 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   firstHookDeadlineSeconds: 180,
   spawnBurstLimit: 30,
   spawnBurstWindowMinutes: 10,
+  idempotencyLedgerTtlMinutes: 24 * 60,
+  idempotencyLedgerMaxEntries: 10_000,
   reservedActiveSlots: 2,
   reservedSlotSources: ['kookr'],
   postMergeCleanupBudgetMinutes: 10,
@@ -515,6 +525,14 @@ const MIN_SPAWN_BURST_LIMIT = 5;
 const MAX_SPAWN_BURST_LIMIT = 500;
 const MIN_SPAWN_BURST_WINDOW_MIN = 1;
 const MAX_SPAWN_BURST_WINDOW_MIN = 120;
+// Idempotency-ledger retention bounds (issue #2763). The one-minute floor
+// permits short-lived test/ephemeral deployments; the seven-day ceiling keeps
+// replay protection from becoming an unbounded historical store. Entry bounds
+// are intentionally independent from TTL so either policy can cap growth.
+const MIN_IDEMPOTENCY_LEDGER_TTL_MIN = 1;
+const MAX_IDEMPOTENCY_LEDGER_TTL_MIN = 7 * 24 * 60;
+const MIN_IDEMPOTENCY_LEDGER_ENTRIES = 1;
+const MAX_IDEMPOTENCY_LEDGER_ENTRIES = 100_000;
 // Idle-slot idea refinery bounds (issue #2144). Free-slot floor of 1 keeps the
 // trigger meaningful (never fires at 0 headroom); ceiling mirrors MAX_ACTIVE_TASKS
 // so `N` can never exceed a realistic concurrency cap. Cooldown floor of 15m
@@ -736,6 +754,22 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     );
   }
 
+  let idempotencyLedgerTtlMinutes = DEFAULT_SETTINGS.idempotencyLedgerTtlMinutes;
+  if (typeof raw.idempotencyLedgerTtlMinutes === 'number' && Number.isFinite(raw.idempotencyLedgerTtlMinutes)) {
+    idempotencyLedgerTtlMinutes = Math.max(
+      MIN_IDEMPOTENCY_LEDGER_TTL_MIN,
+      Math.min(MAX_IDEMPOTENCY_LEDGER_TTL_MIN, Math.round(raw.idempotencyLedgerTtlMinutes)),
+    );
+  }
+
+  let idempotencyLedgerMaxEntries = DEFAULT_SETTINGS.idempotencyLedgerMaxEntries;
+  if (typeof raw.idempotencyLedgerMaxEntries === 'number' && Number.isFinite(raw.idempotencyLedgerMaxEntries)) {
+    idempotencyLedgerMaxEntries = Math.max(
+      MIN_IDEMPOTENCY_LEDGER_ENTRIES,
+      Math.min(MAX_IDEMPOTENCY_LEDGER_ENTRIES, Math.round(raw.idempotencyLedgerMaxEntries)),
+    );
+  }
+
   let reservedActiveSlots = DEFAULT_SETTINGS.reservedActiveSlots;
   if (typeof raw.reservedActiveSlots === 'number' && Number.isFinite(raw.reservedActiveSlots)) {
     reservedActiveSlots = Math.max(
@@ -914,6 +948,8 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       firstHookDeadlineSeconds,
       spawnBurstLimit,
       spawnBurstWindowMinutes,
+      idempotencyLedgerTtlMinutes,
+      idempotencyLedgerMaxEntries,
       reservedActiveSlots,
       reservedSlotSources,
       postMergeCleanupBudgetMinutes,

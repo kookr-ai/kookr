@@ -848,6 +848,27 @@ describe('diagnostics routes', () => {
       expect(body.timerHealth).not.toHaveProperty('loops');
     });
 
+    test('publishes idempotency ledger retention metrics when wired', async () => {
+      const snapshot = {
+        schemaVersion: 'idempotency-ledger-metrics.v1' as const,
+        entryCount: 7,
+        pendingCount: 1,
+        maxEntries: 100,
+        ttlMs: 86_400_000,
+        expiredTotal: 3,
+        evictedTotal: 2,
+      };
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        idempotencyLedger: { getMetrics: () => snapshot },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { idempotencyLedger?: unknown };
+      expect(body.idempotencyLedger).toEqual(snapshot);
+    });
+
     test('summarizes a stubbed snapshot without copying the loop list', async () => {
       const snapshot = {
         schemaVersion: 'timer-health.v1' as const,

@@ -92,6 +92,8 @@ describe('Settings API', () => {
       firstHookDeadlineSeconds: 180,
       spawnBurstLimit: 30,
       spawnBurstWindowMinutes: 10,
+      idempotencyLedgerTtlMinutes: 1440,
+      idempotencyLedgerMaxEntries: 10000,
       reservedActiveSlots: 2,
       reservedSlotSources: ['kookr'],
       postMergeCleanupBudgetMinutes: 10,
@@ -115,6 +117,8 @@ describe('Settings API', () => {
         shortcutBindings: {
           mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
         },
+        idempotencyLedgerTtlMinutes: 60,
+        idempotencyLedgerMaxEntries: 2,
       }),
     });
     expect(res.status).toBe(200);
@@ -126,6 +130,8 @@ describe('Settings API', () => {
     expect(data.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
     });
+    expect(data.idempotencyLedgerTtlMinutes).toBe(60);
+    expect(data.idempotencyLedgerMaxEntries).toBe(2);
     expect(data.warnings).toEqual([]);
 
     // Verify persisted to file
@@ -137,6 +143,14 @@ describe('Settings API', () => {
     expect(fileContent.shortcutBindings).toEqual({
       mac: { next_bottleneck: 'Cmd+Ctrl+Space' },
     });
+    expect(fileContent.idempotencyLedgerTtlMinutes).toBe(60);
+    expect(fileContent.idempotencyLedgerMaxEntries).toBe(2);
+
+    const metrics = await fetch(`${baseUrl}/metrics`);
+    expect(metrics.status).toBe(200);
+    const metricsBody = await metrics.text();
+    expect(metricsBody).toContain('kookr_idempotency_ledger_ttl_seconds 3600');
+    expect(metricsBody).toContain('kookr_idempotency_ledger_max_entries 2');
   });
 
   test('PUT /api/settings clamps out-of-range interval', async () => {

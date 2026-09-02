@@ -27,6 +27,7 @@ import type { OssRefresher } from '../oss-refresh.js';
 import type { SkillDiscoveryStateHolder } from '../../core/skill-tracked-repo-discovery.js';
 import type { PrLessonsStateHolder } from '../../core/pr-lessons-discovery.js';
 import type { KookrSettings } from '../../core/settings-store.js';
+import type { IdempotencyLedger } from '../../core/idempotency-ledger.js';
 import type { CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { ScheduleRunner } from '../schedule-runner.js';
@@ -380,6 +381,8 @@ export interface RouteDeps {
    */
   taskTailStore?: import('../../core/task-tail-store.js').TaskTailStore;
   launchServiceDeps: LaunchServiceDeps;
+  /** Durable idempotency retention gauges for health and Prometheus. */
+  idempotencyLedger?: Pick<IdempotencyLedger, 'getMetrics'>;
   /**
    * Shared Grok session-auth availability cache (issue #2537). Wired so the
    * GET /api/grok-auth-status preflight reads the SAME cached verdict the launch

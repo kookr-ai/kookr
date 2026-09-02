@@ -24,6 +24,7 @@ import {
 import { FAA_ROOT_CAUSES } from '../core/faa-root-cause.js';
 import type { LessonYieldSnapshot } from '../core/lesson-decision.js';
 import type { GitHubStateFetchFailureSnapshotEntry } from '../adapters/github-fetcher.js';
+import type { IdempotencyLedgerMetrics } from '../core/idempotency-ledger.js';
 
 export const PROMETHEUS_CONTENT_TYPE = 'text/plain; version=0.0.4';
 
@@ -91,6 +92,8 @@ export interface PrometheusExpositionSnapshot {
    * hook-log scan. Same fields as `/api/health` `lessonYield`.
    */
   lessonYield?: LessonYieldSnapshot;
+  /** Idempotency replay-retention count and compaction counters (issue #2763). */
+  idempotencyLedger?: IdempotencyLedgerMetrics;
   /**
    * `/api/health` body-cache timing gauges (issue #2497): the last full
    * assembly duration and the current cached body's age. When undefined (cache
@@ -190,6 +193,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendRingFleetBudgetMetrics(lines, snapshot.ringFleetBudget);
   appendCapacityMetrics(lines, snapshot.capacity);
   appendLessonYieldMetrics(lines, snapshot.lessonYield);
+  appendIdempotencyLedgerMetrics(lines, snapshot.idempotencyLedger);
   appendHealthBodyCacheMetrics(lines, snapshot.healthBodyCache);
   appendFinishedAwaitingAckReclaimMetrics(lines, snapshot.finishedAwaitingAckReclaim);
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
@@ -198,6 +202,32 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 
   return `${lines.join('\n')}\n`;
+}
+
+function appendIdempotencyLedgerMetrics(
+  lines: string[],
+  snapshot: IdempotencyLedgerMetrics | undefined,
+): void {
+  lines.push(
+    '# HELP kookr_idempotency_ledger_entries Current finalized idempotency entries retained.',
+    '# TYPE kookr_idempotency_ledger_entries gauge',
+    metricLine('kookr_idempotency_ledger_entries', {}, snapshot?.entryCount ?? 0),
+    '# HELP kookr_idempotency_ledger_pending Current in-flight idempotency reservations.',
+    '# TYPE kookr_idempotency_ledger_pending gauge',
+    metricLine('kookr_idempotency_ledger_pending', {}, snapshot?.pendingCount ?? 0),
+    '# HELP kookr_idempotency_ledger_max_entries Configured maximum finalized idempotency entries.',
+    '# TYPE kookr_idempotency_ledger_max_entries gauge',
+    metricLine('kookr_idempotency_ledger_max_entries', {}, snapshot?.maxEntries ?? 0),
+    '# HELP kookr_idempotency_ledger_ttl_seconds Configured idempotency replay-protection TTL in seconds.',
+    '# TYPE kookr_idempotency_ledger_ttl_seconds gauge',
+    metricLine('kookr_idempotency_ledger_ttl_seconds', {}, snapshot ? snapshot.ttlMs / 1000 : 0),
+    '# HELP kookr_idempotency_ledger_expired_total Total finalized entries removed after TTL expiry.',
+    '# TYPE kookr_idempotency_ledger_expired_total counter',
+    metricLine('kookr_idempotency_ledger_expired_total', {}, snapshot?.expiredTotal ?? 0),
+    '# HELP kookr_idempotency_ledger_evicted_total Total finalized entries removed by the size bound.',
+    '# TYPE kookr_idempotency_ledger_evicted_total counter',
+    metricLine('kookr_idempotency_ledger_evicted_total', {}, snapshot?.evictedTotal ?? 0),
+  );
 }
 
 function appendRequestDurationMetrics(lines: string[], snapshot: RequestDurationMetricsSnapshot): void {

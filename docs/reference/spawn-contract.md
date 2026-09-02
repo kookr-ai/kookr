@@ -60,7 +60,7 @@ the load-bearing primitive for safe reconciliation:
   prompt content.
 - Durability is best-effort, not absolute — see the
   [`idempotencyKey` field notes in api.md](./api.md#post-apitasks-body-fields)
-  for the ledger TTL (24h) and the narrow crash/disk-failure windows where a
+  for the ledger TTL (24h by default; configurable in settings) and the narrow crash/disk-failure windows where a
   duplicate is still possible.
 
 **A key makes re-POST safe.** Because the server replays-or-creates under the

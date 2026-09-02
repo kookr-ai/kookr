@@ -116,6 +116,28 @@ describe('renderPrometheusExposition', () => {
     expect(output.endsWith('\n')).toBe(true);
   });
 
+  test('renders idempotency retention gauges and compaction counters', () => {
+    const output = renderPrometheusExposition({
+      requestDurations: EMPTY_REQUEST_DURATIONS,
+      circuitBreakers: [],
+      idempotencyLedger: {
+        schemaVersion: 'idempotency-ledger-metrics.v1',
+        entryCount: 7,
+        pendingCount: 1,
+        maxEntries: 100,
+        ttlMs: 86_400_000,
+        expiredTotal: 3,
+        evictedTotal: 2,
+      },
+    });
+    expect(output).toContain('kookr_idempotency_ledger_entries 7');
+    expect(output).toContain('kookr_idempotency_ledger_pending 1');
+    expect(output).toContain('kookr_idempotency_ledger_max_entries 100');
+    expect(output).toContain('kookr_idempotency_ledger_ttl_seconds 86400');
+    expect(output).toContain('kookr_idempotency_ledger_expired_total 3');
+    expect(output).toContain('kookr_idempotency_ledger_evicted_total 2');
+  });
+
   test('renders webhook delivery outcome counters', () => {
     const webhookDeliveries: WebhookDeliveryCounts = {
       success: 4,

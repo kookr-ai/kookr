@@ -126,6 +126,11 @@ The bind/auth/transport knobs it reuses:
 > and revoked, but the wiring that admits a viewer cookie onto the live data
 > streams is deferred. See the setup guide for the current status.
 
+The idempotency ledger's retention is configured through the JSON settings
+surface (`idempotencyLedgerTtlMinutes` and `idempotencyLedgerMaxEntries`), not
+through an environment variable. See [Idempotency ledger retention](api.md#idempotency-ledger-retention)
+for defaults and validation bounds.
+
 ## Agent Launch
 
 | Variable | Default | Accepted values | Effect |
@@ -170,7 +175,7 @@ not user configuration knobs.
 | `KOOKR_SPAWN_MAX_PROMPT_BYTES` | `1048576` | Positive integer bytes | Maximum prompt size accepted from `kookr spawn` stdin or `--prompt-file`. |
 | `KOOKR_SPAWN_CONNECT_RETRIES` | `3` | Integer `1` through `10` | Number of `kookr spawn` connectivity sweeps before reporting no server. |
 | `KOOKR_SPAWN_REDEPLOY_WAIT_MS` | unset (no extension when status is down) | Integer milliseconds `0` through `300000` | When `kookr spawn` auto-detect health probes fail: if `GET /api/deploy/status` reports `deploying=true` (or a recent `lastRestart`/`lastRestartAt` within 60s when present), spawn already extends the connect wait up to 45000ms with a stderr "waiting for redeploy" line. If deploy/status is unreachable mid-blackout, set this to optionally extend past `KOOKR_SPAWN_CONNECT_RETRIES` instead of failing fast with exit 3. Invalid or unset leaves the default retry budget unchanged. |
-| `KOOKR_SPAWN_AUTO_IDEMPOTENCY` | unset (off) | `1`/`true`/`yes`/`on` to enable | Default for `kookr spawn --auto-idempotency`: when no `--idempotency-key` is given, derive a key (`auto-<hash>`) from prompt, cwd, criteria, agent, model policy, playbook path, and playbook scope so a client-timeout retry of the identical spawn replays instead of stranding a duplicate (bounded by the server's rolling 24h idempotency TTL). Existing calls with no model policy retain their prior derived key. Changing any input needs an explicit `--idempotency-key`. `--no-auto-idempotency` overrides it per-invocation; no effect under `--dedupe=skip`. |
+| `KOOKR_SPAWN_AUTO_IDEMPOTENCY` | unset (off) | `1`/`true`/`yes`/`on` to enable | Default for `kookr spawn --auto-idempotency`: when no `--idempotency-key` is given, derive a key (`auto-<hash>`) from prompt, cwd, criteria, agent, model policy, playbook path, and playbook scope so a client-timeout retry of the identical spawn replays instead of stranding a duplicate (bounded by the server's configured rolling idempotency TTL, 24h by default). Existing calls with no model policy retain their prior derived key. Changing any input needs an explicit `--idempotency-key`. `--no-auto-idempotency` overrides it per-invocation; no effect under `--dedupe=skip`. |
 | `KOOKR_MERGE_REQUIRE_REVIEW` | `1` (on) | `0`/`false` to disable | Independent merge-review gate for `pnpm merge` (`scripts/kookr-merge.sh`, issue #1717). When on (default), the wrapper refuses to merge (exit 4) unless a fresh-context reviewer posts `pass` with `review-head-sha` equal to the exact current PR head — see the `independent-merge-review` skill. The `review-skipped-timeout` label is telemetry only and never bypasses the gate. Also arms `hooks/gh-pr-merge-gate.sh` (issue #1968): in Kookr-managed sessions (`KOOKR_TASK_ID` set) bare `gh pr merge` is denied so agents must use `pnpm merge`. Set to `0` only for a human-driven manual merge, never for an autonomous self-merge. |
 
 ## Terminal Backend

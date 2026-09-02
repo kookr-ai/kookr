@@ -77,7 +77,7 @@ Options:
 | `--criteria` | text | unset | Acceptance criteria sent with the task request. This value is argv-exposed; use prompt files or stdin for hook-sensitive text. |
 | `--dedupe` | `warn`, `block`, or `skip` | `warn` | Active duplicate-prompt handling. `warn` prompts interactively and blocks in non-interactive shells, `block` exits with code 5, and `skip` creates the task intentionally while suppressing duplicate-cluster findings. |
 | `--idempotency-key` | opaque string, ≤200 chars | unset | Retry key (issue #1526). Re-running `kookr spawn` with the SAME key replays the earlier launch outcome instead of launching a second task. A replayed active-prompt duplicate repeats the warning and confirmation flow. |
-| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, effort, model, model tier, playbook path, and playbook scope. A client-timeout retry replays only when all inputs are unchanged (bounded by the server's rolling 24h idempotency TTL — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
+| `--auto-idempotency` / `--no-auto-idempotency` | none | off (env-controlled) | When no `--idempotency-key` is given, derive one (`auto-<hash>`) from prompt, cwd, criteria, agent, effort, model, model tier, playbook path, and playbook scope. A client-timeout retry replays only when all inputs are unchanged (bounded by the server's configured rolling idempotency TTL, 24h by default — no calendar component). If any input can change between retries, pass an explicit `--idempotency-key` that encodes the logical intent instead. Also enabled by `KOOKR_SPAWN_AUTO_IDEMPOTENCY=1`; `--no-auto-idempotency` forces it off. No effect under `--dedupe=skip`; an explicit `--idempotency-key` always wins. |
 | `--wait` | optional seconds via `--wait=<seconds>` | false | Poll until the spawned task raises `completion-ready` or reaches a terminal state. |
 | `--parent-task-id` | task id | `KOOKR_TASK_ID` when set | Explicit parent task to link in the dashboard. Mutually exclusive with `--no-parent-task`. |
 | `--no-parent-task` | none | false | Launch detached and ignore `KOOKR_TASK_ID`. Mutually exclusive with `--parent-task-id`. |
@@ -151,7 +151,8 @@ Task already exists (idempotent replay)` instead of `✓ Task created`, exits
 `0`, and (in `--json` mode) sets `details.idempotentReplay: true`. A replayed
 prompt duplicate repeats the warning; confirmation derives a separate stable
 key so a timeout during the intentional duplicate launch can be reconciled
-safely. Reservations live in a TTL-bounded ledger on the server (24h).
+safely. Reservations live in a TTL-bounded ledger on the server (24h by
+default; configurable in settings).
 Durability is best-effort, not absolute: a crash strictly between task creation
 and the ledger write can lose that one reservation, and a ledger persist
 failure is logged server-side without failing the request — see

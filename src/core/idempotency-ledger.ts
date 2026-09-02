@@ -46,9 +46,12 @@
  * Only `finalized` entries are persisted (`idempotency-ledger.json` under the
  * Kookr data dir), so a restart mid-launch simply loses the (meaningless)
  * pending marker while a completed launch's replay protection survives.
- * Entries older than {@link IDEMPOTENCY_TTL_MS} (24h) are compacted both on
+ * Entries older than the configured TTL (24h by default) are compacted both on
  * `load()` (boot) and inline inside `reserveOrWait` (so a key past its TTL is
  * silently treated as never-seen, without needing a background sweep timer).
+ * The finalized ledger is also bounded by a deterministic oldest-first entry
+ * limit. `createdAt` is persisted rather than a derived expiry timestamp, so a
+ * settings change or restart never changes the meaning of an on-disk row.
  *
  * Durability is honest, not absolute: (1) a crash strictly inside the
  * create→finalize window loses the (memory-only) pending reservation, so a
@@ -72,8 +75,11 @@ export const IDEMPOTENCY_LEDGER_FILE = 'idempotency-ledger.json';
 
 const SCHEMA_VERSION = 1;
 
-/** How long a finalized entry protects against a duplicate launch. */
+/** Default TTL for a finalized entry's duplicate-launch protection. */
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Default maximum number of finalized entries retained on disk. */
+export const IDEMPOTENCY_MAX_ENTRIES = 10_000;
 
 /** One persisted (finalized-only) ledger row. */
 export interface IdempotencyLedgerEntry {
@@ -87,6 +93,17 @@ export interface IdempotencyLedgerEntry {
 interface IdempotencyLedgerFile {
   schemaVersion: number;
   entries: Record<string, IdempotencyLedgerEntry>;
+}
+
+export interface IdempotencyLedgerMetrics {
+  schemaVersion: 'idempotency-ledger-metrics.v1';
+  /** Finalized entries currently retained; pending reservations are transient. */
+  entryCount: number;
+  pendingCount: number;
+  maxEntries: number;
+  ttlMs: number;
+  expiredTotal: number;
+  evictedTotal: number;
 }
 
 /** Outcome delivered to callers that awaited a pending reservation. */
@@ -155,15 +172,19 @@ function isValidEntry(value: unknown): value is IdempotencyLedgerEntry {
 
 export class IdempotencyLedger {
   private readonly filePath: string;
-  private readonly ttlMs: number;
+  private ttlMs: number;
+  private maxEntries: number;
   private readonly now: () => number;
   private state = new Map<string, LedgerState>();
+  private expiredTotal = 0;
+  private evictedTotal = 0;
   /** Async write mutex — serializes persist() across concurrent finalize() callers. */
   private writeLock: Promise<void> = Promise.resolve();
 
-  constructor(kookrDir: string, options: { ttlMs?: number; now?: () => number } = {}) {
+  constructor(kookrDir: string, options: { ttlMs?: number; maxEntries?: number; now?: () => number } = {}) {
     this.filePath = join(kookrDir, IDEMPOTENCY_LEDGER_FILE);
-    this.ttlMs = options.ttlMs ?? IDEMPOTENCY_TTL_MS;
+    this.ttlMs = normalizePositiveInteger(options.ttlMs ?? IDEMPOTENCY_TTL_MS);
+    this.maxEntries = normalizePositiveInteger(options.maxEntries ?? IDEMPOTENCY_MAX_ENTRIES);
     this.now = options.now ?? Date.now;
   }
 
@@ -187,6 +208,7 @@ export class IdempotencyLedger {
       return;
     }
     const nowMs = this.now();
+    let compacted = false;
     const entries = loaded.entries && typeof loaded.entries === 'object' ? loaded.entries : {};
     for (const [key, entry] of Object.entries(entries)) {
       if (!isValidEntry(entry)) {
@@ -194,7 +216,11 @@ export class IdempotencyLedger {
         continue;
       }
       const createdAtMs = Date.parse(entry.createdAt);
-      if (nowMs - createdAtMs > this.ttlMs) continue; // expired — compacted on load
+      if (nowMs - createdAtMs > this.ttlMs) {
+        this.expiredTotal++;
+        compacted = true;
+        continue; // expired — compacted on load
+      }
       this.state.set(key, {
         status: 'finalized',
         createdAtMs,
@@ -202,6 +228,8 @@ export class IdempotencyLedger {
         duplicate: entry.duplicate === true,
       });
     }
+    if (this.compactBySize() > 0) compacted = true;
+    if (compacted) await this.persistBestEffort('load', '<compaction>');
   }
 
   /**
@@ -209,7 +237,8 @@ export class IdempotencyLedger {
    * Always call this before any async task-creation work.
    */
   reserveOrWait(key: string): IdempotencyReservation {
-    this.compactExpired();
+    const compacted = this.compactExpired() > 0;
+    if (compacted) void this.persistBestEffort('expiry', key);
     const existing = this.state.get(key);
     if (existing?.status === 'finalized') {
       return {
@@ -239,6 +268,7 @@ export class IdempotencyLedger {
         // review item 1: a launch that already spawned an agent must never
         // become an HTTP error just because the ledger write failed).
         this.state.set(key, { status: 'finalized', createdAtMs, taskId, duplicate });
+        this.compactBySize();
         resolve({ ok: true, taskId, ...(duplicate ? { duplicate: true as const } : {}) });
         await this.persistBestEffort('finalize', key);
       },
@@ -266,13 +296,81 @@ export class IdempotencyLedger {
     return this.state.size;
   }
 
-  private compactExpired(): void {
+  /**
+   * In-memory retention counters for `/api/health` and `/metrics`. Scans the
+   * current entries once (O(n) in the retained set) to split finalized from
+   * pending; the counters themselves are read directly.
+   */
+  getMetrics(): IdempotencyLedgerMetrics {
+    let entryCount = 0;
+    let pendingCount = 0;
+    for (const entry of this.state.values()) {
+      if (entry.status === 'finalized') entryCount++;
+      else pendingCount++;
+    }
+    return {
+      schemaVersion: 'idempotency-ledger-metrics.v1',
+      entryCount,
+      pendingCount,
+      maxEntries: this.maxEntries,
+      ttlMs: this.ttlMs,
+      expiredTotal: this.expiredTotal,
+      evictedTotal: this.evictedTotal,
+    };
+  }
+
+  /** Apply live settings and compact immediately when a bound becomes tighter. */
+  async configure(options: { ttlMs?: number; maxEntries?: number }): Promise<void> {
+    if (options.ttlMs !== undefined) this.ttlMs = normalizePositiveInteger(options.ttlMs);
+    if (options.maxEntries !== undefined) this.maxEntries = normalizePositiveInteger(options.maxEntries);
+    const expired = this.compactExpired();
+    const evicted = this.compactBySize();
+    const changed = expired > 0 || evicted > 0;
+    if (changed) await this.persistBestEffort('configure', '<compaction>');
+  }
+
+  private compactExpired(): number {
     const nowMs = this.now();
+    let removed = 0;
     for (const [key, entry] of this.state) {
       if (entry.status === 'finalized' && nowMs - entry.createdAtMs > this.ttlMs) {
         this.state.delete(key);
+        this.expiredTotal++;
+        removed++;
       }
     }
+    return removed;
+  }
+
+  /**
+   * Retain the newest finalized entries. The timestamp/key tie-break makes
+   * eviction stable across insertion order and restart. Pending reservations
+   * are intentionally excluded: they are in-flight coordination state and are
+   * never persisted or evicted while a waiter may still depend on them.
+   */
+  private compactBySize(): number {
+    // Fast path: `finalize()` calls this on every launch, so avoid
+    // materializing and sorting the whole finalized set when we are under the
+    // bound and nothing can be evicted. A single O(n) count is far cheaper than
+    // the O(n log n) array build+sort below, which matters at the upper
+    // `maxEntries` (100k) end of the range (hot-path/OOM care, issue #1553).
+    let finalizedCount = 0;
+    for (const entry of this.state.values()) {
+      if (entry.status === 'finalized') finalizedCount++;
+    }
+    if (finalizedCount <= this.maxEntries) return 0;
+    const finalized = [...this.state.entries()]
+      .filter(([, entry]) => entry.status === 'finalized')
+      .sort(([keyA, entryA], [keyB, entryB]) => {
+        if (entryA.createdAtMs !== entryB.createdAtMs) return entryA.createdAtMs - entryB.createdAtMs;
+        return keyA.localeCompare(keyB);
+      });
+    const excess = Math.max(0, finalized.length - this.maxEntries);
+    for (const [key] of finalized.slice(0, excess)) {
+      this.state.delete(key);
+      this.evictedTotal++;
+    }
+    return excess;
   }
 
   /**
@@ -324,4 +422,8 @@ export class IdempotencyLedger {
       release();
     }
   }
+}
+
+function normalizePositiveInteger(value: number): number {
+  return Number.isFinite(value) && value > 0 ? Math.max(1, Math.round(value)) : 1;
 }

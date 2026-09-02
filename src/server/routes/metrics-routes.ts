@@ -61,6 +61,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       // Pure read of the last warm 24h health-cache snapshot (issue #1857).
       // Never scans hook logs on the scrape path — cold cache omits series.
       lessonYield: collectLessonYield(deps),
+      idempotencyLedger: deps.idempotencyLedger?.getMetrics(),
       // Health-body cache timing gauges (issue #2497). Pure read of the shared
       // stats the diagnostics route records on each assembly — cold cache (never
       // assembled) omits the series.
