@@ -158,6 +158,12 @@ non-loopback bind).
    The raw token rides in the URL **fragment** (`#token=…`), which a normal
    browser navigation never sends to any server. The token is shown **exactly
    once** and is not re-derivable — copy it now.
+
+   Above the URL, the dialog shows a one-line summary of the scope and expiry
+   you just picked (e.g. `Whole dashboard · Never expires` or
+   `Project: API · Expires in 24 hours (…)`) so you can confirm what was minted
+   before copying. The summary is derived from the returned grant; it never
+   contains the raw token.
 5. **Hand it off** over a channel you trust (e.g. a DM on the same tailnet).
    When the collaborator opens it, the SPA reads the fragment, exchanges it for
    the `HttpOnly` session cookie via `POST /api/auth/session`, and clears the
