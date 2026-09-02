@@ -1257,7 +1257,13 @@ async function launchTaskCore(
   ) {
     throw new AgentBlacklistedError(opts.agentType);
   }
-  if (launchableTypes.length === 0) {
+  // Empty launchable set is only a blacklist failure for round-robin /
+  // implicit default. An explicit pin that is *not* blacklisted must still
+  // reach the adapter (e.g. grok-build with expired session auth — issue
+  // #2194 strips it from rotation, not from an operator pin).
+  const explicitConcretePin = opts.agentType !== undefined
+    && opts.agentType !== ROUND_ROBIN_AGENT_TYPE;
+  if (launchableTypes.length === 0 && !explicitConcretePin) {
     const refused = isAgentType(requestedAgent) ? requestedAgent : DEFAULT_AGENT_TYPE;
     throw new AgentBlacklistedError(refused, {
       noneRemain: true,

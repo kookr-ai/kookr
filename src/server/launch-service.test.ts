@@ -636,6 +636,33 @@ describe('launchTask', () => {
       expect(store.listTasks()).toHaveLength(0);
     });
 
+    it('does not refuse an explicit non-blacklisted pin when rotation is empty', async () => {
+      const grokAdapter = {
+        agentType: 'grok-build',
+        launch: vi.fn().mockResolvedValue('tmux-grok'),
+        sendInput: vi.fn(),
+        sendKeystroke: vi.fn(),
+        stop: vi.fn(),
+        captureDisplay: vi.fn(),
+        onEvent: vi.fn(),
+        onRefreshNeeded: vi.fn(),
+        injectHookEvent: vi.fn(),
+      } as any;
+      deps.adapterRegistry.register(grokAdapter);
+      const gated = {
+        ...deps,
+        getBlacklistedAgentTypes: () => ['claude-code' as const, 'codex-cli' as const],
+        isGrokAuthUsable: () => false,
+      };
+      const result = await launchTask(gated, {
+        prompt: 'explicit grok pin',
+        cwd: '/tmp',
+        agentType: 'grok-build',
+      });
+      expect(result.task.agentType).toBe('grok-build');
+      expect(grokAdapter.launch).toHaveBeenCalledOnce();
+    });
+
     it('launches the agent again after it is removed from the blacklist', async () => {
       let banned: Array<'claude-code'> = ['claude-code'];
       const gated = { ...deps, getBlacklistedAgentTypes: () => banned };
