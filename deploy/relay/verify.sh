@@ -65,6 +65,17 @@ https_health_ok() {
   [ -n "$DOMAIN" ] && curl --max-time "$VERIFY_TIMEOUT" --fail --silent --show-error "https://${DOMAIN}/health" >/dev/null
 }
 
+# Readiness, separate from the liveness probe above (issue #2795). /health is
+# always-200 while the process is alive; /ready returns 503 when the instance
+# must not receive traffic (unreachable state DB or emergency-disabled mode,
+# #1393). Deployment verification must reject a live-but-not-ready relay, so
+# `--fail` maps that 503 to a failed check. Keeping the two probes distinct lets
+# an operator tell a post-restart boot window (health ok, ready not ok) apart
+# from a dead process (health not ok). Bounded by the same per-probe deadline.
+https_ready_ok() {
+  [ -n "$DOMAIN" ] && curl --max-time "$VERIFY_TIMEOUT" --fail --silent --show-error "https://${DOMAIN}/ready" >/dev/null
+}
+
 tls_valid() {
   [ -n "$DOMAIN" ] && echo | with_deadline openssl s_client -servername "$DOMAIN" -connect "${DOMAIN}:443" -verify_return_error >/dev/null 2>&1
 }
@@ -125,6 +136,7 @@ ssh_not_public_when_ufw_present() {
 
 check "relay port is loopback-only" relay_loopback_only
 check "https /health is reachable" https_health_ok
+check "relay reports ready on /ready" https_ready_ok
 check "tls certificate verifies" tls_valid
 check "admin path is refused off-box" admin_refused_off_box
 check "port 80 redirects or serves ACME only" http_redirect_or_acme_only

@@ -198,6 +198,13 @@ sudo KOOKR_RELAY_DOMAIN=relay.example.com /opt/kookr/deploy/relay/verify.sh
 
 It checks loopback binding, TLS, admin-path refusal, SSH hardening, unattended upgrades, SSH fail2ban, the relay systemd unit, SQLite readability, monitor heartbeat, and daily backup presence. It does not apply changes.
 
+It runs two distinct HTTPS probes against the relay:
+
+* `https /health is reachable` — **liveness**. `/health` stays 200 whenever the process is alive, even while degraded, so this only fails when the relay is unreachable or down.
+* `relay reports ready on /ready` — **readiness**. `/ready` returns 503 when the instance must not receive traffic (unreachable state DB or emergency-disabled mode), so this fails a deployment that reports success while infrastructure would route writes to a live-but-not-ready relay.
+
+Keep the two apart when reading the output: `health ok` + `ready not ok` is a post-restart boot window or degraded DB (the process is alive but should not take traffic yet), whereas `health not ok` is a dead or unreachable process.
+
 Every network probe is bounded by a per-probe request deadline, so a relay outage or slow restart makes the check fail with a labelled `not ok - <check>` line instead of hanging. The default is 10 seconds; override it for unusually slow deployments:
 
 ```bash
