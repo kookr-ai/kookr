@@ -36,6 +36,7 @@
  * See: docs/adr/014-local-dtach-backend.md
  */
 import { spawn as spawnChild } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import {
   accessSync,
   constants as fsConstants,
@@ -52,6 +53,8 @@ import {
   type BackendError,
   type BackendStats,
   type CaptureCurrentFrameOptions,
+  type LaunchAbandonedRecoveryResult,
+  type RecoverLaunchAbandonedOptions,
   type ReconnectTransportOptions,
   type ReconnectTransportResult,
   type SessionId,
@@ -112,6 +115,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private readonly ringStore: DtachRingStore;
   private readonly dtachBinary: string;
   private readonly instanceId: string;
+  /** Unique process-generation stamp for restart-safe launch handoff markers. */
+  private readonly launchCreatorId = randomUUID();
   private readonly writeTimeoutMs: number;
   private readonly reconnectCooldownMs: number;
   /** Fleet sum of ring capacities; `0` disables shrink (issue #1779). */
@@ -152,6 +157,10 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private ringShrinkCount = 0;
   /** Last observed over-budget residual after enforce (issue #1779). */
   private ringFleetOverBudgetBytes = 0;
+  /** Exact prior-process launch-abandoned masters reaped during this boot. */
+  private launchAbandonedRecoveredCount = 0;
+  /** Launch-abandoned candidates that could not be reaped during this boot. */
+  private launchAbandonedRecoveryFailureCount = 0;
 
   /** Periodic ring-buffer snapshot timer; null after `close()`. */
   private flushTimer: NodeJS.Timeout | null = null;
@@ -224,6 +233,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       reconnectCooldownMs: this.reconnectCooldownMs,
       instanceDir: this.instanceDir,
       instanceId: this.instanceId,
+      launchCreatorId: this.launchCreatorId,
       dtachBinary: this.dtachBinary,
       isClosed: () => this.closed,
       emitError: (err) => this.emitError(err),
@@ -234,6 +244,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       attachPtyInto: (sess, sock, initialSize, suppress, classify) =>
         this.attachPtyInto(sess, sock, initialSize, suppress, classify),
       disposeAttachChildOnly: (sess) => this.disposeAttachChildOnly(sess),
+      killSession: (id) => this.killSession(id),
     });
 
     // Startup recovery is fire-once, but its rejection must not escape the
@@ -346,6 +357,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
         startedAt,
         status: 'pending',
         sock,
+        launchState: 'unadopted',
+        launchCreatorId: this.launchCreatorId,
       });
     });
 
@@ -550,6 +563,30 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     return this.recovery.verifyRecoveredSession(id, options);
   }
 
+  async recoverLaunchAbandonedSessions(
+    durablyAdoptedSessionIds: ReadonlySet<SessionId>,
+    options: RecoverLaunchAbandonedOptions = {},
+  ): Promise<LaunchAbandonedRecoveryResult> {
+    await this.whenStartupRecoverySettled();
+    const result = await this.recovery.recoverLaunchAbandonedSessions(
+      durablyAdoptedSessionIds,
+      options,
+    );
+    this.launchAbandonedRecoveredCount += result.recoveredSessionIds.length;
+    this.launchAbandonedRecoveryFailureCount += result.failures.length;
+    for (const id of result.recoveredSessionIds) {
+      this.emitError({ kind: 'launch-abandoned-recovered', id });
+    }
+    for (const failure of result.failures) {
+      this.emitError({
+        kind: 'launch-abandoned-recovery-failed',
+        id: failure.sessionId,
+        error: failure.error,
+      });
+    }
+    return result;
+  }
+
   getStats(): BackendStats {
     let pending = 0;
     for (const s of this.attached.values()) pending += s.pendingWriters;
@@ -572,6 +609,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       ringShrunkenSessions: ringSnap.shrunkenSessions,
       ringShrinkCount: this.ringShrinkCount,
       startupRecoveryState: this.getStartupRecoveryState(),
+      launchAbandonedRecoveredCount: this.launchAbandonedRecoveredCount,
+      launchAbandonedRecoveryFailureCount: this.launchAbandonedRecoveryFailureCount,
     };
   }
 

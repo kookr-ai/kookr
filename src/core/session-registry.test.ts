@@ -1,5 +1,9 @@
 import { describe, expect, test, vi, beforeEach } from 'vitest';
-import { SessionRegistry, type SessionRegistryHost } from './session-registry.js';
+import {
+  SessionRegistry,
+  collectDurablyAdoptedSessionIds,
+  type SessionRegistryHost,
+} from './session-registry.js';
 import type { Task } from './task-read-model.js';
 import type { SessionInfo } from './session-read-model.js';
 
@@ -101,6 +105,27 @@ describe('SessionRegistry', () => {
     expect(() => registry.addSession('missing', makeSession('kookr-a'))).toThrow(
       'Task not found: missing',
     );
+  });
+
+  test('collectDurablyAdoptedSessionIds keeps live non-terminal sessions only', () => {
+    const adopted = collectDurablyAdoptedSessionIds([
+      makeTask({
+        id: 'live',
+        status: 'inProgress',
+        sessions: [makeSession('kookr-live')],
+      }),
+      makeTask({
+        id: 'aborted-link',
+        status: 'inProgress',
+        sessions: [makeSession('kookr-aborted', { lastStatus: 'aborted' })],
+      }),
+      makeTask({
+        id: 'terminal',
+        status: 'terminated',
+        sessions: [makeSession('kookr-terminal')],
+      }),
+    ]);
+    expect([...adopted]).toEqual(['kookr-live']);
   });
 
   test('addSession refuses a session id already recorded as aborted', () => {

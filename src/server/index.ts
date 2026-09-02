@@ -110,6 +110,7 @@ import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stat
 import { DetectionStatsStore } from './detection-stats-store.js';
 import {
   promotePendingStartupTasks,
+  recoverLaunchAbandonedMasters,
   runStartupRecoveryPhase,
   type StartupRecoverySummary,
 } from './startup-recovery.js';
@@ -458,6 +459,10 @@ function formatBackendErrorLine(err: BackendError): string {
       return `[terminal-backend] write to session ${err.id} timed out after ${err.durationMs}ms`;
     case 'manifest-corrupt':
       return `[terminal-backend] manifest corrupt; recovered ${err.recoveredCount} entries from socket dir`;
+    case 'launch-abandoned-recovered':
+      return `[launch-recovery] reaped launch-abandoned dtach master ${err.id}`;
+    case 'launch-abandoned-recovery-failed':
+      return `[launch-recovery] failed to reap launch-abandoned dtach master ${err.id}: ${err.error}`;
     case 'session-recovery-repaired':
       return `[terminal-backend] session ${err.id} attach transport repaired after restart (${err.attempts} attempt(s))`;
     case 'session-recovery-unverified':
@@ -1325,6 +1330,38 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }),
   });
 
+  // Resolve the exact durable launch handoff before generic reconciliation
+  // can classify the same master as an ordinary 24h unowned orphan. Only
+  // prior-process manifests explicitly marked unadopted participate; live
+  // task-session ids are preserved and adopted by the backend.
+  try {
+    const launchRecovery = await recoverLaunchAbandonedMasters(taskStore, terminalBackend, {
+      auditLogPath: join(kookrDir, 'audit.jsonl'),
+    });
+    if (launchRecovery.recoveredSessionIds.length > 0) {
+      console.log(
+        `[launch-recovery] reaped ${launchRecovery.recoveredSessionIds.length} `
+        + `launch-abandoned dtach master(s): ${launchRecovery.recoveredSessionIds.join(', ')}`,
+      );
+    }
+    if (launchRecovery.clearedSessionIds.length > 0) {
+      console.log(
+        `[launch-recovery] cleared ${launchRecovery.clearedSessionIds.length} `
+        + `stale launch marker(s) with no master: ${launchRecovery.clearedSessionIds.join(', ')}`,
+      );
+    }
+    for (const failure of launchRecovery.failures) {
+      console.error(
+        `[launch-recovery] failed to reap ${failure.sessionId}: ${failure.error}`,
+      );
+    }
+  } catch (err) {
+    console.error(
+      '[launch-recovery] bounded boot pass failed:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // Reconcile with live backend sessions
   const reconcileResult = await reconcile(taskStore, terminalBackend, worktreeRegistry);
   // Boot-only sweep (issue #1526 Phase C / #1528): launches that died with
@@ -1507,12 +1544,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         // not needed per the RFC's "silent recovery except for a log line".
         break;
       case 'session-recovery-repaired':
-        // Successful post-restart self-heal — informational only. The backend
-        // already emitted a structured audit line (kookr-ai/kookr#1345).
+      case 'launch-abandoned-recovered':
+        // Successful post-restart recovery — informational only. Structured
+        // counters remain on /api/health, distinct from host-stale reaps.
         console.log(line);
         break;
       case 'dtach-unavailable':
       case 'manifest-corrupt':
+      case 'launch-abandoned-recovery-failed':
       case 'session-recovery-unverified':
       case 'startup-recovery-failed':
         // A recovered session whose attach transport could not be revived, or a

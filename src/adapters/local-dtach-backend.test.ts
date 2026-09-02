@@ -20,7 +20,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
 import { type BackendError, SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
@@ -979,6 +979,211 @@ describe('LocalDtachBackend', () => {
       if (backend2) backend2.close();
     }
   }, 15_000);
+
+  skipIfNoProc(
+    'reaps a prior-process launch-abandoned master during the bounded restart pass',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-launch-abandoned-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const id = 'launch-abandoned';
+      const pidFile = join(tmpDir, 'launch-abandoned.pid');
+      let backend2: LocalDtachBackend | null = null;
+
+      await backend.createSession({
+        id,
+        command: '/bin/bash',
+        args: ['-c', `trap "" HUP; trap 'exit 0' TERM; echo $$ > ${pidFile}; sleep 600 & wait`],
+      });
+      const childPid = await waitForPidFile(pidFile);
+      expect(childPid).toBeGreaterThan(0);
+      expect(isPidAlive(childPid)).toBe(true);
+
+      try {
+        // Abandon-before-onSessionCreated crash window: the backend made the
+        // master durable, but no persisted task session owns it. Closing
+        // models the old Kookr process dying without killing dtach.
+        backend.close();
+        backend2 = new LocalDtachBackend({
+          socketDir: tmpDir,
+          instanceId: 'test',
+          dtachBinary: DTACH!,
+        });
+
+        const result = await backend2.recoverLaunchAbandonedSessions(new Set(), {
+          settleMs: 250,
+        });
+
+        expect(result).toMatchObject({
+          recoveredSessionIds: [id],
+          clearedSessionIds: [],
+          preservedSessionIds: [],
+          failures: [],
+        });
+        expect(isPidAlive(childPid)).toBe(false);
+        expect(await backend2.listSessions()).not.toContain(id);
+        expect(existsSync(join(tmpDir, 'test', `${id}.sock`))).toBe(false);
+        expect(backend2.getStats()).toMatchObject({
+          launchAbandonedRecoveredCount: 1,
+          launchAbandonedRecoveryFailureCount: 0,
+        });
+      } finally {
+        await (backend2 ?? backend).killSession(id).catch(() => undefined);
+        backend2?.close();
+      }
+    },
+    15_000,
+  );
+
+  skipIfNoProc(
+    'preserves a launch marker when a live task durably adopted the exact session',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-launch-adopted-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const id = 'launch-adopted';
+      let backend2: LocalDtachBackend | null = null;
+      await backend.createSession({
+        id,
+        command: '/bin/sh',
+        args: ['-c', 'exec cat'],
+      });
+
+      try {
+        backend.close();
+        backend2 = new LocalDtachBackend({
+          socketDir: tmpDir,
+          instanceId: 'test',
+          dtachBinary: DTACH!,
+        });
+
+        const result = await backend2.recoverLaunchAbandonedSessions(new Set([id]), {
+          settleMs: 250,
+        });
+
+        expect(result).toEqual({
+          recoveredSessionIds: [],
+          clearedSessionIds: [],
+          preservedSessionIds: [id],
+          failures: [],
+        });
+        expect(await backend2.isAlive(id)).toBe(true);
+        const manifest = JSON.parse(
+          readFileSync(join(tmpDir, 'test', 'manifest.json'), 'utf-8'),
+        ) as { entries: Array<{ sessionId: string; launchState?: string }> };
+        expect(manifest.entries.find((entry) => entry.sessionId === id)?.launchState).toBe(
+          'adopted',
+        );
+        expect(backend2.getStats().launchAbandonedRecoveredCount).toBe(0);
+      } finally {
+        await (backend2 ?? backend).killSession(id).catch(() => undefined);
+        backend2?.close();
+      }
+    },
+    15_000,
+  );
+
+  skipIfNoDtach(
+    'scopes launch recovery away from current-process and legacy manifest entries',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-launch-recovery-scope-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+
+      const currentId = 'launch-current-process';
+      const legacyId = 'launch-legacy-entry';
+      await backend.createSession({
+        id: currentId,
+        command: '/bin/sh',
+        args: ['-c', 'exec cat'],
+      });
+      await backend.createSession({
+        id: legacyId,
+        command: '/bin/sh',
+        args: ['-c', 'exec cat'],
+      });
+
+      try {
+        const manifestPath = join(tmpDir, 'test', 'manifest.json');
+        const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as {
+          entries: Array<{
+            sessionId: string;
+            launchState?: string;
+            launchCreatorId?: string;
+          }>;
+        };
+        const legacy = manifest.entries.find((entry) => entry.sessionId === legacyId)!;
+        delete legacy.launchState;
+        delete legacy.launchCreatorId;
+        writeFileSync(manifestPath, JSON.stringify(manifest));
+
+        expect(await backend.recoverLaunchAbandonedSessions(new Set(), { settleMs: 0 })).toEqual({
+          recoveredSessionIds: [],
+          clearedSessionIds: [],
+          preservedSessionIds: [],
+          failures: [],
+        });
+        expect(await backend.isAlive(currentId)).toBe(true);
+        expect(await backend.isAlive(legacyId)).toBe(true);
+      } finally {
+        await backend.killSession(currentId).catch(() => undefined);
+        await backend.killSession(legacyId).catch(() => undefined);
+      }
+    },
+    15_000,
+  );
+
+  it('does not signal a recycled pid from a prior-process launch marker', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-launch-recycled-pid-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH ?? 'dtach',
+    });
+    await backend.whenStartupRecoverySettled();
+
+    const unrelated = spawn('/bin/sleep', ['600'], { stdio: 'ignore' });
+    const unrelatedPid = unrelated.pid!;
+    const id = 'launch-recycled-pid';
+    const manifestPath = join(tmpDir, 'test', 'manifest.json');
+    writeFileSync(manifestPath, JSON.stringify({
+      version: 1,
+      instanceId: 'test',
+      entries: [{
+        sessionId: id,
+        pid: unrelatedPid,
+        startedAt: new Date().toISOString(),
+        status: 'active',
+        sock: join(tmpDir, 'test', `${id}.sock`),
+        launchState: 'unadopted',
+        launchCreatorId: 'prior-process',
+      }],
+    }));
+
+    try {
+      const result = await backend.recoverLaunchAbandonedSessions(new Set(), { settleMs: 0 });
+      expect(result).toMatchObject({
+        recoveredSessionIds: [],
+        clearedSessionIds: [id],
+        failures: [],
+      });
+      expect(isPidAlive(unrelatedPid)).toBe(true);
+    } finally {
+      try { process.kill(unrelatedPid, 'SIGKILL'); } catch { /* already exited */ }
+      backend.close();
+    }
+  });
 
   skipIfNoDtach('persists wrapped ring buffer (head > capacity) across restart', async () => {
     // Wraparound regression guard. The fresh-ring case (head < capacity) and

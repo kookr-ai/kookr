@@ -6,6 +6,12 @@
  * visibility and the session reaper (#1720), which only reaps sessions the
  * backend still reports as live.
  *
+ * Live-socket launch-abandoned masters (issue #2762: restart after launch
+ * timeout but before `onSessionCreated`) are a different class. This policy
+ * never selects a present socket (`socket_present`). That restart window is
+ * closed by the durable dtach-manifest handoff in `LocalDtachRecovery`, not
+ * by extending host-stale selection.
+ *
  * This module is pure: it classifies already-observed facts into a reap
  * verdict and plans a bounded sweep. No process kill, no `/proc` I/O. The
  * server janitor (`host-stale-dtach-reaper`) calls

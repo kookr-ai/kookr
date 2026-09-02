@@ -23,6 +23,25 @@ function cloneTask(task: Task): Task {
 }
 
 /**
+ * Session ids a live task has durably adopted. Aborted records are the
+ * launch-timeout link from issue #2500 — they are ownership for the reaper,
+ * not a live adoption that boot recovery must preserve.
+ */
+export function collectDurablyAdoptedSessionIds(
+  tasks: Iterable<Pick<Task, 'status' | 'sessions'>>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const task of tasks) {
+    if (isTerminalStatus(task.status)) continue;
+    for (const session of task.sessions) {
+      if (session.lastStatus === 'aborted') continue;
+      ids.add(session.tmuxSession);
+    }
+  }
+  return ids;
+}
+
+/**
  * Session-info mutation facet peeled from TaskStore (issue #1823).
  *
  * Owns attach / patch / child-session / git / worktree-health / cwd updates on

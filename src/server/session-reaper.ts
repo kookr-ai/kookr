@@ -28,6 +28,12 @@
  * A third leak class (stale `dtach -a` attach clients from dead server
  * generations) is handled by the boot-only `runStaleAttacherSweep`, backed by
  * `adapters/dtach-attach-reaper.ts`.
+ *
+ * Launch-abandoned masters left by a restart in the
+ * abandon-before-`onSessionCreated` window (issue #2762) are not this
+ * sweep's 24h `unowned` class. Boot recovery for that exact durable handoff
+ * lives in `recoverLaunchAbandonedMasters` (`startup-recovery.ts`) and is
+ * distinct from the host-stale missing-socket janitor (#2356 / #2384).
  */
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
