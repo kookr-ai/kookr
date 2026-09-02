@@ -22,15 +22,26 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Code patterns:** `typescript-type-safety`, `error-handling-patterns`, `async-flow-control`, `dependency-injection-patterns`, `domain-driven-design`, `monorepo-architecture`, `requirements-engineering`, `state-machine-workflow-patterns`, `process-lifecycle-patterns`, `realtime-state-sync`, `event-driven-messaging-patterns`, `logging-design-patterns`, `shell-subprocess-safety`, `safe-refactoring`, `testing-patterns`, `playwright-e2e-patterns`, `websocket-dashboard`.
 
-**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `agent-efficiency-retrofit`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `ui-mockup-variants` (offer design mockup variants before implementing any UI change), `adversarial-swarm-analysis` (cast conflicting expert roles, run them blind and in parallel, attack their consensus, synthesize a verdict that keeps the disagreement).
+**Workflow:** `git-commit-discipline`, `tdd-workflow`, `token-efficiency`, `agent-efficiency-retrofit`, `claude-code-metrics-analysis`, `hook-driven-workflow-enforcement`, `e2e-agent-testing`, `github-issue-workflow`, `github-trending-repos`, `placement-picker` (decide where a new rule, skill, hook, or memory belongs), `ui-mockup-variants` (offer design mockup variants before implementing any UI change), `adversarial-swarm-analysis` (cast conflicting expert roles, run them blind and in parallel, attack their consensus, synthesize a verdict that keeps the disagreement).
+
+**Writing and design review:** `clear-technical-writing` (docstrings, comments, PR bodies, and docs a cold reader can follow), `rfc-iterative-review` (draft an RFC, run parallel critic subagents, iterate over rounds), `mbse-system-modeling` (generate or update multi-level architecture documentation), `architecture-drift-signals` (score structural health from file-size, layering, and dependency-graph signals), `requirements-engineering`.
+
+**Autonomous loops and merge safety:** `autonomous-review-loop` (bounded implement-and-correct cycles with durable accounting), `autonomous-watch-loop` (long-lived poll-and-act janitor tasks), `self-continuation-task` (sequential task chains where each run spawns the next), `independent-merge-review` (fresh-context reviewer verdict required before an autonomous self-merge).
+
+**Reflection:** `self-reflect` (root-cause a mistake, then implement a structural fix), `task-feedback-reflect` (act on a thumbs-up/down on a completed task), `task-snapshot-reflect` (analyze a live or finished task from an immutable snapshot).
+
+**Claude Code configuration:** `claude-code-hooks` (all hook event types, payloads, and matchers), `claude-code-permissions` (permission modes, rule syntax, and settings precedence).
 
 **Kookr operations:** Kookr-specific skills that are useful from any working
-directory, such as task spawning, task supervision, and CLI/API workflows. These
+directory, such as task spawning, task supervision, CLI/API workflows, and
+`playbook-authoring` (write or revise a Kookr playbook and its scheduling). These
 belong in the plugin because it is the distributed toolkit surface: Kookr
 injects it into spawned agents regardless of cwd, and regular Claude Code
 sessions can also see it when the plugin is installed or synced locally.
 
 **OSS contribution:** `oss-fork-manager`, `oss-pr-{critic,distill,plan,threshold}`, `pr-review-triage`, `pr-contribution-excellence` (bundled with per-repo distilled patterns under `repo/`), `find-best-reviewers`, `rust-lang-rust-{tests,pre-push}`.
+
+**Playbooks (`plugin/playbooks/`):** ready-to-run task templates Kookr can launch on a schedule or on demand — architecture upkeep (`architecture-health-check`, `architecture-doc-sync`, `architecture-refactor-rfc`, `architecture-refactor-phase`, `pre-refactor-assessment`, `api-consistency-audit`, `doc-implementation-gap-analysis`), issue and backlog flow (`issue-triage`, `implement-github-issue`, `parallel-issue-batch`, `umbrella-decompose`, `repository-idea-scout`), OSS contribution (`oss-contribution-pipeline`, `oss-bug-triage`, `oss-bug-fix`, `oss-bug-pr`, `oss-pr-lessons`), and merge/verification safety (`independent-verification-lane`, `pr-merge-rebase-watchdog`, `incident-close-out-gate`, `test-quality-improvement`, `session-self-reflect`, `capitalize-wisdom`). See [Playbooks Reference](../docs/reference/playbooks.md) for the file format.
 
 **Reviewer specialists (`plugin/reviewer-specialists/`):** narrow prompt templates (`conventions-specialist`, `correctness-specialist`, `deadcode-specialist`, `test-specialist`, `docs-drift-specialist`, `a11y-specialist`) consumed by the bundled `pre-pr-review` skill.
 
@@ -40,7 +51,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Codex PR analysis:** `codex-pr-{critic,distill,plan,threshold}`.
 
-**Review subagents (18):** `ambition-amplifier`, `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `assumption-archaeologist`, `boundary-critic`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
+**Review subagents (19):** `ambition-amplifier`, `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `assumption-archaeologist`, `boundary-critic`, `clear-writing-reviewer`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 
 ## One-time setup for the OSS extension
 

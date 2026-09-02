@@ -14,7 +14,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 
 - [x] Initialize TypeScript project (strict mode, Vitest, pnpm)
 - [x] Validate terminal-persistence tool choice (initial tmux PoC validated session creation/input/display; later replaced by dtach in [ADR-014](adr/014-local-dtach-backend.md))
-- [x] Fork aegiscore patterns (adapt for hook-based monitoring)
+- [x] Fork aegiscore patterns (an earlier internal agent-supervision project; see [Architecture](architecture.md)) — adapt for hook-based monitoring
 - [x] Create managed dtach session via `LocalDtachBackend.createSession({ command: 'claude', … })`
 - [x] Monitor agent via hook event tailing (`~/.kookr/hooks/<session-id>.jsonl`) for structured events
 - [x] Register hooks for real-time structured event notifications (tool use, errors, permission requests)
@@ -78,10 +78,11 @@ Now informed by concrete research: agents run in interactive mode inside managed
 
 ## Phase 4: Multi-Agent Type + Polish (post-V1/current)
 
-**Goal:** Support Codex CLI. Production-quality release.
+**Goal:** Support agent CLIs beyond Claude Code. Production-quality release.
 
 - [x] Codex CLI adapter (`src/adapters/codex-cli-adapter.ts`, `routing-agent-adapter.ts`, `codex-config.ts`) — Kookr-managed Codex sessions are wired through the forked CLI. Remaining fork-side caveats are tracked in [PoC 003](poc/003-codex-compatibility-gaps.md) and project issue notes
 - [ ] Codex session discovery (`~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` — date-partitioned, no PID, liveness via mtime)
+- [x] Grok Build adapter — Kookr launches and supervises Grok Build agents through the official `grok` CLI, alongside Claude Code and Codex CLI. See [Getting Started](getting-started.md) for the install and one-time login
 - [x] Agent type indicators in UI (`AgentTypeSelector.tsx`; agent type shown on finding cards)
 - [ ] Dark/light theme (OS preference)
 - [x] E2E tests with Playwright (concurrent scenarios)
@@ -89,7 +90,7 @@ Now informed by concrete research: agents run in interactive mode inside managed
 - [x] Getting-started guide (README quickstart plus `docs/getting-started.md`)
 - [x] Linux + macOS testing
 
-**Demo:** Mixed fleet of Claude Code + Codex CLI agents, all managed from one Kookr instance. `npx kookr` just works.
+**Demo:** Mixed fleet of Claude Code, Codex CLI, and Grok Build agents, all managed from one Kookr instance. `npx kookr` just works.
 
 ---
 

@@ -11,8 +11,14 @@ Setup, prerequisites, and the daily-use vs. development split are documented onc
 ```bash
 git clone https://github.com/kookr-ai/kookr.git && cd kookr
 pnpm install
-pnpm dev         # backend on :4801 + Vite frontend on :5173
+pnpm prod:setup && pnpm prod:update   # stable instance on :4800, from a sibling ../kookr-prod worktree
+pnpm dev                              # hot-reload backend on :4801 + Vite on :5173
 ```
+
+Run both. The stable instance on `4800` is what supervises your real agent work;
+it keeps running while this checkout is mid-edit. `pnpm dev` is where you watch
+your own changes — it restarts on every save, so it is a poor supervisor but the
+right place to verify a diff.
 
 If anything fails, run `pnpm run doctor` — it diagnoses Node/pnpm versions, build tools, the dtach binary, GPU availability, and port conflicts, then prints copy-pasteable fix commands.
 
@@ -96,7 +102,7 @@ A useful rule of thumb: if the diff exceeds a few hundred lines outside generate
 7. **Tests** — `pnpm test`.
 8. **Plugin placement + version bump** for changes under `plugin/`. Distributed skills may include Kookr runtime operations and public `KOOKR_*`, CLI, API, or `~/.kookr/` contracts when agents need that procedure from other repositories. They must not depend on the Kookr source checkout as their cwd or contain hardcoded maintainer paths. The gate also rejects `kookr-` prefixes on plugin skills/agents, name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`. Keep Kookr source-maintenance workflows in `.claude/`; put cross-repository runtime guidance in the shipped plugin.
 
-For docs-only prose pushes, the hook skips only the TypeScript and Vitest lanes (`pnpm build:server`, `pnpm check:e2e`, and `pnpm test`). That shortcut is deliberately strict: every changed file must be Markdown under `docs/` or one of the repository's top-level prose docs. Empty diffs, missing/ambiguous `origin/main` comparisons, and any mixed change run the full gate. Validators still run because they check docs and skills directly.
+Docs-only pushes get a second, narrower shortcut — distinct from step 3's reviewer-specialist allowlist above. Where that allowlist decides whether a *reviewer marker* is required, this one decides whether the *build and test lanes* run at all: for docs-only prose pushes, the hook skips only the TypeScript and Vitest lanes (steps 4, 5, and 7 — `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`). That shortcut is deliberately strict: every changed file must be Markdown under `docs/` or one of the repository's top-level prose docs. Empty diffs, missing/ambiguous `origin/main` comparisons, and any mixed change run the full gate. Validators still run because they check docs and skills directly.
 
 If any step fails, fix the underlying issue and re-run `git push`. Don't bypass with `--no-verify` — the gates exist because they've caught real regressions.
 

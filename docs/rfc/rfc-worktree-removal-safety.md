@@ -383,7 +383,7 @@ the live failure mode rather than relying only on hand-written porcelain.
 | `src/server/routes/file-routes.ts` | Exclude bare Git common directories from file-view roots. |
 | `src/adapters/worktree-safety.test.ts` (new) | Real-Git safety and removal contract tests. |
 | Existing worktree/cleanup/reflect tests | Regression coverage for each caller and failure mode. |
-| `docs/requirements.md` / `docs/user-guide.md` / `docs/changelog.md` | Keep the requirement evidence and user-facing behavior aligned with the single removal boundary. |
+| `docs/requirements.md` / `docs/user-guide.md` | Keep the requirement evidence and user-facing behavior aligned with the single removal boundary. |
 
 The installed global Claude hook is currently an operational concern outside
 this repository's source tree and points at an older product path. It should

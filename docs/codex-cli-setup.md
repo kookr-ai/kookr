@@ -68,8 +68,13 @@ uses that version automatically.
 
 ### Paired installation layout
 
-The CLI sends local tool requests to the code-mode host over an inter-process
-communication (IPC) protocol. The helper treats these executables as one
+Codex runs an agent's tool calls — shell commands, file edits — in a separate
+helper process called the **code-mode host** (`codex-code-mode-host`), rather
+than inside the `codex` CLI itself. The two talk over an inter-process
+communication (IPC) protocol whose shape changes between builds, so a `codex`
+from one build paired with a host from another fails in confusing ways. The
+layout below exists to make that mismatch impossible: the two binaries are
+installed and swapped as a single unit. The helper treats these executables as one
 runtime pair: it prepares both files before changing the active install, then
 creates this layout under `CODEX_INSTALL_DIR`:
 

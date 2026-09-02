@@ -22,7 +22,7 @@ State directory:
 - Port `4800`: `~/.kookr/`
 - Other ports: `~/.kookr-<port>/`
 
-Completed-task terminal tails (for Lucy peeks and `GET /api/tasks/:id/tail`) live under `{stateDir}/task-tails/` for 7 days by default. Tune with:
+When a task completes, Kookr keeps the tail of its terminal output on disk so you can still read what the agent did last — through `GET /api/tasks/:id/tail` or any external tool that polls it. These tails live under `{stateDir}/task-tails/` for 7 days by default. Tune with:
 
 ```bash
 KOOKR_TASK_TAIL_RETENTION_DAYS=7
@@ -125,7 +125,7 @@ All three paths run through `sanitizeProjectConfig` before persistence.
 | --- | --- | --- |
 | `project` | string (required) | Project id, e.g. `github.com/owner/repo` or a local project key |
 | `tracked` | boolean | Whether the project is tracked in the sidebar |
-| `dailyPrLimit` | non-negative integer | Max PRs per calendar day. Manual value **overrides** `rate-limits.json`. Omitted when unset. Invalid values (`Infinity`, `NaN`, negatives, fractions) are **dropped**, not clamped, so a bad write cannot silence the rate-limit fallback |
+| `dailyPrLimit` | non-negative integer | Max PRs per calendar day. Manual value **overrides** the fallback defaults in `rate-limits.json` (see [Data Directory](reference/data-directory.md)). Omitted when unset. Invalid values (`Infinity`, `NaN`, negatives, fractions) are **dropped**, not clamped, so a bad write cannot silence the rate-limit fallback |
 | `weeklyPrLimit` | non-negative integer | Max PRs per calendar week. Same reject-and-drop rules as `dailyPrLimit` |
 | `budgetWarnUsd` | finite number ≥ 0 | Per-task cost warning threshold in USD. **`0` disables** budget alerts for this project. Negatives are clamped to `0`; non-finite values are dropped. Overrides the global `KOOKR_BUDGET_WARN_USD` when set |
 | `notes` | string | Free-form operator notes. Values longer than 2000 characters are **truncated** on write |
