@@ -317,6 +317,31 @@ export interface TimerDeps {
   /** Optional counter for first-hook misses, exposed via `/api/health` + `/metrics` (issue #2036). */
   firstHookMissMetrics?: Pick<FirstHookMissMetrics, 'recordMiss'>;
   /**
+   * Live getter for the per-probe watchdog deadline, in ms (issue #2770). Each
+   * pane capture and hook-file drain is raced against it so one hung probe
+   * cannot consume the whole tick. Falls back to
+   * {@link WATCHDOG_PROBE_TIMEOUT_MS} when absent; `0` disables the deadline.
+   */
+  getWatchdogProbeTimeoutMs?: () => number;
+  /**
+   * Live getter for the per-tick watchdog sweep wall-clock budget, in ms (issue
+   * #2770). Once a sweep exceeds it, remaining agents are deferred to the next
+   * tick and the rotating cursor advances so they are checked first. Falls back
+   * to {@link WATCHDOG_SWEEP_BUDGET_MS} when absent; `0` disables the budget
+   * (all tracked agents checked each tick, still bounded per agent by the probe
+   * deadline).
+   */
+  getWatchdogSweepBudgetMs?: () => number;
+  /**
+   * Optional watchdog sweep fairness counters (issue #2770), exposed via
+   * `/api/health.watchdogSweep` + `/metrics`. Records probe timeouts and, once
+   * per sweep, the checked/skipped counts, sweep duration, and oldest-check age.
+   */
+  watchdogSweepMetrics?: Pick<
+    import('./watchdog-sweep-metrics.js').WatchdogSweepMetrics,
+    'recordProbeTimeout' | 'recordSweep'
+  >;
+  /**
    * Operator page when hungSuspect residual stays high after the TTL reclaim
    * window (issue #1993). Page-only — never terminates extra tasks. Prefer a
    * `detectorBroadcast` path so fire/clear edges spool to Discord.
@@ -1015,6 +1040,88 @@ async function appendReapWarningClearedAudit(
 export const TOKEN_SCAN_INTERVAL_MS = 5_000;
 /** Fixed cadence for the watchdog tick (issue #1771 timer-health). */
 export const WATCHDOG_INTERVAL_MS = 5_000;
+/**
+ * Default per-probe deadline for a single watchdog external probe (issue
+ * #2770), in ms. Each pane capture and hook-file drain is raced against this so
+ * a wedged terminal backend or a stuck drain cannot consume the whole tick. Set
+ * well under {@link WATCHDOG_INTERVAL_MS} so a hung probe releases the tick long
+ * before the next interval fires. `0` disables the deadline (probe awaited as
+ * before). Overridable via `getWatchdogProbeTimeoutMs`.
+ */
+export const WATCHDOG_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * Default per-tick wall-clock budget for one watchdog sweep (issue #2770), in
+ * ms. Once a sweep has spent this long, the remaining tracked agents are
+ * deferred to the next tick and the rotating cursor advances so they are
+ * checked first next time — this is the fairness guarantee: no single tick's
+ * slow agents can indefinitely starve the rest. Kept under
+ * {@link WATCHDOG_INTERVAL_MS} so a sweep finishes before the next interval.
+ * `0` disables the budget (every tracked agent is checked each tick, the
+ * pre-#2770 behavior, still bounded per agent by the probe deadline).
+ * Overridable via `getWatchdogSweepBudgetMs`.
+ */
+export const WATCHDOG_SWEEP_BUDGET_MS = 4_000;
+
+/** Sentinel error raised when a watchdog external probe exceeds its deadline. */
+export class WatchdogProbeTimeoutError extends Error {
+  constructor(public readonly kind: 'capture' | 'drain') {
+    super(`watchdog ${kind} probe timed out`);
+    this.name = 'WatchdogProbeTimeoutError';
+  }
+}
+
+/**
+ * Race a watchdog external probe against a deadline (issue #2770). Rejects with
+ * a {@link WatchdogProbeTimeoutError} when the probe outruns `timeoutMs`, so the
+ * caller can fall through to its existing probe-failure path AND distinguish a
+ * timeout from an ordinary rejection for the diagnostics counter. `timeoutMs <=
+ * 0` disables the deadline (the probe is simply awaited). The underlying probe
+ * promise cannot be cancelled — a genuinely wedged backend keeps its promise
+ * pending — but the sweep stops awaiting it, which is the whole point.
+ */
+export function raceWatchdogProbe<T>(
+  probe: Promise<T>,
+  timeoutMs: number,
+  kind: 'capture' | 'drain',
+): Promise<T> {
+  if (!(timeoutMs > 0)) return probe;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new WatchdogProbeTimeoutError(kind)), timeoutMs);
+    // Never keep the event loop alive on shutdown for a pending probe deadline.
+    timer.unref?.();
+    probe.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Order tracked agents so the sweep resumes AFTER the last-processed cursor
+ * (issue #2770). Given the current tracked-agent list and the id the previous
+ * sweep stopped on, returns the list rotated so iteration starts at the agent
+ * following the cursor. When the cursor is absent or no longer tracked (the
+ * agent unregistered between ticks), iteration starts from the front. This is
+ * what guarantees every agent an eventual turn under a per-tick budget: each
+ * tick picks up where the last one left off rather than always re-checking the
+ * same prefix.
+ */
+export function orderWatchdogAgentsFromCursor(
+  agents: readonly string[],
+  cursor: string | undefined,
+): string[] {
+  if (cursor === undefined || agents.length === 0) return [...agents];
+  const idx = agents.indexOf(cursor);
+  if (idx < 0) return [...agents];
+  const start = (idx + 1) % agents.length;
+  return [...agents.slice(start), ...agents.slice(0, start)];
+}
 /** Fixed cadence for snooze-expiry restore (issue #1771 timer-health). */
 export const SNOOZE_EXPIRY_INTERVAL_MS = 1_000;
 /**
@@ -1211,24 +1318,75 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
   // (two ticks both trying to terminate/complete the same task).
   timerHealth?.register('watchdog', WATCHDOG_INTERVAL_MS);
   let watchdogTickRunning = false;
+  // Sweep-fairness state (issue #2770), persisted across ticks. `sweepCursor`
+  // is the id the previous sweep stopped on; the next sweep resumes AFTER it so
+  // budget-deferred agents get first turn. `lastCheckedAt` records when each
+  // agent was last actually checked, for the oldest-check-age health gauge.
+  let watchdogSweepCursor: string | undefined;
+  const watchdogLastCheckedAt = new Map<string, number>();
   const watchdogInterval = setInterval(async () => {
     if (watchdogTickRunning) return;
     watchdogTickRunning = true;
     timerHealth?.recordFire('watchdog', WATCHDOG_INTERVAL_MS);
     try {
-      const agents = watchdog.getTrackedAgents();
+      const trackedAgents = watchdog.getTrackedAgents();
+      // Fairness cursor + per-tick budget (issue #2770): resume after the agent
+      // the last sweep stopped on, and stop starting new agents once the
+      // wall-clock budget is spent so a slow prefix can never starve the rest.
+      const agents = orderWatchdogAgentsFromCursor(trackedAgents, watchdogSweepCursor);
+      const probeTimeoutMs = deps.getWatchdogProbeTimeoutMs?.() ?? WATCHDOG_PROBE_TIMEOUT_MS;
+      const sweepBudgetMs = deps.getWatchdogSweepBudgetMs?.() ?? WATCHDOG_SWEEP_BUDGET_MS;
+      const sweepStartedAt = Date.now();
+      // Drop last-checked entries for agents no longer tracked so the
+      // oldest-check-age gauge reflects only the live fleet.
+      const trackedSet = new Set(trackedAgents);
+      for (const id of watchdogLastCheckedAt.keys()) {
+        if (!trackedSet.has(id)) watchdogLastCheckedAt.delete(id);
+      }
+      let checkedCount = 0;
+      let skippedCount = 0;
+      let lastProcessedAgentId: string | undefined;
       let changed = false;
 
-      for (const agentId of agents) {
+      for (let i = 0; i < agents.length; i++) {
+        const agentId = agents[i]!;
+        // Budget gate: once the sweep has spent its wall-clock budget, defer the
+        // remaining agents to the next tick (the cursor already points past the
+        // last one processed, so they lead next sweep). The first agent always
+        // runs even under a zero remaining budget so forward progress is
+        // guaranteed. `sweepBudgetMs <= 0` disables the budget entirely.
+        if (
+          sweepBudgetMs > 0
+          && checkedCount > 0
+          && Date.now() - sweepStartedAt >= sweepBudgetMs
+        ) {
+          skippedCount = agents.length - i;
+          break;
+        }
+        // Count + cursor-advance BEFORE the body so a first-hook-miss `continue`
+        // or a reap teardown still marks this agent checked and moves the cursor
+        // past it — otherwise a mid-loop `continue` would leave the cursor stuck.
+        checkedCount++;
+        lastProcessedAgentId = agentId;
+        watchdogLastCheckedAt.set(agentId, sweepStartedAt);
         try {
-          // Capture pane output
+          // Capture pane output — bounded by the per-probe deadline (issue
+          // #2770) so a wedged terminal backend cannot hang the whole sweep.
           let paneContent = '';
           let paneCaptureSucceeded = true;
           try {
-            paneContent = await adapter.captureDisplay(agentId);
-          } catch {
-            // Session might be dead — liveness check will handle it
+            paneContent = await raceWatchdogProbe(
+              adapter.captureDisplay(agentId),
+              probeTimeoutMs,
+              'capture',
+            );
+          } catch (err) {
+            // Session might be dead — liveness check will handle it. A timeout
+            // is recorded so operators can see a slow/wedged capture backend.
             paneCaptureSucceeded = false;
+            if (err instanceof WatchdogProbeTimeoutError) {
+              deps.watchdogSweepMetrics?.recordProbeTimeout('capture');
+            }
           }
 
           // Backup read path: hook-watcher already tails the file via fs.watch
@@ -1236,10 +1394,15 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           // stuck-detection never waits on a dropped fs.watch event. The drain
           // updates the single offset map and dispatches any recovered lines
           // through adapter.onEvent — no parallel parsing, no parallel offset.
+          // Bounded by the same per-probe deadline so a stuck drain cannot hang
+          // the sweep (issue #2770).
           try {
-            await hookWatcher.drainNow(agentId);
-          } catch {
+            await raceWatchdogProbe(hookWatcher.drainNow(agentId), probeTimeoutMs, 'drain');
+          } catch (err) {
             // Drain failures are non-critical — next tick retries.
+            if (err instanceof WatchdogProbeTimeoutError) {
+              deps.watchdogSweepMetrics?.recordProbeTimeout('drain');
+            }
           }
 
           // Hook events have already propagated into watchdog via recordEvents
@@ -1356,6 +1519,36 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         } catch (err) {
           console.error(`Watchdog error for ${agentId}:`, err);
         }
+      }
+
+      // Persist the fairness cursor + project the sweep onto diagnostics (issue
+      // #2770). The cursor points at the last agent processed so the next sweep
+      // resumes after it; when nothing was processed (empty fleet), it is left
+      // unchanged. oldestCheckAgeMs is the largest time-since-check across the
+      // currently tracked fleet — the "oldest overdue probe" health signal.
+      if (lastProcessedAgentId !== undefined) {
+        watchdogSweepCursor = lastProcessedAgentId;
+      }
+      if (deps.watchdogSweepMetrics) {
+        const sweepEndedAt = Date.now();
+        let oldestCheckAgeMs = 0;
+        for (const id of trackedAgents) {
+          // A tracked agent that has been budget-deferred every tick since
+          // registration has no last-checked entry yet; measure its age from
+          // registration so the "oldest overdue probe" gauge reflects that
+          // genuine worst case instead of reading it as freshly checked.
+          const at = watchdogLastCheckedAt.get(id) ?? watchdog.getState(id)?.registeredAt;
+          if (at !== undefined) {
+            oldestCheckAgeMs = Math.max(oldestCheckAgeMs, sweepEndedAt - at);
+          }
+        }
+        deps.watchdogSweepMetrics.recordSweep({
+          checked: checkedCount,
+          skipped: skippedCount,
+          durationMs: sweepEndedAt - sweepStartedAt,
+          oldestCheckAgeMs,
+          trackedAgents: trackedAgents.length,
+        });
       }
 
       // Reap-warning maintenance (RFC rfc-reap-grace-warning.md): clear warnings

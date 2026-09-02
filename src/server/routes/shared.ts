@@ -571,6 +571,16 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /**
+   * Watchdog sweep fairness counters (issue #2770). `/api/health.watchdogSweep`
+   * and `/metrics` read only `getSnapshot()` — probe-timeout counters plus
+   * last-sweep checked/skipped/duration and oldest-check age; never a fresh
+   * sweep on the request path.
+   */
+  watchdogSweepMetrics?: Pick<
+    import('../watchdog-sweep-metrics.js').WatchdogSweepMetrics,
+    'getSnapshot'
+  >;
+  /**
    * Lesson-yield health cache (issues #1538, #1553, #1857). Diagnostics warms
    * it via bounded background scans; `/metrics` only calls `getCached24h()`
    * and never scans hook logs on the scrape path.

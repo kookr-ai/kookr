@@ -173,6 +173,12 @@ export interface PrometheusExpositionSnapshot {
    */
   firstHookMiss?: { firstHookMissTotal: number };
   /**
+   * Watchdog sweep fairness counters (issue #2770). Probe-timeout counters plus
+   * last-sweep gauges (checked/skipped/duration, oldest-check age). Omitted when
+   * the watchdog sweep metrics are not wired.
+   */
+  watchdogSweep?: import('./watchdog-sweep-metrics.js').WatchdogSweepMetricsSnapshot;
+  /**
    * Per-repo GitHub state-fetch non-rate-limit failure counters (issue #1946).
    * Empty array / omitted → HELP/TYPE only (no series) so scrapers see the
    * family without fabricated zero-label series.
@@ -211,6 +217,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
   appendProviderPausedOccupancyMetrics(lines, snapshot.providerPausedOccupancy);
   appendFirstHookMissMetrics(lines, snapshot.firstHookMiss);
+  appendWatchdogSweepMetrics(lines, snapshot.watchdogSweep);
   appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 
   return `${lines.join('\n')}\n`;
@@ -668,6 +675,50 @@ function appendFirstHookMissMetrics(
     '# HELP kookr_first_hook_miss_total Total post-spawn sessions reaped for never emitting SessionStart / any agent hook since process start.',
     '# TYPE kookr_first_hook_miss_total counter',
     metricLine('kookr_first_hook_miss_total', {}, snapshot.firstHookMissTotal),
+  );
+}
+
+/**
+ * Watchdog sweep fairness counters (issue #2770). Omitted when the sweep
+ * metrics are not wired. Cumulative counters expose as Prometheus counters;
+ * the last-sweep observations (checked/skipped/duration, oldest-check age,
+ * tracked agents) expose as gauges.
+ */
+function appendWatchdogSweepMetrics(
+  lines: string[],
+  snapshot: import('./watchdog-sweep-metrics.js').WatchdogSweepMetricsSnapshot | undefined,
+): void {
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_watchdog_sweeps_total Completed watchdog sweeps since process start.',
+    '# TYPE kookr_watchdog_sweeps_total counter',
+    metricLine('kookr_watchdog_sweeps_total', {}, snapshot.sweepsTotal),
+    '# HELP kookr_watchdog_agents_checked_total Cumulative agent health checks across all watchdog sweeps.',
+    '# TYPE kookr_watchdog_agents_checked_total counter',
+    metricLine('kookr_watchdog_agents_checked_total', {}, snapshot.agentsCheckedTotal),
+    '# HELP kookr_watchdog_agents_skipped_total Cumulative agent checks deferred to a later tick because the sweep budget ran out.',
+    '# TYPE kookr_watchdog_agents_skipped_total counter',
+    metricLine('kookr_watchdog_agents_skipped_total', {}, snapshot.skippedTotal),
+    '# HELP kookr_watchdog_probe_timeouts_total Watchdog external probes that hit their per-agent deadline, by probe kind.',
+    '# TYPE kookr_watchdog_probe_timeouts_total counter',
+    metricLine('kookr_watchdog_probe_timeouts_total', { kind: 'capture' }, snapshot.captureTimeoutsTotal),
+    metricLine('kookr_watchdog_probe_timeouts_total', { kind: 'drain' }, snapshot.drainTimeoutsTotal),
+    '# HELP kookr_watchdog_last_sweep_checked Agents checked in the most recent watchdog sweep.',
+    '# TYPE kookr_watchdog_last_sweep_checked gauge',
+    metricLine('kookr_watchdog_last_sweep_checked', {}, snapshot.lastSweepCheckedCount),
+    '# HELP kookr_watchdog_last_sweep_skipped Agents deferred in the most recent watchdog sweep.',
+    '# TYPE kookr_watchdog_last_sweep_skipped gauge',
+    metricLine('kookr_watchdog_last_sweep_skipped', {}, snapshot.lastSweepSkippedCount),
+    '# HELP kookr_watchdog_last_sweep_duration_ms Wall-clock duration of the most recent watchdog sweep, milliseconds.',
+    '# TYPE kookr_watchdog_last_sweep_duration_ms gauge',
+    metricLine('kookr_watchdog_last_sweep_duration_ms', {}, snapshot.lastSweepDurationMs),
+    '# HELP kookr_watchdog_oldest_check_age_ms Oldest time-since-last-check across tracked agents at the most recent sweep, milliseconds.',
+    '# TYPE kookr_watchdog_oldest_check_age_ms gauge',
+    metricLine('kookr_watchdog_oldest_check_age_ms', {}, snapshot.oldestCheckAgeMs),
+    '# HELP kookr_watchdog_tracked_agents Tracked agents observed at the start of the most recent watchdog sweep.',
+    '# TYPE kookr_watchdog_tracked_agents gauge',
+    metricLine('kookr_watchdog_tracked_agents', {}, snapshot.trackedAgents),
   );
 }
 
