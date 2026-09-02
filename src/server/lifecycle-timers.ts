@@ -83,6 +83,7 @@ import {
 import {
   reclaimAgedHungSuspectTasks,
   type HungSuspectTtlReclaimMetrics,
+  type ReclaimHungSuspectTasksResult,
 } from './hung-suspect-ttl-sweep.js';
 import {
   maybeReapFirstHookMiss,
@@ -301,7 +302,11 @@ export interface TimerDeps {
   /** Optional counter for the hungSuspect TTL reclaim, exposed via `/metrics` (issue #1935). */
   hungSuspectTtlReclaimMetrics?: Pick<
     HungSuspectTtlReclaimMetrics,
-    'recordReclaimed' | 'recordAttempted' | 'recordSelection'
+    | 'recordReclaimed'
+    | 'recordAttempted'
+    | 'recordSelection'
+    | 'recordSweepFailure'
+    | 'recordSweepSuccess'
   >;
   /**
    * Live getter for the post-spawn first-hook ack deadline, in milliseconds
@@ -1791,39 +1796,67 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         }
         return signals;
       };
-      const hungSuspectTtlResult = await reclaimAgedHungSuspectTasks(
-        {
-          taskStore,
-          lifecycleDeps: {
-            ...lifecycleDeps,
-            ...(deps.agentLifecycleDeps?.interactionLog
-              ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
-              : {}),
+      // Local failure boundary (issue #2897): the hungSuspect TTL sweep awaits a
+      // selector, attribution, and broadcast that can each reject outside the
+      // per-task terminate try/catch. Without this seam any such rejection would
+      // jump to the outer catch and starve every later recovery leg in this tick
+      // (provider-pause reclaim, session/worktree cleanup, promotion) while timer
+      // health still says the tick fired. On failure we keep an *unknown* result
+      // (never a successful zero-reclaim pass), skip the residual page for this
+      // pass, record a bounded failure signal, and fall through to the later
+      // legs. Any tasks already terminated before the throw stay reclaimed — the
+      // sweep records them before this boundary is reached (no rollback).
+      let hungSuspectTtlResult: ReclaimHungSuspectTasksResult | null = null;
+      try {
+        hungSuspectTtlResult = await reclaimAgedHungSuspectTasks(
+          {
+            taskStore,
+            lifecycleDeps: {
+              ...lifecycleDeps,
+              ...(deps.agentLifecycleDeps?.interactionLog
+                ? { interactionLog: deps.agentLifecycleDeps.interactionLog }
+                : {}),
+            },
+            auditLogPath: deps.auditLogPath,
+            dispositionLedgerPath: deps.dispositionLedgerPath,
+            broadcastToAll: deps.broadcastToAll,
+            isHungSuspect: (task) => hungSuspectSignals(task).hungSuspect,
+            getLiveness: (task) => hungSuspectSignals(task).liveness,
+            getQueuedAnomalyType: (task) => hungSuspectSignals(task).queuedAnomalyType,
+            // Use the same event+anomaly provider-pause predicate as auto-close /
+            // delivered sweeps (and the hard reaper's event scan), not the
+            // attention-signals-only flag — a purged billing anomaly with
+            // stop_failure:billing_error in the event stream must still hold
+            // (issue #1667 / independent review PR #1955).
+            isProviderPaused: isTaskProviderPaused,
+            isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+            resolveMergedPr: deps.resolveMergedPr,
+            metrics: deps.hungSuspectTtlReclaimMetrics,
           },
-          auditLogPath: deps.auditLogPath,
-          dispositionLedgerPath: deps.dispositionLedgerPath,
-          broadcastToAll: deps.broadcastToAll,
-          isHungSuspect: (task) => hungSuspectSignals(task).hungSuspect,
-          getLiveness: (task) => hungSuspectSignals(task).liveness,
-          getQueuedAnomalyType: (task) => hungSuspectSignals(task).queuedAnomalyType,
-          // Use the same event+anomaly provider-pause predicate as auto-close /
-          // delivered sweeps (and the hard reaper's event scan), not the
-          // attention-signals-only flag — a purged billing anomaly with
-          // stop_failure:billing_error in the event stream must still hold
-          // (issue #1667 / independent review PR #1955).
-          isProviderPaused: isTaskProviderPaused,
-          isHoldingOpenPr: deps.isTaskHoldingOpenPr,
-          resolveMergedPr: deps.resolveMergedPr,
-          metrics: deps.hungSuspectTtlReclaimMetrics,
-        },
-        { ttlMs: deps.getHungSuspectTtlMs?.() },
-      );
+          { ttlMs: deps.getHungSuspectTtlMs?.() },
+        );
+        // A completed pass (even a zero-reclaim one) clears any prior
+        // current-error state; the cumulative failure count is retained.
+        deps.hungSuspectTtlReclaimMetrics?.recordSweepSuccess();
+      } catch (err) {
+        // Record a bounded failure signal (sanitized category + timestamp; no
+        // raw exception text) and leave hungSuspectTtlResult null so the pass is
+        // NOT reported as a successful zero-reclaim and the residual page below
+        // is skipped. Later recovery legs continue normally.
+        deps.hungSuspectTtlReclaimMetrics?.recordSweepFailure(err);
+        console.error(
+          '[liveness] hungSuspect TTL sweep threw; skipping its residual page and continuing later recovery legs:',
+          err instanceof Error ? err.message : err,
+        );
+      }
 
       // hungSuspect residual page (issue #1993): after reclaim, if residual
       // occupancy stays high without decreasing for the stale window, page
       // the operator (Discord via detectorBroadcast). Never terminates extra
-      // tasks — the reclaim above already did what TTL allows.
-      if (deps.hungSuspectResidualAlerter) {
+      // tasks — the reclaim above already did what TTL allows. Skipped when the
+      // sweep failed this tick (hungSuspectTtlResult null) — a failed pass must
+      // not drive a misleading residual alert (issue #2897).
+      if (deps.hungSuspectResidualAlerter && hungSuspectTtlResult) {
         // Count like the capacity ledger's hungSuspect class: inProgress only,
         // and not finishedAwaitingAck (completion_ready). isTaskHungSuspect
         // short-circuits true on queued stale_agent without consulting
@@ -2075,7 +2108,7 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
         || pendingTtlResult.expiredTaskIds.length > 0
         || finishedAwaitingAckTtlResult.reclaimedTaskIds.length > 0
         || finishedAwaitingAckTtlResult.autoCompletedTaskIds.length > 0
-        || hungSuspectTtlResult.reclaimedTaskIds.length > 0
+        || (hungSuspectTtlResult?.reclaimedTaskIds.length ?? 0) > 0
         || (providerPausedTtlResult?.reclaimedTaskIds.length ?? 0) > 0
         || orphanLoopsFailed > 0
         || promotedPending > 0

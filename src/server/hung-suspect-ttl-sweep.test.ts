@@ -8,6 +8,7 @@ import {
   reclaimAgedHungSuspectTasks,
   HungSuspectTtlReclaimMetrics,
   buildHungSuspectTtlDisposition,
+  classifyHungSuspectSweepFailure,
 } from './hung-suspect-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
@@ -455,6 +456,103 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     expect(snap.skippedOpenPrConfirmed).toBe(1);
     expect(snap.skippedOpenPrUnknown).toBe(2);
     expect(snap.skippedOpenPrFailsafe).toBe(3);
+  });
+
+  it('issue #2897: a post-terminate throw (broadcast) keeps the reclaimed task terminated — no rollback', async () => {
+    // The sweep's summary broadcast runs AFTER the per-task terminate loop and
+    // its metrics.recordReclaimed. If it throws, the tick's local boundary
+    // catches it — but the already-terminated task must stay terminated and its
+    // reclaim must stay counted (issue #2897 Risks: never roll back partial
+    // progress or fabricate an all-or-nothing result).
+    const task = makeHungTask();
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    const broadcastToAll = vi.fn(() => {
+      throw new Error('broadcast socket exploded');
+    });
+
+    await expect(
+      reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath,
+          dispositionLedgerPath,
+          broadcastToAll,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          metrics,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      ),
+    ).rejects.toThrow('broadcast socket exploded');
+
+    // Partial progress survives the throw: the task was terminated + dispositioned
+    // and the reclaim counted before the broadcast failed.
+    expect(taskStore.terminateTask).toHaveBeenCalledWith('task-1', expect.anything());
+    expect(taskStore.setDisposition).toHaveBeenCalledWith('task-1', expect.anything());
+    expect(metrics.getSnapshot()).toMatchObject({ reclaimedTotal: 1, reclaimSucceeded: 1 });
+  });
+
+  it('issue #2897: sweep-failure metrics count, expose a sanitized category+timestamp, and clear on a later success', () => {
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    // Baseline: no failure recorded.
+    expect(metrics.getSnapshot()).toMatchObject({
+      sweepFailuresTotal: 0,
+      lastFailureCategory: null,
+      lastFailureAtMs: null,
+    });
+
+    class SelectorBoom extends Error {
+      override name = 'SelectorBoom';
+    }
+    metrics.recordSweepFailure(new SelectorBoom('raw secret detail'), 1_000);
+    let snap = metrics.getSnapshot();
+    expect(snap.sweepFailuresTotal).toBe(1);
+    expect(snap.lastFailureCategory).toBe('SelectorBoom');
+    expect(snap.lastFailureAtMs).toBe(1_000);
+    // The raw exception message must never leak into the failure category.
+    expect(snap.lastFailureCategory).not.toContain('raw secret detail');
+
+    // A second failure bumps the cumulative count and refreshes current-error.
+    metrics.recordSweepFailure(new TypeError('x'), 2_000);
+    snap = metrics.getSnapshot();
+    expect(snap.sweepFailuresTotal).toBe(2);
+    expect(snap.lastFailureCategory).toBe('TypeError');
+    expect(snap.lastFailureAtMs).toBe(2_000);
+
+    // A later successful pass clears the current-error state but retains the count.
+    metrics.recordSweepSuccess();
+    snap = metrics.getSnapshot();
+    expect(snap.sweepFailuresTotal).toBe(2);
+    expect(snap.lastFailureCategory).toBeNull();
+    expect(snap.lastFailureAtMs).toBeNull();
+  });
+
+  it('issue #2897: classifyHungSuspectSweepFailure sanitizes to the error class name, no raw text', () => {
+    expect(classifyHungSuspectSweepFailure(new TypeError('boom'))).toBe('TypeError');
+    // Non-Error throws fall back to a bounded token.
+    expect(classifyHungSuspectSweepFailure('some string')).toBe('unknown');
+    expect(classifyHungSuspectSweepFailure(null)).toBe('unknown');
+    // Weird characters in the name are stripped; empty result falls back.
+    const weird = new Error('m');
+    weird.name = '!@#$%';
+    expect(classifyHungSuspectSweepFailure(weird)).toBe('unknown');
+    const spaced = new Error('m');
+    spaced.name = 'My Custom Error!';
+    expect(classifyHungSuspectSweepFailure(spaced)).toBe('MyCustomError');
+    // Empty error name falls back rather than producing an empty category.
+    const noName = new Error('m');
+    noName.name = '';
+    expect(classifyHungSuspectSweepFailure(noName)).toBe('unknown');
+    // The category is length-capped (48 chars) so health/metrics stay bounded.
+    const longName = new Error('m');
+    longName.name = 'A'.repeat(200);
+    const cat = classifyHungSuspectSweepFailure(longName);
+    expect(cat).toBe('A'.repeat(48));
+    expect(cat.length).toBe(48);
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {

@@ -137,6 +137,10 @@ export interface PrometheusExpositionSnapshot {
     skippedUnderTtl?: number;
     skippedExemptAnomaly?: number;
     skippedProviderPaused?: number;
+    /** Cumulative sweep passes that threw before completing (issue #2897). */
+    sweepFailuresTotal?: number;
+    /** Epoch-ms of the most recent sweep failure; null once cleared (issue #2897). */
+    lastFailureAtMs?: number | null;
   };
   /**
    * provider_paused occupancy + hard-TTL reclaim (issue #2079). Live count
@@ -728,6 +732,8 @@ function appendHungSuspectReclaimMetrics(
         skippedUnderTtl?: number;
         skippedExemptAnomaly?: number;
         skippedProviderPaused?: number;
+        sweepFailuresTotal?: number;
+        lastFailureAtMs?: number | null;
       }
     | undefined,
 ): void {
@@ -783,6 +789,19 @@ function appendHungSuspectReclaimMetrics(
       'kookr_hung_suspect_ttl_reclaim_skipped_total',
       { reason: 'provider_paused' },
       snapshot.skippedProviderPaused ?? 0,
+    ),
+    // Issue #2897: bounded sweep-failure signal. The counter never resets; the
+    // timestamp gauge is 0 once a later successful pass cleared the error. No
+    // raw exception text — the sanitized category lives on /api/health only.
+    '# HELP kookr_hung_suspect_ttl_sweep_failures_total HungSuspect TTL sweep passes that threw before completing since process start (issue #2897).',
+    '# TYPE kookr_hung_suspect_ttl_sweep_failures_total counter',
+    metricLine('kookr_hung_suspect_ttl_sweep_failures_total', {}, snapshot.sweepFailuresTotal ?? 0),
+    '# HELP kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds Unix time of the most recent hungSuspect TTL sweep failure; 0 after a later successful pass cleared it (issue #2897).',
+    '# TYPE kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds gauge',
+    metricLine(
+      'kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds',
+      {},
+      snapshot.lastFailureAtMs != null ? msToSeconds(snapshot.lastFailureAtMs) : 0,
     ),
   );
 }

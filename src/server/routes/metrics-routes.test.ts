@@ -16,6 +16,7 @@ import type { RouteDeps } from './shared.js';
 import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { LESSON_YIELD_SCHEMA_VERSION } from '../../core/lesson-decision.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
+import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -378,5 +379,31 @@ describe('metrics routes', () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     expect(body).not.toContain('kookr_health_body_');
+  });
+
+  test('serves hungSuspect TTL sweep-failure series cleared by a later success (issue #2897)', async () => {
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    metrics.recordSweepFailure(new TypeError('raw exception text'), 1_700_000_000_000);
+
+    const failed = await mkApp({ hungSuspectTtlReclaimMetrics: metrics }).request('/metrics');
+    expect(failed.status).toBe(200);
+    const failedBody = await failed.text();
+    expect(failedBody).toContain('# TYPE kookr_hung_suspect_ttl_sweep_failures_total counter');
+    expect(failedBody).toContain('kookr_hung_suspect_ttl_sweep_failures_total 1');
+    expect(failedBody).toContain(
+      '# TYPE kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds gauge',
+    );
+    expect(failedBody).toContain(
+      'kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds 1700000000',
+    );
+    // Never leaks raw exception text into the exposition.
+    expect(failedBody).not.toContain('raw exception text');
+
+    metrics.recordSweepSuccess();
+    const recovered = await mkApp({ hungSuspectTtlReclaimMetrics: metrics }).request('/metrics');
+    const recoveredBody = await recovered.text();
+    // Cumulative failure count is retained; the timestamp gauge resets to 0.
+    expect(recoveredBody).toContain('kookr_hung_suspect_ttl_sweep_failures_total 1');
+    expect(recoveredBody).toContain('kookr_hung_suspect_ttl_sweep_last_failure_timestamp_seconds 0');
   });
 });

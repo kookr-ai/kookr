@@ -63,6 +63,43 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
   lastOutcomes: HungSuspectReclaimCandidateOutcome[];
   /** Last pass: task ids selected for reclaim (terminate attempted). */
   lastAttemptedTaskIds: string[];
+  /**
+   * Cumulative sweep passes that threw before completing (issue #2897). A
+   * selector, attribution, or broadcast rejection is caught at the liveness
+   * tick's local boundary so later recovery legs still run; each such failure
+   * increments this counter.
+   */
+  sweepFailuresTotal: number;
+  /**
+   * Sanitized category of the most recent sweep failure (the error's class
+   * name, stripped to `[A-Za-z0-9_]` — never the raw message), or `null` when
+   * the last completed pass succeeded. A later successful pass clears this
+   * while {@link sweepFailuresTotal} is retained (issue #2897).
+   */
+  lastFailureCategory: string | null;
+  /**
+   * Epoch-ms timestamp of the most recent sweep failure, or `null` when a
+   * later successful pass cleared the current-error state (issue #2897).
+   */
+  lastFailureAtMs: number | null;
+}
+
+/** Cap the sanitized failure category so health/metrics stay bounded (issue #2897). */
+const MAX_FAILURE_CATEGORY_LEN = 48;
+
+/**
+ * Derive a bounded, sanitized failure category from a caught sweep error
+ * (issue #2897). Uses the error's class name only — never the message — and
+ * strips it to `[A-Za-z0-9_]` so no raw exception text reaches health or
+ * Prometheus. Falls back to `'unknown'` for a non-Error throw or empty name.
+ */
+export function classifyHungSuspectSweepFailure(err: unknown): string {
+  const rawName =
+    err instanceof Error && typeof err.name === 'string' && err.name.length > 0
+      ? err.name
+      : 'unknown';
+  const cleaned = rawName.replace(/[^A-Za-z0-9_]/g, '').slice(0, MAX_FAILURE_CATEGORY_LEN);
+  return cleaned.length > 0 ? cleaned : 'unknown';
 }
 
 /**
@@ -77,9 +114,34 @@ export class HungSuspectTtlReclaimMetrics {
   private lastCandidatesConsidered = 0;
   private lastOutcomes: HungSuspectReclaimCandidateOutcome[] = [];
   private lastAttemptedTaskIds: string[] = [];
+  private sweepFailuresTotal = 0;
+  private lastFailureCategory: string | null = null;
+  private lastFailureAtMs: number | null = null;
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
+  }
+
+  /**
+   * Record a sweep pass that threw before completing (issue #2897). Bumps the
+   * cumulative failure count and remembers a sanitized category + timestamp for
+   * the current-error state. The category is derived from the error's class
+   * name only — raw exception text never enters the snapshot.
+   */
+  recordSweepFailure(err: unknown, atMs: number = Date.now()): void {
+    this.sweepFailuresTotal += 1;
+    this.lastFailureCategory = classifyHungSuspectSweepFailure(err);
+    this.lastFailureAtMs = atMs;
+  }
+
+  /**
+   * Clear the current-error state after a sweep pass that completed without
+   * throwing (issue #2897). The cumulative {@link sweepFailuresTotal} is
+   * retained; only the last-failure category + timestamp are reset.
+   */
+  recordSweepSuccess(): void {
+    this.lastFailureCategory = null;
+    this.lastFailureAtMs = null;
   }
 
   recordAttempted(count: number): void {
@@ -125,6 +187,9 @@ export class HungSuspectTtlReclaimMetrics {
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
+      sweepFailuresTotal: this.sweepFailuresTotal,
+      lastFailureCategory: this.lastFailureCategory,
+      lastFailureAtMs: this.lastFailureAtMs,
     };
   }
 }

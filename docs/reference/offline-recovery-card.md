@@ -82,6 +82,9 @@ print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
 | `lastCandidatesConsidered` | HungSuspect candidates on the most recent sweep pass |
 | `lastOutcomes` | Last pass: `{ taskId, outcome, silentForMs? }[]` (#2072 task-id audit) |
 | `lastAttemptedTaskIds` | Last pass: task ids selected for terminate |
+| `sweepFailuresTotal` | Sweep passes that threw before completing (#2897). A local liveness-tick boundary contains the fault so later recovery legs still run; a non-zero, climbing count means the TTL reaper itself keeps failing |
+| `lastFailureCategory` | Sanitized class name of the most recent sweep failure (never raw exception text); `null` after a later successful pass cleared it (#2897) |
+| `lastFailureAtMs` | Epoch-ms of the most recent sweep failure; `null` once cleared by a later success (#2897) |
 
 If `reclaimedTotal=0` while `capacity.byClass.hungSuspect≥2`:
 
