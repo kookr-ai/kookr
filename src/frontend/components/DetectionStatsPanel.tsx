@@ -11,6 +11,17 @@ interface DetectionStats {
   falseNegatives?: Record<string, number>;
 }
 
+// Plain-language explainers for the detection-quality metrics. Without these
+// the panel shows bare "N FP" / "N FN" / "x% fire rate" values an operator
+// can't act on — especially a new user who doesn't know the abbreviations
+// (issue #3001). Mirrors the QuotaDisplay explainer pattern in StatusBar.tsx.
+const FP_EXPLAINER =
+  'False positives — detections the operator dismissed as not a real problem. Lower is better.';
+const FN_EXPLAINER =
+  'False negatives — real problems the detector missed, later reported by the operator. Lower is better.';
+const FIRE_RATE_EXPLAINER =
+  'Fire rate — the share of checks that raised a detection (fires ÷ checks). Not inherently good or bad; read it alongside FP and FN.';
+
 const LABEL: Record<string, string> = {
   needs_input: 'Needs Input',
   permission_blocked: 'Permission',
@@ -216,9 +227,31 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
               <div key={type} className="stats-row">
                 <span className="stats-type">{LABEL[type] ?? type}</span>
                 <span className="stats-count">{fires}</span>
-                {fp > 0 && <span className="stats-fp">{fp} FP</span>}
-                {fn > 0 && <span className="stats-fn">{fn} FN</span>}
-                <span className="stats-rate">{rate}% fire rate</span>
+                {fp > 0 && (
+                  <span
+                    className="stats-fp"
+                    title={FP_EXPLAINER}
+                    aria-label={`${fp} false positives. ${FP_EXPLAINER}`}
+                  >
+                    {fp} FP
+                  </span>
+                )}
+                {fn > 0 && (
+                  <span
+                    className="stats-fn"
+                    title={FN_EXPLAINER}
+                    aria-label={`${fn} false negatives. ${FN_EXPLAINER}`}
+                  >
+                    {fn} FN
+                  </span>
+                )}
+                <span
+                  className="stats-rate"
+                  title={FIRE_RATE_EXPLAINER}
+                  aria-label={`${rate}% fire rate. ${FIRE_RATE_EXPLAINER}`}
+                >
+                  {rate}% fire rate
+                </span>
               </div>
             );
           })}
