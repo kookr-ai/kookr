@@ -2612,6 +2612,183 @@ describe('ScheduleService archive (issue #2981)', () => {
     });
   });
 
+  it('still closes out a run that was in flight when its schedule was archived', async () => {
+    await withService(async (service, store, dir) => {
+      const schedule = store.create({
+        name: 'Archived Mid-Run',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-inflight', false);
+
+      // Retire the loop while its task is still running. Archiving is allowed
+      // mid-run; abandoning the run's bookkeeping is not.
+      await service.archive(schedule.id, 'no live supply or demand');
+
+      await service.recordTaskTerminalOutcome('task-inflight', 'completed');
+
+      const after = store.get(schedule.id)!;
+      expect(after.archived).toBe(true);
+      // The ledger row is closed, not left `running` forever.
+      expect(after.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: 'task-inflight',
+          outcome: 'completed',
+          reasonCode: 'none',
+          completedAt: expect.any(String),
+        }),
+      ]);
+      expect(after.currentExecution?.status).toBe('terminal');
+      expect(after.lastRunStatus).toBe('completed');
+      // Closing out must not put the retired loop back into fleet ROI…
+      expect(store.getRollup(schedule.id)).toBeUndefined();
+      expect(service.listResponse().schedules.map((x) => x.id)).not.toContain(schedule.id);
+
+      // The close-out survives a restart: the row reloads still archived, still
+      // closed, still out of ROI — this is where a phantom `running` row would
+      // have resurfaced, since `load()` rebuilds rollups from the ledger.
+      await store.persist();
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      const persisted = reloaded.listArchived().find((x) => x.id === schedule.id)!;
+      expect(persisted.executionLedger[0]).toMatchObject({ outcome: 'completed', reasonCode: 'none' });
+      expect(reloaded.getRollup(schedule.id)).toBeUndefined();
+
+      // …and un-archiving rebuilds a clean rollup with no phantom `running` fire.
+      await service.unarchive(schedule.id);
+      const rollup = store.getRollup(schedule.id)!;
+      expect(rollup.fires).toBe(1);
+      expect(rollup.outcomes.completed).toBe(1);
+      expect(rollup.outcomes.running).toBeUndefined();
+    });
+  });
+
+  it('reconciles on startup a run left mid-flight by a schedule archived before the restart', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const completedTask = taskStore.completeTask(task.id);
+      const schedule = store.create({
+        name: 'Archived Before Restart',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+      await service.archive(schedule.id);
+
+      await service.reconcileOnStartup(taskStore);
+
+      const after = store.get(schedule.id)!;
+      expect(after.archived).toBe(true);
+      expect(after.executionLedger).toEqual([
+        expect.objectContaining({
+          taskId: completedTask.id,
+          outcome: 'completed',
+          reasonCode: 'reconciled_after_restart',
+        }),
+      ]);
+      expect(after.currentExecution?.status).toBe('terminal');
+      expect(after.lastRunStatus).toBe('completed');
+      expect(store.getRollup(schedule.id)).toBeUndefined();
+    });
+  });
+
+  it('reconciles an archived schedule whose mid-flight task is gone from the task store', async () => {
+    await withService(async (service, store) => {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('Run scheduled work', '/tmp');
+      taskStore.startTask(task.id);
+      const schedule = store.create({
+        name: 'Archived Lost Task',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, task.id, false);
+      await service.archive(schedule.id);
+
+      // A fresh TaskStore — the task is gone entirely, the other write path
+      // reconcileOnStartup takes into an archived row.
+      await service.reconcileOnStartup(new TaskStore());
+
+      expect(store.get(schedule.id)!.executionLedger[0]).toMatchObject({
+        outcome: 'unknown_after_restart',
+        reasonCode: 'unknown_after_restart',
+      });
+      expect(store.get(schedule.id)!.archived).toBe(true);
+      expect(store.getRollup(schedule.id)).toBeUndefined();
+    });
+  });
+
+  it('does not raise a failure alert when an archived schedule closes out a failing run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-archive-alert-'));
+    const store = new ScheduleStore(dir);
+    const alerts: Array<Extract<ServerMessage, { type: 'alert' }>> = [];
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      emitAlert: (message) => alerts.push(message),
+      getFailureAlertThreshold: () => 1,
+    });
+    try {
+      const schedule = store.create({
+        name: 'Archived Failing',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const receipt = await service.reserveExecution(schedule, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-doomed', false);
+      await service.archive(schedule.id);
+
+      // A genuine execution failure — this would cross the threshold and page
+      // on an active schedule. An archived loop is dark on every health surface.
+      await service.recordTaskTerminalOutcome('task-doomed', 'cancelled', 'timeout');
+
+      expect(alerts).toHaveLength(0);
+
+      // The cancelled close-out is still complete bookkeeping…
+      const closed = store.get(schedule.id)!;
+      expect(closed.executionLedger[0].outcome).toBe('cancelled');
+      expect(closed.currentExecution?.status).toBe('terminal');
+      expect(closed.lastRunStatus).toBe('cancelled');
+      // …but it must not fail-close a loop that cannot fire anyway: the streak
+      // counts, the enabled/hold state `unarchive()` restores does not move.
+      expect(closed.consecutiveFailures).toBe(1);
+      expect(closed.enabled).toBe(true);
+      expect(closed.stopReason).toBeUndefined();
+      expect(closed.holdSource).toBeUndefined();
+      const restored = await service.unarchive(schedule.id);
+      expect(restored.enabled).toBe(true);
+      expect(restored.stopReason).toBeUndefined();
+
+      // Positive control: the identical run on a LIVE schedule does page and
+      // does park — so the assertions above pin the archived guard, not a
+      // mis-wired threshold or a classifier that stopped counting `timeout`.
+      const live = store.create({
+        name: 'Live Failing',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      const liveReceipt = await service.reserveExecution(live, 'cron', '2026-01-01T09:00:00.000Z');
+      await service.markExecutionAccepted(live.id, liveReceipt.id, 'task-live', false);
+      await service.recordTaskTerminalOutcome('task-live', 'cancelled', 'timeout');
+
+      expect(alerts).toHaveLength(1);
+      expect(store.get(live.id)!.enabled).toBe(false);
+      expect(store.get(live.id)!.stopReason).toBe('consecutive_failures');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rejects archive / unarchive for an unknown id', async () => {
     await withService(async (service) => {
       await expect(service.archive('missing')).rejects.toThrow(/not found/i);

@@ -1405,6 +1405,7 @@ The system SHALL persist a per-schedule execution ledger for cron, manual, skipp
 - Skips caused by active previous runs, capacity pressure, missed startup runs awaiting manual recovery, and stale catch-up windows are durable across restarts
 - Missed startup runs SHALL auto-launch exactly once per boot by default (a `catch_up`-tagged fire), gated behind the relaunch arbiter so a missed run cannot duplicate a concurrent actuator; `KOOKR_MANUAL_CATCHUP` reverts to record-for-manual-recovery and `KOOKR_NO_CATCHUP` suppresses catch-up. In every mode the scheduler SHALL advance its cron watermark so the same missed due slot does not replay on the next tick
 - The schedule API exposes the ledger with each schedule response
+- A fire whose schedule is archived while its task is still running SHALL still record that run's terminal outcome and reason code — on task completion, or on the next boot reconcile — so no ledger row is left permanently `running`
 - The schedules UI surfaces recent ledger entries without replacing the latest execution summary
 
 **Evidence:** `src/core/schedule.ts`, `src/shared/contracts/schedule.ts`, `src/server/schedule-service.ts`, `src/server/schedule-runner.ts`, `src/server/routes/schedule-routes.ts`, `src/frontend/components/SchedulesDialog.tsx`, `src/core/schedule.test.ts`, `src/server/schedule-runner.test.ts`, `src/server/routes/schedule-routes.test.ts`.

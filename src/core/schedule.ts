@@ -795,15 +795,22 @@ export class ScheduleStore {
    * iterate — archived schedules are dark and excluded here by design (issue
    * #2981), so retiring a loop drops it off every one of those surfaces at
    * once. Persistence and archive management read the full set separately
-   * ({@link allSchedules} / {@link listArchived}) so archived rows are never
+   * ({@link listAll} / {@link listArchived}) so archived rows are never
    * lost on the next write.
    */
   list(): Schedule[] {
     return Array.from(this.schedules.values()).filter((s) => !s.archived);
   }
 
-  /** Every schedule including archived — persistence and admin views only. */
-  private allSchedules(): Schedule[] {
+  /**
+   * Every schedule, archived rows included. Use this — never {@link list} —
+   * for work that must still reach a retired row: persistence, admin views,
+   * and terminal bookkeeping for a run that was ALREADY launched (closing out
+   * its ledger entry and receipt). A run archived mid-flight must still be
+   * closed out, otherwise its ledger row stays `running` forever and poisons
+   * the rollup that un-archiving rematerializes (issue #2981).
+   */
+  listAll(): Schedule[] {
     return Array.from(this.schedules.values());
   }
 
@@ -896,9 +903,25 @@ export class ScheduleStore {
     };
 
     this.schedules.set(schedule.id, schedule);
-    this.rollupStore.updateFromSchedule(schedule);
+    this.syncRollup(schedule);
     this.bumpRevision();
     return schedule;
+  }
+
+  /**
+   * Bring one schedule's ROI rollup in line with the row just written. THE
+   * single place the "an archived schedule carries no rollup" invariant lives
+   * (issue #2981) — every write path routes through here so no door is left
+   * open. An archived row contributes nothing to fleet ROI, so any write to it
+   * (an operator edit, an enable/disable toggle, or the close-out of a run that
+   * was in flight when it was archived) keeps its rollup dropped rather than
+   * re-materializing the one `archive()` deliberately removed. For a live row
+   * this is the incremental, bounded write-path update: recompute only THIS
+   * schedule's rollup from its ledger — never a full-fleet rescan (issue #1584).
+   */
+  private syncRollup(schedule: Schedule): void {
+    if (schedule.archived) this.rollupStore.remove(schedule.id);
+    else this.rollupStore.updateFromSchedule(schedule);
   }
 
   updateDefinition(id: string, patch: UpdateScheduleDefinitionInput): Schedule {
@@ -983,7 +1006,7 @@ export class ScheduleStore {
       delete updated.modelTier;
     }
     this.schedules.set(id, updated);
-    this.rollupStore.updateFromSchedule(updated);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -1037,7 +1060,7 @@ export class ScheduleStore {
       updated.heldAt = updated.updatedAt;
     }
     this.schedules.set(id, updated);
-    this.rollupStore.updateFromSchedule(updated);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -1050,6 +1073,12 @@ export class ScheduleStore {
    * archived schedule contributes nothing to fleet ROI, so its rollup is
    * dropped to keep attribution clean; the rollup rematerializes from the
    * ledger on un-archive. Idempotent-ish: re-archiving refreshes `archivedAt`.
+   *
+   * Archiving mid-run is allowed and does NOT abandon the in-flight run: the
+   * terminal-outcome and boot-reconcile paths resolve schedules through
+   * {@link listAll}, so an already-launched task still closes out its
+   * ledger row and receipt after the archive. Only *firing* is gated on
+   * archive state.
    */
   archive(id: string, reason?: string): Schedule {
     const existing = this.schedules.get(id);
@@ -1065,7 +1094,7 @@ export class ScheduleStore {
     };
     if (!trimmedReason) delete updated.archivedReason;
     this.schedules.set(id, updated);
-    this.rollupStore.remove(id);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -1083,7 +1112,7 @@ export class ScheduleStore {
     delete updated.archivedAt;
     delete updated.archivedReason;
     this.schedules.set(id, updated);
-    this.rollupStore.updateFromSchedule(updated);
+    this.syncRollup(updated);
     this.bumpRevision();
     return updated;
   }
@@ -1104,9 +1133,7 @@ export class ScheduleStore {
       updatedAt: new Date().toISOString(),
     };
     this.schedules.set(schedule.id, stored);
-    // Incremental, bounded write-path update: recompute only THIS schedule's
-    // rollup from its ledger — never a full-fleet rescan (issue #1584).
-    this.rollupStore.updateFromSchedule(stored);
+    this.syncRollup(stored);
     this.bumpRevision();
   }
 
@@ -1129,7 +1156,7 @@ export class ScheduleStore {
     // Serialize the FULL set, not `list()` — archived schedules (issue #2981)
     // are excluded from `list()` but must survive the write, else retiring a
     // loop would silently delete it on the next persist.
-    const data = JSON.stringify(this.allSchedules());
+    const data = JSON.stringify(this.listAll());
     const tmpPath = join(dirname(this.filePath), `.schedules-${randomUUID()}.tmp`);
     await mkdir(dirname(this.filePath), { recursive: true });
     let renamed = false;

@@ -790,6 +790,70 @@ describe('ScheduleStore', () => {
       expect(Date.parse(second.archivedAt!)).toBeGreaterThanOrEqual(Date.parse(first.archivedAt!));
     });
 
+    it('a close-out write (replace) to an archived schedule does not re-materialize its ROI rollup', () => {
+      const s = makeSchedule();
+      store.archive(s.id);
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      // The close-out write path for a run archived mid-flight goes through
+      // `replace()`, carrying a REAL terminal ledger row. It must not resurrect
+      // the rollup archiving dropped, or a retired loop silently re-enters
+      // fleet ROI carrying that run's attribution.
+      store.replace({
+        ...store.get(s.id)!,
+        lastRunStatus: 'completed',
+        executionLedger: [{
+          id: 'ledger-1',
+          scheduleId: s.id,
+          taskId: 'task-1',
+          trigger: 'cron',
+          decision: 'cron_due',
+          evaluatedAt: '2026-01-01T09:00:00.000Z',
+          completedAt: '2026-01-01T09:05:00.000Z',
+          outcome: 'completed',
+          reasonCode: 'none',
+        }],
+      });
+
+      expect(store.getRollup(s.id)).toBeUndefined();
+      expect(store.get(s.id)?.archived).toBe(true);
+      expect(store.list().map((x) => x.id)).not.toContain(s.id);
+
+      // Un-archiving is what rebuilds the rollup — from that same real row.
+      store.unarchive(s.id);
+      expect(store.getRollup(s.id)?.fires).toBe(1);
+      expect(store.getRollup(s.id)?.outcomes.completed).toBe(1);
+    });
+
+    it('listAll() exposes archived rows so terminal bookkeeping can still reach them', () => {
+      const active = makeSchedule('Active');
+      const dead = makeSchedule('Dead');
+      store.archive(dead.id);
+
+      expect(store.list().map((x) => x.id)).toEqual([active.id]);
+      expect(store.listAll().map((x) => x.id).sort()).toEqual([active.id, dead.id].sort());
+    });
+
+    it('editing or toggling an archived schedule does not re-materialize its ROI rollup either', () => {
+      const s = makeSchedule();
+      store.archive(s.id);
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      // `updateDefinition` / `setEnabled` resolve by id, so they reach an
+      // archived row (`PATCH /api/schedules/:id`, `kookr schedule disable`).
+      // Neither may put a retired loop back into fleet ROI.
+      store.updateDefinition(s.id, { name: 'Renamed While Archived' });
+      expect(store.getRollup(s.id)).toBeUndefined();
+
+      store.setEnabled(s.id, false);
+      expect(store.getRollup(s.id)).toBeUndefined();
+      expect(store.listRollups()).toHaveLength(0);
+
+      // Still archived throughout — a write is not an un-archive.
+      expect(store.get(s.id)?.archived).toBe(true);
+      expect(store.list()).toHaveLength(0);
+    });
+
     it('un-archiving a schedule that was never archived is a no-op', () => {
       const s = makeSchedule();
       const result = store.unarchive(s.id);

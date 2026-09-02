@@ -491,6 +491,10 @@ export class ScheduleService {
    * once on the failing→healthy edge (a `completed` run resets a firing streak).
    * `autoPaused` folds the issue #2353 fail-closed pause into the same edge
    * alert so operators get one signal, not two.
+   *
+   * Never fires for an archived schedule (issue #2981): a retired loop closes
+   * out the bookkeeping of a run that was already in flight, but silently — it
+   * is dark on every health surface, so it must not page.
    */
   private emitFailureAlertOnEdge(
     previous: Schedule,
@@ -499,6 +503,10 @@ export class ScheduleService {
     autoPaused = false,
   ): void {
     if (!this.emitAlert) return;
+    // An archived schedule is retired and dark on every health surface
+    // (issue #2981). A run that was already in flight when it was archived
+    // still closes out its bookkeeping, but it must not page anyone.
+    if (previous.archived) return;
     const priorCount = previous.consecutiveFailures ?? 0;
     const threshold = this.resolveFailureAlertThreshold();
     if (threshold <= 0) return;
@@ -541,6 +549,16 @@ export class ScheduleService {
     schedule: Schedule,
     consecutiveFailures: number,
   ): Partial<Pick<Schedule, 'enabled' | 'stopReason' | 'operatorHold' | 'holdSource' | 'heldAt'>> {
+    // An archived schedule is retired: it cannot fire, so there is nothing to
+    // fail-close (issue #2981). Parking it would also silently rewrite the
+    // enabled/hold state `unarchive()` promises to restore, turning a loop that
+    // was archived healthy-but-idle into one that comes back disabled with a
+    // daemon hold. The streak still counts, so if it is un-archived while over
+    // threshold `enforceFailureAutoPauses` parks it the moment it re-enters the
+    // active fleet — where the pause actually means something.
+    if (schedule.archived) {
+      return {};
+    }
     const threshold = this.resolveFailureAlertThreshold();
     if (!shouldAutoPauseForConsecutiveFailures(consecutiveFailures, threshold, schedule.enabled)) {
       return {};
@@ -1336,7 +1354,13 @@ export class ScheduleService {
     status: 'completed' | 'cancelled',
     terminationReason?: TerminationReason,
   ): Promise<void> {
-    const schedule = this.store.list().find((candidate) => candidate.latestExecution?.taskId === taskId);
+    // Resolve over the FULL set, archived rows included (issue #2981). Closing
+    // out a run that was already launched is bookkeeping, not firing: if the
+    // schedule is archived mid-run, `list()` would no longer find it and the
+    // task's terminal outcome would be dropped on the floor — leaving a
+    // perpetually-`running` ledger row and a stuck `currentExecution` that
+    // corrupt the rollup un-archiving rebuilds from that ledger.
+    const schedule = this.store.listAll().find((candidate) => candidate.latestExecution?.taskId === taskId);
     if (!schedule?.latestExecution || schedule.latestExecution.taskId !== taskId) return;
 
     const currentReceipt = schedule.currentExecution;
@@ -1447,7 +1471,11 @@ export class ScheduleService {
     // future reconcile-path outcome that DOES key off a graceful redeploy has the
     // signal at hand.
     const serverRestartActive = this.isServerRestarting?.() ?? false;
-    for (const listed of this.store.list()) {
+    // Archived rows included (issue #2981) — same reason as
+    // `recordTaskTerminalOutcome`: a run that was mid-flight when the process
+    // stopped must be reconciled even if the schedule was retired meanwhile,
+    // or its ledger row stays `running` with no live task to ever close it.
+    for (const listed of this.store.listAll()) {
       let schedule = listed;
       if (schedule.currentExecution && (schedule.currentExecution.status === 'reserved' || schedule.currentExecution.status === 'accepted')) {
         const latest = schedule.latestExecution;
