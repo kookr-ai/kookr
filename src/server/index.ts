@@ -2962,7 +2962,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           launchSource: 'schedule',
           unattended: true,
           autoCloseOnSignal: true,
-        }, { deliveryPolicy: 'self-advancing' });
+        }, {
+          deliveryPolicy: 'self-advancing',
+          automationProjectId: options.projectId,
+        });
         return { taskId: result.task.id };
       },
       isTaskTerminal: (taskId) => {

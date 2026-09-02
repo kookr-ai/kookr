@@ -1335,6 +1335,33 @@ Snapshot the fleet.
     expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_safe_mode');
   });
 
+  it('passes automationProjectId on a successful fire', async () => {
+    const schedule = store.create({
+      name: 'Stamp',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    const stamps: Array<string | undefined> = [];
+    const runner = createRunner({
+      resolveAutomationProjectId: async () => 'github.com/jeanibarz/lucy',
+      launcher: async (opts, serverOpts) => {
+        stamps.push(serverOpts?.automationProjectId);
+        const taskId = `task-${++taskIdCounter}`;
+        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+    });
+    await runner.tick();
+    expect(stamps).toEqual(['github.com/jeanibarz/lucy']);
+    expect(launched).toHaveLength(1);
+  });
+
   it('skips with skipped_project_automation when the project is paused and leaves enabled unchanged', async () => {
     const schedule = store.create({
       name: 'Lucy batch',
