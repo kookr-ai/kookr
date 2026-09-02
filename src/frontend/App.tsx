@@ -18,6 +18,7 @@ import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
 import { buildAgentBuckets, countCompletedInWindow, countLaunchedInWindow } from './agent-buckets.js';
 import { activeFindingIndex, queueFocusTarget } from './queue-focus.js';
+import { getSettings, getReflectionRecommendation } from './api/index.js';
 import { computeChainMembership, computeDescendants } from './components/related-tasks-model.js';
 import { deriveProjectPriorityRanks } from '../shared/project-sidebar.js';
 import { TopBar } from './components/TopBar.js';
@@ -629,15 +630,14 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/settings')
-      .then((r) => r.json())
-      .then((settings: {
-        shortcutBindings?: PlatformShortcutBindingOverrides;
-        speakVerbosity?: VerbosityScale;
-        cleanupWorktreeOnComplete?: boolean;
-        roundRobinIndex?: number;
-        quotaHeadroomThreshold?: number;
-      }) => {
+    getSettings<{
+      shortcutBindings?: PlatformShortcutBindingOverrides;
+      speakVerbosity?: VerbosityScale;
+      cleanupWorktreeOnComplete?: boolean;
+      roundRobinIndex?: number;
+      quotaHeadroomThreshold?: number;
+    }>()
+      .then((settings) => {
         if (cancelled) return;
         setShortcutOverrides(settings.shortcutBindings ?? {});
         setSpeakVerbositySnapshot(settings.speakVerbosity);
@@ -1185,8 +1185,7 @@ export function App() {
     if (completedTaskCount === 0) return;
 
     let cancelled = false;
-    fetch('/api/reflect/recommendation')
-      .then((res) => res.ok ? res.json() : null)
+    getReflectionRecommendation()
       .then((payload) => {
         if (cancelled || !payload?.sessionId || !payload?.recommendation) return;
         if (payload.recommendation.shouldSuggest !== true) {

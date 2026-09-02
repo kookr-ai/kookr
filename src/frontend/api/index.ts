@@ -17,6 +17,7 @@ export {
 
 export * from './deploy.js';
 export * from './settings.js';
+export * from './reflection.js';
 export * from './sharing.js';
 export * from './relay.js';
 export * from './coordinator.js';
