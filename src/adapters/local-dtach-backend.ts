@@ -9,9 +9,10 @@
  *     `write` / `captureBytes` / `onData`.
  *   - Per-session 1 MB ring buffer backed by a monotonic `head` counter
  *     (lock-free reads; no torn wraparound). Snapshotted to
- *     `<instanceDir>/rings/<sessionId>.{bin,meta.json}` on the configured
- *     flush interval and once during `close()` so the scrollback
- *     survives a Kookr restart that left the dtach masters running.
+ *     `<instanceDir>/rings/<sessionId>.ring` — a single file committed with
+ *     one atomic rename (issue #2829) — on the configured flush interval and
+ *     once during `close()` so the scrollback survives a Kookr restart that
+ *     left the dtach masters running.
  *   - Per-session write mutex with a 2 s timeout that releases on
  *     `pty.write` backpressure so `captureBytes` and other consumers are
  *     never starved.

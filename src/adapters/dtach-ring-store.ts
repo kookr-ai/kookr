@@ -21,7 +21,21 @@ export const RING_BUFFER_BYTES = 1 * 1024 * 1024;
 /** Floor capacity for rings shrunk under fleet budget pressure (issue #1779). */
 export const RING_IDLE_CAPACITY_BYTES = 64 * 1024;
 export const DEFAULT_RING_FLUSH_INTERVAL_MS = 2_000;
-const RING_META_VERSION = 1;
+/**
+ * Legacy two-file snapshot format (`<id>.bin` + `<id>.meta.json`). Still read
+ * on load so a snapshot written before the upgrade to the combined format is
+ * recoverable, but no longer written.
+ */
+const RING_META_VERSION_LEGACY = 1;
+/**
+ * Combined single-file snapshot format (`<id>.ring`). Data and metadata live in
+ * one file committed with a single atomic rename, so a crash or ENOSPC can
+ * never leave a mismatched data/metadata pair that makes valid scrollback look
+ * corrupt (issue #2829). The file is a JSON header line, then a `\n`, then the
+ * raw logical ring bytes.
+ */
+const RING_META_VERSION_COMBINED = 2;
+const RING_SNAPSHOT_MARKER = 0x0a; // '\n' separating the JSON header from bytes
 
 export interface DtachRingState {
   id: SessionId;
@@ -242,48 +256,53 @@ export class DtachRingStore {
   }
 
   /**
-   * Write a ring snapshot in logical order, oldest byte first, using tmp+rename
-   * for both data and metadata so a crash cannot leave a partial snapshot that
-   * future loads accept.
+   * Write a ring snapshot in logical order, oldest byte first.
+   *
+   * Data and metadata are packed into one file (`<id>.ring`: a JSON header, a
+   * `\n`, then the raw bytes) and committed with a single atomic rename. Because
+   * the whole generation is swapped in by one rename, a crash or ENOSPC leaves
+   * either the previous complete snapshot or the new complete snapshot on disk —
+   * never a mismatched data/metadata pair that {@link load} would reject and so
+   * silently discard valid scrollback (issue #2829). The previous generation is
+   * only replaced once the new file is fully written, so the last recoverable
+   * scrollback is never destroyed before its successor is durable.
    */
   persist(state: DtachRingState): void {
     try {
       const head = state.ringHead;
       const cap = state.ringBuffer.length;
       const size = Math.min(head, cap);
-      const out = Buffer.alloc(size);
-      copyLogicalBytes(state.ringBuffer, head, size, out);
+      const payload = Buffer.alloc(size);
+      copyLogicalBytes(state.ringBuffer, head, size, payload);
 
-      const binPath = this.ringPathFor(state.id);
-      const metaPath = this.metaPathFor(state.id);
-      const tmpBin = `${binPath}.${randomUUID()}.tmp`;
-      const tmpMeta = `${metaPath}.${randomUUID()}.tmp`;
-      let binRenamed = false;
-      let metaRenamed = false;
+      const header = Buffer.from(
+        JSON.stringify({
+          version: RING_META_VERSION_COMBINED,
+          size,
+          savedAt: new Date().toISOString(),
+          lastByteAt: state.lastByteAt,
+        }),
+        'utf-8',
+      );
+      const snapshot = Buffer.concat([header, Buffer.from([RING_SNAPSHOT_MARKER]), payload]);
+
+      const ringPath = this.ringPathFor(state.id);
+      const tmpPath = `${ringPath}.${randomUUID()}.tmp`;
+      let renamed = false;
       try {
-        writeFileSync(tmpBin, out, { mode: 0o600 });
-        writeFileSync(
-          tmpMeta,
-          JSON.stringify({
-            version: RING_META_VERSION,
-            size,
-            savedAt: new Date().toISOString(),
-            lastByteAt: state.lastByteAt,
-          }),
-          { mode: 0o600 },
-        );
-        renameSync(tmpBin, binPath);
-        binRenamed = true;
-        renameSync(tmpMeta, metaPath);
-        metaRenamed = true;
+        writeFileSync(tmpPath, snapshot, { mode: 0o600 });
+        renameSync(tmpPath, ringPath);
+        renamed = true;
       } finally {
-        if (!binRenamed) {
-          try { unlinkSync(tmpBin); } catch { /* best-effort temp cleanup */ }
-        }
-        if (!metaRenamed) {
-          try { unlinkSync(tmpMeta); } catch { /* best-effort temp cleanup */ }
+        if (!renamed) {
+          try { unlinkSync(tmpPath); } catch { /* best-effort temp cleanup */ }
         }
       }
+
+      // The combined file is now the authoritative generation; drop any legacy
+      // two-file snapshot left over from before the format upgrade so it can no
+      // longer shadow or confuse recovery.
+      if (renamed) this.removeLegacy(state.id);
 
       state.lastFlushedHead = head;
     } catch (err) {
@@ -293,39 +312,93 @@ export class DtachRingStore {
   }
 
   /**
-   * Restore a snapshot if both data and metadata exist and agree. Fail-open:
-   * malformed snapshots leave the in-memory ring empty instead of preventing
-   * the backend from serving the session.
+   * Restore a snapshot, preferring the combined single-file format and falling
+   * back to the legacy two-file layout. Fail-open: malformed snapshots leave the
+   * in-memory ring empty instead of preventing the backend from serving the
+   * session.
    */
   load(state: DtachRingState): void {
-    const binPath = this.ringPathFor(state.id);
-    const metaPath = this.metaPathFor(state.id);
+    if (this.loadCombined(state)) return;
+    this.loadLegacy(state);
+  }
+
+  /**
+   * Load the combined `<id>.ring` file. Returns true when a snapshot file was
+   * present and consumed (whether or not it yielded bytes), so the caller knows
+   * not to fall back to the legacy layout.
+   */
+  private loadCombined(state: DtachRingState): boolean {
+    const ringPath = this.ringPathFor(state.id);
+    if (!existsSync(ringPath)) return false;
+    try {
+      const file = readFileSync(ringPath);
+      const sep = file.indexOf(RING_SNAPSHOT_MARKER);
+      if (sep < 0) return true; // header truncated: nothing to recover, fail-open
+      const meta = JSON.parse(file.subarray(0, sep).toString('utf-8')) as {
+        version?: number;
+        size?: number;
+        lastByteAt?: unknown;
+      };
+      // A present `.ring` is authoritative even when unreadable: a successful
+      // persist removes the legacy pair, so a valid `.ring` is always the newest
+      // generation. Returning true (rather than falling back to a legacy pair)
+      // is deliberate — the worst case is an empty ring, never resurrected stale
+      // scrollback.
+      if (meta.version !== RING_META_VERSION_COMBINED) return true;
+      const payload = file.subarray(sep + 1);
+      if (typeof meta.size !== 'number' || meta.size !== payload.length) return true;
+      this.applySnapshot(state, payload, meta.lastByteAt);
+    } catch {
+      // fail-open: a torn header/body leaves the ring empty rather than crashing
+    }
+    return true;
+  }
+
+  /** Load the pre-#2829 `<id>.bin` + `<id>.meta.json` pair. */
+  private loadLegacy(state: DtachRingState): void {
+    const binPath = this.legacyBinPathFor(state.id);
+    const metaPath = this.legacyMetaPathFor(state.id);
     if (!existsSync(binPath) || !existsSync(metaPath)) return;
     try {
       const metaRaw = readFileSync(metaPath, 'utf-8');
       const meta = JSON.parse(metaRaw) as { version?: number; size?: number; lastByteAt?: unknown };
-      if (meta.version !== RING_META_VERSION) return;
+      if (meta.version !== RING_META_VERSION_LEGACY) return;
       const buf = readFileSync(binPath);
       if (typeof meta.size !== 'number' || meta.size !== buf.length) return;
-      const cap = state.ringBuffer.length;
-      const size = Math.min(buf.length, cap);
-      if (size === 0) return;
-      // Prefer the most recent `size` bytes when the disk snapshot exceeds the
-      // current capacity (e.g. a previously-full ring loaded into a test ring).
-      const srcOffset = buf.length - size;
-      buf.copy(state.ringBuffer, 0, srcOffset, srcOffset + size);
-      state.ringHead = size;
-      state.lastByteAt = typeof meta.lastByteAt === 'number' && Number.isFinite(meta.lastByteAt)
-        ? meta.lastByteAt
-        : null;
-      state.lastFlushedHead = size;
+      this.applySnapshot(state, buf, meta.lastByteAt);
     } catch {
       // fail-open
     }
   }
 
+  /** Copy a validated snapshot payload into the in-memory ring. */
+  private applySnapshot(state: DtachRingState, buf: Buffer, lastByteAt: unknown): void {
+    const cap = state.ringBuffer.length;
+    const size = Math.min(buf.length, cap);
+    if (size === 0) return;
+    // Prefer the most recent `size` bytes when the disk snapshot exceeds the
+    // current capacity (e.g. a previously-full ring loaded into a test ring).
+    const srcOffset = buf.length - size;
+    buf.copy(state.ringBuffer, 0, srcOffset, srcOffset + size);
+    state.ringHead = size;
+    state.lastByteAt = typeof lastByteAt === 'number' && Number.isFinite(lastByteAt)
+      ? lastByteAt
+      : null;
+    state.lastFlushedHead = size;
+  }
+
   remove(id: SessionId): void {
-    for (const path of [this.ringPathFor(id), this.metaPathFor(id)]) {
+    for (const path of [this.ringPathFor(id), this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]) {
+      try {
+        if (existsSync(path)) unlinkSync(path);
+      } catch {
+        // best-effort
+      }
+    }
+  }
+
+  private removeLegacy(id: SessionId): void {
+    for (const path of [this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]) {
       try {
         if (existsSync(path)) unlinkSync(path);
       } catch {
@@ -335,10 +408,14 @@ export class DtachRingStore {
   }
 
   private ringPathFor(id: SessionId): string {
+    return join(this.ringsDir, `${id}.ring`);
+  }
+
+  private legacyBinPathFor(id: SessionId): string {
     return join(this.ringsDir, `${id}.bin`);
   }
 
-  private metaPathFor(id: SessionId): string {
+  private legacyMetaPathFor(id: SessionId): string {
     return join(this.ringsDir, `${id}.meta.json`);
   }
 }

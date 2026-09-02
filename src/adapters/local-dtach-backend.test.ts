@@ -941,10 +941,10 @@ describe('LocalDtachBackend', () => {
       // The dtach master keeps running because it was spawned with setsid.
       backend.close();
 
-      // Snapshot files must be on disk before the new backend starts up.
+      // Snapshot file must be on disk before the new backend starts up. Data
+      // and metadata share one atomically-committed file (issue #2829).
       const ringsDir = join(tmpDir, 'test', 'rings');
-      expect(existsSync(join(ringsDir, `${id}.bin`))).toBe(true);
-      expect(existsSync(join(ringsDir, `${id}.meta.json`))).toBe(true);
+      expect(existsSync(join(ringsDir, `${id}.ring`))).toBe(true);
 
       // Spawn a fresh backend pointing at the same instanceDir — the exact
       // condition `pnpm prod:restart` produces. The session must still be
@@ -974,8 +974,7 @@ describe('LocalDtachBackend', () => {
       }
       // killSession is contracted to remove the ring snapshot — assert it,
       // otherwise removePersistedRing could silently regress to a no-op.
-      expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.bin`))).toBe(false);
-      expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.meta.json`))).toBe(false);
+      expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.ring`))).toBe(false);
       if (backend2) backend2.close();
     }
   }, 15_000);

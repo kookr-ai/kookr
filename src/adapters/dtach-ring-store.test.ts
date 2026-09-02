@@ -1,4 +1,11 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -73,6 +80,216 @@ describe('DtachRingStore', () => {
     const out = Buffer.alloc(16);
     store.copyFrom(state, state.ringHead, 16, out);
     expect(out.toString('utf-8')).toBe('efghijklmnopQRST');
+  });
+});
+
+describe('DtachRingStore combined-generation snapshots (issue #2829)', () => {
+  let tmpDir: string | undefined;
+
+  afterEach(() => {
+    if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  function restore(store: DtachRingStore, id: string): string {
+    const state = createDtachRingState(id);
+    store.load(state);
+    const out = Buffer.alloc(state.ringHead);
+    store.copyFrom(state, state.ringHead, out.length, out);
+    return out.toString('utf-8');
+  }
+
+  it('persists data and metadata as a single .ring file, not a two-file pair', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('combined');
+    store.copyInto(state, new TextEncoder().encode('one generation'));
+    store.persist(state);
+
+    expect(existsSync(join(tmpDir, 'combined.ring'))).toBe(true);
+    expect(existsSync(join(tmpDir, 'combined.bin'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'combined.meta.json'))).toBe(false);
+    expect(restore(store, 'combined')).toBe('one generation');
+  });
+
+  it('leaves no leftover temp files after repeated flushes', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('repeat');
+    for (let i = 0; i < 5; i += 1) {
+      store.copyInto(state, new TextEncoder().encode(`flush-${i} `));
+      store.persist(state);
+    }
+    const files = readdirSync(tmpDir);
+    expect(files).toEqual(['repeat.ring']);
+    expect(files.some((f) => f.endsWith('.tmp'))).toBe(false);
+  });
+
+  it('shields committed scrollback from the mismatched-pair residue that broke the old format', () => {
+    // Reproduce the pre-#2829 data-loss residue: a crash between the two renames
+    // left a legacy pair whose metadata size disagreed with its data length,
+    // which the old `load` rejected (`meta.size !== buf.length`), failing open to
+    // an empty ring and discarding valid scrollback. Here the committed
+    // generation lives in the atomic `.ring` file; even with that exact broken
+    // legacy pair sitting on disk beside it, recovery returns the real
+    // scrollback because the single-file generation is authoritative. Reverting
+    // to the two-file format makes this read the mismatched pair and lose the
+    // data — so this test genuinely guards the fix.
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('durable');
+    store.copyInto(state, new TextEncoder().encode('committed generation'));
+    store.persist(state);
+
+    // A mismatched legacy pair: 5-byte data, metadata claiming 999 bytes.
+    writeFileSync(join(tmpDir, 'durable.bin'), Buffer.from('short'));
+    writeFileSync(
+      join(tmpDir, 'durable.meta.json'),
+      JSON.stringify({ version: 1, size: 999, savedAt: 'x', lastByteAt: null }),
+    );
+
+    expect(restore(store, 'durable')).toBe('committed generation');
+  });
+
+  it('does not fall back to a valid legacy pair when the combined file is present but torn', () => {
+    // A present `.ring` is authoritative even when unreadable — falling back to a
+    // stale legacy pair would resurrect old scrollback. Guard the deliberate
+    // no-fallback choice: a torn `.ring` beside a perfectly good legacy pair must
+    // still yield an empty ring, never the legacy bytes.
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    writeFileSync(
+      join(tmpDir, 'shadow.ring'),
+      Buffer.concat([
+        Buffer.from(`${JSON.stringify({ version: 2, size: 100, lastByteAt: null })}\n`, 'utf-8'),
+        Buffer.from('short'),
+      ]),
+    );
+    writeFileSync(join(tmpDir, 'shadow.bin'), Buffer.from('stale legacy scrollback'));
+    writeFileSync(
+      join(tmpDir, 'shadow.meta.json'),
+      JSON.stringify({ version: 1, size: 23, savedAt: 'x', lastByteAt: 7 }),
+    );
+
+    const state = createDtachRingState('shadow');
+    store.load(state);
+    expect(state.ringHead).toBe(0);
+    expect(state.lastByteAt).toBeNull();
+  });
+
+  it.each([
+    ['size larger than payload', `${JSON.stringify({ version: 2, size: 100, lastByteAt: null })}\n`, 'short'],
+    ['size smaller than payload', `${JSON.stringify({ version: 2, size: 2, lastByteAt: null })}\n`, 'much longer body'],
+    ['unknown version', `${JSON.stringify({ version: 3, size: 4, lastByteAt: null })}\n`, 'body'],
+    ['legacy version in combined file', `${JSON.stringify({ version: 1, size: 4, lastByteAt: null })}\n`, 'body'],
+    ['invalid json header', 'this is not json\n', 'body'],
+    ['no separator at all', 'no newline anywhere in this file', ''],
+  ])('fails open to an empty ring on a torn combined file (%s)', (_label, header, body) => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    writeFileSync(join(tmpDir, 'torn.ring'), Buffer.concat([Buffer.from(header, 'utf-8'), Buffer.from(body)]));
+
+    const state = createDtachRingState('torn');
+    expect(() => store.load(state)).not.toThrow();
+    expect(state.ringHead).toBe(0);
+  });
+
+  it('round-trips an empty ring (size 0) without writing a stray generation', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('empty');
+    store.persist(state); // never ingested any bytes
+    expect(existsSync(join(tmpDir, 'empty.ring'))).toBe(true);
+
+    const restored = createDtachRingState('empty');
+    expect(() => store.load(restored)).not.toThrow();
+    expect(restored.ringHead).toBe(0);
+  });
+
+  it('round-trips a wrapped ring (head > capacity) through the combined format', () => {
+    // The fix rewrote the persist packing; drive a buffer past capacity so bytes
+    // are stored out of logical order and confirm the combined snapshot restores
+    // the most-recent capacity bytes in logical order.
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('wrapped', 16);
+    store.copyInto(state, new TextEncoder().encode('abcdefghijklmnopQRSTUVWX')); // 24 > 16
+    expect(state.ringHead).toBe(24);
+    store.persist(state);
+
+    const restored = createDtachRingState('wrapped', 16);
+    store.load(restored);
+    const out = Buffer.alloc(restored.ringHead);
+    store.copyFrom(restored, restored.ringHead, out.length, out);
+    expect(out.toString('utf-8')).toBe('ijklmnopQRSTUVWX'); // last 16 bytes, in order
+  });
+
+  it('reports the exact bytes it committed via a size-matched round-trip', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('roundtrip');
+    const payload = new TextEncoder().encode('measure me precisely');
+    store.copyInto(state, payload);
+    store.persist(state);
+
+    const file = readFileSync(join(tmpDir, 'roundtrip.ring'));
+    const sep = file.indexOf(0x0a);
+    const meta = JSON.parse(file.subarray(0, sep).toString('utf-8')) as { size: number };
+    expect(meta.size).toBe(payload.length);
+    expect(file.subarray(sep + 1).length).toBe(payload.length);
+  });
+
+  it('restores a legacy two-file snapshot written before the format upgrade', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const payload = Buffer.from('legacy scrollback');
+    writeFileSync(join(tmpDir, 'legacy.bin'), payload);
+    writeFileSync(
+      join(tmpDir, 'legacy.meta.json'),
+      JSON.stringify({ version: 1, size: payload.length, savedAt: 'x', lastByteAt: 42 }),
+    );
+
+    const state = createDtachRingState('legacy');
+    store.load(state);
+    const out = Buffer.alloc(state.ringHead);
+    store.copyFrom(state, state.ringHead, out.length, out);
+    expect(out.toString('utf-8')).toBe('legacy scrollback');
+    expect(state.lastByteAt).toBe(42);
+  });
+
+  it('a fresh persist retires the legacy two-file snapshot it supersedes', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    writeFileSync(join(tmpDir, 'upgrade.bin'), Buffer.from('old'));
+    writeFileSync(
+      join(tmpDir, 'upgrade.meta.json'),
+      JSON.stringify({ version: 1, size: 3, savedAt: 'x', lastByteAt: null }),
+    );
+
+    const state = createDtachRingState('upgrade');
+    store.copyInto(state, new TextEncoder().encode('new content'));
+    store.persist(state);
+
+    expect(existsSync(join(tmpDir, 'upgrade.bin'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'upgrade.meta.json'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'upgrade.ring'))).toBe(true);
+    expect(restore(store, 'upgrade')).toBe('new content');
+  });
+
+  it('remove deletes both the combined file and any legacy pair', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir);
+    const state = createDtachRingState('cleanup');
+    store.copyInto(state, new TextEncoder().encode('bye'));
+    store.persist(state);
+    // A stale legacy pair can coexist if it was never superseded by a persist.
+    writeFileSync(join(tmpDir, 'cleanup.bin'), Buffer.from('stale'));
+    writeFileSync(join(tmpDir, 'cleanup.meta.json'), '{}');
+
+    store.remove('cleanup');
+    expect(existsSync(join(tmpDir, 'cleanup.ring'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'cleanup.bin'))).toBe(false);
+    expect(existsSync(join(tmpDir, 'cleanup.meta.json'))).toBe(false);
   });
 });
 
