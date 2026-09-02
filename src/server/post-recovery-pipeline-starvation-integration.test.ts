@@ -106,6 +106,7 @@ describe('post-recovery scout to pipeline-starvation batch handoff integration (
       kicked: true,
       scoutTaskId: expect.any(String),
       utcDay: '2026-08-10',
+      batchArmStatus: 'armed',
     }]);
 
     const scoutTaskId = recoveryKick[0]!.scoutTaskId!;
