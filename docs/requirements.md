@@ -499,6 +499,20 @@ The system SHALL warn in the Launch dialog when the chosen working directory alr
 
 **Evidence:** `src/shared/launch-duplicate.ts`, `src/frontend/components/LaunchBusyDirectoryBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/shared/launch-duplicate.test.ts`, `src/frontend/components/LaunchTaskDialog.busy-directory.test.ts`.
 
+### R4.1f: Preserve Post-Recovery Autonomy at the Launch Boundary [F4.1] — SHALL — `done`
+
+The system SHALL identify post-recovery queue-fill scout launches as autonomous through asynchronous preparation and enforce SAFE MODE again at the trusted launch boundary.
+
+**Acceptance criteria:**
+- A post-recovery queue-fill scout carries the first-class `post-recovery` launch source
+- If SAFE MODE engages after the recovery tick's initial check but before launch preparation completes, the launch boundary rejects the scout without creating a task or agent session
+- Post-recovery launches consume the general per-source spawn budget and do not inherit the `schedule` exemption
+- Manual `api`, `ui`, `cli`, `websocket`, and remote launches remain non-autonomous and retain their existing SAFE MODE behavior
+
+**Linked tests:** `TS-LAUNCH-POST-RECOVERY-001`, `TS-LAUNCH-POST-RECOVERY-002`, `TS-LAUNCH-POST-RECOVERY-003`, `TS-LAUNCH-POST-RECOVERY-004`.
+
+**Evidence:** `src/shared/contracts/task.ts`, `src/core/automation-kill-switch.ts`, `src/server/post-recovery-service.ts`, `src/core/automation-kill-switch.test.ts`, `src/server/post-recovery-service.test.ts`, `src/server/launch-service.test.ts`.
+
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.
@@ -1709,6 +1723,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
 | R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
+| R4.1f | F4.1 | SHALL | done | task contracts, automation-kill-switch, post-recovery-service, launch-service |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation, crash-recovery, diagnostics-routes |

@@ -585,6 +585,19 @@ describe('launchTask', () => {
       expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
     });
 
+    it('TS-LAUNCH-POST-RECOVERY-002: refuses post-recovery launches while SAFE MODE is engaged (issue #2899)', async () => {
+      const gated = { ...deps, isAutomationEnabled: () => false };
+      await expect(
+        launchTask(gated, {
+          prompt: 'recovery scout',
+          cwd: '/tmp',
+          launchSource: 'post-recovery',
+        }),
+      ).rejects.toThrow(AutomationKillSwitchError);
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
     it('still accepts manual launches while SAFE MODE is engaged', async () => {
       const gated = { ...deps, isAutomationEnabled: () => false };
       const result = await launchTask(gated, {
@@ -4808,6 +4821,24 @@ describe('server-side backpressure (issue #1526 Phase C / C3)', () => {
         await expect(launchTask(deps, { prompt: `fire ${i}`, cwd: '/tmp', launchSource: 'schedule', disableDedup: true }))
           .resolves.toBeDefined();
       }
+    });
+
+    it('TS-LAUNCH-POST-RECOVERY-003: post-recovery launches remain spawn-budget-capped (issue #2899)', async () => {
+      const store = new TaskStore();
+      const deps = burstDeps(store, 1);
+      await launchTask(deps, {
+        prompt: 'recovery scout one',
+        cwd: '/tmp',
+        launchSource: 'post-recovery',
+      });
+      await expect(launchTask(deps, {
+        prompt: 'recovery scout two',
+        cwd: '/tmp',
+        launchSource: 'post-recovery',
+      })).rejects.toMatchObject({
+        code: 'spawn_burst_limit',
+        source: 'post-recovery',
+      });
     });
 
     it('an actor-qualified caller has a bucket separate from the bare source', async () => {
