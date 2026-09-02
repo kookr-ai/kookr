@@ -40,11 +40,13 @@ describe('validate-skills', () => {
     expect(errors, errors.map((e) => `${e.file}: ${e.message}`).join('\n')).toEqual([]);
   });
 
-  it('loads github-labels as a SKILL.md directory, not a bare file', () => {
+  it('keeps github-labels as a SKILL.md directory, not a bare file', () => {
     const dir = join(repoRoot, 'plugin/skills/github-labels');
     const skill = join(dir, 'SKILL.md');
     expect(statSync(dir).isDirectory()).toBe(true);
     expect(existsSync(skill)).toBe(true);
+    const { errors } = validateSkills(repoRoot);
+    expect(errors.filter((issue) => issue.message.includes('is a file'))).toEqual([]);
   });
 
   it('reports a bare file sitting where a skill directory should be', () => {
@@ -170,7 +172,7 @@ description: Plan skill.
       'plugin/.claude-plugin/plugin.json': JSON.stringify({
         name: 'kookr-toolkit',
         version: '0.0.1',
-        description: '64 skills and 19 review subagents for tests.',
+        description: '64 skills and 0 review subagents for tests.',
       }),
     });
     try {
@@ -178,6 +180,49 @@ description: Plan skill.
       const countError = errors.find((issue) => issue.message.includes('64 skills'));
       expect(countError).toBeDefined();
       expect(countError?.message).toContain('1 loadable SKILL.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a plugin.json review-subagent count that drifted from disk', () => {
+    const root = makeRepo({
+      'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
+      'plugin/agents/boundary-critic.md': '# Boundary critic\n',
+      'plugin/.claude-plugin/plugin.json': JSON.stringify({
+        name: 'kookr-toolkit',
+        version: '0.0.1',
+        description: '1 skills and 19 review subagents for tests.',
+      }),
+    });
+    try {
+      const { errors } = validateSkills(root);
+      const countError = errors.find((issue) => issue.message.includes('19 review subagents'));
+      expect(countError).toBeDefined();
+      expect(countError?.message).toContain('1 agent files');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a marketplace.json skill count that drifted from disk', () => {
+    const root = makeRepo({
+      'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,
+      '.claude-plugin/marketplace.json': JSON.stringify({
+        name: 'kookr',
+        plugins: [
+          {
+            name: 'kookr-toolkit',
+            description: '64 skills and 0 review subagents for tests.',
+          },
+        ],
+      }),
+    });
+    try {
+      const { errors } = validateSkills(root);
+      const countError = errors.find((issue) => issue.file.endsWith('marketplace.json'));
+      expect(countError).toBeDefined();
+      expect(countError?.message).toContain('64 skills');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -22,6 +22,7 @@ const PLUGIN_AGENTS_ROOT = 'plugin/agents';
 const PLUGIN_PLAYBOOKS_ROOT = 'plugin/playbooks';
 const PLUGIN_README = 'plugin/README.md';
 const PLUGIN_MANIFEST = 'plugin/.claude-plugin/plugin.json';
+const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json';
 const WHATS_INCLUDED_HEADING = "## What's included";
 // Known-bad literals that make shipped content non-portable (R4): content under
 // plugin/ must work for any marketplace user, not one specific GitHub account.
@@ -151,6 +152,7 @@ function validateSkillRootShape(dir: string, errors: SkillIssue[]): void {
 
 function validatePluginReadmeInventory(repoRoot: string, errors: SkillIssue[]): void {
   const readmePath = join(repoRoot, PLUGIN_README);
+  // Temp fixtures omit the README so shape/frontmatter tests stay isolated.
   if (!existsSync(readmePath)) return;
 
   const readme = readFileSync(readmePath, 'utf8');
@@ -176,35 +178,69 @@ function validatePluginReadmeInventory(repoRoot: string, errors: SkillIssue[]): 
 }
 
 function validatePluginManifestCounts(repoRoot: string, errors: SkillIssue[]): void {
-  const manifestPath = join(repoRoot, PLUGIN_MANIFEST);
-  if (!existsSync(manifestPath)) return;
+  const skillCount = collectImmediateSkillDirs(join(repoRoot, PLUGIN_SKILLS_ROOT)).length;
+  const agentCount = collectMarkdownBasenames(join(repoRoot, PLUGIN_AGENTS_ROOT)).length;
+
+  checkManifestDescriptionCounts(
+    join(repoRoot, PLUGIN_MANIFEST),
+    readJsonObject(join(repoRoot, PLUGIN_MANIFEST), errors)?.description,
+    skillCount,
+    agentCount,
+    errors,
+  );
+
+  const marketplace = readJsonObject(join(repoRoot, MARKETPLACE_MANIFEST), errors);
+  const plugins = marketplace && Array.isArray((marketplace as { plugins?: unknown }).plugins)
+    ? ((marketplace as { plugins: unknown[] }).plugins)
+    : [];
+  for (const plugin of plugins) {
+    if (!plugin || typeof plugin !== 'object' || Array.isArray(plugin)) continue;
+    checkManifestDescriptionCounts(
+      join(repoRoot, MARKETPLACE_MANIFEST),
+      (plugin as { description?: unknown }).description,
+      skillCount,
+      agentCount,
+      errors,
+    );
+  }
+}
+
+function readJsonObject(path: string, errors: SkillIssue[]): Record<string, unknown> | null {
+  // Temp fixtures omit these manifests so shape/frontmatter tests stay isolated.
+  if (!existsSync(path)) return null;
 
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    parsed = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
     errors.push({
-      file: manifestPath,
+      file: path,
       message: `invalid JSON: ${(err as Error).message}`,
     });
-    return;
+    return null;
   }
 
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    errors.push({ file: manifestPath, message: 'plugin.json must be a JSON object' });
-    return;
+    errors.push({ file: path, message: `${basename(path)} must be a JSON object` });
+    return null;
   }
+  return parsed as Record<string, unknown>;
+}
 
-  const description = (parsed as { description?: unknown }).description;
+function checkManifestDescriptionCounts(
+  file: string,
+  description: unknown,
+  skillCount: number,
+  agentCount: number,
+  errors: SkillIssue[],
+): void {
+  // No advertised counts to check when a description is missing or not prose.
   if (typeof description !== 'string') return;
-
-  const skillCount = collectImmediateSkillDirs(join(repoRoot, PLUGIN_SKILLS_ROOT)).length;
-  const agentCount = collectMarkdownBasenames(join(repoRoot, PLUGIN_AGENTS_ROOT)).length;
 
   const skillsMatch = description.match(/(\d+)\s+skills/);
   if (skillsMatch && Number(skillsMatch[1]) !== skillCount) {
     errors.push({
-      file: manifestPath,
+      file,
       message: `description says ${skillsMatch[1]} skills but ${PLUGIN_SKILLS_ROOT} has ${skillCount} loadable SKILL.md directories`,
     });
   }
@@ -212,7 +248,7 @@ function validatePluginManifestCounts(repoRoot: string, errors: SkillIssue[]): v
   const agentsMatch = description.match(/(\d+)\s+review subagents/);
   if (agentsMatch && Number(agentsMatch[1]) !== agentCount) {
     errors.push({
-      file: manifestPath,
+      file,
       message: `description says ${agentsMatch[1]} review subagents but ${PLUGIN_AGENTS_ROOT} has ${agentCount} agent files`,
     });
   }
