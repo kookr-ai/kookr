@@ -4,9 +4,9 @@ import {
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
   DEFAULT_DRAIN_FLOOR_BUDGET,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
-  MAX_OPERATOR_OVERRIDE_COUNT,
   DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
+  MAX_OPERATOR_OVERRIDE_COUNT,
   budgetLogicVersionStatus,
   buildDeferredIdeaRecord,
   checkDedupe,
@@ -372,7 +372,7 @@ describe('TS-EMISSION-005: bounded zero-drain operator override (issue #2804)', 
   });
 
   it('never exceeds the hard cap or the backlog-derived budget', () => {
-    const plan = resolveEmissionBudget({
+    const overThreshold = resolveEmissionBudget({
       openBacklogCount: DEFAULT_OPEN_BACKLOG_THRESHOLD,
       requestedBudget: 50,
       drainCount: 0,
@@ -382,9 +382,21 @@ describe('TS-EMISSION-005: bounded zero-drain operator override (issue #2804)', 
         count: MAX_OPERATOR_OVERRIDE_COUNT + 100,
       },
     });
+    expect(overThreshold.operatorOverrideCount).toBe(MAX_OPERATOR_OVERRIDE_COUNT);
+    expect(overThreshold.allowedBudget).toBe(DEFAULT_CONSTRAINED_BUDGET);
 
-    expect(plan.operatorOverrideCount).toBe(MAX_OPERATOR_OVERRIDE_COUNT);
-    expect(plan.allowedBudget).toBe(DEFAULT_CONSTRAINED_BUDGET);
+    const underThreshold = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 50,
+      drainCount: 0,
+      drainFloorBudget: 0,
+      operatorOverride: {
+        ...operatorOverride,
+        count: MAX_OPERATOR_OVERRIDE_COUNT + 100,
+      },
+    });
+    expect(underThreshold.operatorOverrideCount).toBe(MAX_OPERATOR_OVERRIDE_COUNT);
+    expect(underThreshold.allowedBudget).toBe(MAX_OPERATOR_OVERRIDE_COUNT);
   });
 
   it('leaves the explicit zero-drain refusal unchanged when no override is supplied', () => {

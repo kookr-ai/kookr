@@ -1,16 +1,19 @@
 /**
  * `kookr emission` — drain-coupled issue-filing budget + mandatory dedupe
- * (issue #1607).
+ * (issues #1607, #1657, #1703, #2804).
  *
- *   kookr emission plan    --repo owner/repo --requested N [--json]
- *   kookr emission dedupe  --repo owner/repo --title "..." [--json]
- *   kookr emission metrics --repo owner/repo [--json]
- *   kookr emission defer   --repo owner/repo --title "..." --source <playbook> [--json]
+ *   kookr emission plan     --repo owner/repo --requested N [--json]
+ *   kookr emission override --repo owner/repo --requested N --count N
+ *                           --reason "..." --expires-at ISO --override-id UUID [--json]
+ *   kookr emission dedupe   --repo owner/repo --title "..." [--json]
+ *   kookr emission metrics  --repo owner/repo [--json]
+ *   kookr emission defer    --repo owner/repo --title "..." --source <playbook> [--json]
  *
  * Playbooks (idea-scout, architecture-health-check, reflection/retro) call
  * these before any `gh issue create`. Pure budget/dedupe math lives in
  * `core/emission-budget.ts`; this CLI shells out to `gh` for live counts and
- * writes the deferred-ideas JSONL.
+ * writes deferred-ideas JSONL, the emission audit stream, and (for override)
+ * exclusive operator-override claims.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -77,7 +80,7 @@ import {
 } from '../core/project-config-store.js';
 import { UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT } from '../shared/contracts/project-config.js';
 
-export const USAGE = `kookr emission — drain-coupled issue filing budget + dedupe (#1607, #1657, #1703).
+export const USAGE = `kookr emission — drain-coupled issue filing budget + bounded override + dedupe (#1607, #1657, #1703, #2804).
 
 Usage:
   kookr emission plan    --repo <owner/repo> --requested <N> [OPTIONS]
@@ -104,7 +107,7 @@ Options:
   --count <N>             Override batch size (override; 1-${MAX_OPERATOR_OVERRIDE_COUNT}).
   --reason <text>         Operator justification (override) or defer reason.
   --expires-at <ISO>      Absolute override expiry, at most 15 minutes ahead.
-  --override-id <UUID>    Single-use invocation id (override; link dedupe audit).
+  --override-id <UUID>    Single-use invocation id (override; link dedupe/defer audit).
   --title <text>          Candidate issue title (dedupe / defer).
   --source <name>         Emitting playbook id (defer).
   --threshold <N>         Open-backlog threshold (default: ${DEFAULT_OPEN_BACKLOG_THRESHOLD}).
@@ -410,7 +413,6 @@ function constantTimeEqual(left: string, right: string): boolean {
 
 function validateOperatorOverride(
   args: ParsedArgs,
-  repo: string,
   env: NodeJS.ProcessEnv,
   invokedAt: Date,
 ): OperatorEmissionOverride {
@@ -806,7 +808,7 @@ export async function runEmissionCli(
       if (args.verb === 'override') {
         try {
           repo = requireRepo(args.repo);
-          operatorOverride = validateOperatorOverride(args, repo, env, invokedAt);
+          operatorOverride = validateOperatorOverride(args, env, invokedAt);
         } catch (error) {
           const refusalCode = error instanceof OperatorOverrideUsageError
             ? error.refusalCode
@@ -1044,7 +1046,8 @@ export async function runEmissionCli(
               'override_not_granted',
             );
           }
-          if (Date.parse(state.expiresAt) <= attemptedAt.getTime()) {
+          const expiresAtMs = Date.parse(state.expiresAt);
+          if (!Number.isFinite(expiresAtMs) || expiresAtMs <= attemptedAt.getTime()) {
             throw new OperatorOverrideUsageError(
               `override ${args.overrideId} expired at ${state.expiresAt}`,
               'expired',

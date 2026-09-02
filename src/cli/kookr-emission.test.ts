@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   EMISSION_BUDGET_SCHEMA_VERSION,
   MAX_OPERATOR_OVERRIDE_COUNT,
+  OPERATOR_OVERRIDE_SCHEMA_VERSION,
   emissionAuditPath,
   operatorOverrideStatePath,
 } from '../core/emission-budget.js';
@@ -448,6 +449,24 @@ describe('TS-EMISSION-006: audited single-use operator override (issue #2804)', 
       refusalCode: 'invalid_authorization',
     });
     rmSync(dir, { recursive: true, force: true });
+
+    const unconfiguredDir = makeZeroDrainConfig();
+    const unconfiguredIo = mkIo();
+    const unconfiguredEnv = authorizedEnv();
+    delete unconfiguredEnv[OPERATOR_OVERRIDE_SECRET_ENV];
+    const unconfiguredCode = await runEmissionCli(overrideArgs(unconfiguredDir), {
+      ...unconfiguredIo,
+      env: unconfiguredEnv,
+      now: () => now,
+      runGh: () => { throw new Error('must not query GitHub'); },
+    });
+    expect(unconfiguredCode).toBe(2);
+    expect(JSON.parse(unconfiguredIo.auditLines[0]!.line)).toMatchObject({
+      outcome: 'refused',
+      refusalCode: 'authorization_not_configured',
+    });
+    expect(existsSync(operatorOverrideStatePath(unconfiguredDir, invocationId))).toBe(false);
+    rmSync(unconfiguredDir, { recursive: true, force: true });
   });
 
   it('rejects concurrent and replayed use of the same invocation id', async () => {
@@ -620,7 +639,73 @@ describe('TS-EMISSION-006: audited single-use operator override (issue #2804)', 
     }
   });
 
-  it('audits deferred candidates against a granted override batch', async () => {
+  it('refuses a granted override when retro-verify still withholds emission', async () => {
+    const dir = makeZeroDrainConfig();
+    const io = mkIo({ retroVerifyDepth: 1 });
+    try {
+      const code = await runEmissionCli(overrideArgs(dir), {
+        ...io,
+        env: authorizedEnv(),
+        now: () => now,
+        runGh: zeroDrainGh(),
+      });
+      expect(code).toBe(2);
+      expect(io.errs.join('\n')).toMatch(/stricter emission gate/i);
+      expect(JSON.parse(io.auditLines[0]!.line)).toMatchObject({
+        event: 'operator_override',
+        outcome: 'refused',
+        refusalCode: 'stricter_gate_refusal',
+        invocationId,
+      });
+      expect(JSON.parse(readFileSync(operatorOverrideStatePath(dir, invocationId), 'utf8')))
+        .toMatchObject({ status: 'refused', refusalCode: 'stricter_gate_refusal' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a granted override with an unparsable expiry as expired', async () => {
+    const dir = makeZeroDrainConfig();
+    try {
+      mkdirSync(join(dir, 'playbook-state', 'emission-metrics', 'operator-overrides'), { recursive: true });
+      writeFileSync(operatorOverrideStatePath(dir, invocationId), `${JSON.stringify({
+        schemaVersion: OPERATOR_OVERRIDE_SCHEMA_VERSION,
+        invocationId,
+        repo: 'jeanibarz/maison',
+        requestedBudget: 10,
+        count: 7,
+        reason: 'File the reviewed maintenance planning batch',
+        expiresAt: 'not-a-date',
+        invokedAt: now.toISOString(),
+        status: 'granted',
+        effectiveCount: 7,
+      })}\n`);
+      const io = mkIo();
+      let queried = false;
+      const code = await runEmissionCli([
+        'dedupe', '--repo', 'jeanibarz/maison', '--title', 'Later candidate',
+        '--override-id', invocationId, '--kookr-dir', dir, '--json',
+      ], {
+        ...io,
+        now: () => now,
+        runGh: () => {
+          queried = true;
+          return '[]';
+        },
+      });
+      expect(code).toBe(2);
+      expect(queried).toBe(false);
+      expect(JSON.parse(io.auditLines[0]!.line)).toMatchObject({
+        outcome: 'refused',
+        refusalCode: 'expired',
+        invocationId,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('audits a deferred candidate with the override invocation id', async () => {
     const dir = makeZeroDrainConfig();
     try {
       expect(await runEmissionCli(overrideArgs(dir), {

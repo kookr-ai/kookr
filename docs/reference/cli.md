@@ -377,7 +377,7 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 | `--count <N>` | override | Positive batch size, hard-capped at `10`. |
 | `--reason <text>` | override, defer | Override justification (10-500 characters) or defer reason. Override reasons are recorded in the audit stream. |
 | `--expires-at <ISO>` | override | Canonical UTC expiry in the future and no more than 15 minutes after invocation. |
-| `--override-id <UUID>` | override, dedupe | Required single-use invocation ID for the override; pass the same ID to every candidate's dedupe call. |
+| `--override-id <UUID>` | override, dedupe, defer | Required single-use invocation ID for the override; pass the same ID to every candidate's dedupe or defer call so the audit stream stays bound to the batch. |
 | `--title <text>` | dedupe, defer | Candidate issue title. |
 | `--source <name>` | defer | Emitting playbook id. |
 | `--threshold <N>` | plan, override | Open-backlog threshold before the constrained budget applies. |
