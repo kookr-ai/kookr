@@ -351,6 +351,8 @@ repository defaults to `N` instead. Explicit `0` keeps zero-drain emission off.
 
 ```bash
 kookr emission plan    --repo owner/repo --requested N [OPTIONS]
+kookr emission override --repo owner/repo --requested N --count N \
+  --reason "Operator justification" --expires-at ISO --override-id UUID [OPTIONS]
 kookr emission dedupe  --repo owner/repo --title "..." [OPTIONS]
 kookr emission metrics --repo owner/repo [OPTIONS]
 kookr emission defer   --repo owner/repo --title "..." --source <playbook> [OPTIONS]
@@ -360,6 +362,7 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 | Verb | Purpose |
 | --- | --- |
 | **plan** | Resolve how many new issues this run may file given live open backlog, the target repo's drain rate (closed issues in the window, #1657), and the retro-verify / `ci_blind_debt` queue depth (#1703). |
+| **override** | Run one authorized, single-use plan that may replace an explicit zero-drain cap of `0` with a bounded batch budget. It does not modify project settings or bypass other gates. |
 | **dedupe** | Mandatory pre-filing duplicate check against open issues; always prints a log line. |
 | **metrics** | Open backlog + 7-day `netBacklogDelta7d` + `ci_blind_debt` + budget snapshot (daily-report path). |
 | **defer** | Append a candidate to the deferred-ideas JSONL instead of filing. |
@@ -369,21 +372,24 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 
 | Flag | Used by | Meaning |
 | --- | --- | --- |
-| `--repo <owner/repo>` | plan, dedupe, metrics, defer | Target GitHub repository (required). |
-| `--requested <N>` | plan | How many issues this run wants to file. |
+| `--repo <owner/repo>` | plan, override, dedupe, metrics, defer | Target GitHub repository (required). |
+| `--requested <N>` | plan, override | How many issues this run wants to file. |
+| `--count <N>` | override | Positive batch size, hard-capped at `10`. |
+| `--reason <text>` | override, defer | Override justification (10-500 characters) or defer reason. Override reasons are recorded in the audit stream. |
+| `--expires-at <ISO>` | override | Canonical UTC expiry in the future and no more than 15 minutes after invocation. |
+| `--override-id <UUID>` | override, dedupe | Required single-use invocation ID for the override; pass the same ID to every candidate's dedupe call. |
 | `--title <text>` | dedupe, defer | Candidate issue title. |
 | `--source <name>` | defer | Emitting playbook id. |
-| `--reason <text>` | defer | Defer reason (default: over emission budget). |
-| `--threshold <N>` | plan | Open-backlog threshold before the constrained budget applies. |
-| `--constrained <N>` | plan | Budget when over the open-backlog threshold. |
-| `--drain-window <N>` | plan | Drain-rate window in days. |
-| `--drain-ratio <N>` | plan | New issues earned per drained issue. |
-| `--drain-floor <N>` | plan | Compatibility option; must remain `-1`. Configure a repository's zero-drain allowance in Kookr project settings. |
-| `--retro-verify-threshold <N>` | plan | Queue depth at/above which emission is withheld (default `0` = any pending debt). |
-| `--no-retro-verify-coupling` | plan | Disable the `ci_blind_debt` gate (do not read the queue). |
-| `--tolerance-blocker <type:scope>` | plan | Refuse emission when that external blocker already has a tolerance regime (#1702). |
+| `--threshold <N>` | plan, override | Open-backlog threshold before the constrained budget applies. |
+| `--constrained <N>` | plan, override | Budget when over the open-backlog threshold. |
+| `--drain-window <N>` | plan, override | Drain-rate window in days. |
+| `--drain-ratio <N>` | plan, override | New issues earned per drained issue. |
+| `--drain-floor <N>` | plan, override | Compatibility option; must remain `-1`. Configure a repository's zero-drain allowance in Kookr project settings. |
+| `--retro-verify-threshold <N>` | plan, override | Queue depth at/above which emission is withheld (default `0` = any pending debt). |
+| `--no-retro-verify-coupling` | plan, override | Disable the `ci_blind_debt` gate (do not read the queue). |
+| `--tolerance-blocker <type:scope>` | plan, override | Refuse emission when that external blocker already has a tolerance regime (#1702). |
 | `--body-preview <text>` | defer | Optional body snippet stored on defer. |
-| `--kookr-dir <PATH>` | plan, defer | State root for project configuration and deferred ideas (default `~/.kookr`). |
+| `--kookr-dir <PATH>` | plan, override, dedupe, defer | State root for project configuration, override audit, and deferred ideas (default `~/.kookr`). |
 | `--retro-verify-dir <PATH>` | plan, metrics | Override retro-verify queue dir (default `~/.kookr/playbook-state/retro-verify-queue` or `KOOKR_RETRO_VERIFY_QUEUE_DIR`). |
 | `--repo-dir <PATH>` | version | Local checkout to compare against `origin/main`. |
 | `--json` | all | Machine-readable envelope on stdout. |
@@ -393,16 +399,66 @@ kookr emission version [--repo-dir PATH] [OPTIONS]
 
 | Variable | Role |
 | --- | --- |
-| `GH_TOKEN` / `gh auth` | Required for live GitHub counts (`plan` / `dedupe` / `metrics`). |
+| `GH_TOKEN` / `gh auth` | Required for live GitHub counts (`plan` / `override` / `dedupe` / `metrics`). |
 | `KOOKR_RETRO_VERIFY_QUEUE_DIR` | Override retro-verify queue path (also used by `kookr retro-verify` and documented in [environment variables](./environment-variables.md)). |
+| `KOOKR_EMISSION_OVERRIDE_SECRET` | Configured capability secret (at least 16 characters). Keep it out of command-line arguments and audit text. |
+| `KOOKR_EMISSION_OVERRIDE_AUTHORIZATION` | Command-scoped capability presented by the operator. Unattended callers without this value are refused. |
 
 ### Exit codes
 
 | Exit | Meaning |
 | --- | --- |
 | `0` | Success. |
-| `2` | User error (bad flags / missing required args). |
-| `4` | GitHub query failed. |
+| `2` | User/policy error (bad flags, missing authorization, replay, expired or inapplicable override). |
+| `4` | GitHub query or durable audit/state write failed. |
+
+### Bounded zero-drain operator override
+
+The ordinary `plan` command remains fail-closed for a repository whose explicit
+`zeroDrainIssueLimit` is `0`. An operator can authorize one exceptional batch
+without changing that persistent policy:
+
+```bash
+OVERRIDE_ID=$(node -p "require('node:crypto').randomUUID()")
+EXPIRES_AT=$(node -p "new Date(Date.now() + 10 * 60 * 1000).toISOString()")
+read -r -s -p "Emission override authorization: " KOOKR_EMISSION_OVERRIDE_AUTHORIZATION
+export KOOKR_EMISSION_OVERRIDE_AUTHORIZATION
+PLAN=$(kookr emission override --repo owner/repo --requested 10 --count 10 \
+  --reason "File the operator-reviewed maintenance planning batch" \
+  --expires-at "$EXPIRES_AT" --override-id "$OVERRIDE_ID" --json)
+unset KOOKR_EMISSION_OVERRIDE_AUTHORIZATION
+```
+
+`KOOKR_EMISSION_OVERRIDE_SECRET` must already be exported into the CLI process
+(for example by the operator's secure shell wrapper). The CLI compares the command-scoped authorization in constant time and
+never persists either value. Automation cannot use `override` unless the
+operator deliberately gives that invocation the capability.
+
+The returned `allowedBudget` is at most the requested count, the override count
+(`10` maximum), and the backlog-derived budget. The override applies only when
+the live drain count is zero and the effective repository zero-drain limit is
+exactly `0`; retro-verify debt and tolerance-regime refusals still force the
+effective budget to zero.
+
+Every candidate, including a likely duplicate, must run the existing dedupe
+gate with the batch ID before filing:
+
+```bash
+kookr emission dedupe --repo owner/repo --title "Candidate title" \
+  --override-id "$OVERRIDE_ID" --json
+```
+
+Override decisions, dedupe results, and deferred candidates append to
+`~/.kookr/playbook-state/emission-metrics/emission-audit.jsonl`. The single-use
+claim/result lives under `emission-metrics/operator-overrides/`. Claim creation
+uses exclusive file creation, so concurrent or replayed commands with the same
+UUID are refused. A live-query failure burns the claim; an audit-write failure
+fails closed; and dedupe refuses a granted batch after its expiry.
+
+Recovery is intentionally additive: inspect the audit and claim record, correct
+the cause, then issue a new short-lived override with a new UUID and a reason
+that explains the retry. Do not delete or edit the old record—its consumed or
+refused state is the replay/audit evidence.
 
 When `plan` withholds the budget because retro-verify depth exceeds the
 threshold, the JSON envelope sets `emissionBudgetIfRequestedN.allowedBudget=0`
