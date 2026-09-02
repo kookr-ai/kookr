@@ -2020,9 +2020,9 @@ function deriveTerminalBackendStatus(stats: BackendStats): 'ok' | 'degraded' | '
   ) {
     return 'error';
   }
-  // A successful post-restart self-heal (kookr-ai/kookr#1345) is a benign
-  // success signal on the error bus, not a fault — it must not leave the backend
-  // pinned to `degraded` forever via the sticky `lastError` slot.
+  // Success signals on the error bus must not pin the backend to `degraded`
+  // via the sticky `lastError` slot: post-restart attach self-heal (#1345)
+  // and a completed launch-abandoned boot reap (#2762).
   const benign = stats.lastError?.kind === 'session-recovery-repaired'
     || stats.lastError?.kind === 'launch-abandoned-recovered';
   if (stats.pendingWriters > 0 || (stats.lastError && !benign)) return 'degraded';

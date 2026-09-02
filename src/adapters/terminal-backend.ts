@@ -96,13 +96,17 @@ export type BackendError =
   | { kind: 'startup-recovery-failed'; reason: string };
 
 /**
- * The backend's *success* signals on the error bus: a previously-faulted
- * session's transport was made observably live again — a lazy re-attach that
- * recovered (`session-attach-recovered`) or a post-restart repair that
- * succeeded (`session-recovery-repaired`). These are not faults; the backend
- * uses them to clear a resolved transient fault from its current-error
- * projection so a recovered backend stops reporting `degraded` from a stale
- * `lastError` (issue #2810).
+ * The backend's *success* signals on the error bus. They are not faults: they
+ * never increment `errorCount`, and they may clear a resolved transient
+ * session fault from `lastError` (issue #2810).
+ *
+ * Transport revival: a lazy re-attach (`session-attach-recovered`) or a
+ * post-restart attach repair (`session-recovery-repaired`) made a previously
+ * faulted session observably live again.
+ *
+ * Launch-abandoned boot reap (`launch-abandoned-recovered`, issue #2762): a
+ * prior-process master with no durable live-task owner was reaped. That is a
+ * successful cleanup, not a transport revival.
  */
 export function isBackendRecoverySignal(
   err: BackendError,
@@ -255,13 +259,6 @@ export interface LaunchAbandonedRecoveryResult {
   preservedSessionIds: SessionId[];
   failures: LaunchAbandonedRecoveryFailure[];
 }
-
-export const EMPTY_LAUNCH_ABANDONED_RECOVERY: LaunchAbandonedRecoveryResult = {
-  recoveredSessionIds: [],
-  clearedSessionIds: [],
-  preservedSessionIds: [],
-  failures: [],
-};
 
 // Per-session transport diagnostics — the raw adapter shape and its accessor —
 // deliberately live OFF this port in `terminal-session-diagnostics.ts`. They

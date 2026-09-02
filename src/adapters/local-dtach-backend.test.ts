@@ -1030,6 +1030,8 @@ describe('LocalDtachBackend', () => {
         expect(backend2.getStats()).toMatchObject({
           launchAbandonedRecoveredCount: 1,
           launchAbandonedRecoveryFailureCount: 0,
+          lastError: null,
+          errorCount: 0,
         });
       } finally {
         await (backend2 ?? backend).killSession(id).catch(() => undefined);
