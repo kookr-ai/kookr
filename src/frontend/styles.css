@@ -9628,6 +9628,30 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   white-space: nowrap;
 }
 
+/* Selectable variant: a full-width button that keeps the row's grid layout but
+   strips the native button chrome and adds hover/focus affordance. */
+button.project-drawer-task-selectable {
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+  /* Negative margin cancels the inline padding so the dot/name stay flush with
+     the non-selectable div rows, while the padding still widens the hover/focus
+     background. */
+  padding-inline: 4px;
+  margin-inline: -4px;
+  width: calc(100% + 8px);
+  font: inherit;
+}
+button.project-drawer-task-selectable:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+button.project-drawer-task-selectable:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
 .project-drawer-setting {
   display: flex;
   align-items: center;
