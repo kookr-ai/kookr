@@ -30,7 +30,7 @@ Usage:
   kookr maintenance backup [OPTIONS]  Create a crash-consistent data-dir backup tarball.
   kookr lesson status|drain|remember|yield  Durable lesson-write spool + yield metric.
   kookr effort-split [OPTIONS]  Lucy vs kookr output share vs the 80/20 target (daily report).
-  kookr emission plan|dedupe|metrics|defer|version  Drain-coupled issue filing budget + dedupe.
+  kookr emission plan|override|dedupe|metrics|defer|version  Issue filing budget, bounded override + dedupe.
   kookr value-density classify|admit|composition|decline  Refactor-class emission/spawn governor + composition (#1846).
   kookr queue-feeder plan|leaves [OPTIONS]  Auto-decompose product umbrellas into spawnable leaves when capacity idles (#1845).
   kookr reflect outcomes|ideas [OPTIONS]  Reflection Phase-1 telemetry: 24h outcome tally + ideasFiled resolver.

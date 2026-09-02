@@ -4,6 +4,7 @@ import {
   DEFAULT_DEDUPE_SIMILARITY_THRESHOLD,
   DEFAULT_DRAIN_FLOOR_BUDGET,
   DEFAULT_OPEN_BACKLOG_THRESHOLD,
+  MAX_OPERATOR_OVERRIDE_COUNT,
   DEFAULT_RETRO_VERIFY_DEPTH_THRESHOLD,
   EMISSION_BUDGET_SCHEMA_VERSION,
   budgetLogicVersionStatus,
@@ -337,6 +338,110 @@ describe('resolveEmissionBudget drain coupling (issue #1657)', () => {
     expect(plan.drainCoupled).toBe(true);
     expect(plan.drainCap).toBe(100);
     expect(plan.allowedBudget).toBe(DEFAULT_CONSTRAINED_BUDGET); // stays 2, not 100
+  });
+});
+
+describe('TS-EMISSION-005: bounded zero-drain operator override (issue #2804)', () => {
+  const operatorOverride = {
+    invocationId: 'f56b65a4-d91f-45f2-a37d-5e2339728333',
+    count: 4,
+    reason: 'File the reviewed maintenance batch',
+    expiresAt: '2026-09-01T12:10:00.000Z',
+  };
+
+  it('raises only the explicit zero-drain refusal', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      drainCount: 0,
+      drainFloorBudget: 0,
+      operatorOverride,
+    });
+
+    expect(plan).toMatchObject({
+      drainCap: 0,
+      operatorOverrideCoupled: true,
+      operatorOverrideApplied: true,
+      operatorOverrideCount: 4,
+      operatorOverrideInvocationId: operatorOverride.invocationId,
+      allowedBudget: 4,
+      deferredCount: 4,
+      action: 'constrain',
+    });
+    expect(plan.reason).toMatch(/operator override/i);
+  });
+
+  it('never exceeds the hard cap or the backlog-derived budget', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: DEFAULT_OPEN_BACKLOG_THRESHOLD,
+      requestedBudget: 50,
+      drainCount: 0,
+      drainFloorBudget: 0,
+      operatorOverride: {
+        ...operatorOverride,
+        count: MAX_OPERATOR_OVERRIDE_COUNT + 100,
+      },
+    });
+
+    expect(plan.operatorOverrideCount).toBe(MAX_OPERATOR_OVERRIDE_COUNT);
+    expect(plan.allowedBudget).toBe(DEFAULT_CONSTRAINED_BUDGET);
+  });
+
+  it('leaves the explicit zero-drain refusal unchanged when no override is supplied', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      drainCount: 0,
+      drainFloorBudget: 0,
+    });
+
+    expect(plan.operatorOverrideCoupled).toBe(false);
+    expect(plan.operatorOverrideApplied).toBe(false);
+    expect(plan.allowedBudget).toBe(0);
+    expect(plan.action).toBe('refuse');
+  });
+
+  it('does not apply to a repository with positive drain', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      drainCount: 1,
+      drainFloorBudget: 0,
+      operatorOverride,
+    });
+
+    expect(plan.operatorOverrideCoupled).toBe(true);
+    expect(plan.operatorOverrideApplied).toBe(false);
+    expect(plan.allowedBudget).toBe(1);
+  });
+
+  it('does not apply when the zero-drain floor is unlimited', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      drainCount: 0,
+      operatorOverride,
+    });
+
+    expect(plan.operatorOverrideCoupled).toBe(true);
+    expect(plan.operatorOverrideApplied).toBe(false);
+    expect(plan.allowedBudget).toBe(8);
+    expect(plan.action).toBe('allow');
+  });
+
+  it('does not bypass the retro-verify refusal', () => {
+    const plan = resolveEmissionBudget({
+      openBacklogCount: 10,
+      requestedBudget: 8,
+      drainCount: 0,
+      drainFloorBudget: 0,
+      operatorOverride,
+      retroVerifyDepth: 1,
+    });
+
+    expect(plan.operatorOverrideApplied).toBe(true);
+    expect(plan.retroVerifyWithheld).toBe(true);
+    expect(plan.allowedBudget).toBe(0);
   });
 });
 

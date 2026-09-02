@@ -36,6 +36,18 @@ export const DEFAULT_DRAIN_COUPLING_RATIO = 1;
  */
 export const DEFAULT_DRAIN_FLOOR_BUDGET = UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
 
+/** Hard upper bound for one exceptional operator-authorized filing batch. */
+export const MAX_OPERATOR_OVERRIDE_COUNT = 10;
+
+/** An override must expire within this interval after it is invoked. */
+export const MAX_OPERATOR_OVERRIDE_TTL_MS = 15 * 60 * 1_000;
+
+/** Reject placeholder justifications that do not explain the exception. */
+export const MIN_OPERATOR_OVERRIDE_REASON_LENGTH = 10;
+
+export const EMISSION_AUDIT_SCHEMA_VERSION = 'emission-audit.v1' as const;
+export const OPERATOR_OVERRIDE_SCHEMA_VERSION = 'emission-operator-override.v1' as const;
+
 // v2 (issue #1657): allowedBudget is additionally capped by the target repo's
 // drain rate (closed-in-window), fixing low-backlog / low-drain repos (e.g.
 // lucy at backlog 52 < threshold 60 but draining ~1/window) that previously
@@ -54,7 +66,10 @@ export const DEFAULT_DRAIN_FLOOR_BUDGET = UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
 // v5: operator bootstrap floors are applied only for zero-drain targets.
 // v6: an unset zero-drain floor defaults to -1 (unlimited); configured
 // non-negative values still cap only repositories that drained zero issues.
-export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v6' as const;
+// v7: a validated, one-shot operator grant may replace only an explicit
+// zero-drain cap of 0. Backlog, retro-verify, and tolerance-regime gates remain
+// authoritative.
+export const EMISSION_BUDGET_SCHEMA_VERSION = 'emission-budget.v7' as const;
 export const NET_BACKLOG_DELTA_WINDOW_DAYS = 7;
 
 /**
@@ -121,6 +136,18 @@ export interface EmissionBudgetInput {
    * refusal reason string. Optional; purely informational.
    */
   toleranceRegimeBlockerKey?: string;
+  /**
+   * Already-authorized, single-use grant supplied by the CLI. Core clamps its
+   * count defensively and applies it only to an explicit zero-drain refusal.
+   */
+  operatorOverride?: OperatorEmissionOverride;
+}
+
+export interface OperatorEmissionOverride {
+  invocationId: string;
+  count: number;
+  reason: string;
+  expiresAt: string;
 }
 
 export type EmissionBudgetAction = 'allow' | 'constrain' | 'refuse';
@@ -163,6 +190,16 @@ export interface EmissionBudgetPlan {
   toleranceRegimeBlockerKey?: string;
   /** True when tolerance machinery was refused because a regime already exists. */
   toleranceRegimeBlocked: boolean;
+  /** True when an operator override was supplied to the decision. */
+  operatorOverrideCoupled: boolean;
+  /** True when the override raised an otherwise-zero drain-derived budget. */
+  operatorOverrideApplied: boolean;
+  /** Single-use invocation identifier, when supplied. */
+  operatorOverrideInvocationId?: string;
+  /** Defensively clamped override count, when supplied. */
+  operatorOverrideCount?: number;
+  /** Absolute expiry recorded by the CLI, when supplied. */
+  operatorOverrideExpiresAt?: string;
   action: EmissionBudgetAction;
   reason: string;
 }
@@ -204,6 +241,44 @@ export interface DeferredIdeaRecord {
   allowedBudget?: number;
 }
 
+export type OperatorOverrideStateStatus = 'claimed' | 'granted' | 'refused';
+
+export interface OperatorOverrideState {
+  schemaVersion: typeof OPERATOR_OVERRIDE_SCHEMA_VERSION;
+  invocationId: string;
+  repo: string;
+  requestedBudget: number;
+  count: number;
+  reason: string;
+  expiresAt: string;
+  invokedAt: string;
+  status: OperatorOverrideStateStatus;
+  effectiveCount?: number;
+  refusalCode?: string;
+}
+
+export type EmissionAuditEvent = 'operator_override' | 'filing_attempt';
+export type EmissionAuditOutcome = 'granted' | 'refused' | 'duplicate' | 'dedupe_clear';
+
+export interface EmissionAuditRecord {
+  schemaVersion: typeof EMISSION_AUDIT_SCHEMA_VERSION;
+  at: string;
+  event: EmissionAuditEvent;
+  outcome: EmissionAuditOutcome;
+  repo?: string;
+  invocationId?: string;
+  requestedBudget?: number;
+  overrideCount?: number;
+  effectiveCount?: number;
+  expiresAt?: string;
+  reason?: string;
+  refusalCode?: string;
+  candidateTitle?: string;
+  source?: string;
+  matchNumber?: number;
+  similarity?: number;
+}
+
 function clampNonNegInt(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.floor(value));
@@ -223,6 +298,11 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     input.constrainedBudget ?? DEFAULT_CONSTRAINED_BUDGET,
   );
   const overThreshold = openBacklogCount >= openBacklogThreshold;
+  const operatorOverrideCoupled = input.operatorOverride !== undefined;
+  const operatorOverrideCount = input.operatorOverride
+    ? Math.min(MAX_OPERATOR_OVERRIDE_COUNT, clampNonNegInt(input.operatorOverride.count))
+    : undefined;
+  let operatorOverrideApplied = false;
 
   let allowedBudget: number;
   let action: EmissionBudgetAction;
@@ -294,7 +374,24 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
     if (drainCount > 0 || !zeroDrainUnlimited) {
       drainCap = Math.ceil(drainCount * ratio) + appliedFloor;
     }
-    if (drainCap !== undefined && drainCap < allowedBudget) {
+    if (
+      drainCount === 0
+      && floor === 0
+      && drainCap === 0
+      && input.operatorOverride
+      && operatorOverrideCount !== undefined
+      && operatorOverrideCount > 0
+      && allowedBudget > 0
+    ) {
+      const priorAllowed = allowedBudget;
+      allowedBudget = Math.min(priorAllowed, operatorOverrideCount);
+      operatorOverrideApplied = allowedBudget > 0;
+      action = allowedBudget < requestedBudget ? 'constrain' : 'allow';
+      reason =
+        `Operator override ${input.operatorOverride.invocationId} raised the explicit ` +
+        `zero-drain cap from 0 to ${allowedBudget} for this invocation only ` +
+        `(requested ${requestedBudget}, override count ${operatorOverrideCount}).`;
+    } else if (drainCap !== undefined && drainCap < allowedBudget) {
       const priorAllowed = allowedBudget;
       allowedBudget = drainCap;
       action = allowedBudget === 0 ? 'refuse' : 'constrain';
@@ -395,6 +492,15 @@ export function resolveEmissionBudget(input: EmissionBudgetInput): EmissionBudge
       ? { toleranceRegimeBlockerKey: input.toleranceRegimeBlockerKey }
       : {}),
     toleranceRegimeBlocked,
+    operatorOverrideCoupled,
+    operatorOverrideApplied,
+    ...(input.operatorOverride
+      ? {
+          operatorOverrideInvocationId: input.operatorOverride.invocationId,
+          operatorOverrideCount,
+          operatorOverrideExpiresAt: input.operatorOverride.expiresAt,
+        }
+      : {}),
     action,
     reason,
   };
@@ -617,6 +723,17 @@ export function buildDeferredIdeaRecord(input: {
 export function deferredIdeasPath(repo: string, kookrDir: string): string {
   const slug = repo.replace(/[/.]/g, '-');
   return `${kookrDir.replace(/\/$/, '')}/playbook-state/deferred-ideas/${slug}.jsonl`;
+}
+
+/** Append-only audit stream colocated with the existing emission metrics state. */
+export function emissionAuditPath(kookrDir: string): string {
+  return `${kookrDir.replace(/\/$/, '')}/playbook-state/emission-metrics/emission-audit.jsonl`;
+}
+
+/** Durable single-use claim/result for one operator override invocation. */
+export function operatorOverrideStatePath(kookrDir: string, invocationId: string): string {
+  const safeId = invocationId.replace(/[^A-Za-z0-9-]/g, '_');
+  return `${kookrDir.replace(/\/$/, '')}/playbook-state/emission-metrics/operator-overrides/${safeId}.json`;
 }
 
 /**
