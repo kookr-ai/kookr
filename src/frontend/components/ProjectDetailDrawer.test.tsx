@@ -112,3 +112,136 @@ describe('ProjectDetailDrawer — stalled agents', () => {
     expect(container.textContent).not.toContain('Stalled agents');
   });
 });
+
+describe('ProjectDetailDrawer — selectable recent tasks', () => {
+  function renderWithSelection(
+    project: ProjectSummary,
+    opts: { onSelectTask?: (taskId: string) => void; selectableTaskIds?: ReadonlySet<string> } = {},
+  ) {
+    act(() => {
+      root.render(
+        React.createElement(ProjectDetailDrawer, {
+          project,
+          onClose: () => {},
+          send: () => true,
+          onSelectTask: opts.onSelectTask,
+          selectableTaskIds: opts.selectableTaskIds,
+        }),
+      );
+    });
+  }
+
+  const liveTask = { taskId: 'task-live', name: 'Live task', status: 'inProgress' };
+  const historicalTask = { taskId: 'task-gone', name: 'Old task', status: 'completed' };
+
+  test('renders a live recent task as an accessible button and selects it on click', () => {
+    const selected: string[] = [];
+    renderWithSelection(
+      baseProject({ recentTasks: [liveTask] }),
+      { onSelectTask: (id) => selected.push(id), selectableTaskIds: new Set(['task-live']) },
+    );
+
+    const button = container.querySelector('button[data-testid="project-drawer-task-select"]');
+    expect(button).not.toBeNull();
+    expect(button?.tagName).toBe('BUTTON');
+    // Accessible name conveys the task and its (humanized) status.
+    expect(button?.getAttribute('aria-label')).toBe('Open task Live task (running)');
+
+    act(() => {
+      (button as HTMLButtonElement).click();
+    });
+    expect(selected).toEqual(['task-live']);
+  });
+
+  test('leaves a historical-only task non-selectable, and clicking it never selects', () => {
+    const selected: string[] = [];
+    renderWithSelection(
+      baseProject({ recentTasks: [historicalTask] }),
+      { onSelectTask: (id) => selected.push(id), selectableTaskIds: new Set(['task-live']) },
+    );
+
+    // No selectable button rendered for a task absent from the live projection.
+    expect(container.querySelector('button[data-testid="project-drawer-task-select"]')).toBeNull();
+    const row = container.querySelector('.project-drawer-task');
+    expect(row).not.toBeNull();
+    expect(row?.tagName).toBe('DIV');
+    expect(container.textContent).toContain('Old task');
+
+    // The whole point of the feature: a stale/historical row can never open a
+    // task. Clicking the div must not fire the callback.
+    act(() => {
+      (row as HTMLElement).click();
+    });
+    expect(selected).toEqual([]);
+  });
+
+  test('renders both a selectable live row and a non-selectable historical row', () => {
+    renderWithSelection(
+      baseProject({ recentTasks: [liveTask, historicalTask] }),
+      { onSelectTask: () => {}, selectableTaskIds: new Set(['task-live']) },
+    );
+
+    const buttons = container.querySelectorAll('button[data-testid="project-drawer-task-select"]');
+    expect(buttons.length).toBe(1);
+    expect(buttons[0]?.getAttribute('aria-label')).toBe('Open task Live task (running)');
+    // Two rows total, one interactive and one plain.
+    expect(container.querySelectorAll('.project-drawer-task').length).toBe(2);
+  });
+
+  test('with several live rows, each button selects its own task id', () => {
+    const selected: string[] = [];
+    const second = { taskId: 'task-live-2', name: 'Second live', status: 'inProgress' };
+    renderWithSelection(
+      baseProject({ recentTasks: [liveTask, second] }),
+      { onSelectTask: (id) => selected.push(id), selectableTaskIds: new Set(['task-live', 'task-live-2']) },
+    );
+
+    const buttons = Array.from(
+      container.querySelectorAll<HTMLButtonElement>('button[data-testid="project-drawer-task-select"]'),
+    );
+    expect(buttons.length).toBe(2);
+    act(() => buttons[1].click());
+    act(() => buttons[0].click());
+    // Each row targets its own id, in click order — no shared-closure bleed.
+    expect(selected).toEqual(['task-live-2', 'task-live']);
+  });
+
+  test('falls back to the truncated taskId in the button label when the task has no name', () => {
+    renderWithSelection(
+      baseProject({ recentTasks: [{ taskId: 'abcdef1234567890', status: 'inProgress' }] }),
+      { onSelectTask: () => {}, selectableTaskIds: new Set(['abcdef1234567890']) },
+    );
+
+    const button = container.querySelector('button[data-testid="project-drawer-task-select"]');
+    expect(button?.getAttribute('aria-label')).toBe('Open task abcdef12 (running)');
+  });
+
+  test('does not make a task selectable when selectableTaskIds is undefined', () => {
+    renderWithSelection(
+      baseProject({ recentTasks: [liveTask] }),
+      { onSelectTask: () => {} },
+    );
+
+    expect(container.querySelector('button[data-testid="project-drawer-task-select"]')).toBeNull();
+    expect(container.querySelector('.project-drawer-task')?.tagName).toBe('DIV');
+  });
+
+  test('renders all rows as plain divs when no selection callback is supplied', () => {
+    renderWithSelection(baseProject({ recentTasks: [liveTask, historicalTask] }));
+
+    expect(container.querySelector('button[data-testid="project-drawer-task-select"]')).toBeNull();
+    const rows = container.querySelectorAll('.project-drawer-task');
+    expect(rows.length).toBe(2);
+    rows.forEach((row) => expect(row.tagName).toBe('DIV'));
+  });
+
+  test('does not make a live task selectable when the callback is absent', () => {
+    renderWithSelection(
+      baseProject({ recentTasks: [liveTask] }),
+      { selectableTaskIds: new Set(['task-live']) },
+    );
+
+    expect(container.querySelector('button[data-testid="project-drawer-task-select"]')).toBeNull();
+    expect(container.querySelector('.project-drawer-task')?.tagName).toBe('DIV');
+  });
+});

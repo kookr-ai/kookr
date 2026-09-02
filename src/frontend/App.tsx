@@ -1124,6 +1124,26 @@ export function App() {
     if (relationFilter.mode === 'children') allowed.add(relationFilter.rootTaskId);
     return agents.filter((a) => !a.taskId || allowed.has(a.taskId));
   }, [agents, relationFilter, taskRelations]);
+  // taskId → agentId for every task still backed by a live agent. The project
+  // drawer uses `liveTaskIds` to decide which recent-task rows are selectable
+  // and `liveAgentByTaskId` to open the right agent in the detail panel; a
+  // recent task no longer in the projection is absent here, so its row stays
+  // display-only and can never open an unrelated task.
+  const { liveAgentByTaskId, liveTaskIds } = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const agent of agents) {
+      if (agent.taskId) map.set(agent.taskId, agent.agentId);
+    }
+    return { liveAgentByTaskId: map, liveTaskIds: new Set(map.keys()) };
+  }, [agents]);
+  const selectRecentTask = useCallback((taskId: string) => {
+    const agentId = liveAgentByTaskId.get(taskId);
+    if (!agentId) return;
+    selectAgent(agentId, taskId);
+    // The recent-agents list lives in the project drawer; opening a task means
+    // showing it in the main detail panel, so close the drawer on selection.
+    selectProject(null);
+  }, [liveAgentByTaskId, selectAgent, selectProject]);
   const {
     filteredAgents,
     pending,
@@ -1348,6 +1368,8 @@ export function App() {
       } : undefined}
       onLaunchManual={handleLaunchManualTask}
       onRunPlaybook={handleRunPlaybook}
+      onSelectTask={selectRecentTask}
+      selectableTaskIds={liveTaskIds}
       compact={isMobileViewport}
     />
   );

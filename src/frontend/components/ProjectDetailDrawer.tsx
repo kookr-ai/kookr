@@ -9,6 +9,16 @@ interface Props {
   onOpenWorkspace?: () => void;
   onLaunchManual?: () => void;
   onRunPlaybook?: () => void;
+  /**
+   * Open a recent task in the main detail panel. The app wires this to the
+   * store's existing agent selection. Rows are only made selectable when their
+   * task is still present in the live agent projection (`selectableTaskIds`);
+   * historical-only rows stay display-only so a stale id never opens an
+   * unrelated task.
+   */
+  onSelectTask?: (taskId: string) => void;
+  /** Task ids currently backed by a live agent — the selectable set. */
+  selectableTaskIds?: ReadonlySet<string>;
   compact?: boolean;
 }
 
@@ -40,18 +50,42 @@ function StatRow({ label, value, hint }: { label: string; value: React.ReactNode
   );
 }
 
-function TaskRow({ task }: { task: TaskSummary }) {
+function TaskRow({ task, onSelect }: { task: TaskSummary; onSelect?: () => void }) {
   const status = task.status === 'inProgress' ? 'running' : task.status;
+  const label = task.name ?? task.taskId.slice(0, 8);
+  const dot = <span className={`task-status-dot ${task.status}`} aria-hidden />;
+  const name = <span className="task-name" title={task.name ?? task.taskId}>{label}</span>;
+  const statusText = <span className="task-status-text">{status}</span>;
+
+  // Selectable only when the task is still in the live projection (the app
+  // passes onSelect just for those rows). Historical-only rows render as a
+  // plain, non-interactive div exactly as before.
+  if (onSelect) {
+    return (
+      <button
+        type="button"
+        className="project-drawer-task project-drawer-task-selectable"
+        onClick={onSelect}
+        aria-label={`Open task ${label} (${status})`}
+        data-testid="project-drawer-task-select"
+      >
+        {dot}
+        {name}
+        {statusText}
+      </button>
+    );
+  }
+
   return (
     <div className="project-drawer-task">
-      <span className={`task-status-dot ${task.status}`} aria-hidden />
-      <span className="task-name" title={task.name ?? task.taskId}>{task.name ?? task.taskId.slice(0, 8)}</span>
-      <span className="task-status-text">{status}</span>
+      {dot}
+      {name}
+      {statusText}
     </div>
   );
 }
 
-export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, compact = false }: Props) {
+export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, onLaunchManual, onRunPlaybook, onSelectTask, selectableTaskIds, compact = false }: Props) {
   const zeroDrainHintId = `zero-drain-issue-limit-hint-${project.project}`;
   const inheritedZeroDrainIssueLimit = project.zeroDrainIssueLimit === undefined
     ? (project.effectiveZeroDrainIssueLimit ?? project.zeroDrainIssueLimitMax ?? -1)
@@ -396,7 +430,12 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
         <section className="project-drawer-section" aria-labelledby={`recent-agents-${project.project}`}>
           <h4 id={`recent-agents-${project.project}`}>Recent agents</h4>
           <div className="project-drawer-tasks">
-            {visibleTasks.map((task) => (<TaskRow key={task.taskId} task={task} />))}
+            {visibleTasks.map((task) => {
+              const selectable = onSelectTask && selectableTaskIds?.has(task.taskId)
+                ? () => onSelectTask(task.taskId)
+                : undefined;
+              return <TaskRow key={task.taskId} task={task} onSelect={selectable} />;
+            })}
           </div>
           {!tasksExpanded && hiddenTaskCount > 0 && (
             <button className="project-drawer-link" onClick={() => setTasksExpanded(true)}>
