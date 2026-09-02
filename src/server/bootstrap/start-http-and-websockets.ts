@@ -46,7 +46,7 @@ export const TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES = 8_000_000;
  * route already enforces (`SAFE_ID_RE` in agent-routes, `SESSION_ID_RE` in
  * diagnostics-routes). The decoded name flows straight into per-instance
  * filesystem paths — `join(instanceDir, \`${id}.sock\`)` and
- * `join(ringsDir, \`${id}.bin\`)` — so rejecting a non-matching (e.g.
+ * `join(ringsDir, \`${id}.ring\`)` — so rejecting a non-matching (e.g.
  * traversal-bearing `../../foo`) name pre-handshake keeps a malformed id from
  * ever becoming a bridge or a path. Owner-trusted today; defense-in-depth for
  * the deferred viewer-admission seam (`resolveTerminalActor`).

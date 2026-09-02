@@ -98,9 +98,11 @@ These paths are not controlled by an environment variable (the claims audit is g
 
 Dtach sockets, manifests, and terminal scrollback rings do not live in the data
 directory. They are under `/tmp/kookr-dtach/<uid>/port-<port>/`, with
-`manifest.json` and `rings/<session>.bin` / `rings/<session>.meta.json`. They are
-runtime crash-recovery state for surviving dtach masters, not long-term backup
-state. If Kookr is stopped cleanly and the dtach masters are gone, restoring the
+`manifest.json` and `rings/<session>.ring` (a combined single-file snapshot
+committed with one atomic rename since #2829; pre-#2829 `rings/<session>.bin` /
+`rings/<session>.meta.json` pairs are still read for recovery but no longer
+written). They are runtime crash-recovery state for surviving dtach masters, not
+long-term backup state. If Kookr is stopped cleanly and the dtach masters are gone, restoring the
 data directory alone restores task records but not live terminal processes.
 
 Ralph iteration audit logs also live outside the data directory: each Ralph loop
