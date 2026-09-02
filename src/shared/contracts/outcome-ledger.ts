@@ -82,6 +82,48 @@ export interface OutcomeLedgerWindow {
   end: string;
 }
 
+/**
+ * One headline metric's current-vs-previous-window comparison (issue #2784).
+ *
+ * `current` mirrors the same metric on this response (a rate in `0..1`, or null
+ * when the metric is unknown this window). `previous` is that metric recomputed
+ * over the immediately preceding equal-duration window. `delta` is
+ * `current - previous`, and is null whenever either side is unknown so a missing
+ * value renders as "unavailable" rather than being silently read as a zero
+ * change. It describes movement only and implies nothing about its cause.
+ */
+export interface OutcomeLedgerMetricDelta {
+  current: number | null;
+  previous: number | null;
+  delta: number | null;
+}
+
+/**
+ * Comparison of this window's headline rates against the immediately preceding
+ * equal-duration window (issue #2784).
+ *
+ * When `available`, `previousWindow` bounds the baseline range and each metric
+ * carries a {@link OutcomeLedgerMetricDelta}. The comparison is unavailable —
+ * with no delta implied — in two cases:
+ *  - `all_time_window`: the all-time window has no bounded preceding period.
+ *  - `no_previous_data`: the preceding window contains no tasks, so any delta
+ *    would be a comparison against nothing rather than a real zero change.
+ */
+export type OutcomeLedgerComparison =
+  | {
+      available: true;
+      previousWindow: OutcomeLedgerWindow;
+      previousTaskCount: number;
+      completionRate: OutcomeLedgerMetricDelta;
+      verificationCoverage: OutcomeLedgerMetricDelta;
+      thumbsUpRate: OutcomeLedgerMetricDelta;
+      costCoverage: OutcomeLedgerMetricDelta;
+    }
+  | {
+      available: false;
+      reason: 'all_time_window' | 'no_previous_data';
+    };
+
 export interface OutcomeLedgerSummary {
   taskCount: number;
   terminalTaskCount: number;
@@ -174,6 +216,12 @@ export interface OutcomeLedgerResponse {
   summary: OutcomeLedgerSummary;
   /** Task launch-source mix over the window (issue #2801). */
   launchSourceMix: OutcomeLedgerLaunchSourceMix;
+  /**
+   * Direction of this window's headline rates versus the immediately preceding
+   * equal-duration window (issue #2784). Unavailable for the all-time window
+   * and when the preceding window has no tasks.
+   */
+  comparison: OutcomeLedgerComparison;
   quality: OutcomeLedgerQualitySummary;
   byAgent: OutcomeLedgerByAgentRow[];
   findings: OutcomeLedgerFinding[];

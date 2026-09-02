@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import type {
   OutcomeLedgerByAgentRow,
+  OutcomeLedgerComparison,
   OutcomeLedgerFinding,
   OutcomeLedgerFindingKind,
   OutcomeLedgerLaunchSource,
   OutcomeLedgerLaunchSourceMix,
+  OutcomeLedgerMetricDelta,
   OutcomeLedgerProjectScope,
   OutcomeLedgerResponse,
   OutcomeLedgerTaskRow,
@@ -166,14 +168,15 @@ export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = 
               </div>
               <div className="outcome-metrics-grid">
                 <Metric label="tasks" value={String(data.summary.taskCount)} />
-                <Metric label="completed" value={formatRate(data.summary.completionRate)} detail={`${data.summary.completedTaskCount}/${data.summary.terminalTaskCount}`} />
+                <Metric label="completed" value={formatRate(data.summary.completionRate)} detail={`${data.summary.completedTaskCount}/${data.summary.terminalTaskCount}`} delta={comparisonDelta(data.comparison, 'completionRate')} timeWindow={data.window.value} />
                 <Metric label="PRs" value={String(data.summary.prTaskCount)} detail={`${data.summary.prTaskCount}/${data.summary.taskCount}`} />
-                <Metric label="known cost" value={formatMoney(data.summary.totalKnownCostUsd)} detail={`${pct(data.quality.costCoverage)} coverage`} />
+                <Metric label="known cost" value={formatMoney(data.summary.totalKnownCostUsd)} detail={`${pct(data.quality.costCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'costCoverage')} timeWindow={data.window.value} />
                 <Metric label="tokens" value={formatTokens(data.summary.totalInputTokens + data.summary.totalOutputTokens)} detail={`${formatTokens(data.summary.totalInputTokens)} in / ${formatTokens(data.summary.totalOutputTokens)} out`} />
-                <Metric label="feedback" value={formatRate(data.summary.thumbsUpRate)} detail={`${pct(data.summary.feedbackCoverage)} coverage`} />
-                <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} />
+                <Metric label="feedback" value={formatRate(data.summary.thumbsUpRate)} detail={`${pct(data.summary.feedbackCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'thumbsUpRate')} timeWindow={data.window.value} />
+                <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} delta={comparisonDelta(data.comparison, 'verificationCoverage')} timeWindow={data.window.value} />
                 <Metric label="review flags" value={String(data.findings.length)} />
               </div>
+              <ComparisonNote comparison={data.comparison} timeWindow={data.window.value} />
               <div className="outcome-quality-strip outcome-disposition-strip" role="group" aria-label="Task disposition split">
                 <span>{data.summary.cancelledTaskCount} cancelled</span>
                 <span>{data.summary.terminatedTaskCount} terminated</span>
@@ -212,12 +215,98 @@ export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = 
   );
 }
 
-function Metric({ label, value, detail }: { label: string; value: string; detail?: string }): React.ReactElement {
+function Metric({ label, value, detail, delta, timeWindow }: {
+  label: string;
+  value: string;
+  detail?: string;
+  /** Optional current-vs-previous-window comparison for this metric (issue #2784). */
+  delta?: OutcomeLedgerMetricDelta | null;
+  /** The response's own window, used for the delta's label text. */
+  timeWindow?: TimeWindow;
+}): React.ReactElement {
   return (
     <div className="outcome-metric">
       <span className="outcome-metric-label">{label}</span>
       <strong>{value}</strong>
+      {delta && timeWindow && <DeltaBadge delta={delta} timeWindow={timeWindow} />}
       {detail && <span className="outcome-metric-detail">{detail}</span>}
+    </div>
+  );
+}
+
+// A metric's delta is only meaningful once the comparison is available; an
+// unavailable comparison (all-time, or an empty previous window) yields no
+// per-metric badge, and the standalone ComparisonNote explains why instead.
+function comparisonDelta(
+  comparison: OutcomeLedgerComparison,
+  metric: 'completionRate' | 'verificationCoverage' | 'thumbsUpRate' | 'costCoverage',
+): OutcomeLedgerMetricDelta | null {
+  return comparison.available ? comparison[metric] : null;
+}
+
+// Whole-word window nouns for the accessible delta/comparison text; 'all' never
+// reaches here because the all-time comparison is always unavailable.
+const WINDOW_NOUN: Record<TimeWindow, string> = {
+  '24h': '24h',
+  '7d': '7d',
+  '30d': '30d',
+  all: 'all-time',
+};
+
+/**
+ * Compact directional delta versus the previous equal-duration window (issue
+ * #2784). All four compared metrics are rates, so the change is shown in
+ * percentage points (pp). A delta of null — the metric is unknown on one side —
+ * renders as an explicit "unavailable" dash rather than as a zero change, and
+ * the accessible label states direction and magnitude without implying a cause.
+ */
+function DeltaBadge({ delta, timeWindow }: { delta: OutcomeLedgerMetricDelta; timeWindow: TimeWindow }): React.ReactElement {
+  // role="img" is required for the aria-label to be exposed: a bare <span> has
+  // the generic role, which prohibits an author name, so the label would be
+  // dropped and the aria-hidden glyph would leave the badge silent to a screen
+  // reader. role="img" collapses the glyph+text into one labeled graphic.
+  if (delta.delta == null) {
+    return (
+      <span
+        className="outcome-delta unavailable"
+        role="img"
+        aria-label={`no comparable value in the previous ${WINDOW_NOUN[timeWindow]}`}
+        title={`No comparable value in the previous ${WINDOW_NOUN[timeWindow]}`}
+      >
+        <span aria-hidden>—</span>
+      </span>
+    );
+  }
+  const points = Math.round(delta.delta * 100);
+  const direction = points > 0 ? 'up' : points < 0 ? 'down' : 'flat';
+  const arrow = points > 0 ? '▲' : points < 0 ? '▼' : '→';
+  const magnitude = Math.abs(points);
+  const label = points === 0
+    ? `no change vs previous ${WINDOW_NOUN[timeWindow]}`
+    : `${direction === 'up' ? 'up' : 'down'} ${magnitude} percentage point${magnitude === 1 ? '' : 's'} vs previous ${WINDOW_NOUN[timeWindow]}`;
+  return (
+    <span className={`outcome-delta ${direction}`} role="img" aria-label={label} title={label}>
+      <span aria-hidden>{arrow} {magnitude}pp</span>
+    </span>
+  );
+}
+
+/**
+ * Explains what the metric deltas are measured against, or why they are absent
+ * (issue #2784). Deliberately neutral: it reports that a window moved, never
+ * that Kookr caused the movement.
+ */
+function ComparisonNote({ comparison, timeWindow }: { comparison: OutcomeLedgerComparison; timeWindow: TimeWindow }): React.ReactElement {
+  if (!comparison.available) {
+    const text = comparison.reason === 'all_time_window'
+      ? 'All-time has no preceding window, so change deltas are unavailable.'
+      : `No tasks in the previous ${WINDOW_NOUN[timeWindow]}, so change deltas are unavailable.`;
+    return <div className="outcome-comparison-note unavailable">{text}</div>;
+  }
+  const count = comparison.previousTaskCount;
+  return (
+    <div className="outcome-comparison-note">
+      Δ vs previous {WINDOW_NOUN[timeWindow]} · {count} prior task{count === 1 ? '' : 's'}
     </div>
   );
 }
@@ -491,6 +580,7 @@ function isOutcomeLedgerResponse(value: unknown): value is OutcomeLedgerResponse
     && Boolean(candidate.summary)
     && Boolean(candidate.quality)
     && Boolean(candidate.launchSourceMix?.counts)
+    && typeof candidate.comparison?.available === 'boolean'
     && Array.isArray(candidate.findings)
     && Array.isArray(candidate.tasks)
     && Array.isArray(candidate.notes);

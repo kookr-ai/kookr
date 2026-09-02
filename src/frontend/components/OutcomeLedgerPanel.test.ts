@@ -50,6 +50,19 @@ function response(overrides: Record<string, unknown> = {}) {
       counts: { manual: 4, scheduled: 2, parent: 0, unknown: 1 },
       shares: { manual: 4 / 7, scheduled: 2 / 7, parent: 0, unknown: 1 / 7 },
     },
+    comparison: {
+      available: true,
+      previousWindow: {
+        value: '7d',
+        start: '2026-05-07T12:00:00.000Z',
+        end: '2026-05-14T12:00:00.000Z',
+      },
+      previousTaskCount: 5,
+      completionRate: { current: 0.5, previous: 0.75, delta: -0.25 },
+      verificationCoverage: { current: 0.5, previous: 0.5, delta: 0 },
+      thumbsUpRate: { current: 0.5, previous: null, delta: null },
+      costCoverage: { current: 0.25, previous: 0.1, delta: 0.15 },
+    },
     quality: {
       costKnownTasks: 1,
       zeroCostTasks: 1,
@@ -694,6 +707,108 @@ describe('OutcomeLedgerPanel', () => {
     expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=7d', expect.any(Object));
   });
 
+  test('renders directional deltas beside the compared metrics (issue #2784)', async () => {
+    const el = mount();
+
+    await flush();
+
+    const metricFor = (label: string) => Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === label,
+    );
+    // completionRate delta -0.25 → down 25pp, red direction class.
+    const completed = metricFor('completed');
+    const completedDelta = completed?.querySelector('.outcome-delta');
+    expect(completedDelta?.classList.contains('down')).toBe(true);
+    expect(completedDelta?.textContent).toContain('25pp');
+    expect(completedDelta?.getAttribute('aria-label')).toBe('down 25 percentage points vs previous 7d');
+    // verificationCoverage delta 0 → flat direction, no false up/down.
+    const verified = metricFor('verified')?.querySelector('.outcome-delta');
+    expect(verified?.classList.contains('flat')).toBe(true);
+    expect(verified?.getAttribute('aria-label')).toBe('no change vs previous 7d');
+    // costCoverage delta +0.15 → up 15pp, with a symmetric accessible label.
+    const cost = metricFor('known cost')?.querySelector('.outcome-delta');
+    expect(cost?.classList.contains('up')).toBe(true);
+    expect(cost?.textContent).toContain('15pp');
+    expect(cost?.getAttribute('aria-label')).toBe('up 15 percentage points vs previous 7d');
+    // role="img" must be present or the aria-label is dropped on a generic span.
+    expect(cost?.getAttribute('role')).toBe('img');
+    expect(completedDelta?.getAttribute('role')).toBe('img');
+    // The comparison note explains the baseline.
+    expect(el.querySelector('.outcome-comparison-note')?.textContent).toContain('vs previous 7d');
+    expect(el.querySelector('.outcome-comparison-note')?.textContent).toContain('5 prior tasks');
+  });
+
+  test('labels deltas with the response window, not just 7d, and handles singular grammar (issue #2784)', async () => {
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      window: { value: '30d', start: '2026-04-21T12:00:00.000Z', end: '2026-05-21T12:00:00.000Z' },
+      comparison: {
+        available: true,
+        previousWindow: { value: '30d', start: '2026-03-22T12:00:00.000Z', end: '2026-04-21T12:00:00.000Z' },
+        previousTaskCount: 1,
+        completionRate: { current: 0.51, previous: 0.5, delta: 0.01 },
+        verificationCoverage: { current: 0.5, previous: 0.5, delta: 0 },
+        thumbsUpRate: { current: 0.5, previous: 0.5, delta: 0 },
+        costCoverage: { current: 0.25, previous: 0.25, delta: 0 },
+      },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    const completed = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'completed',
+    );
+    // +0.01 → up 1pp, exercising both the 30d window noun and the singular
+    // "percentage point" (not "points") branch.
+    expect(completed?.querySelector('.outcome-delta')?.getAttribute('aria-label'))
+      .toBe('up 1 percentage point vs previous 30d');
+    // Singular "prior task" when previousTaskCount is 1.
+    expect(el.querySelector('.outcome-comparison-note')?.textContent).toContain('vs previous 30d · 1 prior task');
+  });
+
+  test('renders a null metric delta as unavailable rather than a zero change (issue #2784)', async () => {
+    const el = mount();
+
+    await flush();
+
+    // thumbsUpRate delta is null in the fixture (no previous feedback votes).
+    const feedback = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'feedback',
+    );
+    const delta = feedback?.querySelector('.outcome-delta');
+    expect(delta?.classList.contains('unavailable')).toBe(true);
+    expect(delta?.classList.contains('flat')).toBe(false);
+    expect(delta?.textContent).toContain('—');
+    expect(delta?.getAttribute('aria-label')).toBe('no comparable value in the previous 7d');
+  });
+
+  test('states why deltas are unavailable when the comparison is off (issue #2784)', async () => {
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      comparison: { available: false, reason: 'all_time_window' },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    expect(el.querySelector('.outcome-comparison-note.unavailable')?.textContent)
+      .toContain('All-time has no preceding window');
+    // With no comparison, no per-metric delta badges render at all.
+    expect(el.querySelector('.outcome-delta')).toBeNull();
+  });
+
+  test('states the everyday sparse case when the previous window has no tasks (issue #2784)', async () => {
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      comparison: { available: false, reason: 'no_previous_data' },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    expect(el.querySelector('.outcome-comparison-note.unavailable')?.textContent)
+      .toContain('No tasks in the previous 7d');
+    expect(el.querySelector('.outcome-delta')).toBeNull();
+  });
+
   test('renders an error for invalid response payloads', async () => {
     vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse({ schemaVersion: 'wrong' })));
     const el = mount();
@@ -708,6 +823,18 @@ describe('OutcomeLedgerPanel', () => {
     // the type guard rather than reach the panel and throw on mix.counts.
     const { launchSourceMix: _dropped, ...withoutMix } = response();
     vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(withoutMix)));
+    const el = mount();
+
+    await flush();
+
+    expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('rejects an otherwise-valid response that is missing the comparison (issue #2784)', async () => {
+    // Without comparison the panel would throw reading comparison.available, so
+    // the type guard must reject the payload up front.
+    const { comparison: _dropped, ...withoutComparison } = response();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(withoutComparison)));
     const el = mount();
 
     await flush();

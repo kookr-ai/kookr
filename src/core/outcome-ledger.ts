@@ -5,9 +5,11 @@ import type { TokenUsage } from './usage-types.js';
 import type { TimeWindow } from '../shared/contracts/cost-comparison.js';
 import type {
   OutcomeLedgerByAgentRow,
+  OutcomeLedgerComparison,
   OutcomeLedgerFinding,
   OutcomeLedgerLaunchSource,
   OutcomeLedgerLaunchSourceMix,
+  OutcomeLedgerMetricDelta,
   OutcomeLedgerProjectScope,
   OutcomeLedgerQualityFlag,
   OutcomeLedgerQualitySummary,
@@ -67,6 +69,7 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
   const byAgent = summarizeByAgent(taskRows);
   const findings = buildFindings(taskRows);
   const readiness = computeReadiness(summary, quality, findings);
+  const comparison = buildComparison(input, scope, summary, quality);
 
   return {
     schemaVersion: 'outcome-ledger.v1',
@@ -80,6 +83,7 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
     readiness,
     summary,
     launchSourceMix,
+    comparison,
     quality,
     byAgent,
     findings,
@@ -91,6 +95,74 @@ export function buildOutcomeLedger(input: OutcomeLedgerInput): OutcomeLedgerResp
 function isTaskInWindow(task: Task, startMs: number, endMs: number): boolean {
   const createdMs = toMs(task.createdAt);
   return createdMs >= startMs && createdMs <= endMs;
+}
+
+/**
+ * Compare this window's headline rates against the immediately preceding
+ * equal-duration window (issue #2784).
+ *
+ * The all-time window has no bounded baseline, so it reports unavailable outright
+ * rather than comparing against everything-before-forever. Otherwise the previous
+ * window is `[windowStart - duration, windowStart)` — the same span, ending the
+ * instant the current one begins, and half-open at the top so a task created
+ * exactly on the boundary belongs to the current window only and is never counted
+ * on both sides. When that window holds no tasks the comparison is unavailable:
+ * a delta against an empty period would be a comparison with nothing, not a real
+ * zero change. Each metric's per-side null handling (see {@link toMetricDelta})
+ * then keeps a metric that is unknown on either side from reading as no movement.
+ */
+function buildComparison(
+  input: OutcomeLedgerInput,
+  scope: OutcomeLedgerProjectScope,
+  currentSummary: OutcomeLedgerSummary,
+  currentQuality: OutcomeLedgerQualitySummary,
+): OutcomeLedgerComparison {
+  if (input.window === 'all') {
+    return { available: false, reason: 'all_time_window' };
+  }
+  const duration = input.windowEndMs - input.windowStartMs;
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return { available: false, reason: 'all_time_window' };
+  }
+  const previousEndMs = input.windowStartMs;
+  const previousStartMs = input.windowStartMs - duration;
+  const previousRows = input.tasks
+    .filter((task) => taskMatchesScope(task, scope))
+    .filter((task) => isTaskInPreviousWindow(task, previousStartMs, previousEndMs))
+    .map((task) => projectTask(task, input));
+  if (previousRows.length === 0) {
+    return { available: false, reason: 'no_previous_data' };
+  }
+  const previousSummary = summarize(previousRows);
+  const previousQuality = summarizeQuality(previousRows);
+  return {
+    available: true,
+    previousWindow: {
+      value: input.window,
+      start: new Date(previousStartMs).toISOString(),
+      end: new Date(previousEndMs).toISOString(),
+    },
+    previousTaskCount: previousRows.length,
+    completionRate: toMetricDelta(currentSummary.completionRate, previousSummary.completionRate),
+    verificationCoverage: toMetricDelta(currentQuality.verificationCoverage, previousQuality.verificationCoverage),
+    thumbsUpRate: toMetricDelta(currentSummary.thumbsUpRate, previousSummary.thumbsUpRate),
+    costCoverage: toMetricDelta(currentQuality.costCoverage, previousQuality.costCoverage),
+  };
+}
+
+// Half-open [startMs, endMs) so a task on the shared boundary counts in the
+// current window only, never on both sides of the comparison.
+function isTaskInPreviousWindow(task: Task, startMs: number, endMs: number): boolean {
+  const createdMs = toMs(task.createdAt);
+  return createdMs >= startMs && createdMs < endMs;
+}
+
+function toMetricDelta(current: number | null, previous: number | null): OutcomeLedgerMetricDelta {
+  return {
+    current,
+    previous,
+    delta: current != null && previous != null ? current - previous : null,
+  };
 }
 
 function taskMatchesScope(task: Task, scope: OutcomeLedgerProjectScope): boolean {
