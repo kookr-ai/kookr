@@ -96,7 +96,7 @@ unchanged).
 
 Sliding-window rate limit on task **creation**, bucketed per launch source
 (`cli`, `api`, `ui`, `websocket`, `remote-chat-telegram`, `remote-relay`,
-`idle-refinery`).
+`idle-refinery`, `post-recovery`).
 When the Phase B `X-Kookr-Actor` header is present on `POST /api/tasks`, the
 bucket is actor-qualified (`api:actor:lucy-supervisor`), so an attributed
 supervisor burns its own budget instead of sharing — or exhausting — the

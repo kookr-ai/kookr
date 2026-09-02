@@ -31,10 +31,12 @@ export type TaskMetadataIntent = 'keep_as_duplicate';
  * truth for `LaunchOpts.launchSource`, the per-source spawn budget's bucket
  * key, and the `metadata.launchSource` stamp on the created task record.
  *
- * `idle-refinery` (issue #2144) is the idle-slot idea refinery's autonomous
- * spawn source: it decomposes an open umbrella into vetted leaf issues when the
- * harness is idle. It is spawn-budget-capped (NOT exempt like `schedule`) and
- * counts as autonomous actuation for the kill-switch.
+ * `idle-refinery` (issue #2144) and `post-recovery` (issue #2899) are autonomous
+ * spawn sources: the former decomposes an open umbrella into vetted leaf issues
+ * when the harness is idle, the latter refills the queue with a recovery idea
+ * scout after an outage/restart returns free capacity to an empty queue. Both
+ * are spawn-budget-capped (NOT exempt like `schedule`) and count as autonomous
+ * actuation for the kill-switch.
  */
 export type TaskLaunchSource =
   | 'cli'
@@ -43,6 +45,7 @@ export type TaskLaunchSource =
   | 'websocket'
   | 'schedule'
   | 'idle-refinery'
+  | 'post-recovery'
   | 'remote-chat-telegram'
   | 'remote-relay';
 export type TaskPriority = 'high';

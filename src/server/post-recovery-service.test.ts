@@ -2,19 +2,31 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AdapterRegistry, type AgentAdapter } from '../adapters/agent-adapter.js';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
 import type { Schedule } from '../core/schedule.js';
-import type { Task, TaskStore } from '../core/tasks.js';
+import { TaskStore, type Task } from '../core/tasks.js';
 import { POST_RECOVERY_MIN_FREE_SLOTS } from '../core/post-recovery-queue-fill.js';
+import { launchTask, type LaunchServiceDeps } from './launch-service.js';
+
+// A hook the SAFE-MODE-during-preparation test flips just before the mocked
+// playbook preparation resolves, simulating the kill-switch engaging after the
+// recovery tick's initial check but before launch preparation completes.
+const prepareLaunchControl = vi.hoisted(() => ({
+  beforeResolve: undefined as (() => void) | undefined,
+}));
 
 vi.mock('./use-cases/playbook-launch.js', () => ({
-  preparePlaybookLaunchWithMetadata: vi.fn(async () => ({
-    launchOpts: {
-      prompt: 'idea scout mock',
-      cwd: '/tmp/lucy',
-      playbookId: 'repository-idea-scout.md',
-    },
-  })),
+  preparePlaybookLaunchWithMetadata: vi.fn(async () => {
+    prepareLaunchControl.beforeResolve?.();
+    return {
+      launchOpts: {
+        prompt: 'idea scout mock',
+        cwd: '/tmp/lucy',
+        playbookId: 'repository-idea-scout.md',
+      },
+    };
+  }),
 }));
 
 import {
@@ -135,6 +147,7 @@ describe('PostRecoveryService', () => {
   beforeEach(async () => {
     tempDir = await mkdtemp(join(tmpdir(), 'kookr-post-recovery-'));
     nowMs = Date.parse('2026-08-10T15:00:00.000Z');
+    prepareLaunchControl.beforeResolve = undefined;
   });
 
   afterEach(async () => {
@@ -1062,6 +1075,8 @@ describe('PostRecoveryService', () => {
     const launcher = vi.fn(async (opts) => {
       expect(opts.idempotencyKey).toBe('post-recovery-queue-fill:jeanibarz-lucy:2026-08-10');
       expect(opts.playbookId).toBe('repository-idea-scout.md');
+      // Recovery scouts carry the first-class autonomous source (issue #2899).
+      expect(opts.launchSource).toBe('post-recovery');
       return {
         task: { id: 'scout-happy', status: 'running' } as Task,
         queued: false,
@@ -1147,6 +1162,99 @@ describe('PostRecoveryService', () => {
       utcDay: '2026-08-10',
     });
     expect(launcher).toHaveBeenCalledOnce(); // still one
+  });
+
+  it('TS-LAUNCH-POST-RECOVERY-004: SAFE MODE engaged during preparation rejects at the launch boundary (issue #2899)', async () => {
+    // The tick's entry SAFE MODE check (post-recovery-service.ts) passes while
+    // automation is enabled; the kill-switch then engages during asynchronous
+    // playbook preparation. Because the recovery scout carries the first-class
+    // `post-recovery` source, the launch service re-checks SAFE MODE at the
+    // trusted launch boundary and rejects it — no task, no agent session.
+    let automationEnabled = true;
+    prepareLaunchControl.beforeResolve = () => {
+      automationEnabled = false;
+    };
+    const taskStore = new TaskStore();
+    const adapterLaunch = vi.fn(async () => 'must-not-launch');
+    const adapter: AgentAdapter = {
+      agentType: 'claude-code',
+      launch: adapterLaunch,
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(async () => ''),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+    const adapterRegistry = new AdapterRegistry();
+    adapterRegistry.register(adapter);
+    const launchDeps: LaunchServiceDeps = {
+      taskStore,
+      adapterRegistry,
+      flushTasks: vi.fn(async () => {}),
+      lifecycleDeps: {
+        monitor: { registerAgent: vi.fn() },
+        watchdog: { registerAgent: vi.fn() },
+        hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() },
+        githubScanner: {
+          scanTask: vi.fn(),
+          isActive: vi.fn(() => false),
+          processTaskPrompt: vi.fn(),
+        },
+        autoNameTask: vi.fn(),
+      } as unknown as LaunchServiceDeps['lifecycleDeps'],
+      isAutomationEnabled: () => automationEnabled,
+    };
+    const launcher = vi.fn((opts) => launchTask(launchDeps, opts));
+    const service = new PostRecoveryService({
+      listSchedules: () => [
+        schedule({
+          id: 'batch',
+          name: 'Lucy batch',
+          enabled: true,
+          playbook: {
+            path: 'parallel-issue-batch.md',
+            parameters: {
+              repoFullName: 'jeanibarz/lucy',
+              localPath: '/tmp/lucy',
+            },
+          },
+        }),
+      ],
+      setEnabled: vi.fn(),
+      taskStore,
+      getCapacityLedger: () => makeLedger({
+        free: 7,
+        freeForGeneralSources: 7,
+        pendingQueueDepth: 0,
+      }),
+      launcher,
+      isDispatchHealthy: () => true,
+      isAutomationEnabled: () => automationEnabled,
+      kookrDir: tempDir,
+      kickStateDir: join(tempDir, 'kick-safe-mode-race'),
+      starvationStateDir: join(tempDir, 'starvation-safe-mode-race'),
+      now: () => nowMs,
+      log: () => {},
+    });
+
+    const result = await service.tick();
+
+    // The kill-switch flipped mid-preparation, so the tick's entry check could
+    // not catch it — the launcher was still invoked once.
+    expect(automationEnabled).toBe(false);
+    expect(launcher).toHaveBeenCalledOnce();
+    // ...and the launch boundary rejected the autonomous scout.
+    expect(result.kicks).toHaveLength(1);
+    expect(result.kicks[0]).toMatchObject({
+      repo: 'jeanibarz/lucy',
+      kicked: false,
+    });
+    expect(result.kicks[0]?.reason).toContain('SAFE MODE');
+    expect(taskStore.listTasks()).toHaveLength(0);
+    expect(adapterLaunch).not.toHaveBeenCalled();
   });
 
   it('degraded kick: batch-arm persistence failure reports failed + degraded audit while still consuming the day (#2856)', async () => {

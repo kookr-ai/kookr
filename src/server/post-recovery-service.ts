@@ -799,7 +799,11 @@ export class PostRecoveryService {
       ...prepared.launchOpts,
       playbookId: prepared.launchOpts.playbookId ?? 'repository-idea-scout.md',
       projectId: prepared.launchOpts.projectId ?? projectId,
-      launchSource: 'api',
+      // First-class autonomous source (issue #2899): SAFE MODE is re-checked at
+      // the launch boundary AFTER this asynchronous playbook preparation, so a
+      // kill-switch engaged mid-preparation still rejects the recovery scout.
+      // Stays spawn-budget-capped (only `schedule` is budget-exempt).
+      launchSource: 'post-recovery',
       disableDedup: true,
       autoCloseOnSignal: true,
       idempotencyKey: postRecoveryKickIdempotencyKey(

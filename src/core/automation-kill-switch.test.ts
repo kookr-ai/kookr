@@ -51,6 +51,10 @@ describe('isAutonomousLaunchSource', () => {
     expect(isAutonomousLaunchSource('idle-refinery')).toBe(true);
   });
 
+  it('TS-LAUNCH-POST-RECOVERY-001: treats post-recovery as autonomous (issue #2899)', () => {
+    expect(isAutonomousLaunchSource('post-recovery')).toBe(true);
+  });
+
   it('treats operator-driven sources as non-autonomous', () => {
     for (const source of ['api', 'ui', 'cli', 'websocket', 'remote-chat-telegram', 'remote-relay'] as const) {
       expect(isAutonomousLaunchSource(source)).toBe(false);
