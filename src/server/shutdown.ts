@@ -20,6 +20,15 @@ export interface ShutdownHandlerDeps {
   server: { close: () => Promise<void> };
   exit?: (code: number) => void;
   logger?: Pick<Console, 'log' | 'warn'>;
+  /**
+   * Issue #2790: persist a clean-shutdown marker so the next boot classifies
+   * this restart as graceful (not a crash/OOM/SIGKILL). Called once on the
+   * first signal, before `server.close()`, so the marker is on disk even if the
+   * close hangs and a second signal force-exits. Must never throw — the store's
+   * writer already swallows every error. Absent ⇒ no marker is written (tests /
+   * partial harnesses).
+   */
+  recordCleanShutdown?: (signal: string) => void;
 }
 
 /**
@@ -51,6 +60,15 @@ export function createShutdownHandler(deps: ShutdownHandlerDeps): (signal: strin
     }
     shuttingDown = true;
     logger.log(`\n${signal} received. Shutting down...`);
+    // Issue #2790: stamp the clean-shutdown marker up front, before any slow
+    // teardown step, so a graceful restart is recorded even if server.close()
+    // hangs and a second signal force-exits. Best-effort; the writer never
+    // throws, but guard anyway so a marker bug can never abort shutdown.
+    try {
+      deps.recordCleanShutdown?.(signal);
+    } catch {
+      // Marker persistence must never block the shutdown path.
+    }
     // Signal lifecycle abort so in-flight startup-warmup work (Telegram whisper)
     // cancels cleanly. See issue #188.
     deps.lifecycleAc.abort();

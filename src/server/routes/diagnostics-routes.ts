@@ -859,6 +859,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // "listening, still recovering" vs "fully ready" without treating
       // liveness as readiness.
       ...(deps.startupReadiness ? { startup: deps.startupReadiness.getProgress() } : {}),
+      // Issue #2790: did the previous process exit cleanly? `dirty` marks a
+      // crash/OOM/SIGKILL, `clean` a graceful restart, `unknown` a first boot
+      // or wiped/corrupt marker. Deterministic, bounded, secret-free — safe to
+      // project verbatim. Computed before startup recovery, so it describes the
+      // state at bind time, not after recovery churned the tasks.
+      ...(deps.bootStatus ? { boot: deps.bootStatus } : {}),
       ...(startupRecoveryBlock ? { startupRecovery: startupRecoveryBlock } : {}),
       launchDependencies,
       attentionQueue: {

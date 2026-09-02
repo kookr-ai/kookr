@@ -14,6 +14,7 @@ interface Harness {
   ttsStop: ReturnType<typeof vi.fn>;
   serverClose: ReturnType<typeof vi.fn>;
   exit: ReturnType<typeof vi.fn>;
+  recordCleanShutdown: ReturnType<typeof vi.fn>;
   logs: string[];
   warns: string[];
   /** Resolve the server close() to let a gated graceful path proceed. */
@@ -38,15 +39,17 @@ function makeHarness(opts: { gateClose?: boolean } = {}): Harness {
       }),
   );
   const exit = vi.fn();
+  const recordCleanShutdown = vi.fn();
   const deps: ShutdownHandlerDeps = {
     lifecycleAc: { abort },
     sttManager: { url: 'ws://stt', stop: sttStop },
     ttsManager: { url: 'http://tts', stop: ttsStop },
     server: { close: serverClose },
     exit,
+    recordCleanShutdown,
     logger: { log: (m: string) => logs.push(m), warn: (m: string) => warns.push(m) },
   };
-  return { deps, abort, sttStop, ttsStop, serverClose, exit, logs, warns, releaseClose: () => release() };
+  return { deps, abort, sttStop, ttsStop, serverClose, exit, recordCleanShutdown, logs, warns, releaseClose: () => release() };
 }
 
 describe('createShutdownHandler', () => {
@@ -68,6 +71,48 @@ describe('createShutdownHandler', () => {
 
     // abort BEFORE server.close() (issue #188 clean warmup-cancel).
     expect(h.abort.mock.invocationCallOrder[0]).toBeLessThan(h.serverClose.mock.invocationCallOrder[0]);
+  });
+
+  it('records the clean-shutdown marker with the signal, before server.close (issue #2790)', async () => {
+    const h = makeHarness();
+    const shutdown = createShutdownHandler(h.deps);
+
+    await shutdown('SIGTERM');
+
+    expect(h.recordCleanShutdown).toHaveBeenCalledTimes(1);
+    expect(h.recordCleanShutdown).toHaveBeenCalledWith('SIGTERM');
+    // Marker is stamped up front, before the (possibly slow) server close.
+    expect(h.recordCleanShutdown.mock.invocationCallOrder[0]).toBeLessThan(
+      h.serverClose.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not re-stamp the clean marker on a second, escalating signal (issue #2790)', async () => {
+    const h = makeHarness({ gateClose: true });
+    const shutdown = createShutdownHandler(h.deps);
+
+    const first = shutdown('SIGTERM');
+    await Promise.resolve();
+    expect(h.recordCleanShutdown).toHaveBeenCalledTimes(1);
+
+    // Second signal escalates to force-exit; it must not write another marker.
+    await shutdown('SIGTERM');
+    expect(h.recordCleanShutdown).toHaveBeenCalledTimes(1);
+    expect(h.exit).toHaveBeenCalledWith(1);
+
+    h.releaseClose();
+    await first;
+  });
+
+  it('still shuts down when no marker recorder is wired', async () => {
+    const h = makeHarness();
+    h.deps.recordCleanShutdown = undefined;
+    const shutdown = createShutdownHandler(h.deps);
+
+    await shutdown('SIGINT');
+
+    expect(h.serverClose).toHaveBeenCalledTimes(1);
+    expect(h.exit).toHaveBeenCalledWith(0);
   });
 
   it('force-exits(1) on a repeated signal without re-running the graceful path', async () => {
