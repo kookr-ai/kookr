@@ -2,6 +2,7 @@ import { test as base, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
+import { sanitizedChildServerEnv } from './child-server-env.js';
 
 export function createRelayModeTest(mode: 'stored' | 'runtime') {
   const label = mode === 'stored' ? 'Stored' : 'Runtime';
@@ -13,12 +14,11 @@ export function createRelayModeTest(mode: 'stored' | 'runtime') {
         'node',
         ['--import', 'tsx', join(__dirname, 'test-server.ts')],
         {
-          env: {
-            ...process.env,
+          env: sanitizedChildServerEnv({
             E2E_PORT: '0',
             E2E_WITH_RELAY: '1',
             E2E_RELAY_CREDENTIAL_MODE: mode,
-          },
+          }),
           stdio: ['pipe', 'pipe', 'pipe'],
         },
       );

@@ -11,6 +11,7 @@ import { test as base, expect } from '@playwright/test';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { join } from 'node:path';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
+import { sanitizedChildServerEnv } from './child-server-env.js';
 
 export const test = base.extend<{
   suppressOnboarding: boolean;
@@ -33,12 +34,11 @@ export const test = base.extend<{
       'node',
       ['--import', 'tsx', join(__dirname, 'test-server.ts')],
       {
-        env: {
-          ...process.env,
+        env: sanitizedChildServerEnv({
           E2E_PORT: '0',
           KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: promptBracketedPaste ? '1' : '0',
           E2E_PROMPT_SUBMIT_AUTO_HOOK: promptBracketedPaste ? '1' : '0',
-        },
+        }),
         stdio: ['pipe', 'pipe', 'pipe'],
       },
     );
