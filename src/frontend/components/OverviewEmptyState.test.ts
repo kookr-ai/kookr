@@ -16,6 +16,7 @@ import {
   OVERVIEW_RUNNING_LIMIT,
   OverviewEmptyState,
 } from './OverviewEmptyState.js';
+import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
   open: vi.fn(),
@@ -360,8 +361,10 @@ describe('OverviewEmptyState', () => {
     const onCheckSetup = vi.fn();
     render({ onCheckSetup });
 
-    const gettingStarted = container.querySelector<HTMLAnchorElement>('a.overview-tour-link');
-    expect(gettingStarted).not.toBeNull();
+    const gettingStarted = Array.from(
+      container.querySelectorAll<HTMLAnchorElement>('a.overview-tour-link'),
+    ).find((el) => el.textContent?.includes('Getting Started'));
+    expect(gettingStarted).toBeDefined();
     expect(gettingStarted?.textContent).toContain('Getting Started');
     expect(GETTING_STARTED_GUIDE_URL).toBe(
       'https://github.com/kookr-ai/kookr/blob/main/docs/getting-started.md',
@@ -379,6 +382,34 @@ describe('OverviewEmptyState', () => {
       checkSetup?.click();
     });
     expect(onCheckSetup).toHaveBeenCalledTimes(1);
+  });
+
+  test('first-run empty state links the narrated demo, reusing the shared URL constant', () => {
+    render();
+
+    const demoLink = container.querySelector<HTMLAnchorElement>(
+      'a[data-testid="overview-demo-link"]',
+    );
+    expect(demoLink).not.toBeNull();
+    expect(demoLink?.textContent).toContain('Watch the 2-minute demo');
+    // Reuse the exported constant rather than a fresh hard-coded URL: pin the
+    // constant's value AND the rendered href, so a wrong/empty constant is caught.
+    expect(NARRATED_DEMO_YOUTUBE_URL).toBe('https://youtu.be/DHZrO8T_6Xg');
+    expect(demoLink?.href).toBe(NARRATED_DEMO_YOUTUBE_URL);
+    expect(demoLink?.target).toBe('_blank');
+    expect(demoLink?.rel).toBe('noopener noreferrer');
+    // The demo link lives inside the first-run "New to Kookr?" row.
+    const reentryRow = container.querySelector('.overview-tour-reentry');
+    expect(reentryRow?.contains(demoLink)).toBe(true);
+  });
+
+  test('does not link the narrated demo once any task exists', () => {
+    render({ waiting: [makeWaitingAgent('agent-1', 'Fix the build')] });
+
+    expect(
+      container.querySelector('a[data-testid="overview-demo-link"]'),
+    ).toBeNull();
+    expect(container.textContent).not.toContain('Watch the 2-minute demo');
   });
 
   test('does not show the first-run setup links in the returning-empty all-clear branch', () => {

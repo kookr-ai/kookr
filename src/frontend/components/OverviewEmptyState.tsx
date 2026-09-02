@@ -9,6 +9,7 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import { useKookrStore } from '../store/useStore.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
+import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
 import {
   PlaybookUsageTracker,
   resolveRecentPlaybookLabel,
@@ -440,6 +441,16 @@ export function OverviewEmptyState({
             >
               Take the tour
             </button>
+            {' · '}
+            <a
+              className="overview-tour-link"
+              href={NARRATED_DEMO_YOUTUBE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="overview-demo-link"
+            >
+              Watch the 2-minute demo
+            </a>
             {' · '}
             <a
               className="overview-tour-link"
