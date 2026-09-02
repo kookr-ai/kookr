@@ -141,9 +141,10 @@ v1's evidence pack was grepped from a sibling checkout, not this tree
   It takes `source`, `projectId`, `globalEnabled`, `pausedProjectIds`, and
   `safeModeExempt`. Polarity (`!== false` / Set membership) lives **inside**
   the function, not at callers. `safeModeExempt` bypasses **only** global
-  SAFE MODE (R14). Callers: schedule `fire()`, provider-reset sweep,
-  launch-service, idle-refinery **tick**, post-recovery **per-kick**,
-  pipeline-starvation scout/kick (R17).
+  SAFE MODE (R14). Callers: schedule `fire()`, provider-reset **per resume**,
+  launch-service, idle-refinery **tick**, post-recovery **per-kick**.
+  Provider-transient-retry SHALL pass the stamp (R20). Pipeline-starvation
+  is **not** a P1 caller (R19).
 - **R12.** Schedule-runner resolves R5 **once**, skips if paused **before**
   calling `launchTask` (so `recordFireFailure` / `dispatch_failed` cannot
   auto-pause), and passes the same id as
