@@ -377,6 +377,10 @@ export function App() {
   const [schedulePrefill, setSchedulePrefill] = useState<SchedulePrefill | null>(null);
   // One-time post-create hint pointing at the command-palette trigger.
   const [scheduleHintActive, setScheduleHintActive] = useState(false);
+  // Nonce bumped by the command-palette "Share this task" action (#2754).
+  // DetailPanel watches it to open the per-task TaskShareModal for the selected
+  // task; the modal's own state lives there alongside the header Share button.
+  const [shareTaskRequest, setShareTaskRequest] = useState(0);
   // Non-modal surfaces that legitimately co-exist with a modal and with each
   // other, so they keep their own state instead of joining `activeModal`: the
   // diagnostics popover, the inline coordinator-findings pane, and the command
@@ -1351,6 +1355,9 @@ export function App() {
       wideDetailActive={wideDetailActive}
       terminalFocusMode={terminalFocusActive}
       shortcutBindings={shortcutBindings}
+      // #2754: nonce bumped by the palette "Share this task" action; opens the
+      // per-task share modal for the selected task.
+      shareRequestNonce={shareTaskRequest}
       // Overview data for the no-selection state (F8) — the rail's own bucket
       // classification, so "Waiting on you" and the counts match the rail.
       overview={{ waiting: findings, running: healthy, completed }}
@@ -1390,6 +1397,22 @@ export function App() {
   // quick icons too (they carry glanceable alert/badge state), so the palette is
   // a superset, not a replacement.
   const commandActions: CommandAction[] = [
+    // #2754: per-task share, mirroring the DetailPanel header "Share this task"
+    // button. Present only when a task is selected (bumps a nonce DetailPanel
+    // watches); the instance-wide "Share read-only view" below is separate.
+    // Gate on selectedAgent?.taskId — the exact condition under which the modal
+    // can open — not the store's selectedTaskId, so the action's presence and
+    // its effect never diverge in a transient window where the agent is
+    // momentarily unresolved.
+    ...(selectedAgent?.taskId
+      ? [{
+          id: 'share-task',
+          label: 'Share this task',
+          section: 'task' as const,
+          keywords: ['share', 'task', 'link', 'invite', 'collaborate', 'guest'],
+          run: () => setShareTaskRequest((n) => n + 1),
+        }]
+      : []),
     { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: toggleOperations },
     { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
     { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
