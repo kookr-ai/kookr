@@ -328,4 +328,34 @@ describe('ProjectConfigStore — rate limits', () => {
     // Local projects don't have a repo name, so rate limits don't apply
     expect(store.isBlocked('local/my-project')).toBe(false);
   });
+
+  test('copies automationEnabled across localPath siblings and lists both paused ids', async () => {
+    await store.load();
+    store.setConfig('github.com/jeanibarz/lucy', { localPath: '/tmp/lucy-checkout' });
+    store.setConfig('local/lucy', { localPath: '/tmp/lucy-checkout' });
+    store.setConfig('local/lucy', { automationEnabled: false }, '2026-09-03T00:00:00.000Z');
+
+    expect(store.getConfig('local/lucy')?.automationEnabled).toBe(false);
+    expect(store.getConfig('github.com/jeanibarz/lucy')?.automationEnabled).toBe(false);
+    expect(store.getPausedProjectIds()).toEqual(new Set([
+      'local/lucy',
+      'github.com/jeanibarz/lucy',
+    ]));
+    expect(store.getConfig('github.com/jeanibarz/lucy')?.automationPausedSince)
+      .toBe('2026-09-03T00:00:00.000Z');
+  });
+
+  test('a notes patch preserves automationEnabled false', async () => {
+    await store.load();
+    store.setConfig('github.com/jeanibarz/lucy', {
+      automationEnabled: false,
+      notes: 'old',
+    }, '2026-09-03T00:00:00.000Z');
+    store.setConfig('github.com/jeanibarz/lucy', { notes: 'new' });
+    expect(store.getConfig('github.com/jeanibarz/lucy')).toMatchObject({
+      automationEnabled: false,
+      notes: 'new',
+      automationPausedSince: '2026-09-03T00:00:00.000Z',
+    });
+  });
 });

@@ -51,6 +51,17 @@ export interface ProjectConfig {
    * schedule-fired or other automated launches. Defaults to false/unset.
    */
   autoSyncOnManualLaunch?: boolean;
+  /**
+   * Per-project automation pause. Omitted or `true` = allowed. Explicit `false`
+   * = paused: autonomous launches for this project halt the same way SAFE MODE
+   * does, without flipping `schedule.enabled`.
+   */
+  automationEnabled?: boolean;
+  /**
+   * ISO timestamp the current project-automation pause began. Omitted while
+   * allowed. Owned by `ProjectConfigStore.setConfig`, not by sanitize.
+   */
+  automationPausedSince?: string;
 }
 
 /** Finite non-negative integer — used for PR rate-limit fields. */
@@ -103,6 +114,13 @@ export function sanitizeProjectConfig(raw: unknown): ProjectConfig | null {
   if (webhook !== undefined) config.webhook = webhook;
   if (typeof input.autoSyncOnManualLaunch === 'boolean') {
     config.autoSyncOnManualLaunch = input.autoSyncOnManualLaunch;
+  }
+  // Strict boolean — a truthy check would drop the paused value `false`.
+  if (typeof input.automationEnabled === 'boolean') {
+    config.automationEnabled = input.automationEnabled;
+  }
+  if (typeof input.automationPausedSince === 'string' && input.automationPausedSince.length > 0) {
+    config.automationPausedSince = input.automationPausedSince;
   }
   return config;
 }

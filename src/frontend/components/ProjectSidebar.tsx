@@ -181,6 +181,7 @@ function ProjectIcon({
     summary.displayName,
     pinned ? 'Pinned' : 'In sidebar',
     muted ? 'Notifications muted' : null,
+    summary.automationEnabled === false ? 'Automation paused' : null,
     `${summary.activeAgents} active agent${summary.activeAgents !== 1 ? 's' : ''}`,
     isActive
       ? `${taskLoad.runningAgents} running · ${taskLoad.stalledAgents} stalled`
@@ -199,7 +200,11 @@ function ProjectIcon({
   return (
     <Tooltip text={tooltipText}>
       <button
-        aria-label={muted ? `${summary.displayName}, notifications muted` : summary.displayName}
+        aria-label={[
+          summary.displayName,
+          muted ? 'notifications muted' : null,
+          summary.automationEnabled === false ? 'automation paused' : null,
+        ].filter(Boolean).join(', ')}
         className={`project-icon color-${summary.color}${selected ? ' selected' : ''}${!isActive && !hasFindings ? ' inactive' : ''}${dragActive ? ' drag-active' : ''}`}
         data-testid={`project-icon-${summary.project}`}
         draggable
@@ -218,6 +223,13 @@ function ProjectIcon({
         )}
         {isActive && (
           <TaskCountBadge taskLoad={taskLoad} />
+        )}
+        {summary.automationEnabled === false && (
+          <span
+            className="project-icon-paused"
+            data-testid={`project-automation-paused-${summary.project}`}
+            aria-label="Project automation paused"
+          />
         )}
       </button>
     </Tooltip>

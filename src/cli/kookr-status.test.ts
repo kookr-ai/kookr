@@ -458,6 +458,24 @@ describe('kookr-status renderReport', () => {
     expect(out).toContain('SAFE MODE since 2026-08-01T12:00:00.000Z');
   });
 
+  it('surfaces project automation pause digest from /api/health', () => {
+    const health = {
+      ...baseHealth,
+      safeMode: { engaged: false },
+      projectAutomation: {
+        pausedProjectIds: ['github.com/jeanibarz/lucy'],
+        paused: [{ projectId: 'github.com/jeanibarz/lucy', since: '2026-09-03T00:00:00.000Z' }],
+        digest: 'project automation paused: github.com/jeanibarz/lucy',
+      },
+    };
+    const out = renderReport({
+      port: 4800,
+      health,
+      agents: [],
+    });
+    expect(out).toContain('project automation paused: github.com/jeanibarz/lucy');
+  });
+
   it('surfaces elevated pipelineStarvation repos from /api/health (issue #2183)', () => {
     const health = {
       ...baseHealth,

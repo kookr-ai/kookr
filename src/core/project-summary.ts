@@ -84,6 +84,13 @@ export interface ProjectSummary {
    */
   localPath?: string;
   /**
+   * Per-project automation pause. Default true when omitted (allowed).
+   * Explicit false = autonomous launches for this project are halted.
+   */
+  automationEnabled?: boolean;
+  /** ISO timestamp the current project-automation pause began; omitted while allowed. */
+  automationPausedSince?: string;
+  /**
    * Repo-wide GitHub health (issue count, PR count, pending PRs, repo URL).
    * Populated only for `github.com/...` projects in the scanner's tracked set;
    * omitted when unavailable.
@@ -206,7 +213,44 @@ export function configSeedsMembership(config: ProjectConfig): boolean {
   if (config.zeroDrainIssueLimit !== undefined) return true;
   if (config.notes !== undefined && config.notes.trim() !== '') return true;
   if (config.webhook?.enabled !== undefined || config.webhook?.minSeverity !== undefined) return true;
+  if (config.automationEnabled === false) return true;
   return false;
+}
+
+/**
+ * A `local/` summary reads the same pause bit as its `localPath` sibling
+ * GitHub row when one exists (and vice versa).
+ */
+function effectiveAutomationEnabled(
+  configStore: ProjectConfigStore,
+  projectId: string,
+  config: ProjectConfig | undefined,
+): boolean {
+  if (config?.automationEnabled === false) return false;
+  const localPath = config?.localPath;
+  if (!localPath) return true;
+  for (const other of configStore.getAllConfigs()) {
+    if (other.project === projectId) continue;
+    if (other.localPath === localPath && other.automationEnabled === false) return false;
+  }
+  return true;
+}
+
+function effectiveAutomationPausedSince(
+  configStore: ProjectConfigStore,
+  projectId: string,
+  config: ProjectConfig | undefined,
+): string | undefined {
+  if (config?.automationPausedSince) return config.automationPausedSince;
+  const localPath = config?.localPath;
+  if (!localPath) return undefined;
+  for (const other of configStore.getAllConfigs()) {
+    if (other.project === projectId) continue;
+    if (other.localPath === localPath && other.automationPausedSince) {
+      return other.automationPausedSince;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -346,6 +390,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
     const prLessons = prLessonsHolder?.getForProject(projectId);
 
     const overlay = githubTaskOverlay?.get(projectId);
+    const automationPausedSince = effectiveAutomationPausedSince(configStore, projectId, config);
 
     summaries.push({
       project: projectId,
@@ -367,6 +412,8 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       recentTasks,
       notes: config?.notes,
       tracked: config?.tracked === true,
+      automationEnabled: effectiveAutomationEnabled(configStore, projectId, config),
+      ...(automationPausedSince ? { automationPausedSince } : {}),
       prLessonsProcessed: prLessons?.totalProcessed,
       prLessonsDistillations: prLessons?.distillationCount,
       prLessonsRawLines: prLessons?.rawLearningsLines,

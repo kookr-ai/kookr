@@ -39,6 +39,8 @@ export interface ScheduleRuntimeDeps {
    * MODE is engaged. Manual launches remain accepted.
    */
   isAutomationEnabled?: () => boolean;
+  getPausedProjectIds?: () => ReadonlySet<string>;
+  resolveAutomationProjectId?: (schedule: Schedule) => string | Promise<string>;
   /**
    * Live getter for the scheduled-task starvation dead-man window, in ms
    * (issue #1526 Phase C, `deadManScheduleMinutes` setting). Absent falls
@@ -232,6 +234,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // via the short-lived marker written by scripts/prod-restart.sh.
     isServerRestarting: () => isServerRestartingActive(deps.kookrDir),
     ...(deps.isAutomationEnabled ? { isAutomationEnabled: deps.isAutomationEnabled } : {}),
+    ...(deps.getPausedProjectIds ? { getPausedProjectIds: deps.getPausedProjectIds } : {}),
+    ...(deps.resolveAutomationProjectId
+      ? { resolveAutomationProjectId: deps.resolveAutomationProjectId }
+      : {}),
     isTaskBlockingSchedule: (taskId) => {
       const task = deps.taskStore.getTask(taskId);
       const blocking = isTaskBlockingSchedule(task);
@@ -263,7 +269,11 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // duplicate-loop check runs as a second line of defence behind the arbiter.
     ...(deps.ralphLoopService
       ? {
-          loopedLauncher: (schedule: Schedule, extras?: { promptPrefix?: string }) =>
+          loopedLauncher: (schedule: Schedule, extras?: {
+            promptPrefix?: string;
+            automationProjectId?: string;
+            safeModeExempt?: boolean;
+          }) =>
             (deps.launchLoopedPlaybookFn ?? launchLoopedPlaybook)(
               {
                 taskStore: deps.taskStore,
@@ -286,6 +296,12 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
                 ...(schedule.model ? { model: schedule.model } : {}),
                 ...(schedule.modelTier ? { modelTier: schedule.modelTier } : {}),
                 ...(extras?.promptPrefix ? { promptPrefix: extras.promptPrefix } : {}),
+                serverOpts: {
+                  ...(extras?.automationProjectId
+                    ? { automationProjectId: extras.automationProjectId }
+                    : {}),
+                  ...(extras?.safeModeExempt ? { safeModeExempt: true } : {}),
+                },
               },
             ),
         }

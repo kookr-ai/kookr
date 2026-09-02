@@ -1141,6 +1141,16 @@ function renderReport({ port, health, agents, readiness, degraded }) {
     );
   }
 
+  // Per-project automation pause — distinct from SAFE MODE so
+  // safeMode.engaged=false is not readable as "automation is running."
+  const projectAutomation = health.projectAutomation;
+  if (projectAutomation) {
+    const digest = typeof projectAutomation.digest === 'string' && projectAutomation.digest.length > 0
+      ? projectAutomation.digest
+      : null;
+    if (digest) lines.push(digest);
+  }
+
   // CI-blind-merge debt (issue #1703) — surfaced on /api/health as
   // ciBlindDebt / ci_blind_debt so daily reports and operators see unverified
   // merge inventory instead of treating "PRs merged" as fully verified.

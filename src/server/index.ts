@@ -103,7 +103,7 @@ import { QuotaAdapter } from '../adapters/quota-adapter.js';
 import { saveSettings, type KookrSettings } from '../core/settings-store.js';
 import { advertisedAgentTypes } from '../core/agent-types.js';
 import { applySettingsSideEffects } from './settings-side-effects.js';
-import { applyKillSwitchTransition, resolveSafeModeStatus } from '../core/automation-kill-switch.js';
+import { applyKillSwitchTransition, resolveSafeModeStatus, resolveScheduleAutomationProjectId } from '../core/automation-kill-switch.js';
 import { OpsStatusWriter, opsStatusPath } from '../core/ops-status.js';
 import { DiagnosticRunner } from './diagnostic-runner.js';
 import { getDetectionStats, hydrateDetectionStats } from '../core/detection-stats.js';
@@ -1780,6 +1780,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Issue #2085: loadError alone is enough to block autonomous launches even
     // if the in-memory kill-switch bit were somehow cleared without recovery.
     isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
     validateLaunchCwd: config.validateLaunchCwd,
     bypassAllPermissions,
     idempotencyLedger,
@@ -1838,7 +1839,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // schedule-runner sweeps it once per tick.
   const providerResetScheduler = new ProviderResetScheduler({
     arbiter: relaunchArbiter,
-    launch: (opts) => launchTask(launchServiceDeps, opts),
+    launch: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    resolveAutomationProjectId: async (opts) => resolveScheduleAutomationProjectId({
+      playbookPath: opts.playbookId,
+      cwdProjectId: await getProjectId(opts.cwd),
+    }),
     // Drop a queued resume only when the recorder was DELIVERED (completed) or
     // deliberately cancelled — re-dispatching those would duplicate work the
     // lease alone cannot rule out. A `terminated` recorder is the expected
@@ -2297,6 +2304,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     isAccepting: () => drainController.isAccepting(),
     // Issue #2085: same fail-closed gate as launch-service (loadError blocks autonomous).
     isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
     getDeadManScheduleMs,
     getStaleScheduleFloorMs,
     getScheduleFailureAlertThreshold,
@@ -2362,9 +2370,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         .filter((task) => !isTerminalStatus(task.status) && task.metadata?.launchSource === 'idle-refinery')
         .length,
     resolveLaunch: () => resolveUmbrellaDecomposeLaunch(serverCwd),
-    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    launcher: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
     isAccepting: () => drainController.isAccepting(),
     isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
+    getAutomationProjectId: () => getProjectId(serverCwd),
   });
 
   // Post-recovery critical-schedule re-arm + supply-aware queue-fill kick
@@ -2376,7 +2386,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     setEnabled: (id, enabled) => scheduleService.setEnabled(id, enabled),
     taskStore,
     getCapacityLedger: () => launchServiceDeps.getCapacityLedger!(),
-    launcher: (opts) => launchTask(launchServiceDeps, opts),
+    launcher: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
     isDispatchHealthy: () => {
       // Unhealthy only when Grok session auth is unusable AND no non-Grok agent
       // is launchable — same auth_expired posture as schedule fires (#2194).
@@ -2953,7 +2964,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           launchSource: 'schedule',
           unattended: true,
           autoCloseOnSignal: true,
-        }, { deliveryPolicy: 'self-advancing' });
+        }, {
+          deliveryPolicy: 'self-advancing',
+          automationProjectId: options.projectId,
+        });
         return { taskId: result.task.id };
       },
       isTaskTerminal: (taskId) => {
@@ -3493,7 +3507,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       // sweep would otherwise mask as `completed`.
       providerTransientRetry: createProviderTransientRetryHandler({
         taskStore,
-        launchTask: (opts) => launchTask(launchServiceDeps, opts),
+        launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
       }),
       providerTransientAlert: createProviderTransientAlertHandler({
         enqueueAlert: ({ note }) => {

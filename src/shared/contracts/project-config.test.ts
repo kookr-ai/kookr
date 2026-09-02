@@ -123,4 +123,34 @@ describe('sanitizeProjectConfig', () => {
       dailyPrLimit: 5,
     });
   });
+
+  test('keeps automationEnabled false (typeof === boolean, not truthy)', () => {
+    expect(sanitizeProjectConfig({ project: 'p', automationEnabled: false })).toEqual({
+      project: 'p',
+      automationEnabled: false,
+    });
+    expect(sanitizeProjectConfig({ project: 'p', automationEnabled: true })?.automationEnabled).toBe(true);
+  });
+
+  test('drops a non-boolean automationEnabled (omit = allowed)', () => {
+    expect(sanitizeProjectConfig({ project: 'p', automationEnabled: 'false' as unknown as boolean }))
+      .toEqual({ project: 'p' });
+    expect(sanitizeProjectConfig({ project: 'p', automationEnabled: 0 as unknown as boolean }))
+      .toEqual({ project: 'p' });
+  });
+
+  test('a notes patch through sanitize preserves automationEnabled false', () => {
+    const paused = sanitizeProjectConfig({
+      project: 'github.com/jeanibarz/lucy',
+      automationEnabled: false,
+      automationPausedSince: '2026-09-03T00:00:00.000Z',
+      notes: 'old',
+    });
+    expect(sanitizeProjectConfig({ ...paused, notes: 'new' })).toEqual({
+      project: 'github.com/jeanibarz/lucy',
+      automationEnabled: false,
+      automationPausedSince: '2026-09-03T00:00:00.000Z',
+      notes: 'new',
+    });
+  });
 });

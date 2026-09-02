@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyKillSwitchTransition,
+  applyProjectAutomationTransition,
+  formatProjectAutomationDigestLine,
   formatSafeModeDigestLine,
   isAutonomousLaunchSource,
   isSafeModeExemptSchedule,
+  mayAutonomousActuate,
   resolveSafeModeStatus,
+  resolveScheduleAutomationProjectId,
 } from './automation-kill-switch.js';
 
 describe('isSafeModeExemptSchedule (issue #2672)', () => {
@@ -118,6 +122,139 @@ describe('resolveSafeModeStatus / formatSafeModeDigestLine', () => {
     expect(formatSafeModeDigestLine(status)).toBe(
       'SAFE MODE since 2026-08-01T12:00:00.000Z (settings load error: Corrupt automationKillSwitch field)',
     );
+  });
+});
+
+describe('resolveScheduleAutomationProjectId', () => {
+  it('maps kb-scout-reflection.md to kb-scout-evol regardless of cwd id', () => {
+    expect(resolveScheduleAutomationProjectId({
+      playbookPath: 'kb-scout-reflection.md',
+      cwdProjectId: 'github.com/jeanibarz/dotclaude',
+    })).toBe('github.com/jeanibarz/kb-scout-evol');
+    expect(resolveScheduleAutomationProjectId({
+      playbookPath: '/tmp/playbooks/kb-scout-reflection.md',
+      cwdProjectId: 'local/dotclaude',
+    })).toBe('github.com/jeanibarz/kb-scout-evol');
+  });
+
+  it('does not remap the queue-feeder off Lucy', () => {
+    expect(resolveScheduleAutomationProjectId({
+      playbookPath: 'kookr-queue-feeder.md',
+      cwdProjectId: 'github.com/jeanibarz/lucy',
+    })).toBe('github.com/jeanibarz/lucy');
+  });
+
+  it('uses cwd id for every other playbook', () => {
+    expect(resolveScheduleAutomationProjectId({
+      playbookPath: 'parallel-issue-batch.md',
+      cwdProjectId: 'github.com/kookr-ai/kookr',
+    })).toBe('github.com/kookr-ai/kookr');
+  });
+});
+
+describe('mayAutonomousActuate', () => {
+  const lucy = 'github.com/jeanibarz/lucy';
+  const paused = new Set([lucy]);
+
+  it('returns not_autonomous for operator sources', () => {
+    expect(mayAutonomousActuate({
+      source: 'api',
+      projectId: lucy,
+      globalEnabled: true,
+      pausedProjectIds: paused,
+    })).toBe('not_autonomous');
+  });
+
+  it('returns safe_mode when global automation is off, even if the project is also paused', () => {
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: lucy,
+      globalEnabled: false,
+      pausedProjectIds: paused,
+    })).toBe('safe_mode');
+  });
+
+  it('lets the cross-repo orchestrator through SAFE MODE but not a Kookr-project pause', () => {
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: 'github.com/kookr-ai/kookr',
+      globalEnabled: false,
+      pausedProjectIds: new Set(),
+      safeModeExempt: true,
+    })).toBe('allow');
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: 'github.com/kookr-ai/kookr',
+      globalEnabled: true,
+      pausedProjectIds: new Set(['github.com/kookr-ai/kookr']),
+      safeModeExempt: true,
+    })).toBe('project_paused');
+  });
+
+  it('returns project_paused when the stamp is in the live set', () => {
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: lucy,
+      globalEnabled: true,
+      pausedProjectIds: paused,
+    })).toBe('project_paused');
+  });
+
+  it('does not skip when projectId is missing (Set miss)', () => {
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: undefined,
+      globalEnabled: true,
+      pausedProjectIds: paused,
+    })).toBe('allow');
+  });
+});
+
+describe('applyProjectAutomationTransition', () => {
+  const now = '2026-09-03T00:00:00.000Z';
+
+  it('stamps automationPausedSince on the true→false edge', () => {
+    const next = applyProjectAutomationTransition(
+      { automationEnabled: true },
+      { automationEnabled: false, notes: 'keep' },
+      now,
+    );
+    expect(next.automationEnabled).toBe(false);
+    expect(next.automationPausedSince).toBe(now);
+    expect(next.notes).toBe('keep');
+  });
+
+  it('clears automationPausedSince on the false→true edge', () => {
+    const next = applyProjectAutomationTransition(
+      { automationEnabled: false, automationPausedSince: now },
+      { automationEnabled: true, automationPausedSince: now, notes: 'keep' },
+      '2026-09-03T01:00:00.000Z',
+    );
+    expect(next.automationEnabled).toBe(true);
+    expect(next.automationPausedSince).toBeUndefined();
+    expect(next.notes).toBe('keep');
+  });
+
+  it('preserves since on unrelated saves while paused', () => {
+    const next = applyProjectAutomationTransition(
+      { automationEnabled: false, automationPausedSince: now },
+      { automationEnabled: false, automationPausedSince: now, notes: 'new' },
+      '2026-09-03T01:00:00.000Z',
+    );
+    expect(next.automationPausedSince).toBe(now);
+    expect(next.notes).toBe('new');
+  });
+});
+
+describe('formatProjectAutomationDigestLine', () => {
+  it('returns null when nothing is paused', () => {
+    expect(formatProjectAutomationDigestLine({ paused: [] })).toBeNull();
+  });
+
+  it('lists paused project ids', () => {
+    expect(formatProjectAutomationDigestLine({
+      paused: [{ projectId: 'github.com/jeanibarz/lucy', since: '2026-09-03T00:00:00.000Z' }],
+    })).toBe('project automation paused: github.com/jeanibarz/lucy');
   });
 });
 

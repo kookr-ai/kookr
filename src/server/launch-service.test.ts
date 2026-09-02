@@ -724,6 +724,51 @@ describe('launchTask', () => {
       expect(result.task.prompt).toBe('unblocked');
     });
 
+    it('refuses a schedule launch when the project is paused', async () => {
+      const gated = {
+        ...deps,
+        getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      };
+      await expect(
+        launchTask(
+          gated,
+          { prompt: 'sched', cwd: '/tmp', launchSource: 'schedule' },
+          { automationProjectId: 'github.com/jeanibarz/lucy' },
+        ),
+      ).rejects.toMatchObject({ name: 'AutomationKillSwitchError', code: 'project_automation' });
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('refuses an autonomous launch that is missing the automationProjectId stamp', async () => {
+      const gated = {
+        ...deps,
+        getPausedProjectIds: () => new Set(),
+      };
+      await expect(
+        launchTask(gated, { prompt: 'sched', cwd: '/tmp', launchSource: 'schedule' }),
+      ).rejects.toMatchObject({ name: 'AutomationKillSwitchError', code: 'project_automation' });
+    });
+
+    it('does not treat a project-paused error as SAFE MODE', async () => {
+      const gated = {
+        ...deps,
+        isAutomationEnabled: () => true,
+        getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      };
+      try {
+        await launchTask(
+          gated,
+          { prompt: 'sched', cwd: '/tmp', launchSource: 'schedule' },
+          { automationProjectId: 'github.com/jeanibarz/lucy' },
+        );
+        expect.fail('expected throw');
+      } catch (err) {
+        expect(err).toBeInstanceOf(AutomationKillSwitchError);
+        expect((err as AutomationKillSwitchError).code).toBe('project_automation');
+        expect((err as AutomationKillSwitchError).code).not.toBe('safe_mode');
+      }
+    });
+
     it('lets a safeModeExempt schedule launch through while SAFE MODE is engaged (issue #2672)', async () => {
       // The cross-repo orchestrator fire carries serverOpts.safeModeExempt so it
       // keeps ticking during SAFE MODE (it snapshots, honors the pause, spawns

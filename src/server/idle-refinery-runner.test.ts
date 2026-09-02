@@ -105,6 +105,24 @@ describe('IdleRefineryRunner', () => {
     expect(launcher).not.toHaveBeenCalled();
   });
 
+  it('is suppressed when the Kookr project is paused', async () => {
+    const { deps, launcher } = makeDeps({
+      getPausedProjectIds: () => new Set(['github.com/kookr-ai/kookr']),
+      getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+    });
+    expect((await new IdleRefineryRunner(deps).tick()).spawned).toBe(false);
+    expect(launcher).not.toHaveBeenCalled();
+  });
+
+  it('still spawns when Lucy is paused (refinery is Kookr-homed)', async () => {
+    const { deps, launcher } = makeDeps({
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+    });
+    expect((await new IdleRefineryRunner(deps).tick()).spawned).toBe(true);
+    expect(launcher).toHaveBeenCalledTimes(1);
+  });
+
   it('does not spawn while a refinery task is already in flight', async () => {
     const { deps, launcher } = makeDeps({ countActiveRefineryTasks: () => 1 });
     expect((await new IdleRefineryRunner(deps).tick()).reason).toBe('refinery_in_flight');

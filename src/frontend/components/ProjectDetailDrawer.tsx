@@ -207,6 +207,20 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
 
   const visibleTasks = tasksExpanded ? project.recentTasks : project.recentTasks.slice(0, COLLAPSED_TASK_COUNT);
   const hiddenTaskCount = Math.max(0, project.recentTasks.length - COLLAPSED_TASK_COUNT);
+  const automationEnabled = project.automationEnabled !== false;
+
+  function handleAutomationToggle(): void {
+    setSaveSendError(null);
+    const nextEnabled = !automationEnabled;
+    const sent = send({
+      type: 'setProjectConfig',
+      project: project.project,
+      config: { project: project.project, automationEnabled: nextEnabled },
+    });
+    if (!sent) {
+      setSaveSendError('Project settings were not saved. Kookr may be disconnected, or this view may be read-only.');
+    }
+  }
 
   return (
     <div className={`project-drawer${compact ? ' compact' : ''}`} data-testid="project-detail-drawer">
@@ -448,6 +462,27 @@ export function ProjectDetailDrawer({ project, onClose, send, onOpenWorkspace, o
       {!compact && (
         <section className="project-drawer-section" aria-labelledby={`settings-${project.project}`}>
           <h4 id={`settings-${project.project}`}>Settings</h4>
+          <div className="project-drawer-setting project-drawer-automation">
+            <div className="project-drawer-automation-copy">
+              <label htmlFor={`automation-enabled-${project.project}`}>Project automation</label>
+              <span className="project-drawer-setting-hint">
+                {automationEnabled
+                  ? 'Autonomous launches for this project are allowed (still subject to SAFE MODE).'
+                  : `Paused${project.automationPausedSince ? ` since ${project.automationPausedSince}` : ''}. Schedules stay enabled; the next fire skips.`}
+              </span>
+            </div>
+            <button
+              type="button"
+              id={`automation-enabled-${project.project}`}
+              className={`settings-toggle ${automationEnabled ? 'active' : ''}`}
+              onClick={handleAutomationToggle}
+              aria-label="Project automation"
+              aria-pressed={automationEnabled}
+              data-testid="project-automation-toggle"
+            >
+              <span className="settings-toggle-knob" />
+            </button>
+          </div>
           <div className="project-drawer-setting">
             <label htmlFor={`daily-limit-${project.project}`}>Daily PR cap</label>
             <input

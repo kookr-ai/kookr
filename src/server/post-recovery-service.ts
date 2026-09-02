@@ -54,6 +54,10 @@ import {
   savePipelineStarvationState,
 } from '../core/pipeline-starvation-state.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
+import {
+  EMPTY_PAUSED_PROJECT_IDS,
+  mayAutonomousActuate,
+} from '../core/automation-kill-switch.js';
 import type { Schedule } from '../core/schedule.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
@@ -82,7 +86,10 @@ export interface PostRecoveryServiceDeps {
   taskStore: TaskStore;
   /** Same capacity ledger as health / idle-refinery. */
   getCapacityLedger: () => CapacityLedger;
-  launcher: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launcher: (
+    opts: LaunchOpts,
+    serverOpts?: import('./launch-service.js').LaunchTaskServerOptions,
+  ) => Promise<LaunchResult>;
   /**
    * True when dispatch can launch product work (not fleet-wide auth_expired /
    * zero launchable agents). Defaults to true when omitted.
@@ -92,6 +99,8 @@ export interface PostRecoveryServiceDeps {
   isAccepting?: () => boolean;
   /** Automation kill-switch (SAFE MODE). */
   isAutomationEnabled?: () => boolean;
+  /** Live paused-id set. Per-kick gate — do not short-circuit the whole tick. */
+  getPausedProjectIds?: () => ReadonlySet<string>;
   /** `~/.kookr` for audit.jsonl. */
   kookrDir?: string;
   /** Override durable post-recovery kick state dir (tests). */
@@ -598,6 +607,27 @@ export class PostRecoveryService {
         continue;
       }
 
+      const automationProjectId =
+        projectIdFromRepoSpecifier(candidate.repo) ?? candidate.repo;
+      const actuation = mayAutonomousActuate({
+        source: 'post-recovery',
+        projectId: automationProjectId,
+        globalEnabled: true,
+        pausedProjectIds: this.deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
+      });
+      if (actuation === 'project_paused') {
+        this.deps.log?.(
+          `[post-recovery] queue-fill kick skipped for ${candidate.repo} — project automation paused (${automationProjectId})`,
+        );
+        results.push({
+          repo: candidate.repo,
+          kicked: false,
+          reason: 'project_automation',
+          utcDay: decision.utcDay,
+        });
+        continue;
+      }
+
       try {
         const launch = await this.spawnRecoveryScout(
           candidate,
@@ -814,7 +844,10 @@ export class PostRecoveryService {
       name: `Idea scout (post-recovery fill): ${candidate.repo}`,
     };
 
-    return this.deps.launcher(launchOpts);
+    return this.deps.launcher(
+      launchOpts,
+      projectId ? { automationProjectId: projectId } : { automationProjectId: candidate.repo },
+    );
   }
 
   /**

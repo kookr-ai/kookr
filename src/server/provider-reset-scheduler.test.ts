@@ -76,6 +76,7 @@ describe('ProviderResetScheduler', () => {
   const makeScheduler = (opts?: Partial<ConstructorParameters<typeof ProviderResetScheduler>[0]>) =>
     new ProviderResetScheduler({
       arbiter,
+      resolveAutomationProjectId: () => REPO,
       launch: async (o) => {
         launched.push(o);
       },

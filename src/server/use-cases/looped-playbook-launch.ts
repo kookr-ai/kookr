@@ -59,6 +59,8 @@ export interface LaunchLoopedPlaybookInput extends PreparePlaybookLaunchInput {
    * of a loop-armed fire, matching the one-shot path.
    */
   promptPrefix?: string;
+  /** Trusted server-internal launch gate (SAFE MODE exemption + project stamp). */
+  serverOpts?: LaunchTaskServerOptions;
 }
 
 export interface ReplaceLoopedPlaybookDeps extends LaunchLoopedPlaybookDeps {
@@ -172,7 +174,10 @@ export async function launchLoopedPlaybook(
       // misses the verdict channel and the engine treats it as legacy
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
-    }, { deliveryPolicy: prepared.deliveryPolicy });
+    }, {
+      deliveryPolicy: prepared.deliveryPolicy,
+      ...input.serverOpts,
+    });
     if (result.queued && !result.parked) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(
@@ -321,7 +326,10 @@ export async function replaceLoopedPlaybook(
       // misses the verdict channel and the engine treats it as legacy
       // `continued`. Applies to BOTH launch and replace flows in this file.
       ralphVerdictEnv: true,
-    }, { deliveryPolicy: prepared.deliveryPolicy });
+    }, {
+      deliveryPolicy: prepared.deliveryPolicy,
+      ...input.serverOpts,
+    });
     if (result.queued && !result.parked) {
       await deps.cleanupFailedTask?.(result.task.id);
       throw new LoopedPlaybookLaunchError(

@@ -58,6 +58,30 @@ describe('ConfigHandler', () => {
     });
   });
 
+  test('setProjectConfig persists automationEnabled false and a notes patch keeps it', async () => {
+    const handler = new ConfigHandler({ send: vi.fn(), projectConfigStore });
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/jeanibarz/lucy',
+      config: { automationEnabled: false },
+    });
+    expect(projectConfigStore.getConfig('github.com/jeanibarz/lucy')?.automationEnabled).toBe(false);
+
+    await handler.handle({
+      type: 'setProjectConfig',
+      project: 'github.com/jeanibarz/lucy',
+      config: { notes: 'unrelated' },
+    });
+    expect(projectConfigStore.getConfig('github.com/jeanibarz/lucy')).toMatchObject({
+      automationEnabled: false,
+      notes: 'unrelated',
+    });
+
+    const reloaded = new ProjectConfigStore(tempDir);
+    await reloaded.load();
+    expect(reloaded.getConfig('github.com/jeanibarz/lucy')?.automationEnabled).toBe(false);
+  });
+
   test('setProjectConfig persists a per-project budget threshold', async () => {
     const handler = new ConfigHandler({
       send: vi.fn(),

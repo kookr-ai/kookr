@@ -7106,6 +7106,7 @@ label.task-share-row {
 }
 .schedule-status-ok { color: var(--green); }
 .schedule-status-fail { color: var(--red); }
+.schedule-status-skip { color: var(--text-secondary); }
 .schedule-quota { color: var(--text-secondary); }
 .schedule-next-run { color: var(--text-secondary); }
 
@@ -9191,6 +9192,17 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 }
 .project-icon-dot.active { background: var(--green); }
 
+.project-icon-paused {
+  position: absolute;
+  bottom: -2px;
+  left: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  box-shadow: 0 0 0 2px var(--bg);
+}
+
 .project-icon-task-count {
   position: absolute;
   bottom: -2px;
@@ -9789,6 +9801,19 @@ button.project-drawer-task-selectable:hover {
 button.project-drawer-task-selectable:focus-visible {
   outline: 2px solid var(--teal);
   outline-offset: 1px;
+}
+
+.project-drawer-automation {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.project-drawer-automation-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .project-drawer-setting {

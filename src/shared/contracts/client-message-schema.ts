@@ -75,6 +75,7 @@ const projectConfigPartial = z.object({
     enabled: z.boolean().optional(),
     minSeverity: anomalySeverity.optional(),
   }).optional(),
+  automationEnabled: z.boolean().optional(),
 });
 
 const launchPlaybookMessage = z.object({

@@ -132,6 +132,10 @@ All three paths run through `sanitizeProjectConfig` before persistence.
 | `localPath` | string | Absolute local checkout path (first-write wins on task start) |
 | `webhook` | object | Optional `{ enabled?: boolean, minSeverity?: 'info' \| 'warning' \| 'critical' }` routing override |
 | `autoSyncOnManualLaunch` | boolean | Opt-in, defaults to `false`/unset. When `true`, a human-triggered (`ui`/`cli`) launch whose cwd canonicalizes to `localPath` runs `git fetch origin` + `git pull --rebase` against that checkout before the task starts; a sync failure is reported as a launch-note warning rather than blocking the launch. Never applies to scheduled or other automated launches. Requires `localPath` to be an absolute path |
+| `automationEnabled` | boolean | Omitted or `true` = autonomous launches for this project are allowed. Explicit `false` pauses them (same skip-next-fire effect as SAFE MODE, scoped to the project). Does not flip `schedule.enabled`. Written from the project drawer or `POST /api/projects/configs`. |
+| `automationPausedSince` | ISO string | Set by the store on the true→false edge; cleared when unpaused. Not a client-writable field. |
+
+Schedules match a project from their working directory, except `kb-scout-reflection.md` which follows `github.com/jeanibarz/kb-scout-evol`. The queue-feeder is Lucy work on purpose and pauses with Lucy. Two config rows that share `localPath` share one pause.
 
 See [Data Directory](reference/data-directory.md) for file location and
 [API Reference](reference/api.md#projects) for the HTTP body shape.

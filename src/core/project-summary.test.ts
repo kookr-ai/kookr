@@ -494,6 +494,10 @@ describe('configSeedsMembership', () => {
   test('empty webhook routing returns false', () => {
     expect(configSeedsMembership({ project: 'p', webhook: {} })).toBe(false);
   });
+  test('automationEnabled false seeds membership so untrack cannot drop a live pause', () => {
+    expect(configSeedsMembership({ project: 'p', automationEnabled: false })).toBe(true);
+    expect(configSeedsMembership({ project: 'p', automationEnabled: true })).toBe(false);
+  });
 });
 
 describe('checkContributionLimit', () => {

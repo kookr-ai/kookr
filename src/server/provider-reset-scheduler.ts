@@ -43,6 +43,13 @@
 import { claimKeyString, type ClaimKey } from '../core/issue-claim-types.js';
 import type { AgentType } from '../shared/contracts/agent-types.js';
 import type { LaunchOpts } from '../shared/contracts/launch.js';
+import { AutomationKillSwitchError, type LaunchTaskServerOptions } from './launch-service.js';
+import {
+  EMPTY_PAUSED_PROJECT_IDS,
+  mayAutonomousActuate,
+  resolveScheduleAutomationProjectId,
+} from '../core/automation-kill-switch.js';
+
 import type { TaskLaunchIntent } from '../shared/contracts/task.js';
 import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
 import type { RelaunchArbiter } from './relaunch-arbiter.js';
@@ -239,7 +246,12 @@ export interface ProviderResetSchedulerOptions {
    * refill window forward) so a transient launch failure retries — bounded by
    * the token bucket, never a tight loop.
    */
-  launch: (opts: LaunchOpts) => Promise<unknown>;
+  launch: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<unknown>;
+  /** Live paused-id set. Reread per resume. */
+  getPausedProjectIds?: () => ReadonlySet<string>;
+  isAutomationEnabled?: () => boolean;
+  /** Test seam; default is basename map then getProjectId(cwd). */
+  resolveAutomationProjectId?: (opts: LaunchOpts) => string | Promise<string>;
   /** Resumes admitted per refill window. Default {@link DEFAULT_RESUME_RATE_PER_WINDOW}. */
   ratePerWindow?: number;
   /** Token-bucket refill window in ms. Default {@link DEFAULT_RESUME_REFILL_WINDOW_MS}. */
@@ -321,7 +333,12 @@ export class ProviderResetScheduler {
   private readonly now: () => number;
   private readonly random: () => number;
   private readonly arbiter: Pick<RelaunchArbiter, 'evaluate' | 'getLease'>;
-  private readonly launch: (opts: LaunchOpts) => Promise<unknown>;
+  private readonly launch: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<unknown>;
+  private readonly getPausedProjectIds: (() => ReadonlySet<string>) | undefined;
+  private readonly isAutomationEnabled: (() => boolean) | undefined;
+  private readonly resolveAutomationProjectId:
+    | ((opts: LaunchOpts) => string | Promise<string>)
+    | undefined;
   private readonly refillWindowMs: number;
   private readonly shouldResume: ((entry: ProviderResetEntry) => boolean) | undefined;
   private readonly onEvent: ((event: ProviderResetEvent) => void) | undefined;
@@ -329,6 +346,9 @@ export class ProviderResetScheduler {
   constructor(opts: ProviderResetSchedulerOptions) {
     this.arbiter = opts.arbiter;
     this.launch = opts.launch;
+    this.getPausedProjectIds = opts.getPausedProjectIds;
+    this.isAutomationEnabled = opts.isAutomationEnabled;
+    this.resolveAutomationProjectId = opts.resolveAutomationProjectId;
     this.now = opts.now ?? (() => Date.now());
     this.random = opts.random ?? Math.random;
     this.maxJitterMs = Math.max(0, opts.maxJitterMs ?? DEFAULT_RESUME_MAX_JITTER_MS);
@@ -475,12 +495,41 @@ export class ProviderResetScheduler {
       }
     };
     try {
-      // Start the launch synchronously so the pipeline begins within this tick;
-      // its rejection (or a sync throw) is handled off the sweep's critical path.
-      void Promise.resolve(this.launch(t.relaunch)).catch(onFailure);
+      // Start the launch synchronously so the pipeline begins within this tick
+      // when the stamp is already a string (tests + basename map). An async
+      // getProjectId resolver still fire-and-forgets.
+      const resolved = this.resolveAutomationProjectId?.(t.relaunch);
+      if (resolved !== undefined && typeof (resolved as Promise<string>).then === 'function') {
+        void Promise.resolve(resolved)
+          .then((projectId) => this.launchWithStamp(t, projectId))
+          .catch(onFailure);
+        return;
+      }
+      const projectId = typeof resolved === 'string'
+        ? resolved
+        : resolveScheduleAutomationProjectId({
+            playbookPath: t.relaunch.playbookId,
+            cwdProjectId: t.relaunch.cwd,
+          });
+      void Promise.resolve(this.launchWithStamp(t, projectId)).catch(onFailure);
     } catch (err) {
       onFailure(err);
     }
+  }
+
+  private launchWithStamp(t: Tracked, projectId: string): Promise<unknown> {
+    const decision = mayAutonomousActuate({
+      source: t.relaunch.launchSource,
+      projectId,
+      globalEnabled: this.isAutomationEnabled?.() ?? true,
+      pausedProjectIds: this.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
+    });
+    if (decision === 'safe_mode' || decision === 'project_paused') {
+      return Promise.reject(new AutomationKillSwitchError(
+        decision === 'safe_mode' ? 'safe_mode' : 'project_automation',
+      ));
+    }
+    return Promise.resolve(this.launch(t.relaunch, { automationProjectId: projectId }));
   }
 
   private toEntry(t: Tracked): ProviderResetEntry {

@@ -136,6 +136,19 @@ describe('ClientMessageSchema — happy path sanity', () => {
     }).success).toBe(true);
   });
 
+  test('accepts automationEnabled boolean on setProjectConfig', () => {
+    expect(ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/jeanibarz/lucy',
+      config: { automationEnabled: false },
+    }).success).toBe(true);
+    expect(ClientMessageSchema.safeParse({
+      type: 'setProjectConfig',
+      project: 'github.com/jeanibarz/lucy',
+      config: { automationEnabled: 'no' },
+    }).success).toBe(false);
+  });
+
   test('accepts a minimal well-formed launch message', () => {
     const result = ClientMessageSchema.safeParse({ type: 'launch', prompt: 'hi', cwd: '/tmp' });
     expect(result.success).toBe(true);

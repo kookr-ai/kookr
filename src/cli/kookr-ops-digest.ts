@@ -599,6 +599,19 @@ export function collectOpsDigestWarnings(
     });
   }
 
+  const projectAutomation = asRecord(h.projectAutomation);
+  const pausedIdsRaw = projectAutomation?.pausedProjectIds;
+  if (Array.isArray(pausedIdsRaw) && pausedIdsRaw.length > 0) {
+    const ids = pausedIdsRaw.filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (ids.length > 0) {
+      warnings.push({
+        path: 'projectAutomation.pausedProjectIds',
+        summary: `project automation paused: ${ids.join(', ')}`,
+        value: { pausedProjectIds: ids },
+      });
+    }
+  }
+
   if (pressureWhileDisabled === true) {
     const reason = pressureWhileDisabledReason ?? 'host pressure while resourceWatchdog disabled';
     warnings.push({

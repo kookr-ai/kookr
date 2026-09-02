@@ -63,6 +63,9 @@ export class ConfigHandler {
             const webhook = normalizeProjectWebhookRoutingSettings(config.webhook);
             if (webhook !== undefined) patch.webhook = webhook;
           }
+          if (config.automationEnabled !== undefined) {
+            patch.automationEnabled = config.automationEnabled;
+          }
           this.deps.projectConfigStore.setConfig(project, patch);
           await this.deps.projectConfigStore.save();
           this.deps.broadcastProjectSummaries?.();

@@ -1383,6 +1383,198 @@ Snapshot the fleet.
     expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_safe_mode');
   });
 
+  it('passes automationProjectId on a successful fire', async () => {
+    const schedule = store.create({
+      name: 'Stamp',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    const stamps: Array<string | undefined> = [];
+    const runner = createRunner({
+      resolveAutomationProjectId: async () => 'github.com/jeanibarz/lucy',
+      launcher: async (opts, serverOpts) => {
+        stamps.push(serverOpts?.automationProjectId);
+        const taskId = `task-${++taskIdCounter}`;
+        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+    });
+    await runner.tick();
+    expect(stamps).toEqual(['github.com/jeanibarz/lucy']);
+    expect(launched).toHaveLength(1);
+  });
+
+  it('skips with skipped_project_automation when the project is paused and leaves enabled unchanged', async () => {
+    const schedule = store.create({
+      name: 'Lucy batch',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      resolveAutomationProjectId: async () => 'github.com/jeanibarz/lucy',
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_project_automation');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('project_automation');
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('global SAFE MODE skip still records skipped_safe_mode even when the project is also paused', async () => {
+    const schedule = store.create({
+      name: 'Both levers',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      isAutomationEnabled: () => false,
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      resolveAutomationProjectId: async () => 'github.com/jeanibarz/lucy',
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_safe_mode');
+    expect(store.get(schedule.id)!.enabled).toBe(true);
+  });
+
+  it('feeder-shaped schedule (Lucy cwd, kookr-queue-feeder.md) skips when Lucy is paused', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'kookr-queue-feeder.md'), `---
+name: Queue Feeder
+description: feeder
+parameters: []
+checklist:
+  - Feed
+---
+
+Feed the queue.
+`);
+    const schedule = store.create({
+      name: 'Kookr Queue Feeder',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-queue-feeder.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      resolveAutomationProjectId: async (s) => {
+        const { resolveScheduleAutomationProjectId } = await import('../core/automation-kill-switch.js');
+        return resolveScheduleAutomationProjectId({
+          playbookPath: s.playbook.path,
+          cwdProjectId: 'github.com/jeanibarz/lucy',
+        });
+      },
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_project_automation');
+  });
+
+  it('reflection-shaped schedule does not skip when Lucy is paused', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'kb-scout-reflection.md'), `---
+name: KB-Scout reflection
+description: reflection
+parameters: []
+checklist:
+  - Reflect
+---
+
+Reflect.
+`);
+    const schedule = store.create({
+      name: 'KB-Scout daily reflection',
+      cron: '* * * * *',
+      playbook: { path: 'kb-scout-reflection.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      resolveAutomationProjectId: async (s) => {
+        const { resolveScheduleAutomationProjectId } = await import('../core/automation-kill-switch.js');
+        return resolveScheduleAutomationProjectId({
+          playbookPath: s.playbook.path,
+          cwdProjectId: 'github.com/jeanibarz/dotclaude',
+        });
+      },
+    });
+    await runner.tick();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_project_automation');
+  });
+
+  it('reflection-shaped schedule skips when kb-scout-evol is paused', async () => {
+    await writeFile(join(dir, '.kookr', 'playbooks', 'kb-scout-reflection.md'), `---
+name: KB-Scout reflection
+description: reflection
+parameters: []
+checklist:
+  - Reflect
+---
+
+Reflect.
+`);
+    const schedule = store.create({
+      name: 'KB-Scout daily reflection (paused)',
+      cron: '* * * * *',
+      playbook: { path: 'kb-scout-reflection.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    const runner = createRunner({
+      getPausedProjectIds: () => new Set(['github.com/jeanibarz/kb-scout-evol']),
+      resolveAutomationProjectId: async (s) => {
+        const { resolveScheduleAutomationProjectId } = await import('../core/automation-kill-switch.js');
+        return resolveScheduleAutomationProjectId({
+          playbookPath: s.playbook.path,
+          cwdProjectId: 'github.com/jeanibarz/dotclaude',
+        });
+      },
+    });
+    await runner.tick();
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_project_automation');
+  });
+
+  it('mapError of a project-paused kill-switch error is project_automation, not safe_mode or launch_error', async () => {
+    const { mapErrorToReasonCode } = await import('./schedule-runner.js');
+    const { AutomationKillSwitchError } = await import('./launch-service.js');
+    expect(mapErrorToReasonCode(new AutomationKillSwitchError('project_automation')))
+      .toBe('project_automation');
+    expect(mapErrorToReasonCode(new AutomationKillSwitchError('safe_mode'))).toBe('safe_mode');
+    expect(mapErrorToReasonCode(new AutomationKillSwitchError('project_automation')))
+      .not.toBe('launch_error');
+  });
+
   it('fails when playbook file is missing', async () => {
     const schedule = store.create({
       name: 'Missing Playbook',

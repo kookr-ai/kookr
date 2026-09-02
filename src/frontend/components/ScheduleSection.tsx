@@ -46,6 +46,8 @@ function latestExecutionOutcomeLabel(outcome: NonNullable<ScheduleResponse['late
       return 'skipped: server restarting';
     case 'skipped_safe_mode':
       return 'skipped: SAFE MODE';
+    case 'skipped_project_automation':
+      return 'skipped: project automation paused';
     case 'skipped_manual':
       return 'manual run available';
     case 'skipped_stale':
@@ -79,7 +81,6 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_coalesced':
     case 'skipped_draining':
     case 'skipped_server_restarting':
-    case 'skipped_safe_mode':
     case 'skipped_manual':
     case 'skipped_stale':
     case 'skipped_relaunch_locked':
@@ -87,6 +88,9 @@ function statusClass(schedule: ScheduleResponse): string {
     case 'skipped_playbook_drift':
     case 'unknown_after_restart':
       return 'schedule-status-fail';
+    case 'skipped_safe_mode':
+    case 'skipped_project_automation':
+      return 'schedule-status-skip';
     default:
       return '';
   }

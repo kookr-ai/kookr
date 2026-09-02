@@ -1,6 +1,10 @@
 import { decideIdleRefinerySpawn, type IdleRefineryReason } from '../core/idle-refinery.js';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import {
+  EMPTY_PAUSED_PROJECT_IDS,
+  mayAutonomousActuate,
+} from '../core/automation-kill-switch.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
 import type { ResolvedRefineryLaunch } from './umbrella-decompose-launch.js';
 
 /**
@@ -46,11 +50,18 @@ export interface IdleRefineryRunnerDeps {
   /** Resolve the umbrella-decompose playbook into launch inputs (or null). */
   resolveLaunch: () => Promise<ResolvedRefineryLaunch | null>;
   /** The normal launch path (`launchTask` bound to launch-service deps). */
-  launcher: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launcher: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   /** Operator drain gate (issue #659): suppress firing while draining. */
   isAccepting?: () => boolean;
   /** Automation kill-switch (issue #1710): suppress firing in SAFE MODE. */
   isAutomationEnabled?: () => boolean;
+  /** Live paused-id set. Absent means no project is paused. */
+  getPausedProjectIds?: () => ReadonlySet<string>;
+  /**
+   * Project id the idle-refinery is gated on (the server checkout's remote —
+   * typically Kookr). Pausing Lucy does not stop the refinery.
+   */
+  getAutomationProjectId?: () => string | Promise<string>;
   /** Time source (epoch ms) — injected for deterministic tests. */
   now?: () => number;
   /** Timer period. Defaults to {@link DEFAULT_IDLE_REFINERY_TICK_MS}. */
@@ -133,6 +144,19 @@ export class IdleRefineryRunner {
         return { spawned: false, reason: 'disabled' };
       }
 
+      const projectId = this.deps.getAutomationProjectId
+        ? await this.deps.getAutomationProjectId()
+        : undefined;
+      const actuation = mayAutonomousActuate({
+        source: 'idle-refinery',
+        projectId,
+        globalEnabled: true,
+        pausedProjectIds: this.deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
+      });
+      if (actuation === 'project_paused') {
+        return { spawned: false, reason: 'disabled' };
+      }
+
       const ledger = this.deps.getCapacityLedger();
       // The refinery is a general (non-privileged) launch source, so measure
       // headroom the way its own launch is admitted: when the operator reserves
@@ -177,7 +201,7 @@ export class IdleRefineryRunner {
         // Identical prompt each fire — the single-flight guard already prevents
         // stacking, so opt out of dedup to keep intent explicit (mirrors schedules).
         disableDedup: true,
-      });
+      }, projectId ? { automationProjectId: projectId } : undefined);
 
       // Record the spawn time only after the launch actually created a task, so
       // a rejected launch (budget/drain/kill-switch) does not start the cooldown.

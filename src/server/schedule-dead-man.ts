@@ -152,6 +152,9 @@ const DELIBERATE_SUPPRESSION_OUTCOMES: ReadonlySet<ScheduleExecutionOutcome> = n
   // issue #2945: opt-in fail-closed skip when the playbook cwd checkout lags
   // its upstream — the fire intentionally did not run.
   'skipped_playbook_drift',
+  // Per-project automation pause — a Lucy pause must not look like starvation
+  // and self-heal the schedule.
+  'skipped_project_automation',
 ]);
 
 export interface ScheduleDeadManDeps {
