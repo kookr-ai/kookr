@@ -130,6 +130,15 @@ Running the server directly (`node dist/server/start.js`) or through the
 `scripts/prod-restart.sh` pid-file/nohup fallback sends no notifications and
 behaves exactly as before — only the `Type=notify` unit arms the watchdog.
 
+**Confirming the watchdog is armed (issue #2853).** `GET /api/health` carries a
+`systemdNotifier` block whose `arming` field is `absent` (no `NOTIFY_SOCKET`),
+`notifier-only` (readiness armed, watchdog not), or `watchdog-armed`, and
+[`kookr ops digest`](./cli.md#kookr-ops-digest) warns whenever it is not
+`watchdog-armed`. The block reads only process-local arming — it makes no
+`systemctl` call — so `externalUnitStatus` is always `unknown`: it confirms the
+process would ping the watchdog, not that the unit is running or that a restart
+is guaranteed. Use `systemctl status kookr` for the unit's own state.
+
 To tune the deadline per host, override it with a drop-in rather than editing the
 template:
 

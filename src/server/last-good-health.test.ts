@@ -119,6 +119,33 @@ describe('LastGoodHealthWriter', () => {
     });
   });
 
+  test('keeps systemdNotifier arming when the full body is truncated (issue #2853)', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      systemdNotifier: {
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'notifier-only',
+        notificationEnabled: true,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      },
+    }));
+    const snap = readFile(dir);
+    expect(snap.truncated).toBe(true);
+    // The offline digest must still be able to warn that the watchdog is not
+    // armed after HTTP goes dark.
+    expect(snap.health.systemdNotifier).toEqual({
+      schemaVersion: 'systemd-notifier.v1',
+      arming: 'notifier-only',
+      notificationEnabled: true,
+      watchdogArmed: false,
+      watchdogIntervalMs: 0,
+      externalUnitStatus: 'unknown',
+    });
+  });
+
   test('TS-HEALTH-DISK-003: keeps dataDirectory when the full body is truncated', () => {
     const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
     writer.record(baseHealth({

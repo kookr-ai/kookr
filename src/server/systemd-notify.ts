@@ -154,3 +154,76 @@ export function createSystemdNotifier(options: SystemdNotifierOptions = {}): Sys
     },
   };
 }
+
+/** Schema tag for the `/api/health` + `kookr ops digest` notifier block (issue #2853). */
+export const SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION = 'systemd-notifier.v1';
+
+/**
+ * Three-way process-local arming state (issue #2853):
+ *   - `'absent'`         → `NOTIFY_SOCKET` was unset; this process is not running
+ *     under a `Type=notify` unit, so no readiness/watchdog datagrams are sent.
+ *   - `'notifier-only'`  → readiness notifications are armed but the watchdog is
+ *     not (`WATCHDOG_USEC` missing/invalid, or `WATCHDOG_PID` names another pid).
+ *   - `'watchdog-armed'` → readiness *and* the watchdog heartbeat are armed.
+ */
+export type SystemdNotifierArming = 'absent' | 'notifier-only' | 'watchdog-armed';
+
+/**
+ * Operator-facing projection of the notifier's in-memory arming state (issue
+ * #2853). Health and `kookr ops digest` surface this so a remote operator can
+ * tell whether process-level watchdog integration is disabled, instead of
+ * mistaking a dead-but-unsupervised service for an externally supervised one.
+ *
+ * Deliberately narrow: it reports only what the process learned from the
+ * sd_notify environment at construction. It never queries `systemctl` or the
+ * unit — see {@link SystemdNotifierHealthBlock.externalUnitStatus}.
+ */
+export interface SystemdNotifierHealthBlock {
+  readonly schemaVersion: typeof SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION;
+  /** Three-way arming state; see {@link SystemdNotifierArming}. */
+  readonly arming: SystemdNotifierArming;
+  /** True when `NOTIFY_SOCKET` was present — `READY=1` / `WATCHDOG=1` can reach systemd. */
+  readonly notificationEnabled: boolean;
+  /** True when the watchdog heartbeat is armed and `WATCHDOG=1` pings flow. */
+  readonly watchdogArmed: boolean;
+  /**
+   * Heartbeat cadence in ms (`WATCHDOG_USEC / 2`); `0` when the watchdog is not
+   * armed.
+   */
+  readonly watchdogIntervalMs: number;
+  /**
+   * Always `'unknown'`. This block reports only PROCESS-LOCAL arming read from
+   * the sd_notify environment — it performs no `systemctl` call and no
+   * filesystem work — so it cannot, and must not, claim the external service
+   * manager is active or that a restart is guaranteed.
+   */
+  readonly externalUnitStatus: 'unknown';
+}
+
+/**
+ * Project a {@link SystemdNotifier}'s cheap in-memory arming state into the
+ * operator-facing health block (issue #2853). Pure and allocation-cheap: no
+ * `systemctl`, no filesystem, no env re-read — safe on the `/api/health` hot
+ * path.
+ */
+export function buildSystemdNotifierHealthBlock(
+  notifier: Pick<SystemdNotifier, 'enabled' | 'watchdogEnabled' | 'watchdogIntervalMs'>,
+): SystemdNotifierHealthBlock {
+  const notificationEnabled = notifier.enabled;
+  const watchdogArmed = notifier.watchdogEnabled;
+  const arming: SystemdNotifierArming = watchdogArmed
+    ? 'watchdog-armed'
+    : notificationEnabled
+      ? 'notifier-only'
+      : 'absent';
+  return {
+    schemaVersion: SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION,
+    arming,
+    notificationEnabled,
+    watchdogArmed,
+    // A non-armed watchdog reports a 0 interval regardless of the notifier's
+    // raw field, so the block never advertises a cadence that isn't pinging.
+    watchdogIntervalMs: watchdogArmed ? notifier.watchdogIntervalMs : 0,
+    externalUnitStatus: 'unknown',
+  };
+}

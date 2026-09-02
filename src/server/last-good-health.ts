@@ -123,7 +123,9 @@ function slimBuild(health: Record<string, unknown>): { version: unknown } | unde
  * `attentionQueue` and `capacity` are small today but not size-bounded, so a
  * second tier ({@link pickMinimalGauges}) backstops the hard cap.
  * `timerHealth` is four counts (issue #2636) so last-good still answers
- * "did prune run?" when the full body is too big.
+ * "did prune run?" when the full body is too big. `systemdNotifier` is a
+ * handful of scalars (issue #2853) so the offline digest can still warn that
+ * the process-level watchdog is not armed when HTTP is dark.
  */
 function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
   const gauges: Record<string, unknown> = {};
@@ -136,6 +138,7 @@ function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
     'dataDirectory',
     'helperLlm',
     'timerHealth',
+    'systemdNotifier',
   ] as const) {
     if (health[key] !== undefined) gauges[key] = health[key];
   }

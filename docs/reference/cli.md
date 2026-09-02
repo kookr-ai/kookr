@@ -792,6 +792,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | Hook-ingestion p95 lag | `hookIngestion.p95LagMs` | p95 strictly above 10 seconds (`HOOK_INGESTION_P95_WARN_MS`) |
 | Fail-closed paused schedule | `schedules.schedulesPausedByFailure` | any paused row (`count >= 1`, not only when three are paused) |
 | Pipeline starvation | `pipelineStarvation.repos.<repo>.consecutiveBlockedEmpty` | elevated repos |
+| systemd watchdog not armed | `systemdNotifier.watchdogArmed` | `systemdNotifier.arming` is `absent` (no `NOTIFY_SOCKET`) or `notifier-only` (readiness armed, watchdog heartbeat not) — process-level watchdog integration is disabled, so a wedged service will not be externally restarted (issue #2853). The warning states that external unit status is unknown; when armed, a quiet `systemdNotifier.arming=watchdog-armed` line is printed instead |
 | Low data-dir disk | `dataDirectory.diskFreePercent` (or legacy host/sampler aliases) | cached free percent is known and ≤15%; an explicit `dataDirectory.status: "unknown"` stays quiet |
 
 Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).

@@ -3211,6 +3211,79 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — systemdNotifier block (issue #2853)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health systemdNotifier block (issue #2853)', () => {
+    test('omits the block when the notifier is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body).not.toHaveProperty('systemdNotifier');
+    });
+
+    test('projects "absent" arming with an unknown external unit status', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        systemdNotifier: { enabled: false, watchdogEnabled: false, watchdogIntervalMs: 0 },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
+      expect(body.systemdNotifier).toEqual({
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'absent',
+        notificationEnabled: false,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      });
+    });
+
+    test('projects "notifier-only" when readiness is armed but the watchdog is not', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        systemdNotifier: { enabled: true, watchdogEnabled: false, watchdogIntervalMs: 0 },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
+      expect(body.systemdNotifier).toEqual({
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'notifier-only',
+        notificationEnabled: true,
+        watchdogArmed: false,
+        watchdogIntervalMs: 0,
+        externalUnitStatus: 'unknown',
+      });
+    });
+
+    test('projects "watchdog-armed" with the heartbeat interval', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        systemdNotifier: { enabled: true, watchdogEnabled: true, watchdogIntervalMs: 15_000 },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
+      expect(body.systemdNotifier).toEqual({
+        schemaVersion: 'systemd-notifier.v1',
+        arming: 'watchdog-armed',
+        notificationEnabled: true,
+        watchdogArmed: true,
+        watchdogIntervalMs: 15_000,
+        externalUnitStatus: 'unknown',
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — viewerBroadcaster block (#808 / R10)
   // ---------------------------------------------------------------------------
   describe('GET /api/health viewerBroadcaster block', () => {
