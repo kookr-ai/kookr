@@ -143,6 +143,8 @@ function outcomeLabel(outcome: ScheduleResponse['executionLedger'][number]['outc
       return 'skipped: server restarting';
     case 'skipped_safe_mode':
       return 'skipped: SAFE MODE';
+    case 'skipped_project_automation':
+      return 'skipped: project automation paused';
     case 'skipped_manual':
       return 'manual run available';
     case 'skipped_stale':
@@ -172,6 +174,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'server restarting';
     case 'safe_mode':
       return 'SAFE MODE';
+    case 'project_automation':
+      return 'project automation paused';
     case 'previous_run_active':
       return 'previous run active';
     case 'previous_run_pending':

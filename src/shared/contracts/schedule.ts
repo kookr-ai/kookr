@@ -97,6 +97,11 @@ export type ScheduleExecutionOutcome =
    * (issue #2945). Mirrors `core/schedule`.
    */
   | 'skipped_playbook_drift'
+  /**
+   * Per-project automation pause. Distinct from `skipped_safe_mode`.
+   * Mirrors `core/schedule`.
+   */
+  | 'skipped_project_automation'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -145,7 +150,9 @@ export type ScheduleExecutionReasonCode =
    * Reason code for `skipped_playbook_drift` (issue #2945). Mirrors
    * `core/schedule`.
    */
-  | 'playbook_cwd_lag';
+  | 'playbook_cwd_lag'
+  /** Reason code for `skipped_project_automation`. Mirrors `core/schedule`. */
+  | 'project_automation';
 
 /**
  * Classified task terminal cause carried onto a schedule execution receipt

@@ -69,7 +69,11 @@ import {
   type LaunchOutcomeMetrics,
 } from '../core/launch-outcome-metrics.js';
 import type { RelaunchArbiter, RelaunchLease } from './relaunch-arbiter.js';
-import { isAutonomousLaunchSource } from '../core/automation-kill-switch.js';
+import {
+  EMPTY_PAUSED_PROJECT_IDS,
+  isAutonomousLaunchSource,
+  mayAutonomousActuate,
+} from '../core/automation-kill-switch.js';
 import {
   buildTaskLaunchIntent,
   launchIntentPins,
@@ -112,6 +116,13 @@ export interface LaunchTaskServerOptions {
    * `LaunchOpts` — this is a trusted, server-internal channel.
    */
   safeModeExempt?: boolean;
+  /**
+   * Project id the per-project automation gate uses. Trusted server-internal
+   * channel — never from client LaunchOpts. Launch-service uses ONLY this
+   * stamp, never `opts.projectId` (scout target) and never a second
+   * `getProjectId(cwd)`. Required on autonomous launches.
+   */
+  automationProjectId?: string;
 }
 
 export interface LaunchServiceDeps {
@@ -208,6 +219,11 @@ export interface LaunchServiceDeps {
    * accepted. Omitted means automation enabled (back-compat).
    */
   isAutomationEnabled?: () => boolean;
+  /**
+   * Live paused-id set from the in-memory ProjectConfigStore. Reread on every
+   * launch. Absent means no project is paused (back-compat for older tests).
+   */
+  getPausedProjectIds?: () => ReadonlySet<string>;
   /**
    * Test seam for the launch cwd existence check (RFC F12). E2E specs launch
    * tasks into the fictional `/test/project` against FakeTerminalBackend,
@@ -424,14 +440,25 @@ export class DrainModeError extends Error {
 }
 
 /**
- * Thrown by {@link launchTask} when the automation kill-switch is engaged and
- * the launch is autonomous (issue #1710). Manual launches are unaffected.
+ * Thrown by {@link launchTask} when autonomous actuation is halted — either
+ * node-wide SAFE MODE or a per-project pause. Manual launches are unaffected.
+ * Same class for both levers so `mapErrorToReasonCode` inspects `code`, not a
+ * new `err.name` it would miss.
  */
 export class AutomationKillSwitchError extends Error {
-  readonly code = 'safe_mode';
-  constructor() {
-    super('SAFE MODE — automation kill-switch engaged; autonomous launches halted');
+  readonly code: 'safe_mode' | 'project_automation';
+  constructor(
+    code: 'safe_mode' | 'project_automation' = 'safe_mode',
+    message?: string,
+  ) {
+    super(
+      message
+        ?? (code === 'project_automation'
+          ? 'Project automation paused; autonomous launches halted'
+          : 'SAFE MODE — automation kill-switch engaged; autonomous launches halted'),
+    );
     this.name = 'AutomationKillSwitchError';
+    this.code = code;
   }
 }
 
@@ -1165,18 +1192,39 @@ async function launchTaskCore(
   if (deps.isAccepting && !deps.isAccepting()) {
     throw new DrainModeError();
   }
-  // Automation kill-switch (issue #1710): refuse autonomous launches only.
-  // Manual sources (api/ui/cli/websocket/remote) stay accepted so an operator
-  // can still intervene while SAFE MODE is engaged. The cross-repo orchestrator
+  // Automation kill-switch (issue #1710) + per-project pause: refuse autonomous
+  // launches only. Manual sources stay accepted. The cross-repo orchestrator
   // fire carries `serverOpts.safeModeExempt` (issue #2672) so its own agent
-  // launch is allowed through — it must keep ticking to auto-resume the fleet.
-  if (
-    deps.isAutomationEnabled
-    && !deps.isAutomationEnabled()
-    && isAutonomousLaunchSource(opts.launchSource)
-    && !serverOpts.safeModeExempt
-  ) {
-    throw new AutomationKillSwitchError();
+  // launch is allowed through global SAFE MODE — a Kookr-project pause still
+  // skips it. Launch-service uses ONLY `automationProjectId` for the project
+  // gate, never `opts.projectId` (scout target).
+  if (isAutonomousLaunchSource(opts.launchSource)) {
+    const stamp = serverOpts.automationProjectId?.trim();
+    const decision = mayAutonomousActuate({
+      source: opts.launchSource,
+      projectId: stamp,
+      globalEnabled: deps.isAutomationEnabled?.() ?? true,
+      pausedProjectIds: deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
+      safeModeExempt: serverOpts.safeModeExempt,
+    });
+    if (decision === 'safe_mode') {
+      throw new AutomationKillSwitchError('safe_mode');
+    }
+    if (decision === 'project_paused') {
+      throw new AutomationKillSwitchError('project_automation');
+    }
+    // Production always wires getPausedProjectIds. A missing stamp is a
+    // programming error — refuse rather than guess opts.projectId. Older tests
+    // that omit the getter keep the previous signature.
+    if (deps.getPausedProjectIds && !stamp) {
+      console.error(
+        '[launch] autonomous launch missing automationProjectId stamp; refusing rather than guessing opts.projectId',
+      );
+      throw new AutomationKillSwitchError(
+        'project_automation',
+        'Autonomous launch missing automationProjectId stamp',
+      );
+    }
   }
   // Fail fast on a missing working directory (RFC F12) — before dedup, task
   // creation, or any spawn attempt, so the caller gets the actual cause

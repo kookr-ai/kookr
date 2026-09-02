@@ -193,6 +193,12 @@ export type ScheduleExecutionOutcome =
    * outcome is only recorded when `failOnPlaybookDrift` is set.
    */
   | 'skipped_playbook_drift'
+  /**
+   * Per-project automation pause (conjunction in front of SAFE MODE).
+   * Distinct from `skipped_safe_mode` so a Lucy pause is not greppable as
+   * node-wide SAFE MODE. Does not change `schedule.enabled`.
+   */
+  | 'skipped_project_automation'
   | 'unknown_after_restart';
 
 export type ScheduleExecutionReasonCode =
@@ -266,7 +272,9 @@ export type ScheduleExecutionReasonCode =
    * (issue #2945): the playbook cwd checkout is behind its upstream tracking
    * ref, or the playbook blob at HEAD differs from the same path upstream.
    */
-  | 'playbook_cwd_lag';
+  | 'playbook_cwd_lag'
+  /** Reason code for {@link ScheduleExecutionOutcome.skipped_project_automation}. */
+  | 'project_automation';
 
 /**
  * Classified task terminal cause carried onto a schedule execution receipt

@@ -153,6 +153,18 @@ describe('evaluateScheduleStarvation', () => {
     expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
   });
 
+  it('skipped_project_automation is a deliberate pause and never counts as starvation', () => {
+    const sched = schedule({
+      executionLedger: [
+        entry('dispatch_failed', NOW - 4 * 3_600_000),
+        entry('dispatch_failed', NOW - 3 * 3_600_000),
+        entry('skipped_project_automation', NOW - 90 * 60_000),
+        entry('skipped_project_automation', NOW - 30 * 60_000),
+      ],
+    });
+    expect(evaluateScheduleStarvation([sched], NOW, DEFAULT_DEAD_MAN_SCHEDULE_MS).starving).toBe(false);
+  });
+
   it('skipped_draining is operator intent and never counts as a due fire or a failure', () => {
     const sched = schedule({
       executionLedger: [

@@ -27,7 +27,13 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync, type ResolvedScheduleLaunch } from './schedule-validator.js';
 import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
-import { isSafeModeExemptSchedule } from '../core/automation-kill-switch.js';
+import {
+  EMPTY_PAUSED_PROJECT_IDS,
+  isSafeModeExemptSchedule,
+  mayAutonomousActuate,
+  resolveScheduleAutomationProjectId,
+} from '../core/automation-kill-switch.js';
+import { getProjectId } from '../core/project-identity.js';
 import { withTimeout } from '../core/with-timeout.js';
 import {
   crossTierResolutionHint,
@@ -214,6 +220,16 @@ export interface ScheduleRunnerDeps {
    */
   isAutomationEnabled?: () => boolean;
   /**
+   * Live paused-id set from the in-memory ProjectConfigStore. Reread on every
+   * fire. Absent means no project is paused (back-compat).
+   */
+  getPausedProjectIds?: () => ReadonlySet<string>;
+  /**
+   * Test seam for schedule pause identity. Production uses the basename map
+   * then `getProjectId(cwd)`.
+   */
+  resolveAutomationProjectId?: (schedule: Schedule) => string | Promise<string>;
+  /**
    * Resolve a blocking task's current status (issue #1526 Phase A). Used
    * ONLY to split `isTaskBlockingSchedule`'s single boolean into two distinct
    * ledger outcomes: `pending` → coalesce (`skipped_coalesced`, at most one
@@ -380,7 +396,11 @@ export interface ScheduleRunnerDeps {
    */
   loopedLauncher?: (
     schedule: Schedule,
-    extras?: { promptPrefix?: string },
+    extras?: {
+      promptPrefix?: string;
+      automationProjectId?: string;
+      safeModeExempt?: boolean;
+    },
   ) => Promise<LaunchResult>;
   /**
    * Inspect a project-tier playbook's cwd checkout against its upstream
@@ -954,7 +974,15 @@ export class ScheduleRunner {
     const safeModeExempt = isSafeModeExemptSchedule({
       playbookPath: schedule.playbook?.path,
     });
-    if (this.deps.isAutomationEnabled && !this.deps.isAutomationEnabled() && !safeModeExempt) {
+    const automationProjectId = await this.automationProjectIdFor(schedule);
+    const actuation = mayAutonomousActuate({
+      source: 'schedule',
+      projectId: automationProjectId,
+      globalEnabled: this.deps.isAutomationEnabled?.() ?? true,
+      pausedProjectIds: this.deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
+      safeModeExempt,
+    });
+    if (actuation === 'safe_mode') {
       console.warn(`[schedule] Skipping "${schedule.name}" — automation kill-switch engaged (issue #1710)`);
       await this.deps.service.markExecutionOutcome(
         schedule.id,
@@ -964,6 +992,19 @@ export class ScheduleRunner {
         'SAFE MODE — automation kill-switch engaged; schedule fires halted',
       );
       return { error: 'SAFE MODE — automation kill-switch engaged' };
+    }
+    if (actuation === 'project_paused') {
+      console.warn(
+        `[schedule] Skipping "${schedule.name}" — project automation paused (${automationProjectId})`,
+      );
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_project_automation',
+        'project_automation',
+        `Project automation paused (${automationProjectId})`,
+      );
+      return { error: `Project automation paused (${automationProjectId})` };
     }
 
     // issue #2569: cheap probe first. Converged / probe-blip ticks complete
@@ -1035,7 +1076,10 @@ export class ScheduleRunner {
     // behind the WS0.5 relaunch arbiter so concurrent actuators cannot arm
     // duplicate loops for the same schedule unit.
     if (hasScheduleLoopConfig(schedule)) {
-      return this.fireLooped(schedule, receipt, drift);
+      return this.fireLooped(schedule, receipt, drift, {
+        automationProjectId,
+        safeModeExempt,
+      });
     }
 
     // issue #1895 / #1699 WS1.3: pinned-agent availability. Round-robin is
@@ -1106,7 +1150,10 @@ export class ScheduleRunner {
         // issue #1583: carry the scheduleId so the created task's immutable
         // `schedule` provenance points back to this schedule for rollups.
         scheduleId: schedule.id,
-      }, safeModeExempt ? { safeModeExempt: true } : undefined);
+      }, {
+        automationProjectId,
+        ...(safeModeExempt ? { safeModeExempt: true } : {}),
+      });
 
       const acceptDetails = buildSubstitutionAcceptDetails(
         agentResolution,
@@ -1182,6 +1229,7 @@ export class ScheduleRunner {
     schedule: Schedule,
     receipt: { id: string },
     drift: PlaybookCheckoutDrift | null = null,
+    actuation?: { automationProjectId: string; safeModeExempt: boolean },
   ): Promise<ScheduleRunResult> {
     const arbiter = this.deps.relaunchArbiter;
     const claimKey = scheduleRelaunchClaimKey(schedule);
@@ -1241,7 +1289,13 @@ export class ScheduleRunner {
     try {
       const result = await this.deps.loopedLauncher(
         scheduleForLaunch,
-        drift?.warning ? { promptPrefix: drift.warning } : undefined,
+        {
+          ...(drift?.warning ? { promptPrefix: drift.warning } : {}),
+          ...(actuation?.automationProjectId
+            ? { automationProjectId: actuation.automationProjectId }
+            : {}),
+          ...(actuation?.safeModeExempt ? { safeModeExempt: true } : {}),
+        },
       );
       // Looped launcher may not surface substitution chains; ledger at least
       // the schedule hop (issue #2001).
@@ -1461,6 +1515,17 @@ export class ScheduleRunner {
         await this.deps.service.recordCatchUpSkipped(schedule.id, scheduledNext.toISOString(), message);
       }
     }
+  }
+
+  private async automationProjectIdFor(schedule: Schedule): Promise<string> {
+    if (this.deps.resolveAutomationProjectId) {
+      return this.deps.resolveAutomationProjectId(schedule);
+    }
+    const cwdProjectId = await getProjectId(schedule.cwd);
+    return resolveScheduleAutomationProjectId({
+      playbookPath: schedule.playbook?.path,
+      cwdProjectId,
+    });
   }
 
   /**
@@ -1707,7 +1772,7 @@ function getCatchUpMode(): 'auto' | 'manual' | 'off' {
   return 'auto';
 }
 
-function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').ScheduleExecutionReasonCode {
+export function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').ScheduleExecutionReasonCode {
   if (err instanceof ScheduleValidationError) {
     if (err.fieldErrors?.cwd) return 'missing_cwd' as const;
     if (err.fieldErrors?.playbook) return 'missing_playbook' as const;
@@ -1717,9 +1782,14 @@ function mapErrorToReasonCode(err: unknown): import('../core/schedule.js').Sched
   // is recorded as dispatch_failed with its own reason code — never silently
   // dropped, and distinguishable from a broken launcher in the ledger.
   if (isPendingQueueFullError(err)) return 'pending_queue_full' as const;
-  // Defense-in-depth: if a fire reaches the launcher while SAFE MODE is on
-  // (the pre-fire gate above should have short-circuited), map to safe_mode.
-  if (err instanceof Error && err.name === 'AutomationKillSwitchError') return 'safe_mode' as const;
+  // Defense-in-depth: if a fire reaches the launcher while SAFE MODE or a
+  // project pause is on (the pre-fire gate above should have short-circuited),
+  // inspect `code` — a new err.name would miss the project-pause mapping.
+  if (err instanceof Error && err.name === 'AutomationKillSwitchError') {
+    const code = (err as { code?: unknown }).code;
+    if (code === 'project_automation') return 'project_automation' as const;
+    return 'safe_mode' as const;
+  }
   // issue #2194: Grok session/OIDC preflight refusal is a distinct auth class,
   // not a generic launcher thrash — readable from GET /api/schedules ledger.
   if (isGrokAuthPreflightError(err)) return 'auth_expired' as const;

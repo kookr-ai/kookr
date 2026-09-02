@@ -69,7 +69,7 @@ describe('createProviderTransientRetryHandler', () => {
       playbookId: 'scout.md',
       playbookSource: original.playbookSource,
       playbookParameterValues: { repo: 'owner/repo' },
-    }));
+    }), expect.objectContaining({ automationProjectId: expect.any(String) }));
     await vi.waitFor(() =>
       expect(taskStore.setRetryLineage).toHaveBeenCalledWith('retry-1', { retryOf: 'orig', retryAttempt: 1 }),
     );
@@ -95,7 +95,7 @@ describe('createProviderTransientRetryHandler', () => {
     await vi.waitFor(() => expect(launchTask).toHaveBeenCalledWith(expect.objectContaining({
       model: 'claude-fable-5',
       effort: 'high',
-    })));
+    }), expect.anything()));
   });
 
   it('marks an exact persisted tier target as trusted for replay', async () => {
@@ -121,6 +121,7 @@ describe('createProviderTransientRetryHandler', () => {
     handler({ originalTaskId: 'orig-small', failedTaskId: 'orig-small', attempt: 1, delayMs: 0 });
     await vi.waitFor(() => expect(launchTask).toHaveBeenCalledWith(
       expect.objectContaining({ modelTier: 'small' }),
+      expect.anything(),
     ));
     expect(launchTask.mock.calls[0]?.[0]).not.toHaveProperty('model');
     expect(launchTask.mock.calls[0]?.[0]).not.toHaveProperty('effort');

@@ -181,6 +181,7 @@ function ProjectIcon({
     summary.displayName,
     pinned ? 'Pinned' : 'In sidebar',
     muted ? 'Notifications muted' : null,
+    summary.automationEnabled === false ? 'Automation paused' : null,
     `${summary.activeAgents} active agent${summary.activeAgents !== 1 ? 's' : ''}`,
     isActive
       ? `${taskLoad.runningAgents} running · ${taskLoad.stalledAgents} stalled`
@@ -218,6 +219,13 @@ function ProjectIcon({
         )}
         {isActive && (
           <TaskCountBadge taskLoad={taskLoad} />
+        )}
+        {summary.automationEnabled === false && (
+          <span
+            className="project-icon-paused"
+            data-testid={`project-automation-paused-${summary.project}`}
+            aria-label="Project automation paused"
+          />
         )}
       </button>
     </Tooltip>

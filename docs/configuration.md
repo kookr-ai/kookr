@@ -30,6 +30,10 @@ KOOKR_TASK_TAIL_RETENTION_DAYS=7
 # KOOKR_TASK_TAIL_MAX_BYTES=262144
 ```
 
+## Per-project automation pause
+
+Each project can pause Kookr-driven autonomous launches (schedules, the idle-slot refinery, post-recovery kicks) without engaging the global SAFE MODE kill-switch and without flipping each schedule's `enabled` bit. Pause from the project drawer, or `POST /api/projects/configs` with `{ "automationEnabled": false }`. The kb-scout daily reflection playbook (`kb-scout-reflection.md`) follows kb-scout-evol even when its cwd is elsewhere. The queue-feeder follows its Lucy cwd on purpose.
+
 ## AI Suggestions
 
 AI task naming, response suggestions, and remote-chat rephrase run through a

@@ -65,6 +65,13 @@ export interface ProjectSummary {
   prLessonsDistillations?: number;
   prLessonsRawLines?: number;
   localPath?: string;
+  /**
+   * Per-project automation pause. Default true when omitted (allowed).
+   * Explicit false = autonomous launches for this project are halted.
+   */
+  automationEnabled?: boolean;
+  /** ISO timestamp the current project-automation pause began; omitted while allowed. */
+  automationPausedSince?: string;
   repoHealth?: ProjectRepoHealth;
   openIssuesTiedToActiveTasks?: number;
   openPrsTiedToActiveTasks?: number;

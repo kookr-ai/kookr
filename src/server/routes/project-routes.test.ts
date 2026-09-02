@@ -179,6 +179,24 @@ describe('POST /api/projects/configs webhook routing', () => {
     expect(projectConfigStore.getConfig('local/lucy')?.autoSyncOnManualLaunch).toBe(true);
   });
 
+  test('POST automationEnabled false on local/lucy pauses the GitHub Lucy sibling sharing localPath', async () => {
+    projectConfigStore.setConfig('github.com/jeanibarz/lucy', { localPath: '/tmp/lucy-checkout' });
+    projectConfigStore.setConfig('local/lucy', { localPath: '/tmp/lucy-checkout' });
+    const app = mkApp({ projectConfigStore, broadcastProjectSummaries: () => {} });
+
+    const res = await app.request('/api/projects/configs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project: 'local/lucy', automationEnabled: false }),
+    });
+    expect(res.status).toBe(200);
+    expect((await res.json()).automationEnabled).toBe(false);
+    expect(projectConfigStore.getPausedProjectIds()).toEqual(new Set([
+      'local/lucy',
+      'github.com/jeanibarz/lucy',
+    ]));
+  });
+
   test('persists a zero-drain issue limit and rejects only the configured deployment ceiling', async () => {
     const unlimited = await mkApp({
       projectConfigStore,

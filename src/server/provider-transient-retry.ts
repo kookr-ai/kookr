@@ -1,5 +1,7 @@
 import type { TaskStore } from '../core/tasks.js';
-import type { LaunchOpts, LaunchResult } from './launch-service.js';
+import type { LaunchOpts, LaunchResult, LaunchTaskServerOptions } from './launch-service.js';
+import { resolveScheduleAutomationProjectId } from '../core/automation-kill-switch.js';
+import { getProjectId } from '../core/project-identity.js';
 import type {
   ProviderTransientRetryRequest,
   ProviderTransientAlertRequest,
@@ -23,7 +25,9 @@ export interface ProviderTransientRetryDeps {
   taskStore: Pick<TaskStore, 'getTask' | 'setRetryLineage'>
     & Partial<Pick<TaskStore, 'setRelaunchDisposition'>>;
   /** Launch a fresh task. The composition root binds this to the real launch service. */
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
+  /** Test seam; default is basename map then getProjectId(cwd). */
+  resolveAutomationProjectId?: (opts: LaunchOpts) => string | Promise<string>;
   /**
    * Timer used to apply the backoff. Injectable for tests; defaults to an
    * unref'd `setTimeout` so a pending retry never keeps the process alive.
@@ -103,7 +107,13 @@ export function createProviderTransientRetryHandler(
     schedule(() => {
       void (async () => {
         try {
-          const result = await deps.launchTask(launchOpts);
+          const projectId = deps.resolveAutomationProjectId
+            ? await deps.resolveAutomationProjectId(launchOpts)
+            : resolveScheduleAutomationProjectId({
+                playbookPath: original.playbookId,
+                cwdProjectId: await getProjectId(launchOpts.cwd),
+              });
+          const result = await deps.launchTask(launchOpts, { automationProjectId: projectId });
           deps.taskStore.setRetryLineage(result.task.id, {
             retryOf: req.originalTaskId,
             retryAttempt: req.attempt,

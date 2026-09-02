@@ -316,6 +316,18 @@ describe('collectOpsDigestWarnings', () => {
     expect(warnings.some((w) => w.path === 'systemdNotifier.watchdogArmed')).toBe(true);
   });
 
+  it('surfaces project automation pause distinct from safeMode', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      safeMode: { engaged: false },
+      projectAutomation: {
+        pausedProjectIds: ['github.com/jeanibarz/lucy'],
+        digest: 'project automation paused: github.com/jeanibarz/lucy',
+      },
+    });
+    expect(warnings.some((w) => w.path === 'projectAutomation.pausedProjectIds')).toBe(true);
+    expect(warnings.some((w) => w.path === 'safeMode.engaged')).toBe(false);
+  });
+
   it('surfaces safeMode when engaged', () => {
     const { warnings } = collectOpsDigestWarnings({
       safeMode: { engaged: true, since: '2026-08-01T00:00:00.000Z' },

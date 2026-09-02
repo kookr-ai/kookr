@@ -245,3 +245,39 @@ describe('ProjectDetailDrawer — selectable recent tasks', () => {
     expect(container.querySelector('.project-drawer-task')?.tagName).toBe('DIV');
   });
 });
+
+describe('ProjectDetailDrawer — project automation toggle', () => {
+  test('saves immediately when the operator turns automation off', () => {
+    const sent: unknown[] = [];
+    act(() => {
+      root.render(
+        React.createElement(ProjectDetailDrawer, {
+          project: baseProject({ automationEnabled: true }),
+          onClose: () => {},
+          send: (msg) => {
+            sent.push(msg);
+            return true;
+          },
+        }),
+      );
+    });
+    const toggle = container.querySelector('[data-testid="project-automation-toggle"]');
+    expect(toggle).not.toBeNull();
+    act(() => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(sent).toEqual([{
+      type: 'setProjectConfig',
+      project: 'github.com/octo/cat',
+      config: { project: 'github.com/octo/cat', automationEnabled: false },
+    }]);
+  });
+
+  test('shows paused since when automation is off', () => {
+    renderDrawer(baseProject({
+      automationEnabled: false,
+      automationPausedSince: '2026-09-03T00:00:00.000Z',
+    }));
+    expect(container.textContent).toContain('Paused since 2026-09-03T00:00:00.000Z');
+  });
+});

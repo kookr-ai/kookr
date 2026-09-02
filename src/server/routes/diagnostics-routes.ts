@@ -91,6 +91,7 @@ import {
 } from '../control-plane-health.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
 import {
+  formatProjectAutomationDigestLine,
   formatSafeModeDigestLine,
   resolveSafeModeStatus,
 } from '../../core/automation-kill-switch.js';
@@ -479,6 +480,25 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ...(status.since ? { since: status.since } : {}),
         ...(digest ? { digest } : {}),
         ...(status.loadError ? { loadError: status.loadError } : {}),
+      };
+    }
+
+    let projectAutomationBlock:
+      | {
+          pausedProjectIds: string[];
+          paused: Array<{ projectId: string; since?: string }>;
+          digest?: string;
+          loadWarning?: string;
+        }
+      | undefined;
+    if (deps.projectConfigStore) {
+      const status = deps.projectConfigStore.getProjectAutomationStatus();
+      const digest = formatProjectAutomationDigestLine(status);
+      projectAutomationBlock = {
+        pausedProjectIds: status.paused.map((row) => row.projectId),
+        paused: status.paused,
+        ...(digest ? { digest } : {}),
+        ...(status.loadWarning ? { loadWarning: status.loadWarning } : {}),
       };
     }
 
@@ -899,6 +919,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       capacity,
       capacityThroughputVerdict,
       ...(safeModeBlock ? { safeMode: safeModeBlock } : {}),
+      ...(projectAutomationBlock ? { projectAutomation: projectAutomationBlock } : {}),
       ...(orchestrationPauseBlock ? { orchestrationPause: orchestrationPauseBlock } : {}),
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       // camelCase + snake_case: dashboard/status CLI use camelCase; daily

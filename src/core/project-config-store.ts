@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from './persistence-utils.js';
+import { applyProjectAutomationTransition } from './automation-kill-switch.js';
 import {
   sanitizeProjectConfig,
   type ProjectConfig,
@@ -65,6 +66,8 @@ export class ProjectConfigStore {
   private filePath: string;
   private rateLimitsPath: string;
   private readonly maxZeroDrainIssueLimit: number | undefined;
+  /** Last whole-file quarantine warning; fail-open (rows empty), not a second SAFE MODE. */
+  private loadWarning: string | undefined;
 
   constructor(kookrDir: string, options: { maxZeroDrainIssueLimit?: number } = {}) {
     this.filePath = join(kookrDir, 'project-configs.json');
@@ -78,9 +81,14 @@ export class ProjectConfigStore {
   }
 
   async load(): Promise<void> {
+    this.loadWarning = undefined;
     const arr = await readJsonFile<unknown[]>(this.filePath, [], {
       quarantineCorrupt: true,
       warningPrefix: 'project-config-store',
+      warn: (message, cause) => {
+        this.loadWarning = message;
+        console.warn(message, cause);
+      },
     });
     this.configs.clear();
     for (const rawConfig of arr) {
@@ -101,6 +109,7 @@ export class ProjectConfigStore {
         this.configs.set(config.project, config);
       }
     }
+    this.syncAutomationAcrossLocalPathAliases();
   }
 
   /**
@@ -176,10 +185,15 @@ export class ProjectConfigStore {
       ?? UNLIMITED_ZERO_DRAIN_ISSUE_LIMIT;
   }
 
-  setConfig(project: string, patch: Partial<Omit<ProjectConfig, 'project'>>): ProjectConfig {
+  setConfig(
+    project: string,
+    patch: Partial<Omit<ProjectConfig, 'project'>>,
+    nowIso: string = new Date().toISOString(),
+  ): ProjectConfig {
     const existing = this.configs.get(project) ?? { project };
-    const updated = sanitizeProjectConfig({ ...existing, ...patch, project });
-    if (!updated) throw new Error(`Invalid project config: ${project}`);
+    const sanitized = sanitizeProjectConfig({ ...existing, ...patch, project });
+    if (!sanitized) throw new Error(`Invalid project config: ${project}`);
+    const updated = applyProjectAutomationTransition(existing, sanitized, nowIso);
     if (
       this.maxZeroDrainIssueLimit !== undefined
       && updated.zeroDrainIssueLimit !== undefined
@@ -195,7 +209,105 @@ export class ProjectConfigStore {
       );
     }
     this.configs.set(project, updated);
+    if (patch.automationEnabled !== undefined) {
+      this.copyAutomationToLocalPathSiblings(updated);
+    }
     return updated;
+  }
+
+  /**
+   * Live paused-id set: every in-memory row whose `automationEnabled === false`,
+   * plus every sibling that shares the same `localPath` string. Reread on every
+   * fire — not a boot snapshot.
+   */
+  getPausedProjectIds(): Set<string> {
+    const paused = new Set<string>();
+    const pausedPaths = new Set<string>();
+    for (const config of this.configs.values()) {
+      if (config.automationEnabled === false) {
+        paused.add(config.project);
+        if (config.localPath) pausedPaths.add(config.localPath);
+      }
+    }
+    if (pausedPaths.size === 0) return paused;
+    for (const config of this.configs.values()) {
+      if (config.localPath && pausedPaths.has(config.localPath)) {
+        paused.add(config.project);
+      }
+    }
+    return paused;
+  }
+
+  getAutomationPausedSince(project: string): string | undefined {
+    return this.configs.get(project)?.automationPausedSince;
+  }
+
+  getLoadWarning(): string | undefined {
+    return this.loadWarning;
+  }
+
+  /** Operator snapshot for `/api/health` and status digest. */
+  getProjectAutomationStatus(): {
+    paused: Array<{ projectId: string; since?: string }>;
+    loadWarning?: string;
+  } {
+    const pausedIds = this.getPausedProjectIds();
+    const paused = [...pausedIds].sort().map((projectId) => {
+      const since = this.configs.get(projectId)?.automationPausedSince;
+      return since ? { projectId, since } : { projectId };
+    });
+    return {
+      paused,
+      ...(this.loadWarning ? { loadWarning: this.loadWarning } : {}),
+    };
+  }
+
+  /**
+   * Copy `automationEnabled` + `automationPausedSince` onto every other
+   * in-memory row with the same `localPath` (string equality, no git).
+   */
+  private copyAutomationToLocalPathSiblings(source: ProjectConfig): void {
+    if (!source.localPath) return;
+    for (const [id, row] of this.configs) {
+      if (id === source.project) continue;
+      if (row.localPath !== source.localPath) continue;
+      const patched: ProjectConfig = { ...row, automationEnabled: source.automationEnabled };
+      if (source.automationPausedSince) {
+        patched.automationPausedSince = source.automationPausedSince;
+      } else {
+        delete patched.automationPausedSince;
+      }
+      if (source.automationEnabled === undefined) {
+        delete patched.automationEnabled;
+      }
+      this.configs.set(id, patched);
+    }
+  }
+
+  /** Repair disk that only paused one of two localPath-alias rows. */
+  private syncAutomationAcrossLocalPathAliases(): void {
+    const byPath = new Map<string, ProjectConfig[]>();
+    for (const config of this.configs.values()) {
+      if (!config.localPath) continue;
+      const group = byPath.get(config.localPath) ?? [];
+      group.push(config);
+      byPath.set(config.localPath, group);
+    }
+    for (const group of byPath.values()) {
+      if (group.length < 2) continue;
+      const pausedRows = group.filter((row) => row.automationEnabled === false);
+      if (pausedRows.length === 0) continue;
+      const since = pausedRows
+        .map((row) => row.automationPausedSince)
+        .filter((value): value is string => typeof value === 'string' && value.length > 0)
+        .sort()[0];
+      for (const row of group) {
+        if (row.automationEnabled === false && row.automationPausedSince === since) continue;
+        const next: ProjectConfig = { ...row, automationEnabled: false };
+        if (since) next.automationPausedSince = since;
+        this.configs.set(row.project, next);
+      }
+    }
   }
 
   /**
@@ -230,6 +342,7 @@ export class ProjectConfigStore {
     this.configs.clear();
     this.rateLimits = null;
     this.blockedRepos.clear();
+    this.loadWarning = undefined;
   }
 
   getAllConfigs(): ProjectConfig[] {
