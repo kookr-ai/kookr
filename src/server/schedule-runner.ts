@@ -1583,8 +1583,8 @@ export class ScheduleRunner {
   }
 
   /**
-   * Prepend a drift warning to the spawn briefing and stamp git provenance
-   * onto the launch identity so the agent and the task record both see it.
+   * Prepend a drift warning to the one-shot spawn prompt. Receipt provenance
+   * is stamped separately via {@link toSchedulePlaybookSource}.
    */
   private applyPlaybookCheckoutDrift(
     launch: ResolvedScheduleLaunch,
