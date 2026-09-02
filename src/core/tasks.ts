@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from './agent-types.js';
 import { capCompletionDigestForStorage, type CompletionDigest } from './completion-digest.js';
 import { evaluateCompletionSignal, type CompletionSignalDecision } from './completion-signal.js';
+import { MAX_LAUNCH_TIMEOUT_SEC } from './settings-store.js';
 import { deterministicTaskName } from './task-naming.js';
 import { deriveTaskProvenance } from './task-provenance.js';
 import { displayPromptForTask } from './prompt-display.js';
@@ -152,12 +153,29 @@ export function isAgedTerminalTask(
 }
 
 /**
+ * Margin added on top of the maximum launch timeout before a reservation is
+ * considered stale (issue #2764). It absorbs the cleanup/reconciliation latency
+ * between a launch hitting its timeout ceiling and the supervisor either
+ * attaching a session or releasing the reservation, so the two never race at
+ * the boundary.
+ */
+const LAUNCH_RESERVATION_MARGIN_MS = 2 * 60 * 1000;
+
+/**
  * How long an in-flight launch reservation stays authoritative. A launch that
  * hangs past this without attaching a session or failing loses its
  * reservation, so a wedged adapter cannot strand a pending task forever
  * (self-healing, mirrors WorktreeLeaseService's stale-overwrite).
+ *
+ * Anchored to {@link MAX_LAUNCH_TIMEOUT_SEC} plus a margin (issue #2764): the
+ * old fixed 10-minute TTL sat *below* the 15-minute launch-timeout ceiling, so
+ * a still-valid launch running near that ceiling could lose its reservation and
+ * open a capacity-accounting gap (double-allocation / under-counting). Deriving
+ * the TTL from the same ceiling guarantees the invariant "a reservation stays
+ * valid for at least the maximum configured launch timeout" for every settings
+ * value in range, with no second constant to drift.
  */
-const LAUNCH_RESERVATION_TTL_MS = 10 * 60 * 1000;
+export const LAUNCH_RESERVATION_TTL_MS = MAX_LAUNCH_TIMEOUT_SEC * 1000 + LAUNCH_RESERVATION_MARGIN_MS;
 
 interface LaunchReservation {
   reservedAt: number;

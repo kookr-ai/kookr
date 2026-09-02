@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TaskStore } from '../core/tasks.js';
+import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
@@ -965,7 +965,7 @@ describe('Crash Recovery', () => {
       releaseFirst();
       await secondStarted;
       const replacementMarker = taskStore.getTask(task.id)?.launchAdmission;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const replacementToken = taskStore.beginLaunchWithToken(task.id);
       expect(replacementToken).toBeDefined();
 
@@ -1016,7 +1016,7 @@ describe('Crash Recovery', () => {
         recoveryOptions,
       );
       await firstStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const successorToken = taskStore.beginLaunchWithToken(task.id);
       expect(successorToken).toBeDefined();
 
@@ -1075,7 +1075,7 @@ describe('Crash Recovery', () => {
         getLaunchTimeoutMs: () => 1_000_000_000,
       });
       await firstStarted;
-      now += 10 * 60 * 1_000 + 1;
+      now += LAUNCH_RESERVATION_TTL_MS + 1;
       const successorToken = taskStore.beginLaunchWithToken(task.id);
       expect(successorToken).toBeDefined();
       taskStore.addSession(task.id, {

@@ -462,7 +462,10 @@ const MAX_HUNG_TASK_REAP_MIN = 10_080;
 // bounds even the most generous operator override — the incident's launches
 // starved for HOURS, and 15 minutes is already far past any legitimate spawn.
 const MIN_LAUNCH_TIMEOUT_SEC = 30;
-const MAX_LAUNCH_TIMEOUT_SEC = 900;
+// Exported so the launch-reservation TTL can be anchored to this same ceiling
+// (issue #2764): a reservation must outlive the longest launch any operator can
+// configure, and a single source of truth keeps the two from drifting apart.
+export const MAX_LAUNCH_TIMEOUT_SEC = 900;
 // Dead-man schedule-starvation window bounds (minutes). Floor of 30 stays
 // above the runner's 60s tick plus one schedule cadence so a single slow fire
 // can't trip it; ceiling of 1440 (24h) keeps the switch meaningful.
