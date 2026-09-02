@@ -198,6 +198,12 @@ sudo KOOKR_RELAY_DOMAIN=relay.example.com /opt/kookr/deploy/relay/verify.sh
 
 It checks loopback binding, TLS, admin-path refusal, SSH hardening, unattended upgrades, SSH fail2ban, the relay systemd unit, SQLite readability, monitor heartbeat, and daily backup presence. It does not apply changes.
 
+Every network probe is bounded by a per-probe request deadline, so a relay outage or slow restart makes the check fail with a labelled `not ok - <check>` line instead of hanging. The default is 10 seconds; override it for unusually slow deployments:
+
+```bash
+sudo KOOKR_RELAY_DOMAIN=relay.example.com KOOKR_RELAY_VERIFY_TIMEOUT=20 /opt/kookr/deploy/relay/verify.sh
+```
+
 ## Recovery
 
 Keep Hetzner console access working. If SSH is restricted to one source IP and that address changes, the console is the out-of-band recovery path.
