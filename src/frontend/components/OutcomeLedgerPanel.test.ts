@@ -200,6 +200,51 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
   });
 
+  test('renders completion-digest coverage from quality.digestCoverage (issue #2755)', async () => {
+    // Distinct digest values so a wrong-field render (e.g. reading the
+    // like-shaped verification coverage instead) cannot pass: digest is 75%
+    // (3/4) while verification stays 50% (1/4) with completedTaskCount=4.
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      summary: { ...response().summary, completedTaskCount: 4 },
+      quality: {
+        ...response().quality,
+        digestKnownCompletedTasks: 3,
+        digestCoverage: 0.75,
+        verificationKnownCompletedTasks: 1,
+        verificationCoverage: 0.5,
+      },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    const metricFor = (label: string) => Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === label,
+    );
+    const digests = metricFor('digests');
+    expect(digests).toBeTruthy();
+    expect(digests?.querySelector('strong')?.textContent).toBe('75%');
+    expect(digests?.querySelector('.outcome-metric-detail')?.textContent).toBe('3/4');
+    // The neighbouring verification cell keeps its own, distinct figure.
+    const verified = metricFor('verified');
+    expect(verified?.querySelector('strong')?.textContent).toBe('50%');
+    expect(verified?.querySelector('.outcome-metric-detail')?.textContent).toBe('1/4');
+  });
+
+  test('renders a null completion-digest coverage as unknown (issue #2755)', async () => {
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      quality: { ...response().quality, digestKnownCompletedTasks: 0, digestCoverage: null },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    const digests = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'digests',
+    );
+    expect(digests?.querySelector('strong')?.textContent).toBe('unknown');
+  });
+
   test('a finding whose task is live opens that task by taskId, not label (issue #2783)', async () => {
     // Default fixture: task-1 ("Cancelled after prompt") and task-2 ("Missing
     // usage"). Only task-1 is live, so only its row is actionable, and it must
@@ -958,6 +1003,12 @@ describe('OutcomeLedgerPanel', () => {
   });
 
   test('Export CSV downloads the summary, per-agent rows, and flagged task-audit rows', async () => {
+    // Give digest coverage a value distinct from its like-shaped sibling
+    // verification coverage (0.5), so the CSV digest assertion below would fail
+    // if the export row were mis-wired to source verificationCoverage instead.
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      quality: { ...response().quality, digestCoverage: 0.75 },
+    }))));
     const el = mount();
     await flush();
 
@@ -976,6 +1027,12 @@ describe('OutcomeLedgerPanel', () => {
     expect(lines).toContain('Tasks,7');
     expect(lines).toContain('Completion rate,0.5000');
     expect(lines).toContain('PR tasks,3');
+    // Digest coverage (#2755) rides the same summary section as its sibling
+    // verification coverage, as the 0..1 fraction the grid derives its % from.
+    // The two carry distinct fixture values (0.7500 vs 0.5000), so a swap
+    // between the like-shaped fields would fail one of these assertions.
+    expect(lines).toContain('Verification coverage,0.5000');
+    expect(lines).toContain('Digest coverage,0.7500');
     expect(lines).toContain('Review flags,2');
 
     // Per-agent section: full row for each agent, headed and complete.
