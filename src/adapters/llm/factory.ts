@@ -109,6 +109,15 @@ function buildProvider(
  *  - `openrouter` | `requesty` | `baseten` | `groq` | `gemini` | `anthropic`: use only that provider.
  *
  * Returns null when the selected provider(s) have no API key configured.
+ *
+ * Every non-null result is a {@link FallbackLlmClient} — even a single-provider
+ * config wraps its one accounting client in a length-1 chain. `FallbackLlmClient`
+ * is the only place the auth/`410 Gone` cooldown engages (`getActiveAuthPause` /
+ * `pauseProviderAfterAuthFailure`), so wrapping uniformly means a lone dead
+ * provider is paused for the cool-down window and surfaces in `helperLlm.paused`
+ * instead of being re-hit on every call (issue #2959). A length-1 chain is a
+ * transparent pass-through on the success path: `provider`/`model` and the
+ * returned text/finishReason are identical to the bare client.
  */
 export async function createLlmClient(
   builders: LlmProviderBuilders = {},
@@ -124,8 +133,9 @@ export async function createLlmClient(
     const client = await buildProvider(provider, builders, env);
     if (!client) {
       console.warn(`[llm] KOOKR_LLM_PROVIDER=${provider} but no API key is configured for that provider`);
+      return null;
     }
-    return client ? withHelperLlmAccounting(client) : null;
+    return new FallbackLlmClient([withHelperLlmAccounting(client)]);
   }
 
   // auto: chain configured providers in the existing order. Requesty and
@@ -142,6 +152,5 @@ export async function createLlmClient(
   }
 
   if (clients.length === 0) return null;
-  if (clients.length === 1) return clients[0];
   return new FallbackLlmClient(clients);
 }

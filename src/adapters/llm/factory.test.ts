@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   FallbackLlmClient,
   getHelperLlmDiagnosticsSnapshot,
+  getHelperLlmHealthSnapshot,
   resetHelperLlmDiagnosticsForTest,
 } from '../../core/llm-factory.js';
 import type { LlmClient } from '../../core/llm-types.js';
@@ -92,6 +93,11 @@ const ENV_KEYS = [
   'KOOKR_LLM_HTTP_REFERER',
   'KOOKR_LLM_APP_TITLE',
   'KOOKR_LLM_TIMEOUT_MS',
+  // Cleared so the auth/410 cooldown tests below stay hermetic: a runner that
+  // exports KOOKR_LLM_AUTH_COOLDOWN_MS=0 would suppress every pause, and a low
+  // attempt budget would perturb the attempt path.
+  'KOOKR_LLM_AUTH_COOLDOWN_MS',
+  'KOOKR_LLM_PROVIDER_ATTEMPT_BUDGET',
 ] as const;
 
 const originalEnv = Object.fromEntries(ENV_KEYS.map(k => [k, process.env[k]]));
@@ -164,13 +170,15 @@ describe('createLlmClient', () => {
     await expect(createLlmClient()).resolves.toBeNull();
   });
 
-  test('returns the single configured provider directly', async () => {
+  test('wraps the single configured provider in a length-1 fallback chain', async () => {
     process.env.GROQ_API_KEY = ' groq-key ';
 
     const client = await createLlmClient();
 
+    // Wrapped so the auth/410 cooldown engages for single-provider configs too
+    // (issue #2959); the chain is a transparent pass-through for `provider`.
     expect(client?.provider).toBe('groq');
-    expect(client).not.toBeInstanceOf(FallbackLlmClient);
+    expect(client).toBeInstanceOf(FallbackLlmClient);
     expect(created.groq).toEqual(['groq-key']);
   });
 
@@ -227,7 +235,7 @@ describe('createLlmClient', () => {
     const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
 
     expect(client?.provider).toBe('openrouter');
-    expect(client).not.toBeInstanceOf(FallbackLlmClient);
+    expect(client).toBeInstanceOf(FallbackLlmClient);
   });
 
   test('does not construct OpenRouter unless the adapter builder is provided', async () => {
@@ -247,7 +255,7 @@ describe('createLlmClient', () => {
     const client = await createLlmClient({ buildOpenRouter: buildOpenRouter(), buildRequesty: buildRequesty() });
 
     expect(client?.provider).toBe('openrouter');
-    expect(client).not.toBeInstanceOf(FallbackLlmClient);
+    expect(client).toBeInstanceOf(FallbackLlmClient);
     expect(created.groq).toEqual([]);
   });
 
@@ -484,6 +492,101 @@ describe('helper LLM accounting through createLlmClient', () => {
         successCount: 1,
       }),
     ]);
+  });
+});
+
+describe('single-provider auth/410 cooldown (issue #2959)', () => {
+  beforeEach(() => {
+    clearEnv();
+    resetHelperLlmDiagnosticsForTest();
+  });
+
+  afterEach(() => {
+    resetHelperLlmDiagnosticsForTest();
+    clearEnv();
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value !== undefined) {
+        process.env[key] = value;
+      }
+    }
+  });
+
+  // 401/403/410 all classify as the auth cooldown class; a lone provider
+  // returning any of them must pause instead of being re-hit every call.
+  test.each([401, 403, 410])('pauses a lone %d provider and skips it on the next call', async (status) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER = 'baseten';
+    process.env.BASETEN_API_KEY = 'baseten-key';
+    const complete = vi.fn(async () => {
+      throw Object.assign(new Error('provider rejected the request'), { status });
+    });
+    const client = await createLlmClient({
+      buildBaseten: () => ({ provider: 'baseten', model: 'baseten-model', complete }),
+    });
+
+    // First call hits the dead model, classifies the status as auth, and pauses it.
+    await expect(client!.complete({ maxTokens: 8, userMessage: 'hi' })).resolves.toBeNull();
+    expect(complete).toHaveBeenCalledTimes(1);
+
+    // The paused lone provider now surfaces on the /api/health snapshot.
+    expect(getHelperLlmHealthSnapshot().paused).toEqual([
+      expect.objectContaining({ provider: 'baseten', model: 'baseten-model', category: 'auth' }),
+    ]);
+
+    // Second call is skipped during the cooldown — no re-hit of the dead model.
+    await expect(client!.complete({ maxTokens: 8, userMessage: 'again' })).resolves.toBeNull();
+    expect(complete).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  test('pauses a lone 410 provider reached through completeDetailed too', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    process.env.KOOKR_LLM_PROVIDER = 'baseten';
+    process.env.BASETEN_API_KEY = 'baseten-key';
+    const completeDetailed = vi.fn(async () => {
+      throw Object.assign(new Error('model gone'), { status: 410 });
+    });
+    // FallbackLlmClient.completeDetailed carries its own pause logic distinct
+    // from complete(), so exercise the finish-reason path independently.
+    const client = await createLlmClient({
+      buildBaseten: () => ({ provider: 'baseten', model: 'baseten-model', complete: vi.fn(), completeDetailed }),
+    });
+
+    await expect(client!.completeDetailed!({ maxTokens: 8, userMessage: 'hi' })).resolves.toEqual({
+      text: null,
+      finishReason: null,
+    });
+    expect(completeDetailed).toHaveBeenCalledTimes(1);
+    expect(getHelperLlmHealthSnapshot().paused).toEqual([
+      expect.objectContaining({ provider: 'baseten', model: 'baseten-model', category: 'auth' }),
+    ]);
+
+    // Paused: the second completeDetailed call is skipped without a re-hit.
+    await expect(client!.completeDetailed!({ maxTokens: 8, userMessage: 'again' })).resolves.toEqual({
+      text: null,
+      finishReason: null,
+    });
+    expect(completeDetailed).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  test('is a transparent pass-through when the lone provider is healthy', async () => {
+    process.env.KOOKR_LLM_PROVIDER = 'baseten';
+    process.env.BASETEN_API_KEY = 'baseten-key';
+    const complete = vi.fn(async () => 'named ok');
+    const completeDetailed = vi.fn(async () => ({ text: 'named ok', finishReason: 'stop' }));
+    const client = await createLlmClient({
+      buildBaseten: () => ({ provider: 'baseten', model: 'baseten-model', complete, completeDetailed }),
+    });
+
+    expect(client?.provider).toBe('baseten');
+    expect(client?.model).toBe('baseten-model');
+    await expect(client!.complete({ maxTokens: 8, userMessage: 'hi' })).resolves.toBe('named ok');
+    await expect(client!.completeDetailed!({ maxTokens: 8, userMessage: 'hi' })).resolves.toEqual({
+      text: 'named ok',
+      finishReason: 'stop',
+    });
+    expect(getHelperLlmHealthSnapshot().paused).toEqual([]);
   });
 });
 
