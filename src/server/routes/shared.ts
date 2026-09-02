@@ -725,6 +725,15 @@ export interface RouteDeps {
       readyAt?: string;
     };
   };
+  /**
+   * Previous-process exit classification (issue #2790): whether the process
+   * before this one shut down cleanly (`clean`), died to a crash / OOM /
+   * SIGKILL (`dirty`), or cannot be determined (`unknown`). Computed at boot
+   * from the persisted clean-shutdown marker, immutable for the process life,
+   * and projected verbatim onto `/api/health.boot`. Absent ⇒ the block is
+   * omitted (tests / partial harnesses).
+   */
+  bootStatus?: import('../boot-marker.js').BootClassification;
   /** Ralph iteration cycler — drives the loop state machine on Stop events. */
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */

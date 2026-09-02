@@ -25,6 +25,7 @@ import { resolveListenPort } from './resolve-listen-port.js';
 import { parseSTTDevice, startSTT, type STTManager } from './stt-manager.js';
 import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } from './tts-manager.js';
 import { createShutdownHandler } from './shutdown.js';
+import { BootMarkerStore } from './boot-marker.js';
 import { readRingFleetBudgetBytesFromEnv } from './config.js';
 import { validateSpeechServiceUrl } from './speech-service-url.js';
 
@@ -227,6 +228,20 @@ async function main(): Promise<void> {
     + ` ringFleetBudgetBytes=${ringFleetBudgetBytes}`,
   );
 
+  // Issue #2790: classify this boot (clean restart vs crash/OOM/SIGKILL) from
+  // the marker the previous process left behind, then stamp a fresh `running`
+  // marker for this one. Done here — before createKookrServer runs startup
+  // recovery — so the verdict reflects the state at bind time, not after
+  // recovery has churned the tasks. The classification is threaded into the
+  // server so /api/health can expose it; the store's recordCleanShutdown flips
+  // the marker to `clean` on a graceful signal.
+  const bootMarkerStore = new BootMarkerStore({ kookrDir: KOOKR_DIR });
+  const bootClassification = bootMarkerStore.recordBoot();
+  console.log(
+    `[startup] boot classified: status=${bootClassification.status}`
+    + ` reason=${bootClassification.reason}`,
+  );
+
   const lifecycleAc = new AbortController();
 
   // Optional systemd readiness/watchdog notifier (issue #2491). Inert unless the
@@ -259,6 +274,7 @@ async function main(): Promise<void> {
     apiAuth,
     sessionAuth,
     systemdNotifier,
+    bootClassification,
   });
 
   // The listener is up and background services have started — tell systemd the
@@ -268,7 +284,15 @@ async function main(): Promise<void> {
   // Issue #1320: a single re-entrancy-guarded handler backs both signals so a
   // second Ctrl-C during a slow graceful shutdown force-exits instead of
   // re-running the container stops concurrently.
-  const shutdown = createShutdownHandler({ lifecycleAc, sttManager, ttsManager, server });
+  const shutdown = createShutdownHandler({
+    lifecycleAc,
+    sttManager,
+    ttsManager,
+    server,
+    // Issue #2790: flip the boot marker to `clean` so the next boot classifies
+    // this restart as graceful rather than a crash.
+    recordCleanShutdown: (signal) => bootMarkerStore.recordCleanShutdown(signal),
+  });
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));

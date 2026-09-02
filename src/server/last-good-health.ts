@@ -133,6 +133,9 @@ function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
     'status',
     'agents',
     'serverStartedAt',
+    // Issue #2790: keep the dirty-boot verdict in the last-good mirror so an
+    // offline digest can still say whether the previous exit was clean.
+    'boot',
     'attentionQueue',
     'capacity',
     'dataDirectory',

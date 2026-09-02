@@ -697,6 +697,48 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — boot classification / dirty-boot status (issue #2790)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health boot block (issue #2790)', () => {
+    test('projects the dirty-boot verdict verbatim', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        bootStatus: {
+          status: 'dirty',
+          reason: 'unclean_exit',
+          previousStartedAt: '2026-09-01T00:00:00.000Z',
+          previousShutdownAt: null,
+          previousSignal: null,
+        },
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { boot?: Record<string, unknown> };
+      expect(body.boot).toEqual({
+        status: 'dirty',
+        reason: 'unclean_exit',
+        previousStartedAt: '2026-09-01T00:00:00.000Z',
+        previousShutdownAt: null,
+        previousSignal: null,
+      });
+    });
+
+    test('omits the boot block when no classification is wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { boot?: unknown };
+      expect(body.boot).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — cached data-directory capacity (issue #2896)
   // ---------------------------------------------------------------------------
   describe('GET /api/health dataDirectory block (issue #2896)', () => {

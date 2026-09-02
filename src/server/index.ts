@@ -259,6 +259,7 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import type { SystemdNotifier } from './systemd-notify.js';
+import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import {
   TaskTailStore,
@@ -403,6 +404,15 @@ export interface KookrConfig {
    * fire. Absent (tests, non-systemd runs) ⇒ no watchdog pings are sent.
    */
   systemdNotifier?: SystemdNotifier;
+  /**
+   * Boot classification for the current process (issue #2790): whether the
+   * *previous* process exited cleanly (`clean`), was killed by a crash / OOM /
+   * SIGKILL (`dirty`), or cannot be determined (`unknown`). Computed in
+   * `start.ts` from the persisted clean-shutdown marker before this call, so it
+   * reflects the state at bind time. Projected onto `/api/health.boot`. Absent
+   * (tests / partial harnesses) ⇒ the block is omitted.
+   */
+  bootClassification?: BootClassification;
 }
 
 function getOrCreatePrivateNetworkNodeId(kookrDir: string): NodeId {
@@ -491,6 +501,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     resourceStatusIntervalMs,
     lifecycleSignal,
     systemdNotifier,
+    bootClassification,
   } = config;
   const apiAuth: ApiAuthConfig = config.apiAuth ?? { required: false };
 
@@ -2707,6 +2718,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     startupRecoverySummary: null,
     getStartupRecoverySummary: () => startupRecoverySummary,
     startupReadiness,
+    // Issue #2790: previous-process exit classification, projected on /api/health.
+    bootStatus: bootClassification,
     ralphCycler,
     tokenTracker,
     tasksFile,
