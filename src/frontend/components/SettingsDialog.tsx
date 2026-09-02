@@ -610,8 +610,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     () => readNotificationPermission(),
   );
   const agentOptions = buildAgentSelectionOptions(
-    (availableAgentTypes.length > 0 ? availableAgentTypes : AVAILABLE_AGENT_TYPES)
-      .filter((item) => !(settings?.blacklistedAgentTypes ?? []).includes(item.type)),
+    availableAgentTypes.filter((item) => !(settings?.blacklistedAgentTypes ?? []).includes(item.type)),
   );
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);

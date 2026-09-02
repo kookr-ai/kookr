@@ -559,7 +559,8 @@ Do dependency-gated work.
       await runner.tick();
 
       expect(launched).toHaveLength(1);
-      expect(launched[0]!.agentType).not.toBe('claude-code');
+      expect(launched[0]!.agentType).toBe('codex-cli');
+      expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('agent_substituted');
     });
 
     it('parks when the pinned agent is blacklisted and no substitute remains (issue #3025)', async () => {

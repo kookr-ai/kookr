@@ -635,6 +635,17 @@ describe('launchTask', () => {
         .rejects.toThrow(/No launchable coding agents remain/);
       expect(store.listTasks()).toHaveLength(0);
     });
+
+    it('launches the agent again after it is removed from the blacklist', async () => {
+      let banned: Array<'claude-code'> = ['claude-code'];
+      const gated = { ...deps, getBlacklistedAgentTypes: () => banned };
+      await expect(launchTask(gated, { prompt: 'blocked', cwd: '/tmp', agentType: 'claude-code' }))
+        .rejects.toThrow(AgentBlacklistedError);
+      banned = [];
+      const result = await launchTask(gated, { prompt: 'unblocked', cwd: '/tmp', agentType: 'claude-code' });
+      expect(result.task.agentType).toBe('claude-code');
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    });
   });
 
   describe('automation kill-switch (issue #1710)', () => {

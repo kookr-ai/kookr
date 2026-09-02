@@ -31,7 +31,7 @@ Use the dashboard **Launch** button for an interactive start:
 
 Kookr starts the agent in a persistent dtach session. If the server restarts, the dtach master keeps the child process alive and Kookr reconciles state on startup.
 
-Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their CLI is installed and ready. Grok is the one that needs an extra install and login step.
+Claude Code, Codex CLI, and Grok Build all appear as Launch providers when their CLI is installed and ready. A provider you have blacklisted under **Settings → Task Management → Blacklisted agents** stays hidden from Launch, Quick Launch, and other pickers until you uncheck it. Running sessions are left alone. Grok is the one that needs an extra install and login step.
 
 ### Pinning Model And Effort
 

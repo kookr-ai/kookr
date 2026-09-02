@@ -393,7 +393,7 @@ export function excludeBlacklistedAgents(
 
 /**
  * Snapshot picker entries: registered adapters minus the operator blacklist.
- * Launch dialogs, Quick Launch, and round-robin all read this list.
+ * Launch dialogs and Quick Launch read this list.
  */
 export function advertisedAgentTypes(
   registered: readonly AgentType[],

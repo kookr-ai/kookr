@@ -519,7 +519,8 @@ The system SHALL identify post-recovery queue-fill scout launches as autonomous 
 The system SHALL let an operator blacklist a coding agent so Kookr never creates a new session of that agent until the blacklist is cleared, without auto-killing in-flight sessions.
 
 **Acceptance criteria:**
-- Given Claude Code is blacklisted, when a dashboard, CLI, schedule, or child-task launch requests `claude-code`, then no task is created and Claude is not spawned
+- Given Claude Code is blacklisted, when a dashboard, CLI, or child-task launch explicitly requests `claude-code`, then no task is created, the API returns HTTP 403 `code: agent_blacklisted`, and Claude is not spawned
+- Given Claude Code is blacklisted, when a scheduled fire is pinned to `claude-code`, then Kookr substitutes a remaining launchable agent (or parks with `provider_paused` if none remain) and does not spawn Claude
 - Given Claude Code is blacklisted, when round-robin or the server default would have picked it, then Kookr picks a remaining launchable agent instead
 - Given an agent is blacklisted, when the Launch dialog or Quick Launch bar is open, then that agent is not a selectable option
 - Given an agent is blacklisted, when Settings is open, then that agent is shown struck through with a control to remove it from the blacklist

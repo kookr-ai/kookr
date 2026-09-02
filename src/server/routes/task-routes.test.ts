@@ -32,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, AgentBlacklistedError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1679,6 +1679,21 @@ parameters:
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'invalid_effort' });
+  });
+
+  test('maps AgentBlacklistedError to 403 with code agent_blacklisted (issue #3025)', async () => {
+    vi.mocked(launchTask).mockRejectedValueOnce(new AgentBlacklistedError('claude-code'));
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'claude-code' }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      code: 'agent_blacklisted',
+      agentType: 'claude-code',
+    });
   });
 
   test('forwards a valid string effort to launchTask (#681)', async () => {
