@@ -198,6 +198,71 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('.outcome-finding')?.tagName).toBe('LI');
   });
 
+  test('a finding whose task is live opens that task by taskId, not label (issue #2783)', async () => {
+    // Default fixture: task-1 ("Cancelled after prompt") and task-2 ("Missing
+    // usage"). Only task-1 is live, so only its row is actionable, and it must
+    // select by taskId — never the display label a historical row could share.
+    const onOpenTask = vi.fn();
+    const el = mount({ liveTaskIds: new Set(['task-1']), onOpenTask });
+
+    await flush();
+
+    const openButton = el.querySelector<HTMLButtonElement>('button.outcome-finding-open');
+    expect(openButton).toBeTruthy();
+    // Accessible name so keyboard/screen-reader users know what activating does.
+    expect(openButton?.getAttribute('aria-label')).toBe('Open task Cancelled after prompt');
+    // Exactly one openable row — the live one — even though two findings render.
+    expect(el.querySelectorAll('button.outcome-finding-open').length).toBe(1);
+
+    act(() => {
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  test('a finding with no live task stays a readable, non-actionable label (issue #2783)', async () => {
+    // task-2 is not in the live set, so its row must render as plain text with no
+    // button to activate — readable, but never selecting the wrong task.
+    const onOpenTask = vi.fn();
+    const el = mount({ liveTaskIds: new Set(['task-1']), onOpenTask });
+
+    await flush();
+
+    const taskCells = Array.from(el.querySelectorAll('.outcome-finding-task'));
+    const missingUsageCell = taskCells.find((cell) => cell.textContent === 'Missing usage');
+    expect(missingUsageCell).toBeTruthy();
+    expect(missingUsageCell?.tagName).toBe('SPAN');
+    // The historical row still reads its label; it just isn't a button.
+    expect(el.textContent).toContain('Missing usage');
+  });
+
+  test('without onOpenTask wiring, no finding is openable (issue #2783)', async () => {
+    // Even if every task were live, the panel must not fabricate an affordance
+    // when the host provides no selection handler.
+    const el = mount({ liveTaskIds: new Set(['task-1', 'task-2']) });
+
+    await flush();
+
+    expect(el.querySelector('button.outcome-finding-open')).toBeNull();
+    // Labels still render as plain, readable text.
+    expect(el.textContent).toContain('Cancelled after prompt');
+  });
+
+  test('with a handler but no live-id set, no finding is openable (issue #2783)', async () => {
+    // The documented default: with onOpenTask wired but liveTaskIds omitted, the
+    // `liveTaskIds?.has(...) ?? false` branch treats every task as not-live, so
+    // nothing is openable rather than everything.
+    const onOpenTask = vi.fn();
+    const el = mount({ onOpenTask });
+
+    await flush();
+
+    expect(el.querySelector('button.outcome-finding-open')).toBeNull();
+    expect(onOpenTask).not.toHaveBeenCalled();
+    expect(el.textContent).toContain('Cancelled after prompt');
+  });
+
   test('renders the per-finding metric:value only when value is non-null', async () => {
     // Distinct metrics/values pin each formatting branch: a known numeric metric
     // (cost → $) with value 0, a known token metric (compact k-formatting), a
