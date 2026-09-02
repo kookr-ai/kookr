@@ -335,6 +335,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         writeTimeoutCount: backendWriteStats.writeTimeoutCount,
         lastError: backendWriteStats.lastError,
         errorCount: backendWriteStats.errorCount,
+        // Recovery recency (issue #2810): `lastError` is cleared once a
+        // transient session fault recovers, so these timestamps let an operator
+        // tell a fresh fault (lastErrorAt newer) from a recovered one.
+        lastErrorAt: backendWriteStats.lastErrorAt ?? null,
+        lastRecoveredAt: backendWriteStats.lastRecoveredAt ?? null,
         // Fleet ring budget pressure (issue #1779) — always present on the
         // live backend path so operators can chart zeros without a secret env.
         ringFleetBytes: backendWriteStats.ringFleetBytes ?? 0,

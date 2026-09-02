@@ -47,6 +47,8 @@ import { access as fsAccess } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import {
+  isBackendRecoverySignal,
+  isRecoverableSessionFault,
   type BackendError,
   type BackendStats,
   type CaptureCurrentFrameOptions,
@@ -138,6 +140,10 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   private lastError: BackendError | null = null;
   private errorCount = 0;
+  /** Epoch ms of the most recent recorded fault, or null (issue #2810). */
+  private lastErrorAt: number | null = null;
+  /** Epoch ms a recovery last cleared the current fault, or null (issue #2810). */
+  private lastRecoveredAt: number | null = null;
   /** High-water mark of aggregate writeMutex queue depth (issue #1776). */
   private maxPendingWriters = 0;
   /** Cumulative write-timed-out errors (issue #1776). */
@@ -556,6 +562,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       writeTimeoutCount: this.writeTimeoutCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
+      lastErrorAt: this.lastErrorAt,
+      lastRecoveredAt: this.lastRecoveredAt,
       ringFleetBytes: ringSnap.totalBytes,
       ringFleetBudgetBytes: ringSnap.budgetBytes,
       ringFleetOverBudgetBytes: this.ringFleetBudgetBytes > 0
@@ -705,9 +713,29 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   // ─── Error emission ─────────────────────────────────────────────────────
 
   private emitError(err: BackendError): void {
-    this.lastError = err;
-    this.errorCount += 1;
-    if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
+    if (isBackendRecoverySignal(err)) {
+      // A recovery signal is a proven success, not an incident: it never bumps
+      // errorCount. If it resolves the *current* recoverable transient fault for
+      // the same session, clear the sticky current-error projection so a
+      // recovered backend stops reporting `degraded` from a stale `lastError`
+      // (issue #2810). `errorCount`/`lastErrorAt` are retained so a flapping
+      // session stays visible for diagnosis.
+      if (
+        this.lastError &&
+        isRecoverableSessionFault(this.lastError) &&
+        this.lastError.id === err.id
+      ) {
+        this.lastError = null;
+        this.lastRecoveredAt = Date.now();
+      }
+    } else {
+      // A fault: record it as the current projection and advance the monotonic
+      // incident counter + timestamp.
+      this.lastError = err;
+      this.errorCount += 1;
+      this.lastErrorAt = Date.now();
+      if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
+    }
     for (const cb of this.errorSubscribers) {
       try {
         cb(err);

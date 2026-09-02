@@ -86,6 +86,47 @@ export type BackendError =
    */
   | { kind: 'startup-recovery-failed'; reason: string };
 
+/**
+ * The backend's *success* signals on the error bus: a previously-faulted
+ * session's transport was made observably live again — a lazy re-attach that
+ * recovered (`session-attach-recovered`) or a post-restart repair that
+ * succeeded (`session-recovery-repaired`). These are not faults; the backend
+ * uses them to clear a resolved transient fault from its current-error
+ * projection so a recovered backend stops reporting `degraded` from a stale
+ * `lastError` (issue #2810).
+ */
+export function isBackendRecoverySignal(
+  err: BackendError,
+): err is Extract<
+  BackendError,
+  { kind: 'session-attach-recovered' | 'session-recovery-repaired' }
+> {
+  return err.kind === 'session-attach-recovered' || err.kind === 'session-recovery-repaired';
+}
+
+/**
+ * Session-scoped *transient* faults that a later recovery signal for the SAME
+ * session legitimately clears (issue #2810): a session that briefly went away
+ * (`session-gone`), a bounded re-attach failure (`session-attach-failed`), or a
+ * write that timed out (`write-timed-out`). Global/structural faults
+ * (`dtach-unavailable`, `manifest-corrupt`, `startup-recovery-failed`) and the
+ * actionable `session-recovery-unverified` finding are deliberately excluded —
+ * a per-session recovery must never mask those, so an active or repeated
+ * backend failure still reports `degraded`/`error`.
+ */
+export function isRecoverableSessionFault(
+  err: BackendError,
+): err is Extract<
+  BackendError,
+  { kind: 'session-gone' | 'session-attach-failed' | 'write-timed-out'; id: SessionId }
+> {
+  return (
+    err.kind === 'session-gone' ||
+    err.kind === 'session-attach-failed' ||
+    err.kind === 'write-timed-out'
+  );
+}
+
 /** Stable current outcome of the backend's constructor-time startup recovery. */
 export type StartupRecoveryStatus = 'pending' | 'succeeded' | 'failed';
 
@@ -115,8 +156,35 @@ export interface BackendStats {
   maxPendingWriters: number;
   /** Cumulative `WriteTimeoutError` / `write-timed-out` events. */
   writeTimeoutCount: number;
+  /**
+   * The *current* fault, or `null` when the backend is healthy right now — the
+   * authoritative current-status signal (the timestamps below are advisory). A
+   * recovery signal for the same session clears a resolved transient fault
+   * (issue #2810), so a recovered backend no longer looks degraded from a stale
+   * `session-gone`/`write-timed-out`. A new or non-recoverable fault re-sets it,
+   * so a genuinely broken backend stays visible.
+   */
   lastError: BackendError | null;
+  /**
+   * Cumulative count of every fault recorded across the process lifetime.
+   * Retained even after `lastError` is cleared so recovery never erases the
+   * history that a session has been flapping (issue #2810). Recovery signals
+   * are successes, not incidents, and do not increment it.
+   */
   errorCount: number;
+  /**
+   * Epoch ms of the most recent recorded fault (`lastError` set), or `null`.
+   * Retained after a recovery clears `lastError`; `lastErrorAt` newer than
+   * `lastRecoveredAt` means the current fault is fresh, not a stale leftover
+   * (issue #2810). Optional so mocks and non-dtach backends stay valid.
+   */
+  lastErrorAt?: number | null;
+  /**
+   * Epoch ms when a recovery signal last cleared a session-scoped transient
+   * fault from `lastError`, or `null` until the backend has recovered from at
+   * least one such fault (issue #2810). Optional so mocks stay valid.
+   */
+  lastRecoveredAt?: number | null;
   /**
    * Fleet-wide ring buffer memory budget (issue #1779). Optional so mocks
    * and non-dtach backends stay valid; production LocalDtachBackend always
