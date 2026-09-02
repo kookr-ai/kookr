@@ -1061,6 +1061,10 @@ kbd {
   border-color: var(--red);
   color: var(--red);
 }
+.finding-pr-chip--conflict {
+  border-color: var(--red);
+  color: var(--red);
+}
 .finding-context .branch-label { font-size: 10px; color: var(--text-muted); }
 .finding-context .autonomy-badge-inline { font-size: 9px; }
 .finding-context-sep {
@@ -6281,6 +6285,7 @@ label.task-share-row {
 .gh-badge-closed { background: rgba(248, 113, 113, 0.15); color: var(--red); }
 .gh-badge-merged { background: rgba(168, 85, 247, 0.15); color: #a855f7; }
 .gh-badge-draft { background: rgba(107, 119, 142, 0.15); color: var(--text-secondary); }
+.gh-badge-conflict { background: rgba(248, 113, 113, 0.15); color: var(--red); }
 
 /* Review decision */
 .gh-review-decision {

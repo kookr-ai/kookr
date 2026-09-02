@@ -20,11 +20,12 @@ export function FindingPrChip({
   const model = selectFindingPrChip(prs ?? []);
   if (!model) return null;
 
-  const attention = model.ciFailed || model.changesRequested;
+  const attention = model.ciFailed || model.changesRequested || model.conflicting;
   const className = [
     'finding-pr-chip',
+    model.conflicting ? 'finding-pr-chip--conflict' : '',
     model.ciFailed ? 'finding-pr-chip--failed' : '',
-    !model.ciFailed && model.changesRequested ? 'finding-pr-chip--attention' : '',
+    !model.conflicting && !model.ciFailed && model.changesRequested ? 'finding-pr-chip--attention' : '',
   ].filter(Boolean).join(' ');
 
   function handleClick(event: React.MouseEvent<HTMLButtonElement>): void {

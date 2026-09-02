@@ -47,6 +47,15 @@ function PRCard({ pr }: { pr: GitHubPRState }) {
           #{pr.ref.number} {pr.title}
         </a>
         <PRStatusBadge status={pr.status} />
+        {pr.mergeable === 'CONFLICTING' && (
+          <span
+            className="gh-badge gh-badge-conflict"
+            data-testid="gh-pr-conflict-badge"
+            title="This PR has merge conflicts and cannot be merged until they are resolved"
+          >
+            Conflict
+          </span>
+        )}
       </div>
 
       <div className="gh-pr-meta">

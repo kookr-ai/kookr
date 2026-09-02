@@ -5,14 +5,19 @@ export interface FindingPrChipModel {
   status: GitHubPRState['status'];
   ciFailed: boolean;
   changesRequested: boolean;
+  conflicting: boolean;
 }
 
 function hasFailedCheck(pr: GitHubPRState): boolean {
   return pr.checks.some((check) => check.conclusion === 'failure');
 }
 
+function isConflicting(pr: GitHubPRState): boolean {
+  return pr.mergeable === 'CONFLICTING';
+}
+
 function needsAttention(pr: GitHubPRState): boolean {
-  return pr.reviewDecision === 'changes_requested' || hasFailedCheck(pr);
+  return pr.reviewDecision === 'changes_requested' || hasFailedCheck(pr) || isConflicting(pr);
 }
 
 function statusRank(status: GitHubPRState['status']): number {
@@ -30,6 +35,7 @@ function toModel(pr: GitHubPRState): FindingPrChipModel {
     status: pr.status,
     ciFailed: hasFailedCheck(pr),
     changesRequested: pr.reviewDecision === 'changes_requested',
+    conflicting: isConflicting(pr),
   };
 }
 
@@ -51,6 +57,7 @@ export function selectFindingPrChip(prs: readonly GitHubPRState[]): FindingPrChi
 
 export function findingPrChipLabel(model: FindingPrChipModel): string {
   const parts = [`#${model.number}`, model.status];
+  if (model.conflicting) parts.push('conflict');
   if (model.ciFailed) parts.push('CI failed');
   if (model.changesRequested) parts.push('changes requested');
   return parts.join(' · ');

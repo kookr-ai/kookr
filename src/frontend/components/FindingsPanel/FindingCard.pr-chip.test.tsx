@@ -154,6 +154,36 @@ describe('FindingCard GitHub PR chip', () => {
     expect(chip?.className).not.toContain('finding-pr-chip--attention');
   });
 
+  test('adds a conflict class and label when the PR is CONFLICTING', () => {
+    useKookrStore.setState({
+      githubState: {
+        'task-1': stubTaskGitHub({
+          prs: [makePr({ mergeable: 'CONFLICTING' })],
+        }),
+      },
+    });
+    root = renderPanel(container, [makeAgent()]);
+    const chip = container.querySelector('[data-testid="finding-pr-chip"]');
+    expect(chip?.textContent).toBe('#88 · open · conflict');
+    expect(chip?.className).toContain('finding-pr-chip--conflict');
+    expect(chip?.getAttribute('data-attention')).toBe('true');
+  });
+
+  test('leaves an UNKNOWN-mergeable PR chip quiet', () => {
+    useKookrStore.setState({
+      githubState: {
+        'task-1': stubTaskGitHub({
+          prs: [makePr({ mergeable: 'UNKNOWN' })],
+        }),
+      },
+    });
+    root = renderPanel(container, [makeAgent()]);
+    const chip = container.querySelector('[data-testid="finding-pr-chip"]');
+    expect(chip?.textContent).toBe('#88 · open');
+    expect(chip?.className).not.toContain('finding-pr-chip--conflict');
+    expect(chip?.getAttribute('data-attention')).toBe('false');
+  });
+
   test('adds an attention class when a reviewer requested changes', () => {
     useKookrStore.setState({
       githubState: {
