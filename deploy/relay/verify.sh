@@ -10,6 +10,12 @@ BACKUP_GLOB="${KOOKR_RELAY_BACKUP_GLOB:-/var/backups/kookr-relay/*.sqlite}"
 SSH_PORT="${KOOKR_RELAY_SSH_PORT:-22}"
 INCIDENT_ESCALATION_URL="${KOOKR_RELAY_INCIDENT_ESCALATION_URL:-}"
 HOSTED_RELAY_ENABLED="${KOOKR_HOSTED_RELAY_ENABLED:-}"
+# Per-probe request deadline (seconds). Bounds every network probe below so a
+# relay outage or slow restart makes the posture check fail with a labelled
+# error instead of hanging indefinitely (issue #2796; same class as the
+# main-server precedent in #1544/#1552). Default is generous enough for
+# expected under-load relay latency; raise it for unusually slow deployments.
+VERIFY_TIMEOUT="${KOOKR_RELAY_VERIFY_TIMEOUT:-10}"
 
 failures=0
 
@@ -28,6 +34,20 @@ has_command() {
   command -v "$1" >/dev/null 2>&1
 }
 
+# Bound a network command that has no native request-deadline flag (openssl
+# s_client) with coreutils `timeout` so an unresponsive peer cannot wedge the
+# posture check. Falls back to running the command directly when no timeout
+# binary is available.
+with_deadline() {
+  if has_command timeout; then
+    timeout "$VERIFY_TIMEOUT" "$@"
+  elif has_command gtimeout; then
+    gtimeout "$VERIFY_TIMEOUT" "$@"
+  else
+    "$@"
+  fi
+}
+
 relay_loopback_only() {
   if has_command ss; then
     ss -ltn "sport = :${RELAY_PORT}" | awk 'NR > 1 { print $4 }' | grep -Eq "(^|:)127\\.0\\.0\\.1:${RELAY_PORT}$|\\[::1\\]:${RELAY_PORT}$"
@@ -42,19 +62,19 @@ relay_loopback_only() {
 }
 
 https_health_ok() {
-  [ -n "$DOMAIN" ] && curl --fail --silent --show-error "https://${DOMAIN}/health" >/dev/null
+  [ -n "$DOMAIN" ] && curl --max-time "$VERIFY_TIMEOUT" --fail --silent --show-error "https://${DOMAIN}/health" >/dev/null
 }
 
 tls_valid() {
-  [ -n "$DOMAIN" ] && echo | openssl s_client -servername "$DOMAIN" -connect "${DOMAIN}:443" -verify_return_error >/dev/null 2>&1
+  [ -n "$DOMAIN" ] && echo | with_deadline openssl s_client -servername "$DOMAIN" -connect "${DOMAIN}:443" -verify_return_error >/dev/null 2>&1
 }
 
 admin_refused_off_box() {
-  [ -n "$DOMAIN" ] && [ "$(curl --silent --output /dev/null --write-out '%{http_code}' "https://${DOMAIN}/relay/admin/metrics")" = "403" ]
+  [ -n "$DOMAIN" ] && [ "$(curl --max-time "$VERIFY_TIMEOUT" --silent --output /dev/null --write-out '%{http_code}' "https://${DOMAIN}/relay/admin/metrics")" = "403" ]
 }
 
 http_redirect_or_acme_only() {
-  [ -n "$DOMAIN" ] && curl --silent --output /dev/null --write-out '%{http_code}' "http://${DOMAIN}/health" | grep -Eq '^(301|302|308|404)$'
+  [ -n "$DOMAIN" ] && curl --max-time "$VERIFY_TIMEOUT" --silent --output /dev/null --write-out '%{http_code}' "http://${DOMAIN}/health" | grep -Eq '^(301|302|308|404)$'
 }
 
 ssh_key_only() {
@@ -93,7 +113,7 @@ incident_escalation_configured() {
 
 synthetic_probe_manifest_available() {
   [ "$HOSTED_RELAY_ENABLED" = "1" ] || [ "$HOSTED_RELAY_ENABLED" = "true" ] || [ "$HOSTED_RELAY_ENABLED" = "yes" ] || return 0
-  [ -n "$DOMAIN" ] && curl --fail --silent --show-error "https://${DOMAIN}/relay/ops/synthetic-probes" >/dev/null
+  [ -n "$DOMAIN" ] && curl --max-time "$VERIFY_TIMEOUT" --fail --silent --show-error "https://${DOMAIN}/relay/ops/synthetic-probes" >/dev/null
 }
 
 ssh_not_public_when_ufw_present() {
