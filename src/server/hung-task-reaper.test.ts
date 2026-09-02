@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
@@ -203,6 +203,60 @@ describe('reapHungTask', () => {
       },
       // No reportsDir passed to this test — no reportPath key at all.
     }]);
+  });
+
+  // Issue #2852: the audit row is the durable trail for the report-persistence
+  // failure signal. On a real (unmockable) write failure the row must carry
+  // `reportPersistence: 'error'` and NO `reportPath`; on a clean write it must
+  // carry `reportPath` and NO `reportPersistence` key. Uses the real
+  // filesystem: `reportsDir` nested under a regular file makes `mkdir` fail
+  // with ENOTDIR, driving the `error` branch of `persistReapReport` — the same
+  // audit-row spread the `timeout` branch uses.
+  test('audit row records reportPersistence:error when the report write fails', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-reap-io-'));
+    const notADir = join(dir, 'blocker');
+    await writeFile(notADir, 'x', 'utf-8'); // a file where a directory is expected
+    const reportsDir = join(notADir, 'reports'); // mkdir(recursive) → ENOTDIR
+    const auditLogPath = join(dir, 'audit.jsonl');
+
+    const result = await reapHungTask(task, evidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      reportsDir,
+      auditLogPath,
+      now: () => new Date('2026-06-21T00:00:00.000Z'),
+    });
+
+    expect(result.reportPersistence).toBe('error');
+    expect(result.reportPath).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+
+    const rows = await readAuditRows(auditLogPath);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ type: 'task.hungTaskReap', reportPersistence: 'error' });
+    expect(rows[0].reportPath).toBeUndefined();
+  });
+
+  test('audit row carries reportPath and no reportPersistence key on a clean write', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const reportsDir = await mkdtemp(join(tmpdir(), 'kookr-reports-'));
+    const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+
+    const result = await reapHungTask(task, evidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      reportsDir,
+      auditLogPath,
+      now: () => new Date('2026-06-21T00:00:00.000Z'),
+    });
+
+    expect(result.reportPersistence).toBe('ok');
+    const rows = await readAuditRows(auditLogPath);
+    expect(rows[0].reportPath).toBe(result.reportPath);
+    expect(rows[0].reportPersistence).toBeUndefined();
   });
 
   test('broadcasts a warning alert', async () => {

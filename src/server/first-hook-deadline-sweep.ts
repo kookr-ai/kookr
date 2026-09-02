@@ -22,6 +22,10 @@ import { appendDispositionEntry, type DispositionEntry } from '../core/dispositi
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
 import { firstHookMissReportBasename } from './first-hook-miss-report-paths.js';
+import {
+  persistReapReport,
+  type ReapReportPersistOutcome,
+} from './reap-report-persistence.js';
 
 /** In-memory snapshot for `/api/health` + `/metrics` (issue #2036). */
 export interface FirstHookMissMetricsSnapshot {
@@ -54,6 +58,15 @@ export interface ReapFirstHookMissDeps {
   dispositionLedgerPath?: string;
   broadcastToAll?: (msg: ServerMessage) => void;
   metrics?: Pick<FirstHookMissMetrics, 'recordMiss'>;
+  /**
+   * Wall-clock bound for the best-effort evidence-report write (issue #2852).
+   * The write runs AFTER termination has released capacity, so this only caps
+   * how long the audit row / alert / pending-task refill wait on it. Defaults
+   * to the helper's `DEFAULT_REAP_REPORT_PERSIST_TIMEOUT_MS` (5s); `<= 0` awaits
+   * unbounded. Presently an injectable-for-tests knob — no production caller
+   * sets it, so operationally the default always applies.
+   */
+  reportPersistTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -99,22 +112,22 @@ ${tail}
 `;
 }
 
+/**
+ * Write the first-hook-miss report and resolve its path. Errors propagate: the
+ * caller runs this through {@link persistReapReport}, which bounds and catches
+ * it so a wedged data directory can never delay or crash the reap (issue #2852).
+ */
 async function writeReport(
   task: Task,
   evidence: FirstHookMissEvidenceBundle,
   reportsDir: string,
   now: Date,
-): Promise<string | undefined> {
+): Promise<string> {
   const slug = now.toISOString().replace(/[:.]/g, '-');
   const reportPath = join(reportsDir, firstHookMissReportBasename(task.id, slug));
-  try {
-    await mkdir(reportsDir, { recursive: true });
-    await writeFile(reportPath, buildReportMarkdown(task, evidence, now), 'utf-8');
-    return reportPath;
-  } catch (err) {
-    console.warn(`[first-hook-miss] failed to write report for task ${task.id}:`, err);
-    return undefined;
-  }
+  await mkdir(reportsDir, { recursive: true });
+  await writeFile(reportPath, buildReportMarkdown(task, evidence, now), 'utf-8');
+  return reportPath;
 }
 
 /**
@@ -125,14 +138,16 @@ export async function reapFirstHookMiss(
   task: Task,
   evidence: FirstHookMissEvidenceBundle,
   deps: ReapFirstHookMissDeps,
-): Promise<{ reportPath?: string }> {
+): Promise<{ reportPath?: string; reportPersistence: ReapReportPersistOutcome['status'] }> {
   const now = deps.now?.() ?? new Date();
-  const reportPath = deps.reportsDir
-    ? await writeReport(task, evidence, deps.reportsDir, now)
-    : undefined;
 
   const disposition = buildFirstHookMissDisposition(now.toISOString());
 
+  // Terminate and release capacity BEFORE any evidence-report I/O (issue
+  // #2852). The report is a diagnostic artifact, not lifecycle state; writing
+  // it first meant a full/slow/wedged data directory could stall capacity
+  // release indefinitely. The report is persisted best-effort further down,
+  // bounded so a never-settling write cannot delay the reap.
   await terminateTask(task.id, deps.lifecycleDeps, {
     reason: 'timeout',
     detail:
@@ -163,6 +178,19 @@ export async function reapFirstHookMiss(
     });
   }
 
+  // Persist the evidence report best-effort, now that capacity is already
+  // released (issue #2852). Bounded so a wedged data directory cannot delay the
+  // audit row / alert / pending-task refill, and every failure — including a
+  // late rejection after the bound — is caught inside `persistReapReport`.
+  const report: ReapReportPersistOutcome = deps.reportsDir
+    ? await persistReapReport(
+        () => writeReport(task, evidence, deps.reportsDir!, now),
+        deps.reportPersistTimeoutMs,
+        `[first-hook-miss] task ${task.id}:`,
+      )
+    : { status: 'skipped' };
+  const reportPath = report.status === 'ok' ? report.reportPath : undefined;
+
   await appendAuditRow(deps.auditLogPath, {
     type: 'task.firstHookMiss',
     timestamp: nowISO(),
@@ -172,6 +200,11 @@ export async function reapFirstHookMiss(
     deadlineMs: evidence.deadlineMs,
     registeredAt: evidence.registeredAt,
     ...(reportPath ? { reportPath } : {}),
+    // Surface a report-persistence failure on the durable trail (issue #2852)
+    // without touching the happy-path shape: `error`/`timeout` only.
+    ...(report.status === 'error' || report.status === 'timeout'
+      ? { reportPersistence: report.status }
+      : {}),
   });
 
   deps.broadcastToAll?.({
@@ -184,7 +217,7 @@ export async function reapFirstHookMiss(
     severity: 'warning',
   });
 
-  return { reportPath };
+  return { reportPath, reportPersistence: report.status };
 }
 
 /**
@@ -204,6 +237,7 @@ export async function maybeReapFirstHookMiss(
     dispositionLedgerPath?: string;
     broadcastToAll?: (msg: ServerMessage) => void;
     metrics?: Pick<FirstHookMissMetrics, 'recordMiss'>;
+    reportPersistTimeoutMs?: number;
     promotePending?: () => Promise<void>;
     now?: () => Date;
   },
@@ -247,6 +281,7 @@ export async function maybeReapFirstHookMiss(
       dispositionLedgerPath: deps.dispositionLedgerPath,
       broadcastToAll: deps.broadcastToAll,
       metrics: deps.metrics,
+      reportPersistTimeoutMs: deps.reportPersistTimeoutMs,
       now: deps.now,
     },
   );

@@ -1,5 +1,5 @@
 import { describe, expect, test, vi } from 'vitest';
-import { mkdtemp, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TaskStore } from '../core/tasks.js';
@@ -157,6 +157,43 @@ describe('first-hook miss reaper (issue #2036)', () => {
 
     expect(reaped).toBe(false);
     expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+  });
+
+  // Issue #2852: the audit row is the durable trail for the report-persistence
+  // failure signal. A real (unmockable) write failure — `reportsDir` nested
+  // under a regular file so `mkdir` fails with ENOTDIR — must stamp
+  // `reportPersistence: 'error'` on the row and omit `reportPath`, while a
+  // clean write keeps `reportPath` and omits the marker.
+  test('audit row records reportPersistence:error when the report write fails', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const dir = await mkdtemp(join(tmpdir(), 'first-hook-io-'));
+    const notADir = join(dir, 'blocker');
+    await writeFile(notADir, 'x', 'utf-8');
+    const reportsDir = join(notADir, 'reports');
+    const auditLogPath = join(dir, 'audit.jsonl');
+
+    const result = await reapFirstHookMiss(
+      task,
+      {
+        waitedMs: DEFAULT_FIRST_HOOK_DEADLINE_MS + 1_000,
+        deadlineMs: DEFAULT_FIRST_HOOK_DEADLINE_MS,
+        registeredAt: REG,
+        firstHookAt: 0,
+        mcpStartupAt: 0,
+        paneContent: 'stuck',
+      },
+      { taskStore, lifecycleDeps: lifecycleDeps(taskStore), reportsDir, auditLogPath, now: () => PAST_DEADLINE },
+    );
+
+    expect(result.reportPersistence).toBe('error');
+    expect(result.reportPath).toBeUndefined();
+    expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+
+    const rows = (await readFile(auditLogPath, 'utf-8')).trim().split('\n').map((l) => JSON.parse(l));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ type: 'task.firstHookMiss', reportPersistence: 'error' });
+    expect(rows[0].reportPath).toBeUndefined();
   });
 
   test('reapFirstHookMiss writes disposition and increments metrics', async () => {

@@ -10,6 +10,10 @@ import { buildReapDisposition } from '../core/hung-task-reaper.js';
 import { nowISO } from '../core/interaction-log.js';
 import { hungTaskReportBasename } from './hung-task-report-paths.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import {
+  persistReapReport,
+  type ReapReportPersistOutcome,
+} from './reap-report-persistence.js';
 
 const PANE_TAIL_LINES = 50;
 
@@ -51,6 +55,15 @@ export interface HungTaskReaperDeps {
    * `terminated` outcome (never a false `delivered_then_hung`).
    */
   resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
+  /**
+   * Wall-clock bound for the best-effort evidence-report write (issue #2852).
+   * The write runs AFTER termination has released capacity, so this only caps
+   * how long the audit row / alert / pending-task refill wait on it. Defaults
+   * to the helper's `DEFAULT_REAP_REPORT_PERSIST_TIMEOUT_MS` (5s); `<= 0` awaits
+   * unbounded. Presently an injectable-for-tests knob — no production caller
+   * sets it, so operationally the default always applies.
+   */
+  reportPersistTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -58,6 +71,13 @@ export interface HungTaskReapResult {
   reportPath?: string;
   /** Recorded reap outcome (issue #1559): `terminated` or `delivered_then_hung`. */
   outcome: TaskReapOutcome;
+  /**
+   * Report-persistence signal (issue #2852): `ok` when the report was written,
+   * `skipped` when no reports dir is configured, `error`/`timeout` when a
+   * wedged data directory could not accept the write in time. Distinct from
+   * `outcome` (the lifecycle disposition) — the reap itself always succeeded.
+   */
+  reportPersistence: ReapReportPersistOutcome['status'];
 }
 
 function formatAgeFromNow(now: Date, at: number): string {
@@ -92,23 +112,22 @@ ${tail}
 `;
 }
 
-/** Write the reap evidence report. Never throws — a report-write failure must not block the reap. */
+/**
+ * Write the reap evidence report and resolve its path. Errors propagate: the
+ * caller runs this through {@link persistReapReport}, which bounds and catches
+ * it so a wedged data directory can never delay or crash the reap (issue #2852).
+ */
 async function writeHungTaskReport(
   task: Task,
   evidence: HungTaskReapEvidence,
   reportsDir: string,
   now: Date,
-): Promise<string | undefined> {
+): Promise<string> {
   const slug = now.toISOString().replace(/[:.]/g, '-');
   const reportPath = join(reportsDir, hungTaskReportBasename(task.id, slug));
-  try {
-    await mkdir(reportsDir, { recursive: true });
-    await writeFile(reportPath, buildHungTaskReportMarkdown(task, evidence, now), 'utf-8');
-    return reportPath;
-  } catch (err) {
-    console.warn(`[hung-task-reaper] failed to write report for task ${task.id}:`, err);
-    return undefined;
-  }
+  await mkdir(reportsDir, { recursive: true });
+  await writeFile(reportPath, buildHungTaskReportMarkdown(task, evidence, now), 'utf-8');
+  return reportPath;
 }
 
 /**
@@ -127,9 +146,6 @@ export async function reapHungTask(
   deps: HungTaskReaperDeps,
 ): Promise<HungTaskReapResult> {
   const now = deps.now?.() ?? new Date();
-  const reportPath = deps.reportsDir
-    ? await writeHungTaskReport(task, evidence, deps.reportsDir, now)
-    : undefined;
 
   // Attribute delivery BEFORE terminating, so a task that already merged its PR
   // is recorded as `delivered_then_hung` instead of masking the delivery as a
@@ -139,6 +155,12 @@ export async function reapHungTask(
   const disposition = buildReapDisposition(merged, now.toISOString());
   const outcome = disposition.outcome ?? 'terminated';
 
+  // Terminate and release capacity BEFORE any evidence-report I/O (issue
+  // #2852). The report is a diagnostic artifact, not lifecycle state; writing
+  // it first meant a full/slow/wedged data directory could stall capacity
+  // release indefinitely — exactly during the disk pressure when unattended
+  // recovery matters most. The report is persisted best-effort further down,
+  // bounded so a never-settling write cannot delay the reap.
   await terminateTask(task.id, deps.lifecycleDeps, {
     reason: 'timeout',
     detail: `hung-task-reaper: silent for ${Math.round(evidence.silentForMs / 1000)}s (threshold ${Math.round(evidence.thresholdMs / 1000)}s)`,
@@ -163,6 +185,19 @@ export async function reapHungTask(
     console.error(`[hung-task-reaper] failed to record disposition-ledger entry for task ${task.id}:`, err);
   });
 
+  // Persist the evidence report best-effort, now that capacity is already
+  // released (issue #2852). Bounded so a wedged data directory cannot delay the
+  // audit row / alert / pending-task refill, and every failure — including a
+  // late rejection after the bound — is caught inside `persistReapReport`.
+  const report: ReapReportPersistOutcome = deps.reportsDir
+    ? await persistReapReport(
+        () => writeHungTaskReport(task, evidence, deps.reportsDir!, now),
+        deps.reportPersistTimeoutMs,
+        `[hung-task-reaper] task ${task.id}:`,
+      )
+    : { status: 'skipped' };
+  const reportPath = report.status === 'ok' ? report.reportPath : undefined;
+
   await appendAuditRow(deps.auditLogPath, {
     type: 'task.hungTaskReap',
     timestamp: nowISO(),
@@ -180,6 +215,11 @@ export async function reapHungTask(
     ...(evidence.warnedAt !== undefined ? { warnedAt: evidence.warnedAt } : {}),
     ...(evidence.keptAliveCount !== undefined ? { keptAliveCount: evidence.keptAliveCount } : {}),
     ...(reportPath ? { reportPath } : {}),
+    // Surface a report-persistence failure on the durable trail (issue #2852)
+    // without touching the happy-path shape: `error`/`timeout` only.
+    ...(report.status === 'error' || report.status === 'timeout'
+      ? { reportPersistence: report.status }
+      : {}),
   });
 
   const silentMinutes = Math.round(evidence.silentForMs / 60_000);
@@ -195,7 +235,7 @@ export async function reapHungTask(
     severity: 'warning',
   });
 
-  return { reportPath, outcome };
+  return { reportPath, outcome, reportPersistence: report.status };
 }
 
 /**
