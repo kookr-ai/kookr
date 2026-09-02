@@ -7,6 +7,7 @@ import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
 import { ScheduleStaleAlarm } from '../schedule-liveness.js';
 import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
+import { ScheduleBatchPinAlerter } from '../schedule-batch-pin-alert.js';
 import { deriveLedgerEnrichment, deriveScheduleTerminalReason, ScheduleService } from '../schedule-service.js';
 import { ScheduleValidator } from '../schedule-validator.js';
 import { bindOperationalAlertSink, OperationalAlertSink } from '../operational-alert-sink.js';
@@ -316,6 +317,14 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // migration. Fires within one validation cycle instead of only surfacing
     // as a ledger `dispatch_failed` on the next fire.
     resolutionAlerter: new ScheduleResolutionAlerter({
+      broadcast: deps.broadcastToAll,
+    }),
+    // issue #2982: operational alert when a recurring Parallel Issue Batch is
+    // pinned to an explicit `issueSelector` — a config that silently rots into a
+    // permanent no-op once the pinned issues close (the 2026-09-02 Kookr-batch
+    // incident). Fires within one validation cycle instead of surfacing only as
+    // days of no-op fires. Static config inspection; no GitHub calls.
+    batchPinAlerter: new ScheduleBatchPinAlerter({
       broadcast: deps.broadcastToAll,
     }),
     // issue #1896: auto-resume provider-paused issues on the runner's tick.

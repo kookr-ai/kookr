@@ -33,6 +33,10 @@ import {
   type ScheduleResolutionProbe,
   type UnresolvableScheduleInfo,
 } from './schedule-resolution-alert.js';
+import {
+  detectDrainedPinRisk,
+  type PinnedBatchScheduleInfo,
+} from '../core/batch-selector-pin.js';
 import type { ScheduleDeadManStats } from './schedule-dead-man.js';
 import type { TaskStatus } from '../core/types.js';
 import type { TaskLaunchAdmission } from '../shared/contracts/task.js';
@@ -224,6 +228,15 @@ export interface ScheduleRunnerDeps {
    * unresolvable-playbook alerting (back-compat for older wiring/tests).
    */
   resolutionAlerter?: { check(unresolvable: UnresolvableScheduleInfo[], resolvedIds: string[]): void };
+  /**
+   * Drained-pin operational alerter (issue #2982). When provided, fed the
+   * current set of recurring Parallel Issue Batch schedules pinned to an
+   * explicit `issueSelector` on every validation cycle, so a batch that will
+   * silently rot once its pinned issues close raises an operational alert within
+   * one cycle instead of firing no-op for days. `check` must never throw. Absent
+   * means no drained-pin alerting (back-compat for older wiring/tests).
+   */
+  batchPinAlerter?: { check(pinned: PinnedBatchScheduleInfo[], evaluatedIds: string[]): void };
   /**
    * Re-queue-after-reset sweep (issue #1896 / #1699 WS1.4). When provided,
    * evaluated once per tick — piggybacking the existing 60s interval, no timer
@@ -674,7 +687,15 @@ export class ScheduleRunner {
   refreshPlaybookResolution(): void {
     const unresolvable: UnresolvableScheduleInfo[] = [];
     const resolvedIds: string[] = [];
+    // Drained-pin risk set for the batch-pin alerter (#2982) and the full id set
+    // seen this cycle, so the alerter can tell "pin cleared" (recovery) apart
+    // from "schedule deleted" (silent clear).
+    const pinnedBatches: PinnedBatchScheduleInfo[] = [];
+    const evaluatedIds: string[] = [];
     for (const schedule of this.deps.store.list()) {
+      evaluatedIds.push(schedule.id);
+      const pinned = detectDrainedPinRisk(schedule);
+      if (pinned) pinnedBatches.push(pinned);
       const scope = schedule.playbook.scope ?? 'project';
       const cwdExists = existsSync(schedule.cwd);
       const sourceCwd = schedule.playbook.sourceCwd ?? schedule.cwd;
@@ -728,6 +749,13 @@ export class ScheduleRunner {
       this.deps.resolutionAlerter?.check(unresolvable, resolvedIds);
     } catch (err) {
       console.error('[schedule] resolution alerter check failed:', err);
+    }
+    // Same defensive envelope as the resolution alerter above: this also runs on
+    // the unwrapped startup seed, so a throwing broadcast must not abort startup.
+    try {
+      this.deps.batchPinAlerter?.check(pinnedBatches, evaluatedIds);
+    } catch (err) {
+      console.error('[schedule] batch-pin alerter check failed:', err);
     }
   }
 

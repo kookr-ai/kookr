@@ -3246,6 +3246,55 @@ Launch and stall.
     // ...but IS in the genuinely-resolved set that gates recovery alerts.
     expect(resolvedIds).toEqual([healthy.id]);
   });
+
+  it('feeds the batch-pin alerter the pinned recurring batches and every evaluated id (issue #2982)', () => {
+    // The 2026-09-02 incident shape: a recurring Parallel Issue Batch pinned to
+    // an explicit issue list. detectDrainedPinRisk keys only off the config, so
+    // the playbook path need not resolve for this detector.
+    const pinned = store.create({
+      name: 'Kookr parallel issue batch',
+      cron: '23 2,14 * * *',
+      playbook: { path: 'parallel-issue-batch.md', parameters: { issueSelector: '2756 2757 2758' } },
+      cwd: dir,
+    });
+    // A healthy batch with a blank selector (the working Lucy config) — must be
+    // evaluated but NOT reported as pinned.
+    const healthy = store.create({
+      name: 'Lucy parallel issue batch',
+      cron: '7 */2 * * *',
+      playbook: { path: 'parallel-issue-batch.md', parameters: { issueSelector: '' } },
+      cwd: dir,
+    });
+
+    const check = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      batchPinAlerter: { check },
+    });
+
+    runner.refreshPlaybookResolution();
+
+    expect(check).toHaveBeenCalledTimes(1);
+    const [reportedPins, evaluatedIds] = check.mock.calls[0];
+    // Only the pinned batch is reported, with its parsed issue list...
+    expect(reportedPins).toEqual([
+      expect.objectContaining({
+        id: pinned.id,
+        name: 'Kookr parallel issue batch',
+        issues: [2756, 2757, 2758],
+        selector: '2756 2757 2758',
+      }),
+    ]);
+    // ...while every evaluated schedule id (pinned + healthy) is forwarded so the
+    // alerter can tell "pin cleared" from "schedule deleted".
+    expect(new Set(evaluatedIds)).toEqual(new Set([pinned.id, healthy.id]));
+  });
 });
 
 describe('cheap probe pre-check (issue #2569)', () => {
