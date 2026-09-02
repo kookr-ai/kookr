@@ -828,6 +828,269 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — resourceStatus block (issue #2791)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health resourceStatus block (issue #2791)', () => {
+    test('TS-HEALTH-RES-001: projects the latest sample and its freshness age, path-free', async () => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        sampleGapMs: 10_000,
+        timerDriftMs: 2,
+        host: {
+          cpuUsagePercent: 12,
+          memoryUsedPercent: 34,
+          memoryFreeBytes: 1_000,
+          memoryTotalBytes: 2_000,
+          dataDirectory: {
+            path: '/private/operator/state',
+            diskFreeBytes: 15_000_000_000,
+            diskTotalBytes: 100_000_000_000,
+            diskFreePercent: 15,
+            diskFreeInodes: 5_000,
+            diskTotalInodes: 9_000,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 7,
+          processRssBytes: 111,
+          processHeapUsedBytes: 222,
+          processHeapTotalBytes: 333,
+        },
+        unavailable: [],
+      }));
+      // Health assembly stamps age against `deps.nowMs`; sample is 4s old.
+      const nowMs = Date.parse('2026-09-01T04:05:10.000Z');
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+        nowMs: () => nowMs,
+      }).request('/api/health');
+
+      expect(res.status).toBe(200);
+      const body = await res.json() as { resourceStatus?: Record<string, unknown> };
+      expect(body.resourceStatus).toEqual({
+        status: 'known',
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        ageMs: 4_000,
+        sampleGapMs: 10_000,
+        timerDriftMs: 2,
+        host: {
+          cpuUsagePercent: 12,
+          memoryUsedPercent: 34,
+          memoryFreeBytes: 1_000,
+          memoryTotalBytes: 2_000,
+          dataDirectory: {
+            diskFreeBytes: 15_000_000_000,
+            diskTotalBytes: 100_000_000_000,
+            diskFreePercent: 15,
+            diskFreeInodes: 5_000,
+            diskTotalInodes: 9_000,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 7,
+          processRssBytes: 111,
+          processHeapUsedBytes: 222,
+          processHeapTotalBytes: 333,
+        },
+        unavailable: [],
+      });
+      // The sampler's data-directory path must never leak onto operator-visible
+      // health (#2896 invariant, reused here).
+      const dd = (body.resourceStatus?.host as { dataDirectory?: Record<string, unknown> })?.dataDirectory;
+      expect(dd).not.toHaveProperty('path');
+      // Reuses the single sample also feeding the dataDirectory block — the
+      // getter is called exactly once for the whole assembly, not per block.
+      expect(getLatestResourceStatus).toHaveBeenCalledTimes(1);
+    });
+
+    test('TS-HEALTH-RES-002: represents a missing sample as explicit unknown nulls', async () => {
+      const getLatestResourceStatus = vi.fn(() => null);
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+      }).request('/api/health')).json() as { resourceStatus?: Record<string, unknown> };
+
+      expect(body.resourceStatus).toEqual({
+        status: 'unknown',
+        sampledAt: null,
+        ageMs: null,
+        sampleGapMs: null,
+        timerDriftMs: null,
+        host: {
+          cpuUsagePercent: null,
+          memoryUsedPercent: null,
+          memoryFreeBytes: null,
+          memoryTotalBytes: null,
+          dataDirectory: {
+            diskFreeBytes: null,
+            diskTotalBytes: null,
+            diskFreePercent: null,
+            diskFreeInodes: null,
+            diskTotalInodes: null,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: null,
+          processRssBytes: null,
+          processHeapUsedBytes: null,
+          processHeapTotalBytes: null,
+        },
+        unavailable: [],
+      });
+    });
+
+    test('TS-HEALTH-RES-003: preserves partial nulls, defaults absent inodes, and carries unavailable reasons', async () => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        sampleGapMs: null,
+        timerDriftMs: null,
+        host: {
+          cpuUsagePercent: null,
+          memoryUsedPercent: null,
+          memoryFreeBytes: null,
+          memoryTotalBytes: null,
+          // Older sampler: no inode fields at all — must become null, not undefined.
+          dataDirectory: {
+            path: '/private/operator/state',
+            diskFreeBytes: null,
+            diskTotalBytes: null,
+            diskFreePercent: null,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: null,
+          processRssBytes: null,
+          processHeapUsedBytes: null,
+          processHeapTotalBytes: null,
+        },
+        unavailable: ['sampler_error' as const],
+      }));
+      // Pin nowMs to the sample instant so the whole block (ageMs included) is
+      // deterministic and can be asserted field-for-field — no null passthrough
+      // (sampleGapMs/timerDriftMs/host/server) may silently drift to 0.
+      const nowMs = Date.parse('2026-09-01T04:05:06.000Z');
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+        nowMs: () => nowMs,
+      }).request('/api/health')).json() as { resourceStatus?: Record<string, unknown> };
+
+      expect(body.resourceStatus).toEqual({
+        status: 'known',
+        sampledAt: '2026-09-01T04:05:06.000Z',
+        ageMs: 0,
+        sampleGapMs: null,
+        timerDriftMs: null,
+        host: {
+          cpuUsagePercent: null,
+          memoryUsedPercent: null,
+          memoryFreeBytes: null,
+          memoryTotalBytes: null,
+          dataDirectory: {
+            diskFreeBytes: null,
+            diskTotalBytes: null,
+            diskFreePercent: null,
+            diskFreeInodes: null,
+            diskTotalInodes: null,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: null,
+          processRssBytes: null,
+          processHeapUsedBytes: null,
+          processHeapTotalBytes: null,
+        },
+        unavailable: ['sampler_error'],
+      });
+    });
+
+    test('TS-HEALTH-RES-005: clamps a future sampledAt (clock skew) to a zero age, never negative', async () => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: '2026-09-01T04:05:10.000Z',
+        sampleGapMs: 1,
+        timerDriftMs: 1,
+        host: {
+          cpuUsagePercent: 1,
+          memoryUsedPercent: 1,
+          memoryFreeBytes: 1,
+          memoryTotalBytes: 1,
+          dataDirectory: {
+            path: '/x',
+            diskFreeBytes: 1,
+            diskTotalBytes: 1,
+            diskFreePercent: 1,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 1,
+          processRssBytes: 1,
+          processHeapUsedBytes: 1,
+          processHeapTotalBytes: 1,
+        },
+        unavailable: [],
+      }));
+      // Health assembly runs 4s BEFORE the sample's stamp (skew): age must clamp.
+      const nowMs = Date.parse('2026-09-01T04:05:06.000Z');
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+        nowMs: () => nowMs,
+      }).request('/api/health')).json() as { resourceStatus?: { ageMs: unknown } };
+
+      expect(body.resourceStatus?.ageMs).toBe(0);
+    });
+
+    test('TS-HEALTH-RES-004: an unparseable sampledAt yields a null age, never NaN', async () => {
+      const getLatestResourceStatus = vi.fn(() => ({
+        source: { kind: 'server-host' as const },
+        sampledAt: 'not-a-timestamp',
+        sampleGapMs: 1,
+        timerDriftMs: 1,
+        host: {
+          cpuUsagePercent: 1,
+          memoryUsedPercent: 1,
+          memoryFreeBytes: 1,
+          memoryTotalBytes: 1,
+          dataDirectory: {
+            path: '/x',
+            diskFreeBytes: 1,
+            diskTotalBytes: 1,
+            diskFreePercent: 1,
+          },
+        },
+        server: {
+          eventLoopDelayP95Ms: 1,
+          processRssBytes: 1,
+          processHeapUsedBytes: 1,
+          processHeapTotalBytes: 1,
+        },
+        unavailable: [],
+      }));
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getLatestResourceStatus,
+      }).request('/api/health')).json() as { resourceStatus?: { ageMs: unknown; sampledAt: unknown } };
+
+      expect(body.resourceStatus?.sampledAt).toBe('not-a-timestamp');
+      expect(body.resourceStatus?.ageMs).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — timerHealth summary (issue #2636)
   // ---------------------------------------------------------------------------
   describe('GET /api/health timerHealth block (issue #2636)', () => {

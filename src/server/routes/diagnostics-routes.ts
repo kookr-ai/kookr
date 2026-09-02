@@ -56,6 +56,7 @@ import {
   summarizeTimerHealth,
 } from '../../core/timer-health.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
+import type { SystemResourceStatus } from '../../shared/contracts/messages.js';
 import {
   buildCapacityLedger,
   buildVettedIdeaRunwayReport,
@@ -668,6 +669,21 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       diskFreePercent: latestDataDirectory?.diskFreePercent ?? null,
       sampledAt: latestResourceStatus?.sampledAt ?? null,
     };
+    // Issue #2791: project the SAME already-sampled RSS/heap/event-loop/memory/
+    // data-directory gauges onto the HTTP health path so a remote probe gets the
+    // resource sample without opening a dashboard WebSocket (until now the only
+    // carrier). Reuses `latestResourceStatus` fetched above — no re-sample, no
+    // extra getter call — so this stays cheap on the health hot path. Kept
+    // path-free like `dataDirectory` above (#2896): the data-directory `path` is
+    // deliberately omitted from operator-visible health and its last-good mirror.
+    // `ageMs` is the sample-freshness field the issue asks for — how stale the
+    // gauges are relative to now, so a caller can tell a live sample from a
+    // frozen one. Fields are bounded and secret-free (same shape already
+    // broadcast over WS); `unavailable` is a fixed-size enum list, never history.
+    const resourceStatusBlock = buildResourceStatusHealthBlock(
+      latestResourceStatus,
+      deps.nowMs?.() ?? Date.now(),
+    );
     // Issue #1885: first-class finding when relay-server orphans exceed the
     // bound, so sentinel/reflection can cite a stable code instead of
     // re-deriving a threshold from the raw count. Absent when within bound.
@@ -891,6 +907,9 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         ? { postResumeRefill: postResumeRefillBlock }
         : {}),
       dataDirectory: dataDirectoryBlock,
+      // Issue #2791: full latest resource sample (RSS/heap/event-loop/memory/
+      // data-directory) + freshness age, reused from the WS sampler.
+      resourceStatus: resourceStatusBlock,
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(idempotencyLedgerBlock ? { idempotencyLedger: idempotencyLedgerBlock } : {}),
       // systemd notifier arming (issue #2853): process-local readiness/watchdog
@@ -2234,6 +2253,116 @@ function timerHealthSummaryForHealth(
   if (!recorder) return EMPTY_TIMER_HEALTH_SUMMARY;
   if (typeof recorder.summary === 'function') return recorder.summary();
   return summarizeTimerHealth(recorder.snapshot());
+}
+
+/**
+ * Latest resource sample projected onto GET `/api/health` (issue #2791).
+ *
+ * Until now the RSS/heap/event-loop/memory/data-directory gauges were only
+ * pushed to dashboard WebSocket clients as `resourceStatus`. The HTTP health
+ * response is the dependable remote probe, so this block reuses the SAME cached
+ * sample the background {@link ResourceStatusService} already maintains — no
+ * re-sample, no fresh `/proc` or filesystem walk on the health hot path.
+ *
+ * Deliberately path-free: the data-directory `path` is omitted to match the
+ * `dataDirectory` health block (#2896), since health and its last-good mirror
+ * are operator-visible. `ageMs` is the sample-freshness field — how stale the
+ * gauges are relative to the health assembly, so a caller can tell a live
+ * sample from a frozen one. `status` is `known` once a sample exists and
+ * `unknown` before the first tick (or when the getter is unwired).
+ */
+export interface ResourceStatusHealthBlock {
+  status: 'known' | 'unknown';
+  sampledAt: string | null;
+  ageMs: number | null;
+  sampleGapMs: number | null;
+  timerDriftMs: number | null;
+  host: {
+    cpuUsagePercent: number | null;
+    memoryUsedPercent: number | null;
+    memoryFreeBytes: number | null;
+    memoryTotalBytes: number | null;
+    dataDirectory: {
+      diskFreeBytes: number | null;
+      diskTotalBytes: number | null;
+      diskFreePercent: number | null;
+      diskFreeInodes: number | null;
+      diskTotalInodes: number | null;
+    };
+  };
+  server: {
+    eventLoopDelayP95Ms: number | null;
+    processRssBytes: number | null;
+    processHeapUsedBytes: number | null;
+    processHeapTotalBytes: number | null;
+  };
+  unavailable: SystemResourceStatus['unavailable'];
+}
+
+export function buildResourceStatusHealthBlock(
+  latest: SystemResourceStatus | null,
+  nowMs: number,
+): ResourceStatusHealthBlock {
+  if (!latest) {
+    return {
+      status: 'unknown',
+      sampledAt: null,
+      ageMs: null,
+      sampleGapMs: null,
+      timerDriftMs: null,
+      host: {
+        cpuUsagePercent: null,
+        memoryUsedPercent: null,
+        memoryFreeBytes: null,
+        memoryTotalBytes: null,
+        dataDirectory: {
+          diskFreeBytes: null,
+          diskTotalBytes: null,
+          diskFreePercent: null,
+          diskFreeInodes: null,
+          diskTotalInodes: null,
+        },
+      },
+      server: {
+        eventLoopDelayP95Ms: null,
+        processRssBytes: null,
+        processHeapUsedBytes: null,
+        processHeapTotalBytes: null,
+      },
+      unavailable: [],
+    };
+  }
+  // Freshness: clamp at 0 so a small clock skew never reports a negative age,
+  // and leave null when the sampler stamped an unparseable timestamp.
+  const sampledAtMs = Date.parse(latest.sampledAt);
+  const ageMs = Number.isFinite(sampledAtMs) ? Math.max(0, nowMs - sampledAtMs) : null;
+  return {
+    status: 'known',
+    sampledAt: latest.sampledAt,
+    ageMs,
+    sampleGapMs: latest.sampleGapMs,
+    timerDriftMs: latest.timerDriftMs,
+    host: {
+      cpuUsagePercent: latest.host.cpuUsagePercent,
+      memoryUsedPercent: latest.host.memoryUsedPercent,
+      memoryFreeBytes: latest.host.memoryFreeBytes,
+      memoryTotalBytes: latest.host.memoryTotalBytes,
+      dataDirectory: {
+        diskFreeBytes: latest.host.dataDirectory.diskFreeBytes,
+        diskTotalBytes: latest.host.dataDirectory.diskTotalBytes,
+        diskFreePercent: latest.host.dataDirectory.diskFreePercent,
+        diskFreeInodes: latest.host.dataDirectory.diskFreeInodes ?? null,
+        diskTotalInodes: latest.host.dataDirectory.diskTotalInodes ?? null,
+      },
+    },
+    server: {
+      eventLoopDelayP95Ms: latest.server.eventLoopDelayP95Ms,
+      processRssBytes: latest.server.processRssBytes,
+      processHeapUsedBytes: latest.server.processHeapUsedBytes,
+      processHeapTotalBytes: latest.server.processHeapTotalBytes,
+    },
+    unavailable: latest.unavailable,
+  };
 }
 
 /**
