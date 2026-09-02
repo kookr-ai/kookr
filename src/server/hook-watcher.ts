@@ -226,7 +226,9 @@ const HEALTH_SAMPLE_LIMIT = 128;
  *
  * Uses dual-mode watching for resilience:
  * - Primary: fs.watch (low-latency, but unreliable on WSL2/macOS edge cases)
- * - Backup: interval poll every 3s (guaranteed delivery, catches missed fs.watch events)
+ * - Backup: self-scheduling poll (~3s cadence; guaranteed delivery, catches
+ *   missed fs.watch events). Re-armed only after each tick settles so a slow
+ *   read can't stack overlapping polls (issue #2776).
  *
  * Both run simultaneously. Offset tracking ensures each line is processed exactly once.
  */
@@ -804,11 +806,17 @@ export class HookFileWatcher {
       this.pollInFlight.delete(tmuxName);
       const elapsedMs = Date.now() - startedAtMs;
       if (elapsedMs > this.pollIntervalMs) {
-        const health = this.getOrCreateHealth(tmuxName);
-        health.pollOverrunCount += 1;
-        health.lastPollOverrunMs = elapsedMs;
-        health.maxPollOverrunMs =
-          health.maxPollOverrunMs === null ? elapsedMs : Math.max(health.maxPollOverrunMs, elapsedMs);
+        // Update the existing entry only — never `getOrCreateHealth` here. A
+        // slow (overrunning) tick is exactly when stop() may have deleted this
+        // session's health mid-await; re-creating it would leave a phantom row
+        // in getHealthSnapshot with no live watcher behind it.
+        const health = this.healthBySession.get(tmuxName);
+        if (health) {
+          health.pollOverrunCount += 1;
+          health.lastPollOverrunMs = elapsedMs;
+          health.maxPollOverrunMs =
+            health.maxPollOverrunMs === null ? elapsedMs : Math.max(health.maxPollOverrunMs, elapsedMs);
+        }
       }
       // Re-arm only after this body settled — the source of the anti-overlap
       // guarantee, independent of the in-flight guard above.

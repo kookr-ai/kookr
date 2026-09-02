@@ -1748,6 +1748,8 @@ describe('HookFileWatcher', () => {
       offsets: Map<string, number>;
       pollActive: Set<string>;
       pollIntervals: Map<string, ReturnType<typeof setTimeout>>;
+      watchers: Map<string, { close(): void }>;
+      healthBySession: Map<string, unknown>;
     };
     const priv = (w: HookFileWatcher): PollTestHooks => w as unknown as PollTestHooks;
 
@@ -1786,11 +1788,17 @@ describe('HookFileWatcher', () => {
       await second; // returns immediately: suppressed, not queued
 
       expect(healthOf(watcher, tmuxName)?.pollSkippedCount).toBe(1);
+      // The skip is a true short-circuit before recordPollTick, so only the
+      // first tick counted as a tick.
+      expect(healthOf(watcher, tmuxName)?.pollTickCount).toBe(1);
 
       release();
       await first;
       expect(readCalls).toBe(1); // only one read ran despite two ticks
       expect(healthOf(watcher, tmuxName)?.pollSkippedCount).toBe(1);
+      // Negative case for the overrun guard: a fast read (well under the 3s
+      // default interval) must not be counted as an overrun.
+      expect(healthOf(watcher, tmuxName)?.pollOverrunCount).toBe(0);
     });
 
     test('stop() during an in-flight tick does not re-arm the poll', async () => {
@@ -1823,17 +1831,57 @@ describe('HookFileWatcher', () => {
       registerSession(tmuxName);
       writeFileSync(hookFile, sessionStartLine('z'));
       priv(overrunWatcher).offsets.set(tmuxName, 0);
+      let readDelayMs = 40;
       priv(overrunWatcher).readNewLines = async () => {
-        await new Promise((r) => setTimeout(r, 40)); // > 5ms interval
+        await new Promise((r) => setTimeout(r, readDelayMs)); // > 5ms interval
       };
 
       try {
         await priv(overrunWatcher).runBackupPollTick(tmuxName, hookFile);
-        const health = healthOf(overrunWatcher, tmuxName);
-        expect(health?.pollOverrunCount).toBe(1);
-        expect(health?.lastPollOverrunMs ?? 0).toBeGreaterThanOrEqual(5);
-        expect(health?.maxPollOverrunMs).toBe(health?.lastPollOverrunMs);
-        expect(health?.pollSkippedCount).toBe(0);
+        const afterFirst = healthOf(overrunWatcher, tmuxName);
+        expect(afterFirst?.pollOverrunCount).toBe(1);
+        expect(afterFirst?.lastPollOverrunMs ?? 0).toBeGreaterThanOrEqual(5);
+        expect(afterFirst?.maxPollOverrunMs).toBe(afterFirst?.lastPollOverrunMs);
+        expect(afterFirst?.pollSkippedCount).toBe(0);
+        const firstMax = afterFirst?.maxPollOverrunMs ?? 0;
+
+        // A second, shorter overrun advances `last` but must not lower `max`.
+        readDelayMs = 10;
+        await priv(overrunWatcher).runBackupPollTick(tmuxName, hookFile);
+        const afterSecond = healthOf(overrunWatcher, tmuxName);
+        expect(afterSecond?.pollOverrunCount).toBe(2);
+        expect(afterSecond?.lastPollOverrunMs ?? 0).toBeLessThan(firstMax);
+        expect(afterSecond?.maxPollOverrunMs).toBe(firstMax); // running max retained
+      } finally {
+        overrunWatcher.stopAll();
+      }
+    }, 6000);
+
+    test('an overrunning tick does not resurrect health after stop() removed it', async () => {
+      const tmuxName = 'kookr-overrun-stop';
+      const overrunWatcher = new HookFileWatcher(tempDir, adapter, { pollIntervalMs: 5 });
+      const hookFile = join(tempDir, `${tmuxName}.jsonl`);
+      registerSession(tmuxName);
+      writeFileSync(hookFile, sessionStartLine('q'));
+      priv(overrunWatcher).offsets.set(tmuxName, 0);
+      priv(overrunWatcher).pollActive.add(tmuxName);
+
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      priv(overrunWatcher).readNewLines = async () => {
+        await gate; // hold the tick in flight (overrunning the 5ms interval)
+      };
+
+      try {
+        const tick = priv(overrunWatcher).runBackupPollTick(tmuxName, hookFile);
+        await new Promise((r) => setTimeout(r, 20)); // ensure elapsed > interval
+        overrunWatcher.stop(tmuxName); // deletes this session's health entry
+        release();
+        await tick;
+
+        // The overrun branch in `finally` must not re-create a phantom row.
+        expect(priv(overrunWatcher).healthBySession.has(tmuxName)).toBe(false);
+        expect(healthOf(overrunWatcher, tmuxName)).toBeUndefined();
       } finally {
         overrunWatcher.stopAll();
       }
@@ -1860,8 +1908,14 @@ describe('HookFileWatcher', () => {
         await pollWatcher.drainNow(tmuxName);
         expect(events.length).toBe(1);
 
+        // Tear down fs.watch so the backup poll is the ONLY live delivery path
+        // (fs.watch can otherwise observe the in-place rewrite on some
+        // platforms, masking a broken poll). The poll handle stays armed.
+        priv(pollWatcher).watchers.get(tmuxName)?.close();
+        priv(pollWatcher).watchers.delete(tmuxName);
+
         // Replace with a shorter record and let ONLY the self-scheduling backup
-        // poll observe the shrink and recover (no drainNow, no fs.watch reliance).
+        // poll observe the shrink and recover (no drainNow, no fs.watch).
         const small = JSON.stringify({
           session_id: 'sess-1',
           transcript_path: '/path/to/transcript.jsonl',
