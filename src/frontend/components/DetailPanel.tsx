@@ -245,6 +245,12 @@ interface Props {
   terminalFocusMode?: boolean;
   shortcutBindings?: ShortcutBindingMap;
   /**
+   * #2754: monotonic nonce from the command-palette "Share this task" action.
+   * Each bump opens the per-task {@link TaskShareModal} for the selected task,
+   * matching the header Share button. Undefined/0 means no request yet.
+   */
+  shareRequestNonce?: number;
+  /**
    * Rail bucket data for the no-selection overview (F8). Passed down from
    * App's buildAgentBuckets result so the overview matches the rail exactly
    * instead of reclassifying agents here.
@@ -515,7 +521,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -546,6 +552,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
   const diffTriggerRef = useRef<HTMLElement | null>(null);
   // Same for the file viewer pane.
   const fileTriggerRef = useRef<HTMLElement | null>(null);
+  // #2754: highest palette share-request nonce already acted on. Seeded from
+  // the incoming nonce rather than 0 so a remount (App keeps DetailPanel in
+  // two layout subtrees and behind the mobile findings/task tabs, and the
+  // ever-incrementing App-side nonce is never reset) treats the current value
+  // as already-seen — otherwise a fresh 0 < an elevated nonce would spring the
+  // modal open with no user action. Only a genuine later bump reopens it.
+  const lastShareNonceRef = useRef(shareRequestNonce);
 
   useEffect(() => {
     function updateViewportMode() {
@@ -600,6 +613,17 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
       window.removeEventListener('kookr:settings-updated', handleSettingsUpdated);
     };
   }, []);
+
+  // #2754: open the per-task share modal when the command palette bumps the
+  // nonce. Consume every increase (advance the high-water mark unconditionally)
+  // so a bump that lands with no selected task can never open the modal later
+  // when a task reappears; open only when a task is actually selected. A task
+  // switch re-fires this effect with an unchanged nonce, so it stays a no-op.
+  useEffect(() => {
+    if (shareRequestNonce <= lastShareNonceRef.current) return;
+    lastShareNonceRef.current = shareRequestNonce;
+    if (agent?.taskId) setShowShareModal(true);
+  }, [shareRequestNonce, agent?.taskId]);
 
   useEffect(() => {
     // The header is a lightweight hint; if sharing is unavailable or the
