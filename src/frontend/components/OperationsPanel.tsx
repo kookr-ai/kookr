@@ -19,9 +19,20 @@ interface Props {
   expandLiveFriction?: boolean;
   /** Tracked projects offered in the Outcome Scoreboard scope selector (issue #2850). */
   outcomeProjects?: OutcomeLedgerProjectOption[];
+  /** Task IDs with a live dashboard agent, so Outcome Scoreboard findings can offer an "Open task" affordance (issue #2783). */
+  outcomeLiveTaskIds?: ReadonlySet<string>;
+  /** Select the live task behind an Outcome Scoreboard finding (issue #2783). */
+  onOpenOutcomeTask?: (taskId: string) => void;
 }
 
-export function OperationsPanel({ send, onClose, expandLiveFriction = false, outcomeProjects }: Props) {
+export function OperationsPanel({
+  send,
+  onClose,
+  expandLiveFriction = false,
+  outcomeProjects,
+  outcomeLiveTaskIds,
+  onOpenOutcomeTask,
+}: Props) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const liveFrictionHeaderRef = useRef<HTMLButtonElement>(null);
@@ -57,7 +68,11 @@ export function OperationsPanel({ send, onClose, expandLiveFriction = false, out
           </button>
         </div>
         <div className="operations-panel-body">
-          <OutcomeLedgerPanel projects={outcomeProjects} />
+          <OutcomeLedgerPanel
+            projects={outcomeProjects}
+            liveTaskIds={outcomeLiveTaskIds}
+            onOpenTask={onOpenOutcomeTask}
+          />
           <AudioAlertsPanel />
           <DetectionStatsPanel defaultExpanded showEmpty />
           <SessionHealthPanel />

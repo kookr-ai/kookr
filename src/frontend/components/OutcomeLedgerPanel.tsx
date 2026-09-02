@@ -70,9 +70,28 @@ interface OutcomeLedgerPanelProps {
    * identity behind a missing label.
    */
   projects?: OutcomeLedgerProjectOption[];
+  /**
+   * Task IDs that have a live dashboard agent right now (issue #2783). A finding
+   * whose `taskId` is in this set gets an active "Open task" affordance; every
+   * other finding — historical rows, or a task with no live agent — stays a
+   * plain, readable label. Defaults to empty, so with no wiring no finding is
+   * openable. Membership is keyed on the finding `taskId`, never a display
+   * label, so a matching name can never open the wrong task.
+   */
+  liveTaskIds?: ReadonlySet<string>;
+  /**
+   * Select the live task behind a finding, reusing the dashboard's existing
+   * selection path. Only ever called with a `taskId` that is in
+   * {@link liveTaskIds}, so it never has to guess a task from a display label.
+   */
+  onOpenTask?: (taskId: string) => void;
 }
 
-export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = {}): React.ReactElement {
+export function OutcomeLedgerPanel({
+  projects = [],
+  liveTaskIds,
+  onOpenTask,
+}: OutcomeLedgerPanelProps = {}): React.ReactElement {
   const [windowChoice, setWindowChoice] = useState<TimeWindow>('7d');
   const [projectChoice, setProjectChoice] = useState<string>(ALL_PROJECTS_CHOICE);
   const [data, setData] = useState<OutcomeLedgerResponse | null>(null);
@@ -190,7 +209,14 @@ export function OutcomeLedgerPanel({ projects = [] }: OutcomeLedgerPanelProps = 
               {findings.length > 0 && <FindingBreakdown findings={findings} />}
               {visibleFindings.length > 0 ? (
                 <ul className="outcome-findings-list" aria-label="Outcome data quality findings">
-                  {visibleFindings.map((finding) => <FindingRow key={`${finding.taskId}:${finding.kind}:${finding.metric}`} finding={finding} />)}
+                  {visibleFindings.map((finding) => (
+                    <FindingRow
+                      key={`${finding.taskId}:${finding.kind}:${finding.metric}`}
+                      finding={finding}
+                      canOpen={Boolean(onOpenTask) && (liveTaskIds?.has(finding.taskId) ?? false)}
+                      onOpen={onOpenTask}
+                    />
+                  ))}
                 </ul>
               ) : (
                 <div className="diagnostic-empty">No data-quality findings in this window.</div>
@@ -382,7 +408,15 @@ function FindingBreakdown({ findings }: { findings: OutcomeLedgerFinding[] }): R
   );
 }
 
-function FindingRow({ finding }: { finding: OutcomeLedgerFinding }): React.ReactElement {
+function FindingRow({
+  finding,
+  canOpen,
+  onOpen,
+}: {
+  finding: OutcomeLedgerFinding;
+  canOpen: boolean;
+  onOpen?: (taskId: string) => void;
+}): React.ReactElement {
   const measure = finding.value == null ? null : formatFindingMeasure(finding.metric, finding.value);
   return (
     <li className={`outcome-finding ${finding.severity}`}>
@@ -393,7 +427,23 @@ function FindingRow({ finding }: { finding: OutcomeLedgerFinding }): React.React
             message straight into the chip (e.g. "$0 cost.cost: $0.0000"). */}
         {measure && <>{' '}<span className="outcome-finding-measure">{measure}</span></>}
       </span>
-      <span className="outcome-finding-task">{finding.label}</span>
+      {canOpen && onOpen ? (
+        // Live task: a real button so the same action is reachable by click,
+        // keyboard, and screen reader. It selects by finding.taskId, never the
+        // display label, so a shared name can't open the wrong task.
+        <button
+          type="button"
+          className="outcome-finding-task outcome-finding-open"
+          onClick={() => onOpen(finding.taskId)}
+          aria-label={`Open task ${finding.label}`}
+        >
+          {finding.label}
+        </button>
+      ) : (
+        // Historical or unmatched finding: still readable, but plainly not
+        // actionable — no button, so nothing to activate and nothing to select.
+        <span className="outcome-finding-task">{finding.label}</span>
+      )}
     </li>
   );
 }

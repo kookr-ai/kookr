@@ -1144,6 +1144,17 @@ export function App() {
     // showing it in the main detail panel, so close the drawer on selection.
     selectProject(null);
   }, [liveAgentByTaskId, selectAgent, selectProject]);
+  // Open the live task behind an Outcome Scoreboard finding (issue #2783). Same
+  // taskId→agent resolution as selectRecentTask — reusing liveAgentByTaskId so a
+  // finding can only ever open a task still backed by a live agent, keyed on the
+  // finding taskId and never a display label — but it closes Diagnostics (where
+  // the scoreboard lives) instead of the project drawer.
+  const openOutcomeTask = useCallback((taskId: string) => {
+    const agentId = liveAgentByTaskId.get(taskId);
+    if (!agentId) return;
+    selectAgent(agentId, taskId);
+    closeOperations();
+  }, [liveAgentByTaskId, selectAgent, closeOperations]);
   const {
     filteredAgents,
     pending,
@@ -1499,6 +1510,8 @@ export function App() {
               expandLiveFriction={operationsFocus === 'live-friction'}
               onClose={closeOperations}
               outcomeProjects={outcomeScoreboardProjects}
+              outcomeLiveTaskIds={liveTaskIds}
+              onOpenOutcomeTask={openOutcomeTask}
             />
           </Suspense>
         </div>
