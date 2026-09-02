@@ -1520,6 +1520,7 @@ type CompactApiTaskSession = Pick<
   | 'worktreeHealth'
   | 'lastEventAt'
   | 'crashRecovered'
+  | 'promptDelivery'
   | 'relaunchCount'
 >;
 
@@ -1637,6 +1638,7 @@ function toCompactApiTask(task: Task, store: TaskStore): CompactApiTask {
       worktreeHealth: normalizeTerminalWorktreeHealth(task.status, session.worktreeHealth),
       lastEventAt: session.lastEventAt,
       crashRecovered: session.crashRecovered,
+      promptDelivery: session.promptDelivery,
       relaunchCount: session.relaunchCount,
     })),
   };

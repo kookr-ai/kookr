@@ -237,7 +237,7 @@ initiator + prior state + work disposition — legacy rows without one project t
 `unknown_legacy`), a `suppressed` flag when applicable, and a
 trimmed `sessions[]` stub (`tmuxSession`, `agentType`, `lastStatus`,
 `lastTurnState`, `worktreeHealth`, `lastEventAt`, `crashRecovered`,
-`relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
+`promptDelivery`, `relaunchCount`) — and **omits** the heavy bodies: `prompt`, `userPrompt`,
 `criteria`, `launchNote`, `completionDigest`, `launchHealthSummary`, and the
 per-session transcript/child-session/git-identity fields.
 

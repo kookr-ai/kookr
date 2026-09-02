@@ -256,6 +256,13 @@ describe('GET /api/tasks?view=compact', () => {
       createdAt: new Date(),
       lastStatus: 'working',
       worktreeHealth: 'healthy',
+      promptDelivery: {
+        status: 'assumed-submitted',
+        confirmationAttempts: 3,
+        enterWrites: 2,
+        observedAt: '2026-09-02T12:00:00.000Z',
+        failureReason: 'submit-assumed-after-timeout',
+      },
     });
 
     const app = mkApp(mkLoopDeps(taskStore));
@@ -300,6 +307,15 @@ describe('GET /api/tasks?view=compact', () => {
     expect(row.sessions[0].lastStatus).toBe('working');
     expect(row.sessions[0].worktreeHealth).toBe('healthy');
     expect(row.sessions[0].transcriptPath).toBeUndefined();
+    // Prompt-delivery health is a session-health signal, so it rides the compact
+    // stub for remote diagnosis at list scale (#2792).
+    expect(row.sessions[0].promptDelivery).toEqual({
+      status: 'assumed-submitted',
+      confirmationAttempts: 3,
+      enterWrites: 2,
+      observedAt: '2026-09-02T12:00:00.000Z',
+      failureReason: 'submit-assumed-after-timeout',
+    });
   });
 
   test('normalizes terminal worktree health in the compact session stub', async () => {

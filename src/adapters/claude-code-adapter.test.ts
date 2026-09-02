@@ -136,6 +136,52 @@ describe('ClaudeCodeAdapter', () => {
     );
   });
 
+  test('persists an open-loop prompt-delivery outcome on the registered session (#2792)', async () => {
+    // The test env forces bracketed-paste off, so delivery is open-loop: a
+    // clean outcome that still gets recorded for remote diagnosis.
+    const task = taskStore.createTask('Fix auth bug', '/cwd');
+    const sessionId = await adapter.launch(task.id, 'Fix auth bug', '/cwd');
+
+    const session = taskStore
+      .getTask(task.id)!
+      .sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery).toBeDefined();
+    expect(session.promptDelivery!.status).toBe('open-loop');
+    expect(session.promptDelivery!.enterWrites).toBe(1);
+    expect(session.promptDelivery!.failureReason).toBeUndefined();
+    expect(Number.isNaN(Date.parse(session.promptDelivery!.observedAt))).toBe(false);
+  });
+
+  test('persists a confirmed prompt-delivery outcome for a bracketed-paste launch (#2792)', async () => {
+    const bracketAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 5_000,
+      promptSubmitRetries: 0,
+    });
+    const writeSpy = vi.spyOn(backend, 'write');
+    const task = taskStore.createTask('Fix bug', '/cwd');
+    const launchPromise = bracketAdapter.launch(task.id, 'Fix bug', '/cwd');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const pendingSessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(pendingSessionId, COMPOSER_READY_PANE);
+    await vi.waitFor(() => expect(writeSpy).toHaveBeenCalledTimes(1));
+    bracketAdapter.injectHookEvent(pendingSessionId, JSON.stringify({
+      session_id: 'delivery-health-session',
+      transcript_path: '/tmp/claude/transcripts/health.jsonl',
+      cwd: '/cwd',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Fix bug',
+    }));
+    const sessionId = await launchPromise;
+
+    const session = taskStore
+      .getTask(task.id)!
+      .sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery!.status).toBe('confirmed');
+    expect(session.promptDelivery!.failureReason).toBeUndefined();
+  });
+
   test('launch fails when the agent reports a truncated prompt (#2977)', async () => {
     // Bytes dropped in transit still submit — just short. `confirmed` alone
     // therefore proves nothing about content, so the launch compares the

@@ -20,6 +20,7 @@ import {
   DEFAULT_PROMPT_READY_SETTLE_MS,
   DEFAULT_PROMPT_READY_TIMEOUT_MS,
   INITIAL_PROMPT_CHUNK_BYTES,
+  toPromptDeliveryHealth,
 } from './agent-launch-context.js';
 
 /**
@@ -770,6 +771,72 @@ describe('deliverInitialPromptToSession with awaitSubmit', () => {
     expect(DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS).toBe(2_000);
     expect(DEFAULT_PROMPT_SUBMIT_RETRIES).toBe(2);
     expect(DEFAULT_PROMPT_READY_SETTLE_MS).toBe(1_500);
+  });
+});
+
+describe('toPromptDeliveryHealth (#2792)', () => {
+  const observedAt = new Date('2026-09-02T12:00:00.000Z');
+
+  test('confirmed delivery carries no failure reason', () => {
+    expect(
+      toPromptDeliveryHealth(
+        { status: 'confirmed', confirmationAttempts: 1, enterWrites: 1 },
+        observedAt,
+      ),
+    ).toEqual({
+      status: 'confirmed',
+      confirmationAttempts: 1,
+      enterWrites: 1,
+      observedAt: '2026-09-02T12:00:00.000Z',
+    });
+  });
+
+  test('open-loop delivery carries no failure reason', () => {
+    const health = toPromptDeliveryHealth(
+      { status: 'open-loop', confirmationAttempts: 0, enterWrites: 1 },
+      observedAt,
+    );
+    expect(health.failureReason).toBeUndefined();
+    expect(health.status).toBe('open-loop');
+  });
+
+  test('assumed-submitted maps to the assumed-after-timeout reason', () => {
+    expect(
+      toPromptDeliveryHealth(
+        { status: 'assumed-submitted', confirmationAttempts: 3, enterWrites: 2 },
+        observedAt,
+      ),
+    ).toEqual({
+      status: 'assumed-submitted',
+      confirmationAttempts: 3,
+      enterWrites: 2,
+      observedAt: '2026-09-02T12:00:00.000Z',
+      failureReason: 'submit-assumed-after-timeout',
+    });
+  });
+
+  test('unconfirmed maps to the not-confirmed reason', () => {
+    expect(
+      toPromptDeliveryHealth(
+        { status: 'unconfirmed', confirmationAttempts: 3, enterWrites: 3 },
+        observedAt,
+      ).failureReason,
+    ).toBe('submit-not-confirmed');
+  });
+
+  test('is deterministic for the same result and clock', () => {
+    const result = { status: 'assumed-submitted' as const, confirmationAttempts: 2, enterWrites: 2 };
+    expect(toPromptDeliveryHealth(result, observedAt)).toEqual(
+      toPromptDeliveryHealth(result, observedAt),
+    );
+  });
+
+  test('records the observed time as an ISO-8601 string', () => {
+    const health = toPromptDeliveryHealth(
+      { status: 'confirmed', confirmationAttempts: 1, enterWrites: 1 },
+      observedAt,
+    );
+    expect(health.observedAt).toBe(observedAt.toISOString());
   });
 });
 

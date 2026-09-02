@@ -108,6 +108,20 @@ describe('GrokBuildAdapter', () => {
     expect(spec.envMode).toBe('replace');
   });
 
+  test('persists an open-loop prompt-delivery outcome on the registered session (#2792)', async () => {
+    // The test env forces bracketed-paste off, so grok delivery is open-loop.
+    const adapter = makeAdapter();
+    const task = taskStore.createTask('do it', '/workspace');
+    const sessionId = await adapter.launch(task.id, 'do it', '/workspace');
+
+    const session = taskStore
+      .getTask(task.id)!
+      .sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery!.status).toBe('open-loop');
+    expect(session.promptDelivery!.failureReason).toBeUndefined();
+    expect(Number.isNaN(Date.parse(session.promptDelivery!.observedAt))).toBe(false);
+  });
+
   test('a resolved per-task tier model overrides the adapter default', async () => {
     const adapter = makeAdapter();
     const task = taskStore.createTask('do it', '/workspace');
@@ -329,6 +343,17 @@ describe('GrokBuildAdapter', () => {
     expect(
       warn.mock.calls.some((c) => String(c[0]).includes('assuming initial prompt submitted')),
     ).toBe(true);
+    // The assumed-submitted outcome is retained as a durable session-health
+    // signal for remote diagnosis (#2792).
+    const session = taskStore
+      .getTask(task.id)!
+      .sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery!.status).toBe('assumed-submitted');
+    expect(session.promptDelivery!.failureReason).toBe('submit-assumed-after-timeout');
+    // Accounting reflects the extra busy-ack confirmation wait on top of the
+    // first delivery loop; no handshake Enter was resent on the busy pane.
+    expect(session.promptDelivery!.confirmationAttempts).toBe(2);
+    expect(session.promptDelivery!.enterWrites).toBe(1);
     warn.mockRestore();
   });
 
@@ -371,6 +396,16 @@ describe('GrokBuildAdapter', () => {
     );
     const sessionId = await launchPromise;
     expect(sessionId).toBe(sessions[0]);
+    // The confirmed-after-handshake path persists the retry accounting: the
+    // first delivery loop (1 Enter, 1 confirm wait) plus one handshake resend
+    // (1 Enter, 1 confirm wait) that the injected hook then confirmed (#2792).
+    const session = taskStore
+      .getTask(task.id)!
+      .sessions.find((s) => s.tmuxSession === sessionId)!;
+    expect(session.promptDelivery!.status).toBe('confirmed');
+    expect(session.promptDelivery!.confirmationAttempts).toBe(2);
+    expect(session.promptDelivery!.enterWrites).toBe(2);
+    expect(session.promptDelivery!.failureReason).toBeUndefined();
     warn.mockRestore();
   });
 

@@ -3,6 +3,11 @@ import { delimiter, join, resolve } from 'node:path';
 import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
 import { INTERACTIVE_TOOL_DENY_RULES } from '../shared/contracts/operator-needed.js';
 import type { TaskStore } from '../core/tasks.js';
+import type {
+  PromptDeliveryFailureReason,
+  PromptDeliveryHealth,
+  PromptDeliveryStatus,
+} from '../core/session-read-model.js';
 import { ENTER_BYTES } from './keystroke.js';
 import type { SessionId, TerminalBackend } from './terminal-backend.js';
 import {
@@ -439,16 +444,51 @@ export interface DeliverInitialPromptOptions {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export type InitialPromptDeliveryStatus =
-  | 'open-loop'
-  | 'confirmed'
-  | 'assumed-submitted'
-  | 'unconfirmed';
+/**
+ * Single source of truth for this union is {@link PromptDeliveryStatus} in
+ * core; aliased here so the historical adapter-facing name keeps working.
+ */
+export type InitialPromptDeliveryStatus = PromptDeliveryStatus;
 
 export interface InitialPromptDeliveryResult {
   status: InitialPromptDeliveryStatus;
   confirmationAttempts: number;
   enterWrites: number;
+}
+
+/**
+ * Project a delivery result into the durable {@link PromptDeliveryHealth}
+ * record persisted on the session (#2792). Deterministic: the same result and
+ * `observedAt` clock always produce the same record. Callers pass this to
+ * `TaskStore.addSession` so remote recovery/diagnosis can read the launch-time
+ * delivery outcome from persisted session state.
+ */
+export function toPromptDeliveryHealth(
+  result: InitialPromptDeliveryResult,
+  observedAt: Date = new Date(),
+): PromptDeliveryHealth {
+  const failureReason = promptDeliveryFailureReason(result.status);
+  return {
+    status: result.status,
+    confirmationAttempts: result.confirmationAttempts,
+    enterWrites: result.enterWrites,
+    observedAt: observedAt.toISOString(),
+    ...(failureReason ? { failureReason } : {}),
+  };
+}
+
+function promptDeliveryFailureReason(
+  status: InitialPromptDeliveryStatus,
+): PromptDeliveryFailureReason | undefined {
+  switch (status) {
+    case 'assumed-submitted':
+      return 'submit-assumed-after-timeout';
+    case 'unconfirmed':
+      return 'submit-not-confirmed';
+    case 'open-loop':
+    case 'confirmed':
+      return undefined;
+  }
 }
 
 function realSleep(ms: number): Promise<void> {

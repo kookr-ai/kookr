@@ -152,6 +152,35 @@ describe('Task Persistence', () => {
     expect(tasks[0].status).toBe('inProgress');
   });
 
+  test('round-trips a session prompt-delivery health record through JSON (#2792)', async () => {
+    const store = new TaskStore();
+    const task = createTaskForMutation(store, 'Fix auth', '/cwd');
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-abc',
+      agentType: 'claude-code',
+      cwd: '/cwd',
+      createdAt: FIXED_TIME,
+      promptDelivery: {
+        status: 'assumed-submitted',
+        confirmationAttempts: 3,
+        enterWrites: 2,
+        observedAt: '2026-01-01T00:00:00.000Z',
+        failureReason: 'submit-assumed-after-timeout',
+      },
+    });
+
+    await saveTasks(store.getAllTasks(), filePath);
+    const { tasks } = await loadTasks(filePath);
+
+    expect(tasks[0].sessions[0].promptDelivery).toEqual({
+      status: 'assumed-submitted',
+      confirmationAttempts: 3,
+      enterWrites: 2,
+      observedAt: '2026-01-01T00:00:00.000Z',
+      failureReason: 'submit-assumed-after-timeout',
+    });
+  });
+
   test('round-trips parked launch intent and admission through JSON', async () => {
     const store = new TaskStore();
     const task = store.createTask({
