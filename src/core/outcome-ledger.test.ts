@@ -294,6 +294,69 @@ describe('buildOutcomeLedger', () => {
     expect(historicalRow?.flags).toContain('missing_intervention_data');
     expect(response.quality.interventionCoverage).toBe(0.5);
   });
+
+  test('projects a launch-source mix across manual, scheduled, parent, and legacy tasks', () => {
+    const tasks = [
+      ledgerTask({ id: 'manual-1', provenance: { kind: 'manual', sourceId: 'ui' } }),
+      ledgerTask({ id: 'manual-2', provenance: { kind: 'manual', sourceId: 'cli' } }),
+      ledgerTask({ id: 'scheduled-1', provenance: { kind: 'schedule', sourceId: 'sched-a' } }),
+      ledgerTask({ id: 'parent-1', provenance: { kind: 'parent', sourceId: 'root-task' } }),
+      ledgerTask({ id: 'explicit-unknown', provenance: { kind: 'unknown' } }),
+      // No `provenance` at all: a legacy task persisted before the field existed.
+      ledgerTask({ id: 'legacy-1' }),
+    ];
+    const response = ledger(tasks);
+
+    expect(response.launchSourceMix.total).toBe(6);
+    expect(response.launchSourceMix.counts).toEqual({
+      manual: 2,
+      scheduled: 1,
+      parent: 1,
+      unknown: 2,
+    });
+    expect(response.launchSourceMix.shares).toEqual({
+      manual: 2 / 6,
+      scheduled: 1 / 6,
+      parent: 1 / 6,
+      unknown: 2 / 6,
+    });
+    // Per-row provenance is normalized onto every task row too — one assertion
+    // per `normalizeLaunchSource` arm so no bucket is only checked in aggregate.
+    const sourceOf = (id: string) => response.tasks.find((row) => row.taskId === id)?.launchSource;
+    expect(sourceOf('manual-1')).toBe('manual');
+    expect(sourceOf('scheduled-1')).toBe('scheduled');
+    expect(sourceOf('parent-1')).toBe('parent');
+    expect(sourceOf('explicit-unknown')).toBe('unknown');
+    expect(sourceOf('legacy-1')).toBe('unknown');
+  });
+
+  test('launch-source mix reports every bucket as zero with null shares for an empty window', () => {
+    const response = ledger([]);
+    expect(response.launchSourceMix.total).toBe(0);
+    expect(response.launchSourceMix.counts).toEqual({ manual: 0, scheduled: 0, parent: 0, unknown: 0 });
+    expect(response.launchSourceMix.shares).toBeNull();
+  });
+
+  test('launch-source mix does not disturb existing completion, cost, verification, or feedback metrics', () => {
+    const base = {
+      tokenUsage: usage({ costUsd: 0.2 }),
+      completionDigest: verifiedDigest(),
+      completionFeedback: { rating: 'up' as const },
+    };
+    const withoutProvenance = ledger([
+      ledgerTask({ id: 'a', ...base }),
+      ledgerTask({ id: 'b', ...base }),
+    ]);
+    const withProvenance = ledger([
+      ledgerTask({ id: 'a', ...base, provenance: { kind: 'schedule', sourceId: 's' } }),
+      ledgerTask({ id: 'b', ...base, provenance: { kind: 'manual', sourceId: 'ui' } }),
+    ]);
+    // Stamping provenance changes only the launch-source projection, never the
+    // completion/cost/verification/feedback rollups.
+    expect(withProvenance.summary).toEqual(withoutProvenance.summary);
+    expect(withProvenance.quality).toEqual(withoutProvenance.quality);
+    expect(withProvenance.readiness).toBe(withoutProvenance.readiness);
+  });
 });
 
 function toMs(value: Date | string): number {

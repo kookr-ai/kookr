@@ -4705,6 +4705,11 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-secondary);
   background: rgba(148, 163, 184, 0.08);
 }
+.outcome-launch-source-strip .outcome-launch-source-share {
+  padding: 0;
+  background: none;
+  color: var(--text-muted);
+}
 .outcome-finding-breakdown {
   display: flex;
   flex-direction: column;

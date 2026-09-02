@@ -38,6 +38,44 @@ export type OutcomeLedgerFindingKind =
 
 export type OutcomeLedgerFindingSeverity = 'info' | 'review' | 'critical';
 
+/**
+ * Normalized launch-source bucket for the scoreboard's provenance mix (issue
+ * #2801). Derived from each task's immutable {@link TaskProvenance} (issue
+ * #1583), collapsed to the origins an operator reasons about:
+ *
+ *  - `manual`    — a plain API/UI/CLI/websocket/remote creation.
+ *  - `scheduled` — fired by the schedule runner (from `schedule` provenance).
+ *  - `parent`    — spawned by another task (a child spawn).
+ *  - `unknown`   — legacy tasks persisted before provenance existed, or any
+ *                  creation path that recorded no launch signal.
+ *
+ * These are descriptive origin labels only; they imply no quality ranking
+ * between launch sources.
+ */
+export type OutcomeLedgerLaunchSource = 'manual' | 'scheduled' | 'parent' | 'unknown';
+
+/** Every launch-source bucket in a stable display order (issue #2801). */
+export const OUTCOME_LEDGER_LAUNCH_SOURCES: readonly OutcomeLedgerLaunchSource[] = [
+  'manual',
+  'scheduled',
+  'parent',
+  'unknown',
+] as const;
+
+/**
+ * Task launch-source mix over the scoreboard window (issue #2801). Answers
+ * whether scheduled automation is producing a meaningful share of the observed
+ * work without cross-referencing separate surfaces. `total` equals
+ * {@link OutcomeLedgerSummary.taskCount}; `counts` always carries every bucket
+ * (zeroes included) so the projection is exhaustive, and `shares` is null when
+ * there are no tasks to avoid a divide-by-zero share.
+ */
+export interface OutcomeLedgerLaunchSourceMix {
+  total: number;
+  counts: Record<OutcomeLedgerLaunchSource, number>;
+  shares: Record<OutcomeLedgerLaunchSource, number> | null;
+}
+
 export interface OutcomeLedgerWindow {
   value: TimeWindow;
   start: string | null;
@@ -98,6 +136,8 @@ export interface OutcomeLedgerTaskRow {
   label: string;
   agentType: AgentType;
   status: TaskStatus;
+  /** Normalized launch origin for this task (issue #2801). */
+  launchSource: OutcomeLedgerLaunchSource;
   projectId: string | null;
   playbookId: string | null;
   startedAt: string;
@@ -132,6 +172,8 @@ export interface OutcomeLedgerResponse {
   scope: OutcomeLedgerProjectScope;
   readiness: OutcomeLedgerReadiness;
   summary: OutcomeLedgerSummary;
+  /** Task launch-source mix over the window (issue #2801). */
+  launchSourceMix: OutcomeLedgerLaunchSourceMix;
   quality: OutcomeLedgerQualitySummary;
   byAgent: OutcomeLedgerByAgentRow[];
   findings: OutcomeLedgerFinding[];
