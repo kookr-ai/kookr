@@ -54,6 +54,8 @@ import {
   type ReconnectTransportResult,
   type SessionId,
   type SessionSpec,
+  type StartupRecoveryState,
+  type StartupRecoveryStatus,
   type TerminalBackend,
   type VerifyRecoveredSessionOptions,
   type VerifyRecoveredSessionResult,
@@ -150,6 +152,23 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   /** True after `close()` has torn down the backend. Prevents double-close. */
   private closed = false;
+
+  /**
+   * Stable outcome of constructor-time startup recovery (issue #2828). Starts
+   * `pending`; `runStartupRecovery` flips it to `succeeded`, or to `failed` with
+   * `startupRecoveryError` set, when recovery settles. Unlike the transient
+   * `lastError`, this is never overwritten by later errors, so it is the stable
+   * current recovery state an operator reads to distinguish a degraded backend.
+   */
+  private startupRecoveryStatus: StartupRecoveryStatus = 'pending';
+  private startupRecoveryError: string | null = null;
+  /**
+   * Settles (never rejects) when startup recovery finishes — on both success and
+   * contained failure. A caller that needs to synchronize on recovery (the tests
+   * do) awaits this instead of racing an arbitrary timer against the old
+   * fire-and-forget recovery.
+   */
+  private readonly startupRecoverySettled: Promise<void>;
   /** Resolves in-flight recovery waits immediately when shutdown starts. */
   private readonly closeWaiters = new Set<() => void>();
 
@@ -211,7 +230,13 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       disposeAttachChildOnly: (sess) => this.disposeAttachChildOnly(sess),
     });
 
-    void this.recovery.recoverOnStartup();
+    // Startup recovery is fire-once, but its rejection must not escape the
+    // backend boundary as an unhandled promise rejection nor leave a silent
+    // partial startup (issue #2828). `runStartupRecovery` contains any failure
+    // (ENOSPC, unwritable/corrupt manifest rebuild) into a stable, observable
+    // state and a structured `startup-recovery-failed` error. It never rejects,
+    // so the stored promise is a clean await point rather than a `void` cast.
+    this.startupRecoverySettled = this.runStartupRecovery();
 
     const flushInterval = options.ringFlushIntervalMs ?? DEFAULT_RING_FLUSH_INTERVAL_MS;
     this.flushTimer = setInterval(() => {
@@ -538,6 +563,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
         : 0,
       ringShrunkenSessions: ringSnap.shrunkenSessions,
       ringShrinkCount: this.ringShrinkCount,
+      startupRecoveryState: this.getStartupRecoveryState(),
     };
   }
 
@@ -631,6 +657,49 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   /** @internal Exposed via cast for tests; delegates to process-identity module. */
   private findAgentPidSync(masterPid: number): number | null {
     return findAgentPidSyncImpl(masterPid);
+  }
+
+  // ─── Startup recovery containment (issue #2828) ─────────────────────────
+
+  /**
+   * Run constructor-time startup recovery exactly once and contain any failure.
+   *
+   * The old `void this.recovery.recoverOnStartup()` let a rejection — a disk-full
+   * `ENOSPC`, an unwritable instance dir, a corrupt-manifest rebuild that cannot
+   * be persisted — escape as an unhandled promise rejection while the operator
+   * saw no stable recovery state. Here the failure is contained into a durable
+   * state (`startupRecoveryStatus`/`startupRecoveryError`) and a structured
+   * `startup-recovery-failed` error (which bumps the cumulative `errorCount` and
+   * `lastError` like every other backend fault). Recovery is not retried: it is a
+   * single bounded pass, so containment adds no duplicate work or unbounded
+   * resource growth. The backend stays fail-open — new `createSession` calls are
+   * unaffected — so the catch never masks an otherwise-usable backend.
+   */
+  private async runStartupRecovery(): Promise<void> {
+    try {
+      await this.recovery.recoverOnStartup();
+      this.startupRecoveryStatus = 'succeeded';
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.startupRecoveryStatus = 'failed';
+      this.startupRecoveryError = reason;
+      this.emitError({ kind: 'startup-recovery-failed', reason });
+    }
+  }
+
+  /**
+   * Await startup-recovery completion. Resolves on both success and contained
+   * failure and never rejects, so a caller can synchronize on recovery instead
+   * of racing a fixed timer against the async startup pass. Currently a
+   * test-support / observability seam — no production path awaits it.
+   */
+  whenStartupRecoverySettled(): Promise<void> {
+    return this.startupRecoverySettled;
+  }
+
+  /** Stable current startup-recovery state (issue #2828). */
+  getStartupRecoveryState(): StartupRecoveryState {
+    return { status: this.startupRecoveryStatus, error: this.startupRecoveryError };
   }
 
   // ─── Error emission ─────────────────────────────────────────────────────

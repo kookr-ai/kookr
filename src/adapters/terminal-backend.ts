@@ -74,7 +74,32 @@ export type BackendError =
    * watchdog's generic `stale_agent`: the dtach master and agent process are
    * still alive, but Kookr's attach transport to them could not be revived.
    */
-  | { kind: 'session-recovery-unverified'; id: SessionId; attempts: number; failureReason: string };
+  | { kind: 'session-recovery-unverified'; id: SessionId; attempts: number; failureReason: string }
+  /**
+   * Constructor-time startup recovery (manifest reconciliation / corrupt-manifest
+   * rebuild) failed and was contained instead of escaping the backend boundary as
+   * an unhandled promise rejection (kookr-ai/kookr#2828). A disk-full (`ENOSPC`)
+   * or otherwise unwritable instance dir is the archetypal cause. Emitting this —
+   * rather than a silent partial startup — gives the operator a stable, actionable
+   * signal while the backend stays fail-open for new sessions. The stable current
+   * state is also readable via {@link LocalDtachBackend.getStartupRecoveryState}.
+   */
+  | { kind: 'startup-recovery-failed'; reason: string };
+
+/** Stable current outcome of the backend's constructor-time startup recovery. */
+export type StartupRecoveryStatus = 'pending' | 'succeeded' | 'failed';
+
+/**
+ * Stable snapshot of startup recovery (kookr-ai/kookr#2828). Unlike
+ * {@link BackendStats.lastError} — which any later error overwrites — this
+ * reports the durable recovery outcome so an operator can tell a degraded
+ * backend from a healthy one at any point after startup.
+ */
+export interface StartupRecoveryState {
+  status: StartupRecoveryStatus;
+  /** Failure reason when `status` is `failed`; `null` otherwise. */
+  error: string | null;
+}
 
 /**
  * Snapshot of backend internals used by `/api/health.terminalBackend` and
@@ -107,6 +132,15 @@ export interface BackendStats {
   ringShrunkenSessions?: number;
   /** Cumulative shrink events since process start. */
   ringShrinkCount?: number;
+  /**
+   * Stable outcome of constructor-time startup recovery (issue #2828). Optional
+   * so mocks and non-dtach backends stay valid; LocalDtachBackend always
+   * populates it. `pending` until recovery settles, then `succeeded` or
+   * `failed` — a `failed` value is the operator-facing degraded signal. Named
+   * `startupRecoveryState` (not `startupRecovery`) to avoid confusion with the
+   * unrelated `/api/health.startupRecovery` crash-recovery counts (issue #2351).
+   */
+  startupRecoveryState?: StartupRecoveryState;
 }
 
 // Per-session transport diagnostics — the raw adapter shape and its accessor —
