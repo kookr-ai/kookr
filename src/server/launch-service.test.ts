@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -572,6 +572,68 @@ describe('launchTask', () => {
       accepting = true;
       const result = await launchTask(gatedDeps, { prompt: 'second', cwd: '/tmp' });
       expect(result.task.prompt).toBe('second');
+    });
+  });
+
+  describe('operator agent blacklist (issue #3025)', () => {
+    it('refuses an explicit launch of a blacklisted agent and creates no task', async () => {
+      const banned = { ...deps, getBlacklistedAgentTypes: () => ['claude-code' as const] };
+      await expect(launchTask(banned, {
+        prompt: 'blocked claude',
+        cwd: '/tmp',
+        agentType: 'claude-code',
+      })).rejects.toThrow(AgentBlacklistedError);
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('surfaces code agent_blacklisted on the refusal', async () => {
+      const banned = { ...deps, getBlacklistedAgentTypes: () => ['claude-code' as const] };
+      try {
+        await launchTask(banned, { prompt: 'blocked', cwd: '/tmp', agentType: 'claude-code' });
+        expect.unreachable('expected AgentBlacklistedError');
+      } catch (err) {
+        expect(isAgentBlacklistedError(err)).toBe(true);
+        expect((err as AgentBlacklistedError).code).toBe('agent_blacklisted');
+        expect((err as AgentBlacklistedError).agentType).toBe('claude-code');
+      }
+    });
+
+    it('skips a blacklisted default and launches a remaining agent', async () => {
+      const banned = {
+        ...deps,
+        getDefaultAgentType: () => 'claude-code' as const,
+        getBlacklistedAgentTypes: () => ['claude-code' as const],
+      };
+      const result = await launchTask(banned, { prompt: 'use remaining', cwd: '/tmp' });
+      expect(result.task.agentType).toBe('codex-cli');
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+      expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
+    });
+
+    it('skips a blacklisted agent in round-robin rotation', async () => {
+      let cursor = 0;
+      const banned = {
+        ...deps,
+        getDefaultAgentType: () => 'round-robin' as const,
+        getBlacklistedAgentTypes: () => ['claude-code' as const],
+        roundRobinCursor: { peek: () => cursor, advance: () => { cursor += 1; } },
+      };
+      const first = await launchTask(banned, { prompt: 'rr one', cwd: '/tmp' });
+      const second = await launchTask(banned, { prompt: 'rr two', cwd: '/tmp' });
+      expect(first.task.agentType).toBe('codex-cli');
+      expect(second.task.agentType).toBe('codex-cli');
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('refuses when every registered agent is blacklisted', async () => {
+      const banned = {
+        ...deps,
+        getBlacklistedAgentTypes: () => ['claude-code' as const, 'codex-cli' as const],
+      };
+      await expect(launchTask(banned, { prompt: 'none left', cwd: '/tmp' }))
+        .rejects.toThrow(/No launchable coding agents remain/);
+      expect(store.listTasks()).toHaveLength(0);
     });
   });
 

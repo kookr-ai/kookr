@@ -376,6 +376,34 @@ export function filterFallbackCandidates(
 }
 
 /**
+ * Drop blacklisted agent types from a launchable set (issue #3025).
+ *
+ * Stronger than {@link filterFallbackCandidates}: the operator blacklist
+ * applies to *every* spawn, including an explicit pin. Callers that still
+ * need "explicit pin wins" must not use this helper.
+ */
+export function excludeBlacklistedAgents(
+  agents: readonly AgentType[],
+  blacklisted: readonly AgentType[],
+): AgentType[] {
+  if (blacklisted.length === 0) return [...agents];
+  const banned = new Set(blacklisted);
+  return agents.filter((type) => !banned.has(type));
+}
+
+/**
+ * Snapshot picker entries: registered adapters minus the operator blacklist.
+ * Launch dialogs, Quick Launch, and round-robin all read this list.
+ */
+export function advertisedAgentTypes(
+  registered: readonly AgentType[],
+  blacklisted: readonly AgentType[] = [],
+): AvailableAgentType[] {
+  const allowed = new Set(excludeBlacklistedAgents(registered, blacklisted));
+  return AVAILABLE_AGENT_TYPES.filter((item) => allowed.has(item.type));
+}
+
+/**
  * Resolve a pinned agent pin against registered (and optionally deprioritized)
  * adapters. Returns the pin unchanged when it is launchable; otherwise the
  * first healthy *allowed* agent in canonical order ({@link AVAILABLE_AGENT_TYPES});

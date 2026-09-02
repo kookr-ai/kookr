@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import {
   DEFAULT_AGENT_TYPE,
+  ROUND_ROBIN_AGENT_TYPE,
   normalizeAgentSelection,
   isValidEffortForAgent,
   effortLevelsForAgent,
@@ -69,6 +70,13 @@ export interface KookrSettings {
    * Explicit pins are not filtered by this list.
    */
   agentFallbackAllowlist: AgentType[];
+  /**
+   * Coding agents that must never spawn (issue #3025) — dashboard, CLI,
+   * schedules, child tasks, round-robin, and migration. Stronger than
+   * {@link disallowAgentFallback}: an explicit pin is also refused. Empty =
+   * nothing blacklisted. Existing in-flight sessions are not auto-killed.
+   */
+  blacklistedAgentTypes: AgentType[];
   /**
    * Utilization percentage (0–100) at/above which the plan-quota admission
    * gate treats the Anthropic window as exhausted and denies (then rotates)
@@ -405,6 +413,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   // Issue #2001: do not silently cascade onto codex-cli under load/quota.
   disallowAgentFallback: ['codex-cli'],
   agentFallbackAllowlist: [],
+  blacklistedAgentTypes: [],
   quotaHeadroomThreshold: QUOTA_NO_HEADROOM_UTILIZATION,
   roundRobinIndex: 0,
   shortcutBindings: {},
@@ -846,7 +855,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     ? raw.cleanupWorktreeOnComplete
     : DEFAULT_SETTINGS.cleanupWorktreeOnComplete;
 
-  const defaultAgentType =
+  let defaultAgentType =
     typeof raw.defaultAgentType === 'string'
       ? normalizeAgentSelection(raw.defaultAgentType)
       : DEFAULT_SETTINGS.defaultAgentType;
@@ -862,6 +871,21 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     raw.agentFallbackAllowlist,
     DEFAULT_SETTINGS.agentFallbackAllowlist,
   );
+  // Issue #3025: operator blacklist. Missing field = empty (nothing banned).
+  // Unknown strings are dropped. If the configured default is itself
+  // blacklisted, switch the default to round-robin so new launches still
+  // pick a remaining agent instead of sitting on a banned pin.
+  const blacklistedAgentTypes = parseAgentTypeList(
+    raw.blacklistedAgentTypes,
+    DEFAULT_SETTINGS.blacklistedAgentTypes,
+  );
+  const blacklistWarnings: string[] = [];
+  if (isAgentType(defaultAgentType) && blacklistedAgentTypes.includes(defaultAgentType)) {
+    blacklistWarnings.push(
+      `defaultAgentType "${defaultAgentType}" is blacklisted; switched to round-robin`,
+    );
+    defaultAgentType = ROUND_ROBIN_AGENT_TYPE;
+  }
 
   let roundRobinIndex = DEFAULT_SETTINGS.roundRobinIndex;
   if (
@@ -909,6 +933,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       ...agentEffortWarnings,
       ...quietHoursValidation.warnings,
       ...replySnippetValidation.warnings,
+      ...blacklistWarnings,
     ],
     settings: {
       githubPollingEnabled: enabled,
@@ -921,6 +946,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       defaultAgentType,
       disallowAgentFallback,
       agentFallbackAllowlist,
+      blacklistedAgentTypes,
       quotaHeadroomThreshold,
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,

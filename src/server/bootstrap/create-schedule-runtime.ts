@@ -335,6 +335,9 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // (filterLaunchableAgentTypes) so registered-but-auth-expired grok-build
     // is not treated as launchable when a non-Grok substitute exists.
     getAvailableAgentTypes: () => deps.launchServiceDeps.adapterRegistry.getTypes(),
+    ...(deps.launchServiceDeps.getBlacklistedAgentTypes
+      ? { getBlacklistedAgentTypes: deps.launchServiceDeps.getBlacklistedAgentTypes }
+      : {}),
     // Unpinned schedules inherit the live server default at fire time.
     ...(deps.getDefaultAgentType ? { getDefaultAgentType: deps.getDefaultAgentType } : {}),
     ...(deps.launchServiceDeps.getDeprioritizedAgentTypes

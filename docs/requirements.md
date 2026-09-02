@@ -514,6 +514,20 @@ The system SHALL identify post-recovery queue-fill scout launches as autonomous 
 
 **Evidence:** `src/shared/contracts/task.ts`, `src/core/automation-kill-switch.ts`, `src/server/post-recovery-service.ts`, `src/core/automation-kill-switch.test.ts`, `src/server/post-recovery-service.test.ts`, `src/server/launch-service.test.ts`.
 
+### R4.1g: Blacklist a Coding Agent From New Spawns [F4.13] — SHALL — `done`
+
+The system SHALL let an operator blacklist a coding agent so Kookr never creates a new session of that agent until the blacklist is cleared, without auto-killing in-flight sessions.
+
+**Acceptance criteria:**
+- Given Claude Code is blacklisted, when a dashboard, CLI, schedule, or child-task launch requests `claude-code`, then no task is created and Claude is not spawned
+- Given Claude Code is blacklisted, when round-robin or the server default would have picked it, then Kookr picks a remaining launchable agent instead
+- Given an agent is blacklisted, when the Launch dialog or Quick Launch bar is open, then that agent is not a selectable option
+- Given an agent is blacklisted, when Settings is open, then that agent is shown struck through with a control to remove it from the blacklist
+- Given the blacklist is cleared, when a launch requests that agent, then spawn proceeds as before
+- Existing in-flight sessions of a just-blacklisted agent are not auto-killed; new spawns are blocked without a server restart
+
+**Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/SettingsDialog.tsx`, `src/core/settings-store.test.ts`, `src/server/launch-service.test.ts`, `src/server/schedule-runner.test.ts`, `src/frontend/components/SettingsDialog.test.ts`.
+
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.

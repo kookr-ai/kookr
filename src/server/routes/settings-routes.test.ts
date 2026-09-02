@@ -38,6 +38,11 @@ function mkRouteDeps(options: {
     monitor: { getSnapshot: () => [] } as unknown as RouteDeps['monitor'],
     taskStore: { listRelations: () => [] } as unknown as RouteDeps['taskStore'],
     getMaxActiveTasks: () => committed.maxActiveTasks,
+    launchServiceDeps: {
+      adapterRegistry: {
+        getTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+      },
+    } as RouteDeps['launchServiceDeps'],
     broadcastToAll,
     settings: {
       get: () => committed,

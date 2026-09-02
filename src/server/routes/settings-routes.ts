@@ -8,6 +8,7 @@ import {
   buildSettingsMutationAuditRow,
 } from '../../core/settings-mutation-audit.js';
 import { resolveSafeModeStatus } from '../../core/automation-kill-switch.js';
+import { advertisedAgentTypes } from '../../core/agent-types.js';
 
 export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
   app.get('/api/settings', (c) => {
@@ -55,6 +56,11 @@ export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
         activityMetaProvider: deps.hookIngestion,
         getMaxActiveTasks: deps.getMaxActiveTasks,
         relationTaskStore: deps.taskStore,
+        availableAgentTypes: advertisedAgentTypes(
+          deps.launchServiceDeps?.adapterRegistry.getTypes() ?? [],
+          committed.blacklistedAgentTypes,
+        ),
+        defaultAgentType: committed.defaultAgentType,
         safeMode: resolveSafeModeStatus({
           automationKillSwitch: committed.automationKillSwitch,
           safeModeSince: committed.safeModeSince,

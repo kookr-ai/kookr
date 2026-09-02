@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 
 import type { AdapterRegistry } from '../../adapters/agent-adapter.js';
-import { AVAILABLE_AGENT_TYPES, type AgentSelection } from '../../core/agent-types.js';
+import { advertisedAgentTypes, type AgentSelection, type AgentType } from '../../core/agent-types.js';
 import { ACHIEVEMENT_BY_ID } from '../../core/achievement-catalog.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { GitHubReference } from '../../core/github-types.js';
@@ -59,6 +59,8 @@ export interface RealtimeServicesDeps {
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
   getDefaultAgentType: () => AgentSelection;
+  /** Operator blacklist (issue #3025). Hidden from the snapshot picker list. */
+  getBlacklistedAgentTypes?: () => readonly AgentType[];
   bypassAllPermissions?: boolean;
   getDrainStatus?: () => DrainStatusSnapshot;
   /** Automation kill-switch / SAFE MODE (issue #1710). */
@@ -293,7 +295,10 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
       };
       msg = {
         ...msg,
-        availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((item) => deps.adapterRegistry.getTypes().includes(item.type)),
+        availableAgentTypes: advertisedAgentTypes(
+          deps.adapterRegistry.getTypes(),
+          deps.getBlacklistedAgentTypes?.() ?? [],
+        ),
         defaultAgentType: deps.getDefaultAgentType(),
       };
     }

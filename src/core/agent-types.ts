@@ -30,6 +30,8 @@ export {
   resolveRoundRobinAgent,
   resolvePinnedAgentFallback,
   filterFallbackCandidates,
+  excludeBlacklistedAgents,
+  advertisedAgentTypes,
   buildAgentSelectionOptions,
   previewRoundRobinNextLabel,
   CLAUDE_CODE_EFFORT_LEVELS,

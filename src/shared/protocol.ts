@@ -45,6 +45,8 @@ export {
   ROUND_ROBIN_AGENT_TYPE,
   agentSelectionHint,
   buildAgentSelectionOptions,
+  excludeBlacklistedAgents,
+  advertisedAgentTypes,
   effortLevelsForAgent,
   isAgentType,
   isValidEffortForAgent,

@@ -540,6 +540,53 @@ Do dependency-gated work.
       expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('dispatch_failed');
     });
 
+    it('does not spawn a blacklisted pin and substitutes onto a remaining agent (issue #3025)', async () => {
+      const schedule = store.create({
+        name: 'Blacklisted pin',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'claude-code',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+        getBlacklistedAgentTypes: () => ['claude-code'],
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(1);
+      expect(launched[0]!.agentType).not.toBe('claude-code');
+    });
+
+    it('parks when the pinned agent is blacklisted and no substitute remains (issue #3025)', async () => {
+      const schedule = store.create({
+        name: 'All blacklisted',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'claude-code',
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+      });
+
+      const runner = createRunner({
+        getAvailableAgentTypes: () => ['claude-code', 'codex-cli'],
+        getBlacklistedAgentTypes: () => ['claude-code', 'codex-cli'],
+      });
+      await runner.tick();
+
+      expect(launched).toHaveLength(0);
+      expect(store.get(schedule.id)!.latestExecution).toMatchObject({
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
+      });
+    });
+
     it('substitutes a deprioritized pin when a healthy alternative remains', async () => {
       const schedule = store.create({
         name: 'Deprioritized pin',

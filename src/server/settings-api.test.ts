@@ -65,6 +65,7 @@ describe('Settings API', () => {
       defaultAgentType: 'claude-code',
       disallowAgentFallback: ['codex-cli'],
       agentFallbackAllowlist: [],
+      blacklistedAgentTypes: [],
       quotaHeadroomThreshold: 90,
       roundRobinIndex: 0,
       shortcutBindings: {},
