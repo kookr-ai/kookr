@@ -6,7 +6,7 @@
  * skipped with a message. Running the full suite locally requires
  * `scripts/build-dtach.sh` first.
  */
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   chmodSync,
   existsSync,
@@ -2086,5 +2086,95 @@ describe('LocalDtachBackend startup recovery containment (issue #2828)', () => {
     expect(store.manifestStore.read().entries).toEqual([]);
     // Bounded single pass on the valid, non-empty branch.
     expect(reads).toBe(1);
+  });
+});
+
+describe('LocalDtachBackend error-bus health recovery (issue #2810)', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend | null;
+
+  // These tests drive the structured error bus directly (no dtach needed):
+  // construction only touches the empty tmp manifest, so they run everywhere.
+  const emit = (b: LocalDtachBackend, err: BackendError): void => {
+    (b as unknown as { emitError(e: BackendError): void }).emitError(err);
+  };
+
+  beforeAll(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-2810-'));
+  });
+
+  afterEach(() => {
+    backend?.close();
+    backend = null;
+  });
+
+  afterAll(() => {
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('clears the current fault when the same session recovers, keeping cumulative counts', async () => {
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r1', dtachBinary: 'dtach' });
+    await backend.whenStartupRecoverySettled();
+
+    // Failure: a transient session-gone pins the current-error projection.
+    emit(backend, { kind: 'session-gone', id: 's1' });
+    let stats = backend.getStats();
+    expect(stats.lastError).toEqual({ kind: 'session-gone', id: 's1' });
+    expect(stats.errorCount).toBe(1);
+    expect(stats.lastErrorAt).toBeTypeOf('number');
+    expect(stats.lastRecoveredAt).toBeNull();
+
+    // Recovery: a re-attach for the SAME session clears the sticky fault but
+    // preserves the cumulative incident counter and never bumps it.
+    emit(backend, { kind: 'session-attach-recovered', id: 's1', attempt: 1 });
+    stats = backend.getStats();
+    expect(stats.lastError).toBeNull();
+    expect(stats.errorCount).toBe(1);
+    expect(stats.lastRecoveredAt).toBeTypeOf('number');
+
+    // New failure: a fresh fault re-projects and advances the cumulative count.
+    emit(backend, { kind: 'session-gone', id: 's1' });
+    stats = backend.getStats();
+    expect(stats.lastError).toEqual({ kind: 'session-gone', id: 's1' });
+    expect(stats.errorCount).toBe(2);
+  });
+
+  it('does not clear a fault when a different session recovers', async () => {
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r2', dtachBinary: 'dtach' });
+    await backend.whenStartupRecoverySettled();
+
+    emit(backend, { kind: 'write-timed-out', id: 's1', durationMs: 2000 });
+    // A recovery for a different session must not mask s1's active fault.
+    emit(backend, { kind: 'session-attach-recovered', id: 's2', attempt: 1 });
+    const stats = backend.getStats();
+    expect(stats.lastError).toEqual({ kind: 'write-timed-out', id: 's1', durationMs: 2000 });
+    expect(stats.writeTimeoutCount).toBe(1);
+  });
+
+  it('does not let a per-session recovery clear a global/structural fault', async () => {
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r3', dtachBinary: 'dtach' });
+    await backend.whenStartupRecoverySettled();
+
+    emit(backend, { kind: 'dtach-unavailable', binary: 'dtach' });
+    emit(backend, { kind: 'session-recovery-repaired', id: 's1', attempts: 1 });
+    const stats = backend.getStats();
+    // dtach-unavailable is a structural fault — a session repair must not hide it.
+    expect(stats.lastError).toEqual({ kind: 'dtach-unavailable', binary: 'dtach' });
+    expect(stats.errorCount).toBe(1);
+  });
+
+  it('a recovery with no prior fault is a no-op on the current projection', async () => {
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r4', dtachBinary: 'dtach' });
+    await backend.whenStartupRecoverySettled();
+
+    emit(backend, { kind: 'session-recovery-repaired', id: 's1', attempts: 1 });
+    const stats = backend.getStats();
+    expect(stats.lastError).toBeNull();
+    expect(stats.errorCount).toBe(0);
+    expect(stats.lastRecoveredAt).toBeNull();
   });
 });

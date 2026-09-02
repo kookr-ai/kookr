@@ -25,6 +25,7 @@ import {
   checkSchedulesPausedReadiness,
   buildHookIngestionHealthSummary,
 } from './diagnostics-routes.js';
+import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { HotPathSampler } from '../../core/hot-path-sampler.js';
@@ -1447,6 +1448,45 @@ describe('diagnostics routes', () => {
         pendingWrites: 2,
         maxPendingWrites: 4,
       });
+    });
+
+    test('terminalBackend health recovers to ok after a transient session fault clears (issue #2810)', async () => {
+      const backend = new FakeTerminalBackend();
+
+      // Build a fresh app (hence a cold health-body cache, issue #2429/#2492)
+      // for each probe so we read the live backend state, not a ~1s-stale body.
+      const statusOf = async (): Promise<{ status: string; lastError: unknown; lastRecoveredAt: number | null }> => {
+        const app = mkApp({
+          taskStore: new TaskStore(),
+          queue: new AttentionQueue(),
+          buildInfo: {} as never,
+          terminalBackend: backend as never,
+        });
+        const res = await app.request('/api/health');
+        const body = await res.json() as {
+          terminalBackend: { status: string; lastError: unknown; lastRecoveredAt: number | null };
+        };
+        return body.terminalBackend;
+      };
+
+      // Transient session-gone → the current-error projection pins degraded.
+      backend.fireError({ kind: 'session-gone', id: 's1' });
+      let tb = await statusOf();
+      expect(tb.status).toBe('degraded');
+      expect(tb.lastError).toEqual({ kind: 'session-gone', id: 's1' });
+
+      // The same session recovers → sticky fault cleared, health back to ok,
+      // and the recovery is timestamped for operators.
+      backend.fireError({ kind: 'session-attach-recovered', id: 's1', attempt: 1 });
+      tb = await statusOf();
+      expect(tb.status).toBe('ok');
+      expect(tb.lastError).toBeNull();
+      expect(tb.lastRecoveredAt).toBeTypeOf('number');
+
+      // A genuinely new fault still degrades — recovery never mutes active faults.
+      backend.fireError({ kind: 'write-timed-out', id: 's1', durationMs: 1500 });
+      tb = await statusOf();
+      expect(tb.status).toBe('degraded');
     });
   });
 
