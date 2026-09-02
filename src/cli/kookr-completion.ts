@@ -194,13 +194,16 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   },
   {
     name: 'emission',
-    subcommands: ['plan', 'dedupe', 'metrics', 'defer', 'version'],
+    subcommands: ['plan', 'override', 'dedupe', 'metrics', 'defer', 'version'],
     flags: [
       '--repo',
       '--requested',
+      '--count',
       '--title',
       '--source',
       '--reason',
+      '--expires-at',
+      '--override-id',
       '--threshold',
       '--constrained',
       '--drain-window',
