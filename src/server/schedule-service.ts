@@ -11,6 +11,7 @@ import {
   type ScheduleExecutionOutcome,
   type ScheduleExecutionReasonCode,
   type ScheduleListResponse,
+  type ScheduleResponse,
   type ScheduleLatestExecutionStatus,
   type ScheduleStatusSnapshot,
   type ScheduleTerminalReason,
@@ -922,6 +923,35 @@ export class ScheduleService {
     }
     await this.store.persist();
     this.broadcastSchedules();
+  }
+
+  /**
+   * Archive a schedule (issue #2981) — retire an abandoned loop without losing
+   * it. The row is kept (persisted, un-archivable) but excluded from the active
+   * fleet, so it stops firing and drops off the status snapshot, health checks
+   * and ROI attribution instead of lingering as a disabled-but-active row that
+   * still costs health checks and inflates failed counts.
+   */
+  async archive(id: string, reason?: string) {
+    this.requireSchedule(id);
+    this.store.archive(id, reason);
+    await this.store.persist();
+    this.broadcastSchedules();
+    return this.store.getWithComputed(id)!;
+  }
+
+  /** Un-archive a schedule (issue #2981) — return it to the active fleet. */
+  async unarchive(id: string) {
+    this.requireSchedule(id);
+    this.store.unarchive(id);
+    await this.store.persist();
+    this.broadcastSchedules();
+    return this.store.getWithComputed(id)!;
+  }
+
+  /** Archived schedules enriched for API/CLI display (issue #2981). */
+  listArchived(): ScheduleResponse[] {
+    return this.store.listArchivedWithComputed();
   }
 
   async reserveExecution(

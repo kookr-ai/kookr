@@ -369,6 +369,27 @@ Do dependency-gated work.
     });
   });
 
+  it('refuses to fire an archived schedule via Run Now and does not re-materialize its rollup (issue #2981)', async () => {
+    const schedule = store.create({
+      name: 'Archived Loop',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    store.archive(schedule.id, 'no live supply or demand');
+    // Archiving drops the ROI rollup — the guard must not bring it back.
+    expect(store.getRollup(schedule.id)).toBeUndefined();
+
+    const runner = createRunner();
+    const result = await runner.runNow(schedule.id);
+
+    expect(result).toEqual({ error: 'Schedule is archived' });
+    expect(launched).toHaveLength(0);
+    // No fire bookkeeping ran (no reserved receipt) and the rollup stays gone.
+    expect(store.get(schedule.id)?.currentExecution).toBeUndefined();
+    expect(store.getRollup(schedule.id)).toBeUndefined();
+  });
+
   it('inherits getDefaultAgentType when schedule has no agentType pin', async () => {
     const schedule = store.create({
       name: 'Unpinned inherit',

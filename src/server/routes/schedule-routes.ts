@@ -37,12 +37,16 @@ function parseScheduleLoopField(raw: unknown, fieldName: string): ScheduleLoopCo
   return normalizeScheduleLoopConfig(raw) ?? {};
 }
 
-type ScheduleRunErrorCode = "capacity" | "draining" | "previous_run_active" | "validation";
+type ScheduleRunErrorCode = "capacity" | "draining" | "previous_run_active" | "archived" | "validation";
 
 function scheduleRunErrorResponse(error: string): { code: ScheduleRunErrorCode; status: 400 | 409 | 503 } {
   switch (error) {
     case "Max active tasks reached":
       return { code: "capacity", status: 409 };
+    // An archived schedule is retired (issue #2981): a manual Run Now is a
+    // state conflict, not a validation error — un-archive it first.
+    case "Schedule is archived":
+      return { code: "archived", status: 409 };
     case "Server draining":
     case "Server is draining; not accepting new task launches":
     case "Server is redeploying; not accepting new task launches":
@@ -235,6 +239,43 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       return c.json({ error: "Schedule not found" }, 404);
     }
     return c.json({ ok: true });
+  });
+
+  // Archive management (issue #2981). Archiving retires an abandoned loop
+  // without deleting it — the row is retained but excluded from the active
+  // fleet, so it stops firing and drops off status/health/attribution. Prefer
+  // this over leaving a schedule disabled-but-active (which still costs health
+  // checks) when a loop has no live supply or demand.
+  app.get("/api/schedules/archived", (c) => {
+    if (!deps.scheduleService) return c.json({ schedules: [] });
+    return c.json({ schedules: deps.scheduleService.listArchived() });
+  });
+
+  app.post("/api/schedules/:id/archive", async (c) => {
+    if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
+    const id = c.req.param("id");
+    let reason: string | undefined;
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (body && typeof body.reason === "string") reason = body.reason;
+    try {
+      return c.json(await deps.scheduleService.archive(id, reason));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = err instanceof Error && err.name === "ScheduleValidationError" ? 404 : 500;
+      return c.json({ error: message }, status);
+    }
+  });
+
+  app.post("/api/schedules/:id/unarchive", async (c) => {
+    if (!deps.scheduleService) return c.json({ error: "Scheduling not configured" }, 500);
+    const id = c.req.param("id");
+    try {
+      return c.json(await deps.scheduleService.unarchive(id));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const status = err instanceof Error && err.name === "ScheduleValidationError" ? 404 : 500;
+      return c.json({ error: message }, status);
+    }
   });
 
   app.post("/api/schedules/:id/run", async (c) => {

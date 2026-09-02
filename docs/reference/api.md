@@ -900,6 +900,9 @@ Returns the full sanitized config object for that project.
 | `DELETE /api/schedules/:id` | Delete a schedule |
 | `POST /api/schedules/:id/run` | Trigger a scheduled task immediately. A capacity wait returns `queued: true`; a required-dependency wait additionally returns `parked: true`, `outcome: "parked_dependency"`, and `reasonCode: "dependency_degraded"` so consumers do not misdiagnose it as capacity exhaustion. |
 | `POST /api/schedules/recover` | Bulk re-enable schedules parked by the fail-closed `consecutive_failures` auto-pause (issue #2520). Body `{ "stopReason": "consecutive_failures", "heldBefore"?: "<ISO>" }`; `heldBefore` scopes recovery to holds established before a fix-commit / deploy watermark. Returns `{ ok, recovered[], skipped[] }`. Backs `kookr schedule enable --stop-reason consecutive_failures`. |
+| `GET /api/schedules/archived` | List archived (retired-but-retained) schedules (issue #2981). Returns `{ schedules[] }`. Backs `kookr schedule list --archived`. |
+| `POST /api/schedules/:id/archive` | Archive a schedule (issue #2981) — retire an abandoned loop without deleting it: the row is kept but excluded from the active fleet, so it stops firing and drops off status, health checks, and ROI attribution. Optional body `{ "reason"?: "<text>" }`. Returns the archived schedule. Backs `kookr schedule archive <id>`. |
+| `POST /api/schedules/:id/unarchive` | Un-archive a schedule (issue #2981) — return it to the active fleet in its prior enabled/hold state. Returns the restored schedule. Backs `kookr schedule unarchive <id>`. |
 | `POST /api/pipeline-starvation/handle` | Consume a batch `blocked-empty` outcome: on-demand idea-scout + starvation alert (issue #1715) |
 
 Schedule create/update bodies accept `modelTier: "small"` with the same mapping

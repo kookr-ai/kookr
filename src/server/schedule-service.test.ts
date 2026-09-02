@@ -2543,3 +2543,79 @@ describe('ScheduleService hold provenance + bulk recovery (issue #2520)', () => 
     }
   });
 });
+
+describe('ScheduleService archive (issue #2981)', () => {
+  it('drops an archived schedule off the status snapshot, list response, and firing fleet', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Abandoned Orchestration Supervisor',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Put it in the exact state the issue's supervisors are in: disabled,
+      // held, and parked by the consecutive-failures auto-pause — so it shows
+      // up in the paused-by-failure WARN before archiving.
+      store.replace({
+        ...store.get(schedule.id)!,
+        enabled: false,
+        operatorHold: true,
+        stopReason: 'consecutive_failures',
+        consecutiveFailures: 3,
+      });
+      expect(service.getStatusSnapshot().schedulesPausedByFailure).toHaveLength(1);
+
+      const archived = await service.archive(schedule.id, 'no live supply or demand');
+      expect(archived.archived).toBe(true);
+      expect(archived.archivedReason).toBe('no live supply or demand');
+
+      // Gone from every surface the acceptance criteria name.
+      expect(service.getStatusSnapshot().schedulesPausedByFailure ?? []).toHaveLength(0);
+      expect(service.listResponse().schedules.map((s) => s.id)).not.toContain(schedule.id);
+      // But retained and discoverable for un-archive.
+      expect(service.listArchived().map((s) => s.id)).toEqual([schedule.id]);
+    });
+  });
+
+  it('un-archive returns the schedule to the list response', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Frozen Template',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await service.archive(schedule.id);
+      expect(service.listResponse().schedules.map((s) => s.id)).not.toContain(schedule.id);
+
+      const restored = await service.unarchive(schedule.id);
+      expect(restored.archived).toBeUndefined();
+      expect(service.listResponse().schedules.map((s) => s.id)).toContain(schedule.id);
+      expect(service.listArchived()).toHaveLength(0);
+    });
+  });
+
+  it('persists the archive across a store reload', async () => {
+    await withService(async (service, store, dir) => {
+      const schedule = store.create({
+        name: 'Persisted Archive',
+        cron: '0 0 * * *',
+        playbook: { path: 'a.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await service.archive(schedule.id, 'retired');
+
+      const reloaded = new ScheduleStore(dir);
+      await reloaded.load();
+      expect(reloaded.list().map((s) => s.id)).not.toContain(schedule.id);
+      expect(reloaded.listArchived().find((s) => s.id === schedule.id)?.archivedReason).toBe('retired');
+    });
+  });
+
+  it('rejects archive / unarchive for an unknown id', async () => {
+    await withService(async (service) => {
+      await expect(service.archive('missing')).rejects.toThrow(/not found/i);
+      await expect(service.unarchive('missing')).rejects.toThrow(/not found/i);
+    });
+  });
+});
