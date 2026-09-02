@@ -4,6 +4,7 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 
 import { asNodeId, type NodeId } from '../../../src/remote/ids.js';
+import { enforceOwnerOnlyFile } from '../../../src/shared/owner-only-mode.js';
 import type { ContactShareEnvelope } from '../../../src/shared/contracts/contact-share.js';
 import { isContactShareEnvelope } from '../../../src/shared/contracts/contact-share.js';
 import { isInvitationRecord, type InvitationRecord } from '../invitations/store.js';
@@ -83,6 +84,23 @@ export class RelaySqliteStateStore {
     this.db.pragma('foreign_keys = ON');
     this.migrate();
     this.assertIntegrity();
+    this.enforceStateOwnerOnly(dbPath);
+  }
+
+  /**
+   * Repair owner-only (`0o600`) modes on the live database file and its WAL/SHM
+   * sidecars (issue #2779). WAL mode and the initial migration create the
+   * sidecars before this runs, so a permissive umask cannot leave the node
+   * hashes, invitation verifiers, contact-share metadata, or tenant controls
+   * they hold readable beyond the owner. Best-effort and skipped for in-memory
+   * databases, which have no on-disk footprint.
+   */
+  private enforceStateOwnerOnly(dbPath: string): void {
+    if (dbPath === ':memory:') return;
+    enforceOwnerOnlyFile(dbPath);
+    enforceOwnerOnlyFile(`${dbPath}-wal`);
+    enforceOwnerOnlyFile(`${dbPath}-shm`);
+    enforceOwnerOnlyFile(`${dbPath}-journal`);
   }
 
   load(): RelayStateSnapshot {
