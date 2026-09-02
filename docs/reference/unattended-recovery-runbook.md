@@ -31,6 +31,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Symptom | Health / artifact field | First action |
 | --- | --- | --- |
 | Schedules / autonomous spawns stopped; manual launches still work | `safeMode.engaged` | Confirm intentional; **disengage** when incident over (see [SAFE MODE](#1-safe-mode-engage--disengage)) |
+| One project's schedules skip while other projects still fire; `safeMode.engaged` is false | `projectAutomation.paused` / `pausedProjectIds` | Confirm the project-drawer pause (or `POST /api/projects/configs` with `automationEnabled: true`) — this is not node-wide SAFE MODE |
 | Need to stop schedule fires during an incident | `safeMode.engaged == false` | **Engage** SAFE MODE via settings (not drain — drain blocks *all* launches) |
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / byte and inode capacity under `KOOKR_DIR` | Inspect `pressureCause`; reclaim byte space or inodes. Reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |

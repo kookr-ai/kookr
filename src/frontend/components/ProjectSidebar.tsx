@@ -200,7 +200,11 @@ function ProjectIcon({
   return (
     <Tooltip text={tooltipText}>
       <button
-        aria-label={muted ? `${summary.displayName}, notifications muted` : summary.displayName}
+        aria-label={[
+          summary.displayName,
+          muted ? 'notifications muted' : null,
+          summary.automationEnabled === false ? 'automation paused' : null,
+        ].filter(Boolean).join(', ')}
         className={`project-icon color-${summary.color}${selected ? ' selected' : ''}${!isActive && !hasFindings ? ' inactive' : ''}${dragActive ? ' drag-active' : ''}`}
         data-testid={`project-icon-${summary.project}`}
         draggable

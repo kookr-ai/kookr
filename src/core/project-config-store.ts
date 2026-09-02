@@ -238,14 +238,6 @@ export class ProjectConfigStore {
     return paused;
   }
 
-  getAutomationPausedSince(project: string): string | undefined {
-    return this.configs.get(project)?.automationPausedSince;
-  }
-
-  getLoadWarning(): string | undefined {
-    return this.loadWarning;
-  }
-
   /** Operator snapshot for `/api/health` and status digest. */
   getProjectAutomationStatus(): {
     paused: Array<{ projectId: string; since?: string }>;
