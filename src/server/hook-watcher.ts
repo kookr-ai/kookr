@@ -78,7 +78,35 @@ export interface HookWatcherSessionHealth {
   maxDrainLatencyMs: number | null;
   p95DrainLatencyMs: number | null;
   lastReadAt: string | null;
+  /**
+   * The *current* error, or `null` when the watcher is healthy right now — the
+   * authoritative current-status signal (the timestamps below are advisory). A
+   * successful disk read clears this (issue #2811) so a recovered watcher that
+   * resumed reading no longer looks actively degraded from a stale error (e.g.
+   * a transient ENOENT while `fs.watch` fell back to polling). Recurring or
+   * partial failures re-set it, so a genuinely broken watcher stays visible.
+   * The clear is gated on a *proven* read (fresh bytes off disk), not a no-op
+   * stat, so an idle watcher with no new hook activity keeps its last error
+   * until it demonstrably reads again — the conservative "only a real read
+   * proves health" choice.
+   */
   lastError: string | null;
+  /**
+   * Cumulative count of every error recorded for this watcher across the
+   * process lifetime. Retained even after `lastError` is cleared so recovery
+   * never erases the diagnostic history that a watcher has been flapping
+   * (issue #2811).
+   */
+  errorCount: number;
+  /** ISO timestamp of the most recent recorded error, or `null` if none. */
+  lastErrorAt: string | null;
+  /**
+   * ISO timestamp of the most recent recovery — when a successful read last
+   * cleared a non-null `lastError`. `null` until the watcher has recovered from
+   * at least one error. `lastErrorAt` newer than this means the current error
+   * is fresh, not a stale leftover.
+   */
+  lastRecoveredAt: string | null;
 }
 
 export interface HookWatcherHealthSnapshot {
@@ -164,6 +192,9 @@ interface MutableHookWatcherSessionHealth {
   drainLatencySamples: number[];
   lastReadAtMs: number | null;
   lastError: string | null;
+  errorCount: number;
+  lastErrorAtMs: number | null;
+  lastRecoveredAtMs: number | null;
 }
 
 const HEALTH_SAMPLE_LIMIT = 128;
@@ -551,6 +582,17 @@ export class HookFileWatcher {
       const health = this.getOrCreateHealth(tmuxName);
       health.readCount += 1;
       health.lastReadAtMs = Date.now();
+      // Proven healthy read: the watcher just pulled fresh bytes off disk, so a
+      // prior error (e.g. a transient ENOENT that dropped us to poll fallback)
+      // is stale — clear it and timestamp the recovery so diagnostics stop
+      // reporting a recovered watcher as degraded (issue #2811). `errorCount`
+      // and `lastErrorAt` are retained, so a flapping watcher's history stays
+      // visible, and a parse failure while injecting the records below re-sets
+      // `lastError` to keep partial/recurring failures surfaced.
+      if (health.lastError !== null) {
+        health.lastError = null;
+        health.lastRecoveredAtMs = health.lastReadAtMs;
+      }
       const nonEmpty = records.filter((line) => line.trim()).length;
       health.recordCount += nonEmpty;
       if (options?.replay === true) {
@@ -745,6 +787,9 @@ export class HookFileWatcher {
       drainLatencySamples: [],
       lastReadAtMs: null,
       lastError: null,
+      errorCount: 0,
+      lastErrorAtMs: null,
+      lastRecoveredAtMs: null,
     };
     this.healthBySession.set(tmuxName, created);
     return created;
@@ -775,7 +820,10 @@ export class HookFileWatcher {
   }
 
   private recordHealthError(tmuxName: string, err: unknown): void {
-    this.getOrCreateHealth(tmuxName).lastError = err instanceof Error ? err.message : String(err);
+    const health = this.getOrCreateHealth(tmuxName);
+    health.lastError = err instanceof Error ? err.message : String(err);
+    health.errorCount += 1;
+    health.lastErrorAtMs = Date.now();
   }
 
   private loadReplayCheckpoints(): HookReplayCheckpointFile {
@@ -972,6 +1020,9 @@ function projectWatcherHealth(
     p95DrainLatencyMs: percentile(health.drainLatencySamples, 0.95),
     lastReadAt: isoOrNull(health.lastReadAtMs),
     lastError: health.lastError,
+    errorCount: health.errorCount,
+    lastErrorAt: isoOrNull(health.lastErrorAtMs),
+    lastRecoveredAt: isoOrNull(health.lastRecoveredAtMs),
   };
 }
 

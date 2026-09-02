@@ -1177,7 +1177,103 @@ describe('HookFileWatcher', () => {
       p95DrainLatencyMs: expect.any(Number),
       lastReadAt: expect.any(String),
       lastError: null,
+      errorCount: 0,
+      lastErrorAt: null,
+      lastRecoveredAt: null,
     }));
+  });
+
+  test('clears a recovered watcher error after a healthy read but retains cumulative history (#2811)', async () => {
+    // An adapter that throws on records carrying the failure marker and
+    // succeeds otherwise. A throwing injectHookEvent drives recordHealthError,
+    // exactly the error path that used to leave a stale `lastError` stuck on a
+    // watcher that had since resumed reading (issue #2811).
+    const FAIL = 'FAIL_MARKER';
+    const flakyAdapter: HookEventInjector = {
+      injectHookEvent(_tmux, raw) {
+        if (raw.includes(FAIL)) throw new Error('boom parse error');
+        return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: 0 };
+      },
+    };
+    const w = new HookFileWatcher(tempDir, flakyAdapter);
+    const session = 'kookr-recover';
+    const hookFile = join(tempDir, `${session}.jsonl`);
+    writeFileSync(hookFile, '');
+
+    const health = () => w.getHealthSnapshot().sessions.find((s) => s.tmuxName === session)!;
+
+    try {
+      w.watch(session);
+
+      // 1) A record that makes the adapter throw records the current error and
+      //    starts the cumulative count; no recovery has happened yet.
+      appendFileSync(hookFile, `${JSON.stringify({ marker: FAIL })}\n`);
+      await w.drainNow(session);
+      expect(health().lastError).toContain('boom');
+      expect(health().errorCount).toBe(1);
+      expect(health().lastErrorAt).toEqual(expect.any(String));
+      expect(health().lastRecoveredAt).toBeNull();
+      const firstErrorAt = health().lastErrorAt;
+
+      // 2) A clean record is a proven healthy read: the current error clears and
+      //    the recovery is timestamped, but errorCount and lastErrorAt are
+      //    retained for history (only lastError is nulled).
+      appendFileSync(hookFile, `${JSON.stringify({ hook_event_name: 'SessionStart' })}\n`);
+      await w.drainNow(session);
+      expect(health().lastError).toBeNull();
+      expect(health().errorCount).toBe(1);
+      expect(health().lastErrorAt).toBe(firstErrorAt); // history retained across the clear
+      expect(health().lastRecoveredAt).toEqual(expect.any(String));
+
+      // 3) A recurring failure after recovery stays visible: lastError re-sets
+      //    and the cumulative count advances (partial/flapping watcher signal).
+      const recoveredAt = health().lastRecoveredAt;
+      appendFileSync(hookFile, `${JSON.stringify({ marker: FAIL })}\n`);
+      await w.drainNow(session);
+      expect(health().lastError).toContain('boom');
+      expect(health().errorCount).toBe(2);
+      expect(health().lastRecoveredAt).toBe(recoveredAt); // unchanged — no clear this read
+    } finally {
+      w.stopAll();
+    }
+  });
+
+  test('a no-growth drain does not clear a stale watcher error (only a real read proves health, #2811)', async () => {
+    // Guards the stat-first early return: a drain that finds no new bytes is not
+    // proof of health, so it must NOT clear a recorded error. Without this the
+    // "proven healthy read" contract would be an empty read away from a false
+    // recovery.
+    const FAIL = 'FAIL_MARKER';
+    const flakyAdapter: HookEventInjector = {
+      injectHookEvent(_tmux, raw) {
+        if (raw.includes(FAIL)) throw new Error('boom parse error');
+        return { parseStatus: 'ok', agentType: 'claude-code', parentage: 'parent', sequence: 0 };
+      },
+    };
+    const w = new HookFileWatcher(tempDir, flakyAdapter);
+    const session = 'kookr-nogrowth';
+    const hookFile = join(tempDir, `${session}.jsonl`);
+    writeFileSync(hookFile, '');
+    const health = () => w.getHealthSnapshot().sessions.find((s) => s.tmuxName === session)!;
+
+    try {
+      w.watch(session);
+
+      // Record an error via a failing record.
+      appendFileSync(hookFile, `${JSON.stringify({ marker: FAIL })}\n`);
+      await w.drainNow(session);
+      expect(health().lastError).toContain('boom');
+      expect(health().lastRecoveredAt).toBeNull();
+
+      // Drain again with no new bytes appended: the stat-first guard returns
+      // before any clear, so the stale error and its null recovery persist.
+      await w.drainNow(session);
+      expect(health().lastError).toContain('boom');
+      expect(health().errorCount).toBe(1);
+      expect(health().lastRecoveredAt).toBeNull();
+    } finally {
+      w.stopAll();
+    }
   });
 
   test('health snapshot reports poll-until-exists mode before a missing hook file appears', () => {
