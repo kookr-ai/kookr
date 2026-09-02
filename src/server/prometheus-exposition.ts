@@ -9,6 +9,7 @@ import {
 } from '../integrations/webhook/index.js';
 import type { AuthThrottleSnapshot } from './auth-throttle.js';
 import type { RequestDurationMetricsSnapshot } from './request-duration-metrics.js';
+import type { ControlPlaneLatencyMetricsSnapshot } from './control-plane-latency-metrics.js';
 import {
   EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT,
   type TerminalInputRttMetricsSnapshot,
@@ -65,6 +66,12 @@ export interface SnapshotShedMetricsExposition {
 
 export interface PrometheusExpositionSnapshot {
   requestDurations: RequestDurationMetricsSnapshot;
+  /**
+   * Control-plane probe latency + completion status (issue #2774) for
+   * `/api/health`, health subroutes, and `/api/ready`. When undefined (metrics
+   * not wired) the series are omitted so scrapers see no fabricated zeros.
+   */
+  controlPlaneLatencies?: ControlPlaneLatencyMetricsSnapshot;
   circuitBreakers: CircuitBreakerSnapshot[];
   toolLatencies?: ToolLatencyMetricsSnapshot;
   attentionQueueSuppressions?: AttentionQueueSuppressionCounts;
@@ -183,6 +190,7 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   const lines: string[] = [];
 
   appendRequestDurationMetrics(lines, snapshot.requestDurations);
+  appendControlPlaneLatencyMetrics(lines, snapshot.controlPlaneLatencies);
   appendToolLatencyMetrics(lines, snapshot.toolLatencies ?? emptyToolLatencyMetricsSnapshot());
   appendCircuitBreakerMetrics(lines, snapshot.circuitBreakers);
   appendAttentionQueueSuppressionMetrics(lines, snapshot.attentionQueueSuppressions);
@@ -274,6 +282,78 @@ function appendRequestDurationMetrics(lines: string[], snapshot: RequestDuration
     '# HELP kookr_http_request_duration_dropped_routes_total Total route templates dropped after the request-duration route limit was reached.',
     '# TYPE kookr_http_request_duration_dropped_routes_total counter',
     metricLine('kookr_http_request_duration_dropped_routes_total', {}, snapshot.droppedRouteCount),
+  );
+}
+
+function appendControlPlaneLatencyMetrics(
+  lines: string[],
+  snapshot: ControlPlaneLatencyMetricsSnapshot | undefined,
+): void {
+  // Omit the whole family when metrics are unwired (cold) so scrapers never see
+  // fabricated zero-label series for control-plane probes.
+  if (!snapshot) return;
+
+  lines.push(
+    '# HELP kookr_control_plane_probe_observations_total Total recorded control-plane probe observations by route template.',
+    '# TYPE kookr_control_plane_probe_observations_total counter',
+  );
+  for (const route of snapshot.routes) {
+    lines.push(metricLine('kookr_control_plane_probe_observations_total', {
+      method: route.method,
+      route: route.route,
+    }, route.count));
+  }
+
+  lines.push(
+    '# HELP kookr_control_plane_probe_sample_count Number of retained control-plane probe duration samples by route template.',
+    '# TYPE kookr_control_plane_probe_sample_count gauge',
+  );
+  for (const route of snapshot.routes) {
+    lines.push(metricLine('kookr_control_plane_probe_sample_count', {
+      method: route.method,
+      route: route.route,
+    }, route.sampleCount));
+  }
+
+  lines.push(
+    '# HELP kookr_control_plane_probe_errors_total Control-plane probe responses with an HTTP status >= 400 by route template.',
+    '# TYPE kookr_control_plane_probe_errors_total counter',
+  );
+  for (const route of snapshot.routes) {
+    lines.push(metricLine('kookr_control_plane_probe_errors_total', {
+      method: route.method,
+      route: route.route,
+    }, route.errorCount));
+  }
+
+  lines.push(
+    `# HELP kookr_control_plane_probe_slow_total Control-plane probe observations at or above the ${snapshot.slowThresholdMs}ms slow threshold by route template.`,
+    '# TYPE kookr_control_plane_probe_slow_total counter',
+  );
+  for (const route of snapshot.routes) {
+    lines.push(metricLine('kookr_control_plane_probe_slow_total', {
+      method: route.method,
+      route: route.route,
+    }, route.slowCount));
+  }
+
+  lines.push(
+    '# HELP kookr_control_plane_probe_duration_seconds Control-plane probe duration quantiles by route template.',
+    '# TYPE kookr_control_plane_probe_duration_seconds gauge',
+  );
+  for (const route of snapshot.routes) {
+    const baseLabels = { method: route.method, route: route.route };
+    lines.push(
+      metricLine('kookr_control_plane_probe_duration_seconds', { ...baseLabels, quantile: '0.5' }, msToSeconds(route.p50Ms)),
+      metricLine('kookr_control_plane_probe_duration_seconds', { ...baseLabels, quantile: '0.95' }, msToSeconds(route.p95Ms)),
+      metricLine('kookr_control_plane_probe_duration_seconds', { ...baseLabels, quantile: '0.99' }, msToSeconds(route.p99Ms)),
+    );
+  }
+
+  lines.push(
+    '# HELP kookr_control_plane_probe_dropped_routes_total Total control-plane route templates dropped after the probe route limit was reached.',
+    '# TYPE kookr_control_plane_probe_dropped_routes_total counter',
+    metricLine('kookr_control_plane_probe_dropped_routes_total', {}, snapshot.droppedRouteCount),
   );
 }
 

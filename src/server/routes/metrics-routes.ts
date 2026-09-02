@@ -44,6 +44,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const firstHookMiss = deps.firstHookMissMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
+      // Control-plane probe latency + completion status (issue #2774). Omitted
+      // when unwired so scrapers see no fabricated zero series.
+      controlPlaneLatencies: deps.controlPlaneLatencyMetrics?.snapshot(),
       toolLatencies: deps.watchdog?.getToolLatencyMetrics().snapshot(),
       circuitBreakers: deps.circuitBreakerRegistry?.getAllSnapshots() ?? [],
       attentionQueueSuppressions: deps.queue?.getSuppressionCounts(),

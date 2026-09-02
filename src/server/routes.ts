@@ -45,6 +45,7 @@ import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
+import { ControlPlaneLatencyMetrics } from './control-plane-latency-metrics.js';
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
 import { createInFlightRequestMiddleware, inFlightRequestRegistry } from './in-flight-request-registry.js';
 import { LessonYieldHealthCache } from './lesson-yield-health-cache.js';
@@ -82,6 +83,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   }
 
   const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
+  const controlPlaneLatencyMetrics = deps.controlPlaneLatencyMetrics ?? new ControlPlaneLatencyMetrics();
   app.use('*', createInFlightRequestMiddleware(inFlightRequestRegistry));
   app.use(
     '/api/*',
@@ -89,7 +91,7 @@ export function createRoutes(deps: RouteDeps): Hono {
       deps.requestBodyLimitBytes ?? readRequestBodyLimitBytesFromEnv(),
     ),
   );
-  app.use('*', createRequestDurationMiddleware(requestDurationMetrics));
+  app.use('*', createRequestDurationMiddleware(requestDurationMetrics, controlPlaneLatencyMetrics));
 
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
   // snapshot broadcast) and coordinator-routes (3 mutation handlers) share one
@@ -103,6 +105,7 @@ export function createRoutes(deps: RouteDeps): Hono {
     // must be threaded explicitly (dogfood regression, see TaskRouteDeps).
     ...(deps.issueClaims ? { issueClaimRegistry: deps.issueClaims.registry } : {}),
     requestDurationMetrics,
+    controlPlaneLatencyMetrics,
     coordinatorSuppressions:
       deps.coordinatorSuppressions ?? new CoordinatorSuppressionStore(deps.kookrDir ?? deps.serverCwd),
     // Shared lesson-yield cache so /api/health and /metrics see the same

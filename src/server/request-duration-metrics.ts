@@ -1,5 +1,9 @@
 import type { MiddlewareHandler } from 'hono';
 import { matchedRoutes } from 'hono/route';
+import {
+  isControlPlaneLatencyRoute,
+  type ControlPlaneLatencyMetrics,
+} from './control-plane-latency-metrics.js';
 
 const DEFAULT_MAX_ROUTES = 128;
 const DEFAULT_MAX_SAMPLES_PER_ROUTE = 256;
@@ -86,19 +90,30 @@ export class RequestDurationMetrics {
   }
 }
 
-export function createRequestDurationMiddleware(metrics: RequestDurationMetrics): MiddlewareHandler {
+export function createRequestDurationMiddleware(
+  metrics: RequestDurationMetrics,
+  controlPlaneMetrics?: ControlPlaneLatencyMetrics,
+): MiddlewareHandler {
   return async (c, next) => {
     const startedAt = metrics.now();
     try {
       await next();
     } finally {
       const route = findLastRecordableRouteTemplate(matchedRoutes(c));
-      if (!shouldRecordRequestDuration(c.req.method, c.req.path, route, c.res.status)) return;
-      metrics.record({
-        method: c.req.method,
-        route,
-        durationMs: metrics.now() - startedAt,
-      });
+      const method = c.req.method;
+      const status = c.res.status;
+      const durationMs = metrics.now() - startedAt;
+      if (shouldRecordRequestDuration(method, c.req.path, route, status)) {
+        metrics.record({ method, route, durationMs });
+      } else if (controlPlaneMetrics && shouldRecordControlPlaneLatency(method, route, status)) {
+        // Isolated from the health response: recording runs after `next()`
+        // resolves and must never throw back into the finally block (#2774).
+        try {
+          controlPlaneMetrics.record({ method, route, durationMs, status });
+        } catch {
+          // Metrics collection cannot delay or fail the health response.
+        }
+      }
     }
   };
 }
@@ -121,9 +136,22 @@ function shouldRecordRequestDuration(method: string, requestPath: string, matche
   if (!matchedRoute || !isRecordableRouteTemplate(matchedRoute)) return false;
   if (status === 404) return false;
   if (matchedRoute === REQUEST_LATENCIES_ROUTE) return false;
-  if (matchedRoute === '/api/ready') return false;
-  if (matchedRoute === '/api/health' || matchedRoute.startsWith('/api/health/')) return false;
+  // Control-plane probe surfaces are recorded by ControlPlaneLatencyMetrics
+  // instead, keeping the general request-latency histogram free of probe noise.
+  if (isControlPlaneLatencyRoute(matchedRoute)) return false;
   return true;
+}
+
+/**
+ * Record into {@link ControlPlaneLatencyMetrics} exactly the control-plane probe
+ * routes that {@link shouldRecordRequestDuration} excludes, minus non-matches,
+ * OPTIONS preflights, and 404s.
+ */
+function shouldRecordControlPlaneLatency(method: string, matchedRoute: string, status: number): boolean {
+  if (method === 'OPTIONS') return false;
+  if (status === 404) return false;
+  if (!matchedRoute || !isRecordableRouteTemplate(matchedRoute)) return false;
+  return isControlPlaneLatencyRoute(matchedRoute);
 }
 
 function normalizeMethod(method: string): string {
