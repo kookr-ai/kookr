@@ -643,7 +643,7 @@ kookr/
 │       ├── resource-status.ts             # Resource status presentation
 │       ├── terminal-send.ts               # Terminal send helpers
 │       ├── terminal-paste.ts              # Terminal paste helpers
-│       ├── api/                           # Typed data-access client (issue #1826) — the single fetch() seam for components
+│       ├── api/                           # Typed data-access client (issue #1826) — the single fetch() seam for components and the app root
 │       ├── audio/                         # Browser sound preferences + alert log
 │       ├── group-findings.ts              # Finding grouping for FindingsPanel
 │       ├── markdown.ts                    # Markdown rendering helpers
