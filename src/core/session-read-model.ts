@@ -32,6 +32,63 @@ export interface ChildSessionInfo {
   reason: 'subagent_hook' | 'inherited_settings' | 'unknown';
 }
 
+/**
+ * Outcome status of the initial-prompt submit loop. Mirrors
+ * `InitialPromptDeliveryStatus` in the adapter layer (which aliases this type),
+ * kept in core so {@link SessionInfo} can carry it without introducing a
+ * core→adapters dependency edge.
+ */
+export type PromptDeliveryStatus =
+  | 'open-loop'
+  | 'confirmed'
+  | 'assumed-submitted'
+  | 'unconfirmed';
+
+/**
+ * Short, fixed reason code for a non-clean prompt delivery. Never free-form
+ * text, prompt contents, or secrets — a closed set so remote diagnosis and
+ * tests can match on it.
+ *
+ * In practice only `submit-assumed-after-timeout` (paired with
+ * `assumed-submitted`) is ever *persisted*: an `unconfirmed` delivery fails the
+ * launch and reaps the session before any record is written, so
+ * `submit-not-confirmed` is produced by the mapper for completeness but never
+ * reaches a stored {@link SessionInfo}.
+ */
+export type PromptDeliveryFailureReason =
+  | 'submit-assumed-after-timeout'
+  | 'submit-not-confirmed';
+
+/**
+ * Durable session-health record of how the initial prompt was delivered at
+ * launch (issue #2792). The launch path already computes this outcome to decide
+ * whether to fail the launch, but historically discarded it once consumed;
+ * retaining it lets remote recovery/diagnosis see that a live session's prompt
+ * was only *assumed* submitted (never hook-confirmed), and how long ago, without
+ * re-deriving it from PTY bytes.
+ *
+ * Bounded and redaction-safe by construction: it holds counts, a status, a
+ * timestamp, and a short fixed reason code — never prompt contents or secrets,
+ * and never unbounded history (one record, overwritten per launch).
+ */
+export interface PromptDeliveryHealth {
+  /** Terminal outcome of the submit-confirmation loop. */
+  status: PromptDeliveryStatus;
+  /** Number of confirmation waits performed (`awaitSubmit` calls). */
+  confirmationAttempts: number;
+  /** Number of submitting Enter keystrokes written during delivery. */
+  enterWrites: number;
+  /** ISO-8601 time the outcome was observed (basis for confirmation age). */
+  observedAt: string;
+  /**
+   * Present only for non-clean outcomes. In persisted records this is always
+   * `submit-assumed-after-timeout` (status `assumed-submitted`); an
+   * `unconfirmed` delivery fails the launch and is never stored. Absent for
+   * `confirmed` and `open-loop`.
+   */
+  failureReason?: PromptDeliveryFailureReason;
+}
+
 export interface SessionInfo {
   tmuxSession: string;
   agentType: AgentType;
@@ -75,6 +132,12 @@ export interface SessionInfo {
   worktreeRegistryStale?: boolean;
   /** Set to true when this session was terminated by a crash and a replacement was launched. */
   crashRecovered?: boolean;
+  /**
+   * How the initial prompt was delivered to this session at launch (#2792).
+   * Absent on resumed sessions (no fresh delivery occurs) and on sessions
+   * launched before this field existed.
+   */
+  promptDelivery?: PromptDeliveryHealth;
   /** How many times this session chain has been relaunched (0 = original). */
   relaunchCount?: number;
   /** Timestamp (ms since epoch) when this session chain was last relaunched. */

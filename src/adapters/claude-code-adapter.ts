@@ -41,7 +41,9 @@ import {
   stripBracketedPasteMarkers,
   type InitialPromptDeliveryResult,
   resolveBracketedPasteSubmit,
+  toPromptDeliveryHealth,
 } from './agent-launch-context.js';
+import type { PromptDeliveryHealth } from '../core/session-read-model.js';
 import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
@@ -397,6 +399,11 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Phase instrumentation (issue #1589): agent-boot covers readiness and the
     // initial-prompt delivery/submit-confirmation loop below.
     opts?.onPhase?.('agent-boot');
+    // Durable record of the initial-prompt delivery outcome (#2792). Stays
+    // undefined for the resume path (no fresh delivery occurs); set once
+    // delivery is confirmed/assumed for a fresh launch and attached to the
+    // registered session below so remote recovery/diagnosis can read it.
+    let promptDelivery: PromptDeliveryHealth | undefined;
     if (!useResume) {
       // Register a deferred BEFORE delivery so a fast UserPromptSubmit hook
       // is not missed. The resolver fires from `injectHookEvent` on the
@@ -447,6 +454,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
         if (deliveryResult.status === 'unconfirmed') {
           throw new InitialPromptSubmissionNotConfirmedError(tmuxName, deliveryResult);
         }
+        promptDelivery = toPromptDeliveryHealth(deliveryResult);
         // Delivery-integrity check (#2977). `confirmed` only proves that *a*
         // prompt left the composer, not that it is the one we wrote: bytes
         // dropped in transit still submit, just short. The UserPromptSubmit
@@ -516,6 +524,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       agentType: 'claude-code',
       cwd,
       createdAt: new Date(),
+      ...(promptDelivery ? { promptDelivery } : {}),
     });
 
     // Fire-and-forget: capture git context from CWD

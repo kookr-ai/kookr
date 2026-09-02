@@ -36,8 +36,10 @@ import { getGitInfo } from './git-info.js';
 import {
   buildAgentLaunchContext,
   deliverInitialPromptToSession,
+  type InitialPromptDeliveryResult,
   isBracketedPasteModeEnabled,
   resolveBracketedPasteSubmit,
+  toPromptDeliveryHealth,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
 } from './agent-launch-context.js';
 import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
@@ -641,8 +643,11 @@ export class GrokBuildAdapter implements AgentAdapter {
     // capture) fails fast instead of holding POST /api/tasks open for up to
     // the 180s top-level launch timeout. Also bound to the top-level launch
     // AbortSignal so a launch timeout cancels prompt delivery immediately.
+    // Durable record of the initial-prompt delivery outcome (#2792), captured
+    // from the boot sequence and attached to the registered session below.
+    let deliveryResult: InitialPromptDeliveryResult | undefined;
     try {
-      await raceAgainstLaunchAbort(
+      deliveryResult = await raceAgainstLaunchAbort(
         raceWithDeadline(
           this.runAgentBootSequence(tmuxName, prompt, submitConfirmed, sessionStarted),
           this.agentBootTimeoutMs,
@@ -670,6 +675,7 @@ export class GrokBuildAdapter implements AgentAdapter {
       agentType: 'grok-build',
       cwd,
       createdAt: new Date(),
+      ...(deliveryResult ? { promptDelivery: toPromptDeliveryHealth(deliveryResult) } : {}),
     });
 
     getGitInfo(cwd)
@@ -755,7 +761,7 @@ export class GrokBuildAdapter implements AgentAdapter {
     prompt: string,
     submitConfirmed: Promise<void>,
     sessionStarted: Promise<void>,
-  ): Promise<void> {
+  ): Promise<InitialPromptDeliveryResult> {
     await this.waitForReadyOrAbort(tmuxName, sessionStarted);
     const awaitSubmit = (timeoutMs: number) => withTimeout(submitConfirmed.then(() => true), timeoutMs, false);
     const delivery = await deliverInitialPromptToSession(this.backend, tmuxName, prompt, {
@@ -769,7 +775,23 @@ export class GrokBuildAdapter implements AgentAdapter {
       submitRetries: this.promptSubmitRetries,
       readyTimeoutMs: this.promptReadyTimeoutMs,
     });
-    if (delivery.status !== 'unconfirmed') return;
+    if (delivery.status !== 'unconfirmed') return delivery;
+
+    // Track delivery accounting across the in-session handshake retries so the
+    // persisted outcome (#2792) reflects the extra confirmation waits and Enter
+    // resends below, not just the first delivery loop.
+    let confirmationAttempts = delivery.confirmationAttempts;
+    let enterWrites = delivery.enterWrites;
+    const confirmed = (): InitialPromptDeliveryResult => ({
+      status: 'confirmed',
+      confirmationAttempts,
+      enterWrites,
+    });
+    const assumedSubmitted = (): InitialPromptDeliveryResult => ({
+      status: 'assumed-submitted',
+      confirmationAttempts,
+      enterWrites,
+    });
 
     // First confirmation loop timed out. Capture the pane for diagnosis, then
     // optionally retry the handshake once in-session (issue #1808) before
@@ -813,13 +835,14 @@ export class GrokBuildAdapter implements AgentAdapter {
         // launch_error on sessions already working while UserPromptSubmit
         // stayed silent (auth preflight OK).
         const busyAckMs = Math.min(3_000, this.promptSubmitConfirmTimeoutMs);
-        if (await awaitSubmit(busyAckMs)) return;
+        confirmationAttempts += 1;
+        if (await awaitSubmit(busyAckMs)) return confirmed();
         console.warn(
           `[grok-build-adapter] assuming initial prompt submitted for ${tmuxName}: ` +
             `pane is busy/responding but ${GROK_INITIAL_PROMPT_ACK_MARKER} never arrived; ` +
             `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
         );
-        return;
+        return assumedSubmitted();
       }
       // Still looks idle: the first Enter may have been dropped. Resend
       // Enter once, then re-await the same UserPromptSubmit signal.
@@ -827,13 +850,15 @@ export class GrokBuildAdapter implements AgentAdapter {
         await this.inputWriter.writeInput(tmuxName, ENTER_BYTES, {
           reason: 'launch-prompt-handshake-retry-enter',
         });
+        enterWrites += 1;
       } catch (err) {
         console.warn(
           `[grok-build-adapter] handshake retry Enter failed for ${tmuxName}:`,
           err instanceof Error ? err.message : err,
         );
       }
-      if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return;
+      confirmationAttempts += 1;
+      if (await awaitSubmit(this.promptSubmitConfirmTimeoutMs)) return confirmed();
       // Re-check busy after the retry window — Grok may have started
       // streaming without emitting the hook. Permission menus are "busy"
       // for Enter safety but must still fail closed (same as mid-busy /
@@ -850,7 +875,7 @@ export class GrokBuildAdapter implements AgentAdapter {
               `pane became busy after handshake retry ${attempt + 1}; ` +
               `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
           );
-          return;
+          return assumedSubmitted();
         }
       } catch (err) {
         if (err instanceof Error && err.message.includes('[grok-build-adapter]')) throw err;
@@ -881,7 +906,7 @@ export class GrokBuildAdapter implements AgentAdapter {
           `final pane is busy/responding without ${GROK_INITIAL_PROMPT_ACK_MARKER}; ` +
           `pane excerpt: ${formatGrokPaneExcerpt(display)}`,
       );
-      return;
+      return assumedSubmitted();
     }
     throw new Error(this.formatUnconfirmedPromptError(null, display));
   }
