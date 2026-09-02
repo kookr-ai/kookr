@@ -447,6 +447,8 @@ function formatBackendErrorLine(err: BackendError): string {
     case 'session-recovery-unverified':
       return `[terminal-backend] session ${err.id} could not be verified live after restart `
         + `(${err.attempts} repair attempt(s); ${err.failureReason}) — agent preserved, attach transport unrevived`;
+    case 'startup-recovery-failed':
+      return `[terminal-backend] startup recovery failed (contained; backend degraded but fail-open): ${err.reason}`;
   }
 }
 
@@ -1465,8 +1467,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       case 'dtach-unavailable':
       case 'manifest-corrupt':
       case 'session-recovery-unverified':
-        // A recovered session whose attach transport could not be revived is an
-        // actionable operator finding, distinct from the watchdog's stale_agent.
+      case 'startup-recovery-failed':
+        // A recovered session whose attach transport could not be revived, or a
+        // contained startup-recovery failure that left the backend degraded, is
+        // an actionable operator finding distinct from the watchdog's stale_agent.
         console.error(line);
         break;
       default:

@@ -10,6 +10,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -22,7 +23,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { LocalDtachBackend, buildDtachSpawn } from './local-dtach-backend.js';
 import { findDtachMasterPidSync, verifyMasterIdentity } from './local-dtach-process-identity.js';
-import { SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
+import { type BackendError, SessionGoneError, WriteTimeoutError } from './terminal-backend.js';
 import { reapDtachReferencing } from '../test-utils/reap-dtach.js';
 
 describe('buildDtachSpawn', () => {
@@ -1907,4 +1908,183 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     await backend.killSession(liveB);
     await backend.killSession(broken);
   }, 20_000);
+});
+
+/**
+ * Constructor-time startup recovery containment (kookr-ai/kookr#2828).
+ *
+ * These do not need a real dtach binary: the failure lives entirely in the
+ * manifest-recovery pass, which touches only the manifest store and the socket
+ * dir scan. They prove the old `void this.recovery.recoverOnStartup()` — which
+ * let an ENOSPC / unwritable-manifest rejection escape as an unhandled promise
+ * rejection with no stable operator-visible state — is now an observed,
+ * contained, single-pass transition.
+ */
+describe('LocalDtachBackend startup recovery containment (issue #2828)', () => {
+  let tmpDir: string;
+  let backend: LocalDtachBackend | null = null;
+
+  afterEach(() => {
+    if (backend) {
+      try {
+        backend.close();
+      } catch {
+        // best-effort
+      }
+      backend = null;
+    }
+    try {
+      if (tmpDir && existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  it('reports succeeded on a healthy (missing-manifest) startup, leaving diagnostics untouched', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-recover-'));
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: 'dtach' });
+
+    await backend.whenStartupRecoverySettled();
+
+    expect(backend.getStartupRecoveryState()).toEqual({ status: 'succeeded', error: null });
+    expect(backend.getStats().startupRecoveryState).toEqual({ status: 'succeeded', error: null });
+    // Healthy-path diagnostics stay exactly as before — no phantom error.
+    expect(backend.getStats().lastError).toBeNull();
+    expect(backend.getStats().errorCount).toBe(0);
+  });
+
+  it('contains an ENOSPC-style recovery write failure instead of an unhandled rejection', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-recover-'));
+    // Seed an unparseable manifest so recovery enters the corrupt-rebuild
+    // branch, whose `writeAtomic` is exactly where a disk-full backend throws.
+    const instanceDir = join(tmpDir, 'test');
+    mkdirSync(instanceDir, { recursive: true });
+    writeFileSync(join(instanceDir, 'manifest.json'), '{ this is not valid json');
+
+    const rejections: unknown[] = [];
+    const onRejection = (err: unknown): void => {
+      rejections.push(err);
+    };
+    process.on('unhandledRejection', onRejection);
+    try {
+      backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: 'dtach' });
+
+      // Fail the persist step like a full disk, and count reconciliation reads.
+      // Both synchronous patches land before recovery's first `await` yields the
+      // microtask that runs the corrupt-rebuild path, so the rebuild's
+      // `writeAtomic` call hits the throwing stub.
+      const store = backend as unknown as {
+        manifestStore: {
+          writeAtomic: (m: unknown) => void;
+          readForRecovery: () => unknown;
+          read: () => { entries: Array<{ sessionId: string }> };
+        };
+      };
+      const realWriteAtomic = store.manifestStore.writeAtomic.bind(store.manifestStore);
+      store.manifestStore.writeAtomic = (): never => {
+        const err = new Error('ENOSPC: no space left on device, write') as NodeJS.ErrnoException;
+        err.code = 'ENOSPC';
+        throw err;
+      };
+      let reads = 0;
+      const realReadForRecovery = store.manifestStore.readForRecovery.bind(store.manifestStore);
+      store.manifestStore.readForRecovery = (): unknown => {
+        reads += 1;
+        return realReadForRecovery();
+      };
+
+      const errors: BackendError[] = [];
+      backend.onBackendError((e) => errors.push(e));
+
+      await backend.whenStartupRecoverySettled();
+      // Drain the queues so a would-be escaped rejection has a chance to surface.
+      await new Promise((r) => setTimeout(r, 10));
+
+      // Stable, observable failure state — not a silent partial startup.
+      expect(backend.getStartupRecoveryState().status).toBe('failed');
+      expect(backend.getStartupRecoveryState().error).toContain('ENOSPC');
+      expect(backend.getStats().startupRecoveryState?.status).toBe('failed');
+
+      // Structured error emitted; cumulative counters preserved (bumped once).
+      expect(backend.getStats().lastError).toMatchObject({ kind: 'startup-recovery-failed' });
+      expect(backend.getStats().errorCount).toBe(1);
+      expect(errors.filter((e) => e.kind === 'startup-recovery-failed')).toHaveLength(1);
+
+      // The failure did not escape the backend boundary.
+      expect(rejections).toHaveLength(0);
+
+      // Bounded single pass ON THE FAILURE PATH — where a retry-on-failure loop
+      // (the unbounded-resource-growth regression the issue guards against) would
+      // most plausibly be introduced: recovery reads the manifest exactly once
+      // and does not re-enter after the write threw.
+      expect(reads).toBe(1);
+
+      // Fail-open: once the disk-full condition clears, the store's own write
+      // path works again — the containment did not wedge the manifest store into
+      // a dead backend. Restore the real writer and round-trip a manifest.
+      store.manifestStore.writeAtomic = realWriteAtomic;
+      store.manifestStore.writeAtomic({
+        version: 1,
+        instanceId: 'test',
+        entries: [{ sessionId: 'probe', pid: -1, startedAt: new Date().toISOString(), status: 'recovered', sock: join(instanceDir, 'probe.sock') }],
+      });
+      expect(store.manifestStore.read().entries.map((e) => e.sessionId)).toEqual(['probe']);
+    } finally {
+      process.off('unhandledRejection', onRejection);
+    }
+  });
+
+  it('reconciles an existing valid manifest to succeeded in a single pass, diagnostics clean', async () => {
+    // The healthy-path-with-existing-sessions case: a parseable manifest whose
+    // entry has aged out. Recovery takes the `valid` branch, reconciles the
+    // entry away, and persists — exercising the non-empty happy path (not just
+    // the empty missing-manifest case) that the acceptance criterion
+    // "healthy path + cumulative diagnostics unchanged" asserts.
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-recover-'));
+    const instanceDir = join(tmpDir, 'test');
+    mkdirSync(instanceDir, { recursive: true });
+    writeFileSync(
+      join(instanceDir, 'manifest.json'),
+      JSON.stringify({
+        version: 1,
+        instanceId: 'test',
+        entries: [
+          {
+            sessionId: 'stale',
+            pid: -1,
+            // Epoch start — far older than PENDING_TTL_MS, so it ages out.
+            startedAt: '1970-01-01T00:00:00.000Z',
+            status: 'pending',
+            sock: join(instanceDir, 'stale.sock'),
+          },
+        ],
+      }),
+    );
+
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: 'dtach' });
+
+    // Count reconciliation reads on this non-trivial (valid, non-empty) path so
+    // "single bounded pass" is proven where recovery actually does work.
+    let reads = 0;
+    const store = backend as unknown as {
+      manifestStore: { readForRecovery: () => unknown; read: () => { entries: unknown[] } };
+    };
+    const original = store.manifestStore.readForRecovery.bind(store.manifestStore);
+    store.manifestStore.readForRecovery = (): unknown => {
+      reads += 1;
+      return original();
+    };
+
+    await backend.whenStartupRecoverySettled();
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(backend.getStartupRecoveryState()).toEqual({ status: 'succeeded', error: null });
+    // Cumulative diagnostics stay clean through a real reconcile — no phantom error.
+    expect(backend.getStats().lastError).toBeNull();
+    expect(backend.getStats().errorCount).toBe(0);
+    // The aged-out entry was reconciled away and the manifest re-persisted.
+    expect(store.manifestStore.read().entries).toEqual([]);
+    // Bounded single pass on the valid, non-empty branch.
+    expect(reads).toBe(1);
+  });
 });
