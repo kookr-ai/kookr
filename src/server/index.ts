@@ -42,6 +42,12 @@ import { cancelTask, completeTask, type AgentLifecycleDeps, type TerminalInputDe
 import { FinishedAwaitingAckTtlReclaimMetrics } from './finished-awaiting-ack-ttl-sweep.js';
 import { HungSuspectTtlReclaimMetrics } from './hung-suspect-ttl-sweep.js';
 import { FirstHookMissMetrics } from './first-hook-deadline-sweep.js';
+import { WatchdogSweepMetrics } from './watchdog-sweep-metrics.js';
+import {
+  WATCHDOG_INTERVAL_MS,
+  WATCHDOG_PROBE_TIMEOUT_MS,
+  WATCHDOG_SWEEP_BUDGET_MS,
+} from './lifecycle-timers.js';
 import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
@@ -648,6 +654,35 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const getHungSuspectTtlMs = () => currentSettings.hungSuspectTtlMinutes * 60_000;
   // Live getter for the post-spawn first-hook ack deadline (issue #2036).
   const getFirstHookDeadlineMs = () => currentSettings.firstHookDeadlineSeconds * 1000;
+  // Watchdog sweep fairness (issue #2770). Env-tunable so a slow terminal
+  // backend can be given more headroom without a rebuild, but bounded so a
+  // misconfiguration cannot re-introduce the starvation the feature prevents.
+  // A single agent's two probes (capture + drain) run in series, so the probe
+  // deadline is clamped to HALF the watchdog interval — that keeps one wedged
+  // agent's worst-case sweep (2 × probe) within a single interval so the sweep
+  // finishes before the next tick. The sweep budget is clamped to the full
+  // interval. `0` (env) disables each — probe: await as before; budget: check
+  // every agent each tick (still bounded per agent by the probe deadline).
+  const getWatchdogProbeTimeoutMs = (): number => {
+    const raw = process.env.KOOKR_WATCHDOG_PROBE_TIMEOUT_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.min(Math.floor(parsed), Math.floor(WATCHDOG_INTERVAL_MS / 2));
+      }
+    }
+    return WATCHDOG_PROBE_TIMEOUT_MS;
+  };
+  const getWatchdogSweepBudgetMs = (): number => {
+    const raw = process.env.KOOKR_WATCHDOG_SWEEP_BUDGET_MS;
+    if (raw !== undefined && raw !== '') {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed) && parsed >= 0) {
+        return Math.min(Math.floor(parsed), WATCHDOG_INTERVAL_MS);
+      }
+    }
+    return WATCHDOG_SWEEP_BUDGET_MS;
+  };
   // Reserved self-maintenance capacity (issue #1564). Same live-binding
   // pattern — applies to the next launch without a restart.
   const getReservedActiveSlots = () => currentSettings.reservedActiveSlots;
@@ -1111,6 +1146,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const finishedAwaitingAckTtlReclaimMetrics = new FinishedAwaitingAckTtlReclaimMetrics();
   const hungSuspectTtlReclaimMetrics = new HungSuspectTtlReclaimMetrics();
   const firstHookMissMetrics = new FirstHookMissMetrics();
+  const watchdogSweepMetrics = new WatchdogSweepMetrics();
   const providerPausedStartTracker = new ProviderPausedStartTracker();
   const providerPausedOccupancyMetrics = new ProviderPausedOccupancyMetrics();
   broadcastProjectSummariesRef = broadcastProjectSummaries;
@@ -2689,6 +2725,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hungSuspectTtlReclaimMetrics,
     openPrFailsafeReasonMetrics,
     firstHookMissMetrics,
+    watchdogSweepMetrics,
     providerPausedOccupancyMetrics,
     resourceWatchdog: resourceWatchdogService,
     staleProcessSummaryCache,
@@ -3379,6 +3416,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hungSuspectTtlReclaimMetrics,
       getFirstHookDeadlineMs,
       firstHookMissMetrics,
+      // issue #2770: watchdog sweep fairness — per-probe deadline + rotating
+      // cursor budget so one hung probe cannot starve the fleet; metrics feed
+      // /api/health.watchdogSweep and /metrics.
+      getWatchdogProbeTimeoutMs,
+      getWatchdogSweepBudgetMs,
+      watchdogSweepMetrics,
       // issue #1993: Discord page when residual hungSuspect stays high after TTL
       hungSuspectResidualAlerter,
       // issue #2077: Discord page when residual finishedAwaitingAck stays high after TTL

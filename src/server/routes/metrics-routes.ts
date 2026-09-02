@@ -42,6 +42,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const hungSuspectReclaim = deps.hungSuspectTtlReclaimMetrics?.getSnapshot();
     const providerPausedOccupancy = deps.providerPausedOccupancyMetrics?.getSnapshot();
     const firstHookMiss = deps.firstHookMissMetrics?.getSnapshot();
+    const watchdogSweep = deps.watchdogSweepMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
       // Control-plane probe latency + completion status (issue #2774). Omitted
@@ -127,6 +128,9 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
       ...(firstHookMiss
         ? { firstHookMiss: { firstHookMissTotal: firstHookMiss.firstHookMissTotal } }
         : {}),
+      // Issue #2770: watchdog sweep fairness — probe timeouts, deferred work,
+      // and oldest-check age so scrapers can alert on a starving sweep.
+      ...(watchdogSweep ? { watchdogSweep } : {}),
       ...(nonCriticalTimerPause
         ? {
             nonCriticalTimerPause: {

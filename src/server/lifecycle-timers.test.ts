@@ -17,6 +17,11 @@ import {
   runReapWarningMaintenance,
   REAP_WARNING_STUCK_CLEAR_MS,
   startLifecycleTimers,
+  orderWatchdogAgentsFromCursor,
+  raceWatchdogProbe,
+  WatchdogProbeTimeoutError,
+  WATCHDOG_PROBE_TIMEOUT_MS,
+  WATCHDOG_SWEEP_BUDGET_MS,
   TOKEN_SCAN_INTERVAL_MS,
   WATCHDOG_INTERVAL_MS,
   SNOOZE_EXPIRY_INTERVAL_MS,
@@ -1239,6 +1244,12 @@ describe('startLifecycleTimers watchdog-tick re-entrancy guard (issue #1526 Phas
         saveIntervalMs: 600_000,
         livenessIntervalMs: 600_000,
         broadcastToAll: vi.fn(),
+        // Probe deadline disabled so captureDisplay's never-resolving promise
+        // holds the tick open indefinitely — the exact hang the re-entrancy
+        // guard defends against. (With the default deadline the probe would
+        // time out and the tick would complete; that anti-starvation behavior
+        // is covered by the issue #2770 suite below.)
+        getWatchdogProbeTimeoutMs: () => 0,
       };
       return { deps };
     })();
@@ -1250,6 +1261,246 @@ describe('startLifecycleTimers watchdog-tick re-entrancy guard (issue #1526 Phas
       // fire again on the second tick even though the first never finished.
       await vi.advanceTimersByTimeAsync(11_000);
       expect(deps.adapter.captureDisplay).toHaveBeenCalledTimes(1);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+});
+
+describe('orderWatchdogAgentsFromCursor (issue #2770)', () => {
+  test('no cursor → returns the list unchanged (fresh copy)', () => {
+    const agents = ['a', 'b', 'c'];
+    const ordered = orderWatchdogAgentsFromCursor(agents, undefined);
+    expect(ordered).toEqual(['a', 'b', 'c']);
+    expect(ordered).not.toBe(agents);
+  });
+
+  test('cursor resumes AFTER the last-processed agent', () => {
+    expect(orderWatchdogAgentsFromCursor(['a', 'b', 'c', 'd'], 'b')).toEqual(['c', 'd', 'a', 'b']);
+  });
+
+  test('cursor on the last agent wraps to the front', () => {
+    expect(orderWatchdogAgentsFromCursor(['a', 'b', 'c'], 'c')).toEqual(['a', 'b', 'c']);
+  });
+
+  test('cursor no longer tracked → starts from the front', () => {
+    expect(orderWatchdogAgentsFromCursor(['a', 'b', 'c'], 'gone')).toEqual(['a', 'b', 'c']);
+  });
+
+  test('empty fleet → empty list', () => {
+    expect(orderWatchdogAgentsFromCursor([], 'a')).toEqual([]);
+  });
+});
+
+describe('raceWatchdogProbe (issue #2770)', () => {
+  test('resolves with the probe value when it wins the race', async () => {
+    vi.useFakeTimers();
+    const p = raceWatchdogProbe(Promise.resolve('pane'), 1_000, 'capture');
+    await expect(p).resolves.toBe('pane');
+  });
+
+  test('rejects with WatchdogProbeTimeoutError when the probe outruns the deadline', async () => {
+    vi.useFakeTimers();
+    const never = new Promise<string>(() => {});
+    const p = raceWatchdogProbe(never, 2_000, 'drain').catch((err) => err);
+    await vi.advanceTimersByTimeAsync(2_000);
+    const err = await p;
+    expect(err).toBeInstanceOf(WatchdogProbeTimeoutError);
+    expect((err as WatchdogProbeTimeoutError).kind).toBe('drain');
+  });
+
+  test('propagates an ordinary probe rejection unchanged (not a timeout)', async () => {
+    vi.useFakeTimers();
+    const boom = Promise.reject(new Error('backend down'));
+    await expect(raceWatchdogProbe(boom, 2_000, 'capture')).rejects.toThrow('backend down');
+  });
+
+  test('deadline of 0 disables the race and returns the bare probe (no wrapper, no timer)', async () => {
+    const probe = Promise.resolve('pane');
+    const p = raceWatchdogProbe(probe, 0, 'capture');
+    // The guard returns the probe itself — identity proves no timeout wrapper
+    // (and thus no lingering setTimeout) was created for the 0-disable path.
+    expect(p).toBe(probe);
+    await expect(p).resolves.toBe('pane');
+  });
+});
+
+describe('startLifecycleTimers watchdog sweep fairness (issue #2770)', () => {
+  const HEALTHY_PANE = 'assistant working...\n';
+
+  function sweepDeps(
+    agentIds: string[],
+    overrides: Partial<TimerDeps> = {},
+  ): { taskStore: TaskStore; watchdog: Watchdog; deps: TimerDeps } {
+    const taskStore = new TaskStore();
+    const watchdog = new Watchdog();
+    // Register every agent as freshly-active so the real watchdog classifies
+    // them healthy — this suite isolates sweep fairness from reaping.
+    const now = Date.now();
+    for (const id of agentIds) watchdog.registerAgent(id, now, now);
+    const deps: TimerDeps = {
+      monitor: {
+        getSnapshot: () => [],
+        getAgentEvents: () => [],
+        applyWatchdogVerdict: vi.fn(() => false),
+        sampleFindingEvidence: vi.fn(() => false),
+        getCurrentAnomaly: vi.fn(),
+        unregisterAgent: vi.fn(),
+      } as any,
+      taskStore,
+      queue: new AttentionQueue(),
+      adapter: {
+        captureDisplay: vi.fn(async () => HEALTHY_PANE),
+        stop: vi.fn(async () => undefined),
+      } as any,
+      adapterRegistry: {} as any,
+      tokenTracker: {
+        scanGrowth: vi.fn(async () => []),
+        scanAll: vi.fn(async () => undefined),
+        getTrackedTaskIds: vi.fn(() => []),
+        getUsage: vi.fn(() => undefined),
+        unregister: vi.fn(),
+      } as any,
+      watchdog,
+      hookWatcher: { drainNow: vi.fn(async () => undefined), stop: vi.fn(), isWatching: vi.fn(() => false), watch: vi.fn() } as any,
+      terminalBackend: { listSessions: vi.fn(async () => []) } as any,
+      hooksDir: '/tmp/hooks',
+      tasksFile: '/tmp/tasks.json',
+      serverCwd: '/tmp/repo',
+      saveIntervalMs: 600_000,
+      livenessIntervalMs: 600_000,
+      broadcastToAll: vi.fn(),
+      ...overrides,
+    };
+    return { taskStore, watchdog, deps };
+  }
+
+  test('a never-resolving capture does not starve the other agents (bounded probe)', async () => {
+    vi.useFakeTimers();
+    const recordProbeTimeout = vi.fn();
+    const recordSweep = vi.fn();
+    // agent-hang's capture never resolves; agent-ok's resolves immediately.
+    const captureDisplay = vi.fn((id: string) =>
+      id === 'agent-hang' ? new Promise<string>(() => {}) : Promise.resolve(HEALTHY_PANE),
+    );
+    const { deps } = sweepDeps(['agent-hang', 'agent-ok'], {
+      adapter: { captureDisplay, stop: vi.fn(async () => undefined) } as any,
+      watchdogSweepMetrics: { recordProbeTimeout, recordSweep },
+    });
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      // One tick fires at 5s; agent-hang's capture times out at +2s (default
+      // deadline). Advance past that (but before the next 10s interval) so the
+      // single tick completes: agent-ok is still checked within the same sweep.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_INTERVAL_MS + WATCHDOG_PROBE_TIMEOUT_MS + 500);
+      expect(captureDisplay).toHaveBeenCalledWith('agent-hang');
+      expect(captureDisplay).toHaveBeenCalledWith('agent-ok');
+      expect(recordProbeTimeout).toHaveBeenCalledWith('capture');
+      // The sweep completed (checked both) rather than hanging forever.
+      const lastSweep = recordSweep.mock.calls.at(-1)?.[0];
+      expect(lastSweep.checked).toBe(2);
+      expect(lastSweep.skipped).toBe(0);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('a tiny sweep budget defers work and the cursor rotates so every agent is eventually checked', async () => {
+    vi.useFakeTimers();
+    // Every capture hangs, so each agent consumes a full probe deadline (2s) of
+    // fake time — with a 4s budget that is exactly two agents per tick, and the
+    // third is deferred to the next tick.
+    const captureDisplay = vi.fn((_id: string) => new Promise<string>(() => {}));
+    const recordSweep = vi.fn();
+    const { deps } = sweepDeps(['a', 'b', 'c'], {
+      adapter: { captureDisplay, stop: vi.fn(async () => undefined) } as any,
+      getWatchdogProbeTimeoutMs: () => 2_000,
+      getWatchdogSweepBudgetMs: () => 4_000,
+      watchdogSweepMetrics: { recordProbeTimeout: vi.fn(), recordSweep },
+    });
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      // Cover several full ticks. Each hung capture burns its 2s deadline of
+      // fake time, so ~2 agents fit the 4s budget per tick and each tick
+      // completes (~4s) before the next 5s interval — no re-entrancy skips.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_INTERVAL_MS * 4);
+      // First sweep deferred the third agent — the anti-starvation property.
+      const first = recordSweep.mock.calls[0]?.[0];
+      expect(first.checked).toBe(2);
+      expect(first.skipped).toBe(1);
+      // The deferred agent is measured as genuinely overdue (age from its
+      // registration, not read as freshly checked) — the oldest-check-age gauge
+      // reflects the real worst case.
+      expect(first.oldestCheckAgeMs).toBeGreaterThan(0);
+      // Across the rotation every agent gets checked (fairness) — the cursor
+      // resumes after the last-processed agent each tick.
+      const everChecked = new Set(captureDisplay.mock.calls.map((c) => c[0] as string));
+      expect(everChecked).toEqual(new Set(['a', 'b', 'c']));
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('oldest-check age is reported and a disabled budget checks every agent each tick', async () => {
+    vi.useFakeTimers();
+    const recordSweep = vi.fn();
+    const { deps } = sweepDeps(['a', 'b', 'c'], {
+      getWatchdogSweepBudgetMs: () => 0, // disabled → all agents each tick
+      watchdogSweepMetrics: { recordProbeTimeout: vi.fn(), recordSweep },
+    });
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(WATCHDOG_INTERVAL_MS);
+      const lastSweep = recordSweep.mock.calls.at(-1)?.[0];
+      expect(lastSweep.checked).toBe(3);
+      expect(lastSweep.skipped).toBe(0);
+      expect(lastSweep.trackedAgents).toBe(3);
+      expect(typeof lastSweep.oldestCheckAgeMs).toBe('number');
+      expect(lastSweep.oldestCheckAgeMs).toBeGreaterThanOrEqual(0);
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
+  test('a hung agent is reaped exactly once while a co-tracked agent is still checked', async () => {
+    vi.useFakeTimers();
+    const stop = vi.fn(async () => undefined);
+    const captureDisplay = vi.fn(async () => 'stale frozen pane\nnothing here\n');
+    const taskStore = new TaskStore();
+    const watchdog = new Watchdog();
+    // agent-stale: silent long ago → real watchdog returns stale_agent → reap.
+    // agent-live: freshly active → healthy, must still be checked this tick.
+    const longAgo = Date.now() - 20 * 60_000;
+    watchdog.registerAgent('agent-stale', longAgo, longAgo);
+    watchdog.registerAgent('agent-live', Date.now(), Date.now());
+    const staleTask = taskStore.createTask({ prompt: 'hung', cwd: '/tmp' });
+    taskStore.addSession(staleTask.id, { tmuxSession: 'agent-stale', agentType: 'claude-code', cwd: '/tmp', createdAt: new Date() });
+
+    const { deps } = sweepDeps([], {
+      adapter: { captureDisplay, stop } as any,
+      watchdog,
+      taskStore,
+      getHungTaskReapMs: () => 1_000,
+    });
+
+    const handles = startLifecycleTimers(deps);
+    try {
+      await vi.advanceTimersByTimeAsync(WATCHDOG_INTERVAL_MS);
+      expect(taskStore.getTask(staleTask.id)?.status).toBe('terminated');
+      // The reap tore down exactly one session — no duplicate termination.
+      expect(stop).toHaveBeenCalledTimes(1);
+      // Fairness: the healthy co-tracked agent was still captured this tick.
+      expect(captureDisplay).toHaveBeenCalledWith('agent-live');
+
+      // A SUBSEQUENT tick does not re-terminate the already-reaped task: the
+      // reap teardown unregistered agent-stale, so the next sweep never revisits
+      // it and `stop` stays at one — the no-duplicate-termination guarantee.
+      await vi.advanceTimersByTimeAsync(WATCHDOG_INTERVAL_MS);
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(taskStore.getTask(staleTask.id)?.status).toBe('terminated');
     } finally {
       clearAllTimers(handles);
     }

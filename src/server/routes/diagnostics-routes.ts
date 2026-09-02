@@ -965,6 +965,13 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(deps.firstHookMissMetrics
         ? { firstHookMissTotal: deps.firstHookMissMetrics.getSnapshot().firstHookMissTotal }
         : {}),
+      // Issue #2770: watchdog sweep fairness — probe-timeout counters plus the
+      // last sweep's checked/skipped counts and oldest-check age, so an operator
+      // can see when a hung probe is deferring work or the fleet is falling
+      // behind its sweep cadence. Cheap in-memory read only — never a fresh sweep.
+      ...(deps.watchdogSweepMetrics
+        ? { watchdogSweep: deps.watchdogSweepMetrics.getSnapshot() }
+        : {}),
       // Hook-ingestion lag summary (issue #2319): sessionCount / notableLagCount
       // + max/p95 from the in-memory diagnostics snapshot. Operators and drain
       // automation polling /api/health (and `kookr status`) see data-plane lag
