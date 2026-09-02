@@ -9,10 +9,12 @@
 #   - pr-workflow-gate.sh — blocks gh pr create until the pre-pr-review
 #     skill has produced a producer-token state file proving pre-PR checks ran.
 #     (PreToolUse / Bash)
-#   - gh-pr-merge-gate.sh — blocks bare `gh pr merge` in Kookr-managed
+#   - gh-pr-merge-gate.sh — blocks direct PR merges in Kookr-managed
 #     sessions (KOOKR_TASK_ID set) when KOOKR_MERGE_REQUIRE_REVIEW is on;
 #     steers agents to `pnpm merge` / scripts/kookr-merge.sh (issue #1968).
-#     (PreToolUse / Bash)
+#     Registered twice — once for `Bash(gh pr merge*)` and once for
+#     `Bash(gh api*)` — so a `gh api --method PUT .../pulls/<n>/merge` call
+#     also reaches the hook (issue #2944). (PreToolUse / Bash)
 #   - oss-contribution-gate.sh — rate-limits external OSS PRs (default
 #     1/day/repo) and enforces the blocked-repo list. Reads
 #     ~/.kookr/rate-limits.json. (PreToolUse / Bash)
@@ -69,6 +71,10 @@ HOOKS=(
   $'pr-workflow-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'oss-contribution-gate.sh\tPreToolUse\tBash\tBash(gh pr create*)'
   $'gh-pr-merge-gate.sh\tPreToolUse\tBash\tBash(gh pr merge*)'
+  # Second registration of the same hook for the `gh api` merge verb
+  # (issue #2944). register_hook dedups on command+if, so both coexist; the
+  # symlink is installed once per hook name (install loop dedups by name).
+  $'gh-pr-merge-gate.sh\tPreToolUse\tBash\tBash(gh api*)'
   $'post-merge-keyword-scan.sh\tUserPromptSubmit\t\t'
   $'kb-context-inject.sh\tUserPromptSubmit\t\t'
 )
@@ -197,9 +203,13 @@ uninstall_plugin_asset_symlink() {
 }
 
 print_global_assets() {
-  local row name event matcher if_cond src_rel dest_rel skill
+  local row name event matcher if_cond src_rel dest_rel skill seen=""
   for row in "${HOOKS[@]}"; do
     IFS=$'\t' read -r name event matcher if_cond <<<"$row"
+    # A hook may appear more than once (registered under multiple `if`
+    # filters); it is a single symlink, so emit its asset row once.
+    case " $seen " in *" $name "*) continue ;; esac
+    seen="$seen $name"
     printf '%s\t%s\t%s\n' "$name" "hooks/$name" ".claude/hooks/$name"
   done
   # SKILLS is intentionally empty; `${arr[@]+"${arr[@]}"}` keeps the loop safe
@@ -244,14 +254,18 @@ register_hook() {
   # Idempotently add the entry under hooks.<event> (create if missing).
   local tmp
   tmp=$(mktemp)
+  # Dedup key is (command, if): one hook script may be registered under several
+  # `if` filters (e.g. gh-pr-merge-gate.sh for both `gh pr merge*` and
+  # `gh api*`, issue #2944), so keying on command alone would drop the second.
   # Note: jq's `//` has lower precedence than `==`, so the equality needs its
   # own parens or `"" == $cmd` evaluates first and the `//` short-circuits
   # on any non-null command.
-  jq --argjson entry "$entry" --arg cmd "$dest" --arg event "$event" '
+  jq --argjson entry "$entry" --arg cmd "$dest" --arg event "$event" --arg ifc "$if_cond" '
     .hooks = (.hooks // {})
     | .hooks[$event] = (.hooks[$event] // [])
     | if any(.hooks[$event][]?;
-              (((.hooks // [])[0].command) // "") == $cmd)
+              (((.hooks // [])[0].command) // "") == $cmd
+              and (((.hooks // [])[0]["if"]) // "") == $ifc)
       then .
       else .hooks[$event] += [$entry]
       end
@@ -285,9 +299,15 @@ case "$cmd" in
   install)
     ensure_jq
     printf 'Installing Kookr hooks from %s\n' "$REPO_DIR"
+    linked=""
     for row in "${HOOKS[@]}"; do
       IFS=$'\t' read -r name event matcher if_cond <<<"$row"
-      install_symlink "$name"
+      # Install the symlink once per hook name; a hook registered under
+      # multiple `if` filters (issue #2944) still resolves to one script.
+      case " $linked " in
+        *" $name "*) ;;
+        *) install_symlink "$name"; linked="$linked $name" ;;
+      esac
       register_hook "$name" "$event" "$matcher" "$if_cond"
     done
     for skill in ${SKILLS[@]+"${SKILLS[@]}"}; do
@@ -306,12 +326,21 @@ case "$cmd" in
   --uninstall|uninstall)
     ensure_jq
     printf 'Uninstalling Kookr hooks\n'
+    unlinked=""
     for row in "${HOOKS[@]}"; do
       IFS=$'\t' read -r name event matcher if_cond <<<"$row"
-      if [ -L "$DEST_DIR/$name" ] || [ -f "$DEST_DIR/$name" ]; then
-        rm -f "$DEST_DIR/$name"
-        printf '  removed  %s\n' "$DEST_DIR/$name"
-      fi
+      # Remove the symlink once per hook name; unregister_hook drops every
+      # registration for this command, so re-calling it is a harmless no-op.
+      case " $unlinked " in
+        *" $name "*) ;;
+        *)
+          if [ -L "$DEST_DIR/$name" ] || [ -f "$DEST_DIR/$name" ]; then
+            rm -f "$DEST_DIR/$name"
+            printf '  removed  %s\n' "$DEST_DIR/$name"
+          fi
+          unlinked="$unlinked $name"
+          ;;
+      esac
       unregister_hook "$name" "$event"
     done
     for row in "${PLUGIN_ASSETS[@]}"; do
