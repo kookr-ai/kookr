@@ -21,14 +21,14 @@ afterEach(() => {
 
 /** Isolate fixture git from the ambient worktree (GIT_DIR / common-dir). */
 function isolatedEnv(home: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = {
-    PATH: process.env.PATH,
-    TMPDIR: process.env.TMPDIR,
-    HOME: home,
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    ...extra,
-  };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, ...extra };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('GIT_') || key === 'KOOKR_GIT_COMMON_DIR') {
+      delete env[key];
+    }
+  }
+  env.GIT_CONFIG_NOSYSTEM = '1';
+  env.GIT_CONFIG_GLOBAL = '/dev/null';
   return env;
 }
 
