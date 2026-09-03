@@ -206,6 +206,9 @@ describe('parallel-issue-batch playbook: merge follow-through hardening (2026-08
     expect(content).toMatch(/independent review is advisory/i);
     expect(content).toMatch(/never become a task blocker/i);
     expect(content).toMatch(/#3027/);
+    expect(content).toContain('Classify: `kookr-ai/kookr` → hard');
+    expect(content).toContain("grep -qiE 'independent review is advisory'");
+    expect(content).toContain('else hard');
   });
 });
 

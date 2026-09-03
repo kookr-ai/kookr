@@ -168,6 +168,9 @@ describe('implement-github-issue playbook', () => {
     expect(gateText).toMatch(/#3027/);
     // Hard-gate enforcement on this repo is unchanged.
     expect(gateText).toMatch(/exit code 4|exit 4/);
+    expect(gateText).toContain('if `"$REPO"` is `kookr-ai/kookr` → hard');
+    expect(gateText).toContain("grep -qiE 'independent review is advisory'");
+    expect(gateText).toMatch(/else hard/);
   });
 
   test('incident-labeled issues use Refs not Closes so merge cannot auto-close (issue #1750)', () => {

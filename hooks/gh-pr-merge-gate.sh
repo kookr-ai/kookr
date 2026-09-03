@@ -51,6 +51,16 @@ if [ "$require" = "0" ] || [ "$require" = "false" ]; then
   exit 0
 fi
 
+# Issue #3027: consuming repos that document independent review as advisory
+# (Lucy CLAUDE.md / #3606) may use bare `gh pr merge`. Do not weaken
+# kookr-ai/kookr — that origin always stays on the hard gate.
+origin_url=$(git remote get-url origin 2>/dev/null || true)
+origin_norm=$(printf '%s' "$origin_url" | sed -E 's#\.git$##' | sed -E 's#^([^@]*@|https?://)[^/:]+[:/]##')
+if [ "$origin_norm" != "kookr-ai/kookr" ] && \
+   grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md 2>/dev/null; then
+  exit 0
+fi
+
 INPUT=$(cat)
 COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null) \
   || fail_open "failed to parse input JSON"

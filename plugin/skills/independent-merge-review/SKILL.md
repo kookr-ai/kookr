@@ -69,8 +69,13 @@ On an advisory repo, still run this skill before merging when capacity
 permits; if the reviewer cannot return in time, merge after local gates
 instead of stalling.
 
-Skip only when the merge is a human-driven manual merge (set
-`KOOKR_MERGE_REQUIRE_REVIEW=0` for that one merge).
+On a **hard-gate** repo, skip the wrapper only for a human-driven manual
+merge (`KOOKR_MERGE_REQUIRE_REVIEW=0` for that one merge) — never for an
+autonomous self-merge. On an **advisory** repo, skipping the reviewer after
+a failed or missing attempt is the documented policy; merge after local
+gates. If a global `gh pr merge` hook still denies the merge there, this
+env var on that one command is the authorized kill-switch for a repo that
+opted out, not a human-merge exception.
 
 ## The verdict comment contract
 

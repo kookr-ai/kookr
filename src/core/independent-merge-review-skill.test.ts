@@ -40,9 +40,18 @@ describe('independent-merge-review skill (issue #3027)', () => {
   });
 
   test('classifies kookr-ai/kookr as hard before the CLAUDE.md advisory grep', () => {
-    const kookrIdx = skill.indexOf('kookr-ai/kookr');
-    const grepIdx = skill.search(/independent review is advisory/);
-    expect(kookrIdx).toBeGreaterThan(0);
-    expect(grepIdx).toBeGreaterThan(kookrIdx);
+    const classifyStart = skill.indexOf('**Classify:**');
+    expect(classifyStart).toBeGreaterThan(0);
+    const classify = skill.slice(classifyStart, classifyStart + 600);
+    expect(classify).toContain('if [ "$REPO" = "kookr-ai/kookr" ]; then');
+    expect(classify).toContain('REVIEW_POLICY=hard');
+    expect(classify).toContain("grep -qiE 'independent review is advisory'");
+    expect(classify).toContain('REVIEW_POLICY=advisory');
+    const hardIdx = classify.indexOf('REVIEW_POLICY=hard');
+    const advisoryIdx = classify.indexOf('REVIEW_POLICY=advisory');
+    const elseIdx = classify.lastIndexOf('REVIEW_POLICY=hard');
+    expect(hardIdx).toBeGreaterThan(0);
+    expect(advisoryIdx).toBeGreaterThan(hardIdx);
+    expect(elseIdx).toBeGreaterThan(advisoryIdx);
   });
 });

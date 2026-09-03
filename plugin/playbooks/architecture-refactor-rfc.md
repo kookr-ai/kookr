@@ -190,6 +190,11 @@ different head. A timeout label is telemetry only. Any correction changes the
 head: update `rfcHeadSha`, run the repository gates again, push, and obtain a
 new exact-head verdict.
 
+This playbook keeps a hard exact-head PASS requirement even on repos whose
+CLAUDE.md documents independent review as advisory (issue #3027). RFC delivery
+is fail-closed; do not apply the skill's advisory "merge despite BLOCK/timeout"
+lane here.
+
 Use an exact-head reviewed merge command. In `kookr-ai/kookr`, use the enforced
 repository wrapper (`pnpm merge <RFC_PR_NUMBER> --repo <repo>`). In another
 repository, first confirm its allowed merge method and required checks, then
