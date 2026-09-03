@@ -16,6 +16,7 @@ import { ClaudeCodeAdapter } from '../adapters/claude-code-adapter.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import type { GitHubReference, GitHubPRState, GitHubIssueState } from '../core/github-types.js';
 import { MessageRouter } from './ws.js';
+import { reconcile } from './reconciliation.js';
 import { getSnapshotAgentsRaw } from './use-cases/get-snapshot.js';
 import type { ServerMessage, ClientMessage } from '../shared/protocol.js';
 import type { LaunchOpts, LaunchResult } from './launch-service.js';
@@ -1350,15 +1351,58 @@ describe('WebSocket MessageRouter', () => {
     expect(taskStore.getTask(task.id)!.status).toBe('cancelled');
   });
 
-  test('client sends reopenTask - task reopened', () => {
+  test('client sends reopenTask - task re-queued as pending for relaunch', async () => {
     const task = taskStore.createTask('Fix bug', '/cwd');
     taskStore.startTask(task.id);
     taskStore.cancelTask(task.id);
 
     const msg: ClientMessage = { type: 'reopenTask', taskId: task.id };
-    router.handleMessage(msg);
+    await router.handleMessage(msg);
 
-    expect(taskStore.getTask(task.id)!.status).toBe('open');
+    // Reopen re-queues the task (terminated/cancelled -> open -> pending) so it
+    // relaunches with a fresh session and stays visible. A bare `open` state is
+    // invisible in the snapshot and gets reclaimed by reconcile. (This router
+    // has no promotion deps wired, so it rests at `pending`.)
+    expect(taskStore.getTask(task.id)!.status).toBe('pending');
+  });
+
+  test('reopenTask survives a reconcile pass (regression: dead sessions no longer re-terminate)', async () => {
+    // Reproduces the "Reopen does nothing" report: a terminated task keeps its
+    // dead sessions, and a bare `terminated -> open` reopen lets the next
+    // reconcile pass drive it straight back to `terminated`.
+    const task = taskStore.createTask('Crashed task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Crashed task', '/cwd');
+    // Simulate the session dying without a clean turn, then reconcile marking
+    // the task terminated (the state the operator sees).
+    taskStore.updateSession(task.id, tmuxName, { lastStatus: 'aborted' });
+    taskStore.terminateTask(task.id, { reason: 'unknown', detail: 'session died' });
+    expect(taskStore.getTask(task.id)!.status).toBe('terminated');
+
+    await router.handleMessage({ type: 'reopenTask', taskId: task.id });
+    // Not re-terminated: the reopened task is queued as pending, which is exempt
+    // from reconcile's "all sessions done -> terminal" rule.
+    expect(taskStore.getTask(task.id)!.status).toBe('pending');
+
+    const result = await reconcile(taskStore, terminal);
+    expect(result.tasksTerminated).not.toContain(task.id);
+    expect(taskStore.getTask(task.id)!.status).toBe('pending');
+  });
+
+  test('reopenTask leaves exactly one dashboard row for the task (no ghost session row)', async () => {
+    // A terminated task can still have its dead session registered in the
+    // monitor (e.g. before cleanup ran). After reopen the task must appear once,
+    // not as both a `pending-<id>` row and a stale live-session row.
+    const task = taskStore.createTask('Crashed task', '/cwd');
+    const tmuxName = await adapter.launch(task.id, 'Crashed task', '/cwd');
+    monitor.registerAgent(tmuxName);
+    taskStore.updateSession(task.id, tmuxName, { lastStatus: 'aborted' });
+    taskStore.terminateTask(task.id, { reason: 'unknown', detail: 'session died' });
+
+    await router.handleMessage({ type: 'reopenTask', taskId: task.id });
+
+    const rows = getSnapshotAgentsRaw({ monitor }).filter((a) => a.taskId === task.id);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.taskStatus).toBe('pending');
   });
 
   test('client sends relaunch - new task created from original', async () => {
