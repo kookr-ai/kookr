@@ -154,6 +154,22 @@ describe('implement-github-issue playbook', () => {
     expect(gateText).toContain('review-skipped-timeout');
   });
 
+  test('Phase 8 splits independent-review hard-gate vs advisory repo policy (issue #3027)', () => {
+    // Lucy #3606 made independent review advisory on consuming repos; the
+    // playbook used to claim it was a merge gate everywhere, so Lucy agents
+    // stalled at an open PR. kookr-ai/kookr must keep the hard wrapper.
+    const phase8Start = pb.body.indexOf('Phase 8: Merge Policy and Claim Release');
+    const gateIdx = pb.body.indexOf('Independent merge-review gate', phase8Start);
+    const mergeIdx = pb.body.indexOf('pnpm merge <PR_NUMBER>', phase8Start);
+    const gateText = pb.body.slice(gateIdx, mergeIdx);
+    expect(gateText).toContain('kookr-ai/kookr');
+    expect(gateText).toMatch(/independent review is advisory/i);
+    expect(gateText).toMatch(/never become a task blocker/i);
+    expect(gateText).toMatch(/#3027/);
+    // Hard-gate enforcement on this repo is unchanged.
+    expect(gateText).toMatch(/exit code 4|exit 4/);
+  });
+
   test('incident-labeled issues use Refs not Closes so merge cannot auto-close (issue #1750)', () => {
     // Close-out gate: fix-merged ≠ incident-resolved. The playbook must detect
     // incident labels in Phase 1 and use Refs (never Closes) in the PR body.
