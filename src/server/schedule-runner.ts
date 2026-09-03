@@ -27,7 +27,7 @@ import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync, type ResolvedScheduleLaunch } from './schedule-validator.js';
-import { isPendingQueueFullError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
+import { isPendingQueueFullError, isQuotaHeadroomAdmissionError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
 import {
   EMPTY_PAUSED_PROJECT_IDS,
   isSafeModeExemptSchedule,
@@ -1378,6 +1378,34 @@ export class ScheduleRunner {
     receipt: { id: string },
     err: unknown,
   ): Promise<{ error: string }> {
+    // Issue #1894 recurrence (2026-08-27): a fire refused before any task
+    // record because the resolved provider has no live quota headroom is
+    // provider *unavailability*, not a genuine dispatch failure. Record it as
+    // a park (`skipped_provider_paused`) — the same non-incrementing outcome
+    // `parkUnavailableAgent` uses — so the fire is deferred without advancing
+    // the schedule's execution-failure streak. Left as `dispatch_failed` it
+    // would count toward the #2353 fail-closed auto-pause and daemon-hold the
+    // schedule after three provider-empty ticks (the observed symptom: the
+    // queue feeder, issue batches, and the orchestration-effectiveness loop
+    // all auto-paused while quota was exhausted, not because they were broken).
+    if (isQuotaHeadroomAdmissionError(err)) {
+      const resetHint = err.resetsAt
+        ? ` Retry after the binding window resets (${err.resetsAt}).`
+        : ' Retry once plan quota resets.';
+      const parkMessage =
+        `Provider quota exhausted (utilization ${err.maxUtilization.toFixed(0)}% `
+        + `≥ threshold ${err.threshold.toFixed(0)}%, no healthy alternate) — `
+        + `fire parked (provider_paused).${resetHint}`;
+      console.warn(`[schedule] Parking "${schedule.name}": ${parkMessage}`);
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        'skipped_provider_paused',
+        'provider_paused',
+        parkMessage,
+      );
+      return { error: parkMessage };
+    }
     const message = err instanceof Error ? err.message : String(err);
     const reasonCode = mapErrorToReasonCode(err);
     // issue #1589: a launch that reached the adapter and then timed out/threw

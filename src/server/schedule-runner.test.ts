@@ -14,7 +14,8 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
-import { PendingQueueFullError } from './launch-service.js';
+import { PendingQueueFullError, QuotaHeadroomAdmissionError } from './launch-service.js';
+import { isGenuineExecutionFailure } from './schedule-service.js';
 import { aTask } from '../core/__fixtures__/task-builders.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
@@ -538,6 +539,73 @@ Do dependency-gated work.
         reasonCode: 'provider_paused',
       });
       expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('dispatch_failed');
+    });
+
+    it('parks (not dispatch_failed) when a fire is refused for no quota headroom, so three quota-empty ticks cannot auto-pause the schedule (issue #1894)', async () => {
+      // Threshold-armed service: three genuine `dispatch_failed` fires WOULD
+      // fail-close this schedule (issue #2353). Proving the schedule stays
+      // enabled after three quota-empty ticks is only meaningful because the
+      // auto-pause is actually wired here — remove the recordFireFailure park
+      // branch and this test fail-closes at the third tick.
+      const armedService = new ScheduleService({
+        store,
+        validator,
+        getFailureAlertThreshold: () => 3,
+        getDaemonHealthy: () => true,
+      });
+      const schedule = store.create({
+        name: 'Quota-exhausted schedule',
+        cron: '* * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+      });
+      replaceSchedule(schedule.id, {
+        createdAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+      });
+
+      // A launcher throw modelling the pre-slot quota-headroom admission deny
+      // (Anthropic plan quota exhausted, no healthy alternate to rotate to).
+      const ledger = {
+        maxActiveTasks: 10,
+        active: 10,
+        free: 0,
+        byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+        effectiveWorking: 2,
+        phantomActive: 8,
+        pendingQueueDepth: 0,
+        oldestPendingAgeMs: 0,
+        oldestFinishedAwaitingAckAgeMs: 3_600_000,
+      };
+      const runner = createRunner({
+        service: armedService,
+        launcher: async () => {
+          throw new QuotaHeadroomAdmissionError(ledger, 97, 90, '2026-08-02T18:00:00Z');
+        },
+      });
+
+      // Fire three quota-empty ticks — the exact count that daemon-holds a
+      // schedule on genuine failures.
+      for (let i = 0; i < 3; i++) {
+        replaceSchedule(schedule.id, { lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString() });
+        await runner.tick();
+      }
+
+      // Provider unavailability is a park, not a genuine dispatch failure: each
+      // fire is deferred and the outcome never advances the execution-failure
+      // streak, so the schedule is not daemon-held.
+      const after = store.get(schedule.id)!;
+      expect(launched).toHaveLength(0);
+      expect(after.latestExecution).toMatchObject({
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
+      });
+      expect(after.latestExecution?.outcome).not.toBe('dispatch_failed');
+      expect(after.latestExecution?.message).toContain('quota exhausted');
+      expect(after.consecutiveFailures ?? 0).toBe(0);
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      // The classifier the streak is computed from agrees this is no failure.
+      expect(isGenuineExecutionFailure(after.latestExecution!.outcome)).toBe(false);
     });
 
     it('does not spawn a blacklisted pin and substitutes onto a remaining agent (issue #3025)', async () => {
