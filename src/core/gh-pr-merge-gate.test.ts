@@ -19,16 +19,31 @@ afterEach(() => {
   }
 });
 
+/** Isolate fixture git from the ambient worktree (GIT_DIR / common-dir). */
+function isolatedEnv(home: string, extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    PATH: process.env.PATH,
+    TMPDIR: process.env.TMPDIR,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    ...extra,
+  };
+  return env;
+}
+
 function makeRepo(origin: string, claudeBody: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'gh-pr-merge-gate-'));
   temps.push(dir);
-  const init = spawnSync('git', ['init', '-q'], { cwd: dir, encoding: 'utf8' });
-  expect(init.status).toBe(0);
+  const env = isolatedEnv(dir);
+  const init = spawnSync('git', ['init', '-q'], { cwd: dir, env, encoding: 'utf8' });
+  expect(init.status, init.stderr).toBe(0);
   const remote = spawnSync('git', ['remote', 'add', 'origin', origin], {
     cwd: dir,
+    env,
     encoding: 'utf8',
   });
-  expect(remote.status).toBe(0);
+  expect(remote.status, remote.stderr).toBe(0);
   writeFileSync(join(dir, 'CLAUDE.md'), claudeBody);
   return dir;
 }
@@ -37,15 +52,10 @@ function runHook(
   cwd: string,
   extraEnv: Record<string, string>,
   command: string,
-  unset: string[] = [],
 ): string {
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: cwd, ...extraEnv };
-  for (const key of unset) {
-    delete env[key];
-  }
   return execFileSync('bash', [HOOK], {
     cwd,
-    env,
+    env: isolatedEnv(cwd, extraEnv),
     input: JSON.stringify({ tool_input: { command } }),
     encoding: 'utf8',
   });
@@ -91,7 +101,7 @@ describe('gh-pr-merge-gate.sh advisory-repo split (issue #3027)', () => {
 
   test('does nothing when KOOKR_TASK_ID is unset', () => {
     const cwd = makeRepo('git@github.com:kookr-ai/kookr.git', '# kookr\n');
-    const out = runHook(cwd, {}, MERGE, ['KOOKR_TASK_ID']);
+    const out = runHook(cwd, {}, MERGE);
     expect(out.trim()).toBe('');
   });
 });

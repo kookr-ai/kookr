@@ -34,7 +34,7 @@ repo's merge wrapper.
 **Advisory** — the repo's `CLAUDE.md` or `AGENTS.md` documents that
 independent review is advisory verification (Lucy's standing heading: "No
 human merge gate — independent review is advisory verification",
-jeanibarz/lucy#3606). Still spawn the reviewer and post the verdict when
+Lucy #3606). Still spawn the reviewer and post the verdict when
 capacity permits. Timeout, missing, or BLOCK never become a task blocker or
 merge refusal. Local gates remain the merge gate.
 
