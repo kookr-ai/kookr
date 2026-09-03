@@ -261,7 +261,8 @@ a parallel flow.
    fresh context. Require a latest `pass` comment whose `review-head-sha`
    equals the current RFC PR head. A missing, BLOCK, unbound, or stale verdict
    fails closed. A correction changes the head and therefore requires a new
-   verdict.
+   verdict. This architecture-refactor tail stays fail-closed even on repos
+   whose CLAUDE.md documents independent review as advisory (issue #3027).
 3. **Merge with an exact-head guard.** In `kookr-ai/kookr`, use `pnpm merge` so
    the independent verdict is enforced by the repository wrapper. Elsewhere,
    resolve the repository's allowed merge method and use the pull-request merge

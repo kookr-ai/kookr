@@ -199,6 +199,17 @@ describe('parallel-issue-batch playbook: merge follow-through hardening (2026-08
     expect(content).toMatch(/never merely idle or slow/);
     expect(content).toMatch(/when in doubt, treat it as alive/);
   });
+
+  test('child merge template splits independent-review hard-gate vs advisory (issue #3027)', () => {
+    expect(content).toContain('independent-merge-review');
+    expect(content).toContain('kookr-ai/kookr');
+    expect(content).toMatch(/independent review is advisory/i);
+    expect(content).toMatch(/never become a task blocker/i);
+    expect(content).toMatch(/#3027/);
+    expect(content).toContain('Classify: `kookr-ai/kookr` → hard');
+    expect(content).toContain("grep -qiE 'independent review is advisory'");
+    expect(content).toContain('else hard');
+  });
 });
 
 describe('parallel-issue-batch playbook: queue-feeder claim recheck (#2757)', () => {

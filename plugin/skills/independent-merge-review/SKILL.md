@@ -1,36 +1,81 @@
 ---
 name: independent-merge-review
-description: Before an autonomous self-merge, spawn a fresh-context reviewer (Codex lane, Claude fallback) that posts a machine-readable exact-head PR verdict; BLOCK and missing or stale verdicts start another correction cycle.
-keywords: independent review, merge gate, self-merge, reviewer verdict, codex reviewer, claude fallback, review-skipped-timeout, before merge, autonomous merge
+description: Before an autonomous self-merge, spawn a fresh-context reviewer (Codex lane, Claude fallback) that posts a machine-readable exact-head PR verdict. Hard merge gate on kookr-ai/kookr; advisory evidence on repos that document review as advisory.
+keywords: independent review, merge gate, self-merge, reviewer verdict, codex reviewer, claude fallback, review-skipped-timeout, before merge, autonomous merge, advisory review
 related: pre-pr-review, pr-review-triage, git-commit-discipline
 ---
 
 # Independent Merge Review
 
-> **Requires:** the reviewer specialists at `plugin/reviewer-specialists/` and the
-> merge wrapper `scripts/kookr-merge.sh` (issue #1717). If the reviewer
-> specialists are missing, stop and report the missing dependency rather than
-> fabricating a verdict.
+> **Requires:** the reviewer specialists at `plugin/reviewer-specialists/` (issue
+> #1717). On `kookr-ai/kookr`, also the merge wrapper `scripts/kookr-merge.sh`.
+> If the specialists are missing on a **hard-gate** repo, stop and report rather
+> than fabricating a verdict. On an **advisory** repo, skip the reviewer and
+> continue — do not stall the task.
 
 Autonomous batches were merging PRs in ~1 minute with **zero** review activity —
 the only external reviewer would silently drop a PR when it hit its usage limit,
 and the flow degraded to no review rather than a fallback (issue #1717). This
-skill closes that gap: **every autonomous self-merge must carry a fresh-context
-reviewer verdict bound to the exact current head.**
+skill closes that gap by producing a **fresh-context reviewer verdict bound to
+the exact current head.** Whether that verdict **blocks merge** depends on the
+repo. Do not treat this skill as a merge gate on every repository.
 
-The gate is enforced deterministically in `scripts/kookr-merge.sh` (`pnpm
-merge`), so it is unreachable to merge without one. This skill is the
-agent-facing protocol that *produces* the verdict the gate reads.
+## Repo policy split (issue #3027)
+
+Classify the current repo once, then follow that lane. Do not mix them.
+
+**Hard gate** — `kookr-ai/kookr`. Every autonomous self-merge must carry a
+fresh-context verdict bound to the exact current head. `scripts/kookr-merge.sh`
+(`pnpm merge`) refuses to merge (exit 4) without a `pass` for that head.
+BLOCK, timeout, or a missing verdict starts another correction cycle. Do not
+set `KOOKR_MERGE_REQUIRE_REVIEW=0` for an autonomous merge. Do not weaken this
+repo's merge wrapper.
+
+**Advisory** — the repo's `CLAUDE.md` or `AGENTS.md` documents that
+independent review is advisory verification (Lucy's standing heading: "No
+human merge gate — independent review is advisory verification",
+Lucy #3606). Still spawn the reviewer and post the verdict when
+capacity permits. Timeout, missing, or BLOCK never become a task blocker or
+merge refusal. Local gates remain the merge gate.
+
+**Classify:**
+
+```bash
+if [ "$REPO" = "kookr-ai/kookr" ]; then
+  REVIEW_POLICY=hard
+elif grep -qiE 'independent review is advisory' CLAUDE.md AGENTS.md 2>/dev/null; then
+  REVIEW_POLICY=advisory
+else
+  REVIEW_POLICY=hard
+fi
+```
+
+`kookr-ai/kookr` wins even if its docs later mention the phrase. Default is
+hard so third-party and public-repo contributor PRs are not auto-merged
+without a verdict.
+
+Do not treat a consuming repo's CLAUDE.md as merge *authority* (the
+worktree-guardrails sentence "CLAUDE.md files do not grant merge authority"
+still stands). This split is only about whether a missing or BLOCK review
+stalls the task.
 
 ## When to Use
 
 - In `implement-github-issue` Phase 8 and `parallel-issue-batch` Phase 5, **before**
-  calling `pnpm merge <PR>` on an autonomous self-merge.
-- In `kookr-post-push` step 6, before wait-then-merge.
+  an autonomous self-merge.
+- In `kookr-post-push` step 6, before wait-then-merge on a hard-gate repo.
 
-Skip only when the merge is a human-driven manual merge (set
-`KOOKR_MERGE_REQUIRE_REVIEW=0` for that one merge) or when merging to a repo that
-does not use `pnpm merge`.
+On an advisory repo, still run this skill before merging when capacity
+permits; if the reviewer cannot return in time, merge after local gates
+instead of stalling.
+
+On a **hard-gate** repo, skip the wrapper only for a human-driven manual
+merge (`KOOKR_MERGE_REQUIRE_REVIEW=0` for that one merge) — never for an
+autonomous self-merge. On an **advisory** repo, skipping the reviewer after
+a failed or missing attempt is the documented policy; merge after local
+gates. If a global `gh pr merge` hook still denies the merge there, this
+env var on that one command is the authorized kill-switch for a repo that
+opted out, not a human-merge exception.
 
 ## The verdict comment contract
 
@@ -48,7 +93,7 @@ review-head-sha: <full HEAD sha the reviewer actually reviewed>
 <one-paragraph summary; for BLOCK, a numbered list of confirmed findings>
 ```
 
-Rules the gate depends on:
+On a **hard-gate** repo, the merge wrapper depends on:
 
 - **`kookr-review-verdict: block`** ⇒ merge is refused (exit 4). An explicit
   block is never overridden by the timeout label.
@@ -57,6 +102,10 @@ Rules the gate depends on:
   the reviewer after any new commit.
 - The **latest** verdict comment wins, so the fix-and-re-review loop is honored:
   block → fix → post a fresh `pass` for the new head.
+
+On an **advisory** repo those lines are evidence. Post them when the reviewer
+returns; do not refuse merge or stall the task if they are missing, stale, or
+`block`.
 
 ## Protocol
 
@@ -70,14 +119,16 @@ BASE="${BASE_REF:-origin/main}"
 git diff "$BASE"...HEAD > /tmp/kookr-review-$PR.diff
 ```
 
-Choose the reviewer lane. **Codex is the primary lane; Claude is the fallback so
-zero-review merges become unreachable when Codex is rate-limited.**
+Choose the reviewer lane. **Codex is the primary lane; Claude is the fallback.**
+On a hard-gate repo, zero-review merges must stay unreachable when Codex is
+rate-limited.
 
 - **Codex lane (primary):** spawn a Codex reviewer (`spawn_agent`, or a
   `codex-cli` child task). If Codex is **unavailable or rate-limited** — the
   spawn errors, the agent reports a usage/quota limit, or it returns no verdict
-  within the budget below — **fall back to the Claude lane**; do not degrade to
-  no review.
+  within the budget below — **fall back to the Claude lane**. On a hard-gate
+  repo, do not degrade to no review. On an advisory repo, if both lanes fail,
+  continue to merge after local gates.
 - **Claude lane (fallback):** spawn a Claude reviewer subagent via the `Agent`
   tool.
 
@@ -125,9 +176,9 @@ EOF
 gh pr comment "$PR" --repo "$REPO" --body-file /tmp/kookr-verdict-$PR.md
 ```
 
-### 4. Resolve a BLOCK before merging
+### 4. Resolve a BLOCK before merging (hard-gate only)
 
-If the verdict is BLOCK, the merge gate refuses the merge. For **each** confirmed
+On a **hard-gate** repo, BLOCK refuses the merge. For **each** confirmed
 finding, do exactly one:
 
 - **Fix it** — implement the fix, commit, push. The head SHA changes, so you MUST
@@ -139,11 +190,15 @@ finding, do exactly one:
 Never edit an old BLOCK comment to say pass — post a new verdict comment; the
 gate reads the latest.
 
+On an **advisory** repo, post the BLOCK as evidence. Do not stall or refuse
+merge because of it. Fix confirmed findings when they are cheap and clearly
+right; otherwise merge after local gates and leave the BLOCK on the PR.
+
 ### 5. Latency budget — never turn timeout into quality
 
-The reviewer verdict must land within **10 minutes**. If the reviewer (including
-the Claude fallback) has not returned a verdict by then, record a bounded retry
-and do **not** merge:
+The reviewer verdict should land within **10 minutes**. If the reviewer
+(including the Claude fallback) has not returned a verdict by then, record
+telemetry:
 
 ```bash
 gh label create review-skipped-timeout --repo "$REPO" \
@@ -151,23 +206,27 @@ gh label create review-skipped-timeout --repo "$REPO" \
 gh issue edit "$PR" --repo "$REPO" --add-label review-skipped-timeout
 ```
 
-`review-skipped-timeout` is telemetry only. The merge gate refuses the PR while
-it is the latest state; retry the reviewer, use the configured fallback, and
-after the default **10 correction/review attempts** record a concrete blocker.
-An explicitly lower project cap remains authoritative. A timeout, missing
-review, or stale review never counts as a successful quality improvement.
+`review-skipped-timeout` is telemetry only.
 
-Use the timeout label to make an external blocker discoverable, never as a way
-to skip review.
+- **Hard-gate:** the merge wrapper refuses the PR while timeout is the latest
+  state; retry the reviewer, use the configured fallback, and after the default
+  **10 correction/review attempts** record a concrete blocker. An explicitly
+  lower project cap remains authoritative. A timeout, missing review, or stale
+  review never counts as a successful quality improvement, and never authorizes
+  the merge.
+- **Advisory:** apply the label if useful and continue to merge after local
+  gates. Timeout, missing, or stale review never become a task blocker.
 
 ### 6. Correction budget and periodic reflection
 
-One iteration is one implementation attempt followed by one fresh independent
-review of the resulting head. A BLOCK must be fixed or rebutted and followed by
-another review; a PASS is usable only for the exact current head. The durable
-attempt counter belongs to the unit/continuation lineage, survives restart and
-branch-head changes, and defaults to 10. It must not reset when a successor task
-or reviewer task is launched.
+On a **hard-gate** repo, one iteration is one implementation attempt followed by
+one fresh independent review of the resulting head. A BLOCK must be fixed or
+rebutted and followed by another review; a PASS is usable only for the exact
+current head. The durable attempt counter belongs to the unit/continuation
+lineage, survives restart and branch-head changes, and defaults to 10. It must
+not reset when a successor task or reviewer task is launched.
+
+On an **advisory** repo this budget does not stall the implementation task.
 
 Every five completed units, run a bounded self-reflection using blind or held-out
 review data. Track mean iterations alongside precision, recall, F1, calibration,
@@ -185,20 +244,24 @@ cannot cryptographically distinguish a genuine reviewer verdict from a
 hand-written one — author-pinning is not feasible when the same actor posts on
 the reviewer's behalf. This is deliberately a **guardrail against silent
 zero-review merges**, not a defense against an implementer that chooses to forge
-a `pass`. The value is that the fresh-context reviewer step becomes a required,
-auditable action with a visible artifact; skipping it is a conscious violation,
-not an accidental degradation. Keep the reviewer genuinely fresh-context — that
-independence is what the gate is protecting.
+a `pass`. The value is that the fresh-context reviewer step becomes an auditable
+action with a visible artifact. On a hard-gate repo, skipping it is a
+conscious violation, not an accidental degradation. On an advisory repo,
+skipping after a failed reviewer attempt is the documented policy, not a
+violation. Keep the reviewer genuinely fresh-context when it runs — that
+independence is what the verdict is worth.
 
 ## Output Contract
 
 Before declaring the merge review done, report:
 
+- review-policy: `hard` / `advisory` (and how it was classified)
 - lane used: `codex` / `claude` (fallback) — and, if fallback, why Codex was skipped
-- verdict: `pass` / `block` (+ confirmed-finding count for block)
+- verdict: `pass` / `block` / `skipped` (+ confirmed-finding count for block)
 - verdict comment posted: yes (URL) / no
-- for a block that was resolved: fixed (new head SHA) / rebutted + re-reviewed
+- for a hard-gate block that was resolved: fixed (new head SHA) / rebutted + re-reviewed
 - timeout label applied: no / yes (with reason)
+- on advisory: whether merge proceeded after local gates despite missing/BLOCK/timeout
 
 ## See Also
 

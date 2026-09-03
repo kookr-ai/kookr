@@ -26,7 +26,7 @@ After installation, the toolkit is available in every Claude Code session on you
 
 **Writing and design review:** `clear-technical-writing` (docstrings, comments, PR bodies, and docs a cold reader can follow), `rfc-iterative-review` (draft an RFC, run parallel critic subagents, iterate over rounds), `mbse-system-modeling` (generate or update multi-level architecture documentation), `architecture-drift-signals` (score structural health from file-size, layering, and dependency-graph signals), `requirements-engineering`.
 
-**Autonomous loops and merge safety:** `autonomous-review-loop` (bounded implement-and-correct cycles with durable accounting), `autonomous-watch-loop` (long-lived poll-and-act janitor tasks), `self-continuation-task` (sequential task chains where each run spawns the next), `independent-merge-review` (fresh-context reviewer verdict required before an autonomous self-merge).
+**Autonomous loops and merge safety:** `autonomous-review-loop` (bounded implement-and-correct cycles with durable accounting), `autonomous-watch-loop` (long-lived poll-and-act janitor tasks), `self-continuation-task` (sequential task chains where each run spawns the next), `independent-merge-review` (fresh-context exact-head verdict: hard merge gate on kookr-ai/kookr; advisory evidence where the repo documents independent review as advisory — issue #3027).
 
 **Reflection:** `self-reflect` (root-cause a mistake, then implement a structural fix), `task-feedback-reflect` (act on a thumbs-up/down on a completed task), `task-snapshot-reflect` (analyze a live or finished task from an immutable snapshot).
 
