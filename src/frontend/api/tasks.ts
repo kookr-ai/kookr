@@ -1,6 +1,11 @@
 import { apiFetch, fetchJson, fetchResult, getJson, type ApiResult } from './client.js';
 import type { AgentType } from '../../shared/contracts/agent-types.js';
 import { parseTaskArchivePage, type TaskArchivePage } from '../completed-history.js';
+import {
+  parseRecentPromptsResponse,
+  RECENT_PROMPTS_DEFAULT_LIMIT,
+  type RecentPromptEntry,
+} from '../../shared/contracts/recent-prompts.js';
 
 /**
  * GET one task's full detail (prompt/criteria bodies), the payload the compact
@@ -13,6 +18,31 @@ export function getTask<T>(taskId: string): Promise<T> {
 /** GET the compact task list (cwd + session ids only). Throws on a non-2xx. */
 export function getCompactTasks<T>(): Promise<T> {
   return getJson<T>('/api/tasks?view=compact');
+}
+
+/**
+ * GET the recall list of recent manual-launch prompts for the Launch dialog's
+ * picker (RFC: rfc-launch-prompt-recall). `cwd` biases ranking toward prompts
+ * previously launched there. Fails closed to `[]` on any non-2xx, aborted, or
+ * malformed response so the picker degrades to "no recall available" and never
+ * blocks a launch.
+ */
+export async function getRecentPrompts(
+  cwd: string | undefined,
+  signal?: AbortSignal,
+  limit: number = RECENT_PROMPTS_DEFAULT_LIMIT,
+): Promise<RecentPromptEntry[]> {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (cwd && cwd.trim()) params.set('cwd', cwd.trim());
+  try {
+    const res = await apiFetch(`/api/tasks/recent-prompts?${params.toString()}`, signal ? { signal } : undefined);
+    if (!res.ok) return [];
+    const body = (await res.json().catch(() => null)) as unknown;
+    return parseRecentPromptsResponse(body) ?? [];
+  } catch {
+    // Aborted fetch (unmount / superseded) or network error — fail closed.
+    return [];
+  }
 }
 
 /**

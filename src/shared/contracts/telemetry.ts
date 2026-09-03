@@ -15,6 +15,8 @@ export const TELEMETRY_EVENT_TYPES = [
   'launch_dialog_draft_restored',
   'launch_dialog_draft_discarded',
   'launch_dialog_cwd_field_used',
+  /** A recalled recent manual-launch prompt was selected to refill the description. */
+  'launch_prompt_recall_used',
   'launch_submitted',
   'task_completed',
   'task_cancelled',

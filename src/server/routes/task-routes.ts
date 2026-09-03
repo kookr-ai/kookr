@@ -39,6 +39,12 @@ import {
 import { LaunchPreflightError } from '../../core/launch-dependency-preflight.js';
 import { LAUNCH_DEPENDENCIES, type LaunchDependency, type PlaybookScope } from '../../core/playbook.js';
 import type { SessionInfo, Task, TaskStore, TokenUsage } from '../../core/tasks.js';
+import { selectRecentManualPrompts } from '../../core/recent-manual-prompts.js';
+import {
+  RECENT_PROMPTS_DEFAULT_LIMIT,
+  RECENT_PROMPTS_MAX_LIMIT,
+} from '../../shared/contracts/recent-prompts.js';
+import { canonicalizeCwd } from '../cwd.js';
 import type { TaskStatus } from '../../core/task-status.js';
 import type { TaskDependencyEdge, TaskMetadataIntent, TaskTerminalReceipt } from '../../shared/contracts/task.js';
 import { projectTerminalReceipt } from '../../core/terminal-receipt.js';
@@ -348,6 +354,68 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}),
       ...(skippedCorrupt > 0 ? { skippedCorruptLines: skippedCorrupt } : {}),
     });
+  });
+
+  // Recall of recent *manual-launch* prompts for the Launch dialog's picker
+  // (RFC: rfc-launch-prompt-recall). MUST be registered BEFORE `/api/tasks/:id`
+  // below — Hono matches in registration order, and after `:id` this literal
+  // path would be captured as a task id. The recent-prompts route test asserts
+  // it is not shadowed.
+  //
+  // Read-only projection: the live store (non-cloning `viewTasks()` — the pure
+  // projection never mutates or retains task refs) unioned with a bounded page
+  // of the durable archive (#2765), so recall survives the 1-day live-store
+  // prune. Prompt bodies are the same ones the same-origin dashboard already
+  // obtains via `GET /api/tasks?view=full`.
+  app.get('/api/tasks/recent-prompts', async (c) => {
+    const rawLimit = c.req.query('limit');
+    let limit = RECENT_PROMPTS_DEFAULT_LIMIT;
+    if (rawLimit !== undefined && /^\d+$/.test(rawLimit)) {
+      limit = Math.min(Math.max(Number(rawLimit), 1), RECENT_PROMPTS_MAX_LIMIT);
+    }
+    const rawCwd = c.req.query('cwd');
+    // Trim before canonicalization: realpathSync fails on a whitespace-padded
+    // path and pathResolve would then resolve it relative to process.cwd(),
+    // silently defeating every cwd match.
+    const cwd = rawCwd && rawCwd.trim() ? rawCwd.trim() : undefined;
+
+    // Live tasks via the non-cloning read (read-only contract; projection copies
+    // only the ≤50 returned strings).
+    const live: readonly Task[] = taskStore.viewTasks();
+
+    // Bounded archive page (newest-first). Absent when no data dir is wired
+    // (minimal/test), mirroring the `/api/tasks/archive` route.
+    let archived: Task[] = [];
+    if (deps.kookrDir) {
+      try {
+        const archiveDir = join(deps.kookrDir, TASK_ARCHIVE_DIRNAME);
+        const page = await readArchivedTasks(archiveDir, { limit: 500 });
+        archived = page.records.map((r) => r.task);
+      } catch {
+        // A read never throwing is the archive module's contract; on any
+        // unexpected failure recall degrades to the live store rather than 500.
+        archived = [];
+      }
+    }
+
+    // Canonicalize each distinct cwd at most once — `canonicalizeCwd` hits the
+    // filesystem (realpath), so memoize across the (few) distinct directories in
+    // the store rather than calling it per task.
+    const cwdCache = new Map<string, string>();
+    const normalizeCwd = (value: string): string => {
+      const cached = cwdCache.get(value);
+      if (cached !== undefined) return cached;
+      const resolved = canonicalizeCwd(value);
+      cwdCache.set(value, resolved);
+      return resolved;
+    };
+
+    const entries = selectRecentManualPrompts([...live, ...archived], {
+      ...(cwd !== undefined ? { cwd } : {}),
+      limit,
+      normalizeCwd,
+    });
+    return c.json(entries);
   });
 
   app.get('/api/tasks/:id', (c) => {

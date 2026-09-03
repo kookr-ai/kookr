@@ -5,7 +5,7 @@ import {
   formatBlackoutSeconds,
   getDeployStatus,
 } from './deploy.js';
-import { getArchivedTasks, getMigratableTasks, getTaskVerificationCommands, migrateTasks, patchTaskEdges } from './tasks.js';
+import { getArchivedTasks, getMigratableTasks, getRecentPrompts, getTaskVerificationCommands, migrateTasks, patchTaskEdges } from './tasks.js';
 import { createTaskShare, getTaskShares, SHARE_CSRF_HEADER } from './sharing.js';
 
 function stubFetch() {
@@ -217,5 +217,44 @@ describe('sharing', () => {
       headers: { [SHARE_CSRF_HEADER]: 'tok-123', 'content-type': 'application/json' },
       body: JSON.stringify({ taskId: 't1', ttlMs: 1000, displayLabel: 'Demo' }),
     });
+  });
+});
+
+describe('getRecentPrompts', () => {
+  test('builds the query with a trimmed cwd and the given limit', async () => {
+    const spy = vi.fn((_p: string, _i?: RequestInit) =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([]) } as Response),
+    );
+    vi.stubGlobal('fetch', spy);
+    const signal = new AbortController().signal;
+    await getRecentPrompts('  /work/proj  ', signal, 10);
+    expect(spy).toHaveBeenCalledWith('/api/tasks/recent-prompts?limit=10&cwd=%2Fwork%2Fproj', { signal });
+  });
+
+  test('omits cwd when blank and returns parsed entries', async () => {
+    const entry = { prompt: 'p', cwd: '/r', at: 1, cwdMatch: false };
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve([entry]) } as Response),
+    ));
+    expect(await getRecentPrompts('   ')).toEqual([entry]);
+  });
+
+  test('fails closed to [] on a non-2xx', async () => {
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve([]) } as Response),
+    ));
+    expect(await getRecentPrompts('/r')).toEqual([]);
+  });
+
+  test('fails closed to [] on a malformed body', async () => {
+    vi.stubGlobal('fetch', vi.fn(() =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ not: 'an array' }) } as Response),
+    ));
+    expect(await getRecentPrompts('/r')).toEqual([]);
+  });
+
+  test('fails closed to [] when the fetch rejects (abort / network)', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('aborted'))));
+    expect(await getRecentPrompts('/r')).toEqual([]);
   });
 });

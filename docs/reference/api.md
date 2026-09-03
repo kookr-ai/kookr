@@ -205,6 +205,7 @@ capacity).
 | `GET /api/tasks/:id` | A single task by id — always full detail including `prompt` (404 with `{"error": "Task not found"}` for unknown ids) |
 | `GET /api/tasks/:id/tail` | Bounded terminal output tail for a task — live ring while in progress, durable persisted tail after completion (see below) |
 | `GET /api/tasks/archive` | Page durable terminal-task history archived before pruning (issue #2765), newest-first, without hydrating the live store. Optional `before=<ISO\|epoch-ms>`, `cursor=<token>`, `limit`. Returns `{ schemaVersion: "task-archive.v1", count, records: [{archivedAt, lastActivityMs, task}], nextCursor?, skippedCorruptLines? }` |
+| `GET /api/tasks/recent-prompts` | Recent distinct **manual-launch** prompts for the Launch dialog's recall picker (RFC: rfc-launch-prompt-recall). Read-only projection over the live store unioned with a bounded archive read. Optional `cwd` (ranks prompts ever launched there first) and `limit` (default 20, max 50). Returns `RecentPromptEntry[]` (`{ prompt, cwd, at, cwdMatch }`) — distinct, capped, ranked; the same prompt bodies obtainable via `GET /api/tasks?view=full` |
 | `GET /api/tasks/completion-ready/stale` | List stale `completion_ready` signals and whether each can be auto-closed |
 | `POST /api/tasks` | Create and launch a new task |
 | `POST /api/tasks/:id/complete` | Mark a finished task `completed` (non-destructive), tear down its idle session, and apply the saved worktree-cleanup policy. Supervisor endpoint — see below |
