@@ -4054,10 +4054,12 @@ Custom body.
   // converged tick back through a full Grok Build / Codex agent. These three
   // bind the *real committed* `.kookr/playbooks/kookr-deploy-convergence.md`
   // through the exact runtime path the daemon uses (resolveProbeForSchedule →
-  // resolveSchedulePlaybookSync → parsePlaybook → resolveScheduleProbe), so if
-  // the playbook loses its `probe` frontmatter, is renamed out of the basename
-  // fallback, or stops resolving, a converged tick would launch an agent and the
-  // first test fails loudly.
+  // resolveSchedulePlaybookSync → parsePlaybook → resolveScheduleProbe), so a
+  // regression that leaves *no* cheap probe resolving — the playbook dropping out
+  // of both its `probe` frontmatter and the basename fallback, or resolution
+  // breaking with no fallback — makes a converged tick launch an agent and fails
+  // the first test loudly. (Losing the frontmatter alone is still caught by the
+  // basename fallback, which the third test pins.)
   const repoRoot = join(import.meta.dirname, '..', '..');
 
   it('binds the real committed deploy-convergence playbook to the cheap probe (no agent on a converged tick)', async () => {
