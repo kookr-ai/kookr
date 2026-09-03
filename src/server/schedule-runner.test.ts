@@ -4046,6 +4046,99 @@ Custom body.
     expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
   });
 
+  // Live schedule-registration guard (issue #2569 recurrence 2026-08-27).
+  //
+  // The tests above register a *synthetic* playbook written into the temp dir.
+  // They prove the runner honours a probe, but they cannot catch a registration
+  // or resolution regression that leaves the real production schedule routing a
+  // converged tick back through a full Grok Build / Codex agent. These three
+  // bind the *real committed* `.kookr/playbooks/kookr-deploy-convergence.md`
+  // through the exact runtime path the daemon uses (resolveProbeForSchedule →
+  // resolveSchedulePlaybookSync → parsePlaybook → resolveScheduleProbe), so if
+  // the playbook loses its `probe` frontmatter, is renamed out of the basename
+  // fallback, or stops resolving, a converged tick would launch an agent and the
+  // first test fails loudly.
+  const repoRoot = join(import.meta.dirname, '..', '..');
+
+  it('binds the real committed deploy-convergence playbook to the cheap probe (no agent on a converged tick)', async () => {
+    // No playbook is written into the temp dir; the schedule points cwd at the
+    // real repo so the runner resolves the committed playbook + its frontmatter.
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: repoRoot,
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({ receipt: 'deploy-convergence: converged · serving=abc main=abc' }),
+        stderr: '',
+      };
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(probes).toEqual([
+      ['pnpm', 'deploy:convergence', '--', '--branch', 'main', '--grace-minutes', '15', '--act'],
+    ]);
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.reasonCode).toBe('probe_quiet');
+    expect(after.latestExecution?.taskId).toBeUndefined();
+  });
+
+  it('escalates the real committed playbook to an agent only on a DIVERGENT tick', async () => {
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: repoRoot,
+    });
+    markDue(schedule.id);
+
+    const runner = createProbeRunner(async () => ({
+      exitCode: 2,
+      stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
+      stderr: '',
+    }));
+    await runner.tick();
+
+    expect(launched).toHaveLength(1);
+    // The escalation launches the real playbook body, not a stub.
+    expect(launched[0].prompt).toContain('short-lived, cheap deploy-convergence probe');
+    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+  });
+
+  it('keeps the kookr schedule cheap via the basename fallback when the playbook cannot be resolved', async () => {
+    // Registration drift: the schedule name/basename survives but the playbook
+    // file is unresolvable (renamed dir, wrong scope, missing checkout). The
+    // basename fallback must still route the cheap path — the same protection
+    // the Lucy schedule already has above.
+    const schedule = store.create({
+      name: 'Kookr Deploy Convergence',
+      cron: '* * * * *',
+      playbook: { path: 'kookr-deploy-convergence.md', parameters: { act: 'true' } },
+      cwd: dir, // temp dir has an empty playbooks/ — the file is absent
+    });
+    markDue(schedule.id);
+
+    const probes: string[][] = [];
+    const runner = createProbeRunner(async (spec) => {
+      probes.push(spec.argv);
+      return { exitCode: 0, stdout: 'converged', stderr: '' };
+    });
+    await runner.tick();
+
+    expect(launched).toHaveLength(0);
+    expect(probes[0][0]).toBe('pnpm');
+    expect(probes[0]).toContain('deploy:convergence');
+    expect(store.get(schedule.id)!.latestExecution?.reasonCode).toBe('probe_quiet');
+  });
+
   it('maps a real execFile exit 2 through defaultExecScheduleProbe', async () => {
     const result = await defaultExecScheduleProbe(
       {
