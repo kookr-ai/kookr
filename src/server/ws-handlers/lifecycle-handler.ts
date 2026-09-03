@@ -315,7 +315,7 @@ export class LifecycleHandler {
       }
 
       case 'reopenTask':
-        assertCommandSucceeded(this.commands.reopenTask(msg.taskId));
+        assertCommandSucceeded(await this.commands.reopenTask(msg.taskId));
         return { duplicate: false };
 
       case 'dismissAgentSignal': {

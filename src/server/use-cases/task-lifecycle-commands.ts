@@ -277,10 +277,34 @@ export class TaskLifecycleCommands {
     };
   }
 
-  reopenTask(taskId: string): TaskLifecycleCommandResult {
+  async reopenTask(taskId: string): Promise<TaskLifecycleCommandResult> {
     const task = this.deps.taskStore.getTask(taskId);
     if (!task) return { outcome: 'not_found', error: `Task not found: ${taskId}` };
-    return { outcome: 'reopened', task: this.deps.taskStore.reopenTask(taskId) };
+    // Reopening a terminal task must re-queue it, not merely un-terminate it.
+    //
+    // The bare `terminated -> open` transition is not durable on its own: the
+    // task's dead sessions stay attached, so the very next liveness reconcile
+    // pass sees an `open` task whose sessions are all done and immediately
+    // drives it back to `terminated` (the "all sessions done" rule in
+    // reconciliation.ts). That is the silent no-op operators saw — the Reopen
+    // button appeared to do nothing because reconcile reclaimed the task within
+    // a tick. An `open` task with no live session is also invisible in the
+    // dashboard snapshot (only pending + terminal task-only rows are
+    // synthesized), so even a durable `open` state would leave nothing on
+    // screen to act on.
+    //
+    // Pending is the fix on both counts: it is exempt from reconcile's
+    // auto-terminate branch, it renders as a `pending-<id>` row, and it is the
+    // same queue the recovery paths use (reopenTask -> pendTask) to resume a
+    // task with a fresh session. This mirrors "reopen, then launch a new agent"
+    // (state-machine catalog) as a single operator action.
+    this.deps.taskStore.reopenTask(taskId); // terminated -> open
+    const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
+    // Launch immediately when a slot is free so the task visibly resumes rather
+    // than only reappearing on the next periodic snapshot; if capacity is full
+    // or automation is drained it stays queued as pending (still visible).
+    await this.deps.tryPromotePending?.();
+    return { outcome: 'reopened', task: this.deps.taskStore.getTask(taskId) ?? pended };
   }
 
   /**
