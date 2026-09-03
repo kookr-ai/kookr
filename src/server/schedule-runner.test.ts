@@ -4100,17 +4100,32 @@ Custom body.
     });
     markDue(schedule.id);
 
-    const runner = createProbeRunner(async () => ({
-      exitCode: 2,
-      stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
-      stderr: '',
-    }));
-    await runner.tick();
+    // The real playbook declares `cwd: $HOME/git/kookr`; the launch path
+    // (resolveLaunch) expands it via HOME and existsSync-checks it. Point HOME
+    // at a temp dir that contains git/kookr so the launch cwd exists on every
+    // machine and on CI (where HOME=/home/runner and the checkout is elsewhere),
+    // instead of relying on this host happening to have ~/git/kookr.
+    const fakeHome = await mkdtemp(join(tmpdir(), 'runner-probe-home-'));
+    await mkdir(join(fakeHome, 'git', 'kookr'), { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+    try {
+      const runner = createProbeRunner(async () => ({
+        exitCode: 2,
+        stdout: JSON.stringify({ receipt: 'deploy-convergence: DIVERGENT · serving=old main=new' }),
+        stderr: '',
+      }));
+      await runner.tick();
 
-    expect(launched).toHaveLength(1);
-    // The escalation launches the real playbook body, not a stub.
-    expect(launched[0].prompt).toContain('short-lived, cheap deploy-convergence probe');
-    expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+      expect(launched).toHaveLength(1);
+      // The escalation launches the real playbook body, not a stub.
+      expect(launched[0].prompt).toContain('short-lived, cheap deploy-convergence probe');
+      expect(store.get(schedule.id)!.latestExecution?.taskId).toBe('task-1');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      await rm(fakeHome, { recursive: true, force: true });
+    }
   });
 
   it('keeps the kookr schedule cheap via the basename fallback when the playbook cannot be resolved', async () => {
