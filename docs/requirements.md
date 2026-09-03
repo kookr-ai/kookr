@@ -847,6 +847,21 @@ The system SHALL preserve required work without consuming a worker when confirme
 
 **Evidence:** `src/core/launch-dependency-admission.ts`, `src/core/launch-dependency-task-admission.ts`, `src/core/task-launch-intent.ts`, `src/core/pending-task-ttl.ts`, `src/core/capacity-ledger.ts`, `src/core/launch-dependency-diagnostics.ts`, `src/core/session-registry.ts`, `src/core/tasks.ts`, `src/server/launch-service.ts`, `src/server/agent-lifecycle.ts`, `src/server/crash-recovery.ts`, `src/server/provider-transient-retry.ts`, `src/server/reconciliation.ts`, `src/server/startup-recovery.ts`, `src/server/schedule-validator.ts`, `src/server/schedule-runner.ts`, `src/server/ralph-loop-service.ts`, `src/server/use-cases/looped-playbook-launch.ts`, `src/server/use-cases/delete-task.ts`, `src/server/use-cases/task-lifecycle-commands.ts`, `src/server/use-cases/prune-aged-task-records.ts`, `src/server/routes/task-routes.ts`, and focused tests beside each module.
 
+### R4b.13: Recall a Recent Manual-Launch Prompt at Launch [F4.1] — SHOULD — `done`
+
+The system SHOULD let the operator refill the Launch dialog's task description from a prompt they previously sent via a manual launch, biased toward the current working directory, so a prompt can be repeated on a specific repository without authoring a playbook. See `docs/rfc/rfc-launch-prompt-recall.md`.
+
+**Acceptance criteria:**
+- The Manual tab surfaces a "Recent prompts" picker listing the operator's recent manual-launch prompts (`provenance.kind === 'manual'`), most-recent first; selecting one fills the description with that exact text and does not submit, change the working directory/agent/completion criteria, or overwrite a non-empty prompt except as the direct result of that selection
+- A prompt ever launched against the current (canonicalized) working directory ranks ahead of prompts never launched there, computed over all occurrences before the result cap
+- Recall is server-backed and read-only: it projects the live task store unioned with a bounded read of the durable terminal-task archive (R4b.12 / #2765), so it recovers prompts already sent — including from other sessions and on a fresh browser — and survives the 1-day live-store prune. It exposes no prompt bodies the same-origin dashboard cannot already obtain via `GET /api/tasks?view=full`
+- The prompt shown is the display prompt (`displayPromptForTask`): guardrail preamble stripped, `userPrompt` preferred, legacy `prompt` as fallback; entries are deduped on display text
+- The picker is client-side filterable, hides itself when there is no history, and is not offered during a relaunch (which prefills from the source task)
+- Fetch fails closed: a non-2xx, aborted, or malformed response yields no recall and never blocks a launch; the fetch happens once when the manual tab is shown, not per cwd keystroke
+- `GET /api/tasks/recent-prompts` validates and clamps `limit` (default 20, max 50) and is registered before `/api/tasks/:id` so the literal path is not captured as a task id
+
+**Evidence:** `src/core/recent-manual-prompts.ts`, `src/shared/contracts/recent-prompts.ts`, `src/server/routes/task-routes.ts` (`GET /api/tasks/recent-prompts`), `src/frontend/api/tasks.ts` (`getRecentPrompts`), `src/frontend/hooks/useRecentPrompts.ts`, `src/frontend/components/RecentPromptsPicker.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, and focused tests beside each module (`src/core/recent-manual-prompts.test.ts`, `src/server/routes/task-routes.recent-prompts.test.ts`, `src/frontend/components/RecentPromptsPicker.test.tsx`, `src/frontend/components/LaunchTaskDialog.recall.test.tsx`, `src/shared/contracts/recent-prompts.test.ts`).
+
 ### R4b.13: Portable Small-Model Intent [F4.1, F11] — SHALL — `done`
 
 The system SHALL let routine tasks request `modelTier: "small"` without pinning a coding-agent provider.

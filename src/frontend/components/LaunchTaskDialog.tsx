@@ -43,6 +43,8 @@ import {
   type LaunchDuplicateCandidate,
 } from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
+import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
+import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { copyText, readClipboardText } from '../clipboard.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -200,6 +202,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     : requestedInitialTab ?? (projectContext ? 'playbooks' : 'manual');
   const [tab, setTab] = useState<Tab>(initialTab);
   const [submitting, setSubmitting] = useState(false);
+  // Recall of recent manual-launch prompts (RFC: rfc-launch-prompt-recall).
+  // Fetched once when the manual tab is shown (never on relaunch, which owns its
+  // own state) so the picker can hide itself when there is no history — no
+  // per-keystroke refetch. `cwd` biases the server-side ranking at fetch time.
+  const recentPrompts = useRecentPrompts({
+    enabled: tab === 'manual' && !isRelaunch,
+    cwd,
+  });
   // Agent default chain (RFC F6): explicit prop → user's last-used selection
   // (persisted on successful submit) → server default → 'claude-code'. The
   // last-used entry is skipped when it is not currently offered (e.g.
@@ -654,6 +664,15 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                   📋 Paste from clipboard
                 </button>
               </div>
+              <RecentPromptsPicker
+                entries={recentPrompts}
+                currentCwd={cwd}
+                onSelect={(recalled, meta) => {
+                  setPrompt(recalled);
+                  promptRef.current?.focus();
+                  track({ type: 'launch_prompt_recall_used', cwdMatch: meta.cwdMatch, rank: meta.rank });
+                }}
+              />
               <div className="input-with-voice">
                 <textarea
                   id="launch-task-description"
