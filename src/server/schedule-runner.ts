@@ -265,6 +265,19 @@ export interface ScheduleRunnerDeps {
    */
   staleAlarm?: { check(schedules: Schedule[]): void };
   /**
+   * Bounded provider-park-age alarm (issue #3034). When provided, evaluated
+   * once per tick right after {@link ScheduleRunnerDeps.staleAlarm}, on the same
+   * 60s interval (no timer of its own). Catches an enabled schedule that has
+   * recorded `skipped_provider_paused` continuously past a bounded age — a park
+   * that neither the dead-man switch nor the liveness alarm reports, because the
+   * park is a deliberate suppression for the former and a heartbeat for the
+   * latter. Alert-only: it never auto-pauses the schedule (the #1894 guarantee
+   * holds). `check` must never throw; it is still called inside the tick's
+   * tracked-work error envelope. Absent means no provider-park alarm (back-compat
+   * for older wiring/tests).
+   */
+  providerParkAlarm?: { check(schedules: Schedule[]): void };
+  /**
    * Unresolvable-playbook operational alerter (issue #1661). When provided,
    * fed the current set of unresolvable schedules on every validation cycle
    * (the runner's existing tick + the pre-broadcast seed) so an already-broken
@@ -593,6 +606,18 @@ export class ScheduleRunner {
         this.deps.staleAlarm?.check(this.deps.store.list());
       } catch (err) {
         console.error('[schedule] stale-alarm check failed:', err);
+      }
+
+      // Bounded provider-park-age alarm (issue #3034). Runs alongside the
+      // dead-man and liveness alarms on accumulated ledger state — same
+      // decoupling from the fire loop, same defensive wrapper. Catches a
+      // schedule parked-on-provider (`skipped_provider_paused`) for too long,
+      // the quiet failure mode #1894's non-incrementing park left unobserved.
+      // Alert-only — never auto-pauses.
+      try {
+        this.deps.providerParkAlarm?.check(this.deps.store.list());
+      } catch (err) {
+        console.error('[schedule] provider-park alarm check failed:', err);
       }
 
       // Issue #2459: leftover consecutive_failures holds from a transient

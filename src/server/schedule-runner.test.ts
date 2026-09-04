@@ -3327,6 +3327,54 @@ Do the thing.
     expect(check).toHaveBeenCalledWith(store.list());
   });
 
+  it('the provider-park alarm is evaluated once per tick with the full schedule list (issue #3034)', async () => {
+    store.create({
+      name: 'Park alarm probe',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    const check = vi.fn();
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      providerParkAlarm: { check },
+    });
+
+    await runner.tick();
+    await runner.tick();
+
+    expect(check).toHaveBeenCalledTimes(2);
+    // The actual (non-empty) schedule list reaches the alarm, not just [].
+    const list = store.list();
+    expect(list.length).toBeGreaterThan(0);
+    expect(check).toHaveBeenCalledWith(list);
+  });
+
+  it('a throwing provider-park alarm does not abort the tick (issue #3034)', async () => {
+    const check = vi.fn(() => {
+      throw new Error('boom');
+    });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => ({ task: { id: 'unused' } as any, queued: false }),
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+      providerParkAlarm: { check },
+    });
+
+    await expect(runner.tick()).resolves.not.toThrow();
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
   it('pushes the dead-man self-heal stats onto the status snapshot each tick (issue #1903)', async () => {
     const stats = vi.fn(() => ({
       attempts: 4,
