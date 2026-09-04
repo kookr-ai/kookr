@@ -6,6 +6,7 @@ import { launchTask, type LaunchServiceDeps } from '../launch-service.js';
 import { isTaskBlockingSchedule, ScheduleRunner } from '../schedule-runner.js';
 import { ScheduleDeadManSwitch } from '../schedule-dead-man.js';
 import { ScheduleStaleAlarm } from '../schedule-liveness.js';
+import { ScheduleProviderParkAlarm } from '../schedule-provider-park-alarm.js';
 import { ScheduleResolutionAlerter } from '../schedule-resolution-alert.js';
 import { ScheduleBatchPinAlerter } from '../schedule-batch-pin-alert.js';
 import { deriveLedgerEnrichment, deriveScheduleTerminalReason, ScheduleService } from '../schedule-service.js';
@@ -54,6 +55,14 @@ export interface ScheduleRuntimeDeps {
    * module default (6h); a value <= 0 disables the alarm.
    */
   getStaleScheduleFloorMs?: () => number;
+  /**
+   * Live getter for the bounded provider-park-age alarm threshold, in ms (issue
+   * #3034, `providerParkAlarmMinutes` setting). A schedule parked-on-provider
+   * (`skipped_provider_paused`) continuously beyond this age raises one operator
+   * alert (alert-only — never auto-paused). Absent falls back to the module
+   * default (6h); a value <= 0 disables the alarm.
+   */
+  getProviderParkAlarmMs?: () => number;
   /**
    * Live getter for the per-schedule consecutive-failure alert threshold
    * (issue #1665, `scheduleFailureAlertThreshold` setting). Absent falls back
@@ -328,6 +337,16 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
       broadcast: deps.broadcastToAll,
       recordTransition: recordOperationalAlert,
       ...(deps.getStaleScheduleFloorMs ? { getStaleFloorMs: deps.getStaleScheduleFloorMs } : {}),
+    }),
+    // issue #3034: bounded provider-park-age alarm. Catches a schedule that has
+    // recorded `skipped_provider_paused` continuously past a bounded age — the
+    // quiet failure mode #1894's non-incrementing park left unobserved (neither
+    // the dead-man switch nor the liveness alarm reports it). Alert-only, durable
+    // sink; never auto-pauses the schedule (the #1894 guarantee holds).
+    providerParkAlarm: new ScheduleProviderParkAlarm({
+      broadcast: deps.broadcastToAll,
+      recordTransition: recordOperationalAlert,
+      ...(deps.getProviderParkAlarmMs ? { getMaxProviderParkMs: deps.getProviderParkAlarmMs } : {}),
     }),
     // issue #1661: operational alert when a schedule's playbook stops resolving
     // in its (defaulted) tier — including one silently broken by the scope

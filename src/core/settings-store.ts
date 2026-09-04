@@ -208,6 +208,26 @@ export interface KookrSettings {
    */
   staleScheduleAlarmMinutes: number;
   /**
+   * Bounded provider-park-age alarm (minutes) — issue #3034. An enabled schedule
+   * that has recorded `skipped_provider_paused` continuously (a trailing run of
+   * ≥ 2 parks with no successful fire or other outcome in between) for longer
+   * than this age raises ONE operator alert (severity warning), then a matching
+   * recovery alert when the park clears. The park stays non-incrementing and the
+   * schedule is NOT auto-paused (the #1894 guarantee holds) — only the alarm
+   * changes. Fills the observability gap where a stuck provider/quota signal
+   * parks a schedule silently and permanently (neither the dead-man switch nor
+   * the #2694 liveness alarm reports it). Alert-only. Set to 0 to disable.
+   *
+   * Note: park age is measured from the oldest park row still retained in the
+   * schedule's execution ledger, which is capped (MAX_LEDGER_ENTRIES = 500). A
+   * fast-cadence schedule that parks every tick retains only about
+   * `500 × cadence` of park history, so the detectable age saturates near that
+   * span. The 360m default is safe for a minute-cadence schedule (~8.3h span);
+   * raising this well above a schedule's retained span means the alarm can
+   * never trip for that schedule (conservative — it never false-fires).
+   */
+  providerParkAlarmMinutes: number;
+  /**
    * Per-schedule consecutive-failure alert threshold (issue #1665). When a
    * schedule's `consecutiveFailures` counter crosses this value (only a
    * genuine launch / timeout / task failure increments it; a `completed` run
@@ -430,6 +450,7 @@ export const DEFAULT_SETTINGS: KookrSettings = {
   launchTimeoutSeconds: 180,
   deadManScheduleMinutes: 120,
   staleScheduleAlarmMinutes: 360,
+  providerParkAlarmMinutes: 360,
   scheduleFailureAlertThreshold: 3,
   maxPendingTasks: 24,
   pendingTaskTtlMinutes: 240,
@@ -497,6 +518,12 @@ const MAX_DEAD_MAN_SCHEDULE_MIN = 1440;
 // weekly schedules.
 const MIN_STALE_SCHEDULE_ALARM_MIN = 30;
 const MAX_STALE_SCHEDULE_ALARM_MIN = 7 * 24 * 60;
+// Bounded provider-park-age alarm (issue #3034). Floor of 30 keeps a fast
+// schedule from alarming on a brief transient park (above the 60s tick + a
+// cadence or two); ceiling of 10080 (7 days) keeps the alarm meaningful for a
+// long weekly-quota park while still bounding a genuinely stuck provider signal.
+const MIN_PROVIDER_PARK_ALARM_MIN = 30;
+const MAX_PROVIDER_PARK_ALARM_MIN = 7 * 24 * 60;
 // Per-schedule consecutive-failure alert threshold (issue #1665). Floor of 1
 // lets an operator alert on the very first failure; ceiling of 100 stops a
 // fat-fingered value from silencing the alert entirely.
@@ -673,6 +700,21 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
         : Math.max(
             MIN_STALE_SCHEDULE_ALARM_MIN,
             Math.min(MAX_STALE_SCHEDULE_ALARM_MIN, Math.round(raw.staleScheduleAlarmMinutes)),
+          );
+  }
+
+  let providerParkAlarmMinutes = DEFAULT_SETTINGS.providerParkAlarmMinutes;
+  if (typeof raw.providerParkAlarmMinutes === 'number' && Number.isFinite(raw.providerParkAlarmMinutes)) {
+    // Mirror staleScheduleAlarmMinutes: test the RAW value for the disable
+    // sentinel BEFORE rounding so only a genuinely non-positive value (0,
+    // negative) disables; a small positive value clamps UP to the floor rather
+    // than rounding to 0 and silently disabling the alarm.
+    providerParkAlarmMinutes =
+      raw.providerParkAlarmMinutes <= 0
+        ? 0
+        : Math.max(
+            MIN_PROVIDER_PARK_ALARM_MIN,
+            Math.min(MAX_PROVIDER_PARK_ALARM_MIN, Math.round(raw.providerParkAlarmMinutes)),
           );
   }
 
@@ -963,6 +1005,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       launchTimeoutSeconds,
       deadManScheduleMinutes,
       staleScheduleAlarmMinutes,
+      providerParkAlarmMinutes,
       scheduleFailureAlertThreshold,
       maxPendingTasks,
       pendingTaskTtlMinutes,

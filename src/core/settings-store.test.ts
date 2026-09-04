@@ -327,6 +327,21 @@ describe('validateSettings', () => {
     expect(validateSettings({ staleScheduleAlarmMinutes: 'off' }).staleScheduleAlarmMinutes).toBe(360);
   });
 
+  it('defaults providerParkAlarmMinutes to 360, clamps to 30–10080, and preserves 0 as disable (issue #3034)', () => {
+    expect(validateSettings({}).providerParkAlarmMinutes).toBe(360);
+    expect(DEFAULT_SETTINGS.providerParkAlarmMinutes).toBe(360);
+    expect(validateSettings({ providerParkAlarmMinutes: 480 }).providerParkAlarmMinutes).toBe(480);
+    expect(validateSettings({ providerParkAlarmMinutes: 5 }).providerParkAlarmMinutes).toBe(30);
+    expect(validateSettings({ providerParkAlarmMinutes: 999_999 }).providerParkAlarmMinutes).toBe(10_080);
+    // 0 (and any non-positive) is the explicit disable sentinel, not clamped up.
+    expect(validateSettings({ providerParkAlarmMinutes: 0 }).providerParkAlarmMinutes).toBe(0);
+    expect(validateSettings({ providerParkAlarmMinutes: -10 }).providerParkAlarmMinutes).toBe(0);
+    // A small POSITIVE value is aggressive-but-valid intent — clamp up to the
+    // floor, do NOT round-to-0 and silently disable the alarm.
+    expect(validateSettings({ providerParkAlarmMinutes: 0.3 }).providerParkAlarmMinutes).toBe(30);
+    expect(validateSettings({ providerParkAlarmMinutes: 'off' }).providerParkAlarmMinutes).toBe(360);
+  });
+
   it('defaults scheduleFailureAlertThreshold to 3 and clamps to the 1–100 range (issue #1665)', () => {
     expect(validateSettings({}).scheduleFailureAlertThreshold).toBe(3);
     expect(DEFAULT_SETTINGS.scheduleFailureAlertThreshold).toBe(3);
@@ -795,6 +810,7 @@ describe('loadSettings / saveSettings', () => {
       launchTimeoutSeconds: 300,
       deadManScheduleMinutes: 240,
       staleScheduleAlarmMinutes: 720,
+      providerParkAlarmMinutes: 480,
       scheduleFailureAlertThreshold: 5,
       maxPendingTasks: 48,
       pendingTaskTtlMinutes: 120,

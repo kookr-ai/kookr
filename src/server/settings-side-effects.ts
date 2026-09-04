@@ -170,6 +170,12 @@ export async function applySettingsSideEffects({
       + `(was ${prevSettings.staleScheduleAlarmMinutes}min)`,
     );
   }
+  if (prevSettings.providerParkAlarmMinutes !== newSettings.providerParkAlarmMinutes) {
+    console.log(
+      `[settings] providerParkAlarmMinutes → ${newSettings.providerParkAlarmMinutes}min `
+      + `(was ${prevSettings.providerParkAlarmMinutes}min)`,
+    );
+  }
   if (prevSettings.maxPendingTasks !== newSettings.maxPendingTasks) {
     console.log(
       `[settings] maxPendingTasks → ${newSettings.maxPendingTasks} `

@@ -82,6 +82,7 @@ describe('Settings API', () => {
       launchTimeoutSeconds: 180,
       deadManScheduleMinutes: 120,
       staleScheduleAlarmMinutes: 360,
+      providerParkAlarmMinutes: 360,
       scheduleFailureAlertThreshold: 3,
       maxPendingTasks: 24,
       pendingTaskTtlMinutes: 240,
