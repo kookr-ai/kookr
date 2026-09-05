@@ -4,6 +4,7 @@ import {
   normalizePaneForActivity,
   PaneSemanticsStrategy,
 } from './pane-patterns.js';
+import { decodeCodexIdlePane } from './__fixtures__/codex-idle-pane.js';
 
 describe('analyzePaneSemantics', () => {
   describe('input prompt detection', () => {
@@ -107,6 +108,75 @@ describe('analyzePaneSemantics', () => {
 
       const result = analyzePaneSemantics(pane);
       expect(result.state).not.toBe('input_prompt');
+    });
+
+    // Regression for issue #3037: Codex renders its empty idle composer with a
+    // dim placeholder ("Ask Codex to do anything") and lays the prompt + model
+    // footer out with absolute cursor-positioning escapes, which our
+    // newline-only reconstruction collapses onto one line. The pre-fix
+    // empty-row (`^›\s*$`) + standalone-footer heuristic missed it, so a
+    // finished/idle Codex session was classified `stale_agent` and reaped by
+    // the 3h hung-task reaper.
+    test('detects idle Codex composer with placeholder text (collapsed layout)', () => {
+      // What the newline-only reconstruction actually produces after the
+      // cursor-addressing escapes are stripped: prompt, placeholder and footer
+      // fused onto one trailing line.
+      const pane = [
+        '─ Worked for 27m 45s ─────────────────────────────',
+        '› Ask Codex to do anything   gpt-5.6-luna xhigh · ~/git/kb-scout-evol · Main [default]',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).toBe('input_prompt');
+      expect(result.confidence).toBe('high');
+    });
+
+    test('does not treat the idle placeholder as idle while a live status line is present', () => {
+      const pane = [
+        '• Investigating rendering code (3s • esc to interrupt)',
+        '',
+        '› Ask Codex to do anything',
+        '',
+        '  gpt-5.6-luna xhigh · ~/git/project · Main [default]',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).not.toBe('input_prompt');
+    });
+
+    // Issue #3037 review, Finding 1: a bare placeholder quoted in agent output/
+    // scrollback (no model-footer tag fused onto the same line) must NOT be read
+    // as the live idle composer — otherwise a genuinely hung agent whose screen
+    // happens to echo the phrase would be masked from the reaper.
+    test('does not treat a bare placeholder quoted in scrollback as idle', () => {
+      const pane = [
+        'The composer shows › Ask Codex to do anything when empty.',
+        'Some later analysis line with no composer footer.',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).not.toBe('input_prompt');
+    });
+
+    // Issue #3037 review, Findings 2-3: the same cursor-addressing collapse can
+    // fuse a live `• Working (Ns • esc to interrupt)` status row onto the
+    // composer row. That collapsed line carries the placeholder AND the footer,
+    // but also `esc to interrupt` — the per-line status-bar exclusion must keep
+    // it from reading as idle.
+    test('does not treat a collapsed mid-turn frame (status fused onto composer) as idle', () => {
+      const pane = [
+        '  1512 RESTORE_EVIDENCE_INVALID  • Working (2m 50s • esc to interrupt)  '
+        + '› Ask Codex to do anything   gpt-5.6-sol xhigh · ~/git/kb-scout-evol · Main [default]',
+      ].join('\n');
+
+      const result = analyzePaneSemantics(pane);
+      expect(result.state).not.toBe('input_prompt');
+    });
+
+    test('classifies the real captured idle Codex pane as input_prompt (issue #3037 fixture)', () => {
+      const result = analyzePaneSemantics(decodeCodexIdlePane());
+      expect(result.state).toBe('input_prompt');
+      expect(result.confidence).toBe('high');
     });
   });
 

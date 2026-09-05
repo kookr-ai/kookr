@@ -1,0 +1,84 @@
+/**
+ * Real raw dtach PTY capture of an idle Codex (gpt-5.6) session on the
+ * kb-scout-evol repo, taken from a hung-task reap report (task
+ * 7a08124b, reaped 2026-08-25 after 182m "silent"). The agent had FINISHED
+ * its turn ("Worked for 27m 45s", full report posted) and was sitting at the
+ * idle composer — yet the pane was classified `stale_agent` and reaped.
+ *
+ * Codex lays the composer out with absolute cursor-positioning escapes
+ * (\x1b[22;1H›  …  \x1b[24;1H  gpt-5.6-luna …) and no newlines between rows,
+ * so our newline-only reconstruction collapses the `›` prompt, the "Ask Codex
+ * to do anything" placeholder, and the model footer onto one line. This is the
+ * exact byte stream that must classify as an idle input_prompt. See issue #3037.
+ */
+export const CODEX_IDLE_PANE_B64 =
+  'ChtbO20bW0sgICAgG1sybSA2IBtbMjJtG1s7bSsbWzttYWRkcmVzcyBpdC4bW20bW20bWzBtChtbO20bW0sgICAgG1sybSA3IBtb' +
+  'MjJtG1s7bSsbW20bW20bWzBtChtbO20bW0sgICAgG1sybSA4IBtbMjJtG1s7bSsbWzttIyMbWzttIBtbO21FdmlkZW5jZRtbbRtb' +
+  'bRtbMG0KG1s7bRtbSyAgICAbWzJtIDkgG1syMm0bWzttKxtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtMTAgG1syMm0bWzttKxtb' +
+  'O20tG1s7bSBQUjogG1s7bWh0dHBzOi8vZ2l0aHViLmNvbS9qZWFuaWJhcnova2Itc2NvdXQtZXZvbC9wdWxsLzQxMxtbbRtbbRtb' +
+  'MG0KG1s7bRtbSyAgICAbWzJtMTEgG1syMm0bWzttKxtbO20tG1s7bSBDaGVjayBydW46IBtbO21odHRwczovL2dpdGh1Yi5jb20v' +
+  'amVhbmliYXJ6L2tiLXNjb3V0LWV2b2wvYWN0aW9ucy9ydW5zLzMyOBtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtICAgIBtbMjJt' +
+  'G1s7bTI2NTEyODQyL2pvYi85NzczNTYwNzQ4MRtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtMTIgG1syMm0bWzttKxtbO20tG1s7' +
+  'bSBDSSBjb21tYW5kOiAbWzttYBtbO21ucG0gdGVzdBtbO21gG1s7bSBmcm9tIBtbO21gG1s7bWtiLXNjb3V0LWxvY2FsLWV2YWwv' +
+  'G1s7bWAbWzttLhtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtMTMgG1syMm0bWzttKxtbO20tG1s7bSBGYWlsdXJlIHNpdGU6IBtb' +
+  'O21gG1s7bWtiLXNjb3V0LWV2YWwvYmluL3NlbGYtdGVzdC5tanM6NjUyG1s7bWAbWzttLhtbbRtbbRtbMG0KG1s7bRtbSyAgICAb' +
+  'WzJtMTQgG1syMm0bWzttKxtbO20tG1s7bSBGYWlsdXJlOiAbWzttYBtbO21yZWFsIHN0YXRlLmpzb24gc2hvdWxkIEFMTE9XIGl0' +
+  'ZXItOTAgKD09IGNhcCkgdW5kZXIgLS1lbmZvcmMbW20bW20bWzBtChtbO20bW0sgICAgG1sybSAgICAbWzIybRtbO21lG1s7bWAb' +
+  'WzttLCBidXQgG1s7bWAbWzttY2hlY2stY2hhaW4tY2FwG1s7bWAbWzttIHJldHVybmVkIGV4aXQgMyBiZWNhdXNlIHRvZGF5ICgb' +
+  'WzttYBtbO20yMDI2LTA4LTI1G1s7bWAbWzttKSBpG1ttG1ttG1swbQobWzttG1tLICAgIBtbMm0gICAgG1syMm0bWzttcyBwYXN0' +
+  'IBtbO21gG1s7bXN0YXRlLmNoYWluLmRhdGVfYmFja3N0b3A9MjAyNi0wOC0xNxtbO21gG1s7bS4bW20bW20bWzBtChtbO20bW0sg' +
+  'ICAgG1sybTE1IBtbMjJtG1s7bSsbWzttLRtbO20gVGhlIHNhbWUgZmFpbHVyZSBpcyB2aXNpYmxlIGluIHRoZSBDSSBsb2cgYmVm' +
+  'b3JlIGFueSByZWZsZWN0aW9uLXNwZWNpZhtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtICAgIBtbMjJtG1s7bWljIGFzc2VydGlv' +
+  'bjsgcmVzb2x2aW5nIGl0IHJlcXVpcmVzIGFuIG9wZXJhdG9yIGRlY2lzaW9uIGFib3V0IHRoZSBleHBpchtbbRtbbRtbMG0KG1s7' +
+  'bRtbSyAgICAbWzJtICAgIBtbMjJtG1s7bWVkIGNoYWluIGJhY2tzdG9wL2xvb3AtY29udHJvbCBzdGF0ZSwgd2hpY2ggaXMgb3V0' +
+  'c2lkZSB0aGlzIGFkdmlzb3J5IHJlZhtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtICAgIBtbMjJtG1s7bWxlY3Rpb24ncyBzY29w' +
+  'ZS4bW20bW20bWzBtChtbO20bW0sgICAgG1sybTE2IBtbMjJtG1s7bSsbW20bW20bWzBtChtbO20bW0sgICAgG1sybTE3IBtbMjJt' +
+  'G1s7bSsbWzttVGhlIFBSIHJlbWFpbnMgb3BlbiBhbmQgdW5tZXJnZWQuIERvIG5vdCBjaGFuZ2UgdGhlIHJlZmxlY3Rpb24ncyBw' +
+  'cm90ZWN0G1ttG1ttG1swbQobWzttG1tLICAgIBtbMm0gICAgG1syMm0bWzttZWQbW20bW20bWzBtChtbO20bW0sgICAgG1sybTE4' +
+  'IBtbMjJtG1s7bSsbWzttc3RhdGUgZmllbGRzIG9yIG1lcmdlIHVudGlsIHRoZSBjaGFpbi1jYXAgY2hlY2sgaGFzIGFuIGF1dGhv' +
+  'cml6ZWQgcmVzb2x1G1ttG1ttG1swbQobWzttG1tLICAgIBtbMm0gICAgG1syMm0bWzttdGlvbi4bW20bW20bWzBtChtbO20bW0sb' +
+  'W20bW20bWzBtChtbO20bW0sbWzFtG1s7beKAohtbMjJtG1s7bSAbWzFtUmFuG1syMm0gG1s7bWdpdBtbO20gYWRkIGtiLXNjb3V0' +
+  'LWV2YWwvcnVucy9vcGVyYXRvci1uZWVkZWQta2Itc2NvdXQtcmVmbGVjdGlvbi5tZCAbWzttJiYbWzttIBtbO21naXQbW20bW20b' +
+  'WzBtChtbO20bW0sbWzJtICDilIIgG1syMm0bWzttY29tbWl0G1s7bSAtG1s7bW0bWzttIBtbO20iZG9jcyhrYi1zY291dCk6IHJl' +
+  'Y29yZCByZWZsZWN0aW9uIGRlbGl2ZXJ5IGJsb2NrZXIiG1s7bSAbWzttJiYbWzttIBtbO21naXQbWzttIHB1c2gbW20bW20bWzBt' +
+  'ChtbO20bW0sbWzJtICDilJQgVG8gaHR0cHM6Ly9naXRodWIuY29tL2plYW5pYmFyei9rYi1zY291dC1ldm9sLmdpdBtbbRtbbRtb' +
+  'MG0KG1s7bRtbSyAgICAbWzJtICAgN2FlNGM3OC4uZjgxNWQ3ZiAgY2hvcmUvcmVmbGVjdGlvbi0yMDI2LTA4LTI1IC0+IGNob3Jl' +
+  'LxtbbRtbbRtbMG0KG1s7bRtbSyAgICAbWzJtcmVmbGVjdGlvbi0yMDI2LTA4LTI1G1ttG1ttG1swbQobWzttG1tLG1ttG1ttG1sw' +
+  'bQobWzttG1tLG1sybeKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgBtbbRtbbRtbMG0KG1s7bRtbSxtbbRtbbRtbMG0KG1s7bRtbSxtbMm3igKIgG1sy' +
+  'Mm1SZWZsZWN0aW9uIGNvbXBsZXRlZCBpbiAbWzttL2hvbWUvamVhbi9naXQva2Itc2NvdXQtZXZvbC1yZWZsZWN0aW9uLTIwMjYt' +
+  'MDgtMjUva2ItG1ttG1ttG1swbQobWzttG1tLICAbWzttc2NvdXQtZXZhbC9yZWZsZWN0aW9ucy8yMDI2LTA4LTI1Lm1kOjEbWztt' +
+  'LhtbbRtbbRtbMG0KG1s7bRtbSxtbbRtbbRtbMG0KG1s7bRtbSyAgLSBQUjogG104OztodHRwczovL2dpdGh1Yi5jb20vamVhbmli' +
+  'YXJ6L2tiLXNjb3V0LWV2b2wvcHVsbC80MTMHIzQxMxtdODs7ByAoG1s0bRtbO20bXTg7O2h0dHBzOi8vZ2l0aHViLmNvbS9qZWFu' +
+  'aWJhcnova2Itc2NvdXQtZXZvbC9wdWxsLzQxMwdodHRwczovL2dpdGh1Yi5jb20vamVhbmliYXJ6L2tiLXNjb3V0LWV2b2wvcHVs' +
+  'bC80MTMbXTg7OwcbWzI0bRtbO20pG1ttG1ttG1swbQobWzttG1tLICAtIENvbW1pdHM6IBtbO203YWU0Yzc4G1s7bSAocmVmbGVj' +
+  'dGlvbiksIBtbO21mODE1ZDdmG1s7bSAoYmxvY2tlciBub3RlKRtbbRtbbRtbMG0KG1s7bRtbSyAgLSBObyBtZXJnZTogcmVxdWly' +
+  'ZWQgQ0kgZmFpbHMgYXQgG1s7bWJpbi9zZWxmLXRlc3QubWpzOjY1MhtbO20gYmVjYXVzZRtbbRtbbRtbMG0KG1s7bRtbSyAgICAb' +
+  'WzttZGF0ZV9iYWNrc3RvcD0yMDI2LTA4LTE3G1s7bSBoYXMgZXhwaXJlZC4gRGV0YWlsczogG1s7bS9ob21lL2plYW4vZ2l0L2ti' +
+  'LXNjb3V0LWV2b2wtG1ttG1ttG1swbQobWzttG1tLICAgIBtbO21yZWZsZWN0aW9uLTIwMjYtMDgtMjUva2Itc2NvdXQtZXZhbC9y' +
+  'dW5zL29wZXJhdG9yLW5lZWRlZC1rYi1zY291dC0bW20bW20bWzBtChtbO20bW0sgICAgG1s7bXJlZmxlY3Rpb24ubWQ6MRtbO20u' +
+  'G1ttG1ttG1swbQobWzttG1tLG1ttG1ttG1swbQobWzttG1tLICBIaWdoZXN0LWxldmVyYWdlIHJlY29tbWVuZGF0aW9uOiB3aXJl' +
+  'IHBhaXJlZC12MTAsIHJ1biBBL0EgZmlyc3QsIHRoZW4gdmFsaWRhdGUbW20bW20bWzBtChtbO20bW0sgIHYxMTEgYWdhaW5zdCBj' +
+  'YWxsZXIgdXRpbGl0eS4bW20bW20bWzBtChtbO20bW0sbW20bW20bWzBtChtbO20bW0sgIEFwcGVuZGVkIGh5cG90aGVzaXM6IBtb' +
+  'O21oMTYtZnJvemVuLWZyb250aWVyLWludGVncml0eS1oYW5kb2ZmG1s7bS4bW20bW20bWzBtChtbO20bW0sbW20bW20bWzBtChtb' +
+  'O20bW0sgIEdvb2RoYXJ0IGNvbmNlcm46IHYxMTEgbWF5IG9wdGltaXplIHJ1YnJpYy12aXNpYmxlIGNhdmVhdGluZyByYXRoZXIg' +
+  'dGhhbhtbbRtbbRtbMG0KG1s7bRtbSyAgY2FsbGVyIHV0aWxpdHkuIEZhYnJpY2F0aW9uIHJlbWFpbnMgY2xlYW4sIGJ1dCB6ZXJv' +
+  'LXBhc3NhZ2Ugb3V0cHV0cyBjYW4gZXZhZGUbW20bW20bWzBtChtbO20bW0sgIGNpdGF0aW9uLWZyYWN0aW9uIGNoZWNrcyBhcyBh' +
+  'biBpbnRlZ3JpdHkvdW5pbnNwZWN0YWJsZSBjYXNlLhtbbRtbbRtbMG0KG1s7bRtbSxtbbRtbbRtbMG0KG1s7bRtbSxtbMm3ilIAg' +
+  'V29ya2VkIGZvciAyN20gNDVzIOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKU' +
+  'gOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgOKUgBtbbRtbbRtbMG0bW3IbWzE7MUgbWzIwOzJIG1sw' +
+  'bRtbbRtbSxtbMjE7MkgbWzBtG1ttG1tLG1syMjsyN0gbWzBtG1ttG1tLG1syMzsySBtbMG0bW20bW0sbWzI0Ozc0SBtbMG0bW20b' +
+  'W0sbWzIwOzFIIBtbMjE7MUggG1syMjsxSBtbMW3igLobWzIybSAbWzJtQXNrIENvZGV4IHRvIGRvIGFueXRoaW5nG1syMzsxSBtb' +
+  'MjJtIBtbMjQ7MUggIBtbO21ncHQtNS42LWx1bmEgeGhpZ2gbWzJtG1s7bSDCtyAbWzIybRtbO21+L2dpdC9rYi1zY291dC1ldm9s' +
+  'L2tiLXNjb3V0LWV2YWwbWzJtG1s7bSDCtyBNYWluIFtkZWZhdWx0XRtbbRtbbRtbMG0bWzAgcRtbPzI1aBtbMjI7M0gbWz8yMDI2' +
+  'bBtbPzIwMjZoG1ttG1ttG1swbRtbMCBxG1s/MjVoG1syMjszSBtbPzIwMjZsCg==';
+
+export function decodeCodexIdlePane(): string {
+  // The runtime decodes captured PTY bytes as UTF-8 (see CodexCliAdapter
+  // captureDisplay → textDecoder.decode), so decode the same way here — a
+  // latin1 round-trip would mangle the multi-byte `›` prompt glyph.
+  return Buffer.from(CODEX_IDLE_PANE_B64, 'base64').toString('utf-8');
+}

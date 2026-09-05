@@ -5,6 +5,7 @@ import { Watchdog, type WatchdogConfig } from './watchdog.js';
 import { ToolLatencyMetrics } from './tool-latency-metrics.js';
 import { parseHookEvent } from './hook-parser.js';
 import type { AgentEvent } from './types.js';
+import { decodeCodexIdlePane } from './__fixtures__/codex-idle-pane.js';
 
 const fixturesDir = join(import.meta.dirname, '..', '__fixtures__');
 
@@ -282,6 +283,23 @@ describe('Watchdog', () => {
         expect(verdict.anomaly.type).toBe('needs_input');
         expect(verdict.anomaly.subType).toBe('stop');
       }
+    });
+
+    // Regression for issue #3037: a real captured idle Codex pane (composer +
+    // "Ask Codex to do anything" placeholder + model footer, laid out with
+    // cursor-addressing escapes that collapse onto one line) must read as
+    // needs_input, NOT stale_agent — because the hung-task reaper is gated on
+    // stale_agent, and this exact pane shape was being reaped after 3h even
+    // though the Codex agent had finished its turn and was idle at the prompt.
+    test('classifies the real collapsed idle Codex pane as needs_input, not stale_agent', () => {
+      const t0 = 0;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeSessionStart('s1')], t0);
+
+      const idlePane = decodeCodexIdlePane();
+      watchdog.tick(agentId, idlePane, [], t0 + 5_000);
+      const verdict = watchdog.tick(agentId, idlePane, [], t0 + 11_000);
+      expect(verdict.status).toBe('needs_input');
     });
 
     test('does not misclassify Codex running status as needs_input', () => {
