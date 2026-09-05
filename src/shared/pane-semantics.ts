@@ -68,6 +68,30 @@ const CLAUDE_INPUT_PROMPT_RE = /^❯\s*$/;
 const CODEX_INPUT_PROMPT_RE = /^›\s*$/;
 // Codex composer/footer line that accompanies the idle prompt.
 const CODEX_COMPOSER_FOOTER_RE = /^\s{2}(?:gpt-[\w.-].*|Fast on\s*$|.*Plan mode.*|.*(?:% left|context left).*)$/i;
+// Codex's empty idle composer renders a dim placeholder ("Ask Codex to do
+// anything") in the input row instead of leaving it blank, and lays the
+// composer + model footer out with absolute cursor-positioning escapes. Our
+// reconstruction (visibleLinesFromTerminalText) honours only \r/\n/\b, not
+// cursor addressing, so those rows collapse onto one line — defeating the
+// empty-row (`^›\s*$`) + standalone-footer heuristic below. Match the
+// placeholder directly: its presence means the composer is empty and the agent
+// is idle at the prompt. This is the load-bearing signal that keeps a finished
+// or idle Codex session from being misread as `stale_agent` and killed by the
+// 3h hung-task reaper (the reaper is gated on the watchdog's `stale_agent`
+// verdict, and `input_prompt` → `needs_input` excludes it). See issue #3037.
+//
+// NOTE: the exact English placeholder is a Codex TUI string; if a future Codex
+// version reworks it, this detector silently reverts to the pre-#3037 behavior
+// (idle composer → stale_agent → reaped). The fixture-backed tests freeze the
+// captured shape but cannot detect a live string change — revisit if Codex's
+// idle composer copy changes.
+const CODEX_IDLE_PLACEHOLDER_RE = /›\s+Ask Codex to do anything\b/;
+// The model-footer tag Codex renders on the composer's footer row
+// (`gpt-5.6-luna xhigh · <cwd> · Main [default]`). After the cursor-addressing
+// collapse this fuses onto the same reconstructed line as the placeholder, so a
+// line carrying BOTH is the live idle composer — not a bare placeholder quoted
+// in scrollback (issue #3037 review, Finding 1).
+const CODEX_MODEL_FOOTER_TAG_RE = /\bgpt-[\w.-]/i;
 
 // Permission dialog: Claude Code shows tool name + "Allow" / "Deny" options.
 const PERMISSION_ALLOW_DENY_RE = /\bAllow\b.*\bDeny\b|\ballow\b.*\bdeny\b/i;
@@ -163,6 +187,26 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
         return { state: 'input_prompt', confidence: 'high', matchedText: nonStatusLines[i].trim() };
       }
     }
+  }
+
+  // Codex idle-composer placeholder (issue #3037). Robust to the cursor-
+  // addressing collapse described on CODEX_IDLE_PLACEHOLDER_RE. A line is the
+  // live idle composer when it carries BOTH the placeholder AND the model-footer
+  // tag (the two rows the collapse fuses together) AND is not itself a live
+  // status row (`esc to interrupt` / `tab to queue message`). Requiring the
+  // footer on the same line sheds a bare placeholder quoted in agent
+  // scrollback/output; the per-line status-bar exclusion rejects a mid-turn
+  // frame whose active `• Working (Ns • esc to interrupt)` row collapsed onto the
+  // composer (issue #3037 review, Findings 1–3). Belt-and-suspenders: the
+  // watchdog only consumes `input_prompt` after its stale/tool-in-progress
+  // gates, so a working agent is already `healthy`/`tool_running` first.
+  const codexIdleComposerLine = lastLines.find(
+    (line) => CODEX_IDLE_PLACEHOLDER_RE.test(line)
+      && CODEX_MODEL_FOOTER_TAG_RE.test(line)
+      && !STATUS_BAR_RE.test(line),
+  );
+  if (codexIdleComposerLine) {
+    return { state: 'input_prompt', confidence: 'high', matchedText: 'Ask Codex to do anything' };
   }
 
   for (let i = lastLines.length - 1; i >= Math.max(0, lastLines.length - 5); i--) {
