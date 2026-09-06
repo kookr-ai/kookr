@@ -252,6 +252,41 @@ describe('LocalDtachBackend', () => {
     }
   });
 
+  skipIfNoDtach(
+    'launches after the instance directory is swept out of /tmp mid-run (#3042)',
+    async () => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-sweep-'));
+      backend = new LocalDtachBackend({
+        socketDir: tmpDir,
+        instanceId: 'test',
+        dtachBinary: DTACH!,
+      });
+      const instanceDir = join(tmpDir, 'test');
+      const marker = join(tmpDir, 'launched.txt');
+
+      try {
+        // A /tmp sweeper (or scripts/rollback-dtach.sh) removes the whole
+        // instance directory while the server keeps running. Before #3042 the
+        // pending-manifest write threw ENOENT here and every subsequent launch
+        // failed identically until the server was restarted.
+        rmSync(instanceDir, { recursive: true, force: true });
+
+        await backend.createSession({
+          id: 'after-sweep',
+          command: '/bin/sh',
+          args: ['-c', `printf 'ok' > ${JSON.stringify(marker)}; sleep 1`],
+        });
+
+        await waitForFileContents(marker, 'ok');
+        expect(existsSync(join(instanceDir, 'manifest.json'))).toBe(true);
+        expect(existsSync(join(instanceDir, 'after-sweep.sock'))).toBe(true);
+      } finally {
+        await backend.killSession('after-sweep').catch(() => undefined);
+        backend.close();
+      }
+    },
+  );
+
   afterEach(async () => {
     // dtach masters spawned via setsid survive the test process, so reap any
     // that still reference this test's tmpDir (and the agent/shell children

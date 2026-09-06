@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { ensureDtachDir } from './dtach-instance-dir.js';
 import type { SessionId } from './terminal-backend.js';
 
 export interface DtachManifestEntry {
@@ -77,6 +79,10 @@ export class DtachManifestStore {
   }
 
   writeAtomic(manifest: DtachManifestFile): void {
+    // The instance directory lives in /tmp and can be swept away while the
+    // server runs; re-create it here so a vanished directory costs one launch
+    // at most instead of every launch until restart (kookr-ai/kookr#3042).
+    ensureDtachDir(dirname(this.manifestPath));
     const tmp = `${this.manifestPath}.${randomUUID()}.tmp`;
     let renamed = false;
     try {

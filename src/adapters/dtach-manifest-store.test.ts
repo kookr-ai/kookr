@@ -56,4 +56,43 @@ describe('DtachManifestStore', () => {
     expect(existsSync(manifestPath)).toBe(false);
     expect(readdirSync(tmpDir).some((name) => name.startsWith('manifest.json.corrupt-'))).toBe(true);
   });
+
+  it('re-creates an instance directory that was swept away under a running server (#3042)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-manifest-test-'));
+    const instanceDir = join(tmpDir, 'port-4800');
+    const store = new DtachManifestStore(join(instanceDir, 'manifest.json'), 'test-instance');
+
+    // Get the store into the steady state a live server is in: one session
+    // already recorded, manifest and instance directory both on disk.
+    await store.update((manifest) => {
+      manifest.entries.push({
+        sessionId: 'before-sweep',
+        pid: 41,
+        startedAt: '2026-09-06T21:24:00.000Z',
+        status: 'active',
+        sock: join(instanceDir, 'before-sweep.sock'),
+      });
+    });
+    expect(existsSync(instanceDir)).toBe(true);
+
+    // Now a /tmp sweeper (or `scripts/rollback-dtach.sh`) takes the whole
+    // instance directory out from under the running server. Before #3042 the
+    // next write threw ENOENT, and so did every launch after it until restart.
+    rmSync(instanceDir, { recursive: true, force: true });
+
+    await store.update((manifest) => {
+      manifest.entries.push({
+        sessionId: 'after-sweep',
+        pid: 42,
+        startedAt: '2026-09-06T21:26:00.000Z',
+        status: 'pending',
+        sock: join(instanceDir, 'after-sweep.sock'),
+      });
+    });
+
+    expect(existsSync(join(instanceDir, 'manifest.json'))).toBe(true);
+    // The pre-sweep entry went with the directory — read() falls back to an
+    // empty manifest — so the recovered file holds exactly the new session.
+    expect(store.read().entries.map((entry) => entry.sessionId)).toEqual(['after-sweep']);
+  });
 });

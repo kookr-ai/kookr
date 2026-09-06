@@ -101,6 +101,7 @@ Sessions with `kind=terminal` bridge opens in the log are the tell-tale sign of 
 - **Manifest:** `/tmp/kookr-dtach/<uid>/<instanceId>/manifest.json` — array of `{sessionId, pid, startedAt, status, sock}`. Written atomically via temp+rename. `LocalDtachBackend` owns this exclusively.
 - **Per-instance isolation:** `instanceId = port-${PORT}`. `kookr-prod` (port 4800) and dev (4801) never collide.
 - **Session ID cap 40 chars** — keeps socket paths under Linux UDS 107-byte limit.
+- **The instance directory self-heals (#3042).** It lives in `/tmp`, so an OS temp sweeper, `scripts/rollback-dtach.sh`, or a stray `rm` can delete it while the server runs. Every write path (`DtachManifestStore.writeAtomic`, `LocalDtachBackend.createSession`, `DtachRingStore.persist`) re-creates it via `ensureDtachDir` immediately before writing. Before that fix it was created once in the backend constructor, so losing it made **every** launch fail with a bare `ENOENT` on the manifest temp file until the server was restarted. If you see that ENOENT in `~/.kookr/server.log`, `mkdir -p` the directory — no restart needed.
 
 ## Reconciliation
 
