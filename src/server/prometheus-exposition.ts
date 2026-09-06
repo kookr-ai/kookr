@@ -126,6 +126,8 @@ export interface PrometheusExpositionSnapshot {
     skippedUnderTtl?: number;
     autoCompletedTotal?: number;
     autoCompleteDeferredTotal?: number;
+    /** Strict/soft/capacity-pressure reclaims deferred by the live-turn/pane veto (issue #3040). */
+    reclaimDeferredTotal?: number;
     autoCompleteAgeHistogram?: Record<string, number>;
   };
   /**
@@ -747,6 +749,7 @@ function appendFinishedAwaitingAckReclaimMetrics(
         skippedUnderTtl?: number;
         autoCompletedTotal?: number;
         autoCompleteDeferredTotal?: number;
+        reclaimDeferredTotal?: number;
         autoCompleteAgeHistogram?: Record<string, number>;
       }
     | undefined,
@@ -827,6 +830,17 @@ function appendFinishedAwaitingAckReclaimMetrics(
         'kookr_finished_awaiting_ack_auto_complete_deferred_total',
         {},
         snapshot.autoCompleteDeferredTotal,
+      ),
+    );
+  }
+  if (typeof snapshot.reclaimDeferredTotal === 'number') {
+    lines.push(
+      '# HELP kookr_finished_awaiting_ack_ttl_reclaim_deferred_total Total strict/soft/capacity-pressure FAA reclaims deferred by the TOCTOU re-check — resumed live turn, interactive pane, or confirmed-open PR hold (issue #3040).',
+      '# TYPE kookr_finished_awaiting_ack_ttl_reclaim_deferred_total counter',
+      metricLine(
+        'kookr_finished_awaiting_ack_ttl_reclaim_deferred_total',
+        {},
+        snapshot.reclaimDeferredTotal,
       ),
     );
   }

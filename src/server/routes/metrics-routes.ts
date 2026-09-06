@@ -85,6 +85,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
               skippedUnderTtl: finishedAwaitingAckReclaim.skippedUnderTtl,
               autoCompletedTotal: finishedAwaitingAckReclaim.autoCompletedTotal,
               autoCompleteDeferredTotal: finishedAwaitingAckReclaim.autoCompleteDeferredTotal,
+              reclaimDeferredTotal: finishedAwaitingAckReclaim.reclaimDeferredTotal,
               autoCompleteAgeHistogram: finishedAwaitingAckReclaim.autoCompleteAgeHistogram,
             },
           }

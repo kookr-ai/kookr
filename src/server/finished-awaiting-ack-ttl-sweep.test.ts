@@ -197,6 +197,182 @@ describe('reclaimAgedFinishedAwaitingAckTasks (issue #1884)', () => {
     expect(Object.values(snap.autoCompleteAgeHistogram).reduce((a, b) => a + b, 0)).toBe(1);
   });
 
+  // Issue #3040: the exact production incident. A finished task raised
+  // completion_ready, then a follow-up prompt resumed its turn (lastTurnState →
+  // running) WITHOUT clearing the stale signal, so it still classifies as FAA.
+  // Under capacity pressure the soft-TTL reclaim must DEFER it, not force-complete
+  // it out from under live work.
+  it('capacity-pressure soft TTL defers a task whose turn has resumed (issue #3040)', async () => {
+    const softTtlMs = 5 * 60_000;
+    const task = makeFaaTask({
+      id: 'resumed-1',
+      sessions: [
+        aSession({
+          tmuxSession: 'kookr-resumed',
+          lastStatus: 'inProgress',
+          lastTurnState: 'running',
+        }),
+      ],
+      pendingSignal: {
+        kind: 'completion_ready',
+        raisedAt: new Date(NOW.getTime() - softTtlMs - 60_000).toISOString(),
+      },
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr: () => false, metrics },
+      { now: NOW, ttlMs: TTL_MS, softTtlMs, capacityAllowsEarlyReclaim: true },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.capacityPressureEarlyReclaimedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['resumed-1']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(taskStore.clearPendingSignal).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().reclaimDeferredTotal).toBe(1);
+    // No reclaim audit row was written for a deferral.
+    await expect(readFile(auditLogPath, 'utf-8')).rejects.toThrow();
+  });
+
+  it('strict hard-TTL path defers a task whose turn has resumed (issue #3040)', async () => {
+    const task = makeFaaTask({
+      id: 'resumed-2',
+      sessions: [
+        aSession({
+          tmuxSession: 'kookr-resumed-2',
+          lastStatus: 'inProgress',
+          lastTurnState: 'running',
+        }),
+      ],
+    });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr: () => false, metrics },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['resumed-2']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(taskStore.clearPendingSignal).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().reclaimDeferredTotal).toBe(1);
+  });
+
+  it('strict path defers when the pane shows a high-confidence human interactive prompt (issue #3040)', async () => {
+    const task = makeFaaTask({ id: 'interactive-strict' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        isHoldingOpenPr: () => false,
+        getTaskPaneText: () => 'Some output\n❯\n',
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['interactive-strict']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(taskStore.clearPendingSignal).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().reclaimDeferredTotal).toBe(1);
+  });
+
+  it('strict path defers when a confirmed-open PR hold lands between selection and close (issue #3040)', async () => {
+    const task = makeFaaTask({ id: 'pr-landed' });
+    const taskStore = makeMockTaskStore([task]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    // Selection sees no open PR (clears the candidate); by the re-check the PR
+    // has landed. The stateful predicate models the TOCTOU race directly.
+    let call = 0;
+    const isHoldingOpenPr = vi.fn(() => (call++ === 0 ? false : true));
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr, metrics },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual(['pr-landed']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(taskStore.clearPendingSignal).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().reclaimDeferredTotal).toBe(1);
+  });
+
+  it('strict path silently skips (no defer) a task that left the FAA class between selection and re-GET (issue #3040)', async () => {
+    // True TOCTOU: selection saw a clean FAA; the fresh re-GET returns a task
+    // that has since completed, so it is neither reclaimed nor counted as a
+    // deferral — it is simply no longer ours to close.
+    const task = makeFaaTask({ id: 'raced' });
+    const taskStore = makeMockTaskStore([task]);
+    taskStore.getTask = vi.fn(() => ({ ...task, status: 'completed' as const }));
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      { taskStore, lifecycleDeps, auditLogPath, isHoldingOpenPr: () => false, metrics },
+      { now: NOW, ttlMs: TTL_MS },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds).toEqual([]);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    expect(metrics.getSnapshot().reclaimDeferredTotal).toBe(0);
+  });
+
+  it('partitions a mixed sweep: strict deferral vs meta deferral land on distinct counters (issue #3040)', async () => {
+    // Task A: strict candidate (no open PR), live turn → strict path defers →
+    // reclaimDeferredTotal. Task B: allowlisted meta task with an UNKNOWN PR ref
+    // (strict fail-safe skips it), live turn → meta path selects then defers →
+    // autoCompleteDeferredTotal. The shared deferredTaskIds holds both, but the
+    // two counters must each land on exactly one — proving the strictDeferredCount
+    // boundary does not double-count.
+    const liveSession = (tmux: string) =>
+      aSession({ tmuxSession: tmux, lastStatus: 'inProgress', lastTurnState: 'running' });
+    const taskA = makeFaaTask({ id: 'A', sessions: [liveSession('kookr-a')] });
+    const taskB = makeFaaTask({
+      id: 'B',
+      playbookId: 'cross-repo-orchestrator.md',
+      sessions: [liveSession('kookr-b')],
+    });
+    const taskStore = makeMockTaskStore([taskA, taskB]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckTtlReclaimMetrics();
+
+    const result = await reclaimAgedFinishedAwaitingAckTasks(
+      {
+        taskStore,
+        lifecycleDeps,
+        auditLogPath,
+        // A: confirmed no PR → strict selects. B: unknown → strict skips, meta (relaxed) selects.
+        isHoldingOpenPr: (t) => (t.id === 'A' ? false : undefined),
+        metrics,
+      },
+      { now: NOW, ttlMs: TTL_MS, metaAutoCompleteTtlMs: 12 * 60_000 },
+    );
+
+    expect(result.reclaimedTaskIds).toEqual([]);
+    expect(result.autoCompletedTaskIds).toEqual([]);
+    expect(result.deferredTaskIds.sort()).toEqual(['A', 'B']);
+    expect(taskStore.completeTask).not.toHaveBeenCalled();
+    const snap = metrics.getSnapshot();
+    expect(snap.reclaimDeferredTotal).toBe(1);
+    expect(snap.autoCompleteDeferredTotal).toBe(1);
+  });
+
   // End-to-end proof that the #2695 threshold is plumbed through the sweep: an
   // actionable (non-ask-first) FAA past the actionable threshold with UNKNOWN
   // open-PR state force-completes under capacity pressure, and is audited with

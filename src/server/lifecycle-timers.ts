@@ -285,6 +285,7 @@ export interface TimerDeps {
     | 'recordSoftTtlPolicy'
     | 'recordAutoCompleted'
     | 'recordAutoCompleteDeferred'
+    | 'recordReclaimDeferred'
   >;
   /**
    * Operator page when finishedAwaitingAck residual stays high after the TTL
