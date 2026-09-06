@@ -76,6 +76,15 @@ export interface FinishedAwaitingAckTtlReclaimMetricsSnapshot {
   /** Cumulative TOCTOU deferrals (live turn / interactive pane) on the #2070 path. */
   autoCompleteDeferredTotal: number;
   /**
+   * Cumulative strict/soft/capacity-pressure reclaims held back by the TOCTOU
+   * re-check (issue #3040): a resumed live turn, a high-confidence interactive
+   * pane, or a confirmed-open PR hold that landed between selection and
+   * force-complete. A rising counter means the guard is doing its job — tasks
+   * that were no longer safe to close were deferred instead of force-completed
+   * out from under live work.
+   */
+  reclaimDeferredTotal: number;
+  /**
    * Age-at-auto-complete / pressure-reclaim histogram counts, keyed by
    * upper-bound minutes (`"5"`, `"12"`, `"15"`, …, `"+Inf"`). Cumulative
    * since process start. Meta auto-complete and capacity-pressure early
@@ -105,6 +114,7 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
   private lastAttemptedTaskIds: string[] = [];
   private autoCompletedTotal = 0;
   private autoCompleteDeferredTotal = 0;
+  private reclaimDeferredTotal = 0;
   private autoCompleteAgeHistogram: Record<string, number> = emptyAgeHistogram();
   private softTtlMs: number | null = null;
   private capacityEarlyReclaim = false;
@@ -170,6 +180,11 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
     if (count > 0) this.autoCompleteDeferredTotal += count;
   }
 
+  /** Strict/soft/capacity-pressure reclaims deferred by the TOCTOU re-check — live turn / interactive pane / open-PR hold (issue #3040). */
+  recordReclaimDeferred(count: number): void {
+    if (count > 0) this.reclaimDeferredTotal += count;
+  }
+
   getSnapshot(): FinishedAwaitingAckTtlReclaimMetricsSnapshot {
     return {
       reclaimedTotal: this.reclaimedTotal,
@@ -186,6 +201,7 @@ export class FinishedAwaitingAckTtlReclaimMetrics {
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],
       autoCompletedTotal: this.autoCompletedTotal,
       autoCompleteDeferredTotal: this.autoCompleteDeferredTotal,
+      reclaimDeferredTotal: this.reclaimDeferredTotal,
       autoCompleteAgeHistogram: { ...this.autoCompleteAgeHistogram },
       softTtlMs: this.softTtlMs,
       capacityEarlyReclaim: this.capacityEarlyReclaim,
@@ -255,6 +271,7 @@ export interface ReclaimFinishedAwaitingAckTasksDeps {
     | 'recordSoftTtlPolicy'
     | 'recordAutoCompleted'
     | 'recordAutoCompleteDeferred'
+    | 'recordReclaimDeferred'
   >;
 }
 
@@ -350,7 +367,59 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   const reclaimedTaskIds: string[] = [];
   const capacityPressureEarlyReclaimedTaskIds: string[] = [];
   const capacityPressureAges: number[] = [];
+  // Shared with the #2070 meta path below so both TOCTOU vetoes accrue to one
+  // per-sweep deferral list (and the meta selection skips ids the strict path
+  // already deferred).
+  const deferredTaskIds: string[] = [];
   for (const { task, ageMs, capacityPressureEarlyReclaim, actionableRelaxedReclaim } of selection.expired) {
+    // TOCTOU re-GET + live-turn / interactive-pane veto (Lucy #2238 pattern),
+    // mirroring the ack-path reaper (#2170) and the meta auto-complete path
+    // below. Pure selection is age-only; between selection and force-complete a
+    // finished task can have its turn resumed by a follow-up prompt — which
+    // leaves the stale `completion_ready` signal set (so it still classifies as
+    // FAA) while `lastTurnState` goes back to `running`. The strict/soft/
+    // capacity-pressure reclaim is the one FAA close path that was missing this
+    // guard, so under capacity pressure it force-completed tasks out from under
+    // live work at the 5m soft TTL (issue #3040). Defer instead — a genuinely
+    // idle FAA re-selects next tick and reclaims then.
+    const fresh = deps.taskStore.getTask(task.id);
+    if (
+      !fresh
+      || fresh.status !== 'inProgress'
+      || fresh.pendingSignal?.kind !== 'completion_ready'
+    ) {
+      // Acked / dismissed / transitioned since selection — no longer ours to close.
+      continue;
+    }
+    if (taskHasLiveTurn(fresh)) {
+      deferredTaskIds.push(task.id);
+      console.warn(
+        `[finished-awaiting-ack-ttl] deferred task ${task.id} — turn resumed (live turn) since selection`,
+      );
+      continue;
+    }
+    const paneText = deps.getTaskPaneText ? await deps.getTaskPaneText(task.id) : undefined;
+    if (paneHasHumanInteractiveMarkers(paneText)) {
+      deferredTaskIds.push(task.id);
+      console.warn(
+        `[finished-awaiting-ack-ttl] deferred task ${task.id} — pane shows a human-interactive prompt`,
+      );
+      continue;
+    }
+    // A confirmed-open delivery PR may have landed between selection and now.
+    // Never force-complete out from under it — the PR is the deliverable and a
+    // premature "completed" would strand it. Only a definite `true` blocks here
+    // (parity with the ack-path reaper #2170); an unknown/unconfirmed ref does
+    // not re-exempt an actionable relaxed reclaim the selector already cleared
+    // (issue #2695), so this re-check is safe for both the strict and relaxed
+    // selections.
+    if (deps.isHoldingOpenPr?.(fresh) === true) {
+      deferredTaskIds.push(task.id);
+      console.warn(
+        `[finished-awaiting-ack-ttl] deferred task ${task.id} — confirmed-open PR hold landed since selection`,
+      );
+      continue;
+    }
     const reason = capacityPressureEarlyReclaim
       ? 'finished_awaiting_ack_capacity_pressure'
       : 'finished_awaiting_ack_ttl';
@@ -403,9 +472,20 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
     capacityPressureEarlyReclaimedTaskIds.length,
     capacityPressureAges,
   );
+  // Issue #3040: strict/soft/capacity-pressure reclaims held back by the
+  // live-turn / interactive-pane veto. Recorded before the meta path so the
+  // counter attributes strict deferrals distinctly from the #2070 meta
+  // auto-complete deferrals. `deferredTaskIds` holds ONLY strict deferrals at
+  // this point — the meta loop appends to the same list afterwards, so capture
+  // the boundary to keep the two counters from double-counting.
+  const strictDeferredCount = deferredTaskIds.length;
+  deps.metrics?.recordReclaimDeferred(strictDeferredCount);
 
   // Issue #2070: meta/playbook FAA auto-complete for the unfetched-PR-ref residual.
-  const alreadyHandled = new Set(reclaimedTaskIds);
+  // Skip ids the strict path already reclaimed OR deferred this sweep (a strict
+  // deferral means the task has a live turn / interactive pane — the meta path
+  // must not re-close it either).
+  const alreadyHandled = new Set([...reclaimedTaskIds, ...deferredTaskIds]);
   const metaEntries = listMetaFinishedAwaitingAckAutoCompleteTasks(deps.taskStore.viewTasks(), {
     now,
     ttlMs: opts.metaAutoCompleteTtlMs ?? DEFAULT_META_FAA_AUTO_COMPLETE_TTL_MS,
@@ -413,7 +493,6 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   }).filter((e) => !alreadyHandled.has(e.task.id));
 
   const autoCompletedTaskIds: string[] = [];
-  const deferredTaskIds: string[] = [];
   const autoCompletedAges: number[] = [];
 
   for (const { task, ageMs } of metaEntries) {
@@ -474,7 +553,9 @@ export async function reclaimAgedFinishedAwaitingAckTasks(
   }
 
   deps.metrics?.recordAutoCompleted(autoCompletedTaskIds.length, autoCompletedAges);
-  deps.metrics?.recordAutoCompleteDeferred(deferredTaskIds.length);
+  // Only the deferrals the meta loop appended — strict deferrals were already
+  // attributed to recordReclaimDeferred above (issue #3040).
+  deps.metrics?.recordAutoCompleteDeferred(deferredTaskIds.length - strictDeferredCount);
 
   const totalClosed = reclaimedTaskIds.length + autoCompletedTaskIds.length;
   if (totalClosed > 0) {
