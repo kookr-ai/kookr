@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { ensureDtachDir } from './dtach-instance-dir.js';
 import { join } from 'node:path';
 import type { SessionId } from './terminal-backend.js';
 
@@ -227,7 +228,7 @@ export function enforceRingFleetBudget(
 
 export class DtachRingStore {
   constructor(private readonly ringsDir: string) {
-    mkdirSync(this.ringsDir, { recursive: true, mode: 0o700 });
+    ensureDtachDir(this.ringsDir);
   }
 
   copyFrom(state: DtachRingState, head: number, size: number, out: Buffer): void {
@@ -269,6 +270,10 @@ export class DtachRingStore {
    */
   persist(state: DtachRingState): void {
     try {
+      // `rings/` sits under the /tmp instance directory and can be swept away
+      // while the server runs. Re-create it here so a vanished directory costs
+      // one snapshot rather than every snapshot from now on (#3042).
+      ensureDtachDir(this.ringsDir);
       const head = state.ringHead;
       const cap = state.ringBuffer.length;
       const size = Math.min(head, cap);

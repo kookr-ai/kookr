@@ -81,6 +81,27 @@ describe('DtachRingStore', () => {
     store.copyFrom(state, state.ringHead, 16, out);
     expect(out.toString('utf-8')).toBe('efghijklmnopQRST');
   });
+
+  it('re-creates a rings directory that was swept away mid-run (#3042)', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const ringsDir = join(tmpDir, 'rings');
+    const store = new DtachRingStore(ringsDir);
+    const state = createDtachRingState('after-sweep');
+
+    store.copyInto(state, new TextEncoder().encode('scrollback after the sweep'));
+    // A /tmp sweeper removes the instance directory (and `rings/` with it) while
+    // the server is running. persist() swallows write errors, so before #3042
+    // this silently dropped every snapshot from here on.
+    rmSync(ringsDir, { recursive: true, force: true });
+
+    store.persist(state);
+
+    const restored = createDtachRingState('after-sweep');
+    store.load(restored);
+    const out2 = Buffer.alloc('scrollback after the sweep'.length);
+    store.copyFrom(restored, restored.ringHead, out2.length, out2);
+    expect(out2.toString('utf-8')).toBe('scrollback after the sweep');
+  });
 });
 
 describe('DtachRingStore combined-generation snapshots (issue #2829)', () => {

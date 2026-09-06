@@ -41,7 +41,6 @@ import {
   accessSync,
   constants as fsConstants,
   existsSync,
-  mkdirSync,
   unlinkSync,
 } from 'node:fs';
 import { access as fsAccess } from 'node:fs/promises';
@@ -73,6 +72,7 @@ import {
   type DtachManifestEntry,
   DtachManifestStore,
 } from './dtach-manifest-store.js';
+import { ensureDtachDir } from './dtach-instance-dir.js';
 import {
   DEFAULT_RING_FLUSH_INTERVAL_MS,
   DtachRingStore,
@@ -205,7 +205,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     const baseDir =
       options.socketDir ?? join('/tmp', 'kookr-dtach', String(process.getuid?.() ?? 'unknown'));
     this.instanceDir = join(baseDir, this.instanceId);
-    mkdirSync(this.instanceDir, { recursive: true, mode: 0o700 });
+    ensureDtachDir(this.instanceDir);
     this.manifestStore = new DtachManifestStore(join(this.instanceDir, 'manifest.json'), this.instanceId);
     this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME));
 
@@ -344,6 +344,17 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   async createSession(spec: SessionSpec): Promise<void> {
     this.validateSessionId(spec.id);
+    // The instance directory was created at construction time, but it lives in
+    // /tmp and can be swept away while the server runs. Re-create it here so
+    // the pending-manifest write below — the step that used to fail closed and
+    // brick every later launch — has a directory to land in (kookr-ai/kookr#3042).
+    //
+    // This does NOT guarantee the directory still exists when dtach binds its
+    // socket further down: the manifest write is awaited in between, so a sweep
+    // inside that window is still possible. That case is already survivable —
+    // `waitForSocket` times out, the manifest entry is removed, and the next
+    // launch re-creates the directory and succeeds.
+    ensureDtachDir(this.instanceDir);
     const sock = this.socketPathFor(spec.id);
 
     // Step 1: write `pending` manifest entry before spawn so a mid-spawn crash
