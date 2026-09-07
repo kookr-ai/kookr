@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { HELP_TEXT, main } from '../../bin/kookr.js';
@@ -87,6 +89,80 @@ describe('kookr dispatcher', () => {
     });
     expect(stderr).toBe('');
     expect(stdout).toContain(helpNeedle);
+  });
+
+  // Guards issue #3048: the root help once advertised --json for only 7 commands
+  // while ~22 subcommands had gained the flag. This derives the authoritative set
+  // of --json-capable commands straight from source and checks it against the help
+  // sentence in both directions, so the sentence cannot silently drift out of date
+  // again (a new --json command that goes unlisted, or a listed command that loses
+  // the flag).
+  it('advertises --json for every command that implements the envelope', () => {
+    // Command implementations that actually parse a --json flag live in two
+    // places: TypeScript under src/cli/kookr-*.ts and the hand-written
+    // JS entry points under bin/kookr-*.js. Real envelope commands parse the
+    // flag one of three ways: `x === '--json'`, `case '--json'`, or
+    // `argv.includes('--json')` (either quote style). Files that only list
+    // '--json' in a flag registry (completion) or a comment are not matched.
+    // A command that parsed the flag some fourth way (e.g. `argv.indexOf`) would
+    // escape this scan; the three idioms below are the only ones in use today.
+    const JSON_PARSE = /(===|case|includes\()\s*['"]--json['"]/;
+    const sources: Array<{ dir: string; ext: string }> = [
+      { dir: 'src/cli', ext: '.ts' },
+      { dir: 'bin', ext: '.js' },
+    ];
+
+    const commandWords = new Set<string>();
+    for (const { dir, ext } of sources) {
+      const abs = join(process.cwd(), dir);
+      for (const name of readdirSync(abs)) {
+        if (!name.startsWith('kookr-') || !name.endsWith(ext)) continue;
+        if (name.endsWith(`.test${ext}`) || name.endsWith('.d.ts')) continue;
+        const body = readFileSync(join(abs, name), 'utf8');
+        if (!JSON_PARSE.test(body)) continue;
+        // kookr-ops-digest.ts backs both `ops digest` and `ops timers`; the
+        // help lists them under the shared `ops` word.
+        const word = name.slice('kookr-'.length, -ext.length).replace(/^ops-digest$/, 'ops');
+        commandWords.add(word);
+      }
+    }
+
+    // The --json capability sentence spans from "Use --json" to its first period.
+    // The command list has no internal period, so this captures the whole list.
+    const sentence = HELP_TEXT.match(/Use --json[\s\S]*?\./)?.[0] ?? '';
+    expect(sentence).not.toBe('');
+
+    // Everything after the colon is the comma-separated command list. Tokenise on
+    // word boundaries (splitting `ops digest` and `drain/resume` into their parts)
+    // so matching is exact rather than a loose substring test.
+    const listPart = sentence.split(':').slice(1).join(':');
+    const advertised = new Set(
+      listPart
+        .toLowerCase()
+        .split(/[\s,./]+/)
+        .filter((token) => token && token !== 'and'),
+    );
+
+    // Sub-forms/aliases of a detected command that appear as their own words in
+    // the list (`ops digest`/`ops timers` → ops, `resume` → drain). Consulted only
+    // by the reverse check, so a new unregistered sub-form fails loudly.
+    const EXPANSIONS = new Set<string>(['digest', 'timers', 'resume']);
+
+    // Floor guard: catches a scan that silently finds nothing (wrong dir, broken
+    // regex), which would otherwise make both checks below pass vacuously.
+    expect(commandWords.size).toBeGreaterThan(15);
+
+    // Forward: every --json-capable command is advertised.
+    const missing = [...commandWords].filter((word) => !advertised.has(word)).sort();
+    expect(missing).toEqual([]);
+
+    // Reverse: every advertised command word maps to a real --json command (or a
+    // known sub-form of one), so a stale entry cannot linger after a command drops
+    // the flag or is renamed.
+    const stale = [...advertised]
+      .filter((word) => !commandWords.has(word) && !EXPANSIONS.has(word))
+      .sort();
+    expect(stale).toEqual([]);
   });
 
   it('dispatches subcommand JSON help through the main binary', async () => {
