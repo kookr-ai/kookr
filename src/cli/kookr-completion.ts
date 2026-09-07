@@ -18,7 +18,7 @@ const LESSON_REMEMBER_FLAGS = [
 const LESSON_YIELD_FLAGS = ['--json', '--days', '--kookr-dir', '-h', '--help'] as const;
 const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
 // #1858 / #1518: known model base ids for spawn --model tab-completion.
-// Keep in sync with ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in
+// Keep in sync with ALL_MODEL_IDS and the per-agent model-id lists in
 // src/shared/contracts/agent-types.ts and MODEL_IDS in bin/kookr-spawn.js.
 // Inlined (not imported) so `kookr completion` still loads from source without
 // a prior build — this file is imported by bin/kookr.js via strip-types.
@@ -31,6 +31,7 @@ const SPAWN_MODEL_IDS = [
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
+  'gpt-6-astra',
 ] as const;
 
 export type CompletionShell = (typeof COMPLETION_SHELLS)[number];

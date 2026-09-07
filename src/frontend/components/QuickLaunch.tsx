@@ -159,11 +159,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   }, []);
 
   // Selected-task / last-used effects can change the agent without the
-  // picker onChange. Keep pins the new agent still accepts; drop the rest.
+  // picker onChange. Model changes can also narrow the valid effort set.
+  // Keep only the pin pair the current selection accepts.
   useEffect(() => {
-    setEffort((current) => sanitizeLaunchPins(agentType, current, '').effort);
-    setModel((current) => sanitizeLaunchPins(agentType, '', current).model);
-  }, [agentType]);
+    const nextPins = sanitizeLaunchPins(agentType, effort, model);
+    if (nextPins.effort !== effort) setEffort(nextPins.effort);
+    if (nextPins.model !== model) setModel(nextPins.model);
+  }, [agentType, effort, model]);
 
   const activeDuplicate = useMemo(
     () => findActiveLaunchDuplicate(duplicateCandidates, { prompt, cwd, agentType }),
@@ -284,7 +286,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           roundRobinIndex={roundRobinIndex}
           grokAuthUsable={grokAuth ? !grokAuth.launchWouldRefuse : undefined}
         />
-        {(effortOptionsForSelection(agentType).length > 0
+        {(effortOptionsForSelection(agentType, model).length > 0
           || modelOptionsForSelection(agentType).length > 0) && (
           <details className="quick-launch-pins">
             <summary>Pins</summary>

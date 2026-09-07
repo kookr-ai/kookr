@@ -13,7 +13,7 @@ describe('lookupPricing — strict exact-match', () => {
     const observed = [
       'claude-opus-5', 'claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5',
       'gpt-5.3-codex', 'gpt-5.4', 'gpt-5.4-mini',
-      'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
+      'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.5-pro', 'gpt-5', 'gpt-5-mini', 'o3', 'o3-mini',
     ];
     for (const m of observed) {
       const p = lookupPricing(m);
@@ -106,6 +106,16 @@ describe('lookupPricing — strict exact-match', () => {
       outputPerMTok: 30,
       cacheWritePerMTok: 6.25,
       cacheReadPerMTok: 0.5,
+    });
+  });
+
+  test('gpt-6-astra uses its published token and cache rates', () => {
+    expect(lookupPricing('gpt-6-astra')).toMatchObject({
+      vendor: 'openai',
+      inputPerMTok: 10,
+      outputPerMTok: 50,
+      cacheWritePerMTok: 12.5,
+      cacheReadPerMTok: 1,
     });
   });
 });

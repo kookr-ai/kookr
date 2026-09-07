@@ -1382,20 +1382,24 @@ async function launchTaskCore(
   // Validate a per-task effort override against the *resolved* agent's allowed
   // set (#681), before any side effect or task record. Done here — not at the
   // route — because round-robin only resolves to a concrete agent now, and the
-  // allowed set is agent-specific (`minimal`/`none`/`ultra` are codex-only). The
+  // allowed set is agent- and sometimes model-specific (Astra excludes Codex's
+  // `minimal` and `none` values). The
   // per-agent-type *default* is applied inside the adapter and
   // validated when settings are saved, so it is not re-checked here.
-  if (effectiveEffort !== undefined && !isValidEffortForAgent(agentType, effectiveEffort)) {
+  if (
+    effectiveEffort !== undefined
+    && !isValidEffortForAgent(agentType, effectiveEffort, effectiveModel)
+  ) {
     throw new EffortValidationError(
       `Invalid effort "${effectiveEffort}" for agent ${agentType}; ` +
-      `valid levels: ${effortLevelsForAgent(agentType).join(', ')}`,
+      `valid levels: ${effortLevelsForAgent(agentType, effectiveModel).join(', ')}`,
     );
   }
 
   // Validate a per-task model pin against the *resolved* agent's allowlist
   // (#1518). Same placement as effort — after round-robin, before side effects.
   // No silent fallback: unknown models throw rather than launch with the CLI
-  // default. codex-cli / grok-build currently have empty public allowlists;
+  // default. The Codex allowlist exposes only explicitly qualified raw pins;
   // model-tier targets come from the exhaustive trusted mapping above.
   if (
     effectiveModel !== undefined
@@ -1407,7 +1411,8 @@ async function launchTaskCore(
       valid.length === 0
         ? `Invalid model "${effectiveModel}" for agent ${agentType}; this agent does not accept a per-task model pin`
         : `Invalid model "${effectiveModel}" for agent ${agentType}; ` +
-          `valid models: ${valid.join(', ')} (dated suffixes of those bases also accepted)`,
+          `valid models: ${valid.join(', ')}` +
+          (agentType === 'claude-code' ? ' (dated suffixes of those bases also accepted)' : ''),
     );
   }
 
@@ -1634,12 +1639,16 @@ async function launchTaskCore(
           effectiveEffort = target.effort;
           effectiveModel = target.model;
         } else {
-          // Drop explicit pins the substitute cannot honor independently.
-          if (effectiveEffort !== undefined && !isValidEffortForAgent(toAgent, effectiveEffort)) {
-            effectiveEffort = undefined;
-          }
+          // Drop explicit pins the substitute cannot honor. Validate the model
+          // first because it can narrow the replacement's effort vocabulary.
           if (effectiveModel !== undefined && !isValidModelForAgent(toAgent, effectiveModel)) {
             effectiveModel = undefined;
+          }
+          if (
+            effectiveEffort !== undefined
+            && !isValidEffortForAgent(toAgent, effectiveEffort, effectiveModel)
+          ) {
+            effectiveEffort = undefined;
           }
         }
         agentType = toAgent;

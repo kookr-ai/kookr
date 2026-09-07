@@ -125,6 +125,23 @@ describe('task launch intent', () => {
       agentType: 'grok-build',
       launchIntent: buildTaskLaunchIntent('grok-build', { model: 'arbitrary-model' }),
     })).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
+    expect(validatePersistedLaunchIntent({
+      agentType: 'codex-cli',
+      launchIntent: buildTaskLaunchIntent('codex-cli', {
+        model: 'gpt-6-astra',
+        effort: 'minimal',
+      }),
+    })).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
+  });
+
+  it('accepts a valid raw Astra intent without treating it as a portable tier', () => {
+    const intent = buildTaskLaunchIntent('codex-cli', {
+      model: 'gpt-6-astra',
+      effort: 'ultra',
+    });
+
+    expect(validatePersistedLaunchIntent({ agentType: 'codex-cli', launchIntent: intent }))
+      .toEqual({ ok: true, intent });
   });
 
   it('keeps dependency and Ralph wiring in the dedup identity', () => {

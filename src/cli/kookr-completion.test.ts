@@ -334,6 +334,7 @@ describe('bash completion behavior', () => {
         'claude-opus-4-8',
         'claude-sonnet-5',
         'claude-haiku-4-5',
+        'gpt-6-astra',
       ]),
     );
     await expect(completeBash(['kookr', 'spawn', '--model='])).resolves.toEqual(
@@ -342,6 +343,7 @@ describe('bash completion behavior', () => {
         '--model=claude-fable-5',
         '--model=claude-sonnet-5',
         '--model=claude-haiku-4-5',
+        '--model=gpt-6-astra',
       ]),
     );
   });
@@ -713,6 +715,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
         'claude-opus-4-8',
         'claude-sonnet-5',
         'claude-haiku-4-5',
+        'gpt-6-astra',
       ]),
     );
     await expect(completeZsh(['kookr', 'spawn', '--model='], 3)).resolves.toEqual(
@@ -721,6 +724,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
         '--model=claude-fable-5',
         '--model=claude-sonnet-5',
         '--model=claude-haiku-4-5',
+        '--model=gpt-6-astra',
       ]),
     );
   });

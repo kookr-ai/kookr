@@ -15,9 +15,9 @@ interface Props {
  * Per-task effort and model selects for a dashboard launch.
  *
  * Each select appears only when the resolved agent accepts that pin.
- * Grok Build hides both (no validated effort or model allowlist). Codex
- * shows effort and hides model. Round-robin hides both until a concrete
- * agent is chosen — the server validates against the resolved type.
+ * Grok Build hides both (no validated effort or model allowlist). Codex shows
+ * effort and its qualified Astra model. Round-robin hides both until a
+ * concrete agent is chosen — the server validates against the resolved type.
  */
 export function LaunchEffortModelPickers({
   agentType,
@@ -27,7 +27,7 @@ export function LaunchEffortModelPickers({
   onModelChange,
   compact = false,
 }: Props) {
-  const effortLevels = effortOptionsForSelection(agentType);
+  const effortLevels = effortOptionsForSelection(agentType, model);
   const modelIds = modelOptionsForSelection(agentType);
   if (effortLevels.length === 0 && modelIds.length === 0) return null;
 
@@ -56,7 +56,13 @@ export function LaunchEffortModelPickers({
           <select
             aria-label="Model"
             value={model}
-            onChange={(e) => onModelChange(e.target.value)}
+            onChange={(e) => {
+              const nextModel = e.target.value;
+              if (effort && !effortOptionsForSelection(agentType, nextModel).includes(effort)) {
+                onEffortChange('');
+              }
+              onModelChange(nextModel);
+            }}
           >
             <option value="">Agent default</option>
             {modelIds.map((id) => (

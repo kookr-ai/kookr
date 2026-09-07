@@ -9,6 +9,8 @@ import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import {
   CLAUDE_CODE_EFFORT_LEVELS,
   CLAUDE_CODE_MODEL_IDS,
+  CODEX_CLI_MODEL_IDS,
+  CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
 } from '../../shared/contracts/agent-types.js';
 import { LAST_EFFORT_KEY, LAST_MODEL_KEY } from '../store/last-launch-pins.js';
 import type { AgentSelection, ClientMessage } from '../../shared/protocol.js';
@@ -165,12 +167,27 @@ describe('LaunchTaskDialog effort and model pickers (#2448)', () => {
     act(() => root.unmount());
   });
 
-  test('codex-cli shows effort and hides model', async () => {
-    const { root } = renderDialog(container, 'codex-cli');
+  test('codex-cli shows effort and gpt-6-astra model', async () => {
+    const { root, sent } = renderDialog(container, 'codex-cli');
     await flush();
 
     expect(getEffortSelect(container)).not.toBeNull();
-    expect(getModelSelect(container)).toBeNull();
+    const model = getModelSelect(container);
+    expect(model).not.toBeNull();
+    expect([...model!.options].map((option) => option.value)).toEqual(['', ...CODEX_CLI_MODEL_IDS]);
+    await act(async () => { setSelectValue(getEffortSelect(container)!, 'minimal'); });
+    await act(async () => { setSelectValue(model!, 'gpt-6-astra'); });
+    expect([...getEffortSelect(container)!.options].map((option) => option.value)).toEqual([
+      '', ...CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
+    ]);
+    expect(getEffortSelect(container)!.value).toBe('');
+    await submitManualLaunch(container);
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      agentType: 'codex-cli',
+      model: 'gpt-6-astra',
+    });
+    expect(sent[0]).not.toHaveProperty('effort');
     act(() => root.unmount());
   });
 
@@ -234,7 +251,7 @@ describe('LaunchTaskDialog last-used effort and model (#2616)', () => {
     act(() => second.root.unmount());
   });
 
-  test('switching to an agent that rejects a stored pin falls back to Agent default for that pin', async () => {
+  test('switching to an agent with a different model allowlist falls back to Agent default', async () => {
     localStorage.setItem(LAST_EFFORT_KEY, 'high');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
 
@@ -246,7 +263,7 @@ describe('LaunchTaskDialog last-used effort and model (#2616)', () => {
     await act(async () => { setSelectValue(getAgentSelectEl(container), 'codex-cli'); });
     await flush();
     expect(getEffortSelect(container)?.value).toBe('high');
-    expect(getModelSelect(container)).toBeNull();
+    expect(getModelSelect(container)?.value).toBe('');
     act(() => root.unmount());
   });
 

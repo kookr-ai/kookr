@@ -206,12 +206,24 @@ describe('parseArgs', () => {
     expect(parseArgs(['--model', 'claude-fable-5']).model).toBe('claude-fable-5');
     expect(parseArgs(['--model=claude-opus-4-8']).model).toBe('claude-opus-4-8');
     expect(parseArgs(['--model', 'claude-haiku-4-5-20251001']).model).toBe('claude-haiku-4-5-20251001');
+    expect(parseArgs(['--model', 'gpt-6-astra']).model).toBe('gpt-6-astra');
   });
 
   it('rejects unknown --model values at the CLI (#1518)', () => {
     expect(() => parseArgs(['--model', 'gpt-5.6-sol'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model', 'gpt-6-astra-not-real'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model=gpt-6-astra-not-real'])).toThrow(UsageError);
     expect(() => parseArgs(['--model', ''])).toThrow(UsageError);
     expect(() => parseArgs(['--model', 'not-a-model'])).toThrow(UsageError);
+  });
+
+  it('rejects effort levels that gpt-6-astra does not support', () => {
+    expect(() => parseArgs(['--model', 'gpt-6-astra', '--effort', 'minimal'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model=gpt-6-astra', '--effort=none'])).toThrow(UsageError);
+    expect(parseArgs(['--model', 'gpt-6-astra', '--effort', 'ultra'])).toMatchObject({
+      model: 'gpt-6-astra',
+      effort: 'ultra',
+    });
   });
 
   it('parses portable small model intent and rejects ambiguous raw pins', () => {

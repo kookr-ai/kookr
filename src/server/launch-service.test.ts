@@ -419,6 +419,29 @@ describe('launchTask', () => {
       });
     });
 
+    it('threads gpt-6-astra to the Codex adapter', async () => {
+      await launchTask(deps, {
+        prompt: 'hello',
+        cwd: '/tmp',
+        agentType: 'codex-cli',
+        model: 'gpt-6-astra',
+      });
+      expect(launchOptsFor(deps, 'codex-cli')).toMatchObject({ model: 'gpt-6-astra' });
+    });
+
+    it('rejects an effort that gpt-6-astra does not support before creating a task', async () => {
+      await expect(
+        launchTask(deps, {
+          prompt: 'hello',
+          cwd: '/tmp',
+          agentType: 'codex-cli',
+          model: 'gpt-6-astra',
+          effort: 'minimal',
+        }),
+      ).rejects.toBeInstanceOf(EffortValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
     it('rejects an unknown model for claude-code without creating a task (#1518)', async () => {
       await expect(
         launchTask(deps, {
