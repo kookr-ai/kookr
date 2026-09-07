@@ -154,6 +154,29 @@ describe('visibleLinesFromTerminalText — cursor addressing (issue #3039)', () 
     expect(res[res.length - 1]).toBe('X');
   });
 
+  // Safety (independent-review finding): a large RELATIVE row move (CUD/CNL) in
+  // the raw PTY ring must not amplify a few bytes into a giant grid.
+  test('a huge CUD / CNL count is bounded, not allocated', () => {
+    // Non-scrolling: a downward move grows by at most one row per move.
+    expect(visibleLinesFromTerminalText('start\x1b[5000000BX').length).toBeLessThanOrEqual(1000);
+    expect(visibleLinesFromTerminalText('start\x1b[5000000EX').length).toBeLessThanOrEqual(1000);
+    // Scrolling (height inferred from ESC[3;…H): clamped to the screen bottom.
+    expect(visibleLinesFromTerminalText('\x1b[3;1Ha\x1b[5000000By').length).toBeLessThanOrEqual(1000);
+  });
+
+  // Safety: a large COLUMN move (CUF/CHA/CUP col) must not force a giant space pad.
+  test('a huge column move is clamped, not padded into a giant string', () => {
+    for (const frame of ['\x1b[1;1Ha\x1b[5000000CX', '\x1b[1;1Ha\x1b[5000000GX', '\x1b[1;5000000HX']) {
+      const res = visibleLinesFromTerminalText(frame);
+      expect(res.every((l) => l.length <= 1001)).toBe(true);
+    }
+  });
+
+  test('a truncated CSI at end of stream leaves no stray bracket', () => {
+    expect(visibleLinesFromTerminalText('done\x1b[')).toEqual(['done']);
+    expect(visibleLinesFromTerminalText('done\x1b[2')).toEqual(['done2']);
+  });
+
   test('separates a Codex-style composer frame (prompt / blank / footer)', () => {
     // Prompt at row 2, footer at row 4 — no newlines between them, the exact
     // shape that collapsed onto one line before #3039.

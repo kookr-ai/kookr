@@ -41,10 +41,13 @@ const CSI_SEQUENCE_RE = /\x1b\[([0-?]*)[ -/]*([@-~])/y;
 const ESC_CHARSET_INTRODUCERS = new Set(['(', ')', '*', '+', '#']);
 const DEL_CHAR = '\x7f';
 
-// Guards against a bogus absolute row (`ESC[99999H`) forcing a huge grid
-// allocation on the watchdog's per-tick hot path. Real terminals are well under
-// this; the Codex PTY is 50 rows.
+// Guards against a bogus cursor move (`ESC[99999H`, `ESC[99999B`, `ESC[99999C`)
+// forcing a huge grid/line allocation on the watchdog's per-tick hot path — the
+// input is the raw PTY ring, so an agent's arbitrary output can carry a hostile
+// escape. Real terminals are well under these; the Codex PTY is 50 rows × 200
+// cols.
 const MAX_INFERRED_SCREEN_HEIGHT = 1000;
+const MAX_COLUMNS = 1000;
 
 /**
  * The visible screen height for absolute row addressing: the tallest absolute
@@ -111,6 +114,13 @@ export function visibleLinesFromTerminalText(text: string): string[] {
     const r = Math.max(0, row);
     return scrolls ? Math.min(r, screenHeight - 1) : r;
   };
+  // The lowest row a downward move (CUD/CNL) may reach: the screen bottom when
+  // scrolling, else at most one row past existing content. Bounds the grid so a
+  // large relative-move count cannot amplify a few bytes into a huge array.
+  const downRowLimit = () => (scrolls ? screenTop + screenHeight - 1 : lines.length);
+  // Column clamped to [0, MAX_COLUMNS] so a bogus CUF/CHA/CUP-col cannot force a
+  // giant `' '.repeat(col)` pad. Natural left-to-right printing is unaffected.
+  const clampCol = (c: number) => Math.max(0, Math.min(c, MAX_COLUMNS));
   const writeChar = (ch: string) => {
     ensureLine(line);
     let s = lines[line];
@@ -152,35 +162,33 @@ export function visibleLinesFromTerminalText(text: string): string[] {
             case 'H': // CUP
             case 'f': // HVP
               line = screenTop + clampRow((n1 ?? 1) - 1);
-              col = Math.max(0, (n2 ?? 1) - 1);
+              col = clampCol((n2 ?? 1) - 1);
               ensureLine(line);
               break;
             case 'A': // CUU
               line = Math.max(screenTop, line - (n1 ?? 1));
               break;
             case 'B': // CUD
-              line += n1 ?? 1;
+              line = Math.min(line + (n1 ?? 1), downRowLimit());
               ensureLine(line);
-              scrollIntoView();
               break;
             case 'C': // CUF
-              col += n1 ?? 1;
+              col = clampCol(col + (n1 ?? 1));
               break;
             case 'D': // CUB
               col = Math.max(0, col - (n1 ?? 1));
               break;
             case 'E': // CNL
-              line += n1 ?? 1;
+              line = Math.min(line + (n1 ?? 1), downRowLimit());
               col = 0;
               ensureLine(line);
-              scrollIntoView();
               break;
             case 'F': // CPL
               line = Math.max(screenTop, line - (n1 ?? 1));
               col = 0;
               break;
             case 'G': // CHA
-              col = Math.max(0, (n1 ?? 1) - 1);
+              col = clampCol((n1 ?? 1) - 1);
               break;
             case 'd': // VPA
               line = screenTop + clampRow((n1 ?? 1) - 1);
@@ -222,6 +230,11 @@ export function visibleLinesFromTerminalText(text: string): string[] {
           }
           continue;
         }
+        // A CSI intro (ESC[) that did not complete — e.g. a sequence truncated
+        // at the end of the ring. Drop both bytes, as the prior CSI strip did,
+        // rather than leaving a stray `[` to print.
+        i += 1;
+        continue;
       }
       // Other ESC sequence: consume ESC + its 1-byte selector (plus one more
       // byte for charset/DEC introducers). No worse than the prior strip, which
