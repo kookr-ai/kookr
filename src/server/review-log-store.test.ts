@@ -10,6 +10,7 @@ import {
   FINDING_EVIDENCE_REVIEW_LOG_FILE,
   ReviewLogStore,
 } from './review-log-store.js';
+import { stat } from 'node:fs/promises';
 
 const INPUT_HASH = 'a'.repeat(64);
 const TARGET = {
@@ -188,6 +189,111 @@ describe('ReviewLogStore', () => {
         expect(read.records[1].attempt.error).toHaveLength(600);
         expect(read.records[1].attempt.error).not.toContain('\n');
       }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('rotates the log so the on-disk file stays size-capped', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-log-store-rotate-'));
+    try {
+      // One record serializes to ~500 bytes; a tiny cap forces frequent rotation.
+      const store = ReviewLogStore.forKookrDir(dir, { maxBytes: 2048, rotatedGenerations: 2 });
+      const logPath = join(dir, FINDING_EVIDENCE_REVIEW_LOG_FILE);
+
+      for (let i = 0; i < 50; i += 1) {
+        await store.appendReview(validReview({ candidateId: `finding-${i}` }), INPUT_HASH);
+      }
+
+      // The active file never grows past the cap (plus one final append).
+      const activeSize = (await stat(logPath)).size;
+      expect(activeSize).toBeLessThanOrEqual(2048 + 512);
+
+      // Rotation shifted older history into the retained `.1` and `.2` generations.
+      expect((await stat(`${logPath}.1`)).size).toBeGreaterThan(0);
+      expect((await stat(`${logPath}.2`)).size).toBeGreaterThan(0);
+
+      // Beyond the retained generations nothing lingers.
+      await expect(stat(`${logPath}.3`)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      // After real rotation the active file still reads back cleanly and the
+      // most-recent record is preserved.
+      const read = await store.readAll();
+      expect(read.diagnostics).toEqual([]);
+      const last = read.records.at(-1);
+      expect(last?.kind).toBe('valid_review');
+      if (last?.kind === 'valid_review') expect(last.review.candidateId).toBe('finding-49');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('readAll cost does not scale with total history since boot', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-log-store-bounded-'));
+    try {
+      // Large rotation cap keeps everything in one file; a small read window
+      // bounds what readAll tails regardless of how much history accrues.
+      const store = ReviewLogStore.forKookrDir(dir, {
+        maxBytes: 64 * 1024 * 1024,
+        readMaxBytes: 4096,
+      });
+
+      for (let i = 0; i < 40; i += 1) {
+        await store.appendReview(validReview({ candidateId: `finding-${i}` }), INPUT_HASH);
+      }
+      const afterForty = await store.readAll();
+
+      for (let i = 40; i < 200; i += 1) {
+        await store.appendReview(validReview({ candidateId: `finding-${i}` }), INPUT_HASH);
+      }
+      const afterTwoHundred = await store.readAll();
+
+      // The read window bounds record count well below total history, and adding
+      // 5x more history does not grow what a single read returns.
+      expect(afterForty.records.length).toBeLessThan(40);
+      expect(afterTwoHundred.records.length).toBeLessThanOrEqual(afterForty.records.length + 1);
+      expect(afterTwoHundred.records.length).toBeLessThan(200);
+
+      // The most-recent record is always preserved, and the dropped partial
+      // leading line never surfaces as a spurious diagnostic.
+      const last = afterTwoHundred.records.at(-1);
+      expect(last?.kind).toBe('valid_review');
+      if (last?.kind === 'valid_review') expect(last.review.candidateId).toBe('finding-199');
+      expect(afterTwoHundred.diagnostics).toEqual([]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('drops the partial leading line but still surfaces genuine diagnostics in a truncated window', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'review-log-store-truncated-'));
+    try {
+      const store = ReviewLogStore.forKookrDir(dir, { readMaxBytes: 2048 });
+      const logPath = join(dir, FINDING_EVIDENCE_REVIEW_LOG_FILE);
+
+      // A canonical serialized valid line, taken from a real append.
+      await store.appendReview(validReview({ candidateId: 'canonical' }), INPUT_HASH);
+      const validLine = JSON.stringify((await store.readAll()).records[0]);
+
+      // Build a file many windows larger than 2048 bytes so readAll tails only
+      // the last window and drops its partial first line. Place a genuinely
+      // malformed line near the end, well inside the window and after the
+      // dropped partial line, followed by a trailing valid record.
+      const filler = Array.from({ length: 30 }, () => validLine);
+      const lines = [...filler, '{not-json-in-window', validLine];
+      await writeFile(logPath, `${lines.join('\n')}\n`, 'utf8');
+
+      const read = await store.readAll();
+
+      // The window was actually truncated (far fewer than the 32 written lines).
+      expect(read.records.length).toBeLessThan(30);
+      // The dropped partial leading line produces no spurious diagnostic, but
+      // the genuine malformed line inside the window is still reported once.
+      expect(read.diagnostics).toHaveLength(1);
+      expect(read.diagnostics[0]?.failureKind).toBe('malformed_json');
+      expect(read.diagnostics[0]?.lineNumber).toBeGreaterThan(0);
+      // The valid record after the malformed line still survives.
+      expect(read.records.at(-1)?.kind).toBe('valid_review');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
