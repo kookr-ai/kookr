@@ -113,7 +113,7 @@ describe('operationalAlertToSignal — real detector-message fidelity', () => {
 
     const svc = new SignalDeliveryService({
       dir,
-      config: { discord: { webhookUrl: 'https://discord/webhook' }, dryRun: false, pollIntervalMs: 1, minSendIntervalMs: 1, bootDelayMs: 1 },
+      config: { discord: { webhookUrl: 'https://discord/webhook' }, dryRun: false, pollIntervalMs: 1, minSendIntervalMs: 1, bootDelayMs: 1, backoffBaseMs: 1, backoffMaxMs: 1 },
       fetchImpl,
       now: () => new Date(0),
       log: () => {},

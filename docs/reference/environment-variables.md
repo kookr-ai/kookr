@@ -348,6 +348,8 @@ lets scheduled monitors spool transition and liveness signals too.
 | `KOOKR_SIGNAL_DELIVERY_DRY_RUN` | unset | `1` to enable | Formats and logs each batch but never POSTs. Entries are still marked delivered so the log does not loop. |
 | `KOOKR_SIGNAL_DELIVERY_POLL_MS` | `15000` | Positive integer (ms) | Poll cadence for tailing the operator-signal outbox. |
 | `KOOKR_SIGNAL_DELIVERY_MIN_SEND_MS` | `60000` | Positive integer (ms) | Minimum spacing between outbound messages; each eligible tick drains all pending signals into one batched message. |
+| `KOOKR_SIGNAL_DELIVERY_BACKOFF_BASE_MS` | `30000` | Positive integer (ms) | First back-off window after an all-channel delivery failure; doubles per consecutive failure (capped) instead of re-POSTing every poll. A single success resets it. |
+| `KOOKR_SIGNAL_DELIVERY_BACKOFF_MAX_MS` | `900000` | Positive integer (ms) | Ceiling for the exponential failure back-off, and the cap applied to an honored `Retry-After` from a 429. |
 | `KOOKR_OPERATOR_SIGNAL_DIR` | `~/.kookr/playbook-state/operator-signals` | Absolute or relative path | Override the operator-signal outbox directory. |
 
 ## Relay

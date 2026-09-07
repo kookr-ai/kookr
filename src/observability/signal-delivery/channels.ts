@@ -26,6 +26,12 @@ export interface ChannelDeliveryResult {
   ok: boolean;
   status?: number;
   error?: string;
+  /**
+   * Parsed `Retry-After` (ms) from a rate-limited response, when the receiver
+   * sent one. The caller (SignalDeliveryService) honors it as a lower bound on
+   * the next attempt so a 429 is respected instead of hammered (issue #3046).
+   */
+  retryAfterMs?: number;
 }
 
 export interface DiscordChannelConfig {
@@ -89,7 +95,14 @@ async function postJson(
       signal: controller.signal,
     });
     if (res.ok) return { channel, ok: true, status: res.status };
-    return { channel, ok: false, status: res.status, error: `HTTP ${res.status}` };
+    const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
+    return {
+      channel,
+      ok: false,
+      status: res.status,
+      error: `HTTP ${res.status}`,
+      ...(retryAfterMs !== null ? { retryAfterMs } : {}),
+    };
   } catch (err) {
     const message = err instanceof Error
       ? (err.name === 'AbortError' ? `timed out after ${timeoutMs}ms` : err.message)
@@ -103,4 +116,29 @@ async function postJson(
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `${text.slice(0, max - 1)}…`;
+}
+
+/**
+ * Parse an HTTP `Retry-After` header into milliseconds. Accepts both forms in
+ * RFC 9110 §10.2.3: a delay in seconds (`Retry-After: 30`) or an HTTP date
+ * (`Retry-After: Wed, 21 Oct 2015 07:28:00 GMT`). Returns null when the header
+ * is absent, malformed, or resolves to a non-positive delay. Exported for tests.
+ */
+export function parseRetryAfterMs(
+  raw: string | null | undefined,
+  now: () => number = () => Date.now(),
+): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (trimmed === '') return null;
+  // Delta-seconds form: a bare non-negative integer.
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number.parseInt(trimmed, 10);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  }
+  // HTTP-date form.
+  const when = Date.parse(trimmed);
+  if (Number.isNaN(when)) return null;
+  const deltaMs = when - now();
+  return deltaMs > 0 ? deltaMs : null;
 }

@@ -21,6 +21,14 @@
  * channel accepts it. This trades a possible single-channel miss (logged) for a
  * hard no-duplicate-repost guarantee, which is the property the incident that
  * motivated this issue actually needed.
+ *
+ * Failure back-off & health (issue #3046): when *every* channel rejects a batch,
+ * the service no longer re-POSTs it every poll interval. Instead it spaces the
+ * next attempt with capped exponential back-off (honoring a 429 `Retry-After` as
+ * a lower bound); the first success resets the counter and resumes normal
+ * cadence. {@link SignalDeliveryService.status} exposes a sync, secret-free
+ * health snapshot (configured / consecutiveFailures / pending / last send /
+ * last failure) so a silently-failing bridge is visible on GET `/api/health`.
  */
 
 import {
@@ -50,8 +58,37 @@ export interface SignalDeliveryTickResult {
   pending: number;
   /** True when the min-send interval gated this tick (signals left pending). */
   throttled: boolean;
+  /**
+   * True when a failure back-off window gated this tick (issue #3046). Distinct
+   * from `throttled`: the batch is not re-POSTed while the bridge is failing, so
+   * a revoked webhook / 429 / network fault no longer produces a retry storm.
+   */
+  backoff: boolean;
   delivered: string[];
   channelResults: ChannelDeliveryResult[];
+}
+
+/**
+ * Delivery-bridge health snapshot (issue #3046). Sync + secret-free so it can be
+ * projected null-safely onto GET `/api/health`, mirroring the sibling sink
+ * pattern in {@link file://../../server/operational-alert-sink.ts}. Timestamps
+ * are ISO strings (null when the event never happened); counts are plain.
+ */
+export interface SignalDeliveryStatus {
+  /** True when at least one channel (Discord / Telegram) is configured. */
+  configured: boolean;
+  /** Consecutive all-channel failures since the last success (0 when healthy). */
+  consecutiveFailures: number;
+  /** Signals pending as of the most recent tick (in-memory; no dir re-scan). */
+  pending: number;
+  /** ISO time of the last successful delivery, or null. */
+  lastSendAt: string | null;
+  /** ISO time of the last all-channel failure, or null. */
+  lastFailureAt: string | null;
+  /** Last failure summary (channel:error, …). Absent when healthy. */
+  lastError?: string;
+  /** ISO time before which the back-off gate suppresses the next attempt. Absent when healthy. */
+  nextAttemptAt?: string;
 }
 
 const KIND_EMOJI: Record<OperatorSignalKind, string> = {
@@ -65,6 +102,14 @@ export class SignalDeliveryService {
   private bootTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private lastSendAt: number | null = null;
+  // Failure back-off state (issue #3046). On an all-channel failure the next
+  // attempt is spaced by capped exponential back-off (or an honored Retry-After)
+  // instead of re-POSTing every poll; a single success resets all of it.
+  private consecutiveFailures = 0;
+  private lastFailureAt: number | null = null;
+  private lastError: string | null = null;
+  private nextAttemptAt: number | null = null;
+  private lastPending = 0;
   private readonly dir: string;
   private readonly config: SignalDeliveryConfig;
   private readonly fetchImpl: typeof fetch;
@@ -112,7 +157,7 @@ export class SignalDeliveryService {
 
   async tick(): Promise<SignalDeliveryTickResult> {
     if (this.running) {
-      return { pending: 0, throttled: false, delivered: [], channelResults: [] };
+      return { pending: 0, throttled: false, backoff: false, delivered: [], channelResults: [] };
     }
     this.running = true;
     try {
@@ -120,6 +165,27 @@ export class SignalDeliveryService {
     } finally {
       this.running = false;
     }
+  }
+
+  /**
+   * Delivery-bridge health snapshot (issue #3046). Sync in-memory read only —
+   * never scans the outbox — so GET `/api/health` can project it cheaply.
+   */
+  status(): SignalDeliveryStatus {
+    // Only surface nextAttemptAt while it is still in the future — a past value
+    // no longer suppresses an attempt, so reporting it would misdescribe the
+    // gate. consecutiveFailures remains the durable unhealthy signal.
+    const isSuppressing =
+      this.nextAttemptAt !== null && this.nextAttemptAt > this.now().getTime();
+    return {
+      configured: Boolean(this.config.discord || this.config.telegram),
+      consecutiveFailures: this.consecutiveFailures,
+      pending: this.lastPending,
+      lastSendAt: this.lastSendAt !== null ? new Date(this.lastSendAt).toISOString() : null,
+      lastFailureAt: this.lastFailureAt !== null ? new Date(this.lastFailureAt).toISOString() : null,
+      ...(this.lastError ? { lastError: this.lastError } : {}),
+      ...(isSuppressing ? { nextAttemptAt: new Date(this.nextAttemptAt as number).toISOString() } : {}),
+    };
   }
 
   private async runTick(): Promise<SignalDeliveryTickResult> {
@@ -141,13 +207,24 @@ export class SignalDeliveryService {
       pending.push({ fileName, signal });
     }
 
+    this.lastPending = pending.length;
+
     if (pending.length === 0) {
-      return { pending: 0, throttled: false, delivered: [], channelResults: [] };
+      return { pending: 0, throttled: false, backoff: false, delivered: [], channelResults: [] };
     }
 
     const nowMs = this.now().getTime();
+
+    // Failure back-off gate (issue #3046). While a back-off window is open the
+    // batch is NOT re-POSTed — this is what replaces the every-poll retry storm
+    // against a failing endpoint. Signals stay pending; the window is cleared by
+    // the first success.
+    if (this.nextAttemptAt !== null && nowMs < this.nextAttemptAt) {
+      return { pending: pending.length, throttled: false, backoff: true, delivered: [], channelResults: [] };
+    }
+
     if (this.lastSendAt !== null && nowMs - this.lastSendAt < this.config.minSendIntervalMs) {
-      return { pending: pending.length, throttled: true, delivered: [], channelResults: [] };
+      return { pending: pending.length, throttled: true, backoff: false, delivered: [], channelResults: [] };
     }
 
     const message = formatBatch(pending.map((s) => s.signal));
@@ -156,11 +233,21 @@ export class SignalDeliveryService {
 
     if (!anySuccess) {
       const errs = channelResults.map((r) => `${r.channel}:${r.error ?? 'fail'}`).join(', ');
-      this.log(`[signal-delivery] all channels failed (${errs}); ${pending.length} signal(s) stay pending`);
-      return { pending: pending.length, throttled: false, delivered: [], channelResults };
+      this.registerFailure(nowMs, errs, channelResults);
+      const waitMs = this.nextAttemptAt !== null ? Math.max(0, this.nextAttemptAt - nowMs) : 0;
+      this.log(
+        `[signal-delivery] all channels failed (${errs}); ${pending.length} signal(s) stay pending, `
+          + `backing off ${Math.round(waitMs / 1000)}s (failure #${this.consecutiveFailures})`,
+      );
+      return { pending: pending.length, throttled: false, backoff: false, delivered: [], channelResults };
     }
 
+    // Success: clear any back-off immediately so recovery is never delayed.
+    this.consecutiveFailures = 0;
+    this.lastError = null;
+    this.nextAttemptAt = null;
     this.lastSendAt = nowMs;
+    this.lastPending = 0;
     const deliveredNames: string[] = [];
     for (const { fileName, signal } of pending) {
       delivered[fileName] = signal.createdAt;
@@ -175,7 +262,33 @@ export class SignalDeliveryService {
         + (failed.length ? ` (failed: ${failed.map((r) => `${r.channel}:${r.error ?? 'fail'}`).join(', ')})` : ''),
     );
 
-    return { pending: 0, throttled: false, delivered: deliveredNames, channelResults };
+    return { pending: 0, throttled: false, backoff: false, delivered: deliveredNames, channelResults };
+  }
+
+  /**
+   * Record an all-channel failure and schedule the next attempt (issue #3046).
+   * Spacing is capped exponential back-off from the base window, doubling per
+   * consecutive failure; a `Retry-After` from a 429 raises it (as a lower bound)
+   * but is itself capped so a hostile value cannot stall recovery indefinitely.
+   */
+  private registerFailure(nowMs: number, errs: string, results: readonly ChannelDeliveryResult[]): void {
+    this.consecutiveFailures += 1;
+    this.lastFailureAt = nowMs;
+    this.lastError = errs;
+
+    const exponent = this.consecutiveFailures - 1;
+    // Cap the exponent before shifting so 2 ** exponent cannot overflow to Infinity.
+    const cappedExponent = Math.min(exponent, 30);
+    const backoffMs = Math.min(
+      this.config.backoffBaseMs * 2 ** cappedExponent,
+      this.config.backoffMaxMs,
+    );
+    const retryAfterMs = results.reduce<number>(
+      (max, r) => (typeof r.retryAfterMs === 'number' ? Math.max(max, r.retryAfterMs) : max),
+      0,
+    );
+    const waitMs = Math.max(backoffMs, Math.min(retryAfterMs, this.config.backoffMaxMs));
+    this.nextAttemptAt = nowMs + waitMs;
   }
 
   private async send(message: string): Promise<ChannelDeliveryResult[]> {

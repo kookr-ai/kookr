@@ -492,6 +492,15 @@ export interface RouteDeps {
    */
   getHelperLlmHealthSnapshot?: () => import('../../shared/contracts/diagnostic.js').HelperLlmHealthSnapshot;
   /**
+   * Delivery-bridge health snapshot (issue #3046). `/api/health` reads only the
+   * sync in-memory `status()` — configured / consecutiveFailures / pending /
+   * last send + last failure — so a silently-failing Discord/Telegram bridge is
+   * visible without grepping logs. Absent when the bridge is unconfigured (the
+   * service is never constructed) ⇒ health omits the `signalDelivery` block.
+   */
+  getSignalDeliveryStatus?: () =>
+    import('../../observability/signal-delivery/service.js').SignalDeliveryStatus | undefined;
+  /**
    * Combined maintenance-prune gauges (issues #2344 emergency + #2345 schedule).
    * `/api/health` reads only the in-memory snapshot (schedule enabled/interval
    * + last-run counters, emergency edge counters) — never starts a prune on
