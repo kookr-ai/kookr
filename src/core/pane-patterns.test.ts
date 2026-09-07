@@ -110,20 +110,21 @@ describe('analyzePaneSemantics', () => {
       expect(result.state).not.toBe('input_prompt');
     });
 
-    // Regression for issue #3037: Codex renders its empty idle composer with a
-    // dim placeholder ("Ask Codex to do anything") and lays the prompt + model
-    // footer out with absolute cursor-positioning escapes, which our
-    // newline-only reconstruction collapses onto one line. The pre-fix
-    // empty-row (`^›\s*$`) + standalone-footer heuristic missed it, so a
-    // finished/idle Codex session was classified `stale_agent` and reaped by
-    // the 3h hung-task reaper.
-    test('detects idle Codex composer with placeholder text (collapsed layout)', () => {
-      // What the newline-only reconstruction actually produces after the
-      // cursor-addressing escapes are stripped: prompt, placeholder and footer
-      // fused onto one trailing line.
+    // Regression for issues #3037/#3039: once faithful reconstruction keeps the
+    // composer row and the model-footer row distinct (that reconstruction is
+    // exercised on the raw escape stream by the fixture test below and in
+    // pane-semantics.test.ts), the placeholder composer must be recognised as an
+    // empty idle composer by the empty-composer + standalone-footer detector —
+    // no collapsed-line placeholder workaround. This case feeds the already-
+    // separated rows to pin that detector. Before #3039 these rows collapsed
+    // onto one line and a finished/idle Codex session was classified
+    // `stale_agent` and reaped by the 3h hung-task reaper.
+    test('detects idle Codex composer with placeholder text (separated rows)', () => {
       const pane = [
         '─ Worked for 27m 45s ─────────────────────────────',
-        '› Ask Codex to do anything   gpt-5.6-luna xhigh · ~/git/kb-scout-evol · Main [default]',
+        '› Ask Codex to do anything',
+        '',
+        '  gpt-5.6-luna xhigh · ~/git/kb-scout-evol · Main [default]',
       ].join('\n');
 
       const result = analyzePaneSemantics(pane);

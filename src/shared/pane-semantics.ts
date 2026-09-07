@@ -30,11 +30,220 @@ export function stripTerminalControls(text: string): string {
     .replace(ANSI_SINGLE_CHAR_RE, '');
 }
 
+// Matches one CSI sequence: ESC [ <params> <intermediates> <final>. Parameter
+// bytes are 0x30–0x3F (digits, ';', and the '?' private-marker), intermediates
+// 0x20–0x2F, final 0x40–0x7E. Sticky so it can be anchored at a given index via
+// `lastIndex` without slicing the remaining text (keeps reconstruction linear).
+const CSI_SEQUENCE_RE = /\x1b\[([0-?]*)[ -/]*([@-~])/y;
+// ESC-family sequences whose selector byte in [()*+#] introduces a charset/DEC
+// sequence taking one further byte (e.g. ESC(B) — consume it too so the final
+// byte is not mistaken for printable text).
+const ESC_CHARSET_INTRODUCERS = new Set(['(', ')', '*', '+', '#']);
+const DEL_CHAR = '\x7f';
+
+// Guards against a bogus cursor move (`ESC[99999H`, `ESC[99999B`, `ESC[99999C`)
+// forcing a huge grid/line allocation on the watchdog's per-tick hot path — the
+// input is the raw PTY ring, so an agent's arbitrary output can carry a hostile
+// escape. Real terminals are well under these; the Codex PTY is 50 rows × 200
+// cols.
+const MAX_INFERRED_SCREEN_HEIGHT = 1000;
+const MAX_COLUMNS = 1000;
+
+/**
+ * The visible screen height for absolute row addressing: the tallest absolute
+ * row (>= 2) any CUP/HVP/VPA sequence targets. A stream that never addresses a
+ * row past the first keeps an unbounded, non-scrolling buffer (`Infinity`) in
+ * which rows accumulate in stream order.
+ */
+function inferScreenHeight(text: string): number {
+  let max = 0;
+  const re = /\x1b\[([0-9;]*)[Hfd]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const row = parseInt(m[1].split(';')[0] || '1', 10);
+    if (!Number.isNaN(row)) max = Math.max(max, row);
+  }
+  return max >= 2 ? Math.min(max, MAX_INFERRED_SCREEN_HEIGHT) : Infinity;
+}
+
+/**
+ * Reconstruct the visible lines of a terminal pane from its raw byte stream.
+ *
+ * This is a compact VT screen-buffer model, not a newline splitter: it keeps a
+ * cursor (line, column) over a grid and applies printable writes, `\r`/`\n`/`\b`,
+ * absolute and relative cursor moves (CUP/HVP, CUU/CUD/CUF/CUB, CHA, VPA,
+ * CNL/CPL) and in-line/display erases (EL/ED). SGR colour, OSC, DEC private
+ * modes and other sequences are consumed and ignored. Cursor-addressed TUIs —
+ * Codex draws its composer with `ESC[22;1H›  …  ESC[24;1H  gpt-…` and no
+ * newlines between rows — therefore reconstruct into the correct distinct lines
+ * instead of collapsing onto one, which is what defeated the idle-composer
+ * detector in issue #3037 and forced the placeholder-specific workaround in
+ * #3038 (issue #3039).
+ *
+ * Absolute row addressing is relative to the visible screen, so the model
+ * tracks a screen top and scrolls on overflow. The screen height is the tallest
+ * absolute row the stream addresses (>= 2); a stream that never uses multi-row
+ * absolute addressing keeps an unbounded, non-scrolling buffer. A pane that
+ * positions text with only `\r`/`\n`/`\b` (plus SGR/OSC colour, which is
+ * dropped either way) reconstructs identically to the previous newline model —
+ * so the watchdog's pane-change activity hash is unchanged for providers whose
+ * output is line-oriented (Claude/Grok panes in practice). Panes that do use
+ * cursor moves or erases now reconstruct faithfully instead of by concatenation,
+ * which is the point; change detection is preserved because output still varies
+ * iff the visible content varies.
+ */
 export function visibleLinesFromTerminalText(text: string): string[] {
+  const screenHeight = inferScreenHeight(text);
+  const scrolls = Number.isFinite(screenHeight);
   const lines = [''];
+  let line = 0; // absolute index into `lines` of the cursor's row
+  let col = 0;
+  let screenTop = 0; // absolute index of the visible screen's first row
+
+  const ensureLine = (idx: number) => {
+    while (lines.length <= idx) lines.push('');
+  };
+  const scrollIntoView = () => {
+    if (scrolls && line > screenTop + screenHeight - 1) {
+      screenTop = line - (screenHeight - 1);
+    }
+  };
+  // Absolute row within the visible screen, clamped to [0, height-1] so a bogus
+  // out-of-range CUP/VPA cannot grow the grid without bound.
+  const clampRow = (row: number) => {
+    const r = Math.max(0, row);
+    return scrolls ? Math.min(r, screenHeight - 1) : r;
+  };
+  // The lowest row a downward move (CUD/CNL) may reach: the screen bottom when
+  // scrolling, else at most one row past existing content. Bounds the grid so a
+  // large relative-move count cannot amplify a few bytes into a huge array.
+  const downRowLimit = () => (scrolls ? screenTop + screenHeight - 1 : lines.length);
+  // Column clamped to [0, MAX_COLUMNS] so a bogus CUF/CHA/CUP-col cannot force a
+  // giant `' '.repeat(col)` pad. Natural left-to-right printing is unaffected.
+  const clampCol = (c: number) => Math.max(0, Math.min(c, MAX_COLUMNS));
+  const writeChar = (ch: string) => {
+    ensureLine(line);
+    let s = lines[line];
+    if (s.length < col) s += ' '.repeat(col - s.length);
+    lines[line] = s.slice(0, col) + ch + s.slice(col + 1);
+    col++;
+  };
 
   for (let i = 0; i < text.length; i++) {
     const char = text[i];
+
+    if (char === '\x1b') {
+      if (text[i + 1] === ']') {
+        // OSC … ST (ESC\) or BEL — consumed and ignored.
+        let j = i + 2;
+        while (j < text.length && text[j] !== '\x07' && !(text[j] === '\x1b' && text[j + 1] === '\\')) j++;
+        i = text[j] === '\x1b' ? j + 1 : j;
+        continue;
+      }
+      if (text[i + 1] === '[') {
+        CSI_SEQUENCE_RE.lastIndex = i;
+        const m = CSI_SEQUENCE_RE.exec(text);
+        if (m) {
+          i += m[0].length - 1;
+          const params = m[1];
+          const final = m[2];
+          // Skip DEC/private-marker sequences (params led by ? < = >), and parse
+          // params NaN-safe: a non-numeric field (e.g. a `:` sub-parameter) maps
+          // to undefined so `?? default` applies rather than propagating NaN into
+          // a row/col — which would index `lines[NaN]` and throw on this hot path.
+          if (/^[?<=>]/.test(params)) continue;
+          const nums = params.split(';').map((p) => {
+            const v = parseInt(p, 10);
+            return Number.isNaN(v) ? undefined : v;
+          });
+          const n1 = nums[0];
+          const n2 = nums[1];
+          switch (final) {
+            case 'H': // CUP
+            case 'f': // HVP
+              line = screenTop + clampRow((n1 ?? 1) - 1);
+              col = clampCol((n2 ?? 1) - 1);
+              ensureLine(line);
+              break;
+            case 'A': // CUU
+              line = Math.max(screenTop, line - (n1 ?? 1));
+              break;
+            case 'B': // CUD
+              line = Math.min(line + (n1 ?? 1), downRowLimit());
+              ensureLine(line);
+              break;
+            case 'C': // CUF
+              col = clampCol(col + (n1 ?? 1));
+              break;
+            case 'D': // CUB
+              col = Math.max(0, col - (n1 ?? 1));
+              break;
+            case 'E': // CNL
+              line = Math.min(line + (n1 ?? 1), downRowLimit());
+              col = 0;
+              ensureLine(line);
+              break;
+            case 'F': // CPL
+              line = Math.max(screenTop, line - (n1 ?? 1));
+              col = 0;
+              break;
+            case 'G': // CHA
+              col = clampCol((n1 ?? 1) - 1);
+              break;
+            case 'd': // VPA
+              line = screenTop + clampRow((n1 ?? 1) - 1);
+              ensureLine(line);
+              break;
+            case 'K': { // EL — erase in line
+              ensureLine(line);
+              const mode = n1 ?? 0;
+              if (mode === 0) lines[line] = lines[line].slice(0, col);
+              else if (mode === 1) {
+                const clear = Math.min(col + 1, lines[line].length);
+                lines[line] = ' '.repeat(clear) + lines[line].slice(clear);
+              } else if (mode === 2) lines[line] = '';
+              break;
+            }
+            case 'J': { // ED — erase in display
+              const mode = n1 ?? 0;
+              if (mode === 0) {
+                ensureLine(line);
+                lines[line] = lines[line].slice(0, col);
+                lines.length = line + 1;
+              } else if (mode === 2 || mode === 3) {
+                if (scrolls) {
+                  for (let k = screenTop; k < lines.length; k++) lines[k] = '';
+                  line = screenTop;
+                  col = 0;
+                } else {
+                  lines.length = 0;
+                  lines.push('');
+                  line = 0;
+                  screenTop = 0;
+                  col = 0;
+                }
+              }
+              break;
+            }
+            default:
+              break; // SGR (m), DECSTBM (r), DECSCUSR (space q), … — ignore.
+          }
+          continue;
+        }
+        // A CSI intro (ESC[) that did not complete — e.g. a sequence truncated
+        // at the end of the ring. Drop both bytes, as the prior CSI strip did,
+        // rather than leaving a stray `[` to print.
+        i += 1;
+        continue;
+      }
+      // Other ESC sequence: consume ESC + its 1-byte selector (plus one more
+      // byte for charset/DEC introducers). No worse than the prior strip, which
+      // only removed CSI/OSC/C1 forms.
+      const next = text[i + 1];
+      i += next !== undefined && ESC_CHARSET_INTRODUCERS.has(next) ? 2 : 1;
+      continue;
+    }
+
     if (char === '\r') {
       // CRLF ends a line; bare CR is a terminal redraw that returns to column 0.
       // Replays can contain duplicated CRs before LF, so collapse those first.
@@ -42,20 +251,26 @@ export function visibleLinesFromTerminalText(text: string): string[] {
       while (text[next] === '\r') next++;
       if (text[next] === '\n') {
         i = next - 1;
+        col = 0;
         continue;
       }
-      lines[lines.length - 1] = '';
+      lines[line] = '';
+      col = 0;
       continue;
     }
     if (char === '\n') {
-      lines.push('');
+      line += 1;
+      col = 0;
+      ensureLine(line);
+      scrollIntoView();
       continue;
     }
-    if (char === '\b' || char === '\u007f') {
-      lines[lines.length - 1] = lines[lines.length - 1].slice(0, -1);
+    if (char === '\b' || char === DEL_CHAR) {
+      lines[line] = lines[line].slice(0, -1);
+      col = Math.max(0, col - 1);
       continue;
     }
-    lines[lines.length - 1] += char;
+    writeChar(char);
   }
 
   return lines;
@@ -64,34 +279,15 @@ export function visibleLinesFromTerminalText(text: string): string[] {
 // Claude Code's input prompt: ❯ on its own line, often surrounded by horizontal rules.
 const CLAUDE_INPUT_PROMPT_RE = /^❯\s*$/;
 
-// Codex empty idle composer row.
-const CODEX_INPUT_PROMPT_RE = /^›\s*$/;
+// Codex empty idle composer row. An empty composer either renders a bare `›`
+// or fills the row with the dim placeholder Codex draws when nothing is typed
+// ("Ask Codex to do anything"); a faithful multi-row reconstruction now keeps
+// that row distinct from the model footer, so both forms are handled here as
+// "empty composer" rather than by the collapsed-line workaround #3038 needed
+// (issue #3039). Typed draft text (`› run tests`) is deliberately NOT matched.
+const CODEX_INPUT_PROMPT_RE = /^›\s*(?:Ask Codex to do anything\s*)?$/;
 // Codex composer/footer line that accompanies the idle prompt.
 const CODEX_COMPOSER_FOOTER_RE = /^\s{2}(?:gpt-[\w.-].*|Fast on\s*$|.*Plan mode.*|.*(?:% left|context left).*)$/i;
-// Codex's empty idle composer renders a dim placeholder ("Ask Codex to do
-// anything") in the input row instead of leaving it blank, and lays the
-// composer + model footer out with absolute cursor-positioning escapes. Our
-// reconstruction (visibleLinesFromTerminalText) honours only \r/\n/\b, not
-// cursor addressing, so those rows collapse onto one line — defeating the
-// empty-row (`^›\s*$`) + standalone-footer heuristic below. Match the
-// placeholder directly: its presence means the composer is empty and the agent
-// is idle at the prompt. This is the load-bearing signal that keeps a finished
-// or idle Codex session from being misread as `stale_agent` and killed by the
-// 3h hung-task reaper (the reaper is gated on the watchdog's `stale_agent`
-// verdict, and `input_prompt` → `needs_input` excludes it). See issue #3037.
-//
-// NOTE: the exact English placeholder is a Codex TUI string; if a future Codex
-// version reworks it, this detector silently reverts to the pre-#3037 behavior
-// (idle composer → stale_agent → reaped). The fixture-backed tests freeze the
-// captured shape but cannot detect a live string change — revisit if Codex's
-// idle composer copy changes.
-const CODEX_IDLE_PLACEHOLDER_RE = /›\s+Ask Codex to do anything\b/;
-// The model-footer tag Codex renders on the composer's footer row
-// (`gpt-5.6-luna xhigh · <cwd> · Main [default]`). After the cursor-addressing
-// collapse this fuses onto the same reconstructed line as the placeholder, so a
-// line carrying BOTH is the live idle composer — not a bare placeholder quoted
-// in scrollback (issue #3037 review, Finding 1).
-const CODEX_MODEL_FOOTER_TAG_RE = /\bgpt-[\w.-]/i;
 
 // Permission dialog: Claude Code shows tool name + "Allow" / "Deny" options.
 const PERMISSION_ALLOW_DENY_RE = /\bAllow\b.*\bDeny\b|\ballow\b.*\bdeny\b/i;
@@ -136,8 +332,7 @@ const VOLATILE_ACTIVITY_LINE_RES = [
 ];
 
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
-  const cleanText = stripTerminalControls(paneText);
-  const visibleLines = visibleLinesFromTerminalText(cleanText);
+  const visibleLines = visibleLinesFromTerminalText(paneText);
   if (!visibleLines.some((line) => line.trim().length > 0)) {
     return { state: 'unknown', confidence: 'low' };
   }
@@ -179,34 +374,23 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
     }
   }
 
+  // Codex idle composer: a composer prompt row (bare `›` or the dim
+  // "Ask Codex to do anything" placeholder Codex fills an empty composer with)
+  // plus its model footer, and no live `esc to interrupt` status bar. Faithful
+  // multi-row reconstruction (visibleLinesFromTerminalText) keeps the composer
+  // row, the blank row and the footer distinct, so the empty-composer +
+  // standalone-footer heuristic classifies real Codex panes directly — the
+  // placeholder is just another empty-composer form (issue #3039). Gating on
+  // the absence of an active status bar keeps a mid-turn frame (whose
+  // `• Working (Ns • esc to interrupt)` row is present) from reading as idle.
   const hasActiveStatusBar = lastLines.some((line) => STATUS_BAR_RE.test(line));
   const hasCodexComposerFooter = lastLines.some((line) => CODEX_COMPOSER_FOOTER_RE.test(line));
-  if (!hasActiveStatusBar) {
+  if (!hasActiveStatusBar && hasCodexComposerFooter) {
     for (let i = nonStatusLines.length - 1; i >= Math.max(0, nonStatusLines.length - 5); i--) {
-      if (hasCodexComposerFooter && CODEX_INPUT_PROMPT_RE.test(nonStatusLines[i])) {
+      if (CODEX_INPUT_PROMPT_RE.test(nonStatusLines[i])) {
         return { state: 'input_prompt', confidence: 'high', matchedText: nonStatusLines[i].trim() };
       }
     }
-  }
-
-  // Codex idle-composer placeholder (issue #3037). Robust to the cursor-
-  // addressing collapse described on CODEX_IDLE_PLACEHOLDER_RE. A line is the
-  // live idle composer when it carries BOTH the placeholder AND the model-footer
-  // tag (the two rows the collapse fuses together) AND is not itself a live
-  // status row (`esc to interrupt` / `tab to queue message`). Requiring the
-  // footer on the same line sheds a bare placeholder quoted in agent
-  // scrollback/output; the per-line status-bar exclusion rejects a mid-turn
-  // frame whose active `• Working (Ns • esc to interrupt)` row collapsed onto the
-  // composer (issue #3037 review, Findings 1–3). Belt-and-suspenders: the
-  // watchdog only consumes `input_prompt` after its stale/tool-in-progress
-  // gates, so a working agent is already `healthy`/`tool_running` first.
-  const codexIdleComposerLine = lastLines.find(
-    (line) => CODEX_IDLE_PLACEHOLDER_RE.test(line)
-      && CODEX_MODEL_FOOTER_TAG_RE.test(line)
-      && !STATUS_BAR_RE.test(line),
-  );
-  if (codexIdleComposerLine) {
-    return { state: 'input_prompt', confidence: 'high', matchedText: 'Ask Codex to do anything' };
   }
 
   for (let i = lastLines.length - 1; i >= Math.max(0, lastLines.length - 5); i--) {
@@ -227,8 +411,7 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
 }
 
 export function normalizePaneForActivity(paneText: string): string {
-  const cleanText = stripTerminalControls(paneText);
-  const visibleLines = visibleLinesFromTerminalText(cleanText);
+  const visibleLines = visibleLinesFromTerminalText(paneText);
   if (!visibleLines.some((line) => line.trim().length > 0)) return '';
 
   return visibleLines
