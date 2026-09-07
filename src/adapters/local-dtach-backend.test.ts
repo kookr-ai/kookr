@@ -124,7 +124,12 @@ async function waitForFileContents(filePath: string, expected: string, timeoutMs
 async function waitForMasterIdentity(
   socketDir: string,
   id: string,
-  timeoutMs = 3_000,
+  // Generous CEILING, not a fixed cost: the loop returns on the first verifiable
+  // probe, so a large timeout adds no wall-clock on a healthy master while
+  // surviving the seconds-long `/proc`-population lag a `setsid -f` fork can hit
+  // under full-suite CPU saturation. The old 3s ceiling itself timed out — and
+  // threw — under load (kookr-ai/kookr#3044). Scales with KOOKR_TEST_TIMING_SCALE.
+  timeoutMs = 15_000 * Math.max(1, Number(process.env.KOOKR_TEST_TIMING_SCALE) || 1),
 ): Promise<void> {
   const manifestPath = join(socketDir, 'test', 'manifest.json');
   const deadline = Date.now() + timeoutMs;
@@ -145,6 +150,37 @@ async function waitForMasterIdentity(
     }
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+/**
+ * Run a real-dtach reconnect/recovery call and converge past the transient
+ * `attach-spawn-failed` outcome.
+ *
+ * These tests spawn a REAL `dtach -a` attach child. Under full-suite CPU
+ * saturation that fresh child can occasionally come up and then exit before the
+ * liveness probe fires; both the reconnect (`ReconnectTransportResult.reason`)
+ * and the recovery (`VerifyRecoveredSessionResult.failureReason`) paths report
+ * that as `attach-spawn-failed`. Production treats it as a RETRYABLE transport
+ * transient — it never counts toward the reconnect cooldown/cap (kookr-ai/kookr#1347)
+ * and the operator's next attempt is expected to succeed — so converging past it
+ * here mirrors real behaviour and keeps the test asserting the intended
+ * live/repaired outcome rather than flaking on a fork/exec hiccup (#3044).
+ *
+ * This is NOT a blanket retry: it re-runs ONLY on the `attach-spawn-failed`
+ * transient. A genuinely wrong outcome (any other reason, or a bad assertion) is
+ * returned on the first observation and still fails the test. Bounded so a truly
+ * un-spawnable transport surfaces the failure instead of looping.
+ */
+async function retryPastTransientSpawnFailure<
+  T extends { reason?: string; failureReason?: string },
+>(run: () => Promise<T>, attempts = 5): Promise<T> {
+  let result!: T;
+  for (let i = 0; i < attempts; i += 1) {
+    result = await run();
+    if ((result.failureReason ?? result.reason) !== 'attach-spawn-failed') return result;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return result;
 }
 
 /** All processes whose cmdline references `sock`, with their argv tokens. */
@@ -991,10 +1027,17 @@ describe('LocalDtachBackend', () => {
         instanceId: 'test',
         dtachBinary: DTACH!,
       });
-      // Give recoverOnStartup (async, fire-and-forget) a tick to settle so
-      // listSessions reflects the manifest. captureBytes works either way
-      // because it falls back to readManifestSync.
-      await new Promise((r) => setTimeout(r, 25));
+      // Poll recoverOnStartup (async, fire-and-forget) until it settles so
+      // isAlive reflects the recovered manifest. A fixed 25ms tick raced the
+      // async recovery under full-suite load and flaked this assertion (#3044);
+      // the bounded poll returns as soon as recovery lands. captureBytes works
+      // either way because it falls back to readManifestSync.
+      {
+        const settleDeadline = Date.now() + 5_000;
+        while (!(await backend2.isAlive(id)) && Date.now() < settleDeadline) {
+          await new Promise((r) => setTimeout(r, 25));
+        }
+      }
       expect(await backend2.isAlive(id)).toBe(true);
 
       const replayed = Buffer.from(await backend2.captureBytes(id)).toString('utf-8');
@@ -1013,7 +1056,9 @@ describe('LocalDtachBackend', () => {
       expect(existsSync(join(tmpDir, 'test', 'rings', `${id}.ring`))).toBe(false);
       if (backend2) backend2.close();
     }
-  }, 15_000);
+    // Generous ceiling: two real backend spawns + a bounded (up to 5s) poll for
+    // async recoverOnStartup to settle, under load (#3044).
+  }, 30_000);
 
   skipIfNoProc(
     'reaps a prior-process launch-abandoned master during the bounded restart pass',
@@ -1419,6 +1464,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
         command: '/bin/sh',
         args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
       });
+      // Settle the master-identity gate before the reconnect so a racing
+      // identity-unverified doesn't flake this success path under load (#3044).
+      await waitForMasterIdentity(tmpDir, id);
       const sock = join(tmpDir, 'test', `${id}.sock`);
 
       const masterPid = manifestPidFor(id);
@@ -1428,7 +1476,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
       const attachBefore = attachPids(sock);
       expect(attachBefore.length).toBeGreaterThanOrEqual(1);
 
-      const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+      const result = await retryPastTransientSpawnFailure(() =>
+        backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 }),
+      );
 
       expect(result.outcome).toBe('success');
       expect(result.reason).toBe('reconnected');
@@ -1450,8 +1500,10 @@ describe('LocalDtachBackend reconnectTransport', () => {
       expect(attachAfter.some((p) => !attachBefore.includes(p))).toBe(true);
 
       await backend.killSession(id);
+      // Generous ceiling: identity gate + a `livenessTimeoutMs: 2_000` reconnect
+      // that may repeat across a transient attach-spawn-failed retry, under load (#3044).
     },
-    20_000,
+    40_000,
   );
 
   skipIfNoProc('rejects when the master identity cannot be verified', async () => {
@@ -1521,7 +1573,8 @@ describe('LocalDtachBackend reconnectTransport', () => {
     expect(result.identityVerified).toBe(true);
 
     await backend.killSession(id);
-  });
+    // Generous ceiling for the identity gate + real dtach ops under load (#3044).
+  }, 30_000);
 
   skipIfNoProc('reports inconclusive when no fresh-liveness byte arrives in the window', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1529,6 +1582,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
 
     const id = 'reconnect-timeout';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before the reconnect so a racing
+    // identity-unverified doesn't flake the liveness-timeout path under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     // Replace the attach with a silent fake pty so the liveness probe never
     // fires — deterministically exercising the bounded-wait timeout path
@@ -1554,7 +1610,8 @@ describe('LocalDtachBackend reconnectTransport', () => {
     expect(result.newGeneration).toBe(result.previousGeneration + 1);
 
     await backend.killSession(id);
-  });
+    // Generous ceiling for the identity gate + real dtach ops under load (#3044).
+  }, 30_000);
 
   skipIfNoProc('collapses concurrent duplicate requests onto one reconnect attempt', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1562,6 +1619,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
 
     const id = 'reconnect-dup';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before the concurrent reconnects so a racing
+    // identity-unverified doesn't flake the collapse/generation-bump assertions under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     const [r1, r2] = await Promise.all([
       backend.reconnectTransport(id, { livenessTimeoutMs: 300 }),
@@ -1573,7 +1633,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
     expect(r1.newGeneration).toBe(r1.previousGeneration + 1);
 
     await backend.killSession(id);
-  }, 10_000);
+    // Generous ceiling: the identity gate + real dtach spawn/attach can take
+    // several seconds under full-suite CPU saturation (#3044). Returns fast when healthy.
+  }, 30_000);
 
   skipIfNoProc('rejects a second reconnect within the cooldown window', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1590,8 +1652,13 @@ describe('LocalDtachBackend reconnectTransport', () => {
       command: '/bin/sh',
       args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
     });
+    // Settle the master-identity gate before the first reconnect so a racing
+    // identity-unverified doesn't turn it into a `failure` and flake this under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
-    const first = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+    const first = await retryPastTransientSpawnFailure(() =>
+      backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 }),
+    );
     expect(first.outcome).not.toBe('failure');
     const second = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
     expect(second.outcome).toBe('failure');
@@ -1600,7 +1667,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
     expect(second.newGeneration).toBe(second.previousGeneration);
 
     await backend.killSession(id);
-  }, 20_000);
+    // Generous ceiling: identity gate + a `livenessTimeoutMs: 2_000` first reconnect
+    // that may repeat across a transient attach-spawn-failed retry, under load (#3044).
+  }, 40_000);
 
   skipIfNoProc('writes zero bytes to the fresh attach on the real path (no-input guarantee)', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1611,6 +1680,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
     // directly: instrument the freshly-attached pty's `write` and prove the
     // reconnect + liveness wait never calls it.
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before the reconnect so a racing
+    // identity-unverified doesn't flake the no-input assertion under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     let writesDuringReconnect = 0;
     const proto = Object.getPrototypeOf(backend) as {
@@ -1626,12 +1698,15 @@ describe('LocalDtachBackend reconnectTransport', () => {
       };
     };
 
-    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 300 });
+    const result = await retryPastTransientSpawnFailure(() =>
+      backend.reconnectTransport(id, { livenessTimeoutMs: 300 }),
+    );
     expect(result.outcome).not.toBe('failure');
     expect(writesDuringReconnect).toBe(0);
 
     await backend.killSession(id);
-  }, 10_000);
+    // Generous ceiling for the identity gate + real spawn/attach under load (#3044).
+  }, 30_000);
 
   skipIfNoProc('keeps existing onData subscribers attached across a real reconnect', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1643,13 +1718,18 @@ describe('LocalDtachBackend reconnectTransport', () => {
       command: '/bin/sh',
       args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
     });
+    // Settle the master-identity gate before the reconnect so a racing
+    // identity-unverified doesn't turn `success` into `failure` under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     // A single subscriber registered ONCE, never re-registered — the exact
     // SessionBridge continuity the repair must preserve across dispose+respawn.
     const received: Uint8Array[] = [];
     const off = backend.onData(id, (b) => received.push(b));
 
-    const result = await backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 });
+    const result = await retryPastTransientSpawnFailure(() =>
+      backend.reconnectTransport(id, { livenessTimeoutMs: 2_000 }),
+    );
     expect(result.outcome).toBe('success');
 
     // Fresh bytes emitted strictly AFTER the reconnect completed still reach the
@@ -1663,7 +1743,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
 
     off();
     await backend.killSession(id);
-  }, 15_000);
+    // Generous ceiling: identity gate + a `livenessTimeoutMs: 2_000` reconnect that
+    // may repeat across a transient attach-spawn-failed retry, under load (#3044).
+  }, 40_000);
 
   skipIfNoProc('reports attach-spawn-failed when the fresh attach exits immediately', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-test-'));
@@ -1671,6 +1753,9 @@ describe('LocalDtachBackend reconnectTransport', () => {
 
     const id = 'reconnect-immediate-exit';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before the reconnect so a racing
+    // identity-unverified doesn't preempt the attach-spawn-failed path under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     // Model a fresh attach that comes up then dies before the liveness wait:
     // `attachPtyInto` bumps the generation but leaves no live pty. This is the
@@ -1689,7 +1774,8 @@ describe('LocalDtachBackend reconnectTransport', () => {
     expect(result.identityVerified).toBe(true);
 
     await backend.killSession(id);
-  });
+    // Generous ceiling for the identity gate + real dtach ops under load (#3044).
+  }, 30_000);
 });
 
 /**
@@ -1865,13 +1951,18 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     backend.close();
     const backend2 = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH! });
     await new Promise((r) => setTimeout(r, 25)); // let recoverOnStartup settle
+    // Settle the master-identity gate before recovery so a racing
+    // identity-unverified doesn't flake `recovered-live` under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     try {
-      const result = await backend2.verifyRecoveredSession(id, {
-        expectWorking: true,
-        settleWindowMs: LIVE_SETTLE_MS,
-        graceWindowMs: LIVE_GRACE_MS,
-      });
+      const result = await retryPastTransientSpawnFailure(() =>
+        backend2.verifyRecoveredSession(id, {
+          expectWorking: true,
+          settleWindowMs: LIVE_SETTLE_MS,
+          graceWindowMs: LIVE_GRACE_MS,
+        }),
+      );
       expect(result.classification).toBe('recovered-live');
       expect(result.repairAttempts).toBe(0);
       expect(result.identityVerified).toBe(true);
@@ -1895,7 +1986,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
       await backend2.killSession(id);
       backend2.close();
     }
-  }, 20_000);
+    // Generous ceiling: identity gate + a live-probe grace window that may repeat
+    // across a transient attach-spawn-failed retry, under load (#3044).
+  }, 40_000);
 
   // Criterion 2 + 4: wedged internal attach → recycle ONLY the attach child with
   // a REAL fresh dtach -a; dtach master + agent PID unchanged and alive.
@@ -1911,6 +2004,10 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
       command: '/bin/sh',
       args: ['-c', 'while true; do echo tick; sleep 0.05; done'],
     });
+    // Settle the master-identity gate before wedging + recovery so a racing
+    // identity-unverified doesn't flake `recovered-live` under full-suite load
+    // (#3044). The master is untouched by the wedge, so it stays verifiable.
+    await waitForMasterIdentity(tmpDir, id);
     const sock = join(tmpDir, 'test', `${id}.sock`);
     const masterPid = manifestPidFor(id);
     const resolver = backend as unknown as { findAgentPidSync(pid: number): number | null };
@@ -1919,15 +2016,20 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     const attachBefore = attachPids(sock);
     expect(attachBefore.length).toBeGreaterThanOrEqual(1);
 
-    // Model the wedged attach that survived into the observation window. The
-    // repair path below is NOT stubbed — it spawns a real `dtach -a`.
-    wedgeCurrentAttach(id);
-
-    const result = await backend.verifyRecoveredSession(id, {
-      expectWorking: true,
-      settleWindowMs: LIVE_SETTLE_MS,
-      graceWindowMs: LIVE_GRACE_MS,
-      maxRepairAttempts: 3,
+    // Model the wedged attach that survived into the observation window, then let
+    // the repair recycle it with a REAL `dtach -a` (NOT stubbed). Re-wedge on each
+    // attempt so a transient `attach-spawn-failed` (a fresh attach that dies under
+    // load, before the liveness probe) converges to the intended single-recycle
+    // repair instead of flaking — the master/agent are untouched by the wedge, so
+    // `repairAttempts === 1` still holds on the attempt that sticks (#3044).
+    const result = await retryPastTransientSpawnFailure(() => {
+      wedgeCurrentAttach(id);
+      return backend.verifyRecoveredSession(id, {
+        expectWorking: true,
+        settleWindowMs: LIVE_SETTLE_MS,
+        graceWindowMs: LIVE_GRACE_MS,
+        maxRepairAttempts: 3,
+      });
     });
 
     expect(result.classification).toBe('recovered-live');
@@ -1950,7 +2052,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     expect(attachAfter.some((p) => !attachBefore.includes(p))).toBe(true);
 
     await backend.killSession(id);
-  }, 20_000);
+    // Generous ceiling: identity gate + a live-probe grace window that may repeat
+    // across a transient attach-spawn-failed retry, under load (#3044).
+  }, 40_000);
 
   // Criterion 3 + 6 + 7: a permanently-silent session (real cat, no output) is
   // bounded by the repair cap with REAL dtach spawns (no orphan storm), surfaces
@@ -1964,18 +2068,28 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     // every REAL attach observes no progress (the on-attach redraw is discounted
     // by the settle window). This exercises the real repair-spawn cap.
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before recovery so a racing identity-unverified
+    // doesn't preempt the repair-cap path (it would make repairAttempts 0, not 2) under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
     const sock = join(tmpDir, 'test', `${id}.sock`);
     const masterPid = manifestPidFor(id);
 
     const findings: Array<{ kind: string }> = [];
     backend.onBackendError((e) => findings.push(e));
 
-    const result = await backend.verifyRecoveredSession(id, {
-      expectWorking: true,
-      settleWindowMs: 80,
-      graceWindowMs: 120,
-      maxRepairAttempts: 2,
-      restartEpoch: 1234567,
+    // Reset the findings sink on each attempt and converge past a transient
+    // `attach-spawn-failed` (a repair attach that dies under load, which would
+    // otherwise break the loop early with repairAttempts 1) so the assertions
+    // below see the intended capped no-liveness outcome + exactly one finding (#3044).
+    const result = await retryPastTransientSpawnFailure(() => {
+      findings.length = 0;
+      return backend.verifyRecoveredSession(id, {
+        expectWorking: true,
+        settleWindowMs: 80,
+        graceWindowMs: 120,
+        maxRepairAttempts: 2,
+        restartEpoch: 1234567,
+      });
     });
 
     expect(result.classification).toBe('recovered-unverified');
@@ -2002,7 +2116,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     expect(findings.some((f) => f.kind === 'stale_agent')).toBe(false);
 
     await backend.killSession(id);
-  }, 20_000);
+    // Generous ceiling: identity gate + capped repairs that may repeat across a
+    // transient attach-spawn-failed retry, under load (#3044).
+  }, 30_000);
 
   // Criterion 5: a known-idle (not-expected-working) session is never repaired.
   skipIfNoProc('does not repair a known-idle session that is legitimately silent', async () => {
@@ -2011,6 +2127,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
     const id = 'recover-idle';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before wedging + recovery so a racing
+    // identity-unverified doesn't flake `recovered-idle` under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     wedgeCurrentAttach(id);
 
@@ -2036,7 +2155,8 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     expect(attachCalls).toBe(0); // NO repair attaches were opened
 
     await backend.killSession(id);
-  }, 15_000);
+    // Generous ceiling for the identity gate + real dtach ops under load (#3044).
+  }, 30_000);
 
   // Medium coverage: a repair attach that cannot be spawned is a distinct terminal
   // failure (attach-spawn-failed), not masked as generic no-liveness.
@@ -2046,6 +2166,9 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
 
     const id = 'recover-spawnfail';
     await backend.createSession({ id, command: '/bin/sh', args: ['-c', 'exec cat'] });
+    // Settle the master-identity gate before wedging + recovery so a racing
+    // identity-unverified doesn't preempt the attach-spawn-failed path under load (#3044).
+    await waitForMasterIdentity(tmpDir, id);
 
     wedgeCurrentAttach(id);
     // Make the repair spawn throw AFTER identity + dispose.
@@ -2067,7 +2190,8 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     expect(result.identityVerified).toBe(true);
 
     await backend.killSession(id);
-  }, 15_000);
+    // Generous ceiling for the identity gate + real dtach ops under load (#3044).
+  }, 30_000);
 
   // Coverage: an unknown session id classifies unverified without any repair.
   it('reports session-unknown for an id with no manifest entry', async () => {
@@ -2134,9 +2258,14 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     // Break the third session's transport: remove its socket → socket-missing.
     unlinkSync(join(tmpDir, 'test', `${broken}.sock`));
 
+    // The two healthy sessions converge past a transient attach-spawn-failed
+    // (a fresh attach that dies under load) to `recovered-live`; the broken one
+    // fails at socket-missing before any attach, so it needs no such wrapper (#3044).
     const [ra, rb, rbroken] = await Promise.all([
-      backend.verifyRecoveredSession(liveA, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
-      backend.verifyRecoveredSession(liveB, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
+      retryPastTransientSpawnFailure(() =>
+        backend.verifyRecoveredSession(liveA, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS })),
+      retryPastTransientSpawnFailure(() =>
+        backend.verifyRecoveredSession(liveB, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS })),
       backend.verifyRecoveredSession(broken, { expectWorking: true, settleWindowMs: LIVE_SETTLE_MS, graceWindowMs: LIVE_GRACE_MS }),
     ]);
 
@@ -2149,7 +2278,10 @@ describe('LocalDtachBackend verifyRecoveredSession', () => {
     await backend.killSession(liveA);
     await backend.killSession(liveB);
     await backend.killSession(broken);
-  }, 20_000);
+    // Generous ceiling: two identity gates + three concurrent live-probe grace
+    // windows, two of which may repeat across a transient attach-spawn-failed
+    // retry, under load (#3044).
+  }, 40_000);
 });
 
 /**
