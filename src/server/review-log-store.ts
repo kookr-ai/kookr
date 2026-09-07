@@ -1,5 +1,6 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { open } from 'node:fs/promises';
+import { join } from 'node:path';
+import { appendJsonlWithRotation } from '../core/jsonl-rotation.js';
 import {
   FINDING_EVIDENCE_REVIEW_CONFIDENCES,
   FINDING_EVIDENCE_REVIEW_FAILURE_KINDS,
@@ -14,6 +15,33 @@ import {
 
 export const FINDING_EVIDENCE_REVIEW_LOG_FILE = 'finding-evidence-reviews.jsonl';
 export const FINDING_EVIDENCE_REVIEW_LOG_SCHEMA_VERSION = 'finding-evidence-review-log-record.v1';
+
+/**
+ * Rotate `finding-evidence-reviews.jsonl` before an append would exceed this
+ * size. Without rotation the file grew without bound and every {@link
+ * ReviewLogStore.readAll} re-read and re-parsed all review history since boot
+ * (issue #3047). Sits in the 8–16 MB range used by the other JSONL sinks.
+ */
+export const DEFAULT_REVIEW_LOG_MAX_BYTES = 8 * 1024 * 1024;
+/** Rotated generations retained by default (keeps `.1` and `.2`). */
+export const DEFAULT_REVIEW_LOG_ROTATED_GENERATIONS = 2;
+/**
+ * Cap the number of bytes {@link ReviewLogStore.readAll} tails from the end of
+ * the log. Bounds read + parse cost on the diagnostics endpoints and the
+ * sampler so it no longer scales with total history since boot. Kept well above
+ * the sampler's working set and the diagnostics read limits (100–1000 records),
+ * so a ~2 MiB window of the most-recent records is more than enough context.
+ */
+export const DEFAULT_REVIEW_LOG_READ_MAX_BYTES = 2 * 1024 * 1024;
+
+export interface ReviewLogStoreOptions {
+  /** Override the rotation size cap (tests / specialized sinks). */
+  maxBytes?: number;
+  /** Override the retained rotated generations (tests / specialized sinks). */
+  rotatedGenerations?: number;
+  /** Override the bounded tail-read window (tests / specialized sinks). */
+  readMaxBytes?: number;
+}
 
 export interface FindingEvidenceReviewLogTargetV1 {
   candidateKind: 'false_positive' | 'false_negative';
@@ -54,18 +82,29 @@ export interface ReviewLogReadResult {
 
 export class ReviewLogStore {
   private appendChain = Promise.resolve();
+  private readonly maxBytes: number;
+  private readonly rotatedGenerations: number;
+  private readonly readMaxBytes: number;
 
-  constructor(private readonly path: string) {}
+  constructor(private readonly path: string, options: ReviewLogStoreOptions = {}) {
+    this.maxBytes = options.maxBytes ?? DEFAULT_REVIEW_LOG_MAX_BYTES;
+    this.rotatedGenerations = options.rotatedGenerations ?? DEFAULT_REVIEW_LOG_ROTATED_GENERATIONS;
+    this.readMaxBytes = options.readMaxBytes ?? DEFAULT_REVIEW_LOG_READ_MAX_BYTES;
+  }
 
-  static forKookrDir(kookrDir: string): ReviewLogStore {
-    return new ReviewLogStore(join(kookrDir, FINDING_EVIDENCE_REVIEW_LOG_FILE));
+  static forKookrDir(kookrDir: string, options?: ReviewLogStoreOptions): ReviewLogStore {
+    return new ReviewLogStore(join(kookrDir, FINDING_EVIDENCE_REVIEW_LOG_FILE), options);
   }
 
   append(record: FindingEvidenceReviewLogRecordV1): Promise<void> {
     const safeRecord = sanitizeRecord(record);
+    // Serialize appends within the process so two writers cannot race on the
+    // rotation helper's stat/rotate/append sequence (its intra-process contract).
     this.appendChain = this.appendChain.catch(() => undefined).then(async () => {
-      await mkdir(dirname(this.path), { recursive: true });
-      await appendFile(this.path, `${JSON.stringify(safeRecord)}\n`, 'utf8');
+      await appendJsonlWithRotation(this.path, `${JSON.stringify(safeRecord)}\n`, {
+        maxBytes: this.maxBytes,
+        rotatedGenerations: this.rotatedGenerations,
+      });
     });
     return this.appendChain;
   }
@@ -102,10 +141,18 @@ export class ReviewLogStore {
     });
   }
 
+  /**
+   * Read the most-recent window of the log. Rotation caps the file on disk and
+   * this tails at most {@link readMaxBytes} from the end, so read + parse cost
+   * stays bounded regardless of total history since boot (issue #3047). When the
+   * file fits within the window the whole file is read and behavior is identical
+   * to an unbounded read; when it is larger the leading partial line is dropped
+   * and line-number diagnostics are numbered from the first complete line read.
+   */
   async readAll(): Promise<ReviewLogReadResult> {
-    let text: string;
+    let tail: { text: string; truncated: boolean };
     try {
-      text = await readFile(this.path, 'utf8');
+      tail = await this.readBoundedTail();
     } catch (err) {
       if (isNodeErrno(err, 'ENOENT')) return { records: [], diagnostics: [] };
       throw err;
@@ -113,7 +160,10 @@ export class ReviewLogStore {
 
     const records: FindingEvidenceReviewLogRecordV1[] = [];
     const diagnostics: ReviewLogReadDiagnostic[] = [];
-    const lines = text.split('\n');
+    const lines = tail.text.split('\n');
+    // A tailed window almost always begins mid-record; drop the partial first
+    // line so we never emit spurious malformed-JSON diagnostics for it.
+    if (tail.truncated) lines.shift();
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index]!;
       if (!line.trim()) continue;
@@ -141,6 +191,25 @@ export class ReviewLogStore {
     return { records, diagnostics };
   }
 
+  private async readBoundedTail(): Promise<{ text: string; truncated: boolean }> {
+    const handle = await open(this.path, 'r');
+    try {
+      const { size } = await handle.stat();
+      const truncated = size > this.readMaxBytes;
+      const length = truncated ? this.readMaxBytes : size;
+      if (length === 0) return { text: '', truncated: false };
+      const position = truncated ? size - this.readMaxBytes : 0;
+      const buffer = Buffer.alloc(length);
+      // Decode only the bytes actually read: `Buffer.alloc` zero-fills, so a
+      // short read would otherwise append trailing NUL bytes to (and corrupt)
+      // the most-recent line. A single pread fills to EOF for a regular file,
+      // but the range is not contractually guaranteed, so slice defensively.
+      const { bytesRead } = await handle.read(buffer, 0, length, position);
+      return { text: buffer.toString('utf8', 0, bytesRead), truncated };
+    } finally {
+      await handle.close();
+    }
+  }
 }
 
 function sanitizeRecord(record: FindingEvidenceReviewLogRecordV1): FindingEvidenceReviewLogRecordV1 {
