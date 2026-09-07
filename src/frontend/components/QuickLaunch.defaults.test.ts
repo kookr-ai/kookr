@@ -8,6 +8,7 @@ import { QuickLaunch } from './QuickLaunch.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { LAST_AGENT_TYPE_KEY } from '../store/last-agent-type.js';
 import { LAST_EFFORT_KEY, LAST_MODEL_KEY } from '../store/last-launch-pins.js';
+import { CODEX_CLI_MODEL_IDS } from '../../shared/contracts/agent-types.js';
 import type { ClientMessage } from '../../shared/protocol.js';
 
 function syncGlobalStore() {
@@ -101,6 +102,32 @@ describe('QuickLaunch agent default chain (RFC F6)', () => {
     await flush();
 
     expect(getAgentSelectEl(container).value).toBe('codex-cli');
+    act(() => root.unmount());
+  });
+
+  test('offers gpt-6-astra for a Codex task and sends the selected model', async () => {
+    const sent: ClientMessage[] = [];
+    const root = renderQuickLaunch(container, (message) => { sent.push(message); return true; });
+    await flush();
+
+    const modelSelect = container.querySelector('select[aria-label="Model"]') as HTMLSelectElement;
+    expect([...modelSelect.options].map((option) => option.value)).toEqual(['', ...CODEX_CLI_MODEL_IDS]);
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+      setter.call(modelSelect, 'gpt-6-astra');
+      modelSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    const input = container.querySelector('input.quick-launch-input') as HTMLInputElement;
+    await act(async () => { setInputValue(input, 'run with Astra'); });
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+
+    expect(sent[0]).toMatchObject({
+      type: 'launch',
+      agentType: 'codex-cli',
+      model: 'gpt-6-astra',
+    });
     act(() => root.unmount());
   });
 
@@ -438,7 +465,7 @@ describe('QuickLaunch last-used effort and model (#2616)', () => {
     act(() => root.unmount());
   });
 
-  test('stored model is dropped when the resolved agent does not accept it', async () => {
+  test('stored model falls back to Agent default when the resolved agent does not accept it', async () => {
     localStorage.setItem(LAST_AGENT_TYPE_KEY, 'codex-cli');
     localStorage.setItem(LAST_EFFORT_KEY, 'high');
     localStorage.setItem(LAST_MODEL_KEY, 'claude-fable-5');
@@ -448,7 +475,7 @@ describe('QuickLaunch last-used effort and model (#2616)', () => {
 
     expect(getAgentSelectEl(container).value).toBe('codex-cli');
     expect((container.querySelector('select[aria-label="Reasoning effort"]') as HTMLSelectElement).value).toBe('high');
-    expect(container.querySelector('select[aria-label="Model"]')).toBeNull();
+    expect((container.querySelector('select[aria-label="Model"]') as HTMLSelectElement).value).toBe('');
     act(() => root.unmount());
   });
 

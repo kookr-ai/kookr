@@ -125,7 +125,8 @@ export function validatePersistedLaunchIntent(
     }
   } else if (
     (candidate.model !== undefined && !isValidModelForAgent(candidate.agentType, candidate.model))
-    || (candidate.effort !== undefined && !isValidEffortForAgent(candidate.agentType, candidate.effort))
+    || (candidate.effort !== undefined
+      && !isValidEffortForAgent(candidate.agentType, candidate.effort, candidate.model))
   ) {
     return {
       ok: false,

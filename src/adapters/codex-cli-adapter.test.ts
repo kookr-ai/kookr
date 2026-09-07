@@ -1120,6 +1120,34 @@ describe('CodexCliAdapter', () => {
       expect(spec.args).not.toContain('model="gpt-5.6-luna"');
     });
 
+    test('an explicit Astra model remains selected with ultra effort', async () => {
+      const task = taskStore.createTask('Use Astra at ultra effort', '/cwd');
+      const sessionId = await adapter.launch(task.id, 'Use Astra at ultra effort', '/cwd', undefined, {
+        model: 'gpt-6-astra',
+        effort: 'ultra',
+      });
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).toContain('model="gpt-6-astra"');
+      expect(spec.args).toContain('model_reasoning_effort="ultra"');
+      expect(spec.args).not.toContain(`model="${ULTRA_CODEX_MODEL}"`);
+    });
+
+    test('defensively omits an effort that the explicit Astra model does not support', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const task = taskStore.createTask('Do not send an invalid Astra effort', '/cwd');
+      const sessionId = await adapter.launch(
+        task.id,
+        'Do not send an invalid Astra effort',
+        '/cwd',
+        undefined,
+        { model: 'gpt-6-astra', effort: 'minimal' },
+      );
+      const spec = backend.sessions.get(sessionId)!.spec;
+      expect(spec.args).toContain('model="gpt-6-astra"');
+      expect(spec.args).not.toContain('model_reasoning_effort="minimal"');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('ignoring invalid effort "minimal"'));
+    });
+
     test('per-agent-type ultra default selects the Sol model and applies ultra effort', async () => {
       const ultraAdapter = new CodexCliAdapter(backend, taskStore, {
         trustWorkspace: false,
@@ -1248,6 +1276,11 @@ describe('resolveCodexModel', () => {
   test('lets a resolved per-task tier model override the environment default', () => {
     expect(resolveCodexModel('high', { KOOKR_CODEX_MODEL: 'gpt-5.6-sol' }, 'gpt-5.6-luna'))
       .toBe('gpt-5.6-luna');
+  });
+
+  test('lets an explicit model override the automatic ultra fallback', () => {
+    expect(resolveCodexModel('ultra', { KOOKR_CODEX_MODEL: 'gpt-5.6-luna' }, 'gpt-6-astra'))
+      .toBe('gpt-6-astra');
   });
 
   test('ultra always escalates to Sol regardless of env', () => {

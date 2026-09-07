@@ -360,7 +360,33 @@ Review {{repo}}.
       });
     });
 
-    it('rejects model pin for codex-cli (empty allowlist)', async () => {
+    it('accepts gpt-6-astra model pin for codex-cli', async () => {
+      await expect(validator.validateCreate({
+        name: 'Codex Astra model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'codex-cli',
+        model: 'gpt-6-astra',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).resolves.toBeUndefined();
+    });
+
+    it('rejects effort pins that gpt-6-astra does not support', async () => {
+      await expect(validator.validateCreate({
+        name: 'Codex Astra model',
+        cron: '0 9 * * *',
+        cwd: projectCwd,
+        agentType: 'codex-cli',
+        effort: 'none',
+        model: 'gpt-6-astra',
+        playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
+      })).rejects.toMatchObject({
+        name: 'ScheduleValidationError',
+        fieldErrors: { effort: expect.stringMatching(/low.*medium.*high.*xhigh.*max.*ultra/) },
+      });
+    });
+
+    it('rejects unsupported model pin for codex-cli', async () => {
       await expect(validator.validateCreate({
         name: 'Codex model',
         cron: '0 9 * * *',
@@ -370,7 +396,7 @@ Review {{repo}}.
         playbook: { path: 'proj.md', parameters: {}, scope: 'project' },
       })).rejects.toMatchObject({
         name: 'ScheduleValidationError',
-        fieldErrors: { model: expect.stringMatching(/does not accept/) },
+        fieldErrors: { model: expect.stringMatching(/gpt-6-astra|Must be one of/) },
       });
     });
   });

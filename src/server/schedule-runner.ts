@@ -1145,9 +1145,21 @@ export class ScheduleRunner {
               to: agentResolution.agentType,
             }]
           : undefined;
-      // Preserve each opaque pin independently when the substitute accepts it.
-      // A pin that the replacement cannot honor is dropped on its own; model
-      // and effort must never be treated as one shared vocabulary.
+      // Preserve pins when the substitute accepts them. The retained model is
+      // included in effort validation because some models narrow the agent's
+      // general effort vocabulary.
+      const retainedModel = schedule.model !== undefined
+        && (!substituted || isValidModelForAgent(agentType as AgentType, schedule.model))
+        ? schedule.model
+        : undefined;
+      const retainedEffort = schedule.effort !== undefined
+        && (!substituted || isValidEffortForAgent(
+          agentType as AgentType,
+          schedule.effort,
+          retainedModel,
+        ))
+        ? schedule.effort
+        : undefined;
       const driftedLaunch = this.applyPlaybookCheckoutDrift(launch, drift);
       const result = await this.deps.launcher({
         prompt: driftedLaunch.prompt,
@@ -1164,12 +1176,8 @@ export class ScheduleRunner {
         ...(schedule.modelTier !== undefined ? { modelTier: schedule.modelTier } : {}),
         // #1518: forward schedule-level effort/model pins into the spawned
         // task. launchTask still validates them against the resolved agent.
-        ...(schedule.effort !== undefined && (!substituted || isValidEffortForAgent(agentType as AgentType, schedule.effort))
-          ? { effort: schedule.effort }
-          : {}),
-        ...(schedule.model !== undefined && (!substituted || isValidModelForAgent(agentType as AgentType, schedule.model))
-          ? { model: schedule.model }
-          : {}),
+        ...(retainedEffort !== undefined ? { effort: retainedEffort } : {}),
+        ...(retainedModel !== undefined ? { model: retainedModel } : {}),
         ...(priorAgentSubstitutions ? { priorAgentSubstitutions } : {}),
         disableDedup: true,
         // issue #1526 Phase C / C3: mark schedule provenance. This (a)
@@ -1307,11 +1315,18 @@ export class ScheduleRunner {
     let scheduleForLaunch: Schedule = schedule;
     if (agentResolution?.kind === 'substituted') {
       const { effort, model, ...rest } = schedule;
+      const retainedModel = model !== undefined
+        && isValidModelForAgent(agentResolution.agentType, model)
+        ? model
+        : undefined;
       scheduleForLaunch = {
         ...rest,
         agentType: agentResolution.agentType,
-        ...(effort !== undefined && isValidEffortForAgent(agentResolution.agentType, effort) ? { effort } : {}),
-        ...(model !== undefined && isValidModelForAgent(agentResolution.agentType, model) ? { model } : {}),
+        ...(effort !== undefined
+          && isValidEffortForAgent(agentResolution.agentType, effort, retainedModel)
+          ? { effort }
+          : {}),
+        ...(retainedModel !== undefined ? { model: retainedModel } : {}),
       };
     } else if (agentResolution?.kind === 'available') {
       scheduleForLaunch = { ...schedule, agentType: agentResolution.agentType };

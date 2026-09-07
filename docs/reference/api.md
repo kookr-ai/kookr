@@ -425,6 +425,9 @@ resolves to a concrete agent first — and an invalid level returns
 - `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
 - `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`
 
+The selected model can narrow that set. `gpt-6-astra` accepts `low`, `medium`,
+`high`, `xhigh`, `max`, and `ultra`; `none` and `minimal` are rejected.
+
 Omitting `effort` falls back to the per-agent-type setting. For `codex-cli`,
 missing or empty `agentEffort` maps pass no effort override (model-native
 default). Codex model selection defaults to `gpt-5.6-sol` and can be overridden
@@ -442,8 +445,9 @@ no silent fallback. Allowed base ids for `claude-code`:
 - dated suffixes of those bases (e.g. `claude-haiku-4-5-20251001`) are also
   accepted
 
-`codex-cli` and `grok-build` reject a raw per-task `model` pin (use
-`modelTier` for portable policy or the agent-specific environment setting).
+For `codex-cli`, the accepted raw pin is `gpt-6-astra`. `grok-build` rejects a
+raw per-task `model` pin (use `modelTier` for portable policy or the
+agent-specific environment setting).
 Omitting `model` leaves the agent
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. The dashboard Launch dialog and Quick Launch send the same field
@@ -953,6 +957,11 @@ as task launches. Omit `agentType` (or PATCH it to `null`) to follow the live
 default agent on every fire. PATCH `modelTier` to `null` to clear the tier.
 A tier cannot coexist with an effective raw `model` or `effort` pin.
 
+They also accept optional `effort` and `model` pins. Kookr validates them
+against the selected agent, or the live default when `agentType` is omitted;
+`round-robin` cannot carry a raw model pin. Codex currently accepts only the
+exact `gpt-6-astra` model ID.
+
 Schedule create/update bodies also accept `failOnPlaybookDrift: true` (issue
 #2945). Default is warn-and-still-launch: a project-tier playbook whose cwd
 checkout lags its upstream tracking ref gets a briefing warning, and the
@@ -1154,13 +1163,15 @@ reasoning-effort level spawned agents launch at:
 When set, the adapter launches `claude-code` with `--effort <level>` and
 `codex-cli` with `-c model_reasoning_effort="<level>"`. Allowed levels are
 agent-specific (`claude-code`: `low|medium|high|xhigh|max`; `codex-cli`:
-`none|minimal|low|medium|high|xhigh|max|ultra`); invalid `(agent, level)` pairs
-are dropped on save with a warning. Kookr defaults Codex tasks to `gpt-5.6-sol`
-with no effort override (model-native default). Override the model with
+`none|minimal|low|medium|high|xhigh|max|ultra`); model pins can narrow the set.
+In particular, `gpt-6-astra` rejects `none` and `minimal`. Invalid configured
+`(agent, level)` pairs are dropped on save with a warning. Kookr defaults Codex
+tasks to `gpt-5.6-sol` with no effort override (model-native default). Override the model with
 `KOOKR_CODEX_MODEL` (for example `gpt-5.6-luna`). If `agentEffort` is missing,
-empty, or lacks a `codex-cli` entry, no effort flag is passed. An explicit
-`ultra` request always selects the Sol model because Luna does not advertise
-`ultra`. A per-task `effort` on `POST /api/tasks`, the dashboard Launch dialog /
+empty, or lacks a `codex-cli` entry, no effort flag is passed. Without a
+per-task model pin, an explicit `ultra` request selects the Sol model because
+Luna does not advertise `ultra`. An explicit per-task model remains authoritative.
+A per-task `effort` on `POST /api/tasks`, the dashboard Launch dialog /
 Quick Launch, or `kookr-spawn --effort` overrides the settings default
 for one launch. Schedules may also pin
 `effort` / `model` on create/update; those values are forwarded into each

@@ -17,6 +17,7 @@ import {
   ROUND_ROBIN_OPTION,
   CLAUDE_CODE_EFFORT_LEVELS,
   CODEX_CLI_EFFORT_LEVELS,
+  CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
   GROK_BUILD_EFFORT_LEVELS,
   ALL_EFFORT_LEVELS,
   effortLevelsForAgent,
@@ -24,6 +25,7 @@ import {
   isValidModelForAgent,
   isKnownModelId,
   CLAUDE_CODE_MODEL_IDS,
+  CODEX_CLI_MODEL_IDS,
   ALL_MODEL_IDS,
   isValidEffortForAgent,
 } from './agent-types.js';
@@ -389,6 +391,18 @@ describe('reasoning-effort levels (#681)', () => {
     expect(effortLevelsForAgent('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
   });
 
+  test('gpt-6-astra exposes only the efforts advertised by that model', () => {
+    expect([...CODEX_GPT_6_ASTRA_EFFORT_LEVELS]).toEqual([
+      'low', 'medium', 'high', 'xhigh', 'max', 'ultra',
+    ]);
+    expect(effortLevelsForAgent('codex-cli', 'gpt-6-astra')).toEqual(
+      CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
+    );
+    expect(isValidEffortForAgent('codex-cli', 'ultra', 'gpt-6-astra')).toBe(true);
+    expect(isValidEffortForAgent('codex-cli', 'minimal', 'gpt-6-astra')).toBe(false);
+    expect(isValidEffortForAgent('codex-cli', 'none', 'gpt-6-astra')).toBe(false);
+  });
+
   test('grok-build exposes NO validated effort levels (no Claude inheritance)', () => {
     // The whole point of the exhaustive switch: a new agent type must not
     // silently inherit Claude's levels. Grok's set is empty until validated.
@@ -441,11 +455,17 @@ describe('per-task model allowlist (#1518)', () => {
     expect(modelsForAgent('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
   });
 
-  test('codex-cli and grok-build expose no per-task model pins (no Claude inheritance)', () => {
-    expect(modelsForAgent('codex-cli')).toEqual([]);
+  test('codex-cli exposes gpt-6-astra without inheriting Claude models', () => {
+    expect(CODEX_CLI_MODEL_IDS).toEqual(['gpt-6-astra']);
+    expect(modelsForAgent('codex-cli')).toEqual(CODEX_CLI_MODEL_IDS);
+    expect(isValidModelForAgent('codex-cli', 'gpt-6-astra')).toBe(true);
+    expect(isValidModelForAgent('codex-cli', 'gpt-6-astra-not-real')).toBe(false);
+    expect(isValidModelForAgent('codex-cli', 'claude-fable-5')).toBe(false);
+  });
+
+  test('grok-build exposes no per-task model pins (no Claude inheritance)', () => {
     expect(modelsForAgent('grok-build')).toEqual([]);
     for (const id of CLAUDE_CODE_MODEL_IDS) {
-      expect(isValidModelForAgent('codex-cli', id)).toBe(false);
       expect(isValidModelForAgent('grok-build', id)).toBe(false);
     }
   });
@@ -464,8 +484,11 @@ describe('per-task model allowlist (#1518)', () => {
   test('isKnownModelId is the cross-agent CLI fast-fail', () => {
     expect(isKnownModelId('claude-fable-5')).toBe(true);
     expect(isKnownModelId('claude-haiku-4-5-20251001')).toBe(true);
+    expect(isKnownModelId('gpt-6-astra')).toBe(true);
+    expect(isKnownModelId('gpt-6-astra-not-real')).toBe(false);
     expect(isKnownModelId('not-a-model')).toBe(false);
     expect(ALL_MODEL_IDS).toEqual(expect.arrayContaining([...CLAUDE_CODE_MODEL_IDS]));
+    expect(ALL_MODEL_IDS).toEqual(expect.arrayContaining([...CODEX_CLI_MODEL_IDS]));
   });
 });
 

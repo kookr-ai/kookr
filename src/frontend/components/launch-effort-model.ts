@@ -23,9 +23,12 @@ export function optionalLaunchPins(
   };
 }
 
-/** Effort levels for a concrete agent; empty when the selection is unresolved. */
-export function effortOptionsForSelection(agentType: AgentSelection): readonly string[] {
-  return isAgentType(agentType) ? effortLevelsForAgent(agentType) : [];
+/** Effort levels for a concrete agent/model pair; empty when the agent is unresolved. */
+export function effortOptionsForSelection(
+  agentType: AgentSelection,
+  model?: string,
+): readonly string[] {
+  return isAgentType(agentType) ? effortLevelsForAgent(agentType, model) : [];
 }
 
 /** Known model ids for a concrete agent; empty when that agent rejects a pin. */
@@ -46,9 +49,10 @@ export function sanitizeLaunchPins(
   effort: string,
   model: string,
 ): { effort: string; model: string } {
+  const acceptedModel = acceptedPin(model, modelOptionsForSelection(agentType));
   return {
-    effort: acceptedPin(effort, effortOptionsForSelection(agentType)),
-    model: acceptedPin(model, modelOptionsForSelection(agentType)),
+    effort: acceptedPin(effort, effortOptionsForSelection(agentType, acceptedModel)),
+    model: acceptedModel,
   };
 }
 

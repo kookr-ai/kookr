@@ -74,20 +74,24 @@ export function agentSelectionHint(value: string | undefined | null): string | u
  *   (verified: `claude --effort __bogus__` → "It must be one of: low, medium,
  *   high, xhigh, max").
  * - `codex -c model_reasoning_effort=<level>` takes the model's advertised
- *   reasoning-effort values. Kookr exposes: none, minimal, low, medium, high,
- *   xhigh, max, ultra. Default Codex launches use GPT-5.6-Sol with no effort
- *   override (model-native default); set `KOOKR_CODEX_MODEL` / `agentEffort`
- *   to change. An explicit `ultra` request always selects GPT-5.6-Sol because
- *   Luna's supported ceiling is `max`.
+ *   reasoning-effort values. Kookr's general Codex set is: none, minimal, low,
+ *   medium, high, xhigh, max, ultra. GPT-6 Astra narrows that set to low through
+ *   ultra because its catalog does not advertise none or minimal. Default Codex
+ *   launches use GPT-5.6-Sol with no effort override (model-native default); set
+ *   `KOOKR_CODEX_MODEL` / `agentEffort` to change. Without a per-task model pin,
+ *   an explicit `ultra` request selects GPT-5.6-Sol because Luna's supported
+ *   ceiling is `max`.
  *
- * Effort is only meaningful relative to an agent type: `max` is valid for
- * both Claude Code and codex-cli; `minimal`/`none`/`ultra` are valid for
- * codex-cli but not claude-code. There is no shared canonical scale across
- * all possible agent binaries — always validate against
+ * Effort is only meaningful relative to an agent and model: `max` is valid for
+ * both Claude Code and codex-cli; `minimal`/`none` are Codex-only but are not
+ * valid for Astra, while `ultra` is Codex-only. There is no shared canonical
+ * scale across all possible agent binaries — always validate against
  * {@link effortLevelsForAgent} / {@link isValidEffortForAgent}.
  */
 export const CLAUDE_CODE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const;
 export const CODEX_CLI_EFFORT_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
+/** Effort levels advertised by the GPT-6 Astra entry in the Codex model catalog. */
+export const CODEX_GPT_6_ASTRA_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 /**
  * Grok Build exposes NO validated effort levels (issue #1343 / RFC "Grok Build
  * adapter"). Grok advertises a `--reasoning-effort` flag, but POC-A did not
@@ -125,12 +129,14 @@ export type AgentEffortMap = Partial<Record<AgentType, EffortLevel>>;
  * forces every future agent type to declare its own set here, so `grok-build`
  * correctly resolves to its (empty) set rather than Claude's.
  */
-export function effortLevelsForAgent(agent: AgentType): readonly string[] {
+export function effortLevelsForAgent(agent: AgentType, model?: string): readonly string[] {
   switch (agent) {
     case 'claude-code':
       return CLAUDE_CODE_EFFORT_LEVELS;
     case 'codex-cli':
-      return CODEX_CLI_EFFORT_LEVELS;
+      return model === 'gpt-6-astra'
+        ? CODEX_GPT_6_ASTRA_EFFORT_LEVELS
+        : CODEX_CLI_EFFORT_LEVELS;
     case 'grok-build':
       return GROK_BUILD_EFFORT_LEVELS;
     default:
@@ -147,9 +153,9 @@ function assertNeverAgentType(agent: never): never {
   throw new Error(`Unhandled agent type: ${String(agent)}`);
 }
 
-/** True when `effort` is a level the given agent's CLI accepts. */
-export function isValidEffortForAgent(agent: AgentType, effort: string): boolean {
-  return effortLevelsForAgent(agent).includes(effort);
+/** True when `effort` is a level the given agent and optional model accept. */
+export function isValidEffortForAgent(agent: AgentType, effort: string, model?: string): boolean {
+  return effortLevelsForAgent(agent, model).includes(effort);
 }
 
 /**
@@ -174,10 +180,11 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
  *   plus the other Anthropic ids already priced in `MODEL_PRICING`. Dated
  *   suffixes (e.g. `claude-haiku-4-5-20251001`) match via prefix against an
  *   allowlisted base id — see {@link isValidModelForAgent}.
- * - `codex-cli` / `grok-build`: empty for now. Those agents keep their
- *   existing model selection (`KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL`); a
- *   per-task model pin for them is rejected until a follow-up adds their
- *   allowlists. Empty (not Claude inheritance) mirrors the effort pattern.
+ * - `codex-cli`: models validated for Kookr task launches. The allowlist is
+ *   intentionally explicit rather than accepting arbitrary Codex model ids.
+ * - `grok-build`: empty for now. Grok keeps its existing model selection via
+ *   `KOOKR_GROK_MODEL`; a per-task pin is rejected until its allowlist is
+ *   qualified. Empty (not Claude inheritance) mirrors the effort pattern.
  */
 export const CLAUDE_CODE_MODEL_IDS = [
   'claude-opus-5',
@@ -189,7 +196,7 @@ export const CLAUDE_CODE_MODEL_IDS = [
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
 ] as const;
-export const CODEX_CLI_MODEL_IDS = [] as const;
+export const CODEX_CLI_MODEL_IDS = ['gpt-6-astra'] as const;
 export const GROK_BUILD_MODEL_IDS = [] as const;
 
 export type ClaudeCodeModel = (typeof CLAUDE_CODE_MODEL_IDS)[number];
@@ -218,13 +225,14 @@ export function modelsForAgent(agent: AgentType): readonly string[] {
 
 /**
  * True when `model` is an id the given agent's CLI accepts as a per-task pin.
- * Exact match against {@link modelsForAgent}, or a dated suffix on an
- * allowlisted base (e.g. `claude-haiku-4-5-20251001` matches `claude-haiku-4-5`).
+ * Every agent accepts exact allowlist matches. Claude also accepts dated
+ * suffixes (e.g. `claude-haiku-4-5-20251001` matches `claude-haiku-4-5`).
  */
 export function isValidModelForAgent(agent: AgentType, model: string): boolean {
   if (model.length === 0) return false;
   const allowed = modelsForAgent(agent);
   if (allowed.includes(model)) return true;
+  if (agent !== 'claude-code') return false;
   return allowed.some((id) => model.startsWith(`${id}-`));
 }
 
@@ -244,7 +252,7 @@ export const ALL_MODEL_IDS: readonly string[] = [
 export function isKnownModelId(model: string): boolean {
   if (model.length === 0) return false;
   if (ALL_MODEL_IDS.includes(model)) return true;
-  return ALL_MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+  return CLAUDE_CODE_MODEL_IDS.some((id) => model.startsWith(`${id}-`));
 }
 
 /** Picker option representing the round-robin selection. */

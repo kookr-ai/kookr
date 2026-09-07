@@ -40,6 +40,8 @@ export interface ModelPricing {
  *   https://developers.openai.com/api/docs/pricing
  *   https://developers.openai.com/codex/pricing
  *   https://devtk.ai/en/blog/openai-api-pricing-guide-2026/  (cross-check)
+ * GPT-6 Astra verified 2026-09-08 against
+ *   https://developers.openai.com/api/docs/models/gpt-6-astra
  *
  * The merge gate is the empirically-observed model-name set in the author's
  * last 1500 rollouts: gpt-5.3-codex (69%), gpt-5.4 (31%), gpt-5.4-mini (0.4%).
@@ -68,6 +70,7 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   'gpt-5.4-mini':      { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 0.75, outputPerMTok: 4.50, cacheWritePerMTok: 0, cacheReadPerMTok: 0.075 },
 
   // OpenAI — proactive rows (not merge-blocking; future-proof for new sessions)
+  'gpt-6-astra':       { vendor: 'openai',    lastVerified: '2026-09-08', inputPerMTok: 10,   outputPerMTok: 50,   cacheWritePerMTok: 12.5, cacheReadPerMTok: 1     },
   'gpt-5.6-sol':       { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 5,    outputPerMTok: 30,   cacheWritePerMTok: 6.25, cacheReadPerMTok: 0.50  },
   'gpt-5.6-luna':      { vendor: 'openai',    lastVerified: '2026-07-11', inputPerMTok: 1,    outputPerMTok: 6,    cacheWritePerMTok: 1.25, cacheReadPerMTok: 0.10  },
   'gpt-5.5':           { vendor: 'openai',    lastVerified: '2026-05-08', inputPerMTok: 5,    outputPerMTok: 30,   cacheWritePerMTok: 0, cacheReadPerMTok: 0.50  },

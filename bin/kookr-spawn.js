@@ -66,11 +66,13 @@ const TERMINAL_TASK_STATUSES = new Set(['completed', 'cancelled', 'terminated'])
 // ALL_EFFORT_LEVELS in
 // src/shared/contracts/agent-types.ts.
 const EFFORT_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+const GPT_6_ASTRA_EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
 // #1518: known model base ids for CLI fast-fail. Keep in sync with
-// ALL_MODEL_IDS / CLAUDE_CODE_MODEL_IDS in src/shared/contracts/agent-types.ts.
+// ALL_MODEL_IDS and the per-agent model-id lists in
+// src/shared/contracts/agent-types.ts.
 // Dated suffixes (e.g. claude-haiku-4-5-20251001) are accepted when they start
 // with a known base. Authoritative agent-specific check still runs server-side.
-const MODEL_IDS = [
+const CLAUDE_MODEL_IDS = [
   'claude-opus-5',
   'claude-fable-5',
   'claude-opus-4-8',
@@ -80,11 +82,15 @@ const MODEL_IDS = [
   'claude-sonnet-4-6',
   'claude-haiku-4-5',
 ];
+const MODEL_IDS = [
+  ...CLAUDE_MODEL_IDS,
+  'gpt-6-astra',
+];
 const MODEL_TIERS = new Set(['small']);
 function isKnownModelId(model) {
   if (typeof model !== 'string' || model.length === 0) return false;
   if (MODEL_IDS.includes(model)) return true;
-  return MODEL_IDS.some((id) => model.startsWith(`${id}-`));
+  return CLAUDE_MODEL_IDS.some((id) => model.startsWith(`${id}-`));
 }
 // #1526 Phase B: keep in sync with MAX_IDEMPOTENCY_KEY_LENGTH in
 // src/shared/contracts/launch.ts.
@@ -179,14 +185,16 @@ Options:
                            per-agent-type setting, else the agent CLI default).
                            claude-code: low|medium|high|xhigh|max.
                            codex-cli:   none|minimal|low|medium|high|xhigh|max|ultra.
+                           gpt-6-astra: low|medium|high|xhigh|max|ultra.
                            grok-build:  omit --effort (server rejects any value).
       --model <id>         Pin the model for this task (default: agent CLI /
                            env default). claude-code accepts known Claude ids
                            (e.g. claude-opus-5, claude-fable-5,
                            claude-opus-4-8, claude-sonnet-5,
                            claude-haiku-4-5 and dated
-                           suffixes). codex-cli / grok-build reject --model
-                           (use --model-tier for portable model intent).
+                           suffixes). codex-cli accepts gpt-6-astra.
+                           grok-build rejects --model (use --model-tier for
+                           portable model intent).
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
                            Codex requires the Kookr fork; stock/older binaries
@@ -439,6 +447,16 @@ function parseArgs(argv) {
   if (out.model !== null && !isKnownModelId(out.model)) {
     throw new UsageError(
       `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
+    );
+  }
+  if (
+    out.model === 'gpt-6-astra'
+    && out.effort !== null
+    && !GPT_6_ASTRA_EFFORT_LEVELS.has(out.effort)
+  ) {
+    throw new UsageError(
+      `--effort for gpt-6-astra must be one of: ${[...GPT_6_ASTRA_EFFORT_LEVELS].join(', ')} ` +
+      `(got: ${out.effort})`,
     );
   }
   if (out.modelTier !== null && !MODEL_TIERS.has(out.modelTier)) {

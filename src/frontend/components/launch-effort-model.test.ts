@@ -5,6 +5,8 @@ import {
   CLAUDE_CODE_EFFORT_LEVELS,
   CLAUDE_CODE_MODEL_IDS,
   CODEX_CLI_EFFORT_LEVELS,
+  CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
+  CODEX_CLI_MODEL_IDS,
 } from '../../shared/contracts/agent-types.js';
 import { LAST_EFFORT_KEY, LAST_MODEL_KEY } from '../store/last-launch-pins.js';
 import {
@@ -37,9 +39,12 @@ describe('picker options follow the resolved agent allowlist', () => {
     expect(modelOptionsForSelection('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
   });
 
-  test('codex-cli exposes effort and hides model', () => {
+  test('codex-cli exposes effort and gpt-6-astra', () => {
     expect(effortOptionsForSelection('codex-cli')).toEqual(CODEX_CLI_EFFORT_LEVELS);
-    expect(modelOptionsForSelection('codex-cli')).toEqual([]);
+    expect(effortOptionsForSelection('codex-cli', 'gpt-6-astra')).toEqual(
+      CODEX_GPT_6_ASTRA_EFFORT_LEVELS,
+    );
+    expect(modelOptionsForSelection('codex-cli')).toEqual(CODEX_CLI_MODEL_IDS);
   });
 
   test('grok-build and round-robin hide both pickers', () => {
@@ -59,6 +64,10 @@ describe('sanitizeLaunchPins', () => {
     expect(sanitizeLaunchPins('codex-cli', 'high', 'claude-fable-5')).toEqual({
       effort: 'high',
       model: '',
+    });
+    expect(sanitizeLaunchPins('codex-cli', 'minimal', 'gpt-6-astra')).toEqual({
+      effort: '',
+      model: 'gpt-6-astra',
     });
     expect(sanitizeLaunchPins('grok-build', 'high', 'claude-fable-5')).toEqual({
       effort: '',
@@ -114,6 +123,15 @@ describe('restoreLastLaunchPins', () => {
     expect(restoreLastLaunchPins('claude-code')).toEqual({
       effort: '',
       model: 'claude-fable-5',
+    });
+  });
+
+  test('drops a stored effort that the stored Codex model does not support', () => {
+    localStorage.setItem(LAST_EFFORT_KEY, 'minimal');
+    localStorage.setItem(LAST_MODEL_KEY, 'gpt-6-astra');
+    expect(restoreLastLaunchPins('codex-cli')).toEqual({
+      effort: '',
+      model: 'gpt-6-astra',
     });
   });
 

@@ -37,7 +37,7 @@ import {
 } from '../core/hook-parentage.js';
 import { getGitInfo, isGitBranchCommand } from './git-info.js';
 import { inferGitInfoPathFromEvent } from './git-path-inference.js';
-import { isValidEffortForAgent } from '../shared/contracts/agent-types.js';
+import { effortLevelsForAgent, isValidEffortForAgent } from '../shared/contracts/agent-types.js';
 import { LaunchAbortedError, throwIfLaunchAborted } from './launch-abort.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
@@ -60,17 +60,17 @@ export const CODEX_MODEL_ENV = 'KOOKR_CODEX_MODEL';
  */
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol';
 /**
- * Model used when an explicit `ultra` reasoning effort is requested. Luna's
- * advertised ceiling is `max`, so ultra always escalates to Sol regardless of
- * {@link CODEX_MODEL_ENV}.
+ * Model used when `ultra` reasoning is requested without a per-task model pin.
+ * Luna's advertised ceiling is `max`, so ultra overrides the environment
+ * default and escalates to Sol.
  */
 export const ULTRA_CODEX_MODEL = 'gpt-5.6-sol';
 
 /**
  * Resolve the Codex model for a Kookr-fork launch.
  *
- * - `effort === 'ultra'` → {@link ULTRA_CODEX_MODEL} (Sol)
  * - an explicit per-task model → that model
+ * - `effort === 'ultra'` → {@link ULTRA_CODEX_MODEL} (Sol)
  * - otherwise → `KOOKR_CODEX_MODEL` if set and non-empty, else {@link DEFAULT_CODEX_MODEL}
  */
 export function resolveCodexModel(
@@ -78,8 +78,8 @@ export function resolveCodexModel(
   env: NodeJS.ProcessEnv = process.env,
   requestedModel?: string,
 ): string {
-  if (effort === 'ultra') return ULTRA_CODEX_MODEL;
   if (requestedModel) return requestedModel;
+  if (effort === 'ultra') return ULTRA_CODEX_MODEL;
   const fromEnv = env[CODEX_MODEL_ENV]?.trim();
   return fromEnv && fromEnv.length > 0 ? fromEnv : DEFAULT_CODEX_MODEL;
 }
@@ -518,8 +518,8 @@ export class CodexCliAdapter implements AgentAdapter {
     // A Sol session is the default for the Kookr fork (override with
     // KOOKR_CODEX_MODEL). The same capability probe used for --plugin-dir
     // keeps stock/older Codex binaries on their previous model defaults.
-    // Luna tops out at `max`; an explicit `ultra` request selects Sol, which
-    // advertises ultra — regardless of KOOKR_CODEX_MODEL.
+    // A per-task model pin is authoritative. Without one, an `ultra` request
+    // replaces an incompatible Luna environment default with Sol.
     const forkCapabilitiesSupported = await this.probeKookrForkSupport();
     if (opts?.model !== undefined && !forkCapabilitiesSupported) {
       throw new Error(
@@ -559,12 +559,12 @@ export class CodexCliAdapter implements AgentAdapter {
         );
       }
     } else if (effort) {
-      if (isValidEffortForAgent(this.agentType, effort)) {
+      if (isValidEffortForAgent(this.agentType, effort, model)) {
         args.push('-c', `model_reasoning_effort="${effort}"`);
       } else {
         console.warn(
           `[codex-cli-adapter] ignoring invalid effort "${effort}" for ${this.agentType}; ` +
-          `valid: none, minimal, low, medium, high, xhigh, max, ultra`,
+          `valid: ${effortLevelsForAgent(this.agentType, model).join(', ')}`,
         );
       }
     }

@@ -792,12 +792,13 @@ The system SHALL let the operator pin reasoning effort and model on a dashboard 
 - Launch dialog and Quick Launch expose optional effort and model selects for the resolved agent
 - Chosen values are forwarded on the WebSocket `launch` payload into the existing `LaunchOpts` contract
 - Leaving a select on "Agent default" omits that field so the server default still applies
-- Agents that reject a raw per-task model pin (currently Codex CLI and Grok Build) hide the model select
+- Codex CLI exposes `gpt-6-astra` as an available model and accepts that exact pin from dashboard, schedule, API, and `kookr spawn` launches; its compatible effort choices are `low`, `medium`, `high`, `xhigh`, `max`, and `ultra`
+- Agents that reject a raw per-task model pin (currently Grok Build) hide the model select
 - Agents with no validated effort levels (currently Grok Build) hide the effort select
 
 **Rationale:** The launch pipeline already validates per-task effort (#681) and model (#1518). Without dashboard controls, operators could only pin those values via CLI or API.
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchEffortModelPickers.tsx`, `src/shared/contracts/messages.ts`, `src/server/ws-handlers/lifecycle-handler.ts`. Tests: `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`, `src/server/ws-handlers/lifecycle-handler.test.ts`, `src/shared/contracts/client-message-schema.test.ts`.
+**Evidence:** `src/shared/contracts/agent-types.ts`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/LaunchEffortModelPickers.tsx`, `src/shared/contracts/messages.ts`, `src/server/launch-service.ts`, `src/server/schedule-validator.ts`, `src/server/ws-handlers/lifecycle-handler.ts`, `bin/kookr-spawn.js`. Tests: `src/core/agent-types.test.ts`, `src/frontend/components/LaunchTaskDialog.effort-model.test.ts`, `src/frontend/components/launch-effort-model.test.ts`, `src/frontend/components/QuickLaunch.defaults.test.ts`, `src/server/launch-service.test.ts`, `src/server/schedule-validator.test.ts`, `src/cli/kookr-spawn.test.ts`, `src/server/ws-handlers/lifecycle-handler.test.ts`, `src/shared/contracts/client-message-schema.test.ts`.
 
 ### R4b.10: Remember Last Launch Effort and Model [F4.1] — SHALL — `done`
 

@@ -286,8 +286,8 @@ export function validateCron(cron: string): string | undefined {
  *
  * For a concrete agent, use the agent-specific allowlists. For `round-robin`,
  * use the cross-agent union (authoritative check still runs at launch once a
- * concrete agent is resolved). Empty allowlists (codex/grok model) reject any
- * model pin with an explicit message rather than silently ignoring it.
+ * concrete agent is resolved). Empty allowlists reject any model pin with an
+ * explicit message rather than silently ignoring it.
  */
 export function validateScheduleEffortModel(
   agentType: AgentSelection,
@@ -303,8 +303,8 @@ export function validateScheduleEffortModel(
         fieldErrors.effort = `Must be one of: ${ALL_EFFORT_LEVELS.join(', ')}`;
       }
     } else if (isAgentType(agentType)) {
-      if (!isValidEffortForAgent(agentType, effort)) {
-        const levels = effortLevelsForAgent(agentType);
+      if (!isValidEffortForAgent(agentType, effort, model)) {
+        const levels = effortLevelsForAgent(agentType, model);
         fieldErrors.effort = levels.length === 0
           ? `Agent ${agentType} does not accept an effort pin`
           : `Must be one of: ${levels.join(', ')}`;
@@ -322,7 +322,8 @@ export function validateScheduleEffortModel(
         const models = modelsForAgent(agentType);
         fieldErrors.model = models.length === 0
           ? `Agent ${agentType} does not accept a per-schedule model pin`
-          : `Must be one of: ${models.join(', ')} (dated suffixes of those bases also accepted)`;
+          : `Must be one of: ${models.join(', ')}` +
+            (agentType === 'claude-code' ? ' (dated suffixes of those bases also accepted)' : '');
       }
     }
   }

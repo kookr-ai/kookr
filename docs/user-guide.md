@@ -21,7 +21,7 @@ Use the dashboard **Launch** button for an interactive start:
 1. Pick the project directory.
 2. Choose the agent provider when available.
 3. Optionally pin reasoning effort and model. Leave them on "Agent default"
-   to keep the server / CLI default. Codex hides Model; Grok Build hides both.
+   to keep the server / CLI default. Codex offers `gpt-6-astra`; Grok Build hides both.
    After a successful launch, the next open restores those pins when the
    current agent still accepts them.
 4. Enter the task prompt, or click a sample on the Manual tab to fill one
@@ -39,7 +39,7 @@ To repeat a prompt you have run before — without writing a playbook — open t
 
 ### Pinning Model And Effort
 
-The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. The last pins you launched with are remembered locally and shown in those menus the next time you open Launch or **Quick Launch** (the compact launch bar for starting a task without the full dialog). From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` and `grok-build` reject `--model` (set `KOOKR_CODEX_MODEL` / `KOOKR_GROK_MODEL` instead) and have their own effort rules. See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
+The Launch dialog's effort and model controls (step 3 above) set these per task from the dashboard. The last pins you launched with are remembered locally and shown in those menus the next time you open Launch or **Quick Launch** (the compact launch bar for starting a task without the full dialog). From the terminal, `kookr spawn --effort <level>` and `--model <id>` pin them for a single launch, overriding the server / CLI default for that one task. Support varies by agent: `claude-code` accepts a Claude model id and effort levels `low` through `max`; `codex-cli` accepts the `gpt-6-astra` model pin with `low`, `medium`, `high`, `xhigh`, `max`, or `ultra`; `grok-build` rejects `--model` (set `KOOKR_GROK_MODEL` instead). See the [CLI reference](reference/cli.md#kookr-spawn) flag table for the exact per-agent values.
 
 To set a lasting default instead of pinning each launch, use **Settings → Task Management**, where each agent type has a reasoning-effort default that new tasks start at. A per-task `--effort` always wins over that default.
 
