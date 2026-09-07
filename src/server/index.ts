@@ -2630,6 +2630,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let emergencyMaintenancePrune: EmergencyMaintenancePruneController | undefined;
   let maintenancePruneHealth: MaintenancePruneHealth | undefined;
   const emergencyPruneThrottleMsResolved = resolveEmergencyPruneThrottleMs(process.env);
+  // Delivery-bridge health (issue #3046): the SignalDeliveryService is
+  // constructed after createRoutes, so /api/health reads its status() through a
+  // holder the getter closes over. Absent (unconfigured) ⇒ health omits the block.
+  let signalDeliveryServiceHolder: SignalDeliveryService | undefined;
   const app = createRoutes({
     environmentBlockerRegistry,
     pipelineStarvation,
@@ -2762,6 +2766,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     sessionReaper,
     hostStaleDtachReaper,
     getPayloadDietStats,
+    // Delivery-bridge health (issue #3046). Undefined until the service is
+    // constructed and never wired when the bridge is unconfigured.
+    getSignalDeliveryStatus: () => signalDeliveryServiceHolder?.status(),
     getMaintenancePruneHealth: () => {
       // Combined schedule (#2345) + emergency (#2344) block. Schedule tracker is
       // always present; emergency may lag until post-takePredelete wiring fills in.
@@ -3266,6 +3273,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const signalDeliveryService = signalDeliveryConfig
     ? new SignalDeliveryService({ dir: operatorSignalDir, config: signalDeliveryConfig })
     : null;
+  // Publish to the health holder (issue #3046) so GET /api/health can project
+  // the delivery-bridge status(). Stays undefined when unconfigured.
+  signalDeliveryServiceHolder = signalDeliveryService ?? undefined;
   signalDeliveryService?.start();
 
   // --- Quota monitoring (polls Anthropic OAuth usage endpoint) ---

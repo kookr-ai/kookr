@@ -845,6 +845,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         }
       : undefined;
 
+    // Delivery-bridge health (issue #3046). Undefined when the bridge is
+    // unconfigured or before the service is wired at startup ⇒ block omitted.
+    const signalDeliveryBlock = deps.getSignalDeliveryStatus?.();
+
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
     // this process is *actually* serving without digging into `build`.
@@ -1021,6 +1025,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // in-memory auth-pause map. Always present so last-good health and
       // `kookr ops digest` can name a paused provider without grepping logs.
       helperLlm: (deps.getHelperLlmHealthSnapshot ?? getHelperLlmHealthSnapshot)(),
+      // Delivery-bridge health (issue #3046): configured / consecutiveFailures /
+      // pending / last send + last failure from the in-memory status() read.
+      // Makes a silently-failing (revoked webhook / bad token / 429) Discord or
+      // Telegram bridge glanceable. Absent when the bridge is unconfigured.
+      ...(signalDeliveryBlock ? { signalDelivery: signalDeliveryBlock } : {}),
       // Issue #2636: four-field timer-health summary so last-good health
       // (the snapshot Lucy reads after HTTP goes dark) can say whether a
       // safety-net timer is overdue without a second curl. Counts only —

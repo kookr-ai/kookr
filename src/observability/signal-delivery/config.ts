@@ -20,6 +20,15 @@ export const DEFAULT_DELIVERY_POLL_INTERVAL_MS = 15_000;
 export const DEFAULT_DELIVERY_MIN_SEND_INTERVAL_MS = 60_000;
 /** Initial delivery shortly after boot so a pre-existing spool does not wait a full interval. */
 export const DEFAULT_DELIVERY_BOOT_DELAY_MS = 5_000;
+/**
+ * First back-off window after an all-channel delivery failure (issue #3046).
+ * A revoked webhook / bad token / 429 / network fault would otherwise re-POST
+ * the same batch every poll interval forever; the window doubles per consecutive
+ * failure from this base and is capped at {@link DEFAULT_DELIVERY_BACKOFF_MAX_MS}.
+ */
+export const DEFAULT_DELIVERY_BACKOFF_BASE_MS = 30_000;
+/** Ceiling for the exponential failure back-off (and for an honored `Retry-After`). */
+export const DEFAULT_DELIVERY_BACKOFF_MAX_MS = 900_000;
 
 export interface SignalDeliveryConfig {
   discord?: DiscordChannelConfig;
@@ -29,6 +38,10 @@ export interface SignalDeliveryConfig {
   pollIntervalMs: number;
   minSendIntervalMs: number;
   bootDelayMs: number;
+  /** Base back-off window after an all-channel failure (issue #3046). */
+  backoffBaseMs: number;
+  /** Cap for the back-off window and any honored `Retry-After` (issue #3046). */
+  backoffMaxMs: number;
 }
 
 /**
@@ -83,6 +96,14 @@ export function readSignalDeliveryConfigFromEnv(
       DEFAULT_DELIVERY_MIN_SEND_INTERVAL_MS,
     ),
     bootDelayMs: DEFAULT_DELIVERY_BOOT_DELAY_MS,
+    backoffBaseMs: parsePositiveInt(
+      env.KOOKR_SIGNAL_DELIVERY_BACKOFF_BASE_MS,
+      DEFAULT_DELIVERY_BACKOFF_BASE_MS,
+    ),
+    backoffMaxMs: parsePositiveInt(
+      env.KOOKR_SIGNAL_DELIVERY_BACKOFF_MAX_MS,
+      DEFAULT_DELIVERY_BACKOFF_MAX_MS,
+    ),
   };
 }
 

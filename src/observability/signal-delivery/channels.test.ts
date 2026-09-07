@@ -4,6 +4,7 @@ import {
   TELEGRAM_MAX_CONTENT,
   deliverToDiscord,
   deliverToTelegram,
+  parseRetryAfterMs,
 } from './channels.js';
 
 function okFetch() {
@@ -65,5 +66,47 @@ describe('deliverToTelegram', () => {
     await deliverToTelegram({ botToken: 't', chatId: 'c' }, 'y'.repeat(9000), { fetchImpl });
     const body = JSON.parse(fetchImpl.mock.calls[0]![1]!.body as string) as { text: string };
     expect(body.text.length).toBeLessThanOrEqual(TELEGRAM_MAX_CONTENT);
+  });
+});
+
+describe('parseRetryAfterMs (issue #3046)', () => {
+  test('parses delta-seconds into milliseconds', () => {
+    expect(parseRetryAfterMs('30')).toBe(30_000);
+    expect(parseRetryAfterMs('  5  ')).toBe(5_000);
+  });
+
+  test('parses an HTTP-date relative to now', () => {
+    const now = 1_700_000_000_000;
+    const when = new Date(now + 45_000).toUTCString();
+    expect(parseRetryAfterMs(when, () => now)).toBe(new Date(when).getTime() - now);
+  });
+
+  test('returns null for absent, malformed, or non-positive values', () => {
+    expect(parseRetryAfterMs(null)).toBeNull();
+    expect(parseRetryAfterMs(undefined)).toBeNull();
+    expect(parseRetryAfterMs('')).toBeNull();
+    expect(parseRetryAfterMs('   ')).toBeNull();
+    expect(parseRetryAfterMs('soon')).toBeNull();
+    expect(parseRetryAfterMs('0')).toBeNull();
+    // A past date resolves to a non-positive delay → null.
+    expect(parseRetryAfterMs(new Date(1_000).toUTCString(), () => 2_000_000)).toBeNull();
+  });
+});
+
+describe('Retry-After propagation on a 429', () => {
+  test('deliverToDiscord surfaces retryAfterMs from a 429 response', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response('slow', { status: 429, headers: { 'retry-after': '42' } }));
+    const res = await deliverToDiscord({ webhookUrl: 'u' }, 'x', { fetchImpl });
+    expect(res.ok).toBe(false);
+    expect(res.status).toBe(429);
+    expect(res.retryAfterMs).toBe(42_000);
+  });
+
+  test('a plain 500 carries no retryAfterMs', async () => {
+    const fetchImpl = vi.fn(async () => new Response('no', { status: 500 }));
+    const res = await deliverToDiscord({ webhookUrl: 'u' }, 'x', { fetchImpl });
+    expect(res.ok).toBe(false);
+    expect(res.retryAfterMs).toBeUndefined();
   });
 });

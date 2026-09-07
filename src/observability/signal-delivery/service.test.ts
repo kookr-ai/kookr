@@ -21,6 +21,8 @@ function baseConfig(overrides: Partial<SignalDeliveryConfig> = {}): SignalDelive
     pollIntervalMs: 15_000,
     minSendIntervalMs: 60_000,
     bootDelayMs: 5_000,
+    backoffBaseMs: 30_000,
+    backoffMaxMs: 900_000,
     ...overrides,
   };
 }
@@ -170,15 +172,18 @@ describe('SignalDeliveryService — failure handling', () => {
   test('all-channels-failed leaves the signal pending for retry', async () => {
     const dir = await tempDir();
     const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(0);
     await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
-    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: () => new Date(0), log: () => {} });
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
 
     const r = await svc.tick();
     expect(r.delivered).toEqual([]);
     expect(r.pending).toBe(1);
 
-    // Recovers: next attempt succeeds and delivers exactly once.
+    // Recovers once the back-off window elapses: next attempt succeeds and
+    // delivers exactly once.
     fetchImpl.mockImplementation(async () => new Response(null, { status: 204 }));
+    clock.advance(30_000);
     const r2 = await svc.tick();
     expect(r2.delivered).toEqual(['k.json']);
   });
@@ -197,6 +202,173 @@ describe('SignalDeliveryService — failure handling', () => {
     const r2 = await svc.tick();
     expect(r2.delivered).toEqual([]);
     expect(fetchImpl.mock.calls.length).toBe(calls); // no re-post
+  });
+});
+
+describe('SignalDeliveryService — failure back-off (issue #3046)', () => {
+  test('persistent all-channel failures space out attempts instead of re-POSTing every poll', async () => {
+    const dir = await tempDir();
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(0);
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+
+    // First failure: one POST attempted, back-off armed for 30s.
+    const r1 = await svc.tick();
+    expect(r1.pending).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(svc.status().consecutiveFailures).toBe(1);
+
+    // Poll again well within the back-off window (default poll ~15s): gated, NO
+    // new POST — this is the retry storm the issue removes.
+    clock.advance(15_000);
+    const r2 = await svc.tick();
+    expect(r2.backoff).toBe(true);
+    expect(r2.pending).toBe(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Past the 30s window: one more attempt is made (still failing) and the
+    // window doubles to 60s.
+    clock.advance(16_000); // now = 31s
+    const r3 = await svc.tick();
+    expect(r3.backoff).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(svc.status().consecutiveFailures).toBe(2);
+
+    // 45s later (< 60s window from t=31s): still gated.
+    clock.advance(45_000);
+    const r4 = await svc.tick();
+    expect(r4.backoff).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('the back-off window is capped (does not grow unbounded)', async () => {
+    const dir = await tempDir();
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(0);
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    const svc = new SignalDeliveryService({
+      dir, config: baseConfig({ backoffBaseMs: 1000, backoffMaxMs: 4000 }), fetchImpl, now: clock.now, log: () => {},
+    });
+
+    // Drive many consecutive failures, always waiting out the current window.
+    for (let i = 0; i < 8; i++) {
+      await svc.tick();
+      clock.advance(4000); // ≥ cap, so the next tick is always eligible
+    }
+    // Window never exceeds the cap: at t just past cap, the next attempt fires.
+    const before = fetchImpl.mock.calls.length;
+    clock.advance(4000);
+    await svc.tick();
+    expect(fetchImpl.mock.calls.length).toBe(before + 1);
+    expect(svc.status().consecutiveFailures).toBeGreaterThanOrEqual(8);
+  });
+
+  test('a success after back-off resets the counter and resumes normal cadence', async () => {
+    const dir = await tempDir();
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(0);
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+
+    await svc.tick(); // fail #1 → back-off 30s
+    clock.advance(31_000);
+    await svc.tick(); // fail #2 → back-off 60s
+    expect(svc.status().consecutiveFailures).toBe(2);
+
+    // Recover.
+    fetchImpl.mockImplementation(async () => new Response(null, { status: 204 }));
+    clock.advance(61_000);
+    const ok = await svc.tick();
+    expect(ok.delivered).toEqual(['k.json']);
+    expect(svc.status().consecutiveFailures).toBe(0);
+    expect(svc.status().nextAttemptAt).toBeUndefined();
+
+    // Next signal is gated only by the ordinary min-send interval, not back-off.
+    await writeOperatorSignal(dir, { key: 'k2', kind: 'alert', source: 's', title: 't2' });
+    clock.advance(61_000);
+    const ok2 = await svc.tick();
+    expect(ok2.delivered).toEqual(['k2.json']);
+  });
+
+  test('honors a 429 Retry-After as a lower bound on the next attempt', async () => {
+    const dir = await tempDir();
+    // Retry-After: 120s — far longer than the 30s base window.
+    const fetchImpl = vi.fn(async () =>
+      new Response('slow down', { status: 429, headers: { 'retry-after': '120' } }));
+    const clock = new Clock(0);
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+
+    await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // 60s later — past the 30s base but inside the 120s Retry-After: still gated.
+    clock.advance(60_000);
+    const gated = await svc.tick();
+    expect(gated.backoff).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Past 120s: attempt is allowed again.
+    clock.advance(61_000);
+    await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('caps an honored Retry-After so a hostile value cannot stall recovery', async () => {
+    const dir = await tempDir();
+    // Server demands 600s, but the bridge cap is 60s.
+    const fetchImpl = vi.fn(async () =>
+      new Response('slow down', { status: 429, headers: { 'retry-after': '600' } }));
+    const clock = new Clock(0);
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    const svc = new SignalDeliveryService({
+      dir, config: baseConfig({ backoffBaseMs: 5_000, backoffMaxMs: 60_000 }), fetchImpl, now: clock.now, log: () => {},
+    });
+
+    await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Just past the 60s cap (< the 600s the server asked for): attempt resumes.
+    clock.advance(61_000);
+    await svc.tick();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('status() surfaces configured / pending / failure fields for health', async () => {
+    const dir = await tempDir();
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(1_700_000_000_000);
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+
+    // Healthy, nothing sent yet.
+    const s0 = svc.status();
+    expect(s0.configured).toBe(true);
+    expect(s0.consecutiveFailures).toBe(0);
+    expect(s0.lastSendAt).toBeNull();
+    expect(s0.lastFailureAt).toBeNull();
+    expect(s0.lastError).toBeUndefined();
+
+    // After a failure: failure fields populate, timestamps are ISO strings.
+    await writeOperatorSignal(dir, { key: 'k', kind: 'alert', source: 's', title: 't' });
+    await svc.tick();
+    const s1 = svc.status();
+    expect(s1.consecutiveFailures).toBe(1);
+    expect(s1.pending).toBe(1);
+    expect(s1.lastFailureAt).toBe(new Date(1_700_000_000_000).toISOString());
+    expect(typeof s1.lastError).toBe('string');
+    expect(s1.nextAttemptAt).toBe(new Date(1_700_000_000_000 + 30_000).toISOString());
+
+    // After recovery: send timestamp set, pending cleared, failure fields reset.
+    fetchImpl.mockImplementation(async () => new Response(null, { status: 204 }));
+    clock.advance(30_000);
+    await svc.tick();
+    const s2 = svc.status();
+    expect(s2.consecutiveFailures).toBe(0);
+    expect(s2.pending).toBe(0);
+    expect(s2.lastSendAt).toBe(new Date(1_700_000_000_000 + 30_000).toISOString());
+    expect(s2.nextAttemptAt).toBeUndefined();
+    expect(s2.lastError).toBeUndefined();
   });
 });
 

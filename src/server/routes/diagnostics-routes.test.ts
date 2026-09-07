@@ -917,6 +917,55 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — signalDelivery block (issue #3046)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health signalDelivery block (issue #3046)', () => {
+    test('projects the delivery-bridge status when configured', async () => {
+      const status = {
+        configured: true,
+        consecutiveFailures: 3,
+        pending: 2,
+        lastSendAt: '2026-09-01T04:05:06.000Z',
+        lastFailureAt: '2026-09-01T04:10:00.000Z',
+        lastError: 'discord:HTTP 429',
+        nextAttemptAt: '2026-09-01T04:12:00.000Z',
+      };
+      const getSignalDeliveryStatus = vi.fn(() => status);
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getSignalDeliveryStatus,
+      }).request('/api/health')).json() as { signalDelivery?: Record<string, unknown> };
+
+      expect(body.signalDelivery).toEqual(status);
+    });
+
+    test('omits the block when the bridge is unconfigured (getter absent)', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { signalDelivery?: unknown };
+
+      expect(body).not.toHaveProperty('signalDelivery');
+    });
+
+    test('omits the block during the startup window before the service is wired', async () => {
+      // The getter is present but returns undefined until the service exists.
+      const getSignalDeliveryStatus = vi.fn(() => undefined);
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getSignalDeliveryStatus,
+      }).request('/api/health')).json() as { signalDelivery?: unknown };
+
+      expect(body).not.toHaveProperty('signalDelivery');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — resourceStatus block (issue #2791)
   // ---------------------------------------------------------------------------
   describe('GET /api/health resourceStatus block (issue #2791)', () => {
