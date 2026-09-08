@@ -60,6 +60,16 @@ export interface HotPathSnapshot {
   capacity: number;
   /** Timings currently retained in the ring. */
   retainedCount: number;
+  /**
+   * `true` once the ring is full (`retainedCount === capacity`), at which point
+   * every new `record()` overwrites the oldest timing. Windowed metrics may then
+   * be silently losing their oldest history — this is the operator's signal for
+   * that, distinct from `droppedLabelCount` (which counts the label-cardinality
+   * cap, not ring overwrite).
+   */
+  saturated: boolean;
+  /** Ring fill as a percentage (`retainedCount / capacity * 100`), rounded. */
+  utilizationPct: number;
   /** Distinct labels currently tracked. */
   labelCount: number;
   /** Records dropped because the label cap was already reached. */
@@ -159,6 +169,8 @@ export class HotPathSampler {
       generatedAt: this.nowIso(),
       capacity: this.capacity,
       retainedCount: this.size,
+      saturated: this.size >= this.capacity,
+      utilizationPct: roundMs((this.size / this.capacity) * 100),
       labelCount: this.knownLabels.size,
       droppedLabelCount: this.droppedLabelCount,
       topK,

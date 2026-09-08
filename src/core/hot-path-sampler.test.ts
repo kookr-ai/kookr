@@ -105,6 +105,40 @@ describe('HotPathSampler', () => {
     expect(snap.windows[0].paths[0].count).toBe(3);
   });
 
+  it('reports ring saturation and utilization for observability', () => {
+    const sampler = new HotPathSampler({ capacity: 4, windowsMinutes: [60] });
+
+    // Empty ring: not saturated, 0% utilized.
+    expect(sampler.snapshot()).toMatchObject({ saturated: false, utilizationPct: 0 });
+
+    sampler.record('x', 10);
+    sampler.record('x', 10); // half full
+    expect(sampler.snapshot()).toMatchObject({ saturated: false, utilizationPct: 50 });
+
+    // One slot below full stays unsaturated — guards an off-by-one (`>= capacity - 1`).
+    sampler.record('x', 10);
+    expect(sampler.snapshot()).toMatchObject({ saturated: false, utilizationPct: 75 });
+
+    sampler.record('x', 10); // exactly full
+    expect(sampler.snapshot()).toMatchObject({
+      retainedCount: 4,
+      capacity: 4,
+      saturated: true,
+      utilizationPct: 100,
+    });
+
+    // Overwriting the oldest slot keeps the ring saturated (not a new signal).
+    sampler.record('x', 10);
+    expect(sampler.snapshot()).toMatchObject({ saturated: true, utilizationPct: 100 });
+  });
+
+  it('rounds utilizationPct to two decimals for a non-integer fill', () => {
+    // capacity 3, one sample → 1/3 * 100 = 33.333… rounded to 33.33.
+    const sampler = new HotPathSampler({ capacity: 3, windowsMinutes: [60] });
+    sampler.record('x', 10);
+    expect(sampler.snapshot()).toMatchObject({ saturated: false, utilizationPct: 33.33 });
+  });
+
   it('time() records even when the function throws, then rethrows', () => {
     const sampler = new HotPathSampler({ windowsMinutes: [5] });
     const result = sampler.time('ok', () => 42);
@@ -128,6 +162,8 @@ describe('HotPathSampler', () => {
     const snap = new HotPathSampler({ windowsMinutes: [5, 15] }).snapshot();
     expect(snap.retainedCount).toBe(0);
     expect(snap.labelCount).toBe(0);
+    expect(snap.saturated).toBe(false);
+    expect(snap.utilizationPct).toBe(0);
     expect(snap.windows.every((w) => w.paths.length === 0 && w.sampleCount === 0)).toBe(true);
   });
 });
