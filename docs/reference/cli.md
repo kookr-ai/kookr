@@ -713,7 +713,7 @@ Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), and `kookr github` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1321,15 +1321,27 @@ working-tree state), not a conversation transplant.
 | `--effort <level>` | Reasoning effort for the continuation task (re-validated against the target agent) |
 | `--dry-run` | Print the plan and exit without launching |
 | `--yes`, `-y` | Skip the confirmation prompt |
+| `--json` | Emit one machine-readable envelope on stdout instead of human text. Requires `--yes` for a real migration (or use `--dry-run`); no confirmation prompt is shown under `--json`. |
 
 Exit codes: `0` migrated/queued (or dry-run found candidates), `1` declined at
 the prompt, `2` bad flags, `3` no server found, `4` server error, `5` every
 candidate blocked.
 
+In `--json` mode a single JSON object is printed to stdout: a dry-run emits
+`{ ok: true, mode: "plan", targetAgent, candidates }`, a real run emits
+`{ ok: true, mode: "migrate", targetAgent, defaultUpdated, results }`, and any
+failure (bad flags, no server, server error, no eligible tasks) emits
+`{ ok: false, code, message }` with the same non-zero exit code as the human
+path.
+
 ```bash
 # Move all interrupted Grok tasks to Claude Code and make Claude the new default
 kookr migrate --to claude-code --from grok-build --all --set-default --dry-run
 kookr migrate --to claude-code --from grok-build --all --set-default --yes
+
+# Machine-readable: inspect the plan, then migrate, consuming the JSON envelope
+kookr migrate --to claude-code --all --dry-run --json
+kookr migrate --to claude-code --all --yes --json
 ```
 
 ## Redeploy resilience
