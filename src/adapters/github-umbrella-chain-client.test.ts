@@ -190,6 +190,145 @@ describe('GhUmbrellaChainClient.listOpenIssues', () => {
     ]);
     await expect(client.listOpenIssues('o/r')).rejects.toThrow(/invalid issue number/);
   });
+
+  test('retries a transient HTTP 502 on the poll and succeeds without surfacing a skip', async () => {
+    // The advancer treats any rejection from listOpenIssues as a whole-project
+    // skip. A single transient 5xx must be retried so the scan still succeeds.
+    const attempts: string[] = [];
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async (file: string, args?: readonly string[]) => {
+      attempts.push([file, ...(args ?? [])].join(' '));
+      n += 1;
+      if (n === 1) throw Object.assign(new Error('gh: HTTP 502'), { stderr: 'HTTP 502' });
+      return { stdout: '3\n7\n', stderr: '' };
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    expect(await client.listOpenIssues('o/r')).toEqual([{ number: 3 }, { number: 7 }]);
+    expect(attempts).toHaveLength(2); // first (502) + retried success
+    expect(sleeps).toEqual([1_000]); // one bounded back-off, no real delay incurred
+  });
+
+  test('does not retry a non-transient HTTP 404 — it throws after a single attempt', async () => {
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(new Error('gh: HTTP 404'), { stderr: 'HTTP 404' });
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/HTTP 404/);
+    expect(n).toBe(1); // no retry for a non-transient error
+    expect(sleeps).toEqual([]); // never slept
+  });
+
+  test('bounds retries at the attempt cap and rethrows a persistent transient error', async () => {
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(new Error('gh: HTTP 503'), { stderr: 'HTTP 503' });
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/HTTP 503/);
+    expect(n).toBe(3); // default maxAttempts — no unbounded loop
+    expect(sleeps).toEqual([1_000, 3_000]); // bounded back-off between attempts
+  });
+
+  test('retries a SIGTERM timeout-kill — the shape execFile raises when a hung gh call is killed', async () => {
+    // Each read sets { timeout: 20_000 }; a hung call is SIGTERM-killed by
+    // execFile with no "HTTP 5xx" text, so the killed/signal branch must retry.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      if (n === 1) throw Object.assign(new Error('gh timed out'), { killed: true, signal: 'SIGTERM' });
+      return { stdout: '5\n', stderr: '' };
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    expect(await client.listOpenIssues('o/r')).toEqual([{ number: 5 }]);
+    expect(n).toBe(2);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  test('classifies on gh stderr, not the command line — a 404 on a "network"-named repo is not retried', async () => {
+    // promisify(execFile) rejects with message `Command failed: gh api
+    // repos/<owner>/<repo>/...` — the slug is in the message. A genuine 404 on a
+    // repo whose slug contains a transient trigger word ("network") must still
+    // NOT be retried; only gh's own stderr ("HTTP 404") decides.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(
+        new Error('Command failed: gh api repos/acme/network-monitor/issues?state=open&per_page=100\ngh: HTTP 404'),
+        { code: 1, stderr: 'gh: HTTP 404' },
+      );
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.listOpenIssues('acme/network-monitor')).rejects.toThrow(/HTTP 404/);
+    expect(n).toBe(1); // the "network" in the slug must not trigger a transient retry
+    expect(sleeps).toEqual([]);
+  });
+
+  test('does not retry a rate limit (HTTP 429) — a throttle must not be hammered', async () => {
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(new Error('gh: HTTP 429'), { stderr: 'API rate limit exceeded (HTTP 429)' });
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/429/);
+    expect(n).toBe(1); // 429 is not a 5xx — excluded from the transient set
+    expect(sleeps).toEqual([]);
+  });
+});
+
+describe('GhUmbrellaChainClient.getIssue retry', () => {
+  test('retries a transient HTTP 502 on the issue-view read then succeeds', async () => {
+    // getIssue is the scan path's other transient-prone read; a bad merge that
+    // dropped its retry wrapper would otherwise stay green — this guards it.
+    const sleeps: number[] = [];
+    let issueViewCalls = 0;
+    const exec = async (file: string, args?: readonly string[]) => {
+      const call = [file, ...(args ?? [])];
+      if (call.includes('repos/o/r/issues/10') && !call.includes('--paginate')) {
+        issueViewCalls += 1;
+        if (issueViewCalls === 1) throw Object.assign(new Error('gh: HTTP 502'), { stderr: 'HTTP 502' });
+        return { stdout: JSON.stringify({ body: '# Umbrella' }), stderr: '' };
+      }
+      if (call.includes('--paginate') && call.includes('repos/o/r/issues/10/comments?per_page=100')) {
+        return { stdout: '', stderr: '' };
+      }
+      throw new Error(`unscripted invocation: ${call.join(' ')}`);
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    expect(await client.getIssue('o/r', 10)).toEqual({ number: 10, body: '# Umbrella', comments: [] });
+    expect(issueViewCalls).toBe(2); // first 502 + retried success
+    expect(sleeps).toEqual([1_000]);
+  });
 });
 
 describe('GhUmbrellaChainClient.getIssue', () => {
