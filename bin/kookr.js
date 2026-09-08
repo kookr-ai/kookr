@@ -48,7 +48,7 @@ Options:
 Use --json for one machine-readable output envelope with: spawn, status, doctor,
 signal, ralph, issue, schedule, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
-context-pack, pr-checklist, effort-split, and value-density.
+migrate, context-pack, pr-checklist, effort-split, and value-density.
 
 Compatibility aliases:
   kookr-spawn, kookr-status, and kookr-ralph still work for now, but are deprecated.
