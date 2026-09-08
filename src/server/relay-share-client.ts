@@ -42,6 +42,17 @@ export const TASK_SHARE_DEFAULT_TTL_MS = 10 * 60 * 1000;
  */
 export const DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * Default ceiling on a relay response body, in decoded bytes.
+ * Relay share responses are small JSON documents (invitation views); 1 MiB is
+ * far above any legitimate payload while still bounding memory so a hostile or
+ * misbehaving relay cannot force unbounded buffering. The cap is enforced both
+ * against a declared `Content-Length` (rejected before the body is read) and
+ * against the decoded byte count of a chunked stream (cancelled at the ceiling).
+ * Override via `RelayShareClientOptions.maxResponseBytes`.
+ */
+export const DEFAULT_RELAY_SHARE_MAX_RESPONSE_BYTES = 1024 * 1024;
+
 /** HTTP status the dashboard backend surfaces for a failed relay call. */
 export type RelayShareErrorStatus = 400 | 404 | 409 | 429 | 502 | 503;
 
@@ -90,6 +101,12 @@ export interface RelayShareClientOptions {
    * Injectable so tests can assert the timeout path with a delayed `fetchImpl`.
    */
   requestTimeoutMs?: number;
+  /**
+   * Ceiling on the relay response body in decoded bytes. Defaults to
+   * {@link DEFAULT_RELAY_SHARE_MAX_RESPONSE_BYTES} (1 MiB). Injectable so tests
+   * can drive the oversized-body path with a small cap.
+   */
+  maxResponseBytes?: number;
 }
 
 function toSummary(view: RelayNodeInvitationView): TaskShareSummary {
@@ -156,36 +173,123 @@ function buildShareTicketJoinUrl(relayUrl: string, shareId: string, password: st
   return url.toString();
 }
 
+/**
+ * Read a relay response body under the caller's still-armed abort timeout,
+ * bounded to `maxBytes` of decoded content.
+ *
+ * - A declared `Content-Length` over the cap is rejected before any body byte
+ *   is read (`relay-response-too-large`), and the stream is cancelled so no
+ *   payload is retained.
+ * - A chunked body with no usable `Content-Length` is read incrementally; once
+ *   the decoded byte count exceeds the cap the reader is cancelled and the same
+ *   error is thrown, so an unbounded chunked stream cannot force buffering.
+ * - The caller's `AbortController` errors an in-flight `reader.read()` when the
+ *   deadline fires, so a headers-then-stalled body fails within the deadline;
+ *   that (and any other read failure) surfaces as `relay-unreachable`.
+ */
+async function readBodyBounded(res: Response, maxBytes: number): Promise<string> {
+  // Reject an oversized declared body before reading a single byte.
+  const declared = res.headers.get('content-length');
+  if (declared !== null) {
+    const declaredBytes = Number(declared);
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      // Cancel so the connection/stream is released without buffering the payload.
+      await res.body?.cancel().catch(() => {});
+      throw new RelayShareError(
+        'relay-response-too-large',
+        502,
+        `relay declared ${declaredBytes} bytes, over the ${maxBytes}-byte cap`,
+      );
+    }
+  }
+
+  const stream = res.body;
+  // A null body means the response carries no content (a spec-compliant fetch
+  // returns `body === null` only for a genuinely empty body, e.g. 204/304), so
+  // `res.text()` resolves to a tiny/empty string — there is nothing to bound.
+  // The abort timer still covers this await.
+  if (!stream) {
+    return res.text();
+  }
+
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw new RelayShareError(
+          'relay-response-too-large',
+          502,
+          `relay body exceeded the ${maxBytes}-byte cap`,
+        );
+      }
+      chunks.push(value);
+    }
+  } catch (err) {
+    if (err instanceof RelayShareError) throw err;
+    // A timeout abort or transport error during the body read is, like a failed
+    // header round-trip, an unreachable relay from the dashboard's point of view.
+    await reader.cancel().catch(() => {});
+    throw new RelayShareError(
+      'relay-unreachable',
+      502,
+      `relay request failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const buffer = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    buffer.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(buffer);
+}
+
 export function createRelayShareClient(opts: RelayShareClientOptions): RelayShareClient {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const base = opts.relayUrl;
   const authHeader = `Bearer ${opts.relayToken}`;
   // Floor at 1ms so a misconfigured 0/negative does not disable the abort path.
   const requestTimeoutMs = Math.max(1, opts.requestTimeoutMs ?? DEFAULT_RELAY_SHARE_REQUEST_TIMEOUT_MS);
+  // Floor at 1 byte so a misconfigured 0/negative does not disable the cap.
+  const maxResponseBytes = Math.max(1, opts.maxResponseBytes ?? DEFAULT_RELAY_SHARE_MAX_RESPONSE_BYTES);
 
   async function call(path: string, body: unknown, method = 'POST'): Promise<unknown> {
     let res: Response;
     const controller = new AbortController();
+    // A single timer arms the abort for BOTH the header round-trip and the body
+    // read: a relay that returns headers then stalls the body is aborted at the
+    // same deadline, and the timer is cleared only after the body is consumed.
     const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
+    let text: string;
     try {
-      res = await fetchImpl(new URL(path, base), {
-        method,
-        headers: { 'content-type': 'application/json', authorization: authHeader },
-        signal: controller.signal,
-        ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
-      });
-    } catch (err) {
-      // Timeouts and network failures share `relay-unreachable` so the dashboard
-      // can surface a single operator-actionable 502 without hanging waiters.
-      throw new RelayShareError(
-        'relay-unreachable',
-        502,
-        `relay request failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      try {
+        res = await fetchImpl(new URL(path, base), {
+          method,
+          headers: { 'content-type': 'application/json', authorization: authHeader },
+          signal: controller.signal,
+          ...(method === 'GET' ? {} : { body: JSON.stringify(body) }),
+        });
+      } catch (err) {
+        // Timeouts and network failures share `relay-unreachable` so the dashboard
+        // can surface a single operator-actionable 502 without hanging waiters.
+        throw new RelayShareError(
+          'relay-unreachable',
+          502,
+          `relay request failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      text = await readBodyBounded(res, maxResponseBytes);
     } finally {
       clearTimeout(timer);
     }
-    const text = await res.text();
     let parsed: unknown;
     try {
       parsed = text ? JSON.parse(text) : {};
