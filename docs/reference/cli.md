@@ -1328,11 +1328,14 @@ the prompt, `2` bad flags, `3` no server found, `4` server error, `5` every
 candidate blocked.
 
 In `--json` mode a single JSON object is printed to stdout: a dry-run emits
-`{ ok: true, mode: "plan", targetAgent, candidates }`, a real run emits
-`{ ok: true, mode: "migrate", targetAgent, defaultUpdated, results }`, and any
-failure (bad flags, no server, server error, no eligible tasks) emits
-`{ ok: false, code, message }` with the same non-zero exit code as the human
-path.
+`{ ok: true, mode: "plan", targetAgent, candidates, notFound }` (`notFound`
+lists named ids the server had no candidate for; always `[]` for `--all`), and a
+real run emits `{ ok: true, mode: "migrate", targetAgent, defaultUpdated,
+results }`. `ok: true` means the command ran — read the exit code for the
+disposition (`0` migrated/queued or a plan found candidates, `5` nothing
+eligible / all blocked). `ok: false` is reserved for a command that could not
+run at all (bad flags, no server, server error) and carries
+`{ code, message }` with the same non-zero exit code as the human path.
 
 ```bash
 # Move all interrupted Grok tasks to Claude Code and make Claude the new default

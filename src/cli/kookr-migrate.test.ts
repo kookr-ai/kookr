@@ -69,7 +69,7 @@ describe('kookr migrate --json', () => {
     expect(io.codes).toEqual([EXIT_OK]);
     expect(io.errors).toHaveLength(0);
     expect(io.logs).toHaveLength(1); // exactly one JSON line, no human text
-    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'plan', targetAgent: 'codex-cli', candidates });
+    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'plan', targetAgent: 'codex-cli', candidates, notFound: [] });
   });
 
   it('--dry-run --json with no eligible candidates → ok:true but exit EXIT_ALL_BLOCKED', async () => {
@@ -80,7 +80,55 @@ describe('kookr migrate --json', () => {
     await main({ argv: ['--to', 'codex-cli', '--all', '--dry-run', '--json'], env: ENV, out: io.out, err: io.err, exit: io.exit });
 
     expect(io.codes).toEqual([EXIT_ALL_BLOCKED]);
-    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'plan', targetAgent: 'codex-cli', candidates });
+    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'plan', targetAgent: 'codex-cli', candidates, notFound: [] });
+  });
+
+  it('--dry-run --json ids scope → surfaces requested ids the server did not return in notFound', async () => {
+    // Only t1 comes back; t3 was named on the CLI but the server has no candidate for it.
+    const candidates = [
+      { taskId: 't1', name: 'fix', fromAgent: 'claude-code', cwd: '/repo', eligible: true, worktreeShared: false },
+    ];
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { targetAgent: 'codex-cli', candidates })));
+
+    const io = mkIo();
+    await main({ argv: ['--to', 'codex-cli', 't1', 't3', '--dry-run', '--json'], env: ENV, out: io.out, err: io.err, exit: io.exit });
+
+    expect(io.codes).toEqual([EXIT_OK]);
+    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'plan', targetAgent: 'codex-cli', candidates, notFound: ['t3'] });
+  });
+
+  it('--yes --json real run with zero eligible → ok:true, empty results, exit EXIT_ALL_BLOCKED (no POST)', async () => {
+    const candidates = [{ taskId: 't2', eligible: false, reason: 'worktree shared', worktreeShared: true }];
+    const fetchImpl = vi.fn(async () => jsonResponse(200, { targetAgent: 'codex-cli', candidates }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const io = mkIo();
+    await main({ argv: ['--to', 'codex-cli', '--all', '--yes', '--json'], env: ENV, stdin: EXPLODING_STDIN, out: io.out, err: io.err, exit: io.exit });
+
+    // Never POSTs — the GET showed nothing eligible.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(io.codes).toEqual([EXIT_ALL_BLOCKED]);
+    expect(io.logs).toHaveLength(1);
+    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'migrate', targetAgent: 'codex-cli', defaultUpdated: false, results: [] });
+  });
+
+  it('--yes --json real run where every result is blocked → ok:true but exit EXIT_ALL_BLOCKED', async () => {
+    const candidates = [
+      { taskId: 't1', name: 'fix', fromAgent: 'claude-code', cwd: '/repo', eligible: true, worktreeShared: false },
+    ];
+    const results = [{ taskId: 't1', outcome: 'blocked', reason: 'worktree busy' }];
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { targetAgent: 'codex-cli', candidates }))
+      .mockResolvedValueOnce(jsonResponse(200, { targetAgent: 'codex-cli', defaultUpdated: false, results }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const io = mkIo();
+    await main({ argv: ['--to', 'codex-cli', '--all', '--yes', '--json'], env: ENV, out: io.out, err: io.err, exit: io.exit });
+
+    // ok:true (the migrate ran) yet exit is ALL_BLOCKED because nothing succeeded.
+    expect(io.codes).toEqual([EXIT_ALL_BLOCKED]);
+    expect(JSON.parse(io.logs[0])).toEqual({ ok: true, mode: 'migrate', targetAgent: 'codex-cli', defaultUpdated: false, results });
   });
 
   it('--yes --json → GET then POST, one { ok:true, mode:"migrate" } envelope, no prompt, exit 0', async () => {
@@ -126,6 +174,31 @@ describe('kookr migrate --json', () => {
     expect(parsed.code).toBe('SERVER_ERROR');
   });
 
+  it('POST failure after a successful GET under --json → { ok:false, code:"SERVER_ERROR" }, exit non-zero', async () => {
+    const candidates = [
+      { taskId: 't1', name: 'fix', fromAgent: 'claude-code', cwd: '/repo', eligible: true, worktreeShared: false },
+    ];
+    // GET migratable succeeds; the migrate POST then fails — a distinct branch
+    // from a failed GET (message "migrate request failed: …").
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(200, { targetAgent: 'codex-cli', candidates }))
+      .mockResolvedValueOnce(jsonResponse(500, { error: 'boom' }));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const io = mkIo();
+    await main({ argv: ['--to', 'codex-cli', '--all', '--yes', '--json'], env: ENV, out: io.out, err: io.err, exit: io.exit });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(io.codes).toEqual([EXIT_SERVER_ERROR]);
+    expect(io.errors).toHaveLength(0);
+    expect(io.logs).toHaveLength(1);
+    const parsed = JSON.parse(io.logs[0]);
+    expect(parsed.ok).toBe(false);
+    expect(parsed.code).toBe('SERVER_ERROR');
+    expect(parsed.message).toContain('migrate request failed');
+  });
+
   it('no server reachable under --json → { ok:false, code:"NO_SERVER" }, exit EXIT_NO_SERVER', async () => {
     // No KOOKR_PORT → resolvePort probes the default ports; make every probe fail.
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('ECONNREFUSED'); }));
@@ -135,9 +208,11 @@ describe('kookr migrate --json', () => {
 
     expect(io.codes).toEqual([EXIT_NO_SERVER]);
     expect(io.errors).toHaveLength(0);
+    expect(io.logs).toHaveLength(1);
     const parsed = JSON.parse(io.logs[0]);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe('NO_SERVER');
+    expect(parsed.message).toContain('not running');
   });
 
   it('parse error under --json → { ok:false, code:"USER_ERROR" } envelope, exit EXIT_USER_ERROR', async () => {
@@ -147,9 +222,11 @@ describe('kookr migrate --json', () => {
 
     expect(io.codes).toEqual([EXIT_USER_ERROR]);
     expect(io.errors).toHaveLength(0);
+    expect(io.logs).toHaveLength(1);
     const parsed = JSON.parse(io.logs[0]);
     expect(parsed.ok).toBe(false);
     expect(parsed.code).toBe('USER_ERROR');
+    expect(parsed.message).toContain('--to is required');
   });
 
   it('human dry-run output is unchanged when --json is absent', async () => {

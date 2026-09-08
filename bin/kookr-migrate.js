@@ -71,9 +71,14 @@ Without --dry-run and without --yes, prints the plan and asks for
 confirmation on stdin before POSTing.
 
 With --json, one JSON object is printed on stdout:
-  dry-run   { ok:true, mode:"plan", targetAgent, candidates }
+  dry-run   { ok:true, mode:"plan", targetAgent, candidates, notFound }
   real run  { ok:true, mode:"migrate", targetAgent, defaultUpdated, results }
   failure   { ok:false, code, message }   (exit code is non-zero)
+
+ok:true means the command ran and returned a valid result; read the exit code
+for the disposition (0 = migrated/queued or a plan found candidates, 5 =
+nothing eligible / all blocked). ok:false is reserved for a command that could
+not run at all (bad flags, no server reachable, server error).
 
 Environment:
   KOOKR_PORT           Specific port on 127.0.0.1.
@@ -472,6 +477,9 @@ async function main({
         mode: 'plan',
         targetAgent: migratable.targetAgent ?? args.to,
         candidates: migratable.candidates,
+        // Ids named on the command line that the server returned no candidate
+        // for (already-migrated / unknown / untracked). Always [] for --all.
+        notFound: plan.notFound,
       }));
       return exit(plan.eligible.length > 0 ? EXIT_OK : EXIT_ALL_BLOCKED);
     }
@@ -480,12 +488,20 @@ async function main({
   }
 
   if (plan.eligible.length === 0) {
+    // "Nothing eligible" is a valid outcome of a run that completed, not a
+    // failure to run — so under --json it stays ok:true (an empty migrate
+    // result) and only the exit code carries the all-blocked disposition. This
+    // keeps ok:false reserved for "the command could not run" (bad flags, no
+    // server, server error), consistent across every --json path.
     if (args.json) {
-      return failJson(out, exit, {
-        code: 'ALL_BLOCKED',
-        message: 'no eligible tasks to migrate',
-        exitCode: EXIT_ALL_BLOCKED,
-      });
+      out.log(JSON.stringify({
+        ok: true,
+        mode: 'migrate',
+        targetAgent: migratable.targetAgent ?? args.to,
+        defaultUpdated: false,
+        results: [],
+      }));
+      return exit(EXIT_ALL_BLOCKED);
     }
     out.log(formatPlan(plan, args.to));
     err.error('kookr-migrate: no eligible tasks to migrate.');
@@ -575,6 +591,5 @@ export {
   formatPlan,
   formatResults,
   confirmMigration,
-  failJson,
   main,
 };
