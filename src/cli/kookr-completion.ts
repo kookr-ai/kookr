@@ -158,6 +158,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
       '--effort',
       '--dry-run',
       '--yes',
+      '--json',
     ],
   },
   {

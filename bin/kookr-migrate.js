@@ -61,10 +61,19 @@ Options:
       --dry-run             Print the migration plan (GET
                              /api/tasks/migratable) and exit without POSTing.
       --yes, -y              Skip the confirmation prompt.
+      --json                 Emit a single machine-readable JSON envelope on
+                             stdout instead of human text (see below). Requires
+                             --yes for a real migration (or use --dry-run); no
+                             confirmation prompt is shown under --json.
   -h, --help                 Show this help.
 
 Without --dry-run and without --yes, prints the plan and asks for
 confirmation on stdin before POSTing.
+
+With --json, one JSON object is printed on stdout:
+  dry-run   { ok:true, mode:"plan", targetAgent, candidates }
+  real run  { ok:true, mode:"migrate", targetAgent, defaultUpdated, results }
+  failure   { ok:false, code, message }   (exit code is non-zero)
 
 Environment:
   KOOKR_PORT           Specific port on 127.0.0.1.
@@ -92,6 +101,7 @@ function parseArgs(argv) {
     onlyIsolated: false,
     dryRun: false,
     yes: false,
+    json: false,
     effort: null,
     help: false,
   };
@@ -124,6 +134,8 @@ function parseArgs(argv) {
       out.dryRun = true;
     } else if (tok === '--yes' || tok === '-y') {
       out.yes = true;
+    } else if (tok === '--json') {
+      out.json = true;
     } else if (tok === '--effort') {
       out.effort = eat();
     } else if (tok.startsWith('--effort=')) {
@@ -157,6 +169,12 @@ function parseArgs(argv) {
   }
   if (out.from !== null && !out.all) {
     throw new UsageError('--from requires --all');
+  }
+  // A machine caller must never hit the interactive confirm prompt. Reuse the
+  // existing non-interactive guard by requiring --yes for a real --json run;
+  // --dry-run needs no confirmation, so it is exempt.
+  if (out.json && !out.dryRun && !out.yes) {
+    throw new UsageError('--json requires --yes for a real migration (or use --dry-run)');
   }
   return out;
 }
@@ -367,6 +385,16 @@ async function confirmMigration({ count, targetAgent, stdin, out }) {
   return answer === 'y' || answer === 'yes';
 }
 
+/**
+ * Emit an `{ ok:false, code, message }` envelope on stdout (mirroring
+ * `kookr status`/`drain --json`) so machine callers branch on `ok` rather than
+ * scraping stderr. Returns the exit code so callers can `return failJson(...)`.
+ */
+function failJson(out, exit, { code, message, exitCode }) {
+  out.log(JSON.stringify({ ok: false, code, message }));
+  return exit(exitCode);
+}
+
 async function main({
   argv = process.argv.slice(2),
   env = process.env,
@@ -375,11 +403,17 @@ async function main({
   err = console,
   exit = process.exit,
 } = {}) {
+  // Detect --json from the raw argv too, so a parse failure can still answer in
+  // JSON (args isn't available yet when parseArgs throws).
+  const wantsJson = argv.includes('--json');
   let args;
   try {
     args = parseArgs(argv);
   } catch (e) {
     if (e instanceof UsageError) {
+      if (wantsJson) {
+        return failJson(out, exit, { code: 'USER_ERROR', message: e.message, exitCode: EXIT_USER_ERROR });
+      }
       err.error(`kookr-migrate: ${e.message}`);
       err.error('Try `kookr migrate --help`.');
       return exit(EXIT_USER_ERROR);
@@ -393,11 +427,15 @@ async function main({
 
   const resolved = await resolvePort(env);
   if (resolved.kind === 'invalid') {
-    err.error(`KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`);
+    const message = `KOOKR_PORT must be an integer between 1 and 65535 (got: ${JSON.stringify(resolved.raw)}).`;
+    if (args.json) return failJson(out, exit, { code: 'USER_ERROR', message, exitCode: EXIT_USER_ERROR });
+    err.error(message);
     return exit(EXIT_USER_ERROR);
   }
   if (resolved.kind === 'none') {
-    err.error('Kookr is not running on the default ports. Set KOOKR_PORT if using a non-default port.');
+    const message = 'Kookr is not running on the default ports. Set KOOKR_PORT if using a non-default port.';
+    if (args.json) return failJson(out, exit, { code: 'NO_SERVER', message, exitCode: EXIT_NO_SERVER });
+    err.error(message);
     return exit(EXIT_NO_SERVER);
   }
   const baseUrl = `http://127.0.0.1:${resolved.port}`;
@@ -414,6 +452,13 @@ async function main({
     env,
   });
   if (migratable.kind !== 'ok') {
+    if (args.json) {
+      return failJson(out, exit, {
+        code: 'SERVER_ERROR',
+        message: `failed to reach Kookr on port ${resolved.port}: ${migratable.message}`,
+        exitCode: EXIT_SERVER_ERROR,
+      });
+    }
     err.error(`kookr-migrate: failed to reach Kookr on port ${resolved.port}: ${migratable.message}`);
     return exit(EXIT_SERVER_ERROR);
   }
@@ -421,16 +466,34 @@ async function main({
   const plan = buildPlan({ candidates: migratable.candidates, scope, taskIds: args.taskIds });
 
   if (args.dryRun) {
+    if (args.json) {
+      out.log(JSON.stringify({
+        ok: true,
+        mode: 'plan',
+        targetAgent: migratable.targetAgent ?? args.to,
+        candidates: migratable.candidates,
+      }));
+      return exit(plan.eligible.length > 0 ? EXIT_OK : EXIT_ALL_BLOCKED);
+    }
     out.log(formatPlan(plan, args.to));
     return exit(plan.eligible.length > 0 ? EXIT_OK : EXIT_ALL_BLOCKED);
   }
 
   if (plan.eligible.length === 0) {
+    if (args.json) {
+      return failJson(out, exit, {
+        code: 'ALL_BLOCKED',
+        message: 'no eligible tasks to migrate',
+        exitCode: EXIT_ALL_BLOCKED,
+      });
+    }
     out.log(formatPlan(plan, args.to));
     err.error('kookr-migrate: no eligible tasks to migrate.');
     return exit(EXIT_ALL_BLOCKED);
   }
 
+  // Under --json the parser guarantees --yes, so this prompt path is skipped and
+  // no interactive confirmation ever blocks a machine caller.
   if (!args.yes) {
     out.log(formatPlan(plan, args.to));
     const confirmed = await confirmMigration({ count: plan.eligible.length, targetAgent: args.to, stdin, out });
@@ -450,11 +513,28 @@ async function main({
 
   const posted = await postMigrate({ baseUrl, body, env });
   if (posted.kind !== 'ok') {
+    if (args.json) {
+      return failJson(out, exit, {
+        code: 'SERVER_ERROR',
+        message: `migrate request failed: ${posted.message}`,
+        exitCode: EXIT_SERVER_ERROR,
+      });
+    }
     err.error(`kookr-migrate: migrate request failed: ${posted.message}`);
     return exit(EXIT_SERVER_ERROR);
   }
 
-  out.log(formatResults(posted.body));
+  if (args.json) {
+    out.log(JSON.stringify({
+      ok: true,
+      mode: 'migrate',
+      targetAgent: posted.body.targetAgent ?? args.to,
+      defaultUpdated: posted.body.defaultUpdated ?? false,
+      results: posted.body.results,
+    }));
+  } else {
+    out.log(formatResults(posted.body));
+  }
   const anySuccess = posted.body.results.some((r) => r.outcome === 'migrated' || r.outcome === 'queued');
   return exit(anySuccess ? EXIT_OK : EXIT_ALL_BLOCKED);
 }
@@ -495,5 +575,6 @@ export {
   formatPlan,
   formatResults,
   confirmMigration,
+  failJson,
   main,
 };

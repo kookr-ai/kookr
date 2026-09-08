@@ -437,6 +437,23 @@ describe('bash completion behavior', () => {
     ]);
   });
 
+  // #3060: `kookr migrate` gained a --json machine-readable envelope; shell
+  // completion must offer --json alongside its existing flags.
+  it('completes migrate flags including --json', async () => {
+    await expect(completeBash(['kookr', 'migrate', ''])).resolves.toEqual([
+      '--to',
+      '--from',
+      '--all',
+      '--include-cancelled',
+      '--set-default',
+      '--only-isolated',
+      '--effort',
+      '--dry-run',
+      '--yes',
+      '--json',
+    ]);
+  });
+
   // #2311: lesson yield is a live verb; shell completion must offer it + flags.
   it('completes lesson subcommands including yield', async () => {
     await expect(completeBash(['kookr', 'lesson', ''])).resolves.toEqual([
