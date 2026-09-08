@@ -18,6 +18,69 @@ export interface OpenIssueSummary {
   number: number;
 }
 
+/**
+ * Bounded retry for a transient `gh` read. Defaults mirror the sibling
+ * `github-fetcher` helper (3 attempts; 1s then 3s back-off). `sleep` is
+ * injectable so tests exercise the retry path without incurring real delays.
+ */
+export interface GhRetryOptions {
+  maxAttempts?: number;
+  delaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
+}
+
+const DEFAULT_GH_MAX_ATTEMPTS = 3;
+const DEFAULT_GH_RETRY_DELAYS_MS: readonly number[] = [1_000, 3_000];
+
+function defaultSleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => { setTimeout(resolve, ms).unref?.(); });
+}
+
+/**
+ * A transient `gh` failure worth retrying: a 5xx response or a network-level
+ * fault. Rate limits (surfaced as HTTP 403/429, never 5xx) are deliberately
+ * excluded so a throttle is not hammered.
+ *
+ * The text match runs against `stderr` — gh's own error output — only, never
+ * the `promisify(execFile)` `.message`. That message is `Command failed: <full
+ * command line>\n<stderr>`, and the command line embeds the repo slug: matching
+ * it would misclassify a genuine 404/403 on a repo named e.g. `acme/network-*`
+ * as transient (the word "network" in the slug), retrying an error that must
+ * not be retried. Network faults still surface via `code`/`signal` or gh's own
+ * stderr, so dropping `.message` loses no real transient signal.
+ */
+function isTransientGhError(err: unknown): boolean {
+  const error = err as { code?: unknown; killed?: unknown; signal?: unknown; stderr?: unknown } | null;
+  const code = typeof error?.code === 'string' ? error.code : '';
+  const signal = typeof error?.signal === 'string' ? error.signal : '';
+  const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+  return code === 'ETIMEDOUT'
+    || code === 'ECONNRESET'
+    || code === 'ECONNREFUSED'
+    || code === 'EAI_AGAIN'
+    || code === 'ENOTFOUND'
+    || (error?.killed === true && signal === 'SIGTERM')
+    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error/i.test(stderr);
+}
+
+/** Run `operation`, retrying only transient failures within the bounded caps. */
+async function withGhRetry<T>(operation: () => Promise<T>, options: GhRetryOptions = {}): Promise<T> {
+  const maxAttempts = options.maxAttempts ?? DEFAULT_GH_MAX_ATTEMPTS;
+  const delaysMs = options.delaysMs ?? DEFAULT_GH_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? defaultSleep;
+  let attempt = 1;
+  for (;;) {
+    try {
+      return await operation();
+    } catch (err) {
+      if (attempt >= maxAttempts || !isTransientGhError(err)) throw err;
+      await sleep(delaysMs[attempt - 1] ?? delaysMs[delaysMs.length - 1] ?? 0);
+      attempt++;
+    }
+  }
+}
+
 export interface UmbrellaChainRemote {
   listOpenIssues(repo: string): Promise<readonly OpenIssueSummary[]>;
   getIssue(repo: string, issueNumber: number): Promise<UmbrellaIssue | null>;
@@ -31,6 +94,8 @@ export interface UmbrellaChainRemote {
 
 export interface GhUmbrellaChainClientOptions {
   exec?: typeof execFile;
+  /** Retry policy for transient `gh` reads; tests inject a no-op `sleep`. */
+  retryOptions?: GhRetryOptions;
 }
 
 interface GhIssueView {
@@ -55,20 +120,22 @@ function nonEmptyLines(stdout: string): string[] {
 /** Small `gh`/`git` boundary used by the advancer; all policy remains testable above it. */
 export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   private readonly run: typeof execFile;
+  private readonly retryOptions: GhRetryOptions;
 
   constructor(options: GhUmbrellaChainClientOptions = {}) {
     this.run = options.exec ?? execFile;
+    this.retryOptions = options.retryOptions ?? {};
   }
 
   async listOpenIssues(repo: string): Promise<readonly OpenIssueSummary[]> {
     const ledgerFenceStart = `\`\`\`${PHASE_LEDGER_FENCE}`;
-    const { stdout } = await this.run('gh', [
+    const { stdout } = await withGhRetry(() => this.run('gh', [
       'api',
       '--paginate',
       `repos/${repo}/issues?state=open&per_page=100`,
       '--jq',
       `.[] | select((has("pull_request") | not) and (.body | type == "string") and (.body | contains(${JSON.stringify(ledgerFenceStart)}))) | .number`,
-    ], { timeout: 20_000 });
+    ], { timeout: 20_000 }), this.retryOptions);
     return nonEmptyLines(stdout).map((line): OpenIssueSummary => {
       if (!/^[1-9]\d*$/.test(line)) {
         throw new Error(`gh issue REST query returned an invalid issue number: ${line}`);
@@ -82,18 +149,18 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   }
 
   async getIssue(repo: string, issueNumber: number): Promise<UmbrellaIssue | null> {
-    const { stdout } = await this.run('gh', [
+    const { stdout } = await withGhRetry(() => this.run('gh', [
       'api', `repos/${repo}/issues/${issueNumber}`,
-    ], { timeout: 20_000 });
+    ], { timeout: 20_000 }), this.retryOptions);
     const value = json<GhIssueView>(stdout);
     if (typeof value.body !== 'string') return null;
-    const commentsResult = await this.run('gh', [
+    const commentsResult = await withGhRetry(() => this.run('gh', [
       'api',
       '--paginate',
       `repos/${repo}/issues/${issueNumber}/comments?per_page=100`,
       '--jq',
       '.[] | select(.body | type == "string") | .body | @json',
-    ], { timeout: 20_000 });
+    ], { timeout: 20_000 }), this.retryOptions);
     return {
       number: issueNumber,
       body: value.body,
