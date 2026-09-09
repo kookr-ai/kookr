@@ -703,17 +703,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1333,6 +1333,36 @@ including a per-task `failed` outcome, an unexpected response body, or a request
 timeout (the server was reachable but did not answer in time; the abort may still
 be completing, so re-run to confirm), `5` ambiguous port (two instances reachable;
 set `KOOKR_PORT` to choose one).
+
+## `kookr open`
+
+Open the dashboard served by the running Kookr instance in your default browser,
+on demand. The dashboard auto-opens once at server start, but that auto-open is
+deliberately skipped for CI / non-TTY / non-loopback / `--watch` starts — so after
+the tab is closed (or on a suppressed start) this verb is the terminal-first way
+back. With a `taskId`, it deep-links to that task's detail view (`/#/tasks/<id>`);
+an unknown id still opens the base dashboard (the SPA falls back).
+
+```bash
+kookr open                  # open the base dashboard
+kookr open <taskId>         # deep-link to a task
+kookr open <taskId> --json  # machine-readable envelope
+```
+
+Opening is **best-effort**: a remote (non-loopback) instance, or a host with no
+platform opener (`open` on macOS, `xdg-open` on Linux), prints the URL and still
+exits `0` — this verb never fails just because it cannot spawn a browser. `--json`
+emits one `{ ok, code, message, details }` envelope; on success `details` carries
+`{ url, taskId, opened, command }` (or `{ url, taskId, opened: false, reason }`
+when the URL was printed instead of opened).
+
+Target selection mirrors `kookr stop`: `KOOKR_API_BASE_URL` or `KOOKR_PORT`
+overrides auto-detect; otherwise Kookr probes ports `4800` then `4801` and, like
+`stop`/`signal`, exits with an ambiguity error when both respond.
+
+Exit codes: `0` success (browser launched, or URL printed for a remote/headless
+host), `2` usage error (unknown flag), `3` no server reachable, `5` ambiguous port
+(two instances reachable; set `KOOKR_PORT` to choose one).
 
 ## `kookr migrate`
 

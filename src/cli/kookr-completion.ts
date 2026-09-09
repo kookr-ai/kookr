@@ -90,6 +90,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--reason', '--json', '-h', '--help'],
   },
   {
+    // On-demand dashboard open (#3102). Optional positional is a task id to
+    // deep-link to; keep in sync with src/cli/kookr-open.ts.
+    name: 'open',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'signal',
     positionalValues: ['completion-ready'],
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
@@ -413,6 +419,7 @@ function renderBashCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const openFlags = flagsFor('open');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -542,6 +549,9 @@ _kookr()
       ;;
     abort)
       COMPREPLY=( $(compgen -W "${abortFlags}" -- "\${cur}") )
+      ;;
+    open)
+      COMPREPLY=( $(compgen -W "${openFlags}" -- "\${cur}") )
       ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -743,6 +753,7 @@ function renderZshCompletion(): string {
   const spawnFlags = flagsFor('spawn');
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
+  const openFlags = flagsFor('open');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -828,6 +839,9 @@ _kookr()
       ;;
     abort)
       compadd -- ${abortFlags}
+      ;;
+    open)
+      compadd -- ${openFlags}
       ;;
     signal)
       if (( CURRENT == 3 )); then
