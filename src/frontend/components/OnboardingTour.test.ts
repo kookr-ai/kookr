@@ -74,6 +74,28 @@ describe('OnboardingTour readiness guidance', () => {
     expect(demo?.rel.split(/\s+/)).toEqual(expect.arrayContaining(['noopener', 'noreferrer']));
   });
 
+  test('launch card names Claude Code, Codex CLI, and Grok Build providers', async () => {
+    await act(async () => {
+      root.render(React.createElement(OnboardingTour));
+    });
+    act(() => open());
+    await flush();
+
+    // Welcome (0) → four panes (1) → Launching an agent (2).
+    for (let i = 0; i < 2; i++) {
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('.onboarding-btn.primary')?.click();
+      });
+      await flush();
+    }
+
+    expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('Launching an agent');
+    const body = container.querySelector('.onboarding-card-body')?.textContent ?? '';
+    expect(body).toContain('Claude Code');
+    expect(body).toContain('Codex CLI');
+    expect(body).toContain('Grok Build');
+  });
+
   test('renders first-launch readiness guidance in the tour flow', async () => {
     await act(async () => {
       root.render(React.createElement(OnboardingTour));
@@ -91,6 +113,8 @@ describe('OnboardingTour readiness guidance', () => {
     expect(container.querySelector('.onboarding-header h3')?.textContent).toBe('First-launch readiness');
     expect(container.textContent).toContain('pnpm run doctor');
     expect(container.textContent).toContain('Missing agent binary or auth');
+    // The missing-binary recovery line names every launch provider, Grok Build included.
+    expect(container.textContent).toContain('Claude Code, Codex CLI, or Grok Build');
   });
 
   test('Check setup closes the tour before invoking the Diagnostics callback', async () => {
