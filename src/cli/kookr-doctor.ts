@@ -326,6 +326,13 @@ interface RunDoctorDeps {
    * KOOKR_API_BASE_URL or KOOKR_PORT is set. null = no API base / skip.
    */
   probeHttpLatency?: HttpLatencyProbe;
+  /**
+   * Optional override for loading node-pty (issue #3068). Defaults to a lazy
+   * dynamic `import('node-pty')` so the native `.node` binding is only touched
+   * when the check runs. Tests inject a stub so hermetic runs never load the
+   * real compiled binding.
+   */
+  loadNodePty?: () => Promise<unknown>;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -452,6 +459,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkPnpm(run));
   checks.push(await checkGit(run));
   checks.push(await checkDtach(cwd, accessFn, run));
+  checks.push(await checkNodePty(deps.loadNodePty ?? (() => import('node-pty'))));
   checks.push(await checkPersistence(env, accessFn));
   const hostPlatform = deps.platform ?? platform();
   const settingsModeCheck = await checkSettingsFileMode(
@@ -553,6 +561,56 @@ async function checkDtach(
       'Run `pnpm build:dtach` to compile the vendored copy, or install dtach via your package manager.',
     );
   }
+}
+
+/**
+ * Verify node-pty's compiled native binding actually loads (issue #3068).
+ *
+ * node-pty is the sole PTY primitive for every local agent spawn
+ * (`src/adapters/local-dtach-stream.ts`). Its `.node` binding silently breaks
+ * after a Node ABI change — upgrading Node without reinstalling, or a
+ * failed node-gyp build — and every terminal launch then dies at runtime with
+ * an opaque native error. The other runtime checks only cover node-pty's build
+ * *prerequisites* (python3/cc/make) and, on macOS, the spawn-helper bit; none
+ * proves the binding loads. This catches it at preflight instead. The loader is
+ * injectable and lazily imported so hermetic unit tests never touch the real
+ * binding.
+ */
+async function checkNodePty(loadNodePty: () => Promise<unknown>): Promise<DoctorCheck> {
+  const rebuildAction =
+    'Rebuild the node-pty native binding by reinstalling dependencies (`pnpm install`). ' +
+    'A Node ABI change after upgrading Node without reinstalling is the usual cause.';
+  let mod: unknown;
+  try {
+    mod = await loadNodePty();
+  } catch (error) {
+    return failCheck(
+      'runtime.node-pty',
+      'node-pty binding',
+      'runtime',
+      'node-pty native binding failed to load',
+      error instanceof Error ? error.message : String(error),
+      rebuildAction,
+    );
+  }
+  const spawn = (mod as { spawn?: unknown } | null)?.spawn;
+  if (typeof spawn !== 'function') {
+    return failCheck(
+      'runtime.node-pty',
+      'node-pty binding',
+      'runtime',
+      'node-pty loaded but its spawn export is not a function',
+      `typeof spawn = ${typeof spawn}`,
+      rebuildAction,
+    );
+  }
+  return okCheck(
+    'runtime.node-pty',
+    'node-pty binding',
+    'runtime',
+    'native PTY binding loads and spawn() is available',
+    true,
+  );
 }
 
 /**
