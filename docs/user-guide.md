@@ -151,6 +151,7 @@ The top-bar **DND** pill is the manual control:
 - Click the pill to turn Do Not Disturb on until you turn it off again. Click it again to turn it off.
 - Use the caret (`▾`) next to the pill to silence alerts for a fixed duration instead — **15 minutes**, **30 minutes**, **1 hour**, **2 hours**, or **Until I turn it off** (the same indefinite state as clicking the pill directly). When a duration is set, the pill tracks the time remaining and re-enables alerts automatically when it elapses.
 - When you enable DND manually, findings that arrive while it is on are counted on the pill, so you can see how many new findings are waiting the moment you return.
+- You can also toggle Do Not Disturb from the command palette (`Ctrl/Cmd+K`) — search **Do Not Disturb**. The palette entry drives the same manual toggle as the pill, and its label reflects whether a click will turn DND on or off, so the two controls always agree.
 
 The manual toggle is per-browser and persists across reloads, and it stays in sync across open tabs so enabling DND in one tab silences the others too.
 

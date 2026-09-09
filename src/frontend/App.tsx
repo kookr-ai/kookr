@@ -13,6 +13,7 @@ import { useTabAttentionBadge } from './hooks/useTabAttentionBadge.js';
 import { useAudibleAlert } from './hooks/useAudibleAlert.js';
 import { useOpsHealthPoll } from './hooks/useOpsHealthPoll.js';
 import { useTaskCompletionChime } from './hooks/useTaskCompletionChime.js';
+import { useDnd } from './hooks/useDnd.js';
 import { sendToTerminal } from './terminal-send.js';
 import { globalEnterShouldNavigate } from './global-enter-nav.js';
 import { track } from './telemetry.js';
@@ -406,6 +407,10 @@ export function App() {
   }, []);
   const [showCoordinatorFindings, setShowCoordinatorFindings] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
+  // DND is local-only (no WS traffic), so it stays available to read-only
+  // viewers. The palette entry reuses `dnd.toggle` — the same manual-layer path
+  // as the top-bar pill — so the two controls never diverge.
+  const dnd = useDnd();
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
@@ -1446,6 +1451,16 @@ export function App() {
       ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => openModal('sweepConfirm') }]
       : []),
     { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => openModal('costComparison') },
+    {
+      id: 'dnd',
+      // Label reflects what the toggle will do (it flips the manual layer), so
+      // it reads "Turn off" only when manual DND is active and "Turn on"
+      // otherwise — including during scheduled quiet hours. See toggleDnd.
+      label: dnd.source === 'manual' ? 'Turn off Do Not Disturb' : 'Turn on Do Not Disturb',
+      section: 'session',
+      keywords: ['dnd', 'focus', 'mute', 'quiet', 'silence', 'disturb', 'notifications'],
+      run: () => dnd.toggle(),
+    },
     { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => openModal('bugReport') },
     { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => openModal('shareViewer') },
     { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); openModal('settings'); } },
