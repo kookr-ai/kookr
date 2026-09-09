@@ -7714,6 +7714,17 @@ label.task-share-row {
 }
 .completed-row.cancelled .completed-row-status-label { color: var(--red); }
 .completed-row.terminated .completed-row-status-label { color: var(--amber); }
+.completed-row-rating {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 1px 5px;
+  border-radius: 8px;
+  cursor: default;
+  background: var(--surface-2, rgba(127, 127, 127, 0.12));
+}
+.completed-row-rating--up { background: rgba(52, 211, 153, 0.14); }
+.completed-row-rating--down { background: rgba(248, 113, 113, 0.14); }
 .completed-row-pending-delete {
   flex-shrink: 0;
   color: var(--amber);

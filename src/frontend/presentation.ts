@@ -1,5 +1,6 @@
 import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
 import { isTerminalStatus, type TaskStatus } from '../shared/contracts/task-status.js';
+import type { TaskCompletionFeedback } from '../shared/contracts/task.js';
 import { AGENT_TYPES, isAgentType } from '../shared/contracts/agent-types.js';
 import type { ArchivedTaskRecordJson } from './completed-history.js';
 import { toolLabel } from '../shared/contracts/activity-summary.js';
@@ -657,6 +658,8 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
   if (hasCompletionDigest(task.completionDigest)) {
     agent.completionDigest = task.completionDigest;
   }
+  const completionFeedback = asCompletionFeedback(task.completionFeedback);
+  if (completionFeedback) agent.completionFeedback = completionFeedback;
   if (task.ralphLoop && typeof task.ralphLoop === 'object') {
     agent.ralphLoop = task.ralphLoop as AgentState['ralphLoop'];
   }
@@ -678,6 +681,24 @@ function asAgentType(value: unknown): AgentType | undefined {
 function asTerminalTaskStatus(value: unknown): TaskStatus {
   if (value === 'completed' || value === 'cancelled' || value === 'terminated') return value;
   return 'completed';
+}
+
+/**
+ * Validate an archive record's `completionFeedback` (typed `unknown` on the
+ * wire) down to the contract fields the Completed-pane pill renders (issue
+ * #3097). Returns `undefined` for anything without a valid `up`/`down` rating
+ * so a malformed record shows no pill rather than a mislabeled one.
+ */
+function asCompletionFeedback(value: unknown): TaskCompletionFeedback | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.rating !== 'up' && value.rating !== 'down') return undefined;
+  const feedback: TaskCompletionFeedback = { rating: value.rating };
+  const note = asNonEmptyString(value.note);
+  if (note) feedback.note = note;
+  if (value.downReason === 'agent_behavior' || value.downReason === 'my_prompt') {
+    feedback.downReason = value.downReason;
+  }
+  return feedback;
 }
 
 function toIsoTimestamp(value: unknown): string | undefined {

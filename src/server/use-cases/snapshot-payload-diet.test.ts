@@ -17,6 +17,7 @@ import {
   TERMINAL_DESCRIPTION_MAX_BYTES,
   projectTerminalAgentFieldsForClient,
   projectTerminalCompletionDigestForClient,
+  projectTerminalCompletionFeedbackForClient,
 } from '../event-projection.js';
 import type { CompletionDigest } from '../../core/completion-digest.js';
 
@@ -207,8 +208,11 @@ describe('terminal snapshot row slimming (issue #1526 Phase C / C2)', () => {
     expect(agent.description).toContain('bytes elided');
 
     // Dead weight dropped.
-    expect(agent.completionFeedback).toBeUndefined();
     expect(agent.launchHealthSummary).toBeUndefined();
+    // The rating survives (issue #3097 — the Completed pane renders it) but is
+    // slimmed to the contract fields the pill reads; the off-contract `ratedAt`
+    // is coerced away.
+    expect(agent.completionFeedback).toEqual({ rating: 'up' });
 
     // Digest keeps what the dashboard renders, sheds what nothing reads.
     expect(agent.completionDigest).toBeDefined();
@@ -270,6 +274,45 @@ describe('terminal snapshot row slimming (issue #1526 Phase C / C2)', () => {
   it('projectTerminalAgentFieldsForClient is identity-preserving when nothing needs clipping', () => {
     const agent = { description: 'short', completionDigest: { bullets: [], filesChanged: [] } };
     expect(projectTerminalAgentFieldsForClient(agent)).toBe(agent);
+  });
+
+  it('keeps a down rating with its note and downReason on the client row (issue #3097)', () => {
+    const agent = {
+      description: 'short',
+      completionFeedback: { rating: 'down', note: 'flaky', downReason: 'agent_behavior' },
+    };
+    const projected = projectTerminalAgentFieldsForClient(agent);
+    expect(projected.completionFeedback).toEqual({
+      rating: 'down',
+      note: 'flaky',
+      downReason: 'agent_behavior',
+    });
+  });
+
+  describe('projectTerminalCompletionFeedbackForClient', () => {
+    it('slims to the rendered contract fields and drops the rest', () => {
+      expect(
+        projectTerminalCompletionFeedbackForClient({
+          rating: 'up',
+          note: 'nice',
+          downReason: 'my_prompt',
+          ratedAt: '2026-01-01T00:00:00.000Z',
+        }),
+      ).toEqual({ rating: 'up', note: 'nice', downReason: 'my_prompt' });
+    });
+
+    it('drops an empty note and an off-contract downReason', () => {
+      expect(
+        projectTerminalCompletionFeedbackForClient({ rating: 'down', note: '', downReason: 'bogus' }),
+      ).toEqual({ rating: 'down' });
+    });
+
+    it('returns undefined for a missing or invalid rating', () => {
+      expect(projectTerminalCompletionFeedbackForClient(undefined)).toBeUndefined();
+      expect(projectTerminalCompletionFeedbackForClient(null)).toBeUndefined();
+      expect(projectTerminalCompletionFeedbackForClient({ rating: 'sideways' })).toBeUndefined();
+      expect(projectTerminalCompletionFeedbackForClient({})).toBeUndefined();
+    });
   });
 
   it('projectTerminalCompletionDigestForClient is identity-preserving without droppable fields', () => {

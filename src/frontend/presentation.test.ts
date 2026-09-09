@@ -732,4 +732,34 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
       task: { status: 'completed' },
     })).toBeNull();
   });
+
+  test('carries a valid completionFeedback onto the row (issue #3097)', () => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-01T00:00:00.000Z',
+      lastActivityMs: 1,
+      task: {
+        id: 'task-9',
+        status: 'completed',
+        completionFeedback: { rating: 'down', note: 'regressed', downReason: 'agent_behavior' },
+      },
+    });
+    expect(agent?.completionFeedback).toEqual({
+      rating: 'down',
+      note: 'regressed',
+      downReason: 'agent_behavior',
+    });
+  });
+
+  test('drops a completionFeedback with an invalid rating', () => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-01T00:00:00.000Z',
+      lastActivityMs: 1,
+      task: {
+        id: 'task-9',
+        status: 'completed',
+        completionFeedback: { rating: 'meh', note: 'x' },
+      },
+    });
+    expect(agent?.completionFeedback).toBeUndefined();
+  });
 });
