@@ -562,6 +562,12 @@ kbd {
   gap: 8px;
   min-width: 0;
   flex-shrink: 0;
+  /* Wrap when the rail is dragged to its 280px floor: the non-shrinking action
+     row (Snooze/Abort/Collapse + count + severity breakdown) then flows onto a
+     second right-aligned line instead of pushing the rightmost item offscreen
+     (#3088 review). At the default width everything still fits on one line. */
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .findings-type-filters {
   display: flex;
@@ -683,6 +689,23 @@ kbd {
 
 .findings-count { color: var(--amber); }
 .findings-count-empty { color: var(--text-muted); }
+
+/* Severity breakdown next to the active count (#3088). Subordinate to the
+   count: smaller and lighter, with only critical/warning tinted so the
+   triage signal reads without crowding the header. */
+.findings-severity-summary {
+  font-size: 0.8em;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  /* The header sets `text-transform: uppercase`; reset it (as the other header
+     children do) so the labels read lowercase like the CLI's `3 critical`
+     rather than `3 CRITICAL` (#3088 review). */
+  text-transform: none;
+  letter-spacing: 0;
+}
+.findings-severity-summary-item.findings-severity-critical { color: var(--red); }
+.findings-severity-summary-item.findings-severity-warning { color: var(--amber); }
 
 .findings-scroll-area {
   flex: 1;

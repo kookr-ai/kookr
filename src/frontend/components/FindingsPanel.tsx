@@ -8,6 +8,7 @@ import {
   clearBottomSectionsHeight,
 } from '../store/bottom-sections-height-prefs.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
+import type { AnomalySeverity } from '../../shared/contracts/anomalies.js';
 import { track } from '../telemetry.js';
 import { anomalyTypeLabel, formatCompactDateTime } from '../presentation.js';
 import {
@@ -73,6 +74,35 @@ const FINDINGS_SECTION_COLLAPSED_KEYS = [
   SNOOZED_SECTION_COLLAPSED_KEY,
   COMPLETED_SECTION_COLLAPSED_KEY,
 ] as const;
+
+/**
+ * Severity display order, most-urgent first. Kept identical to the CLI's
+ * `SEVERITIES` (`bin/kookr-status.js`) so the dashboard header and
+ * `kookr status` break the attention queue down in the same order (#3088).
+ */
+const FINDINGS_SEVERITY_ORDER = ['critical', 'warning', 'info'] as const satisfies readonly AnomalySeverity[];
+
+export interface FindingSeverityCount {
+  severity: AnomalySeverity;
+  count: number;
+}
+
+/**
+ * Count active findings by anomaly severity, returning only the non-zero
+ * severities in CLI order. Counts `anomaly.severity` (the same field the CLI
+ * aggregates) so the two surfaces agree; findings without an anomaly are
+ * skipped. Pure, so the header summary can be unit-tested in isolation.
+ */
+export function summarizeFindingSeverities(findings: readonly AgentState[]): FindingSeverityCount[] {
+  const counts = new Map<AnomalySeverity, number>();
+  for (const finding of findings) {
+    const severity = finding.anomaly?.severity;
+    if (severity) counts.set(severity, (counts.get(severity) ?? 0) + 1);
+  }
+  return FINDINGS_SEVERITY_ORDER
+    .filter((severity) => (counts.get(severity) ?? 0) > 0)
+    .map((severity) => ({ severity, count: counts.get(severity) ?? 0 }));
+}
 
 interface Props {
   findings: AgentState[];
@@ -273,6 +303,10 @@ export function FindingsPanel({
 
   const presentTypes = useMemo(() => presentFindingTypes(findings), [findings]);
   const typeCounts = useMemo(() => countFindingsByType(findings), [findings]);
+  // Severity breakdown of the active queue, mirroring the CLI's header (#3088).
+  // Subordinate to the "N active" count; hidden entirely when no finding
+  // carries a severity.
+  const severitySummary = useMemo(() => summarizeFindingSeverities(findings), [findings]);
   const activeTypeFilter = useMemo(
     () => activeFindingTypeFilter(selectedFindingTypes, presentTypes),
     [selectedFindingTypes, presentTypes],
@@ -337,6 +371,32 @@ export function FindingsPanel({
             <span className={`findings-count${findings.length === 0 ? ' findings-count-empty' : ''}`}>
               {findings.length} active
             </span>
+            {severitySummary.length > 0 && (
+              <span
+                className="findings-severity-summary"
+                data-testid="findings-severity-summary"
+                // role="img" collapses the fragmented child spans into one
+                // coherent announcement; a bare generic span ignores an
+                // author-supplied aria-label, leaving the crafted breakdown
+                // inert (#3088 a11y review).
+                role="img"
+                aria-label={`Severity breakdown: ${severitySummary.map(({ severity, count }) => `${count} ${severity}`).join(', ')}`}
+              >
+                {severitySummary.map(({ severity, count }, index) => (
+                  <React.Fragment key={severity}>
+                    {index > 0 && (
+                      <span className="findings-severity-summary-sep" aria-hidden="true"> · </span>
+                    )}
+                    <span
+                      className={`findings-severity-summary-item findings-severity-${severity}`}
+                      data-testid={`findings-severity-summary-${severity}`}
+                    >
+                      {count} {severity}
+                    </span>
+                  </React.Fragment>
+                ))}
+              </span>
+            )}
           </span>
         </div>
         {presentTypes.length > 0 && (
