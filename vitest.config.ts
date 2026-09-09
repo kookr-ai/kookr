@@ -6,6 +6,7 @@ export default defineConfig({
     // run rather than letting every agent allocate workers for the whole CPU.
     maxWorkers: 4,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
+    // Dot-integration / *-e2e files run via `pnpm test:integration` (#2823).
     exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
     // Multi-server integration tests (relay + createKookrServerInternal) regularly
     // need >5s under concurrent suite load on a busy workstation. Unit tests still

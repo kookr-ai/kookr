@@ -8,7 +8,8 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 
 | Command | What it runs | Where it runs |
 | --- | --- | --- |
-| `pnpm test` | Vitest unit tests under `src/**/*.test.ts` (no coverage). | Local. CI uses `--coverage`. |
+| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes `src/**/*.integration.test.ts` and `src/**/*-e2e.test.ts`. Hyphen-named `*-integration.test.ts` files still run here by design. | Local. CI uses `--coverage`. |
+| `pnpm test:integration` | Dedicated root Vitest lane (`vitest.integration.config.ts`) for the excluded `*.integration.test.ts` / `*-e2e.test.ts` files. Today's inventory is credential-gated (real provider API keys); those files `skipIf` without keys so the lane stays deterministic. Not part of `pnpm verify` / CI `test`. | Local / manual. |
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local + CI (`test` job). |

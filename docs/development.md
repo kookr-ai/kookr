@@ -19,7 +19,8 @@ pnpm dev                 # backend on 4801 plus Vite frontend on 5173
 pnpm dev:demo            # synthetic agents on 4801 plus Vite frontend on 5173
 pnpm dev:server          # backend only
 pnpm dev:frontend        # frontend only
-pnpm test                # Vitest unit/integration tests
+pnpm test                # Vitest unit tests (see docs/testing.md)
+pnpm test:integration    # Excluded *.integration.test.ts / *-e2e.test.ts lane
 pnpm test:watch          # Vitest watch mode
 pnpm exec playwright test # Playwright E2E tests
 pnpm build               # generate build info, build dtach, typecheck, build frontend

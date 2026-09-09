@@ -20,6 +20,7 @@
   "scripts": {
     "test": "vitest run",
     "test:changed": "vitest run --changed origin/main",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "verify": "bash scripts/verify.sh",
     "check:cycles": "node --import tsx scripts/check-import-cycles.ts",
     "test:smoke": "pnpm build:frontend && node --import tsx scripts/check-remote-import-boundaries.ts && vitest run src/remote/__tests__/load-purity.test.ts src/server/session-bridge.test.ts && node --import tsx scripts/local-only-smoke.ts",
