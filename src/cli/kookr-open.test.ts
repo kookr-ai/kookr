@@ -78,6 +78,9 @@ describe('isLoopbackHost', () => {
     ['::1', true],
     ['0:0:0:0:0:0:0:1', true],
     ['::ffff:127.0.0.1', true],
+    ['::ffff:7f00:1', true], // canonical hex form new URL() produces
+    ['::ffff:7f00:2', true], // 127.0.0.2 mapped
+    ['::ffff:0a00:5', false], // 10.0.0.5 mapped — not loopback
     ['[::1]', true],
     ['10.0.0.5', false],
     ['example.com', false],
@@ -204,6 +207,23 @@ describe('runOpenCli', () => {
     expect(opener.calls).toEqual([]);
     expect(io.logs.join('\n')).toContain('No browser opener');
     expect(io.logs.join('\n')).toContain('http://127.0.0.1:4800');
+  });
+
+  it('treats an IPv4-mapped IPv6 loopback base as loopback (probes it → NO_SERVER when dead)', async () => {
+    const io = captureIo();
+    const opener = recordingOpener();
+    const code = await runOpenCli([], {
+      env: { KOOKR_API_BASE_URL: 'http://[::ffff:127.0.0.1]:59999' },
+      out: io.out,
+      err: io.err,
+      fetchImpl: fetchServing(), // nothing serving
+      openUrl: opener.openUrl,
+      platform: 'linux',
+      ...HAS_OPENER,
+    });
+    expect(code).toBe(3);
+    expect(opener.calls).toEqual([]);
+    expect(io.errors.join('\n')).toContain('no Kookr server reachable');
   });
 
   it('prints the URL for a remote (non-loopback) instance instead of launching a browser', async () => {

@@ -78,14 +78,25 @@ export function isLoopbackHost(host: string | undefined | null): boolean {
   if (normalized.startsWith('[') && normalized.endsWith(']')) {
     normalized = normalized.slice(1, -1);
   }
-  return (
+  if (
     normalized === 'localhost' ||
     normalized === '::1' ||
     normalized === '0:0:0:0:0:0:0:1' ||
     normalized === '::ffff:127.0.0.1' ||
     normalized === '127.0.0.1' ||
     /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(normalized)
-  );
+  ) {
+    return true;
+  }
+  // IPv4-mapped IPv6 loopback in canonical hex form: `new URL()` rewrites
+  // `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`, so match `::ffff:<hi>:<lo>`
+  // whose high 16 bits decode to a 127.x.x.x first octet.
+  const mapped = normalized.match(/^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/);
+  if (mapped) {
+    const hi = Number.parseInt(mapped[1], 16);
+    return hi >>> 8 === 127;
+  }
+  return false;
 }
 
 /** Test seam: spawn the platform opener on `url`. Defaults to `execFile`. */
