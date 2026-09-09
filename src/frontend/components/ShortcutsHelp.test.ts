@@ -5,7 +5,11 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { close as closeOnboardingTour, getSnapshot } from '../store/onboarding-store.js';
-import { getDefaultShortcutBindings, resolveShortcutBindings } from '../../shared/contracts/shortcut-bindings.js';
+import {
+  commandPaletteHintKeys,
+  getDefaultShortcutBindings,
+  resolveShortcutBindings,
+} from '../../shared/contracts/shortcut-bindings.js';
 import { ShortcutsHelp } from './ShortcutsHelp.js';
 
 describe('ShortcutsHelp', () => {
@@ -45,6 +49,37 @@ describe('ShortcutsHelp', () => {
     expect(container.textContent).toContain('Show all projects');
     expect(container.textContent).toContain('Select first visible project');
     expect(document.activeElement).toBe(container.querySelector<HTMLButtonElement>('.shortcuts-close'));
+  });
+
+  function paletteChordKeys(): (string | null)[] {
+    const navGroup = Array.from(container.querySelectorAll<HTMLDivElement>('.shortcuts-group'))
+      .find((group) => group.querySelector('h4')?.textContent === 'Navigation');
+    expect(navGroup).toBeTruthy();
+    const paletteRow = Array.from(navGroup!.querySelectorAll<HTMLDivElement>('.shortcut-row'))
+      .find((row) => row.textContent?.includes('command palette'));
+    expect(paletteRow).toBeTruthy();
+    return Array.from(paletteRow!.querySelectorAll('.shortcut-keys kbd')).map((kbd) => kbd.textContent);
+  }
+
+  test('lists the command palette with its platform-aware chord under Navigation', () => {
+    const originalPlatform = navigator.platform;
+    try {
+      // Off macOS the helper resolves the chord to Ctrl+K...
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: 'Linux x86_64' });
+      act(() => {
+        root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
+      });
+      expect(paletteChordKeys()).toEqual([...commandPaletteHintKeys('default')]);
+
+      // ...and on macOS to the ⌘K glyph, proving the platform helper reaches the render path.
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: 'MacIntel' });
+      act(() => {
+        root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
+      });
+      expect(paletteChordKeys()).toEqual([...commandPaletteHintKeys('mac')]);
+    } finally {
+      Object.defineProperty(navigator, 'platform', { configurable: true, value: originalPlatform });
+    }
   });
 
   test('closes with question mark and traps Tab within the dialog', () => {
