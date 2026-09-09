@@ -79,7 +79,7 @@ export const ONBOARDING_CARDS: Card[] = [
     body: (
       <>
         <p>
-          The <strong>+ Launch</strong> button (or <QuickLaunchShortcutHint />) spawns a Claude Code or Codex CLI session
+          The <strong>+ Launch</strong> button (or <QuickLaunchShortcutHint />) spawns a Claude Code, Codex CLI, or Grok Build session
           inside a managed dtach terminal. Kookr watches its output stream and surfaces anomalies as findings.
         </p>
       </>
@@ -96,7 +96,7 @@ export const ONBOARDING_CARDS: Card[] = [
           build tools, dtach, optional Docker/GPU support, and port conflicts.
         </p>
         <ul className="onboarding-readiness-list" aria-label="First-launch recovery checks">
-          <li>Missing agent binary or auth: install/sign in to Claude Code or Codex, then retry.</li>
+          <li>Missing agent binary or auth: install/sign in to Claude Code, Codex CLI, or Grok Build, then retry.</li>
           <li>
             Port conflict: free the reported port, use <code className="onboarding-command">pnpm dev</code> on
             4801, or keep daily use on 4800.
