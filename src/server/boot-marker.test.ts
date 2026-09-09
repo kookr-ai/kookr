@@ -152,7 +152,11 @@ describe('parseBootMarker', () => {
     expect(parsed?.dirtyStreak).toBe(0);
   });
 
-  it.each([-1, 2.5, Number.NaN, 'lots', null])(
+  // Number.MAX_SAFE_INTEGER + 1 (2^53) survives Number.isInteger but not
+  // isSafeInteger: incrementing it by 1 is a float-precision no-op, so if it
+  // were accepted the streak would freeze there forever and never self-heal.
+  // Number.POSITIVE_INFINITY is the same hazard from the other direction.
+  it.each([-1, 2.5, Number.NaN, 'lots', null, Number.MAX_SAFE_INTEGER + 1, Number.POSITIVE_INFINITY])(
     'self-heals a corrupt dirtyStreak (%p) to 0 without rejecting the marker (issue #3077)',
     (bad) => {
       const parsed = parseBootMarker({

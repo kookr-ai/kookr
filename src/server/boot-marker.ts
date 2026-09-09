@@ -122,10 +122,14 @@ export function parseBootMarker(raw: unknown): BootMarkerFile | null {
     startedAt: m.startedAt,
     pid: m.pid,
     // Self-heal (issue #3077): a legacy marker without the field, or a corrupt
-    // value (negative, fractional, NaN, non-number), reads as streak 0 rather
-    // than rejecting the whole marker — the streak degrades, the verdict does not.
+    // value, reads as streak 0 rather than rejecting the whole marker — the
+    // streak degrades, the verdict does not. `Number.isSafeInteger` (not
+    // `isInteger`) rejects negatives via the `>= 0` guard AND values at/above
+    // 2^53: an unsafe integer would survive `isInteger` but `+ 1` on it is a
+    // float-precision no-op, freezing the streak forever instead of ever
+    // healing — so an out-of-range marker heals to 0 like any other corruption.
     dirtyStreak:
-      typeof m.dirtyStreak === 'number' && Number.isInteger(m.dirtyStreak) && m.dirtyStreak >= 0
+      typeof m.dirtyStreak === 'number' && Number.isSafeInteger(m.dirtyStreak) && m.dirtyStreak >= 0
         ? m.dirtyStreak
         : 0,
   };
