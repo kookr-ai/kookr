@@ -239,7 +239,9 @@ async function main(): Promise<void> {
   const bootClassification = bootMarkerStore.recordBoot();
   console.log(
     `[startup] boot classified: status=${bootClassification.status}`
-    + ` reason=${bootClassification.reason}`,
+    + ` reason=${bootClassification.reason}`
+    // Issue #3077: a streak climbing past 1 across restarts is a crash loop.
+    + ` dirtyStreak=${bootClassification.dirtyStreak}`,
   );
 
   const lifecycleAc = new AbortController();

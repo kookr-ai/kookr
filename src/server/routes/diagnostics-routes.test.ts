@@ -758,17 +758,21 @@ describe('diagnostics routes', () => {
           previousStartedAt: '2026-09-01T00:00:00.000Z',
           previousShutdownAt: null,
           previousSignal: null,
+          dirtyStreak: 3,
         },
       }).request('/api/health');
 
       expect(res.status).toBe(200);
       const body = (await res.json()) as { boot?: Record<string, unknown> };
+      // The dirtyStreak (issue #3077) rides through verbatim, so a crash loop is
+      // visible on /api/health.boot, not just a single unclean exit.
       expect(body.boot).toEqual({
         status: 'dirty',
         reason: 'unclean_exit',
         previousStartedAt: '2026-09-01T00:00:00.000Z',
         previousShutdownAt: null,
         previousSignal: null,
+        dirtyStreak: 3,
       });
     });
 
