@@ -25,7 +25,7 @@ import {
 } from '../core/agent-types.js';
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
-import { ScheduleService } from './schedule-service.js';
+import { ScheduleService, isExecutionReceiptNotFoundError } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync, type ResolvedScheduleLaunch } from './schedule-validator.js';
 import { isPendingQueueFullError, isQuotaHeadroomAdmissionError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
 import {
@@ -1437,9 +1437,9 @@ export class ScheduleRunner {
         + `≥ threshold ${err.threshold.toFixed(0)}%, no healthy alternate) — `
         + `fire parked (provider_paused).${resetHint}`;
       console.warn(`[schedule] Parking "${schedule.name}": ${parkMessage}`);
-      await this.deps.service.markExecutionOutcome(
-        schedule.id,
-        receipt.id,
+      await this.recordFireOutcome(
+        schedule,
+        receipt,
         'skipped_provider_paused',
         'provider_paused',
         parkMessage,
@@ -1455,15 +1455,68 @@ export class ScheduleRunner {
     // failed fire never calls markExecutionAccepted.
     const launchPhaseTimings = launchPhaseTimingsOf(err);
     console.error(`[schedule] Error firing "${schedule.name}":`, message);
-    await this.deps.service.markExecutionOutcome(
-      schedule.id,
-      receipt.id,
+    await this.recordFireOutcome(
+      schedule,
+      receipt,
       'dispatch_failed',
       reasonCode,
       message,
       launchPhaseTimings ? { launchPhaseTimings } : {},
     );
     return { error: message };
+  }
+
+  /**
+   * Write a fire-outcome ledger row, tolerating the issue #3075
+   * receipt-rotation race. The execution receipt can rotate out from under a
+   * failed fire between reservation and this write (a concurrent reserve for
+   * the same schedule, or a restart-driven receipt refresh). `requireReceipt`
+   * then throws a tagged `Execution receipt not found` — unguarded, that
+   * rejected the background fire promise and surfaced as a raw
+   * ScheduleValidationError stack trace via the tick catch-all, losing the
+   * outcome signal entirely.
+   *
+   * Both fire-outcome writes in {@link recordFireFailure} (the quota-park
+   * `skipped_provider_paused` row and the `dispatch_failed` row) route through
+   * here so neither is left exposed to the race. On the rotation race we fall
+   * back to a structured warn that RETAINS the failure signal (schedule,
+   * rotated receipt, outcome, reason, original error); any other write fault
+   * still propagates so a real bug is never masked.
+   */
+  private async recordFireOutcome(
+    schedule: Schedule,
+    receipt: { id: string },
+    outcome: Parameters<ScheduleService['markExecutionOutcome']>[2],
+    reasonCode: Parameters<ScheduleService['markExecutionOutcome']>[3],
+    message: string,
+    details: Parameters<ScheduleService['markExecutionOutcome']>[5] = {},
+  ): Promise<void> {
+    try {
+      await this.deps.service.markExecutionOutcome(
+        schedule.id,
+        receipt.id,
+        outcome,
+        reasonCode,
+        message,
+        details,
+      );
+    } catch (writeErr) {
+      if (isExecutionReceiptNotFoundError(writeErr)) {
+        console.warn(
+          '[schedule] fire-outcome ledger write skipped — execution receipt rotated before recording (issue #3075)',
+          {
+            schedule: schedule.name,
+            scheduleId: schedule.id,
+            receiptId: receipt.id,
+            outcome,
+            reasonCode,
+            fireError: message,
+          },
+        );
+        return;
+      }
+      throw writeErr;
+    }
   }
 
   /**
@@ -1870,7 +1923,23 @@ export function mapErrorToReasonCode(err: unknown): import('../core/schedule.js'
   // issue #2194: Grok session/OIDC preflight refusal is a distinct auth class,
   // not a generic launcher thrash — readable from GET /api/schedules ledger.
   if (isGrokAuthPreflightError(err)) return 'auth_expired' as const;
+  // issue #3075: the backing terminal session/socket vanished mid-launch. A
+  // distinct class so the ledger says "backing session died" rather than
+  // folding it into an arbitrary `launch_error` bug.
+  if (isSessionGoneError(err)) return 'session_gone' as const;
   return 'launch_error' as const;
+}
+
+/**
+ * Detect the terminal-backend `SessionGoneError` (the backing dtach session /
+ * socket vanished) without importing the adapter — mirrors
+ * {@link isGrokAuthPreflightError}'s no-cycle pattern. Matches the typed `name`
+ * and the well-known `session <id> is gone` message as defense in depth
+ * (issue #3075).
+ */
+function isSessionGoneError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return err.name === 'SessionGoneError' || /session .+ is gone/i.test(err.message);
 }
 
 /**

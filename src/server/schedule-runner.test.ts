@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore } from '../core/schedule.js';
+import { ScheduleStore, ScheduleValidationError } from '../core/schedule.js';
 import {
   ScheduleRunner,
   defaultExecScheduleProbe,
+  mapErrorToReasonCode,
   type ScheduleRunnerDeps,
   isTaskBlockingSchedule,
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
@@ -15,7 +16,7 @@ import {
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
 import { PendingQueueFullError, QuotaHeadroomAdmissionError } from './launch-service.js';
-import { isGenuineExecutionFailure } from './schedule-service.js';
+import { isGenuineExecutionFailure, isExecutionReceiptNotFoundError } from './schedule-service.js';
 import { aTask } from '../core/__fixtures__/task-builders.js';
 
 const INVALID_PLAYBOOK_PATH_ERROR = 'Playbook path must stay inside the selected playbooks directory';
@@ -3305,6 +3306,260 @@ Do the thing.
     expect(after.latestExecution?.reasonCode).toBe('pending_queue_full');
     expect(after.latestExecution?.message).toContain('Pending queue is full');
     expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('a launcher SessionGoneError records dispatch_failed / session_gone, not launch_error (issue #3075)', async () => {
+    const schedule = store.create({
+      name: 'Backing session died',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    // Shaped like the terminal-backend SessionGoneError: the typed `name` plus
+    // the `session <id> is gone` message. Matched without importing the adapter.
+    const sessionGone = Object.assign(new Error('session sess-abc123 is gone'), {
+      name: 'SessionGoneError',
+    });
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw sessionGone; },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+
+    const result = await runner.runNow(schedule.id);
+
+    expect(result).toEqual({ error: 'session sess-abc123 is gone' });
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('session_gone');
+    expect(after.currentExecution?.status).toBe('terminal');
+  });
+
+  it('maps a bare `session ... is gone` message to session_gone even without the typed name (issue #3075)', () => {
+    // Defense in depth: the session-bridge raises the same message without the
+    // SessionGoneError name, so the message match must still classify it.
+    expect(mapErrorToReasonCode(new Error('session sess-xyz is gone'))).toBe('session_gone');
+    // Name match alone (no matching message) also classifies.
+    expect(
+      mapErrorToReasonCode(Object.assign(new Error('socket vanished'), { name: 'SessionGoneError' })),
+    ).toBe('session_gone');
+    // An unrelated launch failure still falls through to launch_error.
+    expect(mapErrorToReasonCode(new Error('boom'))).toBe('launch_error');
+  });
+
+  it('a receipt-rotation race during recordFireFailure warns and does not reject the fire (issue #3075)', async () => {
+    const schedule = store.create({
+      name: 'Receipt rotated mid-failure',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    // The fire's launch fails (normal dispatch_failed path)…
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw new Error('launcher exploded'); },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    // …but by the time recordFireFailure writes the ledger, the execution
+    // receipt has rotated out from under it, so requireReceipt throws.
+    const rotated = new ScheduleValidationError('Execution receipt not found: r-1', {
+      receipt: 'not_found',
+    });
+    const outcomeSpy = vi
+      .spyOn(service, 'markExecutionOutcome')
+      .mockRejectedValue(rotated);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Must RESOLVE (not reject) — the rotation race is no longer an escaping
+    // raw ScheduleValidationError stack trace.
+    const result = await runner.runNow(schedule.id);
+
+    expect(result).toEqual({ error: 'launcher exploded' });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('execution receipt rotated before recording'),
+      expect.objectContaining({
+        scheduleId: schedule.id,
+        reasonCode: 'launch_error',
+        fireError: 'launcher exploded',
+      }),
+    );
+
+    outcomeSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('a receipt-rotation race during the quota-park write also warns and does not reject (issue #3075)', async () => {
+    // recordFireFailure has TWO outcome writes: the dispatch_failed row and the
+    // quota-park skipped_provider_paused row. The quota-park write is just as
+    // exposed to the receipt-rotation race, so it must route through the same
+    // guard — otherwise a rotation there re-raises the raw ScheduleValidationError.
+    const schedule = store.create({
+      name: 'Quota park receipt rotated',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const ledger = {
+      maxActiveTasks: 10,
+      active: 10,
+      free: 0,
+      byClass: { working: 2, finishedAwaitingAck: 7, hungSuspect: 1, launching: 0 },
+      effectiveWorking: 2,
+      phantomActive: 8,
+      pendingQueueDepth: 0,
+      oldestPendingAgeMs: 0,
+      oldestFinishedAwaitingAckAgeMs: 3_600_000,
+    };
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      // The fire is refused by quota-headroom admission (the park path)…
+      launcher: async () => { throw new QuotaHeadroomAdmissionError(ledger, 97, 90, '2026-08-02T18:00:00Z'); },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    // …but the receipt rotates before the skipped_provider_paused row is written.
+    const rotated = new ScheduleValidationError('Execution receipt not found: r-1', {
+      receipt: 'not_found',
+    });
+    const outcomeSpy = vi
+      .spyOn(service, 'markExecutionOutcome')
+      .mockRejectedValue(rotated);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Must RESOLVE with the park message — no raw ScheduleValidationError escapes.
+    const result = await runner.runNow(schedule.id);
+
+    expect(result.error).toContain('quota exhausted');
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('execution receipt rotated before recording'),
+      expect.objectContaining({
+        scheduleId: schedule.id,
+        outcome: 'skipped_provider_paused',
+        reasonCode: 'provider_paused',
+      }),
+    );
+
+    outcomeSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('a non-rotation ledger-write fault during recordFireFailure still surfaces (guard stays narrow, issue #3075)', async () => {
+    const schedule = store.create({
+      name: 'Unexpected ledger fault',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw new Error('launcher exploded'); },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    const unexpected = new Error('disk is on fire');
+    const outcomeSpy = vi
+      .spyOn(service, 'markExecutionOutcome')
+      .mockRejectedValue(unexpected);
+
+    // Only the receipt-rotation race is swallowed; any other write fault keeps
+    // the prior behavior and propagates rather than masking a real bug.
+    await expect(runner.runNow(schedule.id)).rejects.toThrow('disk is on fire');
+
+    outcomeSpy.mockRestore();
+  });
+
+  it('isExecutionReceiptNotFoundError only matches the tagged receipt-rotation error (issue #3075)', () => {
+    expect(
+      isExecutionReceiptNotFoundError(
+        new ScheduleValidationError('Execution receipt not found: r', { receipt: 'not_found' }),
+      ),
+    ).toBe(true);
+    // A different validation error (e.g. missing cwd) is not the rotation race.
+    expect(
+      isExecutionReceiptNotFoundError(new ScheduleValidationError('bad cwd', { cwd: 'required' })),
+    ).toBe(false);
+    expect(isExecutionReceiptNotFoundError(new Error('Execution receipt not found: r'))).toBe(false);
+    expect(isExecutionReceiptNotFoundError(undefined)).toBe(false);
+  });
+
+  it('the real requireReceipt tags a stale-receipt throw so isExecutionReceiptNotFoundError matches it (issue #3075)', async () => {
+    // Closes the loop between the tagger (requireReceipt) and the matcher
+    // (isExecutionReceiptNotFoundError): exercise the production throw rather
+    // than a hand-constructed error, so the `{ receipt: 'not_found' }` tag
+    // cannot be silently dropped without a test failing.
+    const schedule = store.create({
+      name: 'Real receipt rotation',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    // Reserve a receipt, then reserve again for the same schedule — the second
+    // reservation rotates `currentExecution`, leaving the first receipt stale.
+    const stale = await service.reserveExecution(store.get(schedule.id)!, 'manual');
+    await service.reserveExecution(store.get(schedule.id)!, 'manual');
+
+    // Writing the ledger against the stale receipt hits the real requireReceipt.
+    let caught: unknown;
+    await service
+      .markExecutionOutcome(schedule.id, stale.id, 'dispatch_failed', 'launch_error', 'boom')
+      .catch((err) => { caught = err; });
+
+    expect(caught).toBeInstanceOf(ScheduleValidationError);
+    expect(isExecutionReceiptNotFoundError(caught)).toBe(true);
+  });
+
+  it('the normal dispatch_failed recording path is unchanged when the receipt is intact (issue #3075 regression)', async () => {
+    const schedule = store.create({
+      name: 'Normal dispatch failure',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const runner = new ScheduleRunner({
+      store,
+      service,
+      validator,
+      launcher: async () => { throw new Error('plain launch failure'); },
+      getActiveCount: () => 0,
+      getMaxActiveTasks: () => 10,
+      isTaskBlockingSchedule: () => false,
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await runner.runNow(schedule.id);
+
+    expect(result).toEqual({ error: 'plain launch failure' });
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('dispatch_failed');
+    expect(after.latestExecution?.reasonCode).toBe('launch_error');
+    expect(after.currentExecution?.status).toBe('terminal');
+    // The rotation-race warn is never emitted on the healthy ledger-write path.
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining('execution receipt rotated before recording'),
+      expect.anything(),
+    );
+
+    warnSpy.mockRestore();
   });
 
   it('the dead-man switch is evaluated once per tick with the full schedule list', async () => {
