@@ -57,6 +57,22 @@ export const DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND = 2000;
  */
 export const DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND = 5 * 1024 * 1024;
 
+/**
+ * Ratio of arrivals lacking a write timestamp above which the doctor WARNs that
+ * ingestion-lag numbers are unreliable (issue #3079). Live ops observed ~48%;
+ * 0.25 catches that band while leaving healthy fleets (payload/mtime timestamps
+ * present) green. Ratio-based on purpose — the writer-timestamp fix will lower
+ * the raw count, so an absolute threshold would drift.
+ */
+export const DEFAULT_MISSING_WRITE_TS_RATIO_WARN = 0.25;
+
+/**
+ * Minimum total arrivals before the missing-write-timestamp ratio is trusted
+ * (issue #3079). Below this, a couple of missing-timestamp events on a quiet
+ * session would spike the ratio; the guard keeps low-traffic sessions green.
+ */
+export const DEFAULT_MISSING_WRITE_TS_MIN_SAMPLE = 50;
+
 export interface DoctorCheck {
   id: string;
   label: string;
@@ -155,11 +171,16 @@ type GithubScannerStatusProbe = (
 /**
  * Live probe of hook-ingestion lag gauges (issue #2320). null = unreachable /
  * unknown / no API base — doctor stays green (hermetic offline).
+ *
+ * `totalArrivals` / `missingWriteTimestampCount` back the missing-write-timestamp
+ * advisory (issue #3079); both default to 0 when the diagnostics body omits them.
  */
 export interface HookIngestionLagProbeSnapshot {
   sessionCount: number;
   notableLagCount: number;
   lagWarningThresholdMs: number;
+  totalArrivals: number;
+  missingWriteTimestampCount: number;
 }
 
 type HookIngestionLagProbe = (
@@ -358,6 +379,7 @@ ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
+hooks.missing-write-timestamps (advisory warn when the missing-write-timestamp ratio exceeds threshold with enough sample),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
 hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/fileBytes exceed soft bounds),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
@@ -478,7 +500,16 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkSchedulesPausedByFailure(env, deps.probeSchedulesPausedByFailure));
-  checks.push(await checkHookIngestionLag(env, deps.probeHookIngestionLag));
+  // Share one hook-ingestion snapshot across both advisories (issue #3079): the
+  // lag and missing-write-timestamp checks read the same
+  // GET /api/diagnostics/hook-ingestion body, so fetch it once and hand both the
+  // identical snapshot instead of issuing two racing probes that could observe
+  // different states (one skipping while the other warns).
+  const hookIngestionProbe = shareHookIngestionProbe(
+    deps.probeHookIngestionLag ?? defaultProbeHookIngestionLag,
+  );
+  checks.push(await checkHookIngestionLag(env, hookIngestionProbe));
+  checks.push(await checkHookMissingWriteTimestamps(env, hookIngestionProbe));
   checks.push(await checkHostStaleDtach(env, deps.probeHostStaleDtach));
   checks.push(await checkHookReplayCheckpoints(env, deps.probeHookReplayCheckpoints));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
@@ -1114,6 +1145,103 @@ async function checkHookIngestionLag(
     snap.sessionCount === 0
       ? 'no tracked sessions (idle)'
       : `notableLagCount=0 across ${snap.sessionCount} session(s)`,
+    false,
+  );
+}
+
+/**
+ * Memoize a hook-ingestion probe so the lag and missing-write-timestamp
+ * advisories (issue #3079) both resolve from a single fetch and observe the
+ * identical snapshot, rather than each issuing its own
+ * `GET /api/diagnostics/hook-ingestion`. The underlying probe runs at most once;
+ * both callers await the same promise. A fresh wrapper is created per doctor run,
+ * so snapshots never leak across invocations.
+ */
+function shareHookIngestionProbe(
+  probe: HookIngestionLagProbe,
+): HookIngestionLagProbe {
+  let cached: Promise<HookIngestionLagProbeSnapshot | null> | undefined;
+  return (env) => (cached ??= probe(env));
+}
+
+/**
+ * Advisory ops check (issue #3079): WARN when a high fraction of hook arrivals
+ * lack a write timestamp (`missingWriteTimestampCount / totalArrivals` exceeds
+ * {@link DEFAULT_MISSING_WRITE_TS_RATIO_WARN}). A high ratio means ingestion-lag
+ * numbers — including the `hooks.ingestion-lag` advisory above — are unreliable
+ * for that fraction of events, since lag is only measurable when a write
+ * timestamp is present.
+ *
+ * Ratio-based with a minimum-sample guard ({@link DEFAULT_MISSING_WRITE_TS_MIN_SAMPLE}):
+ * a couple of missing-timestamp events on a quiet session must not spike the
+ * ratio. Reuses the same live probe as `hooks.ingestion-lag`. Soft-skip when the
+ * server is unreachable so hermetic offline doctor stays green. Never required:fail.
+ */
+async function checkHookMissingWriteTimestamps(
+  env: NodeJS.ProcessEnv,
+  probe: HookIngestionLagProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeHookIngestionLag;
+  let snap: HookIngestionLagProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'hooks.missing-write-timestamps',
+      'Hook write timestamps',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or diagnostics unreachable)',
+      false,
+    );
+  }
+
+  const { totalArrivals, missingWriteTimestampCount } = snap;
+
+  if (totalArrivals < DEFAULT_MISSING_WRITE_TS_MIN_SAMPLE) {
+    return okCheck(
+      'hooks.missing-write-timestamps',
+      'Hook write timestamps',
+      'ops',
+      `below min sample (totalArrivals=${totalArrivals} < ${DEFAULT_MISSING_WRITE_TS_MIN_SAMPLE})`,
+      false,
+    );
+  }
+
+  const ratio = missingWriteTimestampCount / totalArrivals;
+  const pct = (ratio * 100).toFixed(1);
+
+  if (ratio > DEFAULT_MISSING_WRITE_TS_RATIO_WARN) {
+    return {
+      id: 'hooks.missing-write-timestamps',
+      label: 'Hook write timestamps',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        `${pct}% of hook arrivals lack a write timestamp ` +
+        `(${missingWriteTimestampCount}/${totalArrivals})`,
+      detail:
+        `GET /api/diagnostics/hook-ingestion reports missingWriteTimestampCount=` +
+        `${missingWriteTimestampCount} of totalArrivals=${totalArrivals} ` +
+        `(ratio ${pct}% > ${(DEFAULT_MISSING_WRITE_TS_RATIO_WARN * 100).toFixed(0)}% threshold). ` +
+        'Ingestion-lag numbers (including hooks.ingestion-lag) are unreliable for ' +
+        'that fraction of events, since lag is only measurable when a write timestamp is present.',
+      recommendedAction:
+        'Inspect GET /api/diagnostics/hook-ingestion writeTimestampSourceCounts; ensure hook ' +
+        'payloads carry a write timestamp (or that file mtimes are usable), and consider ' +
+        'prod:update if the server is on a stale build predating the writer-timestamp fix.',
+    };
+  }
+
+  return okCheck(
+    'hooks.missing-write-timestamps',
+    'Hook write timestamps',
+    'ops',
+    `${pct}% missing-write-timestamp ratio across ${totalArrivals} arrival(s)`,
     false,
   );
 }
@@ -2142,6 +2270,8 @@ export function parseHookIngestionLagDiagnosticsBody(
       sessionCount?: unknown;
       notableLagCount?: unknown;
       lagWarningThresholdMs?: unknown;
+      totalArrivals?: unknown;
+      missingWriteTimestampCount?: unknown;
     };
   };
   const ingestion = root.ingestion;
@@ -2156,6 +2286,8 @@ export function parseHookIngestionLagDiagnosticsBody(
     sessionCount,
     notableLagCount,
     lagWarningThresholdMs: lagWarningThresholdMs ?? 2000,
+    totalArrivals: nonNegInt(ingestion.totalArrivals) ?? 0,
+    missingWriteTimestampCount: nonNegInt(ingestion.missingWriteTimestampCount) ?? 0,
   };
 }
 
