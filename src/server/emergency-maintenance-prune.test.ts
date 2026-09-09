@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
 import {
+  composeMaintenancePruneHealth,
   DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS,
   EmergencyMaintenancePruneController,
   resolveEmergencyPruneThrottleMs,
@@ -95,6 +96,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(1_000_000).toISOString(),
       lastEmergencyReclaimedBytes: 8192,
+      lastEmergencyPruneError: null,
       throttleMs: 60 * 60 * 1000,
     });
     expect(logSpy.mock.calls.flat().join('\n')).toMatch(/emergency sweep triggered/);
@@ -224,6 +226,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(42_000).toISOString(),
       lastEmergencyReclaimedBytes: null,
+      lastEmergencyPruneError: 'disk exploded',
       throttleMs: 0,
     });
   });
@@ -261,7 +264,79 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       emergencyPruneTriggeredTotal: 0,
       lastEmergencyPruneAt: null,
       lastEmergencyReclaimedBytes: null,
+      lastEmergencyPruneError: null,
       throttleMs: 3_600_000,
     });
+  });
+
+  test('failed emergency sweep surfaces its error; a subsequent success clears it (issue #3078)', async () => {
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+      .mockResolvedValueOnce(fakeResult({ reclaimedBytes: 512 }));
+    let nowMs = 0;
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      now: () => nowMs,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // A failing sweep populates lastEmergencyPruneError with the real message.
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
+    expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneTriggeredTotal: 1,
+      lastEmergencyPruneAt: new Date(0).toISOString(),
+      lastEmergencyReclaimedBytes: null,
+      lastEmergencyPruneError: 'ENOSPC: no space left on device',
+      throttleMs: 0,
+    });
+
+    // The next successful sweep clears the error back to null.
+    nowMs = 10;
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneTriggeredTotal: 2,
+      lastEmergencyPruneAt: new Date(10).toISOString(),
+      lastEmergencyReclaimedBytes: 512,
+      lastEmergencyPruneError: null,
+      throttleMs: 0,
+    });
+  });
+});
+
+describe('composeMaintenancePruneHealth (issue #3078)', () => {
+  const scheduleSnapshot = {
+    enabled: false,
+    intervalHours: 0,
+    lastRunAt: null,
+    lastReclaimedBytes: null,
+    lastRemovedCount: null,
+    lastError: null,
+  };
+
+  test('carries a non-null lastEmergencyPruneError from the emergency snapshot onto the wire shape', () => {
+    const composed = composeMaintenancePruneHealth(scheduleSnapshot, {
+      emergencyPruneTriggeredTotal: 3,
+      lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+      lastEmergencyReclaimedBytes: null,
+      lastEmergencyPruneError: 'ENOSPC: no space left on device',
+      throttleMs: 3_600_000,
+    });
+    expect(composed.lastEmergencyPruneError).toBe('ENOSPC: no space left on device');
+    // The scheduled leg's own lastError is independent of the emergency error.
+    expect(composed.lastError).toBeNull();
+  });
+
+  test('forwards a cleared (null) emergency error', () => {
+    const composed = composeMaintenancePruneHealth(scheduleSnapshot, {
+      emergencyPruneTriggeredTotal: 1,
+      lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+      lastEmergencyReclaimedBytes: 512,
+      lastEmergencyPruneError: null,
+      throttleMs: 3_600_000,
+    });
+    expect(composed.lastEmergencyPruneError).toBeNull();
   });
 });

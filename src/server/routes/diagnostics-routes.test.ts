@@ -2283,6 +2283,7 @@ describe('diagnostics routes', () => {
           emergencyPruneTriggeredTotal: 2,
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
           lastEmergencyReclaimedBytes: 4096,
+          lastEmergencyPruneError: null,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2298,8 +2299,34 @@ describe('diagnostics routes', () => {
         emergencyPruneTriggeredTotal: 2,
         lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
         lastEmergencyReclaimedBytes: 4096,
+        lastEmergencyPruneError: null,
         throttleMs: 3_600_000,
       });
+    });
+
+    test('surfaces lastEmergencyPruneError from a failing emergency sweep (issue #3078)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getMaintenancePruneHealth: () => ({
+          enabled: false,
+          intervalHours: 0,
+          lastRunAt: null,
+          lastReclaimedBytes: null,
+          lastRemovedCount: null,
+          lastError: null,
+          emergencyPruneTriggeredTotal: 3,
+          lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+          lastEmergencyReclaimedBytes: null,
+          lastEmergencyPruneError: 'ENOSPC: no space left on device',
+          throttleMs: 3_600_000,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { maintenancePrune: Record<string, unknown> };
+      expect(body.maintenancePrune.lastEmergencyPruneError).toBe('ENOSPC: no space left on device');
+      expect(body.maintenancePrune.lastEmergencyReclaimedBytes).toBeNull();
     });
 
     test('reports enabled=false when intervalHours=0 (issue #2345)', async () => {
@@ -2317,6 +2344,7 @@ describe('diagnostics routes', () => {
           emergencyPruneTriggeredTotal: 0,
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
+          lastEmergencyPruneError: null,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2359,6 +2387,7 @@ describe('diagnostics routes', () => {
           emergencyPruneTriggeredTotal: 0,
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
+          lastEmergencyPruneError: null,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
