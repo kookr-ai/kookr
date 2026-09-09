@@ -33,7 +33,8 @@ import { dirname, join } from 'node:path';
  *   broken state dir degrades classification to `unknown`, it never crashes the
  *   boot path or the shutdown path.
  * - **Bounded + secret-free**: the file holds only timestamps, a pid, a random
- *   boot id, and a signal name. No prompt contents, no history, no credentials.
+ *   boot id, a signal name, and a small dirty-boot streak counter. No prompt
+ *   contents, no history, no credentials.
  */
 
 export const BOOT_MARKER_FILE = 'boot-marker.json';
@@ -59,6 +60,15 @@ export interface BootMarkerFile {
   shutdownAt?: string;
   /** Signal that triggered the graceful shutdown (e.g. `SIGTERM`) — `clean` only. */
   signal?: string;
+  /**
+   * Consecutive dirty-boot streak as of the boot that wrote this marker (issue
+   * #3077): the number of unclean restarts in an unbroken run ending here. `0`
+   * on a clean or first boot; incremented by each dirty boot; reset to `0` by
+   * the next clean boot. Persisted so a whole-process crash loop is visible on
+   * the health surface, not just "restarted once". Legacy `v1` markers written
+   * before this field default to `0` on read.
+   */
+  dirtyStreak: number;
 }
 
 /** High-level verdict for a fresh boot, projected onto the health surface. */
@@ -84,6 +94,13 @@ export interface BootClassification {
   previousShutdownAt: string | null;
   /** The signal that triggered the previous clean shutdown, if any. */
   previousSignal: string | null;
+  /**
+   * Consecutive dirty-boot streak for *this* boot (issue #3077). `0` on a clean,
+   * first, or unreadable boot (self-heal); otherwise the previous streak plus
+   * one for each unbroken dirty restart. A value climbing past `1` on
+   * `/api/health.boot` is a whole-process crash loop, not a single blip.
+   */
+  dirtyStreak: number;
 }
 
 export function bootMarkerPath(kookrDir: string): string {
@@ -104,6 +121,13 @@ export function parseBootMarker(raw: unknown): BootMarkerFile | null {
     bootId: m.bootId,
     startedAt: m.startedAt,
     pid: m.pid,
+    // Self-heal (issue #3077): a legacy marker without the field, or a corrupt
+    // value (negative, fractional, NaN, non-number), reads as streak 0 rather
+    // than rejecting the whole marker — the streak degrades, the verdict does not.
+    dirtyStreak:
+      typeof m.dirtyStreak === 'number' && Number.isInteger(m.dirtyStreak) && m.dirtyStreak >= 0
+        ? m.dirtyStreak
+        : 0,
   };
   if (typeof m.shutdownAt === 'string') parsed.shutdownAt = m.shutdownAt;
   if (typeof m.signal === 'string') parsed.signal = m.signal;
@@ -146,31 +170,39 @@ export function classifyBoot(previous: {
   unreadable: boolean;
 }): BootClassification {
   if (previous.marker === null) {
+    // No marker (first boot / wiped state dir) or a corrupt one self-heals to
+    // streak 0 (issue #3077): we cannot know a prior streak, so start fresh.
     return {
       status: 'unknown',
       reason: previous.unreadable ? 'marker_unreadable' : 'no_prior_marker',
       previousStartedAt: null,
       previousShutdownAt: null,
       previousSignal: null,
+      dirtyStreak: 0,
     };
   }
   const m = previous.marker;
   if (m.state === 'clean') {
+    // A graceful restart breaks the streak (issue #3077).
     return {
       status: 'clean',
       reason: 'clean_shutdown',
       previousStartedAt: m.startedAt,
       previousShutdownAt: m.shutdownAt ?? null,
       previousSignal: m.signal ?? null,
+      dirtyStreak: 0,
     };
   }
   // state === 'running': the previous process never reached its graceful path.
+  // Extend the prior streak by one so a crash loop is visible, not just the
+  // single most recent unclean exit (issue #3077).
   return {
     status: 'dirty',
     reason: 'unclean_exit',
     previousStartedAt: m.startedAt,
     previousShutdownAt: null,
     previousSignal: null,
+    dirtyStreak: m.dirtyStreak + 1,
   };
 }
 
@@ -216,6 +248,9 @@ export class BootMarkerStore {
       bootId: this.newBootId(),
       startedAt: new Date(this.now()).toISOString(),
       pid: this.pid,
+      // Persist this boot's streak so the *next* boot can extend or reset it
+      // (issue #3077). Equal to the value projected onto /api/health.boot.
+      dirtyStreak: classification.dirtyStreak,
     };
     this.current = marker;
     this.writeAtomic(marker);
@@ -233,6 +268,7 @@ export class BootMarkerStore {
       bootId: this.newBootId(),
       startedAt: new Date(this.now()).toISOString(),
       pid: this.pid,
+      dirtyStreak: 0,
     };
     const marker: BootMarkerFile = {
       ...base,

@@ -26,6 +26,7 @@ describe('classifyBoot', () => {
       previousStartedAt: null,
       previousShutdownAt: null,
       previousSignal: null,
+      dirtyStreak: 0,
     });
   });
 
@@ -36,6 +37,7 @@ describe('classifyBoot', () => {
       previousStartedAt: null,
       previousShutdownAt: null,
       previousSignal: null,
+      dirtyStreak: 0,
     });
   });
 
@@ -48,6 +50,7 @@ describe('classifyBoot', () => {
       pid: 111,
       shutdownAt: '2026-09-02T11:00:00.000Z',
       signal: 'SIGTERM',
+      dirtyStreak: 0,
     };
     expect(classifyBoot({ marker, unreadable: false })).toEqual({
       status: 'clean',
@@ -55,6 +58,7 @@ describe('classifyBoot', () => {
       previousStartedAt: '2026-09-02T10:00:00.000Z',
       previousShutdownAt: '2026-09-02T11:00:00.000Z',
       previousSignal: 'SIGTERM',
+      dirtyStreak: 0,
     });
   });
 
@@ -65,6 +69,7 @@ describe('classifyBoot', () => {
       bootId: 'b2',
       startedAt: '2026-09-02T09:00:00.000Z',
       pid: 222,
+      dirtyStreak: 0,
     };
     expect(classifyBoot({ marker, unreadable: false })).toEqual({
       status: 'dirty',
@@ -72,7 +77,34 @@ describe('classifyBoot', () => {
       previousStartedAt: '2026-09-02T09:00:00.000Z',
       previousShutdownAt: null,
       previousSignal: null,
+      dirtyStreak: 1,
     });
+  });
+
+  it('increments dirtyStreak from the previous marker on a consecutive dirty boot (issue #3077)', () => {
+    const marker: BootMarkerFile = {
+      schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
+      state: 'running',
+      bootId: 'b3',
+      startedAt: '2026-09-02T09:00:00.000Z',
+      pid: 333,
+      dirtyStreak: 4,
+    };
+    expect(classifyBoot({ marker, unreadable: false }).dirtyStreak).toBe(5);
+  });
+
+  it('resets dirtyStreak to 0 on a clean boot even after a prior streak (issue #3077)', () => {
+    const marker: BootMarkerFile = {
+      schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
+      state: 'clean',
+      bootId: 'b4',
+      startedAt: '2026-09-02T10:00:00.000Z',
+      pid: 444,
+      shutdownAt: '2026-09-02T11:00:00.000Z',
+      signal: 'SIGTERM',
+      dirtyStreak: 7,
+    };
+    expect(classifyBoot({ marker, unreadable: false }).dirtyStreak).toBe(0);
   });
 });
 
@@ -97,6 +129,7 @@ describe('parseBootMarker', () => {
       bootId: 'x',
       startedAt: 's',
       pid: 7,
+      dirtyStreak: 3,
     });
     expect(parsed).toEqual({
       schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
@@ -104,8 +137,37 @@ describe('parseBootMarker', () => {
       bootId: 'x',
       startedAt: 's',
       pid: 7,
+      dirtyStreak: 3,
     });
   });
+
+  it('self-heals dirtyStreak to 0 for a legacy marker missing the field (issue #3077)', () => {
+    const parsed = parseBootMarker({
+      schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
+      state: 'running',
+      bootId: 'x',
+      startedAt: 's',
+      pid: 7,
+    });
+    expect(parsed?.dirtyStreak).toBe(0);
+  });
+
+  it.each([-1, 2.5, Number.NaN, 'lots', null])(
+    'self-heals a corrupt dirtyStreak (%p) to 0 without rejecting the marker (issue #3077)',
+    (bad) => {
+      const parsed = parseBootMarker({
+        schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
+        state: 'running',
+        bootId: 'x',
+        startedAt: 's',
+        pid: 7,
+        dirtyStreak: bad,
+      });
+      // The marker is still accepted (not null) — only the streak degrades.
+      expect(parsed).not.toBeNull();
+      expect(parsed?.dirtyStreak).toBe(0);
+    },
+  );
 });
 
 describe('BootMarkerStore', () => {
@@ -132,6 +194,8 @@ describe('BootMarkerStore', () => {
     const classification = store.recordBoot();
     expect(classification.status).toBe('unknown');
     expect(classification.reason).toBe('no_prior_marker');
+    expect(classification.dirtyStreak).toBe(0);
+    expect(readBootMarker(dir).marker?.dirtyStreak).toBe(0);
 
     const onDisk = readBootMarker(dir);
     expect(onDisk.marker?.state).toBe('running');
@@ -169,6 +233,54 @@ describe('BootMarkerStore', () => {
     expect(classification.status).toBe('dirty');
     expect(classification.reason).toBe('unclean_exit');
     expect(classification.previousStartedAt).not.toBeNull();
+    expect(classification.dirtyStreak).toBe(1);
+  });
+
+  it('grows dirtyStreak across a crash loop and resets it on a clean boot (issue #3077)', () => {
+    // First boot: no prior marker → streak 0.
+    expect(makeStore(1).recordBoot().dirtyStreak).toBe(0);
+    // Each subsequent boot finds a still-`running` marker (crash — no clean
+    // shutdown ran) and extends the streak.
+    expect(makeStore(2).recordBoot().dirtyStreak).toBe(1);
+    expect(makeStore(3).recordBoot().dirtyStreak).toBe(2);
+    expect(makeStore(4).recordBoot().dirtyStreak).toBe(3);
+    // The persisted marker carries the current streak forward.
+    expect(readBootMarker(dir).marker?.dirtyStreak).toBe(3);
+
+    // A graceful shutdown then a fresh boot breaks the loop back to 0.
+    const graceful = makeStore(5);
+    graceful.recordBoot(); // dirty streak 4 on disk
+    graceful.recordCleanShutdown('SIGTERM');
+    const afterClean = makeStore(6).recordBoot();
+    expect(afterClean.status).toBe('clean');
+    expect(afterClean.dirtyStreak).toBe(0);
+    expect(readBootMarker(dir).marker?.dirtyStreak).toBe(0);
+
+    // And the streak counts up again from the clean baseline.
+    expect(makeStore(7).recordBoot().dirtyStreak).toBe(1);
+  });
+
+  it('self-heals a legacy on-disk marker (no dirtyStreak) to streak 1 on a dirty boot (issue #3077)', () => {
+    // A `v1` marker written before the field existed: valid JSON, still
+    // `running`, but no `dirtyStreak`. Exercises the full read path end-to-end
+    // (readBootMarker → parseBootMarker self-heal → classifyBoot +1), not just
+    // the pure functions — the streak degrades to 0 on read, so this dirty boot
+    // reports 1.
+    writeFileSync(
+      bootMarkerPath(dir),
+      `${JSON.stringify({
+        schemaVersion: BOOT_MARKER_SCHEMA_VERSION,
+        state: 'running',
+        bootId: 'legacy',
+        startedAt: '2026-09-01T00:00:00.000Z',
+        pid: 999,
+      })}\n`,
+      'utf8',
+    );
+    const classification = makeStore(200).recordBoot();
+    expect(classification.status).toBe('dirty');
+    expect(classification.dirtyStreak).toBe(1);
+    expect(readBootMarker(dir).marker?.dirtyStreak).toBe(1);
   });
 
   it('classifies a corrupt marker as unknown/marker_unreadable', () => {
@@ -210,6 +322,7 @@ describe('BootMarkerStore', () => {
         previousStartedAt: null,
         previousShutdownAt: null,
         previousSignal: null,
+        dirtyStreak: 0,
       });
       expect(() => store.recordCleanShutdown('SIGTERM')).not.toThrow();
     } finally {
