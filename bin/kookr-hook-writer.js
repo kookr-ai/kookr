@@ -167,6 +167,38 @@ async function withLock(lockPath, fn, opts = {}) {
   }
 }
 
+/**
+ * Inject the writer's emit timestamp into a JSON hook payload so ingestion can
+ * measure delivery lag from the payload itself instead of falling back to
+ * coarse file mtime (issue #3076). Parses the payload, sets
+ * `kookr_hook_written_at_ms` to the current epoch-ms — the field ingestion
+ * prefers first (hook-ingestion.ts extractPayloadTimestampMs) — and
+ * re-serializes.
+ *
+ * Fail-open, byte-durable: any failure returns the raw payload unchanged so
+ * the writer's durability guarantee is never traded for the timestamp. The
+ * try/catch covers BOTH JSON.parse AND the re-serialize — JSON.stringify can
+ * throw `RangeError: Invalid string length` for a payload near V8's max string
+ * length, and letting that escape would abort the caller's durable append (the
+ * raw string passed straight through before this change, with no throwing step
+ * ahead of the write). A JSON value that is not a plain object (a bare array /
+ * number / string / null) is also returned unchanged. Overwrites any
+ * pre-existing value: the writer is the emit point, so its clock is the
+ * authoritative write time.
+ */
+export function stampPayload(payload, nowMs = Date.now()) {
+  try {
+    const parsed = JSON.parse(payload);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return payload;
+    }
+    parsed.kookr_hook_written_at_ms = nowMs;
+    return JSON.stringify(parsed);
+  } catch {
+    return payload;
+  }
+}
+
 export async function appendRecord(file, payload, options = {}) {
   const record = payload.endsWith('\n') ? payload : `${payload}\n`;
   const { maxBytes, keep } = resolveRotationConfig(options);
@@ -206,10 +238,13 @@ async function postHttp(url, payload, timeoutMs = 1000) {
 }
 
 async function runWriter(args, payload) {
-  await appendRecord(args.file, payload);
+  // Stamp once so the durable file append and the HTTP push carry the same
+  // emit timestamp (issue #3076).
+  const stamped = stampPayload(payload);
+  await appendRecord(args.file, stamped);
   if (args.url) {
     try {
-      await postHttp(args.url, payload);
+      await postHttp(args.url, stamped);
     } catch {
       // Fail open — durable file write already succeeded.
     }
