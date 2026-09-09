@@ -240,6 +240,20 @@ export function disableDnd(): void {
   applyManual(DISABLED_MANUAL);
 }
 
+/**
+ * Toggle the manual DND layer. Base the decision on the manual layer, not the
+ * effective `enabled` flag: a toggle during scheduled quiet hours pins manual
+ * DND on (so it persists past the window) rather than no-opping. Shared by the
+ * top-bar pill and the command palette so the two never diverge.
+ */
+export function toggleDnd(): void {
+  if (state.source === 'manual') {
+    disableDnd();
+  } else {
+    enableDnd(null);
+  }
+}
+
 /** Whether a scheduled quiet-hours window is currently active (independent of manual DND). */
 export function isQuietHoursActive(now: Date = new Date()): boolean {
   return isWithinQuietHours(quietWindows, now);
@@ -285,6 +299,8 @@ function subscribe(listener: () => void): () => void {
 export interface UseDndResult extends DndState {
   enable: (durationMs?: number | null) => void;
   disable: () => void;
+  /** Flip the manual layer on/off (see {@link toggleDnd}). */
+  toggle: () => void;
 }
 
 export function useDnd(): UseDndResult {
@@ -293,6 +309,7 @@ export function useDnd(): UseDndResult {
     ...snap,
     enable: enableDnd,
     disable: disableDnd,
+    toggle: toggleDnd,
   };
 }
 

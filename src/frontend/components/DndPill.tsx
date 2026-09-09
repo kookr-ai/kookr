@@ -78,13 +78,10 @@ export function DndPill() {
   const remainingLabel = remainingMs !== null ? formatRemaining(remainingMs) : null;
 
   function togglePill() {
-    // Base the toggle on the manual layer: a click during scheduled quiet hours
-    // pins manual DND on (so it persists past the window) rather than no-opping.
-    if (dnd.source === 'manual') {
-      dnd.disable();
-    } else {
-      dnd.enable(null);
-    }
+    // Shared with the command palette so the pill and palette never diverge:
+    // `toggle` bases the decision on the manual layer, pinning manual DND on
+    // during scheduled quiet hours rather than no-opping.
+    dnd.toggle();
   }
 
   function selectDuration(durationMs: number | null) {
