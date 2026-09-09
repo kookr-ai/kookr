@@ -29,6 +29,11 @@ export default defineConfig({
       './test/dtach-master-reaper.global.ts',
     ],
     env: {
+      // Pin provider selection: this lane skips test/setup-env.ts, so ambient
+      // KOOKR_LLM_PROVIDER from a developer shell would otherwise leak in and
+      // can desync hasApiKey vs createLlmClient() (e.g. ANTHROPIC key present
+      // but KOOKR_LLM_PROVIDER=baseten yields no client).
+      KOOKR_LLM_PROVIDER: 'auto',
       KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: '0',
       KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS: '0',
       KOOKR_SESSION_BRIDGE_RESIZE_DEBOUNCE_MS: '0',

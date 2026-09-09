@@ -8,17 +8,17 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 
 | Command | What it runs | Where it runs |
 | --- | --- | --- |
-| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes `src/**/*.integration.test.ts` and `src/**/*-e2e.test.ts`. Hyphen-named `*-integration.test.ts` files still run here by design. | Local. CI uses `--coverage`. |
-| `pnpm test:integration` | Dedicated root Vitest lane (`vitest.integration.config.ts`) for the excluded `*.integration.test.ts` / `*-e2e.test.ts` files. Today's inventory is credential-gated (real provider API keys); those files `skipIf` without keys so the lane stays deterministic. Not part of `pnpm verify` / CI `test`. | Local / manual. |
+| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes `src/**/*.integration.test.ts` and `src/**/*-e2e.test.ts`. Hyphen-named `*-integration.test.ts` files still run here by design. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
+| `pnpm test:integration` | Dedicated root Vitest lane (`vitest.integration.config.ts`) for the excluded `*.integration.test.ts` / `*-e2e.test.ts` files. Today's inventory is credential-gated (real provider API keys); those files `skipIf` without keys so the lane stays deterministic. Not part of `pnpm verify`. | Local / manual. |
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
-| `pnpm check:e2e` | TypeScript check for Playwright tests. | Local + CI (`test` job). |
-| `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local + CI (`test` job). |
-| `pnpm validate:docs-env-vars` | Verifies `KOOKR_*` env vars read in source are documented (or allowlisted). | Local + CI (`test` job). |
-| `pnpm validate:docs-api-routes` | Verifies every registered `/api/*` route is mentioned in `docs/reference/api.md` (or allowlisted as internal). | Local + CI (`test` job). |
-| `pnpm exec playwright test` | Browser E2E. | Local + CI (`build` job, Playwright container). |
-| `pnpm test:hooks` | Shell regression tests for project hooks. | Local + CI (`test` job). |
-| `pnpm test:stt` | Installs and runs the `stt/` speech-to-text sidecar's own vitest unit suite (`stt/src/**/*.test.js`, minus the `*.integration.test.js` files, which need `STT_INTEGRATION=1` and the separate integration config). `stt/` is a standalone npm package outside the root vitest include globs. | Local + CI (`stt-tests` job). |
+| `pnpm check:e2e` | TypeScript check for Playwright tests. | Local. |
+| `pnpm validate:docs-commands` | Verifies documented package scripts, local CLI binaries, and repo-local command entrypoints exist. | Local. |
+| `pnpm validate:docs-env-vars` | Verifies `KOOKR_*` env vars read in source are documented (or allowlisted). | Local. |
+| `pnpm validate:docs-api-routes` | Verifies every registered `/api/*` route is mentioned in `docs/reference/api.md` (or allowlisted as internal). | Local. |
+| `pnpm exec playwright test` | Browser E2E. | Local. |
+| `pnpm test:hooks` | Shell regression tests for project hooks. | Local. |
+| `pnpm test:stt` | Installs and runs the `stt/` speech-to-text sidecar's own vitest unit suite (`stt/src/**/*.test.js`, minus the `*.integration.test.js` files, which need `STT_INTEGRATION=1` and the separate integration config). `stt/` is a standalone npm package outside the root vitest include globs. | Local. |
 | `CANARY=1 pnpm exec playwright test e2e/canary.spec.ts` | Real-agent canary, validates mock event fixtures against real Claude Code (Haiku). Local/manual due to API cost. | Local only. |
 
 `e2e/accessibility-smoke.spec.ts` adds axe-backed structural scans for the dashboard shell and core dialogs. It disables axe's `color-contrast` rule because the existing dark theme has broad contrast debt that would make the smoke layer noisy; do not add broader suppressions without documenting the reason here.
@@ -30,13 +30,15 @@ Some UI regressions are covered below the Playwright layer because they are data
 - Prompt display hygiene: `src/server/launch-service.test.ts` verifies launches preserve the user-authored prompt separately from injected worktree guidance, `src/core/monitor.test.ts` verifies snapshots expose display-safe prompt text for both new and legacy tasks, and `src/frontend/components/Tooltip.test.ts` verifies hidden tooltip portals do not keep long prompt text mounted.
 - Reliable empty-terminal Enter: `src/server/terminal-input-coordinator.test.ts` covers readiness versions, blocked/unknown/stale intent rejection, and the no-forward-Enter invariant; `src/server/dashboard-selection-controller.test.ts` covers atomic selection CAS and duplicate intents; `src/server/terminal-input-boundary.test.ts` guards direct raw backend writes outside the input boundary; `src/frontend/components/DetailPanel.empty-enter.test.ts` covers the frontend intent path.
 
-## CI Mapping
+## CI Mapping (reference only)
 
-| Workflow | Triggers | Jobs |
+GitHub Actions is **disabled** for this repository (operator decision). Local verification is the merge gate. The workflow files below are kept as a reference for which commands historically ran together; they do not execute while Actions remain off. See [`.github/workflows/README.md`](../.github/workflows/README.md).
+
+| Workflow | Historical triggers | Jobs (reference) |
 | --- | --- | --- |
-| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main`. | `test` (typecheck, skill validation, playbook validation, Vitest + coverage, smoke gates, hook tests), `stt-tests` (the `stt/` sidecar's own npm vitest suite; path-filtered on `stt/**`), `build` (Playwright). On PRs, all jobs path-filter: code-heavy steps are skipped when the PR touches no matching paths (docs/skills-only PRs run just the validators; `stt-tests` steps skip when no `stt/**` file changed). Push to `main` always runs everything. |
-| `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment. | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
-| `.github/workflows/staging.yml` | Staging-branch flow. | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
+| `.github/workflows/ci.yml` | Push to `main`, PRs targeting `main` (now `workflow_dispatch`-only). | `test` (typecheck, skill validation, playbook validation, Vitest + coverage, smoke gates, hook tests), `stt-tests` (the `stt/` sidecar's own npm vitest suite; path-filtered on `stt/**`), `build` (Playwright). |
+| `.github/workflows/e2e.yml` | Manual `/run-e2e` PR comment (now `workflow_dispatch`-only). | Full Playwright run, uploads HTML report on every run, comments result on the PR. |
+| `.github/workflows/staging.yml` | Staging-branch flow (now `workflow_dispatch`-only). | Plain `pnpm test` (no coverage). The testing-surfacing RFC defers staging coverage to a later phase. |
 
 ### Artifacts
 
