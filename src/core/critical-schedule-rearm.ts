@@ -225,6 +225,12 @@ export function listCriticalSchedulesToRearm(
  */
 export const TRANSIENT_FAILURE_REARM_REASON_CODES = [
   'launch_error',
+  // issue #3075: a vanished backing session (SessionGoneError) is transient by
+  // nature — re-firing spawns a fresh session. Before #3075 this classified as
+  // `launch_error` and was rearm-eligible; keep that self-heal eligibility now
+  // that it carries its own reason code (unlike `auth_expired`, which the
+  // dead-man switch deliberately holds). See schedule-runner.mapErrorToReasonCode.
+  'session_gone',
   'previous_run_active',
   'previous_run_pending',
 ] as const;

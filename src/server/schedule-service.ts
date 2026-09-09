@@ -318,6 +318,19 @@ export function isGenuineExecutionFailure(
 }
 
 /**
+ * True when `err` is the receipt-rotation race (issue #3075): a ledger write
+ * via {@link ScheduleService.markExecutionOutcome} was refused by
+ * `requireReceipt` because the schedule's current execution receipt rotated
+ * out from under the caller (a concurrent reserve for the same schedule, or a
+ * restart-driven receipt refresh) between fire reservation and the write.
+ * Matched on the tagged `receipt` field so callers never depend on the
+ * human-readable message text.
+ */
+export function isExecutionReceiptNotFoundError(err: unknown): boolean {
+  return err instanceof ScheduleValidationError && err.fieldErrors?.receipt === 'not_found';
+}
+
+/**
  * Cost/tokens + artifact links joined onto a ledger row from its task at
  * write time (issue #1582). Both fields are optional and only ever populated
  * from real task state — a task with no `tokenUsage` yields no `tokenUsage`
@@ -1727,7 +1740,13 @@ export class ScheduleService {
 
   private requireReceipt(schedule: Schedule, receiptId: string) {
     if (!schedule.currentExecution || schedule.currentExecution.id !== receiptId) {
-      throw new ScheduleValidationError(`Execution receipt not found: ${receiptId}`);
+      // issue #3075: tag the field so callers can recognize a receipt-rotation
+      // race (the current receipt changed out from under them) without matching
+      // on the human-readable message. `recordFireFailure` relies on this to
+      // warn-and-continue instead of rejecting its background fire promise.
+      throw new ScheduleValidationError(`Execution receipt not found: ${receiptId}`, {
+        receipt: 'not_found',
+      });
     }
     return schedule.currentExecution;
   }

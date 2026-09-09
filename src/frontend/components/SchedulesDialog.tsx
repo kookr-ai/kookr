@@ -204,6 +204,8 @@ function reasonLabel(reason: NonNullable<ScheduleResponse['executionLedger'][num
       return 'provider paused';
     case 'auth_expired':
       return 'Grok auth expired';
+    case 'session_gone':
+      return 'backing session gone';
     case 'reconciled_after_restart':
       return 'reconciled after restart';
     case 'unknown_after_restart':

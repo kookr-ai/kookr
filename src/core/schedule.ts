@@ -258,6 +258,14 @@ export type ScheduleExecutionReasonCode =
    * thrashing `dispatch_failed` noise class. Never an API-key path.
    */
   | 'auth_expired'
+  /**
+   * The backing terminal session/socket for the fire vanished before the
+   * launch completed (issue #3075) — the adapter's `SessionGoneError`
+   * (`session <id> is gone`). Distinct from generic `launch_error` so the
+   * ledger/GET /api/schedules surface "the backing session died" rather than
+   * an arbitrary launcher bug. Mirrors `shared/contracts/schedule`.
+   */
+  | 'session_gone'
   | 'reconciled_after_restart'
   | 'unknown_after_restart'
   /**

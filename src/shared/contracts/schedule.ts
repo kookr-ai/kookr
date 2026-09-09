@@ -140,6 +140,11 @@ export type ScheduleExecutionReasonCode =
    * (issue #2194). Mirrors `core/schedule`.
    */
   | 'auth_expired'
+  /**
+   * Backing terminal session/socket vanished before the launch completed —
+   * the adapter's `SessionGoneError` (issue #3075). Mirrors `core/schedule`.
+   */
+  | 'session_gone'
   | 'reconciled_after_restart'
   | 'unknown_after_restart'
   /** Cheap probe completed without an agent (issue #2569) — exit 0. */
