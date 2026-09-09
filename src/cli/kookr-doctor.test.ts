@@ -41,6 +41,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.pnpm',
   'runtime.git',
   'runtime.dtach',
+  'runtime.node-pty',
   'runtime.persistence',
   'runtime.settings-mode',
   'ops.systemd-unit',
@@ -82,6 +83,8 @@ const hermeticOps = {
   probeMaintenancePruneTimer: async () => null as { lastFiredAt: string | null } | null,
   probeGithubScannerStatus: async () => null as GithubStatusSnapshot | null,
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
+  // Stub node-pty so hermetic runs never load the real compiled binding (issue #3068).
+  loadNodePty: async () => ({ spawn: () => {} }) as unknown,
   // Owner-only 0600 so the settings-mode check is deterministic and hermetic.
   statFile: async () => ({ mode: 0o600 }),
   platform: 'linux' as NodeJS.Platform,
@@ -236,6 +239,7 @@ describe('kookr doctor --json', () => {
       'runtime.pnpm',
       'runtime.git',
       'runtime.dtach',
+      'runtime.node-pty',
       'github.gh-auth',
       'github.scanner-backoff',
       'launch.kb',
@@ -306,6 +310,99 @@ describe('kookr doctor --json', () => {
       required: false,
       summary: 'scheduled data-dir prune is disabled',
     });
+  });
+
+  it('passes runtime.node-pty when the binding loads and spawn is a function (issue #3068)', async () => {
+    const spawnStub = vi.fn();
+    const loadNodePty = vi.fn(async () => ({ spawn: spawnStub }) as unknown);
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+      ...hermeticOps,
+      loadNodePty,
+    });
+
+    expect(loadNodePty).toHaveBeenCalledTimes(1);
+    const check = report.checks.find((c) => c.id === 'runtime.node-pty');
+    expect(check).toMatchObject({
+      status: 'ok',
+      required: true,
+      category: 'runtime',
+      summary: expect.stringContaining('spawn'),
+    });
+    // Fixtures are known-happy, so the check must be OK (not merely non-fail).
+    expect(report.status).toBe('ok');
+  });
+
+  it('FAILs runtime.node-pty with a rebuild action when the binding fails to load (issue #3068)', async () => {
+    // Simulate an ABI mismatch after a Node upgrade without reinstall.
+    const loadNodePty = vi.fn(async () => {
+      throw new Error(
+        'The module was compiled against a different Node.js ABI version (NODE_MODULE_VERSION 127).',
+      );
+    });
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+      ...hermeticOps,
+      loadNodePty,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.node-pty');
+    expect(check).toMatchObject({
+      status: 'fail',
+      required: true,
+      category: 'runtime',
+    });
+    expect(check?.detail).toContain('NODE_MODULE_VERSION');
+    expect(check?.recommendedAction).toMatch(/rebuild the node-pty native binding/i);
+    // A required runtime check failing must drive the overall status to fail.
+    expect(report.status).toBe('fail');
+    expect(report.ok).toBe(false);
+  });
+
+  it('FAILs runtime.node-pty when the module loads but spawn is not a function (issue #3068)', async () => {
+    const loadNodePty = vi.fn(async () => ({ spawn: undefined }) as unknown);
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+      ...hermeticOps,
+      loadNodePty,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.node-pty');
+    expect(check).toMatchObject({ status: 'fail', required: true });
+    expect(check?.summary).toMatch(/spawn/i);
+    expect(report.status).toBe('fail');
+  });
+
+  it('FAILs runtime.node-pty when the loader resolves to undefined (issue #3068)', async () => {
+    // A broken CJS/ESM interop can hand back an empty/undefined namespace
+    // rather than an object with a missing spawn — exercise the null-guard.
+    const loadNodePty = vi.fn(async () => undefined as unknown);
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+      ...hermeticOps,
+      loadNodePty,
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.node-pty');
+    expect(check).toMatchObject({ status: 'fail', required: true });
+    expect(check?.summary).toMatch(/spawn/i);
+    expect(report.status).toBe('fail');
   });
 
   it('WARNs on github.scanner-backoff when stateFetchBackoffMs is multi-minute (issue #2098)', async () => {
@@ -1413,6 +1510,11 @@ describe('kookr doctor --json', () => {
       probeHungSuspectReclaim: async () => null,
       probeMaintenancePruneTimer: async () => null,
       probeGithubScannerStatus: async () => null,
+      // Stub node-pty so this disk-path test stays hermetic and never loads the
+      // real native binding (issue #3068). hermeticOps is deliberately not
+      // spread here — it would override the intentional readProdSmokeTickAlert
+      // omission that exercises the default on-disk alert path.
+      loadNodePty: async () => ({ spawn: () => {} }) as unknown,
       // intentionally no readProdSmokeTickAlert — exercises default disk path
     });
 
