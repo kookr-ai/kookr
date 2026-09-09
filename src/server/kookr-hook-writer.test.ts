@@ -6,9 +6,12 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-expect-error — JS module without bundled types; runtime contract is the public API surface.
-import { appendRecord, resolveRotationConfig, rotateHookFile } from '../../bin/kookr-hook-writer.js';
+import { appendRecord, resolveRotationConfig, rotateHookFile, stampPayload } from '../../bin/kookr-hook-writer.js';
 
 describe('kookr-hook-writer.appendRecord', () => {
   function makeTmp(): string {
@@ -55,6 +58,167 @@ describe('kookr-hook-writer.appendRecord', () => {
         seen.add(parsed.session_id);
       }
       expect([...seen].sort()).toEqual([...ids].sort());
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('kookr-hook-writer.stampPayload (issue #3076)', () => {
+  it('injects kookr_hook_written_at_ms into a valid JSON object payload', () => {
+    const stamped = stampPayload('{"session_id":"a","hook_event_name":"SessionStart"}', 1_700_000_000_000);
+    const parsed = JSON.parse(stamped) as Record<string, unknown>;
+    expect(parsed.kookr_hook_written_at_ms).toBe(1_700_000_000_000);
+    // Original fields survive the round-trip untouched.
+    expect(parsed.session_id).toBe('a');
+    expect(parsed.hook_event_name).toBe('SessionStart');
+  });
+
+  it('defaults the timestamp to the current epoch-ms', () => {
+    const before = Date.now();
+    const parsed = JSON.parse(stampPayload('{"session_id":"a"}')) as { kookr_hook_written_at_ms: number };
+    const after = Date.now();
+    expect(parsed.kookr_hook_written_at_ms).toBeGreaterThanOrEqual(before);
+    expect(parsed.kookr_hook_written_at_ms).toBeLessThanOrEqual(after);
+  });
+
+  it('overwrites a pre-existing value — the writer is the authoritative emit point', () => {
+    const parsed = JSON.parse(
+      stampPayload('{"session_id":"a","kookr_hook_written_at_ms":1}', 1_700_000_000_000),
+    ) as { kookr_hook_written_at_ms: number };
+    expect(parsed.kookr_hook_written_at_ms).toBe(1_700_000_000_000);
+  });
+
+  it('tolerates a trailing newline on the payload and stamps it', () => {
+    const parsed = JSON.parse(stampPayload('{"session_id":"a"}\n', 42)) as Record<string, unknown>;
+    expect(parsed.kookr_hook_written_at_ms).toBe(42);
+    expect(parsed.session_id).toBe('a');
+  });
+
+  it('fails open on a malformed / non-JSON payload — returned byte-for-byte unchanged', () => {
+    expect(stampPayload('not json at all', 42)).toBe('not json at all');
+    expect(stampPayload('{"session_id":"a"', 42)).toBe('{"session_id":"a"');
+    expect(stampPayload('', 42)).toBe('');
+  });
+
+  it('fails open on a non-object JSON value (array / number / string / null)', () => {
+    expect(stampPayload('[1,2,3]', 42)).toBe('[1,2,3]');
+    expect(stampPayload('123', 42)).toBe('123');
+    expect(stampPayload('"a string"', 42)).toBe('"a string"');
+    expect(stampPayload('null', 42)).toBe('null');
+  });
+
+  it('fails open when RE-SERIALIZATION throws — durable append is never aborted', () => {
+    // A payload near V8's max string length parses fine but overflows
+    // JSON.stringify (`RangeError: Invalid string length`). Reproduce that
+    // failure deterministically without a ~512 MB allocation by forcing
+    // JSON.stringify to throw: the parse-succeeds-serialize-throws path must
+    // still return the raw bytes so the writer's durable append is preserved.
+    const original = JSON.stringify;
+    try {
+      JSON.stringify = () => {
+        throw new RangeError('Invalid string length');
+      };
+      const raw = '{"session_id":"a"}';
+      expect(stampPayload(raw, 42)).toBe(raw);
+    } finally {
+      JSON.stringify = original;
+    }
+  });
+});
+
+describe('kookr-hook-writer CLI end-to-end (issue #3076)', () => {
+  const WRITER = fileURLToPath(new URL('../../bin/kookr-hook-writer.js', import.meta.url));
+
+  function makeTmp(): string {
+    return mkdtempSync(join(tmpdir(), 'kookr-hook-writer-cli-'));
+  }
+
+  // Run the writer as a child process (the real `main()` entrypoint), piping
+  // `stdin` in, so the runWriter → stampPayload → appendRecord/postHttp seam is
+  // exercised exactly as it runs in production.
+  function runCli(args: string[], stdin: string): Promise<{ code: number | null; stderr: string }> {
+    return new Promise((resolve, reject) => {
+      // `--no-warnings` suppresses Node's MODULE_TYPELESS_PACKAGE_JSON ESM
+      // notice for the bundled .js so a clean run leaves stderr empty and the
+      // stderr assertion still catches a real writer error.
+      const child = spawn(process.execPath, ['--no-warnings', WRITER, ...args], { stdio: ['pipe', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (d) => { stderr += String(d); });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, stderr }));
+      child.stdin.end(stdin);
+    });
+  }
+
+  // A one-shot capture server: records the first POST body, then hands its URL
+  // to the test body and shuts down.
+  async function withCaptureServer(fn: (url: string, getBody: () => string | undefined) => Promise<void>): Promise<void> {
+    let body: string | undefined;
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(Buffer.from(c)));
+      req.on('end', () => {
+        body = Buffer.concat(chunks).toString('utf8');
+        res.statusCode = 200;
+        res.end('ok');
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const addr = server.address();
+    const port = typeof addr === 'object' && addr ? addr.port : 0;
+    try {
+      await fn(`http://127.0.0.1:${port}/api/hook-event/kookr-x`, () => body);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  it('stamps once — the durable file record and the POST body carry the SAME kookr_hook_written_at_ms', async () => {
+    const dir = makeTmp();
+    try {
+      const file = join(dir, 'hooks.jsonl');
+      await withCaptureServer(async (url, getBody) => {
+        const before = Date.now();
+        const { code, stderr } = await runCli(
+          ['--session', 'kookr-x', '--file', file, '--url', url],
+          '{"session_id":"kookr-x","hook_event_name":"PreToolUse"}',
+        );
+        const after = Date.now();
+        expect(stderr).toBe('');
+        expect(code).toBe(0);
+
+        const fileRec = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown>;
+        const postRec = JSON.parse(getBody() ?? '') as Record<string, unknown>;
+        // Both sinks saw the same stamped bytes — a regression that stamped
+        // twice (two different Date.now() values) would fail this equality.
+        expect(fileRec.kookr_hook_written_at_ms).toBe(postRec.kookr_hook_written_at_ms);
+        const ts = fileRec.kookr_hook_written_at_ms as number;
+        expect(typeof ts).toBe('number');
+        expect(ts).toBeGreaterThanOrEqual(before);
+        expect(ts).toBeLessThanOrEqual(after);
+        expect(fileRec.session_id).toBe('kookr-x');
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes AND POSTs a malformed payload unchanged (fail-open end-to-end)', async () => {
+    const dir = makeTmp();
+    try {
+      const file = join(dir, 'hooks.jsonl');
+      await withCaptureServer(async (url, getBody) => {
+        const { code } = await runCli(
+          ['--session', 'kookr-x', '--file', file, '--url', url],
+          'not-json-at-all',
+        );
+        expect(code).toBe(0);
+        // Durable file: raw bytes + the writer's single trailing newline.
+        expect(readFileSync(file, 'utf8')).toBe('not-json-at-all\n');
+        // HTTP push: raw bytes, no newline added.
+        expect(getBody()).toBe('not-json-at-all');
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
