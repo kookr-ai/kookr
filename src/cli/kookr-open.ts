@@ -19,7 +19,10 @@
  */
 
 import { execFile } from 'node:child_process';
+import { accessSync, constants as fsConstants } from 'node:fs';
+import { delimiter, join } from 'node:path';
 
+import { dashboardTaskUrl } from '../shared/dashboard-task-url.js';
 import {
   EXIT_AMBIGUOUS,
   EXIT_NO_SERVER,
@@ -96,6 +99,8 @@ export interface OpenCliIo {
   /** Test seam for the browser launch. Defaults to `execFile` with no shell. */
   openUrl?: OpenUrl;
   platform?: NodeJS.Platform;
+  /** Test seam: whether the opener command resolves. Defaults to a PATH scan. */
+  commandExists?: (command: string) => boolean;
 }
 
 export interface ParsedOpenArgs {
@@ -125,11 +130,66 @@ export function parseOpenArgs(argv: string[]): ParsedOpenArgs {
 }
 
 /**
- * Build the dashboard URL for `baseUrl`, deep-linking to `/#/tasks/<taskId>`
- * when a task id is given (matching the `kookr spawn` openUrl pattern).
+ * Build the dashboard URL for `baseUrl`, deep-linking to the given task when a
+ * task id is provided. Uses the canonical `/?task=<id>` contract from
+ * `dashboard-task-url.ts` — the form the SPA actually consumes on first paint
+ * (there is no `/#/tasks/<id>` hash route) — so `kookr open <id>` selects the
+ * task rather than only opening the base dashboard.
  */
 export function buildOpenUrl(baseUrl: string, taskId: string | undefined): string {
-  return taskId ? `${baseUrl}/#/tasks/${taskId}` : baseUrl;
+  return taskId ? dashboardTaskUrl(baseUrl, taskId) : baseUrl;
+}
+
+/**
+ * Authorization for the loopback health probe, mirroring `kookr stop`'s
+ * discovery: forward the supervisor token when set, else the API token, else
+ * nothing (the loopback-open default).
+ */
+function authHeaders(env: NodeJS.ProcessEnv): Record<string, string> {
+  const supervisor = env.KOOKR_SUPERVISOR_TOKEN?.trim();
+  if (supervisor) return { Authorization: `Bearer ${supervisor}` };
+  const apiToken = env.KOOKR_API_TOKEN?.trim();
+  if (apiToken) return { Authorization: `Bearer ${apiToken}` };
+  return {};
+}
+
+/**
+ * Confirm a loopback target is actually serving before we open a browser at it.
+ * Unlike a mutating verb, `kookr open` issues no follow-up request, so an
+ * explicit `KOOKR_PORT` / `KOOKR_API_BASE_URL` pointing at a dead loopback port
+ * would otherwise silently open a dead URL — probe `/api/health` so that case
+ * reports NO_SERVER like the auto-detect path.
+ */
+async function isServerAlive(baseUrl: string, fetchImpl: typeof fetch, env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    const res = await fetchImpl(`${baseUrl}/api/health`, {
+      headers: authHeaders(env),
+      signal: AbortSignal.timeout(500),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether `command` resolves to an executable — an absolute/relative path that
+ * is executable, or a bare name found on `PATH`. Lets a headless host with no
+ * `xdg-open` installed take the print-the-URL fallback instead of spawning a
+ * missing binary and wrongly reporting the browser as opened.
+ */
+export function commandExistsOnPath(command: string, env: NodeJS.ProcessEnv): boolean {
+  const canExec = (file: string): boolean => {
+    try {
+      accessSync(file, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (command.includes('/')) return canExec(command);
+  const pathDirs = (env.PATH ?? '').split(delimiter).filter((d) => d.length > 0);
+  return pathDirs.some((dir) => canExec(join(dir, command)));
 }
 
 function hostnameOf(baseUrl: string): string | undefined {
@@ -218,13 +278,32 @@ export async function runOpenCli(argv: string[], io: OpenCliIo = {}): Promise<nu
   const hostname = hostnameOf(resolvedBase.baseUrl);
 
   // Mirror the server-start loopback guard: only launch a browser for a local
-  // instance. A remote URL is printed for the operator to open themselves.
+  // instance. A remote URL is printed for the operator to open themselves (and
+  // is not liveness-probed — a remote instance may be firewalled to browsers).
   if (!isLoopbackHost(hostname)) {
     return printUrl(out, args.json, { url, taskId, reason: 'non-loopback' });
   }
 
+  // Confirm the loopback target is actually serving before opening. This turns
+  // an explicit KOOKR_PORT / KOOKR_API_BASE_URL that points at a dead port into
+  // NO_SERVER instead of silently opening a dead URL (the auto-detect path
+  // already probed, so this only bites the explicit-override case).
+  if (!(await isServerAlive(resolvedBase.baseUrl, fetchImpl, env))) {
+    const message = `no Kookr server reachable at ${resolvedBase.baseUrl}. Start the server or point KOOKR_PORT / KOOKR_API_BASE_URL at a running instance.`;
+    if (args.json) {
+      emitJson(out, { ok: false, code: 'NO_SERVER', message, details: { subcommand: 'open', baseUrl: resolvedBase.baseUrl } });
+    } else {
+      err.error(`kookr open: ${message}`);
+    }
+    return EXIT_NO_SERVER;
+  }
+
   const command = dashboardBrowserCommand(platform);
-  if (!command) {
+  // No opener for this platform, or the opener binary is not installed (a
+  // headless host without `xdg-open`) → print the URL rather than spawn a
+  // missing binary and wrongly report the browser as opened.
+  const commandExists = io.commandExists ?? ((cmd: string) => commandExistsOnPath(cmd, env));
+  if (!command || !commandExists(command)) {
     return printUrl(out, args.json, { url, taskId, reason: 'no-opener' });
   }
 

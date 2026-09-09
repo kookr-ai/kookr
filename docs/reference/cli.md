@@ -1340,8 +1340,9 @@ Open the dashboard served by the running Kookr instance in your default browser,
 on demand. The dashboard auto-opens once at server start, but that auto-open is
 deliberately skipped for CI / non-TTY / non-loopback / `--watch` starts — so after
 the tab is closed (or on a suppressed start) this verb is the terminal-first way
-back. With a `taskId`, it deep-links to that task's detail view (`/#/tasks/<id>`);
-an unknown id still opens the base dashboard (the SPA falls back).
+back. With a `taskId`, it deep-links to that task via the dashboard's canonical
+`/?task=<id>` selector; an unknown id still opens the base dashboard (the SPA
+falls back).
 
 ```bash
 kookr open                  # open the base dashboard
