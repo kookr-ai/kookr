@@ -11,7 +11,7 @@ This guide is for a first local Kookr install. It keeps optional features out of
 - `pnpm` — use the version pinned in `package.json` (`packageManager: pnpm@10.x`). The simplest way is `corepack enable`, which runs the pinned version automatically. Installing an unpinned global pnpm (e.g. pnpm 11) works but prints a harmless "pnpm field is no longer read" deprecation warning and can rewrite the lockfile.
 - Build tools (`build-essential` / Xcode CLT) **and `python3`** — `node-pty` compiles via `node-gyp`, which needs python3. The `dtach` binary is vendored and built automatically.
 - On Linux, `setsid` (from `util-linux`, present on virtually every distro) — Kookr uses it to detach agent sessions. macOS does not need it.
-- Claude Code CLI, only if you want Kookr to launch Claude Code agents
+- Claude Code CLI, only if you want Kookr to launch Claude Code agents. Install with `curl -fsSL https://claude.ai/install.sh | bash` (or `npm install -g @anthropic-ai/claude-code`) — see [Claude Code Setup](https://code.claude.com/docs/en/setup).
 - For Codex CLI agents, the maintained fork — see [Codex CLI Setup](codex-cli-setup.md)
 - For Grok Build agents (xAI's coding-agent CLI), the official `grok` CLI — optional, only if you want Kookr to launch Grok. Install with `npm install -g @xai-official/grok`, then authenticate once on the machine that runs Kookr: `grok login --device-code` (or `grok login --oauth`). Prefer `--device-code` on the Kookr host; `--oauth` is fine on a machine with a browser.
 
