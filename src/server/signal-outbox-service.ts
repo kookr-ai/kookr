@@ -230,6 +230,28 @@ export class SignalOutboxService {
         };
       }
 
+      // Session/generation identity fence (issue #3066). A completion delivery
+      // that carries the session it was raised for must only terminalize THAT
+      // generation of the task. A stale entry surviving a crash/restart, drained
+      // against a task that has since started a new live session (a new
+      // iteration/relaunch reusing the same task id), belongs to a prior
+      // generation — applying it would auto-complete a live worker with an
+      // unrelated older delivery (the 2026-09-08 `outbox_drained` incident).
+      // Quarantine it with an observable reason instead of accepting it. The
+      // live delivered-completion sweep re-raises a fresh, correctly-bound entry
+      // if the current generation is itself genuinely delivered, so a truly-done
+      // task is not stranded.
+      if (entry.kind === 'completion_ready' && entry.boundSessionId) {
+        const currentSessionId = task.sessions[task.sessions.length - 1]?.tmuxSession;
+        if (currentSessionId !== entry.boundSessionId) {
+          const reason =
+            `stale completion delivery: bound session ${entry.boundSessionId} != current `
+            + `session ${currentSessionId ?? '(none)'} — entry belongs to a prior generation`;
+          this.log(`[signal-outbox] quarantine completion_ready for ${entry.taskId}: ${reason}`);
+          return { outcome: 'permanent_fail', error: reason };
+        }
+      }
+
       if (entry.kind === 'completion_ready' && isLessonDecisionGateEnabled()) {
         const hooksDir = this.kookrDir ? hooksDirFromKookrDir(this.kookrDir) : undefined;
         if (hooksDir) {

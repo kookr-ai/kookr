@@ -39,6 +39,18 @@ export interface SignalOutboxEntry {
   note?: string;
   /** ISO timestamp the entry was first enqueued. */
   createdAt: string;
+  /**
+   * Session/generation identity of the task as it existed when this entry was
+   * enqueued (issue #3066). The daemon captures the task's live session id
+   * (`tmuxSession`) on system-raised completion deliveries so a stale entry that
+   * survives a crash/restart can be fenced: on drain, an entry whose
+   * `boundSessionId` no longer matches the task's current live session belongs
+   * to a *prior* generation of that task and must NOT terminalize the new live
+   * session (the 2026-09-08 `outbox_drained` incident). Absent on agent-raised
+   * (`kookr signal`) entries, which carry no server-side session identity — such
+   * entries are unfenced, preserving existing behavior.
+   */
+  boundSessionId?: string;
   /** Preferred base URL captured at enqueue time (may be stale). */
   baseUrl?: string;
   lastError?: string;
@@ -92,6 +104,7 @@ export function buildSignalOutboxEntry(input: {
   kind: AgentSignalKind;
   note?: string;
   createdAt?: string;
+  boundSessionId?: string;
   baseUrl?: string;
   lastError?: string;
   attemptCount?: number;
@@ -100,6 +113,7 @@ export function buildSignalOutboxEntry(input: {
   if (!taskId) throw new Error('taskId is required');
   if (!isAgentSignalKind(input.kind)) throw new Error(`unknown signal kind: ${String(input.kind)}`);
   const note = input.note?.trim();
+  const boundSessionId = input.boundSessionId?.trim();
   return {
     schemaVersion: SIGNAL_OUTBOX_SCHEMA,
     signalId: input.signalId?.trim() || newSignalId(),
@@ -107,6 +121,7 @@ export function buildSignalOutboxEntry(input: {
     kind: input.kind,
     ...(note ? { note } : {}),
     createdAt: input.createdAt ?? new Date().toISOString(),
+    ...(boundSessionId ? { boundSessionId } : {}),
     ...(input.baseUrl ? { baseUrl: input.baseUrl } : {}),
     ...(input.lastError ? { lastError: input.lastError.slice(0, 500) } : {}),
     ...(typeof input.attemptCount === 'number' ? { attemptCount: input.attemptCount } : {}),
@@ -150,6 +165,9 @@ export async function readPendingSignals(spoolDir: string): Promise<SignalOutbox
           kind: parsed.kind,
           createdAt: parsed.createdAt,
           ...(typeof parsed.note === 'string' && parsed.note ? { note: parsed.note } : {}),
+          ...(typeof parsed.boundSessionId === 'string' && parsed.boundSessionId
+            ? { boundSessionId: parsed.boundSessionId }
+            : {}),
           ...(typeof parsed.baseUrl === 'string' && parsed.baseUrl ? { baseUrl: parsed.baseUrl } : {}),
           ...(typeof parsed.lastError === 'string' ? { lastError: parsed.lastError } : {}),
           ...(typeof parsed.attemptCount === 'number' ? { attemptCount: parsed.attemptCount } : {}),

@@ -59,6 +59,75 @@ describe('SignalOutboxService', () => {
     expect(outcomes).toHaveLength(1); // outcome hook not re-fired
   });
 
+  test('issue #3066: quarantines a stale completion_ready bound to a prior session; live task stays nonterminal', async () => {
+    // Reproduces the 2026-09-08 `outbox_drained` incident: a completion delivery
+    // raised for an EARLIER generation of a task survives a crash in the spool,
+    // then is drained against the same task after a NEW live session started.
+    // Applying it would auto-complete the live worker with an unrelated older
+    // delivery. The identity fence must discard it with an observable reason.
+    const spoolDir = await tempSpoolDir();
+    const store = new TaskStore();
+    const task = store.createTask('KB-Scout finetune iteration 5', '/repo');
+    store.startTask(task.id);
+    // The current, live generation's session.
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-gen-5',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    // Stale entry bound to a PRIOR generation's session (the one that merged the
+    // old PR), surviving in the spool across a restart.
+    await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+      signalId: 'stale-535',
+      taskId: task.id,
+      kind: 'completion_ready',
+      note: 'Delivered: PR #535 merged; post-merge cleanup exceeded the 10m budget',
+      boundSessionId: 'kookr-gen-1',
+    }));
+
+    const logs: string[] = [];
+    const svc = new SignalOutboxService({ taskStore: store, spoolDir, log: (m) => logs.push(m) });
+    const result = await svc.tick();
+
+    // Quarantined (discarded), not accepted.
+    expect(result.drained.permanentFailed).toBe(1);
+    expect(result.drained.delivered).toBe(0);
+    // The live task never received the completion signal and stays nonterminal.
+    expect(store.getPendingSignal(task.id)).toBeUndefined();
+    expect(store.getTask(task.id)?.status).toBe('inProgress');
+    // The stale entry is drained out of the spool (not left to retry forever).
+    expect(await readPendingSignals(spoolDir)).toHaveLength(0);
+    // Observable reason names the generation mismatch.
+    expect(logs.some((m) => m.includes('quarantine') && m.includes('kookr-gen-1'))).toBe(true);
+  });
+
+  test('issue #3066: a completion_ready bound to the CURRENT session still drains', async () => {
+    const spoolDir = await tempSpoolDir();
+    const store = new TaskStore();
+    const task = store.createTask('Ship it', '/repo');
+    store.startTask(task.id);
+    store.addSession(task.id, {
+      tmuxSession: 'kookr-gen-5',
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+    });
+
+    await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+      signalId: 'fresh-1',
+      taskId: task.id,
+      kind: 'completion_ready',
+      boundSessionId: 'kookr-gen-5',
+    }));
+
+    const svc = new SignalOutboxService({ taskStore: store, spoolDir });
+    const result = await svc.tick();
+    expect(result.drained.delivered).toBe(1);
+    expect(store.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
   test('drops permanent failures (unknown / terminal task) and keeps nothing', async () => {
     const spoolDir = await tempSpoolDir();
     const store = new TaskStore();

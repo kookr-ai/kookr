@@ -8,6 +8,25 @@ vi.mock('./dirty-worktree-completion-finding.js', () => ({
 }));
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
+
+// Capture every entry appended to the durable outbox so a test can assert the
+// session/generation identity the sweep binds onto its completion delivery
+// (issue #3066). The real append/remove behavior is preserved by delegating to
+// the actual module.
+const { appendedEntries } = vi.hoisted(() => ({
+  appendedEntries: [] as import('../core/signal-outbox.js').SignalOutboxEntry[],
+}));
+vi.mock('../core/signal-outbox.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../core/signal-outbox.js')>();
+  return {
+    ...actual,
+    appendSignalOutbox: vi.fn(async (dir: string, entry, opts) => {
+      appendedEntries.push(entry);
+      return actual.appendSignalOutbox(dir, entry, opts);
+    }),
+  };
+});
+
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { signalOutboxPendingPath } from '../core/signal-outbox.js';
@@ -30,6 +49,7 @@ const plus = (base: Date, ms: number) => new Date(base.getTime() + ms);
 
 const tmpDirs: string[] = [];
 afterEach(async () => {
+  appendedEntries.length = 0;
   while (tmpDirs.length) {
     await rm(tmpDirs.pop()!, { recursive: true, force: true });
   }
@@ -183,6 +203,26 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     const pending = await readFile(signalOutboxPendingPath(spoolDir), 'utf8');
     expect(pending.trim()).toBe('');
     expect(taskStore.getTask(id)?.status).toBe('completed');
+  });
+
+  test('issue #3066: the raised completion delivery is bound to the task current session', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const tracker = createDeliveredCompletionTracker();
+    const spoolDir = await makeSpoolDir();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS);
+
+    const deps = (now: Date) =>
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => now, signalOutboxSpoolDir: spoolDir });
+    await autoCompleteDeliveredTasks(deps(T0));
+    await autoCompleteDeliveredTasks(deps(past));
+
+    // The durable entry the sweep spooled carries the task's live session id, so
+    // a crash-surviving replay of THIS delivery can be fenced against a later
+    // generation of the same task (the #3066 identity binding).
+    const completionEntries = appendedEntries.filter((e) => e.kind === 'completion_ready');
+    expect(completionEntries).toHaveLength(1);
+    expect(completionEntries[0]!.boundSessionId).toBe(`kookr-${id}`);
   });
 
   test('AC negative: a task whose PR is NOT merged is never auto-completed', async () => {
