@@ -140,6 +140,13 @@ async function raiseCompletionReadyViaOutbox(opts: {
   spoolDir?: string;
   taskId: string;
   note: string;
+  /**
+   * Session/generation identity this completion is being raised for (issue
+   * #3066): the task's current live session id. Stamped on the durable entry so
+   * a stale replay that survives a crash is fenced at drain — it can only ever
+   * terminalize the generation it was raised for, never a later live session.
+   */
+  boundSessionId?: string;
   now: Date;
   onTaskOutcome?: AutoCompleteDeliveredDeps['onTaskOutcome'];
 }): Promise<void> {
@@ -148,6 +155,7 @@ async function raiseCompletionReadyViaOutbox(opts: {
     kind: 'completion_ready',
     note: opts.note,
     createdAt: opts.now.toISOString(),
+    ...(opts.boundSessionId ? { boundSessionId: opts.boundSessionId } : {}),
   });
 
   if (opts.spoolDir) {
@@ -262,6 +270,7 @@ export async function autoCompleteDeliveredTasks(
         spoolDir: deps.signalOutboxSpoolDir,
         taskId: task.id,
         note,
+        boundSessionId: task.sessions[task.sessions.length - 1]?.tmuxSession,
         now,
         onTaskOutcome: deps.onTaskOutcome,
       });

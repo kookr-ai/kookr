@@ -315,6 +315,44 @@ describe('kookr signal main', () => {
     });
   });
 
+  it('issue #3066: stamps boundSessionId from KOOKR_AGENT_ID on the spooled entry', async () => {
+    const { out } = mkConsole();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('connection refused');
+    }));
+    const { exit, spoolDir } = await runSignal({
+      argv: ['completion-ready'],
+      env: {
+        KOOKR_TASK_ID: 't-1',
+        KOOKR_AGENT_ID: 'kookr-gen-9',
+        KOOKR_API_BASE_URL: 'http://127.0.0.1:4800',
+      },
+      out,
+    });
+    expect(exit).toHaveBeenCalledWith(EXIT_OK);
+    const pending = await readPendingSignals(spoolDir);
+    expect(pending).toHaveLength(1);
+    // Binds the raising session so a crash-surviving replay is fenced at drain
+    // against a later generation of the same task id (the agent-raised hole).
+    expect(pending[0]!.boundSessionId).toBe('kookr-gen-9');
+  });
+
+  it('issue #3066: leaves the entry unbound when KOOKR_AGENT_ID is absent', async () => {
+    const { out } = mkConsole();
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('connection refused');
+    }));
+    const { exit, spoolDir } = await runSignal({
+      argv: ['completion-ready'],
+      env: { KOOKR_TASK_ID: 't-1', KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+      out,
+    });
+    expect(exit).toHaveBeenCalledWith(EXIT_OK);
+    const pending = await readPendingSignals(spoolDir);
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.boundSessionId).toBeUndefined();
+  });
+
   it('emits a SPOOLED JSON envelope (exit 0) when no server is reachable', async () => {
     const { out, err, logs, errs } = mkConsole();
     const fetchMock = vi.fn(async () => {

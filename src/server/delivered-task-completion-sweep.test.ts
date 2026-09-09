@@ -8,15 +8,40 @@ vi.mock('./dirty-worktree-completion-finding.js', () => ({
 }));
 import { surfaceDirtyWorktreeOnHeadlessCompletion } from './dirty-worktree-completion-finding.js';
 const mockSurfaceDirty = vi.mocked(surfaceDirtyWorktreeOnHeadlessCompletion);
+
+// Capture every entry appended to the durable outbox so a test can assert the
+// session/generation identity the sweep binds onto its completion delivery
+// (issue #3066). The real append/remove behavior is preserved by delegating to
+// the actual module.
+const { appendedEntries } = vi.hoisted(() => ({
+  appendedEntries: [] as import('../core/signal-outbox.js').SignalOutboxEntry[],
+}));
+vi.mock('../core/signal-outbox.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../core/signal-outbox.js')>();
+  return {
+    ...actual,
+    appendSignalOutbox: vi.fn(async (dir: string, entry, opts) => {
+      appendedEntries.push(entry);
+      return actual.appendSignalOutbox(dir, entry, opts);
+    }),
+  };
+});
+
 import { TaskStore } from '../core/tasks.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { signalOutboxPendingPath } from '../core/signal-outbox.js';
 import { DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS, type MergedPrAttribution } from '../core/completion/index.js';
 import {
+  appendSignalOutbox,
+  buildSignalOutboxEntry,
+  readPendingSignals,
+} from '../core/signal-outbox.js';
+import {
   autoCompleteDeliveredTasks,
   createDeliveredCompletionTracker,
   type AutoCompleteDeliveredDeps,
 } from './delivered-task-completion-sweep.js';
+import { SignalOutboxService } from './signal-outbox-service.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 
 const MERGED: MergedPrAttribution = {
@@ -30,6 +55,7 @@ const plus = (base: Date, ms: number) => new Date(base.getTime() + ms);
 
 const tmpDirs: string[] = [];
 afterEach(async () => {
+  appendedEntries.length = 0;
   while (tmpDirs.length) {
     await rm(tmpDirs.pop()!, { recursive: true, force: true });
   }
@@ -183,6 +209,82 @@ describe('autoCompleteDeliveredTasks (issue #1560)', () => {
     const pending = await readFile(signalOutboxPendingPath(spoolDir), 'utf8');
     expect(pending.trim()).toBe('');
     expect(taskStore.getTask(id)?.status).toBe('completed');
+  });
+
+  test('issue #3066: the raised completion delivery is bound to the task current session', async () => {
+    const taskStore = new TaskStore();
+    const id = makeRunningTask(taskStore);
+    const tracker = createDeliveredCompletionTracker();
+    const spoolDir = await makeSpoolDir();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS);
+
+    const deps = (now: Date) =>
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => now, signalOutboxSpoolDir: spoolDir });
+    await autoCompleteDeliveredTasks(deps(T0));
+    await autoCompleteDeliveredTasks(deps(past));
+
+    // The durable entry the sweep spooled carries the task's live session id, so
+    // a crash-surviving replay of THIS delivery can be fenced against a later
+    // generation of the same task (the #3066 identity binding).
+    const completionEntries = appendedEntries.filter((e) => e.kind === 'completion_ready');
+    expect(completionEntries).toHaveLength(1);
+    expect(completionEntries[0]!.boundSessionId).toBe(`kookr-${id}`);
+  });
+
+  test('issue #3066: a quarantined stale delivery is self-healing — the sweep re-raises for the live session and completes it', async () => {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask({ prompt: 'KB-Scout iteration 5', cwd: '/tmp', autoCloseOnSignal: true });
+    // The current (live) generation's session.
+    taskStore.addSession(task.id, {
+      tmuxSession: 'kookr-gen-2',
+      agentType: 'claude-code',
+      cwd: '/tmp',
+      createdAt: T0,
+    });
+    const spoolDir = await makeSpoolDir();
+
+    // A stale completion delivery from a PRIOR generation survives in the spool.
+    await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+      signalId: 'stale-535',
+      taskId: task.id,
+      kind: 'completion_ready',
+      note: 'Delivered: PR #535 merged; post-merge cleanup exceeded the 10m budget',
+      boundSessionId: 'kookr-gen-1',
+    }));
+
+    // Draining it must quarantine (not terminalize) and clear the spool.
+    const svc = new SignalOutboxService({ taskStore, spoolDir, log: () => {} });
+    const drain = await svc.tick();
+    expect(drain.drained.permanentFailed).toBe(1);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+    expect(await readPendingSignals(spoolDir)).toHaveLength(0);
+
+    // The task is genuinely delivered in the CURRENT generation → the sweep
+    // re-raises a fresh, correctly-bound completion and completes it. A
+    // false-quarantine of a truly-done task is therefore self-healing, not a
+    // permanent strand (the "not stranded" guarantee, exercised end-to-end).
+    const tracker = createDeliveredCompletionTracker();
+    const past = plus(T0, DEFAULT_POST_MERGE_CLEANUP_BUDGET_MS);
+    await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => T0, signalOutboxSpoolDir: spoolDir }),
+    );
+    const r = await autoCompleteDeliveredTasks(
+      baseDeps(taskStore, () => MERGED, { tracker, now: () => past, signalOutboxSpoolDir: spoolDir }),
+    );
+    expect(r.completedTaskIds).toEqual([task.id]);
+    expect(taskStore.getTask(task.id)?.status).toBe('completed');
+
+    // The re-raised delivery was bound to the live generation, not the stale one,
+    // and the digest names the CURRENT delivery's PR — not the stale #535.
+    const reRaised = appendedEntries.filter(
+      (e) => e.kind === 'completion_ready' && e.signalId !== 'stale-535',
+    );
+    expect(reRaised).toHaveLength(1);
+    expect(reRaised[0]!.boundSessionId).toBe('kookr-gen-2');
+    const digest = taskStore.getTask(task.id)?.completionDigest;
+    expect(digest?.bullets[0]).toContain(`PR #${MERGED.prNumber}`);
+    expect(digest?.bullets[0]).not.toContain('#535');
   });
 
   test('AC negative: a task whose PR is NOT merged is never auto-completed', async () => {

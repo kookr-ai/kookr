@@ -41,6 +41,25 @@ describe('buildSignalOutboxEntry', () => {
       kind: 'completion_ready',
     }).signalId).toBe(id);
   });
+
+  test('issue #3066: captures and trims boundSessionId, omits it when blank', () => {
+    const bound = buildSignalOutboxEntry({
+      taskId: 't',
+      kind: 'completion_ready',
+      boundSessionId: '  kookr-gen-2  ',
+    });
+    expect(bound.boundSessionId).toBe('kookr-gen-2');
+
+    const unbound = buildSignalOutboxEntry({
+      taskId: 't',
+      kind: 'completion_ready',
+      boundSessionId: '   ',
+    });
+    expect(unbound.boundSessionId).toBeUndefined();
+    // Absent entirely when not supplied (agent-raised `kookr signal` entries).
+    expect('boundSessionId' in buildSignalOutboxEntry({ taskId: 't', kind: 'completion_ready' }))
+      .toBe(false);
+  });
 });
 
 describe('appendSignalOutbox + drainSignalOutbox', () => {
@@ -63,6 +82,22 @@ describe('appendSignalOutbox + drainSignalOutbox', () => {
 
     const raw = await readFile(signalOutboxPendingPath(spoolDir), 'utf8');
     expect(raw.trim().split('\n')).toHaveLength(1);
+  });
+
+  test('issue #3066: boundSessionId survives the write→read round-trip', async () => {
+    const spoolDir = await tempSpoolDir();
+    const entry = buildSignalOutboxEntry({
+      taskId: 'task-1',
+      kind: 'completion_ready',
+      note: 'delivered',
+      boundSessionId: 'kookr-gen-7',
+    });
+    await appendSignalOutbox(spoolDir, entry);
+    const pending = await readPendingSignals(spoolDir);
+    expect(pending).toHaveLength(1);
+    // The reconstruction in readPendingSignals must preserve the identity binding,
+    // or a crash-surviving entry would drain unfenced (the #3066 incident).
+    expect(pending[0]!.boundSessionId).toBe('kookr-gen-7');
   });
 
   test('duplicate signalId is a no-op append', async () => {

@@ -352,11 +352,22 @@ async function main({
   const spoolDir = spoolDirOverride
     ?? outbox.defaultSignalOutboxDir(env);
   const signalId = randomUUID();
+  // Bind the entry to the raising session/generation (issue #3066). KOOKR_AGENT_ID
+  // is the current session's terminal id (== the task's `tmuxSession`), auto-
+  // injected into managed tasks. Stamping it lets the daemon fence a stale
+  // completion that survives a crash in the spool: if a later generation of the
+  // same task id is live when this entry drains, the fence quarantines it rather
+  // than terminalizing the new live worker. Absent outside a managed session
+  // (e.g. a `--task-id` signal from a plain shell) → unbound, as before.
+  // Stamped for every kind, but the drain-time fence only acts on
+  // `completion_ready` today; it is inert metadata on other kinds.
+  const boundSessionId = env.KOOKR_AGENT_ID;
   const entry = outbox.buildSignalOutboxEntry({
     signalId,
     taskId,
     kind,
     ...(note ? { note } : {}),
+    ...(boundSessionId ? { boundSessionId } : {}),
   });
   try {
     await outbox.appendSignalOutbox(spoolDir, entry);
