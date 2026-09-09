@@ -6,6 +6,30 @@ The complete variable reference is [Environment Variables](reference/environment
 
 ## Server
 
+### Leave CPU capacity for the desktop
+
+On Linux, set `KOOKR_AGENT_CPU_LIST` to a shared CPU list for agent processes:
+
+```bash
+KOOKR_AGENT_CPU_LIST=0-15
+```
+
+Choose a list appropriate to your machine with `lscpu -e=CPU,CORE`; exclude
+whole physical cores where possible. The example allocates sixteen logical
+CPUs, so it is suitable only when the host has additional CPUs to spare.
+Every new agent and its ordinary child processes inherit the same affinity.
+Kookr's server and terminal transport remain unrestricted. This limits where
+agents can run, not their CPU time within that allocation; a process that
+explicitly changes its own affinity can escape it.
+
+This setting requires the Linux `taskset` command and is unset by default.
+Restart Kookr after configuring it. Existing sessions retain their old affinity;
+restarting the server does not relaunch them. Unset the variable on macOS.
+Kookr's test suite also defaults to four workers so concurrent verification runs
+do not each allocate workers for the whole workstation.
+
+### Address and port
+
 Most users can keep the defaults:
 
 ```bash

@@ -1,5 +1,5 @@
 import type { AgentEvent, Anomaly } from './types.js';
-import { analyzePaneSemantics, normalizePaneForActivity } from './pane-patterns.js';
+import { analyzeVisiblePaneLines, normalizeVisiblePaneLines, visibleLinesFromTerminalText } from '../shared/pane-semantics.js';
 import { ToolLatencyMetrics } from './tool-latency-metrics.js';
 
 /** Open PreToolUse entry awaiting a matching PostToolUse / PostToolUseFailure. */
@@ -382,7 +382,10 @@ export class Watchdog {
 
     // Always update pane hash (even during grace period) so baseline is established.
     // Strip volatile UI rows first so elapsed-time redraws do not look like progress.
-    const currentHash = simpleHash(normalizePaneForActivity(currentPaneContent));
+    // Reuse one reconstruction for activity and prompt detection. A retained
+    // terminal ring can contain a megabyte of redraws even when its screen is small.
+    const visibleLines = visibleLinesFromTerminalText(currentPaneContent);
+    const currentHash = simpleHash(normalizeVisiblePaneLines(visibleLines));
     const paneChanged = state.lastPaneHash !== '' && currentHash !== state.lastPaneHash;
     state.lastPaneHash = currentHash;
     if (paneChanged) state.lastPaneChangeAt = now;
@@ -400,7 +403,7 @@ export class Watchdog {
       return { status: 'mcp_starting' };
     }
 
-    const paneSemantics = analyzePaneSemantics(currentPaneContent);
+    const paneSemantics = analyzeVisiblePaneLines(visibleLines);
 
     // Structured PermissionRequest hooks are authoritative. Pane parsing is a
     // lossy fallback and may be low-confidence while the permission is still

@@ -263,6 +263,24 @@ describe('LocalDtachBackend', () => {
     }
   });
 
+  it.skipIf(!DTACH || process.platform !== 'linux')('applies the shared CPU list through a real dtach launch', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-cpu-'));
+    const cpu = readFileSync('/proc/self/status', 'utf8').match(/^Cpus_allowed_list:\s*(.+)$/m)![1].split(/[,-]/)[0];
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'test', dtachBinary: DTACH!, agentCpuList: cpu });
+    const resultFile = join(tmpDir, 'affinity.txt');
+    try {
+      await backend.createSession({
+        id: 'cpu-budget',
+        command: process.execPath,
+        args: ['-e', `const fs=require('fs');fs.writeFileSync(${JSON.stringify(resultFile)},fs.readFileSync('/proc/self/status','utf8').match(/^Cpus_allowed_list:\\s*(.+)$/m)[1]);setInterval(()=>{},1000);`],
+      });
+      await waitForFileContents(resultFile, cpu);
+    } finally {
+      await backend.killSession('cpu-budget').catch(() => undefined);
+      backend.close();
+    }
+  });
+
   skipIfNoDtach('normalizes TERM=dumb in a replace-mode PTY environment', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-term-env-replace-'));
     backend = new LocalDtachBackend({

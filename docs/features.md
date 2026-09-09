@@ -4,6 +4,19 @@ This document defines **what Kookr must do** from the user's perspective. No tec
 
 ---
 
+## Workstation responsiveness
+
+Local agent workloads must leave room for the developer's desktop and Kookr's
+supervisor. Linux operators can allocate the same subset of CPUs to all newly
+launched agents and their child processes. This is an aggregate allocation,
+not a fresh CPU allowance for each agent. Other platforms retain their existing
+launch behavior when this optional setting is unset.
+
+Terminal monitoring must preserve prompt classification and meaningful activity
+detection while avoiding duplicate screen reconstruction within a watchdog check.
+
+---
+
 ## Core User Journey
 
 ```

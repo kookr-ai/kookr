@@ -71,6 +71,15 @@ describe('visibleLinesFromTerminalText', () => {
     expect(visibleLinesFromTerminalText('ab\bc')).toEqual(['ac']);
     expect(visibleLinesFromTerminalText('ab\u007fc')).toEqual(['ac']);
   });
+
+  test('writes long runs and coloured partial overwrites without losing the row suffix', () => {
+    const row = 'x'.repeat(100_000);
+    const text = `${row}\x1b[3G\x1b[31mhello🙂\x1b[0m\nnext\b!`;
+    expect(visibleLinesFromTerminalText(text)).toEqual([
+      `xxhello🙂${row.slice(9)}`,
+      'nex!',
+    ]);
+  });
 });
 
 describe('visibleLinesFromTerminalText — cursor addressing (issue #3039)', () => {

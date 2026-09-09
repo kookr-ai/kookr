@@ -85,6 +85,7 @@ import {
 } from './dtach-ring-store.js';
 import { killProcessTree } from './process-tree.js';
 import { ensureInteractiveTermEnv } from './session-term-env.js';
+import { buildAgentCpuCommand, validateAgentCpuList } from './agent-cpu-budget.js';
 import {
   findAgentPidSync as findAgentPidSyncImpl,
   findDtachMasterPid,
@@ -114,6 +115,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private readonly manifestStore: DtachManifestStore;
   private readonly ringStore: DtachRingStore;
   private readonly dtachBinary: string;
+  private readonly agentCpuList: string | undefined;
   private readonly instanceId: string;
   /** Unique process-generation stamp for restart-safe launch handoff markers. */
   private readonly launchCreatorId = randomUUID();
@@ -193,6 +195,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   constructor(options: LocalDtachBackendOptions = {}) {
     this.instanceId = options.instanceId ?? 'default';
     this.dtachBinary = options.dtachBinary ?? 'dtach';
+    this.agentCpuList = validateAgentCpuList(options.agentCpuList, process.platform);
     this.writeTimeoutMs = options.writeTimeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS;
     this.reconnectCooldownMs = options.reconnectCooldownMs ?? RECONNECT_COOLDOWN_MS;
     this.ringFleetBudgetBytes = options.ringFleetBudgetBytes ?? 0;
@@ -374,7 +377,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     });
 
     // Step 2: spawn the dtach master so it outlives this Kookr process.
-    const dtachArgs = ['-n', sock, '-r', 'winch', '-E', spec.command, ...spec.args];
+    const agentCommand = buildAgentCpuCommand(spec.command, spec.args, this.agentCpuList);
+    const dtachArgs = ['-n', sock, '-r', 'winch', '-E', agentCommand.command, ...agentCommand.args];
     const { command, args } = buildDtachSpawn(process.platform, this.dtachBinary, dtachArgs);
     // `envMode: 'replace'` gives the caller an exact allowlisted child env (the
     // Grok adapter uses it to keep server secrets out of the agent process);
@@ -391,6 +395,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     );
     try {
       this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
+      if (this.agentCpuList) this.assertExecutableAvailable(spec.id, 'taskset', env);
       if (command !== this.dtachBinary) this.assertExecutableAvailable(spec.id, command, env);
     } catch (err) {
       await this.removeManifestEntry(spec.id);

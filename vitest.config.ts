@@ -2,6 +2,9 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Agent suites share the host with the supervisor and desktop. Bound each
+    // run rather than letting every agent allocate workers for the whole CPU.
+    maxWorkers: 4,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
     exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
     // Multi-server integration tests (relay + createKookrServerInternal) regularly
