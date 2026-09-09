@@ -212,6 +212,51 @@ describe('GhUmbrellaChainClient.listOpenIssues', () => {
     expect(sleeps).toEqual([1_000]); // one bounded back-off, no real delay incurred
   });
 
+  test('retries a truncated paginated read (unexpected end of JSON input) then succeeds', async () => {
+    // gh api --paginate --jq emits "unexpected end of JSON input" on stderr when
+    // a page comes back truncated/empty. A re-read usually succeeds, so the poll
+    // must retry instead of skipping the whole project for the tick (#3073).
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      if (n === 1) {
+        throw Object.assign(new Error('gh api failed'), { stderr: 'unexpected end of JSON input' });
+      }
+      return { stdout: '5\n', stderr: '' };
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    expect(await client.listOpenIssues('o/r')).toEqual([{ number: 5 }]);
+    expect(n).toBe(2); // first (truncated) + retried success
+    expect(sleeps).toEqual([1_000]); // one bounded back-off
+  });
+
+  test('bounds a persistently truncated read at the cap, then surfaces it (#3073)', async () => {
+    // A truncation that never clears must still be bounded by the same cap as
+    // any other transient class — retried up to maxAttempts, then rethrown so
+    // the advancer records a project-scan skip rather than looping forever.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      // Shape promisify(execFile) raises: command line in .message, gh's own
+      // output in .stderr (the field the classifier reads).
+      throw Object.assign(new Error('Command failed: gh api ...\nunexpected end of JSON input'), {
+        stderr: 'unexpected end of JSON input',
+      });
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.listOpenIssues('o/r')).rejects.toThrow(/unexpected end of JSON input/);
+    expect(n).toBe(3); // default maxAttempts — same cap as other transient classes
+    expect(sleeps).toEqual([1_000, 3_000]);
+  });
+
   test('does not retry a non-transient HTTP 404 — it throws after a single attempt', async () => {
     const sleeps: number[] = [];
     let n = 0;

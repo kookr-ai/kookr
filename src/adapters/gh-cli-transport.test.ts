@@ -114,6 +114,9 @@ describe('isTransientGhError — classification matrix', () => {
     ['message: timed out', { message: 'gh api timed out after 30000ms' }],
     ['message: HTTP 502', { message: 'server responded with HTTP 502' }],
     ['stderr: connection reset', { stderr: 'error: connection reset by peer' }],
+    // gh api --paginate --jq emits this when a page comes back truncated/empty (#3073).
+    ['message: unexpected end of JSON input', { message: 'unexpected end of JSON input' }],
+    ['stderr: unexpected end of JSON input', { stderr: 'unexpected end of JSON input' }],
   ])('treats %s as transient', (_label, shape) => {
     expect(isTransientGhError(shape)).toBe(true);
   });

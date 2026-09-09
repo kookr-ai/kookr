@@ -49,6 +49,12 @@ function defaultSleep(ms: number): Promise<void> {
  * as transient (the word "network" in the slug), retrying an error that must
  * not be retried. Network faults still surface via `code`/`signal` or gh's own
  * stderr, so dropping `.message` loses no real transient signal.
+ *
+ * `unexpected end of JSON input` is transient: the `listOpenIssues` poll runs
+ * `gh api --paginate ... --jq`, and gh emits that on gh's stderr when a page
+ * comes back truncated/empty. Retrying the poll re-reads the page instead of
+ * skipping the whole project for the tick (#3073). It cannot appear in a repo
+ * slug, so matching it on stderr keeps the false-positive guard above intact.
  */
 function isTransientGhError(err: unknown): boolean {
   const error = err as { code?: unknown; killed?: unknown; signal?: unknown; stderr?: unknown } | null;
@@ -61,7 +67,7 @@ function isTransientGhError(err: unknown): boolean {
     || code === 'EAI_AGAIN'
     || code === 'ENOTFOUND'
     || (error?.killed === true && signal === 'SIGTERM')
-    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error/i.test(stderr);
+    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error|unexpected end of json input/i.test(stderr);
 }
 
 /** Run `operation`, retrying only transient failures within the bounded caps. */

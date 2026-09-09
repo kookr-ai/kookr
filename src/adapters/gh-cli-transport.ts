@@ -134,6 +134,11 @@ export function spawnGhWithStdinOnce(
  * retrying). Rate-limit errors are never transient — they are surfaced so
  * callers can honour retry-after — everything else is matched on error code,
  * kill signal, or message text.
+ *
+ * `unexpected end of JSON input` is transient: `gh api --paginate ... --jq`
+ * emits it when a page comes back truncated/empty, so a re-read usually
+ * succeeds. Matching it here retries the truncation instead of surfacing it as
+ * a fatal read failure (#3073).
  */
 export function isTransientGhError(err: unknown): boolean {
   if (classifyGitHubRateLimit(err)) return false;
@@ -150,7 +155,7 @@ export function isTransientGhError(err: unknown): boolean {
     || code === 'EAI_AGAIN'
     || code === 'ENOTFOUND'
     || (error?.killed === true && signal === 'SIGTERM')
-    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error/i.test(message);
+    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error|unexpected end of json input/i.test(message);
 }
 
 /** Real sleep seam. Resolves immediately for non-positive delays. */
