@@ -1,5 +1,6 @@
 import type { AgentEvent } from '../core/types.js';
 import type { CompletionDigest } from '../core/completion-digest.js';
+import type { TaskCompletionFeedback } from '../core/tasks.js';
 import { isSecretFieldName, redactSecrets } from '../core/redact-secrets.js';
 
 /**
@@ -230,9 +231,14 @@ export function projectDescriptionForClient(
  *  - `description` is bounded to {@link TERMINAL_DESCRIPTION_MAX_BYTES} — on a
  *    terminal row it only feeds the Completed-pane hover tooltip; the full
  *    prompt remains available via `GET /api/tasks/:id`.
- *  - `completionFeedback` and `launchHealthSummary` are dropped — verified to
- *    have zero frontend readers on terminal snapshot rows (the DetailPanel
- *    reads feedback state from the task detail endpoint, not the snapshot).
+ *  - `launchHealthSummary` is dropped — verified to have zero frontend readers
+ *    on terminal snapshot rows.
+ *  - `completionFeedback` is slimmed to the rendered contract fields
+ *    (`rating`/`note`/`downReason`) rather than dropped: the Completed pane now
+ *    renders the operator's rating as a pill on the row (issue #3097), so it
+ *    must survive to the client. It is tiny (a rating plus a note bounded to
+ *    500 chars at capture) and sparse, so it stays well inside the C2 payload
+ *    budget; any off-contract shape is coerced away here.
  *  - `completionDigest` keeps everything the dashboard renders (bullets,
  *    filesChanged, criteriaVerdict, testSummary, branch, tokenUsage) and
  *    sheds the sub-fields with zero frontend readers (`verificationCommands`,
@@ -254,16 +260,47 @@ export function projectTerminalAgentFieldsForClient<
   const completionDigest = agent.completionDigest
     ? projectTerminalCompletionDigestForClient(agent.completionDigest)
     : undefined;
+  const feedback =
+    agent.completionFeedback !== undefined
+      ? projectTerminalCompletionFeedbackForClient(agent.completionFeedback)
+      : undefined;
   const descriptionChanged = description !== agent.description;
   const digestChanged = completionDigest !== agent.completionDigest;
-  const hasDroppableFields = agent.completionFeedback !== undefined || agent.launchHealthSummary !== undefined;
-  if (!descriptionChanged && !digestChanged && !hasDroppableFields) return agent;
+  // The helper always returns a fresh object (or undefined), so any present
+  // feedback counts as a change and forces a rebuild — that is what strips the
+  // off-contract sub-fields and slims the wire copy.
+  const feedbackChanged = feedback !== agent.completionFeedback;
+  const hasDroppableFields = agent.launchHealthSummary !== undefined;
+  if (!descriptionChanged && !digestChanged && !feedbackChanged && !hasDroppableFields) return agent;
 
   const next = { ...agent };
   if (descriptionChanged && description !== undefined) next.description = description;
   if (digestChanged && completionDigest !== undefined) next.completionDigest = completionDigest;
-  delete next.completionFeedback;
+  if (feedbackChanged) {
+    if (feedback) next.completionFeedback = feedback;
+    else delete next.completionFeedback;
+  }
   delete next.launchHealthSummary;
+  return next;
+}
+
+/**
+ * Coerce a stored `completionFeedback` down to exactly the contract fields the
+ * Completed-pane pill renders (issue #3097), dropping any off-contract shape.
+ * Returns `undefined` for anything without a valid `up`/`down` rating so a
+ * malformed record renders nothing rather than a mislabeled pill.
+ */
+export function projectTerminalCompletionFeedbackForClient(
+  feedback: unknown,
+): TaskCompletionFeedback | undefined {
+  if (feedback === null || typeof feedback !== 'object') return undefined;
+  const raw = feedback as { rating?: unknown; note?: unknown; downReason?: unknown };
+  if (raw.rating !== 'up' && raw.rating !== 'down') return undefined;
+  const next: TaskCompletionFeedback = { rating: raw.rating };
+  if (typeof raw.note === 'string' && raw.note.length > 0) next.note = raw.note;
+  if (raw.downReason === 'agent_behavior' || raw.downReason === 'my_prompt') {
+    next.downReason = raw.downReason;
+  }
   return next;
 }
 

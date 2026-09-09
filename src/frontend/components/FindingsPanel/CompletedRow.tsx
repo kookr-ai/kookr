@@ -61,6 +61,26 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
     ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
     : terminalLabel;
 
+  // The operator's completion rating (issue #3097). Captured in
+  // CompleteDialogFooter and persisted on the DTO but never surfaced until now;
+  // render it as a display-only pill so rated tasks are reviewable. Clicking it
+  // just selects the row (no onClick of its own) — it never re-opens the rating
+  // flow.
+  const feedback = agent.completionFeedback;
+  const ratingEmoji = feedback?.rating === 'up' ? '👍' : '👎';
+  const ratingWord = feedback?.rating === 'up' ? 'Rated good' : 'Rated bad';
+  const downReasonLabel =
+    feedback?.downReason === 'agent_behavior'
+      ? 'Agent behavior'
+      : feedback?.downReason === 'my_prompt'
+        ? 'My prompt was unclear'
+        : undefined;
+  const ratingNoteParts = [feedback?.note, downReasonLabel].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  );
+  const ratingTitle =
+    ratingNoteParts.length > 0 ? `${ratingWord}: ${ratingNoteParts.join(' — ')}` : ratingWord;
+
   function selectCompletedAgent() {
     if (pendingDeletion) return;
     track({ type: 'agent_clicked', agentId: agent.agentId, source: 'completed_row', anomalyType: null });
@@ -98,6 +118,16 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt, agent.finishedAt)}
           </span>
+          {feedback && (
+            <span
+              className={`completed-row-rating completed-row-rating--${feedback.rating}`}
+              title={ratingTitle}
+              aria-label={ratingTitle}
+              data-testid="completed-row-rating"
+            >
+              {ratingEmoji}
+            </span>
+          )}
           <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>
             <span className="completed-row-status-label">{terminalLabel}</span>
             {finishedAt && <time dateTime={agent.finishedAt}>{finishedAt}</time>}
