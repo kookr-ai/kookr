@@ -59,6 +59,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'ops.hung-reclaim',
   'ops.schedules-paused-by-failure',
   'hooks.ingestion-lag',
+  'hooks.missing-write-timestamps',
   'ops.host-stale-dtach',
   'hooks.replay-checkpoints',
   'ops.prod-smoke-tick',
@@ -251,6 +252,7 @@ describe('kookr doctor --json', () => {
       'ops.hung-reclaim',
       'ops.schedules-paused-by-failure',
       'hooks.ingestion-lag',
+      'hooks.missing-write-timestamps',
       'ops.host-stale-dtach',
       'hooks.replay-checkpoints',
       'ops.prod-smoke-tick',
@@ -282,6 +284,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'hooks.missing-write-timestamps')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -601,6 +608,8 @@ describe('kookr doctor --json', () => {
         sessionCount: 24,
         notableLagCount: 192,
         lagWarningThresholdMs: 2000,
+        totalArrivals: 1000,
+        missingWriteTimestampCount: 0,
       }),
     });
     const check = report.checks.find((c) => c.id === 'hooks.ingestion-lag');
@@ -623,6 +632,8 @@ describe('kookr doctor --json', () => {
         sessionCount: 3,
         notableLagCount: 0,
         lagWarningThresholdMs: 2000,
+        totalArrivals: 120,
+        missingWriteTimestampCount: 0,
       }),
     });
     expect(healthy.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
@@ -652,14 +663,153 @@ describe('kookr doctor --json', () => {
         sessionCount: 2,
         notableLagCount: 5,
         lagWarningThresholdMs: 2000,
+        totalArrivals: 400,
+        missingWriteTimestampCount: 24,
       },
     })).toEqual({
       sessionCount: 2,
       notableLagCount: 5,
       lagWarningThresholdMs: 2000,
+      totalArrivals: 400,
+      missingWriteTimestampCount: 24,
+    });
+    // totalArrivals / missingWriteTimestampCount default to 0 when the body omits them.
+    expect(parseHookIngestionLagDiagnosticsBody({
+      ingestion: { sessionCount: 1, notableLagCount: 0 },
+    })).toEqual({
+      sessionCount: 1,
+      notableLagCount: 0,
+      lagWarningThresholdMs: 2000,
+      totalArrivals: 0,
+      missingWriteTimestampCount: 0,
     });
     expect(parseHookIngestionLagDiagnosticsBody({})).toBeNull();
     expect(parseHookIngestionLagDiagnosticsBody(null)).toBeNull();
+  });
+
+  it('WARNs on hooks.missing-write-timestamps when the ratio exceeds threshold (issue #3079)', async () => {
+    const run = commandRunner(happyFixtures());
+    // Live-observed ~48%: 480 of 1000 arrivals missing a write timestamp.
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-09-09T00:00:00.000Z'),
+      ...hermeticOps,
+      probeHookIngestionLag: async () => ({
+        sessionCount: 24,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+        totalArrivals: 1000,
+        missingWriteTimestampCount: 480,
+      }),
+    });
+    const check = report.checks.find((c) => c.id === 'hooks.missing-write-timestamps');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('48.0%'),
+    });
+    expect(check?.summary).toContain('480/1000');
+    expect(check?.detail).toContain('missingWriteTimestampCount=480');
+    expect(check?.recommendedAction).toContain('writeTimestampSourceCounts');
+    // The lag advisory is independent and stays green when notableLagCount=0.
+    expect(report.checks.find((c) => c.id === 'hooks.ingestion-lag')).toMatchObject({
+      status: 'ok',
+    });
+  });
+
+  it('keeps hooks.missing-write-timestamps green on a low ratio, below-min-sample, or offline probe (issue #3079)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    // Low ratio: 10 of 1000 (1%) — well under the 25% threshold.
+    const lowRatio = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookIngestionLag: async () => ({
+        sessionCount: 5,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+        totalArrivals: 1000,
+        missingWriteTimestampCount: 10,
+      }),
+    });
+    expect(lowRatio.checks.find((c) => c.id === 'hooks.missing-write-timestamps')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('1.0%'),
+    });
+
+    // Below-min-sample: 40 arrivals all missing (100%) but under the sample guard.
+    const belowSample = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookIngestionLag: async () => ({
+        sessionCount: 2,
+        notableLagCount: 0,
+        lagWarningThresholdMs: 2000,
+        totalArrivals: 40,
+        missingWriteTimestampCount: 40,
+      }),
+    });
+    expect(belowSample.checks.find((c) => c.id === 'hooks.missing-write-timestamps')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('below min sample'),
+    });
+
+    // Offline probe: soft-skip green.
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeHookIngestionLag: async () => null,
+    });
+    expect(offline.checks.find((c) => c.id === 'hooks.missing-write-timestamps')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('respects the exact min-sample and ratio boundaries on hooks.missing-write-timestamps (issue #3079)', async () => {
+    const run = commandRunner(happyFixtures());
+    const missingWriteTsCheck = async (
+      totalArrivals: number,
+      missingWriteTimestampCount: number,
+    ) => {
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv },
+        commandRunner: run,
+        access: async () => {},
+        ...hermeticOps,
+        probeHookIngestionLag: async () => ({
+          sessionCount: 4,
+          notableLagCount: 0,
+          lagWarningThresholdMs: 2000,
+          totalArrivals,
+          missingWriteTimestampCount,
+        }),
+      });
+      return report.checks.find((c) => c.id === 'hooks.missing-write-timestamps');
+    };
+
+    // Min-sample guard is strict `< 50`: 49 arrivals skip (even at 100% missing),
+    // 50 arrivals are evaluated (here 100% → warn), pinning the exact boundary.
+    expect(await missingWriteTsCheck(49, 49)).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('below min sample'),
+    });
+    expect(await missingWriteTsCheck(50, 50)).toMatchObject({ status: 'warn' });
+
+    // Ratio threshold is strict `> 0.25`: exactly 25% passes, just over warns.
+    expect(await missingWriteTsCheck(100, 25)).toMatchObject({ status: 'ok' });
+    expect(await missingWriteTsCheck(100, 26)).toMatchObject({ status: 'warn' });
   });
 
   it('WARNs on ops.host-stale-dtach when dtach far exceeds reaper orphans (issue #2348)', async () => {
