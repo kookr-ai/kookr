@@ -11,6 +11,7 @@ const HELP_TEXT = `kookr - local AI agent supervisor.
 Usage:
   kookr                         Start the built Kookr server.
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
+  kookr stop|abort <taskId>... [--reason <text>]  Abort (terminate) running task(s).
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
   kookr issue <verb> [OPTIONS]   Claim/release/inspect issue ownership.
@@ -45,7 +46,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, status, doctor,
 signal, ralph, issue, schedule, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -115,6 +116,14 @@ async function main({
   if (command === 'status') {
     const { main: runStatusCli } = await import('./kookr-status.js');
     return runStatusCli({ argv: rest, env, out, exit });
+  }
+
+  // Abort (terminate) running task(s) from the terminal (issue #3069). Thin
+  // HTTP client against POST /api/tasks/abort — dispatches here rather than
+  // booting a server. `abort` is an alias for the same verb.
+  if (command === 'stop' || command === 'abort') {
+    const { runStopCommand } = await import('./kookr-stop.js');
+    return exit(await runStopCommand(rest, { env, out, err }));
   }
 
   // Ops digest one-pager (issue #2347). Thin HTTP client against

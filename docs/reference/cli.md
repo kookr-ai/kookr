@@ -703,17 +703,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1291,6 +1291,47 @@ overrides auto-detect; otherwise Kookr probes ports `4800` then `4801`.
 
 Exit codes: `0` success, `2` usage error (bad flags / unknown verb), `3` no
 server reachable, `4` server rejected the request.
+
+## `kookr stop`
+
+Abort (terminate) one or more running tasks on a local Kookr instance from the
+terminal, without opening the dashboard. This is the lifecycle counterpart to
+`kookr spawn`: a thin client of the pre-existing `POST /api/tasks/abort` route
+(`batchAbortTasks`), so it kills a runaway or stuck agent from a headless/scripted
+loop. `kookr abort` is an accepted alias.
+
+```bash
+kookr stop <taskId> [<taskId>...] [--reason "<text>"] [--json]
+kookr abort <taskId>                        # alias
+kookr stop t-1 t-2 --reason "runaway batch" # abort several at once
+kookr stop t-1 --json                        # machine-readable envelope
+```
+
+Each request aborts every still-active task and prints a per-task result. The
+call is **idempotent**: a task that is already terminal (or unknown) reports
+`already_terminal` / `not_found` without a second transition, so re-running the
+same `kookr stop` is safe. Only a genuine `failed` outcome (the server could not
+abort the task) is treated as an error. The human output is a per-task table plus
+a summary line; `--json` emits one `{ ok, code, message, details }` envelope whose
+`details` carries the raw `{ results, summary }` from the route.
+
+**Supervisor token.** The abort route is supervisor-token gated: when the server
+has `KOOKR_SUPERVISOR_TOKEN` set, callers must present `Authorization: Bearer
+<token>`. `kookr stop` forwards that token (from the same-named env var) when it
+is set, falls back to `KOOKR_API_TOKEN` for a non-loopback server, and otherwise
+sends no auth header (the loopback-open default). Every request is attributed via
+the `x-kookr-actor: cli` header for the server's audit log.
+
+Target selection mirrors `kookr spawn`: `KOOKR_API_BASE_URL` or `KOOKR_PORT`
+overrides auto-detect; otherwise Kookr probes ports `4800` then `4801` and, like
+`spawn`/`signal`, exits with an ambiguity error when both respond.
+
+Exit codes: `0` success, `2` usage error (no task id / bad flags / batch over
+`MAX_BATCH_ABORT_TASKS`), `3` no server reachable, `4` server/HTTP error —
+including a per-task `failed` outcome, an unexpected response body, or a request
+timeout (the server was reachable but did not answer in time; the abort may still
+be completing, so re-run to confirm), `5` ambiguous port (two instances reachable;
+set `KOOKR_PORT` to choose one).
 
 ## `kookr migrate`
 
