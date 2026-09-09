@@ -81,6 +81,15 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     },
   },
   {
+    name: 'stop',
+    flags: ['--reason', '--json', '-h', '--help'],
+  },
+  {
+    // `abort` is a documented alias of `stop` (dispatched together in bin/kookr.js).
+    name: 'abort',
+    flags: ['--reason', '--json', '-h', '--help'],
+  },
+  {
     name: 'signal',
     positionalValues: ['completion-ready'],
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
@@ -402,6 +411,8 @@ function renderBashCompletion(): string {
   const modelEqualsValues = equalsFlagValues('--model', modelValues);
   const playbookScopeEqualsValues = equalsFlagValues('--playbook-scope', playbookScopeValues);
   const spawnFlags = flagsFor('spawn');
+  const stopFlags = flagsFor('stop');
+  const abortFlags = flagsFor('abort');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -525,6 +536,12 @@ _kookr()
   case "\${cmd}" in
     spawn)
       COMPREPLY=( $(compgen -W "${spawnFlags}" -- "\${cur}") )
+      ;;
+    stop)
+      COMPREPLY=( $(compgen -W "${stopFlags}" -- "\${cur}") )
+      ;;
+    abort)
+      COMPREPLY=( $(compgen -W "${abortFlags}" -- "\${cur}") )
       ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -724,6 +741,8 @@ function renderZshCompletion(): string {
   const modelEqualsValues = equalsFlagValues('--model', modelValues);
   const playbookScopeEqualsValues = equalsFlagValues('--playbook-scope', playbookScopeValues);
   const spawnFlags = flagsFor('spawn');
+  const stopFlags = flagsFor('stop');
+  const abortFlags = flagsFor('abort');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -803,6 +822,12 @@ _kookr()
         --playbook-scope) compadd ${playbookScopeValues}; return ;;
       esac
       compadd -- ${spawnFlags}
+      ;;
+    stop)
+      compadd -- ${stopFlags}
+      ;;
+    abort)
+      compadd -- ${abortFlags}
       ;;
     signal)
       if (( CURRENT == 3 )); then
