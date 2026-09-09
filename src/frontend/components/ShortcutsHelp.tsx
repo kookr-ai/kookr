@@ -2,6 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import {
+  commandPaletteHintKeys,
+  detectShortcutPlatform,
   getShortcutHelpGroups,
   matchesShortcutAction,
   type ShortcutBindingMap,
@@ -35,6 +37,15 @@ const CONTEXTUAL_SHORTCUTS = [
 export function ShortcutsHelp({ bindings, onClose, onShareView }: Props) {
   useEscapeToClose(onClose);
   const shortcutGroups = getShortcutHelpGroups(bindings);
+  // The command palette chord is not in SHORTCUT_ACTIONS (App hardcodes the
+  // keydown), so surface it here via the platform-aware helper rather than the
+  // binding map — ⌘K on macOS, Ctrl+K elsewhere.
+  const navigationShortcuts = [
+    {
+      keys: commandPaletteHintKeys(detectShortcutPlatform()),
+      description: 'Open the command palette to jump to a command, task, finding, or project',
+    },
+  ];
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
@@ -121,6 +132,15 @@ export function ShortcutsHelp({ bindings, onClose, onShareView }: Props) {
                     </span>
                   </div>
                 ))}
+                {group.title === 'Navigation' &&
+                  navigationShortcuts.map((shortcut) => (
+                    <div key={shortcut.keys.join('+')} className="shortcut-row">
+                      <span className="shortcut-keys">
+                        <ShortcutKeys keys={shortcut.keys} plusClassName="shortcut-plus" />
+                      </span>
+                      <span className="shortcut-desc">{shortcut.description}</span>
+                    </div>
+                  ))}
               </div>
             </div>
           ))}
