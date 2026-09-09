@@ -2777,6 +2777,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         emergencyPruneTriggeredTotal: 0,
         lastEmergencyPruneAt: null,
         lastEmergencyReclaimedBytes: null,
+        lastEmergencyPruneError: null,
         throttleMs: emergencyPruneThrottleMsResolved,
       };
       return composeMaintenancePruneHealth(maintenancePruneHealth.getSnapshot(), emergency);

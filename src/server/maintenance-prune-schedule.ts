@@ -137,6 +137,8 @@ export interface MaintenancePruneHealthSnapshot extends MaintenancePruneSchedule
   lastEmergencyPruneAt: string | null;
   /** Bytes reclaimed by the last successful *emergency* sweep, or null. */
   lastEmergencyReclaimedBytes: number | null;
+  /** Error message from the last failed *emergency* sweep, or null after success. */
+  lastEmergencyPruneError: string | null;
   /** Configured min gap between emergency runs (ms). */
   throttleMs: number;
 }
@@ -149,6 +151,8 @@ export interface EmergencyMaintenancePruneHealthSnapshot {
   emergencyPruneTriggeredTotal: number;
   lastEmergencyPruneAt: string | null;
   lastEmergencyReclaimedBytes: number | null;
+  /** Error message from the last failed *emergency* sweep, or null after success. */
+  lastEmergencyPruneError: string | null;
   /** Configured min gap between emergency runs (ms). */
   throttleMs: number;
 }
@@ -163,6 +167,7 @@ export function composeMaintenancePruneHealth(
     emergencyPruneTriggeredTotal: emergency.emergencyPruneTriggeredTotal,
     lastEmergencyPruneAt: emergency.lastEmergencyPruneAt,
     lastEmergencyReclaimedBytes: emergency.lastEmergencyReclaimedBytes,
+    lastEmergencyPruneError: emergency.lastEmergencyPruneError,
     throttleMs: emergency.throttleMs,
   };
 }
@@ -202,6 +207,8 @@ export class EmergencyMaintenancePruneController {
   private emergencyPruneTriggeredTotal = 0;
   private lastEmergencyPruneAt: string | null = null;
   private lastReclaimedBytes: number | null = null;
+  /** Message from the last failed emergency sweep, or null after success (issue #3078). */
+  private lastEmergencyPruneError: string | null = null;
   /** Epoch-ms of the last started run, or `null` before the first. */
   private lastRunStartedAtMs: number | null = null;
   private inFlight = false;
@@ -219,6 +226,7 @@ export class EmergencyMaintenancePruneController {
       emergencyPruneTriggeredTotal: this.emergencyPruneTriggeredTotal,
       lastEmergencyPruneAt: this.lastEmergencyPruneAt,
       lastEmergencyReclaimedBytes: this.lastReclaimedBytes,
+      lastEmergencyPruneError: this.lastEmergencyPruneError,
       throttleMs: this.throttleMs,
     };
   }
@@ -250,22 +258,38 @@ export class EmergencyMaintenancePruneController {
         `[maintenance-prune] emergency sweep triggered by data-directory disk-critical ` +
           `(total=${this.emergencyPruneTriggeredTotal}, throttleMs=${this.throttleMs})`,
       );
-      // Strip schedule health so emergency reclaims do not overwrite the
-      // interval timer's lastRunAt / lastReclaimedBytes (issue #2345).
-      const { health: _scheduleHealth, ...emergencyConfig } = this.options.pruneConfig;
+      // Strip the schedule health tracker so emergency reclaims do not overwrite
+      // the interval timer's lastRunAt / lastReclaimedBytes (issue #2345). Wire a
+      // capture-only shim in its place so the shared runner surfaces the failure
+      // message on the emergency leg (issue #3078): recordSuccess clears the error
+      // and recordFailure records its message, without touching any schedule field.
+      const { health: _scheduleHealth, ...restConfig } = this.options.pruneConfig;
+      const emergencyConfig: MaintenancePruneScheduleConfig = {
+        ...restConfig,
+        health: {
+          recordSuccess: () => {
+            this.lastEmergencyPruneError = null;
+          },
+          recordFailure: (err) => {
+            this.lastEmergencyPruneError = err instanceof Error ? err.message : String(err);
+          },
+        },
+      };
       const result = await runScheduledMaintenancePrune(emergencyConfig);
       if (result) {
         this.lastReclaimedBytes = result.reclaimedBytes;
         return 'ran';
       }
-      // Failed attempt: do not leave a prior success's reclaim figure as if it
-      // belonged to this run (health couples lastAt with lastEmergencyReclaimedBytes).
+      // Failed attempt (the runner caught the throw and recorded the message via
+      // the shim): do not leave a prior success's reclaim figure as if it belonged
+      // to this run (health couples lastAt with lastEmergencyReclaimedBytes).
       this.lastReclaimedBytes = null;
       return 'failed';
     } catch (err) {
       // runScheduledMaintenancePrune already catches; this is belt-and-braces.
       console.error('[maintenance-prune] emergency sweep failed:', err);
       this.lastReclaimedBytes = null;
+      this.lastEmergencyPruneError = err instanceof Error ? err.message : String(err);
       return 'failed';
     } finally {
       this.inFlight = false;
