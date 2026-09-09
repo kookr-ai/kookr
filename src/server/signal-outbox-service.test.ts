@@ -103,6 +103,34 @@ describe('SignalOutboxService', () => {
     expect(logs.some((m) => m.includes('quarantine') && m.includes('kookr-gen-1'))).toBe(true);
   });
 
+  test('issue #3066: a bound completion_ready is quarantined when the task has no session yet', async () => {
+    // Boundary: a stale entry carries a bound session, but the task currently
+    // has no recorded session (e.g. relaunched/reopened before the new session
+    // attaches). The fence must still refuse — a bound entry can only apply to
+    // its own generation — and name the missing session in the reason.
+    const spoolDir = await tempSpoolDir();
+    const store = new TaskStore();
+    const task = store.createTask('reopened, no session yet', '/repo');
+    store.startTask(task.id); // deliberately no addSession()
+
+    await appendSignalOutbox(spoolDir, buildSignalOutboxEntry({
+      signalId: 'stale-nosession',
+      taskId: task.id,
+      kind: 'completion_ready',
+      boundSessionId: 'kookr-gen-1',
+    }));
+
+    const logs: string[] = [];
+    const svc = new SignalOutboxService({ taskStore: store, spoolDir, log: (m) => logs.push(m) });
+    const result = await svc.tick();
+
+    expect(result.drained.permanentFailed).toBe(1);
+    expect(result.drained.delivered).toBe(0);
+    expect(store.getPendingSignal(task.id)).toBeUndefined();
+    expect(store.getTask(task.id)?.status).toBe('inProgress');
+    expect(logs.some((m) => m.includes('quarantine') && m.includes('(none)'))).toBe(true);
+  });
+
   test('issue #3066: a completion_ready bound to the CURRENT session still drains', async () => {
     const spoolDir = await tempSpoolDir();
     const store = new TaskStore();

@@ -41,14 +41,15 @@ export interface SignalOutboxEntry {
   createdAt: string;
   /**
    * Session/generation identity of the task as it existed when this entry was
-   * enqueued (issue #3066). The daemon captures the task's live session id
-   * (`tmuxSession`) on system-raised completion deliveries so a stale entry that
-   * survives a crash/restart can be fenced: on drain, an entry whose
-   * `boundSessionId` no longer matches the task's current live session belongs
-   * to a *prior* generation of that task and must NOT terminalize the new live
-   * session (the 2026-09-08 `outbox_drained` incident). Absent on agent-raised
-   * (`kookr signal`) entries, which carry no server-side session identity — such
-   * entries are unfenced, preserving existing behavior.
+   * enqueued (issue #3066): the session id (`tmuxSession`) that raised it. Both
+   * producers stamp it — the delivered-completion sweep from the task's live
+   * session, and the `kookr signal` CLI from `KOOKR_AGENT_ID` — so a stale entry
+   * that survives a crash/restart can be fenced: on drain, a `completion_ready`
+   * entry whose `boundSessionId` no longer matches the task's current live
+   * session belongs to a *prior* generation of that task and must NOT terminalize
+   * the new live session (the 2026-09-08 `outbox_drained` incident). Absent only
+   * when no session id was available at enqueue (e.g. a `--task-id` signal from a
+   * plain shell); such entries are unfenced, preserving existing behavior.
    */
   boundSessionId?: string;
   /** Preferred base URL captured at enqueue time (may be stale). */

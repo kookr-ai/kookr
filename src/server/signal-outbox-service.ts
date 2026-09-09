@@ -245,9 +245,12 @@ export class SignalOutboxService {
         const currentSessionId = task.sessions[task.sessions.length - 1]?.tmuxSession;
         if (currentSessionId !== entry.boundSessionId) {
           const reason =
-            `stale completion delivery: bound session ${entry.boundSessionId} != current `
-            + `session ${currentSessionId ?? '(none)'} — entry belongs to a prior generation`;
-          this.log(`[signal-outbox] quarantine completion_ready for ${entry.taskId}: ${reason}`);
+            `quarantined stale completion delivery: bound session ${entry.boundSessionId} != `
+            + `current session ${currentSessionId ?? '(none)'} — entry belongs to a prior generation`;
+          // Same `drop completion_ready` log prefix as the sibling gate rejections
+          // below, so one grep audits every rejected delivery; the reason word
+          // "quarantined" distinguishes a stale-identity discard from a policy drop.
+          this.log(`[signal-outbox] drop completion_ready for ${entry.taskId}: ${reason}`);
           return { outcome: 'permanent_fail', error: reason };
         }
       }
