@@ -60,7 +60,8 @@ function inferScreenHeight(text: string): number {
   const re = /\x1b\[([0-9;]*)[Hfd]/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const row = parseInt(m[1].split(';')[0] || '1', 10);
+    // parseInt stops at ';'; no temporary parameter array is needed per move.
+    const row = parseInt(m[1] || '1', 10);
     if (!Number.isNaN(row)) max = Math.max(max, row);
   }
   return max >= 2 ? Math.min(max, MAX_INFERRED_SCREEN_HEIGHT) : Infinity;
@@ -121,12 +122,12 @@ export function visibleLinesFromTerminalText(text: string): string[] {
   // Column clamped to [0, MAX_COLUMNS] so a bogus CUF/CHA/CUP-col cannot force a
   // giant `' '.repeat(col)` pad. Natural left-to-right printing is unaffected.
   const clampCol = (c: number) => Math.max(0, Math.min(c, MAX_COLUMNS));
-  const writeChar = (ch: string) => {
+  const writeText = (text: string) => {
     ensureLine(line);
     let s = lines[line];
     if (s.length < col) s += ' '.repeat(col - s.length);
-    lines[line] = s.slice(0, col) + ch + s.slice(col + 1);
-    col++;
+    lines[line] = s.slice(0, col) + text + s.slice(col + text.length);
+    col += text.length;
   };
 
   for (let i = 0; i < text.length; i++) {
@@ -147,6 +148,9 @@ export function visibleLinesFromTerminalText(text: string): string[] {
           i += m[0].length - 1;
           const params = m[1];
           const final = m[2];
+          // Colour/style changes do not move the cursor. Avoid splitting and
+          // parsing parameters for the most common escape in coloured output.
+          if (final === 'm') continue;
           // Skip DEC/private-marker sequences (params led by ? < = >), and parse
           // params NaN-safe: a non-numeric field (e.g. a `:` sub-parameter) maps
           // to undefined so `?? default` applies rather than propagating NaN into
@@ -270,7 +274,12 @@ export function visibleLinesFromTerminalText(text: string): string[] {
       col = Math.max(0, col - 1);
       continue;
     }
-    writeChar(char);
+    // Write a printable run in one splice. Per-character splicing repeatedly
+    // copies the entire row and becomes quadratic on long tool-output lines.
+    let end = i + 1;
+    while (end < text.length && !'\x1b\r\n\b\x7f'.includes(text[end])) end++;
+    writeText(text.slice(i, end));
+    i = end - 1;
   }
 
   return lines;
@@ -332,7 +341,11 @@ const VOLATILE_ACTIVITY_LINE_RES = [
 ];
 
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
-  const visibleLines = visibleLinesFromTerminalText(paneText);
+  return analyzeVisiblePaneLines(visibleLinesFromTerminalText(paneText));
+}
+
+/** Classify an already reconstructed pane so callers can reuse one parse. */
+export function analyzeVisiblePaneLines(visibleLines: readonly string[]): PaneSemantics {
   if (!visibleLines.some((line) => line.trim().length > 0)) {
     return { state: 'unknown', confidence: 'low' };
   }
@@ -411,7 +424,11 @@ export function analyzePaneSemantics(paneText: string): PaneSemantics {
 }
 
 export function normalizePaneForActivity(paneText: string): string {
-  const visibleLines = visibleLinesFromTerminalText(paneText);
+  return normalizeVisiblePaneLines(visibleLinesFromTerminalText(paneText));
+}
+
+/** Remove volatile status rows from an already reconstructed pane. */
+export function normalizeVisiblePaneLines(visibleLines: readonly string[]): string {
   if (!visibleLines.some((line) => line.trim().length > 0)) return '';
 
   return visibleLines

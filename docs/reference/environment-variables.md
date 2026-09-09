@@ -186,6 +186,7 @@ not user configuration knobs.
 | --- | --- | --- | --- |
 | `KOOKR_BACKEND` | unset, treated as `dtach` | unset or `dtach` | Compatibility guard only. Any other value hard-fails startup because the tmux backend was removed. |
 | `KOOKR_DTACH_SOCK_DIR` | `/tmp/kookr-dtach/$(id -u)` | Directory path | Overrides the dtach socket root used by `scripts/rollback-dtach.sh`. |
+| `KOOKR_AGENT_CPU_LIST` | unset | Linux CPU list, e.g. `0-15` or `0-3,8-11` | Restricts all newly launched agents and their descendants to the same CPU allocation using `taskset`. Server and terminal transport remain unrestricted. Choose CPUs for the host; existing sessions are not changed. Explicit use on non-Linux platforms is rejected. |
 
 ## Terminal Streaming
 

@@ -222,6 +222,7 @@ async function main(): Promise<void> {
     instanceId: INSTANCE_ID,
     dtachBinary,
     ringFleetBudgetBytes,
+    agentCpuList: process.env.KOOKR_AGENT_CPU_LIST,
   });
   console.log(
     `[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`

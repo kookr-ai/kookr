@@ -135,6 +135,8 @@ export interface ReconnectBase {
 }
 
 export interface LocalDtachBackendOptions {
+  /** Shared Linux CPU list for agent children; unset leaves affinity unchanged. */
+  agentCpuList?: string;
   /**
    * Where to store per-instance sockets + manifest. Defaults to
    * /tmp/kookr-dtach/<uid>/<instanceId>/.
