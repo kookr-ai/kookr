@@ -19,7 +19,8 @@ import {
   formatTimeToUnblockChipTitle,
   type TimeToUnblockSnapshot,
 } from '../../shared/contracts/time-to-unblock.js';
-import { getLiveFrictionCalibration, getTimeToUnblock } from '../api/index.js';
+import { getLiveFrictionCalibration, getOutcomeLedger, getTimeToUnblock } from '../api/index.js';
+import type { OutcomeLedgerReadiness } from '../../shared/contracts/outcome-ledger.js';
 import {
   formatLiveFrictionChipLabel,
   isLiveFrictionSnapshot,
@@ -59,6 +60,11 @@ import {
   formatLaunchedInWindowChipTitle,
   shouldShowLaunchedInWindowChip,
 } from './status-bar-launched-count.js';
+import {
+  format24hCostChipLabel,
+  format24hCostChipTitle,
+  shouldShow24hCostChip,
+} from './status-bar-24h-cost.js';
 
 interface Props {
   findings: number;
@@ -452,6 +458,11 @@ export function StatusBar({
   const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
   const [timeToUnblock, setTimeToUnblock] = useState<TimeToUnblockSnapshot | null>(null);
   const [liveFriction, setLiveFriction] = useState<LiveFrictionSnapshot | null>(null);
+  const [cost24h, setCost24h] = useState<{
+    costUsd: number;
+    readiness: OutcomeLedgerReadiness;
+    costCoverage: number | null;
+  } | null>(null);
   const [, setOldestWaitTick] = useState(0);
 
   useEffect(() => {
@@ -491,6 +502,35 @@ export function StatusBar({
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const body = await getOutcomeLedger('24h');
+        // Trust only a well-shaped summary; a schema drift or error body degrades
+        // to a hidden chip rather than a thrown render or a bogus figure.
+        const costUsd = body?.summary?.totalKnownCostUsd;
+        if (typeof costUsd !== 'number') throw new Error('missing totalKnownCostUsd');
+        const rawCoverage = body?.quality?.costCoverage;
+        if (!cancelled) {
+          setCost24h({
+            costUsd,
+            readiness: body.readiness,
+            costCoverage: typeof rawCoverage === 'number' ? rawCoverage : null,
+          });
+        }
+      } catch {
+        if (!cancelled) setCost24h(null);
+      }
+    };
+    void load();
+    const timer = setInterval(() => { void load(); }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     if (findings <= 0 || oldestFindingWaitStartedAt === undefined) return;
     const timer = setInterval(() => setOldestWaitTick((tick) => tick + 1), 30_000);
     return () => clearInterval(timer);
@@ -510,6 +550,8 @@ export function StatusBar({
   const frictionLabel = frictionCounts ? formatLiveFrictionChipLabel(frictionCounts) : '';
   const showCompletedChip = shouldShowCompletedInWindowChip(completedLast24h);
   const showLaunchedChip = shouldShowLaunchedInWindowChip(launchedLast24h);
+  const showCost24hChip = cost24h !== null
+    && shouldShow24hCostChip(cost24h.costUsd, cost24h.readiness, cost24h.costCoverage);
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -545,6 +587,16 @@ export function StatusBar({
             title={formatLaunchedInWindowChipTitle(launchedLast24h)}
           >
             {formatLaunchedInWindowChipLabel(launchedLast24h)}
+          </span>
+        )}
+        {showCost24hChip && cost24h && (
+          <span
+            className="cost-24h-pill"
+            data-testid="cost-24h-chip"
+            role="status"
+            title={format24hCostChipTitle(cost24h.costUsd)}
+          >
+            {format24hCostChipLabel(cost24h.costUsd)}
           </span>
         )}
         {oldestWaitLabel && (
