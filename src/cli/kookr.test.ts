@@ -61,6 +61,22 @@ describe('kookr dispatcher', () => {
     expect(deps.errors).toEqual([]);
   });
 
+  it('dispatches playbook without forcing process.exit (so large --json output drains)', async () => {
+    // The playbook command sets process.exitCode and returns instead of calling
+    // the injected exit; process.exit truncates buffered stdout mid-write, which
+    // would corrupt a large `--json` listing piped to a slow consumer.
+    const savedExitCode = process.exitCode;
+    const deps = makeDeps();
+    try {
+      await main({ argv: ['playbook', '--help'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });
+      expect(deps.codes).toEqual([]); // natural exit path — injected exit not called
+      expect(deps.logs.join('\n')).toContain('kookr playbook list');
+      expect(deps.errors).toEqual([]);
+    } finally {
+      process.exitCode = savedExitCode;
+    }
+  });
+
   it('rejects unknown subcommands instead of starting the server', async () => {
     const deps = makeDeps();
     await main({ argv: ['wat'], env: {}, out: deps.out, err: deps.err, exit: deps.exit });

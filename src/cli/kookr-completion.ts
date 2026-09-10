@@ -153,6 +153,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--held-by', '--json', '-h', '--help'],
   },
   {
+    // Read-only playbook catalog listing (issue #3126). Keep in sync with
+    // src/cli/kookr-playbook.ts and the root help.
+    name: 'playbook',
+    subcommands: ['list'],
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'drain',
     subcommands: ['status'],
   },
@@ -445,6 +452,8 @@ function renderBashCompletion(): string {
   const ralphFlags = flagsFor('ralph');
   const scheduleSubcommands = subcommandsFor('schedule');
   const scheduleFlags = flagsFor('schedule');
+  const playbookSubcommands = subcommandsFor('playbook');
+  const playbookFlags = flagsFor('playbook');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -619,6 +628,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${scheduleFlags}" -- "\${cur}") )
       fi
       ;;
+    playbook)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${playbookSubcommands} ${playbookFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${playbookFlags}" -- "\${cur}") )
+      fi
+      ;;
     drain)
       COMPREPLY=( $(compgen -W "${drainSubcommands} ${drainFlags}" -- "\${cur}") )
       ;;
@@ -783,6 +799,8 @@ function renderZshCompletion(): string {
   const ralphFlags = flagsFor('ralph');
   const scheduleSubcommands = subcommandsFor('schedule');
   const scheduleFlags = flagsFor('schedule');
+  const playbookSubcommands = subcommandsFor('playbook');
+  const playbookFlags = flagsFor('playbook');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -917,6 +935,13 @@ _kookr()
         compadd -- ${scheduleSubcommands} ${scheduleFlags}
       else
         compadd -- ${scheduleFlags}
+      fi
+      ;;
+    playbook)
+      if (( CURRENT == 3 )); then
+        compadd -- ${playbookSubcommands} ${playbookFlags}
+      else
+        compadd -- ${playbookFlags}
       fi
       ;;
     drain)

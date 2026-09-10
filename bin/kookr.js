@@ -26,6 +26,7 @@ Usage:
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
+  kookr playbook list [--json]  List available playbooks (name · scope · description).
   kookr drain|resume [OPTIONS]  Control operator drain mode.
   kookr orchestration pause|resume|status [OPTIONS]  Pause/resume the autonomous fleet (SAFE MODE wrapper).
   kookr migrate --to <agent> [OPTIONS]  Continue interrupted tasks under a different agent.
@@ -49,7 +50,7 @@ Options:
   -h, --help                    Show this help.
 
 Use --json for one machine-readable output envelope with: spawn, stop, open, reply, status, doctor,
-signal, ralph, issue, schedule, drain, resume, ops digest, ops timers, github, logs,
+signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
@@ -170,6 +171,20 @@ async function main({
   if (command === 'schedule') {
     const { main: runScheduleCli } = await import('./kookr-schedule.js');
     return runScheduleCli({ argv: rest, env, out, err, exit });
+  }
+
+  // Read-only playbook catalog listing (issue #3126). Discovery reads the
+  // local filesystem (project / user / plugin tiers) directly, so it dispatches
+  // here rather than booting a server. Loads the compiled CLI with a dist→src
+  // fallback so it works from an npm install and a source checkout alike.
+  if (command === 'playbook') {
+    await runPlaybookCommand(rest, { env, out, err });
+    // Exit naturally (set exitCode, do not call process.exit) so a large
+    // `--json` listing piped to a slow consumer is fully flushed first —
+    // process.exit truncates buffered stdout mid-write, corrupting the
+    // machine-readable envelope this command exists to produce.
+    process.exitCode = process.exitCode ?? 0;
+    return;
   }
 
   if (command === 'logs') {
@@ -470,6 +485,21 @@ async function runOpsCommand(argv, { env = process.env, out = console, err = con
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runOpsDigestCli(argv, { env, out, err });
+}
+
+async function runPlaybookCommand(argv, { out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-playbook.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-playbook.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] playbook module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runPlaybookCli(argv, { out, err, cwd: process.cwd() });
 }
 
 async function runGithubCommand(argv, { env = process.env, out = console, err = console } = {}) {
