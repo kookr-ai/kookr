@@ -2423,6 +2423,63 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — serverLogRotation block (issue #3113)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health serverLogRotation block (issue #3113)', () => {
+    test('omits serverLogRotation when getServerLogRotationHealth is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation?: unknown };
+      expect(body.serverLogRotation).toBeUndefined();
+    });
+
+    test('surfaces a persistently failing rotation (error + skip reason)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getServerLogRotationHealth: () => ({
+          schemaVersion: 'server-log-rotation.v1',
+          lastRotationAt: '2026-09-10T00:00:00.000Z',
+          lastRotationError: 'ENOSPC: no space left on device',
+          lastSkippedReason: 'error',
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation: Record<string, unknown> };
+      expect(body.serverLogRotation).toEqual({
+        schemaVersion: 'server-log-rotation.v1',
+        lastRotationAt: '2026-09-10T00:00:00.000Z',
+        lastRotationError: 'ENOSPC: no space left on device',
+        lastSkippedReason: 'error',
+      });
+    });
+
+    test('reports a cleared error after a successful rotation', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getServerLogRotationHealth: () => ({
+          schemaVersion: 'server-log-rotation.v1',
+          lastRotationAt: '2026-09-10T01:00:00.000Z',
+          lastRotationError: null,
+          lastSkippedReason: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation: Record<string, unknown> };
+      expect(body.serverLogRotation.lastRotationError).toBeNull();
+      expect(body.serverLogRotation.lastSkippedReason).toBeNull();
+      expect(body.serverLogRotation.lastRotationAt).toBe('2026-09-10T01:00:00.000Z');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — hookReplayCheckpoints block (issue #2281)
   // ---------------------------------------------------------------------------
   describe('GET /api/health hookReplayCheckpoints block (issue #2281)', () => {

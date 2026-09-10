@@ -17,11 +17,14 @@ import {
   DEFAULT_SERVER_LOG_GENERATIONS,
   DEFAULT_SERVER_LOG_MAX_BYTES,
   DEFAULT_SERVER_LOG_ROTATE_INTERVAL_MS,
+  MAX_ROTATION_ERROR_LENGTH,
+  ServerLogRotationHealth,
   maybeRotateServerLog,
   reopenProcessStdio,
   resolveServerLogRotationEnv,
   rotateServerLogGenerations,
   runScheduledServerLogRotation,
+  type ServerLogRotationResult,
 } from './server-log-rotation.js';
 
 describe('resolveServerLogRotationEnv', () => {
@@ -286,5 +289,106 @@ writeFileSync(logPath + '.ok', JSON.stringify({
 describe('reopenProcessStdio export', () => {
   test('is a callable freopen helper', () => {
     expect(typeof reopenProcessStdio).toBe('function');
+  });
+});
+
+describe('ServerLogRotationHealth (issue #3113)', () => {
+  test('starts empty before any tick', () => {
+    const health = new ServerLogRotationHealth();
+    expect(health.getHealthSnapshot()).toEqual({
+      schemaVersion: 'server-log-rotation.v1',
+      lastRotationAt: null,
+      lastRotationError: null,
+      lastSkippedReason: null,
+    });
+  });
+
+  test('retains the error message and skip reason from a failing tick', () => {
+    let nowMs = 1_700_000_000_000;
+    const health = new ServerLogRotationHealth(() => nowMs);
+    const failing: ServerLogRotationResult = {
+      rotated: false,
+      previousSize: 60 * 1024 * 1024,
+      skippedReason: 'error',
+      error: "ENOSPC: no space left on device, rename '/data/kookr/server.log'",
+    };
+
+    health.record(failing);
+
+    expect(health.getHealthSnapshot()).toEqual({
+      schemaVersion: 'server-log-rotation.v1',
+      lastRotationAt: new Date(nowMs).toISOString(),
+      lastRotationError: "ENOSPC: no space left on device, rename '/data/kookr/server.log'",
+      lastSkippedReason: 'error',
+    });
+  });
+
+  test('retains a non-error skip reason (stdio-not-attached) with no error', () => {
+    const health = new ServerLogRotationHealth();
+    health.record({ rotated: false, previousSize: 99, skippedReason: 'stdio-not-attached' });
+    const snap = health.getHealthSnapshot();
+    expect(snap.lastSkippedReason).toBe('stdio-not-attached');
+    expect(snap.lastRotationError).toBeNull();
+    expect(snap.lastRotationAt).not.toBeNull();
+  });
+
+  test('a successful rotation clears a previously recorded error', () => {
+    const health = new ServerLogRotationHealth();
+    health.record({
+      rotated: false,
+      previousSize: 60 * 1024 * 1024,
+      skippedReason: 'error',
+      error: 'EACCES: permission denied',
+    });
+    expect(health.getHealthSnapshot().lastRotationError).toBe('EACCES: permission denied');
+
+    health.record({ rotated: true, previousSize: 60 * 1024 * 1024 });
+
+    expect(health.getHealthSnapshot()).toMatchObject({
+      lastRotationError: null,
+      lastSkippedReason: null,
+    });
+  });
+
+  test('surfaces a post-rename freopen warning while still marking rotated', () => {
+    const health = new ServerLogRotationHealth();
+    health.record({
+      rotated: true,
+      previousSize: 60 * 1024 * 1024,
+      error: 'freopen failed after rename: expected freopen stdout fd 1, got 5',
+    });
+    expect(health.getHealthSnapshot().lastRotationError).toMatch(/freopen failed after rename/);
+  });
+
+  test('bounds the retained error message length', () => {
+    const health = new ServerLogRotationHealth();
+    health.record({ rotated: false, previousSize: 1, skippedReason: 'error', error: 'x'.repeat(5_000) });
+    // Assert the exact prefix-slice, not just the length: a mutant that
+    // truncated from the wrong end or substituted characters would still be
+    // the right length.
+    expect(health.getHealthSnapshot().lastRotationError).toBe('x'.repeat(MAX_ROTATION_ERROR_LENGTH));
+  });
+
+  test('records the observable fields from a real rotation failure result', () => {
+    // Drive the real routine into its error path (rename throws) and feed the
+    // returned result to health — the same wiring the rotation tick uses.
+    const health = new ServerLogRotationHealth();
+    const result = maybeRotateServerLog({
+      logPath: '/data/kookr/server.log',
+      maxBytes: 1,
+      generations: 2,
+      reopenStdio: false,
+      statSize: () => {
+        throw new Error('EACCES: permission denied, stat');
+      },
+    });
+
+    expect(result.rotated).toBe(false);
+    expect(result.skippedReason).toBe('error');
+    health.record(result);
+    const snap = health.getHealthSnapshot();
+    expect(snap.lastSkippedReason).toBe('error');
+    expect(snap.lastRotationError).toBeTruthy();
+    expect(snap.lastRotationAt).not.toBeNull();
   });
 });

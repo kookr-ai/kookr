@@ -979,6 +979,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         const maintenancePrune = deps.getMaintenancePruneHealth?.();
         return maintenancePrune ? { maintenancePrune } : {};
       })(),
+      // Server-log rotation (issue #3113): last size-cap rotation tick timestamp,
+      // last error message, and last skip reason. Cheap in-memory read — makes a
+      // persistently failing rotation (ENOSPC / EACCES / read-only FS) visible
+      // instead of only console.error'd into the very log that is failing.
+      ...(() => {
+        const serverLogRotation = deps.getServerLogRotationHealth?.();
+        return serverLogRotation ? { serverLogRotation } : {};
+      })(),
       // Hook replay-checkpoint gauges (issue #2281): session count + on-disk
       // file size. Cheap in-memory + stat; never a full JSON parse of the
       // multi-MB checkpoint store. Null when checkpoints are disabled.

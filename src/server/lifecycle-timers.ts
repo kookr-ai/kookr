@@ -128,6 +128,7 @@ import {
 import {
   runScheduledServerLogRotation,
   type ServerLogRotationConfig,
+  type ServerLogRotationHealth,
 } from './server-log-rotation.js';
 
 export interface TimerDeps {
@@ -670,6 +671,13 @@ export interface ServerLogRotationScheduleConfig {
   generations: number;
   /** Check interval in ms. `<= 0` disables the timer. */
   intervalMs: number;
+  /**
+   * Optional in-memory health recorder (issue #3113). When wired, each tick's
+   * result (rotation timestamp, error message, skip reason) is retained on it so
+   * a persistently failing rotation is observable on `/api/health` instead of
+   * only `console.error`d into the log that is failing to rotate.
+   */
+  health?: Pick<ServerLogRotationHealth, 'record'>;
   /** Test seam replacing the rotate tick body. */
   run?: (config: ServerLogRotationScheduleConfig) => void;
 }
@@ -2655,7 +2663,11 @@ export function runServerLogRotationTick(config: ServerLogRotationScheduleConfig
     maxBytes: config.maxBytes,
     generations: config.generations,
   };
-  runScheduledServerLogRotation(rotationConfig);
+  // Issue #3113: retain the result on health so a persistently failing rotation
+  // (ENOSPC / EACCES / read-only FS) is surfaced on /api/health instead of only
+  // console.error'd into the very log that is failing to rotate.
+  const result = runScheduledServerLogRotation(rotationConfig);
+  config.health?.record(result);
 }
 
 

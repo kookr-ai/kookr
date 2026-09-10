@@ -88,6 +88,66 @@ export interface ServerLogRotationResult {
   error?: string;
 }
 
+/** Upper bound on the retained rotation-error message length (issue #3113). */
+export const MAX_ROTATION_ERROR_LENGTH = 500;
+
+/** Cheap in-memory `/api/health` shape for the server-log rotation timer (issue #3113). */
+export interface ServerLogRotationHealthSnapshot {
+  schemaVersion: 'server-log-rotation.v1';
+  /** ISO timestamp of the most recent rotation tick, or `null` before the first. */
+  lastRotationAt: string | null;
+  /**
+   * Message (only, bounded) of the most recent tick's error, or `null` when the
+   * last tick had none. A successful rotation — or a clean skip — clears it.
+   */
+  lastRotationError: string | null;
+  /** Skip reason from the most recent tick, or `null` when it rotated. */
+  lastSkippedReason: ServerLogRotationSkipReason | null;
+}
+
+/**
+ * In-memory health for the server-log rotation timer (issue #3113).
+ *
+ * The rotation tick runs each minute and previously discarded its result, so a
+ * persistently failing rotation (ENOSPC / EACCES / read-only FS) — the one
+ * condition that actually causes unbounded `server.log` growth — was invisible
+ * to a remote operator: the routine only `console.error`s, into the very log
+ * that is failing to rotate, and its own error lines are the first thing lost
+ * once the 50 MiB cap is blown. This retains the last tick's timestamp, error
+ * message, and skip reason and projects them onto `/api/health`, mirroring the
+ * emergency-prune error surface (#3078 / #2344).
+ *
+ * Stores only the bounded error message, never the full error object.
+ */
+export class ServerLogRotationHealth {
+  private lastRotationAt: string | null = null;
+  private lastRotationError: string | null = null;
+  private lastSkippedReason: ServerLogRotationSkipReason | null = null;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /**
+   * Retain the observable fields from one rotation tick's result. Pure in-memory
+   * assignment — does not throw for any real {@link ServerLogRotationResult}
+   * (production uses the default `Date.now` clock).
+   */
+  record(result: ServerLogRotationResult): void {
+    this.lastRotationAt = new Date(this.now()).toISOString();
+    this.lastRotationError =
+      result.error != null ? result.error.slice(0, MAX_ROTATION_ERROR_LENGTH) : null;
+    this.lastSkippedReason = result.skippedReason ?? null;
+  }
+
+  getHealthSnapshot(): ServerLogRotationHealthSnapshot {
+    return {
+      schemaVersion: 'server-log-rotation.v1',
+      lastRotationAt: this.lastRotationAt,
+      lastRotationError: this.lastRotationError,
+      lastSkippedReason: this.lastSkippedReason,
+    };
+  }
+}
+
 export interface ResolvedServerLogRotationEnv {
   /** Absolute live log path (`{dataDir}/server.log`). */
   logPath: string;
