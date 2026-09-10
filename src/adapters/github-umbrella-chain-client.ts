@@ -55,6 +55,16 @@ function defaultSleep(ms: number): Promise<void> {
  * comes back truncated/empty. Retrying the poll re-reads the page instead of
  * skipping the whole project for the tick (#3073). It cannot appear in a repo
  * slug, so matching it on stderr keeps the false-positive guard above intact.
+ *
+ * Git ref-lock contention is transient: `refreshBase` runs `git fetch --prune`,
+ * and a live ref-update race (or a lock briefly held by an in-flight fetch)
+ * makes git emit `cannot lock ref …`, `unable to create '….lock': File
+ * exists`, or `another git process seems to be running` on stderr. Retrying the
+ * fetch clears that contention instead of skipping the whole project for the
+ * tick (#3111). A genuinely stale `.lock` matches the same strings but never
+ * clears; it is bounded at the same attempt cap and then surfaces the same skip
+ * as before. These strings are git diagnostics, not repo slugs, so matching
+ * them on stderr keeps the false-positive guard above intact.
  */
 function isTransientGhError(err: unknown): boolean {
   const error = err as { code?: unknown; killed?: unknown; signal?: unknown; stderr?: unknown } | null;
@@ -67,7 +77,8 @@ function isTransientGhError(err: unknown): boolean {
     || code === 'EAI_AGAIN'
     || code === 'ENOTFOUND'
     || (error?.killed === true && signal === 'SIGTERM')
-    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error|unexpected end of json input/i.test(stderr);
+    || /timed out|timeout|network|connection reset|connection refused|TLS|HTTP 5\d\d|stream error|unexpected end of json input/i.test(stderr)
+    || /cannot lock ref|unable to create '.*\.lock'|another git process/i.test(stderr);
 }
 
 /** Run `operation`, retrying only transient failures within the bounded caps. */
@@ -185,7 +196,16 @@ export class GhUmbrellaChainClient implements UmbrellaChainRemote {
   }
 
   async refreshBase(repoPath: string, baseBranch: string): Promise<void> {
-    await this.run('git', ['-C', repoPath, 'fetch', '--prune', 'origin', baseBranch], { timeout: 30_000 });
+    // A live ref-update race (or a lock briefly held by an in-flight fetch)
+    // makes this fail with a ref-lock error that clears on a retry, so retry
+    // within the bounded budget instead of skipping the whole project for the
+    // tick over recoverable contention (#3111). A genuinely stale `.lock` never
+    // clears on its own: it exhausts the budget and then surfaces the same skip
+    // as before — bounded, unchanged, no worse than the raw fetch.
+    await withGhRetry(
+      () => this.run('git', ['-C', repoPath, 'fetch', '--prune', 'origin', baseBranch], { timeout: 30_000 }),
+      this.retryOptions,
+    );
   }
 
   async isPullRequestReachable(
