@@ -15,6 +15,7 @@ export interface TerminalStreamState {
     | 'access-denied' | 'ended' | 'unavailable' | 'continuity-unavailable';
   reason?: string;
   approximate?: boolean;
+  inputDeliveryUncertain?: boolean;
 }
 export interface TerminalRetryBudget { attempts: number[]; }
 interface TerminalSocket extends Pick<WebSocket, 'readyState' | 'close' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'> {
@@ -50,6 +51,7 @@ interface Attempt {
   requestedCursor: TerminalResumeCursor | null;
   ready: boolean;
   retiring: boolean;
+  sentInput: boolean;
   processed: number;
   received: number;
   acknowledged: number;
@@ -70,8 +72,12 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   let suspended = false;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let previousState = '';
+  let currentState: TerminalStreamState | null = null;
+  let inputDeliveryUncertain = false;
 
   function state(next: TerminalStreamState) {
+    currentState = next;
+    if (inputDeliveryUncertain) next = { ...next, inputDeliveryUncertain: true };
     const key = JSON.stringify(next);
     if (key === previousState) return;
     previousState = key;
@@ -79,6 +85,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   }
   function send(attempt: Attempt, control: TerminalClientControl): boolean {
     if (active !== attempt || attempt.socket.readyState !== 1) return false;
+    if (control.type === 'input' || control.type === 'input-bytes' || control.type === 'paste') attempt.sentInput = true;
     try { attempt.socket.send(JSON.stringify(control)); return true; }
     catch { if (!attempt.retiring) fail(attempt, 'unavailable', 'send failed'); return false; }
   }
@@ -93,6 +100,9 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   function retire(attempt: Attempt, reason: 'superseded' | 'disconnected') {
     if (active !== attempt || attempt.retiring) return;
     attempt.retiring = true;
+    // Socket enqueueing is not an agent-delivery receipt. Keep the warning
+    // through output reconnection until the user checks the agent and dismisses it.
+    if (reason === 'disconnected' && attempt.sentInput) inputDeliveryUncertain = true;
     ack(attempt);
     active = null;
     // A callback already inside xterm can still mutate the old parser. Without
@@ -286,7 +296,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     const attempt: Attempt = {
       socket, writer: options.writer.begin(false), metrics, metadata, generation: null, attachId,
       wireState: 'waiting', transaction: null, source: null, expectedSource: null, requestedCursor,
-      ready: false, retiring: false, processed: 0, received: 0, acknowledged: 0,
+      ready: false, retiring: false, sentInput: false, processed: 0, received: 0, acknowledged: 0,
       helloTimer: null, seedTimer: null, ackTimer: null, metricsTimer: null, healthySince: null, lastProgress: null,
     };
     active = attempt;
@@ -341,6 +351,10 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       connect(newView);
     },
     isEstablished() { return active?.ready === true; },
+    dismissInputWarning() {
+      inputDeliveryUncertain = false;
+      if (currentState) state(currentState);
+    },
     sendInput(data: string | Uint8Array): boolean {
       if (!active?.ready || !active.generation) return false;
       if (typeof data === 'string') return send(active, { type: 'input', generation: active.generation, text: data });

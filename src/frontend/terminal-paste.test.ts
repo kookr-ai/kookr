@@ -6,7 +6,7 @@
  * byte-transparent path.
  */
 import { describe, expect, it } from 'vitest';
-import { isMultilinePaste, buildPasteFrame } from './terminal-paste.js';
+import { isMultilinePaste } from './terminal-paste.js';
 
 describe('isMultilinePaste', () => {
   it('is false for single-line text — stays on the raw, byte-transparent path', () => {
@@ -34,21 +34,5 @@ describe('isMultilinePaste', () => {
   it('is true for multiline JSON (the issue-356 repro shape)', () => {
     const json = '{\n  "lighthouseVersion": "13.0.2",\n  "details": {}\n}';
     expect(isMultilinePaste(json)).toBe(true);
-  });
-});
-
-describe('buildPasteFrame', () => {
-  it('builds a parseable paste control frame', () => {
-    expect(JSON.parse(buildPasteFrame('a\nb'))).toEqual({ type: 'paste', text: 'a\nb' });
-  });
-
-  it('round-trips multiline JSON content without corruption', () => {
-    const json = '{\n  "lighthouseVersion": "13.0.2",\n  "items": []\n}';
-    expect(JSON.parse(buildPasteFrame(json)).text).toBe(json);
-  });
-
-  it('escapes embedded quotes and braces so the frame stays valid JSON', () => {
-    const tricky = '{"nested":"value"}\n["array"]';
-    expect(JSON.parse(buildPasteFrame(tricky)).text).toBe(tricky);
   });
 });

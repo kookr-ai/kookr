@@ -856,7 +856,15 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
       {historyDiscarded && (
         <div className="terminal-history-notice" role="status">
           Older terminal lines were discarded.
-          <button type="button" onClick={() => setHistoryDiscarded(false)} aria-label="Dismiss discarded history notice">×</button>
+          <button type="button" onClick={() => { setHistoryDiscarded(false); terminalRef.current?.focus(); }} aria-label="Dismiss discarded history notice">×</button>
+        </div>
+      )}
+      {streamState.inputDeliveryUncertain && (
+        <div className="terminal-history-notice" role="status">
+          Input delivery is uncertain. Check the agent before resending; input is not replayed automatically.
+          <button type="button" aria-label="Dismiss input delivery warning" onClick={() => {
+            controllerRef.current?.dismissInputWarning(); terminalRef.current?.focus();
+          }}>×</button>
         </div>
       )}
       {searchOpen && (
@@ -943,9 +951,10 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
                         : streamState.kind === 'suspended' ? 'Terminal view paused while this tab is hidden.'
                           : 'Terminal connection unavailable.'}
           {(streamState.kind === 'lagged' || streamState.kind === 'continuity-unavailable' || streamState.kind === 'unavailable') && (
-            <button type="button" onClick={() => controllerRef.current?.retry(
-              streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor,
-            )}>
+            <button type="button" onClick={() => {
+              controllerRef.current?.retry(streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor);
+              terminalRef.current?.focus();
+            }}>
               {streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor ? 'Start a new view' : 'Reconnect terminal'}
             </button>
           )}

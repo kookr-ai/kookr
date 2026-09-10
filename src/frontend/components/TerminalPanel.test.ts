@@ -163,7 +163,6 @@ vi.mock('../terminal-writer.js', async (importOriginal) => {
 });
 
 import { TerminalPanel } from './TerminalPanel.js';
-import { buildPasteFrame } from '../terminal-paste.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import {
@@ -331,6 +330,40 @@ describe('TerminalPanel', () => {
     container?.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  test('memoized terminal skips parent metadata rerenders but accepts a changed session', async () => {
+    const fontHook = await import('../hooks/usePersistedTerminalFontSize.js');
+    const renderProbe = vi.spyOn(fontHook, 'usePersistedTerminalFontSize');
+    function Parent({ title, session }: { title: string; session: string }) {
+      return React.createElement('div', { title }, React.createElement(TerminalPanel, { tmuxName: session, visible: true }));
+    }
+    try {
+      await act(async () => root.render(React.createElement(Parent, { title: 'before', session: 'same' })));
+      const renders = renderProbe.mock.calls.length;
+      expect(renders).toBeGreaterThan(0);
+      await act(async () => root.render(React.createElement(Parent, { title: 'after', session: 'same' })));
+      expect(renderProbe).toHaveBeenCalledTimes(renders);
+      await act(async () => root.render(React.createElement(Parent, { title: 'after', session: 'changed' })));
+      expect(renderProbe.mock.calls.length).toBeGreaterThan(renders);
+    } finally { renderProbe.mockRestore(); }
+  });
+
+  test('keeps interrupted input visible until dismissed and returns recovery focus to the terminal', () => {
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'input-warning', visible: true })));
+    const ws = mocks.webSocketInstances[0];
+    const terminal = mocks.terminalInstances[0];
+    act(() => { ws.onopen?.(); emitTerminalData(ws, 'ready'); terminal.dataHandler?.('hello\r'); });
+    act(() => ws.onclose?.({ code: 4408 }));
+    expect(container.textContent).toContain('Input delivery is uncertain');
+    const reconnect = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Reconnect terminal')!;
+    terminal.focus.mockClear();
+    act(() => reconnect.click());
+    expect(terminal.focus).toHaveBeenCalled();
+    expect(container.textContent).toContain('Input delivery is uncertain');
+    const dismiss = container.querySelector<HTMLButtonElement>('[aria-label="Dismiss input delivery warning"]')!;
+    act(() => dismiss.click());
+    expect(container.textContent).not.toContain('Input delivery is uncertain');
   });
 
   test('FR-TERM-003: negotiates v2 and never enables typing from a partial seed', () => {

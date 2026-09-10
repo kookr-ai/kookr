@@ -11,7 +11,7 @@ function screen(terminal: Terminal) {
 const write = (terminal: Terminal, bytes: Uint8Array) => new Promise<void>((resolve) => terminal.write(bytes, resolve));
 
 describe('FR-TERM-003: real xterm parsing', () => {
-  it('matches monolithic parsing across split UTF-8, escape sequences and buffer switches', async () => {
+  it('matches monolithic parsing across split UTF-8 and subsequent buffer switches', async () => {
     const reference = new Terminal({ cols: 80, rows: 24, scrollback: 100 });
     const streamed = new Terminal({ cols: 80, rows: 24, scrollback: 100 });
     const writer = createTerminalWriter({ terminal: streamed, onStall: () => { throw new Error('parser stalled'); } });
@@ -23,6 +23,30 @@ describe('FR-TERM-003: real xterm parsing', () => {
       const session = writer.begin(false);
       await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
       expect(screen(streamed)).toEqual(screen(reference));
+    } finally { writer.dispose(); reference.dispose(); streamed.dispose(); }
+  });
+
+  it.each([
+    ['CSI cursor', '\x1b[12;4H', 4],
+    ['OSC title', '\x1b]2;terminal-title\x1b\\', 9],
+    ['alternate buffer', '\x1b[?1049h', 5],
+    ['bracketed paste mode', '\x1b[?2004h', 6],
+  ] as const)('preserves a split %s sequence across actual writer chunks', async (_name, sequence, split) => {
+    const reference = new Terminal({ cols: 80, rows: 24 });
+    const streamed = new Terminal({ cols: 80, rows: 24 });
+    const referenceTitles: string[] = [];
+    const streamedTitles: string[] = [];
+    reference.onTitleChange((title) => referenceTitles.push(title));
+    streamed.onTitleChange((title) => streamedTitles.push(title));
+    const writer = createTerminalWriter({ terminal: streamed, onStall: () => { throw new Error('parser stalled'); } });
+    try {
+      const bytes = new TextEncoder().encode('x'.repeat(8192 - split) + sequence + 'END');
+      expect(bytes[8192 - split]).toBe(0x1b);
+      await write(reference, bytes);
+      const session = writer.begin(false);
+      await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
+      expect(screen(streamed)).toEqual(screen(reference));
+      expect(streamedTitles).toEqual(referenceTitles);
     } finally { writer.dispose(); reference.dispose(); streamed.dispose(); }
   });
 

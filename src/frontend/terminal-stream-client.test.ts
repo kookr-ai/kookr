@@ -46,6 +46,19 @@ function harness(continuity: TerminalContinuity = { cursor: null, hadView: false
 describe('NFR-TERM-001: terminal streaming client', () => {
   afterEach(() => vi.useRealTimers());
 
+  test('discloses uncertain input after disconnect without replaying it on retry', () => {
+    const h = harness(); h.hello(); h.begin(); h.end(0); h.settle();
+    expect(h.client.sendInput('run-command\r')).toBe(true);
+    h.socket.onclose?.({ code: TERMINAL_CLOSE.lagged });
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ inputDeliveryUncertain: true }));
+    h.client.retry();
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ inputDeliveryUncertain: true }));
+    expect(h.sockets[1].send).not.toHaveBeenCalled();
+    h.client.dismissInputWarning();
+    expect(h.onState.mock.lastCall?.[0].inputDeliveryUncertain).not.toBe(true);
+    h.client.stop(); h.writer.dispose();
+  });
+
   test('keeps input disabled when reconstruction could not produce a usable screen', () => {
     const h = harness(); h.hello(); h.begin();
     h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: false,
