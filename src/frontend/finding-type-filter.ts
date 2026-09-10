@@ -112,8 +112,14 @@ export function toggleFindingTypeSelection(selected: readonly string[], type: st
     : [...selected, type];
 }
 
-/** localStorage-backed multi-select for the findings-rail type chips. */
-export function useFindingTypeFilter(): [string[], (type: string) => void] {
+/**
+ * localStorage-backed multi-select for the findings-rail type chips.
+ *
+ * Returns the selected types, a per-type `toggle`, and a `clear` that drops the
+ * whole selection back to show-all and removes the persisted key so a reload is
+ * not silently pre-narrowed.
+ */
+export function useFindingTypeFilter(): [string[], (type: string) => void, () => void] {
   const [selected, setSelected] = useState<string[]>(() => loadFindingTypeFilter());
   const toggle = useCallback((type: string) => {
     setSelected((prev) => {
@@ -122,5 +128,9 @@ export function useFindingTypeFilter(): [string[], (type: string) => void] {
       return next;
     });
   }, []);
-  return [selected, toggle];
+  const clear = useCallback(() => {
+    setSelected([]);
+    saveFindingTypeFilter([]);
+  }, []);
+  return [selected, toggle, clear];
 }
