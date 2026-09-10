@@ -65,6 +65,7 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     await expect.poll(async () => new TextDecoder().decode(await backend.captureBytes('shell'))).toContain('HOST_MARKER');
     await expect.poll(() => backend.inputCoordinator.getSnapshot('shell')?.readinessVersion).toBe(1);
     expect(backend.getHostHealth().pid).not.toBe(process.pid);
+    expect(backend.getStats().attachFailedCount).toBe(0);
     expect(backend.getStats().terminalHost).toMatchObject({
       status: 'ready', pendingRequests: 0, restarts: 0,
       channelBytes: expect.any(Number), streamBytes: expect.any(Number),

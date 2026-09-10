@@ -41,7 +41,7 @@ export class TerminalHostBackend implements TerminalBackend {
   private instanceDir = '';
   private snapshotAt = 0;
   private stats: BackendStats = { attachedSessions: 0, reattachCounts: {}, pendingWriters: 0,
-    maxPendingWriters: 0, writeTimeoutCount: 0, lastError: null, errorCount: 0 };
+    maxPendingWriters: 0, writeTimeoutCount: 0, attachFailedCount: 0, lastError: null, errorCount: 0 };
   private latest: StatsMessage | null = null;
   private readonly inputSnapshots = new Map<string, { version: number; value: InputSnapshot | null }>();
   private readonly inputMutations = new Map<string, number>();
