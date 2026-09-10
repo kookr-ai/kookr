@@ -69,8 +69,9 @@ it does not authorize killing an unknown process. Dtached agent masters survive.
 Synchronous diagnostics use age-bounded caches. An unreachable host must not be
 mistaken for a dead coding agent or a verified input prompt. Ralph startup now
 preserves an unverified loop during a host outage, without claiming prompt ownership.
-Launch deduplication likewise keeps the original task protected when host
-unavailability prevents a liveness check; only verified dead sessions are reconciled.
+Launch deduplication likewise preserves the original task when a
+terminal-host-unavailable error prevents a liveness check. Other probe failures
+retain the existing stale-record handling.
 
 If a connection carrying input disconnects unexpectedly, the browser displays
 an input-delivery warning until dismissed. Output reconnection does not clear
