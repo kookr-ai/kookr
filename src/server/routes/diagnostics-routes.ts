@@ -987,6 +987,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         const serverLogRotation = deps.getServerLogRotationHealth?.();
         return serverLogRotation ? { serverLogRotation } : {};
       })(),
+      // Process-fatal counters (issue #3112): since-boot unhandledRejection /
+      // uncaughtException totals + last (capped) message/timestamp, stamped by
+      // the fatal handlers in start.ts. Cheap in-memory read — surfaces a daemon
+      // quietly absorbing fatal rejections that would otherwise only appear as a
+      // [fatal] line in the rotated-away server.log.
+      ...(() => {
+        const processFatal = deps.getProcessFatalHealth?.();
+        return processFatal ? { processFatal } : {};
+      })(),
       // Hook replay-checkpoint gauges (issue #2281): session count + on-disk
       // file size. Cheap in-memory + stat; never a full JSON parse of the
       // multi-MB checkpoint store. Null when checkpoints are disabled.

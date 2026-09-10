@@ -521,6 +521,17 @@ export interface RouteDeps {
   getServerLogRotationHealth?: () =>
     import('../server-log-rotation.js').ServerLogRotationHealthSnapshot | undefined;
   /**
+   * Process-fatal counters (issue #3112). `/api/health` reads only the in-memory
+   * snapshot: since-boot `unhandledRejection` / `uncaughtException` totals plus
+   * the last (capped) message + timestamp, stamped by the fatal handlers in
+   * start.ts. Makes a daemon quietly absorbing fatal rejections — otherwise only
+   * a `[fatal] …` line in the rotated-away server.log — visible to a remote
+   * operator. Absent in partial test harnesses ⇒ health omits the `processFatal`
+   * block.
+   */
+  getProcessFatalHealth?: () =>
+    import('../fatal-error-counters.js').FatalErrorHealthSnapshot | undefined;
+  /**
    * Hook replay-checkpoint gauges (issue #2281). `/api/health` reads only the
    * slim `getReplayCheckpointStats()` snapshot — in-memory session count plus
    * `stat().size` for file bytes. Must never parse the (multi-MB) checkpoint
