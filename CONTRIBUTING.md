@@ -41,8 +41,9 @@ For narrower inner-loop checks, use the individual commands:
 | Command | What it checks |
 |---|---|
 | `pnpm verify` | Full local pre-push verification lanes in order |
-| `pnpm test` | Vitest unit suite (excludes `*.integration.test.ts` / `*-e2e.test.ts`) |
-| `pnpm test:integration` | Dedicated root Vitest lane for those excluded files (credential-gated tests skip without API keys) |
+| `pnpm test` | Vitest unit suite (excludes integration-style `*-integration` / `*.integration` / `*-e2e` files under `src/` and `relay/`) |
+| `pnpm test:integration` | Deterministic root Vitest lane for the self-contained integration-style subset |
+| `pnpm test:integration:live` | Opt-in live-LLM integration lane (credential-gated files skip without API keys) |
 | `pnpm test:changed` | Fast inner-loop Vitest run for tests affected by local changes |
 | `pnpm test:hooks` | Bash hook tests under `.claude/hooks-tests/` |
 | `pnpm check:e2e` | TypeScript check for E2E tests (`tsc -p tsconfig.e2e.json`) |

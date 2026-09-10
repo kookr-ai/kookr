@@ -8,8 +8,9 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 
 | Command | What it runs | Where it runs |
 | --- | --- | --- |
-| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes `src/**/*.integration.test.ts` and `src/**/*-e2e.test.ts`. Hyphen-named `*-integration.test.ts` files still run here by design. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
-| `pnpm test:integration` | Dedicated root Vitest lane (`vitest.integration.config.ts`) for the excluded `*.integration.test.ts` / `*-e2e.test.ts` files. Today's inventory is credential-gated (real provider API keys); those files `skipIf` without keys so the lane stays deterministic. Not part of `pnpm verify`. | Local / manual. |
+| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes integration-style files (`*-integration.test.ts`, `*.integration.test.ts`, `*-e2e.test.ts`) under `src/` and `relay/`. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
+| `pnpm test:integration` | Deterministic root Vitest lane (`vitest.integration.config.ts`) for the **self-contained** subset of the shared inventory (`scripts/integration-lane-inventory.ts`). No provider API keys required. Not part of `pnpm verify`. | Local / manual. |
+| `pnpm test:integration:live` | Opt-in live-LLM lane (`vitest.integration.live.config.ts`) for the **credential-gated** inventory subset. Files `skipIf` without provider keys so the command stays exit-0 when keys are absent. | Local / manual (needs API keys to execute). |
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local. |
