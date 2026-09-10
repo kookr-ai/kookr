@@ -340,6 +340,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         pendingWriters: backendWriteStats.pendingWriters,
         maxPendingWriters: backendWriteStats.maxPendingWriters,
         writeTimeoutCount: backendWriteStats.writeTimeoutCount,
+        // Re-attach budget exhaustion (issue #3114): durable process-lifetime
+        // count of sessions wedged detached after exhausting their 3/60s
+        // re-attach budget. Unlike `lastError`, it is never reset by an
+        // unrelated session recovering.
+        attachFailedCount: backendWriteStats.attachFailedCount,
         lastError: backendWriteStats.lastError,
         errorCount: backendWriteStats.errorCount,
         // Recovery recency (issue #2810): `lastError` is cleared once a
@@ -370,6 +375,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       pendingWriters: backendWriteStats?.pendingWriters ?? 0,
       maxPendingWriters: backendWriteStats?.maxPendingWriters ?? 0,
       writeTimeoutCount: backendWriteStats?.writeTimeoutCount ?? 0,
+      attachFailedCount: backendWriteStats?.attachFailedCount ?? 0,
       pendingWrites: coordinatorWriteMetrics?.pendingWrites ?? 0,
       maxPendingWrites: coordinatorWriteMetrics?.maxPendingWrites ?? 0,
     };
@@ -834,6 +840,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           skippedNoPauseStart: providerPausedOccupancySnapshot.skippedNoPauseStart,
           skippedAwaitingProviderReset:
             providerPausedOccupancySnapshot.skippedAwaitingProviderReset,
+          // Issue #3115: age of the oldest open-PR fail-safe hold and how many
+          // holds have run past the hard TTL. The open-PR exemption still holds
+          // reclaim (unchanged); these fields only make an indefinitely pinned
+          // slot visible to a remote operator.
+          oldestOpenPrFailsafeHoldMs:
+            providerPausedOccupancySnapshot.oldestOpenPrFailsafeHoldMs,
+          openPrFailsafeOverHardTtlCount:
+            providerPausedOccupancySnapshot.openPrFailsafeOverHardTtlCount,
           lastCandidatesConsidered:
             providerPausedOccupancySnapshot.lastCandidatesConsidered,
           lastOutcomes: providerPausedOccupancySnapshot.lastOutcomes,
@@ -973,6 +987,23 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(() => {
         const maintenancePrune = deps.getMaintenancePruneHealth?.();
         return maintenancePrune ? { maintenancePrune } : {};
+      })(),
+      // Server-log rotation (issue #3113): last size-cap rotation tick timestamp,
+      // last error message, and last skip reason. Cheap in-memory read — makes a
+      // persistently failing rotation (ENOSPC / EACCES / read-only FS) visible
+      // instead of only console.error'd into the very log that is failing.
+      ...(() => {
+        const serverLogRotation = deps.getServerLogRotationHealth?.();
+        return serverLogRotation ? { serverLogRotation } : {};
+      })(),
+      // Process-fatal counters (issue #3112): since-boot unhandledRejection /
+      // uncaughtException totals + last (capped) message/timestamp, stamped by
+      // the fatal handlers in start.ts. Cheap in-memory read — surfaces a daemon
+      // quietly absorbing fatal rejections that would otherwise only appear as a
+      // [fatal] line in the rotated-away server.log.
+      ...(() => {
+        const processFatal = deps.getProcessFatalHealth?.();
+        return processFatal ? { processFatal } : {};
       })(),
       // Hook replay-checkpoint gauges (issue #2281): session count + on-disk
       // file size. Cheap in-memory + stat; never a full JSON parse of the

@@ -146,7 +146,8 @@ import {
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './maintenance-prune-schedule.js';
-import { resolveServerLogRotationEnv } from './server-log-rotation.js';
+import { getFatalErrorHealth } from './fatal-error-counters.js';
+import { resolveServerLogRotationEnv, ServerLogRotationHealth } from './server-log-rotation.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import {
   HostStaleDtachReaperService,
@@ -1566,10 +1567,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       case 'manifest-corrupt':
       case 'launch-abandoned-recovery-failed':
       case 'session-recovery-unverified':
+      case 'session-attach-failed':
       case 'startup-recovery-failed':
         // A recovered session whose attach transport could not be revived, or a
         // contained startup-recovery failure that left the backend degraded, is
         // an actionable operator finding distinct from the watchdog's stale_agent.
+        // A `session-attach-failed` exhausted its re-attach budget and is now
+        // wedged detached (issue #3114) — an actionable fault, not a passing
+        // warning, and durably counted via `attachFailedCount`.
         console.error(line);
         break;
       default:
@@ -2639,6 +2644,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let emergencyMaintenancePrune: EmergencyMaintenancePruneController | undefined;
   let maintenancePruneHealth: MaintenancePruneHealth | undefined;
   const emergencyPruneThrottleMsResolved = resolveEmergencyPruneThrottleMs(process.env);
+  // Server-log rotation health (issue #3113): shared between the rotation timer
+  // (which records each tick's result) and createRoutes (which projects it onto
+  // /api/health). Constructed here so both close over the same live instance.
+  const serverLogRotationHealth = new ServerLogRotationHealth();
   // Delivery-bridge health (issue #3046): the SignalDeliveryService is
   // constructed after createRoutes, so /api/health reads its status() through a
   // holder the getter closes over. Absent (unconfigured) ⇒ health omits the block.
@@ -2779,6 +2788,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Delivery-bridge health (issue #3046). Undefined until the service is
     // constructed and never wired when the bridge is unconfigured.
     getSignalDeliveryStatus: () => signalDeliveryServiceHolder?.status(),
+    // Server-log rotation health (issue #3113): last tick timestamp, error
+    // message, and skip reason from the size-cap rotation timer. Cheap in-memory
+    // read — surfaces a persistently failing rotation (ENOSPC / EACCES /
+    // read-only FS) that would otherwise only console.error into the failing log.
+    getServerLogRotationHealth: () => serverLogRotationHealth.getHealthSnapshot(),
     getMaintenancePruneHealth: () => {
       // Combined schedule (#2345) + emergency (#2344) block. Schedule tracker is
       // always present; emergency may lag until post-takePredelete wiring fills in.
@@ -2788,11 +2802,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         lastEmergencyPruneAt: null,
         lastEmergencyReclaimedBytes: null,
         lastEmergencyPruneError: null,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+        emergencyPruneReclaimedZeroWhileCritical: false,
         throttleMs: emergencyPruneThrottleMsResolved,
       };
       return composeMaintenancePruneHealth(maintenancePruneHealth.getSnapshot(), emergency);
     },
     getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
+    // Process-fatal counters (issue #3112): since-boot unhandledRejection /
+    // uncaughtException totals + last message/timestamp, stamped by the fatal
+    // handlers in start.ts. Cheap in-memory read; makes a daemon silently
+    // absorbing fatal rejections visible on /api/health.
+    getProcessFatalHealth: () => getFatalErrorHealth(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
@@ -3147,6 +3168,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   emergencyMaintenancePrune = new EmergencyMaintenancePruneController({
     pruneConfig: maintenancePruneConfig,
     throttleMs: emergencyPruneThrottleMsResolved,
+    // #3110: classify a 0-byte successful sweep as ineffective only when the
+    // data directory is still disk-critical when the sweep finishes.
+    isDiskStillCritical: () => diskAdmissionTracker.isCritical(),
   });
   console.log(
     `[maintenance-prune] emergency sweep armed on disk-critical admission edge ` +
@@ -3183,8 +3207,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         diskAdmissionConfig,
       );
-      if (!wasCritical && diskAdmissionTracker.isCritical()) {
+      const isCritical = diskAdmissionTracker.isCritical();
+      if (!wasCritical && isCritical) {
         void emergencyMaintenancePrune?.maybeRunOnDiskCriticalEdge();
+      } else if (wasCritical && !isCritical) {
+        // #3110: on recovery, clear the reclaimed-0-while-critical streak so the
+        // ineffective-reclaim health signal does not latch true once the disk is
+        // healthy again (sweeps only fire on the false→true edge).
+        emergencyMaintenancePrune?.noteDiskLeftCritical();
       }
     },
   });
@@ -3587,6 +3617,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           maxBytes: resolved.maxBytes,
           generations: resolved.generations,
           intervalMs: resolved.intervalMs,
+          // Retain each tick's result so /api/health surfaces a persistently
+          // failing rotation (issue #3113).
+          health: serverLogRotationHealth,
         };
       })(),
       // Relay-orphan sweep (issue #1723 / #1885). ON by default (1h); set

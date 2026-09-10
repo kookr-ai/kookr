@@ -117,6 +117,8 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   private lastRecoveredAt: number | null = null;
   private maxPendingWriters = 0;
   private writeTimeoutCount = 0;
+  /** Cumulative re-attach budget exhaustion faults (issue #3114). */
+  private attachFailedCount = 0;
 
   /** Per-session write queue — preserves submission order across writes. */
   private writeQueues = new Map<SessionId, Promise<void>>();
@@ -506,6 +508,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       pendingWriters: 0,
       maxPendingWriters: this.maxPendingWriters,
       writeTimeoutCount: this.writeTimeoutCount,
+      attachFailedCount: this.attachFailedCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
       lastErrorAt: this.lastErrorAt,
@@ -613,6 +616,7 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
       this.errorCount += 1;
       this.lastErrorAt = Date.now();
       if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
+      if (err.kind === 'session-attach-failed') this.attachFailedCount += 1;
     }
     for (const cb of this.errorSubscribers) {
       try {

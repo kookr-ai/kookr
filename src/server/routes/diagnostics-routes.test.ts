@@ -1798,6 +1798,7 @@ describe('diagnostics routes', () => {
         pendingWriters: 0,
         maxPendingWriters: 0,
         writeTimeoutCount: 0,
+        attachFailedCount: 0,
         pendingWrites: 0,
         maxPendingWrites: 0,
       });
@@ -1815,6 +1816,7 @@ describe('diagnostics routes', () => {
             pendingWriters: 3,
             maxPendingWriters: 9,
             writeTimeoutCount: 5,
+            attachFailedCount: 7,
             lastError: { kind: 'write-timed-out', id: 's1', durationMs: 2000 },
             errorCount: 5,
           }),
@@ -1845,11 +1847,13 @@ describe('diagnostics routes', () => {
         pendingWriters: 3,
         maxPendingWriters: 9,
         writeTimeoutCount: 5,
+        attachFailedCount: 7,
       });
       expect(body.terminalWrite).toEqual({
         pendingWriters: 3,
         maxPendingWriters: 9,
         writeTimeoutCount: 5,
+        attachFailedCount: 7,
         pendingWrites: 2,
         maxPendingWrites: 4,
       });
@@ -2288,6 +2292,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
           lastEmergencyReclaimedBytes: 4096,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2304,6 +2310,8 @@ describe('diagnostics routes', () => {
         lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
         lastEmergencyReclaimedBytes: 4096,
         lastEmergencyPruneError: null,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+        emergencyPruneReclaimedZeroWhileCritical: false,
         throttleMs: 3_600_000,
       });
     });
@@ -2324,6 +2332,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: 'ENOSPC: no space left on device',
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2349,6 +2359,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2392,6 +2404,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2405,6 +2419,128 @@ describe('diagnostics routes', () => {
         lastRemovedCount: 1,
         lastError: 'disk exploded',
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — serverLogRotation block (issue #3113)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health serverLogRotation block (issue #3113)', () => {
+    test('omits serverLogRotation when getServerLogRotationHealth is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation?: unknown };
+      expect(body.serverLogRotation).toBeUndefined();
+    });
+
+    test('surfaces a persistently failing rotation (error + skip reason)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getServerLogRotationHealth: () => ({
+          schemaVersion: 'server-log-rotation.v1',
+          lastRotationAt: '2026-09-10T00:00:00.000Z',
+          lastRotationError: 'ENOSPC: no space left on device',
+          lastSkippedReason: 'error',
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation: Record<string, unknown> };
+      expect(body.serverLogRotation).toEqual({
+        schemaVersion: 'server-log-rotation.v1',
+        lastRotationAt: '2026-09-10T00:00:00.000Z',
+        lastRotationError: 'ENOSPC: no space left on device',
+        lastSkippedReason: 'error',
+      });
+    });
+
+    test('reports a cleared error after a successful rotation', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getServerLogRotationHealth: () => ({
+          schemaVersion: 'server-log-rotation.v1',
+          lastRotationAt: '2026-09-10T01:00:00.000Z',
+          lastRotationError: null,
+          lastSkippedReason: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { serverLogRotation: Record<string, unknown> };
+      expect(body.serverLogRotation.lastRotationError).toBeNull();
+      expect(body.serverLogRotation.lastSkippedReason).toBeNull();
+      expect(body.serverLogRotation.lastRotationAt).toBe('2026-09-10T01:00:00.000Z');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — processFatal block (issue #3112)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health processFatal block (issue #3112)', () => {
+    test('omits processFatal when getProcessFatalHealth is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { processFatal?: unknown };
+      expect(body.processFatal).toBeUndefined();
+    });
+
+    test('projects fatal counters + last-error fields from the getter', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getProcessFatalHealth: () => ({
+          unhandledRejectionTotal: 3,
+          uncaughtExceptionTotal: 1,
+          lastFatalError: 'leaked promise',
+          lastFatalAt: '2026-09-10T00:00:00.000Z',
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { processFatal: Record<string, unknown> };
+      expect(body.processFatal).toEqual({
+        unhandledRejectionTotal: 3,
+        uncaughtExceptionTotal: 1,
+        lastFatalError: 'leaked promise',
+        lastFatalAt: '2026-09-10T00:00:00.000Z',
+      });
+    });
+
+    test('reports a clean baseline (zero counts, null last-error) when nothing has been absorbed', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getProcessFatalHealth: () => ({
+          unhandledRejectionTotal: 0,
+          uncaughtExceptionTotal: 0,
+          lastFatalError: null,
+          lastFatalAt: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        processFatal: {
+          unhandledRejectionTotal: number;
+          uncaughtExceptionTotal: number;
+          lastFatalError: string | null;
+          lastFatalAt: string | null;
+        };
+      };
+      expect(body.processFatal.unhandledRejectionTotal).toBe(0);
+      expect(body.processFatal.uncaughtExceptionTotal).toBe(0);
+      expect(body.processFatal.lastFatalError).toBeNull();
+      expect(body.processFatal.lastFatalAt).toBeNull();
     });
   });
 
@@ -3627,6 +3763,8 @@ describe('diagnostics routes', () => {
         skippedOpenPrUnknown: 0,
         skippedNoPauseStart: 0,
         skippedAwaitingProviderReset: 0,
+        oldestOpenPrFailsafeHoldMs: null,
+        openPrFailsafeOverHardTtlCount: 0,
         lastCandidatesConsidered: 0,
         lastOutcomes: [],
         lastAttemptedTaskIds: [],
@@ -3680,6 +3818,10 @@ describe('diagnostics routes', () => {
         skippedOpenPrFailsafe: 1,
         skippedOpenPrConfirmed: 1,
         skippedOpenPrUnknown: 0,
+        // Issue #3115: p2 held by the open-PR fail-safe for 3h, past the 2h
+        // hard TTL, so it surfaces as the oldest hold and counts as over-TTL.
+        oldestOpenPrFailsafeHoldMs: 3 * 60 * 60_000,
+        openPrFailsafeOverHardTtlCount: 1,
         lastCandidatesConsidered: 3,
         lastAttemptedTaskIds: ['p1'],
         hardTtlMs: 2 * 60 * 60_000,

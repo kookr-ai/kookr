@@ -18,6 +18,7 @@ import {
   presentFindingTypes,
   useFindingTypeFilter,
 } from '../finding-type-filter.js';
+import { filterFindingsByName, useFindingNameFilter } from '../finding-name-filter.js';
 import { ReapWarningBanners } from './ReapWarningBanner.js';
 import { ScheduleSection } from './ScheduleSection.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
@@ -256,7 +257,8 @@ export function FindingsPanel({
   // Load older history results are visible without a second click.
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
-  const [selectedFindingTypes, toggleFindingType] = useFindingTypeFilter();
+  const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
+  const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const showCompletedSection = visibleCompleted.length > 0;
   const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || showCompletedSection;
@@ -311,14 +313,24 @@ export function FindingsPanel({
     () => activeFindingTypeFilter(selectedFindingTypes, presentTypes),
     [selectedFindingTypes, presentTypes],
   );
-  const visibleFindings = useMemo(
+  const typeFilteredFindings = useMemo(
     () => filterFindingsBySelectedTypes(findings, selectedFindingTypes),
     [findings, selectedFindingTypes],
+  );
+  // Compose the free-text name filter on top of the type chips: the visible
+  // list is what both survives the chips AND matches the name query.
+  const visibleFindings = useMemo(
+    () => filterFindingsByName(typeFilteredFindings, nameQuery),
+    [typeFilteredFindings, nameQuery],
   );
   const findingDisplayItems = useMemo(
     () => buildFindingDisplayItems(visibleFindings),
     [visibleFindings],
   );
+  const hasNameQuery = nameQuery.trim().length > 0;
+  // Attribute the empty state to the name query only when the type-filtered set
+  // was itself non-empty — so the message reads truthfully as "no name match".
+  const nameFilterMatchedNothing = hasNameQuery && typeFilteredFindings.length > 0 && visibleFindings.length === 0;
   const latestCompletedLabel = visibleCompleted[0]?.finishedAt
     ? formatCompactDateTime(visibleCompleted[0].finishedAt)
     : '';
@@ -399,6 +411,30 @@ export function FindingsPanel({
             )}
           </span>
         </div>
+        {findings.length > 0 && (
+          <div className="findings-name-filter">
+            <input
+              type="search"
+              className="findings-name-filter-input"
+              data-testid="findings-name-filter-input"
+              placeholder="Search findings by name…"
+              aria-label="Filter findings by name"
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+            />
+            {hasNameQuery && (
+              <button
+                type="button"
+                className="findings-name-filter-clear"
+                data-testid="findings-name-filter-clear"
+                aria-label="Clear name filter"
+                onClick={() => setNameQuery('')}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )}
         {presentTypes.length > 0 && (
           <div className="findings-type-filters" role="group" aria-label="Filter findings by type">
             {presentTypes.map((type) => {
@@ -419,6 +455,17 @@ export function FindingsPanel({
                 </button>
               );
             })}
+            {activeTypeFilter.length > 0 && (
+              <button
+                type="button"
+                className="findings-type-filters-clear"
+                data-testid="findings-type-filters-clear"
+                aria-label="Clear type filter"
+                onClick={clearFindingTypes}
+              >
+                Clear
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -435,6 +482,11 @@ export function FindingsPanel({
                 </p>
               </div>
             )}
+          </div>
+        )}
+        {nameFilterMatchedNothing && (
+          <div className="findings-empty findings-empty-no-match" data-testid="findings-name-filter-empty">
+            No findings match “{nameQuery.trim()}”.
           </div>
         )}
         {findingDisplayItems.map((item) => {

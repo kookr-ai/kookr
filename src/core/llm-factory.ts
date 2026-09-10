@@ -23,10 +23,11 @@ import {
 import { isLoggerLevelEnabled } from './logger.js';
 
 /**
- * Default cool-down after an auth / expired_api_key / HTTP 410 Gone failure
- * before the provider is tried again. Long enough that unattended helper calls
- * stop hammering a dead key or removed model every request; short enough that
- * fixing the key or swapping the model recovers without a process restart.
+ * Default cool-down after an auth / expired_api_key / HTTP 402 Payment Required
+ * / HTTP 410 Gone failure before the provider is tried again. Long enough that
+ * unattended helper calls stop hammering a dead key, exhausted-credit account,
+ * or removed model every request; short enough that fixing the key, topping up
+ * credit, or swapping the model recovers without a process restart.
  * Override with `KOOKR_LLM_AUTH_COOLDOWN_MS` (`0` disables).
  */
 export const DEFAULT_LLM_AUTH_COOLDOWN_MS = 30 * 60 * 1000;
@@ -326,6 +327,7 @@ function shortLlmFailureReason(failure: LlmProviderFailureRecord, status: number
   if (failure.message.includes('attempt budget exhausted')) return 'attempt budget exhausted';
   if (status === 429) return 'rate limited';
   if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 402) return 'payment required';
   if (status === 410) return 'gone';
   if (status === 408) return 'request timeout';
   switch (failure.category) {

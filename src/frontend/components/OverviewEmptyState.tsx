@@ -16,7 +16,7 @@ import {
   usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
-import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatDuration, formatRelativeTimeAgo, prLinkLabel, projectLabel } from '../presentation.js';
+import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatCost, formatDuration, formatRelativeTimeAgo, prLinkLabel, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
@@ -186,7 +186,17 @@ export function OverviewEmptyState({
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
   // Composition across every live bucket, not just what needs input — answers
   // "what am I running?" at a glance (issue #2670).
-  const runtimeMix = buildRuntimeMix([...waiting, ...running, ...completed]);
+  const liveAgents = [...waiting, ...running, ...completed];
+  const runtimeMix = buildRuntimeMix(liveAgents);
+  // Aggregate spend across the same live buckets — answers "what is it costing
+  // me right now?" (issue #3136). Zero-safe: agents with missing/zero
+  // tokenUsage contribute nothing, and the chip is hidden when the total is 0
+  // (mirrors DetailPanel's `costUsd > 0` idiom for agents lacking pricing).
+  const fleetCostUsd = liveAgents.reduce(
+    (sum, agent) => sum + (agent.tokenUsage?.costUsd ?? 0),
+    0,
+  );
+  const showFleetCost = fleetCostUsd > 0;
   const showCreateScheduleCta = !hasAnyTask && schedules.length === 0;
   const recentCompleted = [...completed]
     .sort(compareCompletedAgents)
@@ -229,7 +239,7 @@ export function OverviewEmptyState({
           </div>
         </div>
 
-        {runtimeMix.length > 0 && (
+        {(runtimeMix.length > 0 || showFleetCost) && (
           <p className="overview-runtime-mix" data-testid="overview-runtime-mix">
             {runtimeMix.map((entry, index) => (
               <React.Fragment key={entry.agentType}>
@@ -239,6 +249,20 @@ export function OverviewEmptyState({
                 </span>
               </React.Fragment>
             ))}
+            {showFleetCost && (
+              <>
+                {runtimeMix.length > 0 && (
+                  <span className="overview-runtime-mix-sep"> · </span>
+                )}
+                <span
+                  className="overview-runtime-mix-entry"
+                  data-testid="overview-fleet-cost"
+                  title="Total cost across running, waiting, and completed agents"
+                >
+                  {formatCost(fleetCostUsd)} live spend
+                </span>
+              </>
+            )}
           </p>
         )}
 

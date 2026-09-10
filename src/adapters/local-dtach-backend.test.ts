@@ -2547,6 +2547,33 @@ describe('LocalDtachBackend error-bus health recovery (issue #2810)', () => {
     expect(stats.writeTimeoutCount).toBe(1);
   });
 
+  it('increments attachFailedCount on re-attach budget exhaustion, not reset by an unrelated recovery (issue #3114)', async () => {
+    backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r5', dtachBinary: 'dtach' });
+    await backend.whenStartupRecoverySettled();
+
+    // A session exhausts its bounded re-attach budget and is now wedged detached.
+    emit(backend, { kind: 'session-attach-failed', id: 's1', retries: 3 });
+    let stats = backend.getStats();
+    expect(stats.attachFailedCount).toBe(1);
+    expect(stats.errorCount).toBe(1);
+    expect(stats.lastError).toEqual({ kind: 'session-attach-failed', id: 's1', retries: 3 });
+
+    // A recovery for a *different* session must not mask s1's fault nor reset the
+    // durable attach-failure counter.
+    emit(backend, { kind: 'session-attach-recovered', id: 's2', attempt: 1 });
+    stats = backend.getStats();
+    expect(stats.attachFailedCount).toBe(1);
+    expect(stats.lastError).toEqual({ kind: 'session-attach-failed', id: 's1', retries: 3 });
+
+    // Even after the same session later recovers (clearing the transient
+    // projection), the cumulative attach-failure count is retained and advances
+    // on the next exhaustion.
+    emit(backend, { kind: 'session-attach-recovered', id: 's1', attempt: 1 });
+    emit(backend, { kind: 'session-attach-failed', id: 's1', retries: 3 });
+    stats = backend.getStats();
+    expect(stats.attachFailedCount).toBe(2);
+  });
+
   it('does not let a per-session recovery clear a global/structural fault', async () => {
     backend = new LocalDtachBackend({ socketDir: tmpDir, instanceId: 'r3', dtachBinary: 'dtach' });
     await backend.whenStartupRecoverySettled();

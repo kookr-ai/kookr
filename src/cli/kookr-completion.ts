@@ -96,6 +96,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Terminal reply to a task's live agent (#3103). Positionals are the
+    // taskId|name and the reply text; keep in sync with src/cli/kookr-reply.ts.
+    name: 'reply',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'signal',
     positionalValues: ['completion-ready'],
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
@@ -145,6 +151,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     name: 'schedule',
     subcommands: ['list', 'run', 'enable', 'disable'],
     flags: ['--held-by', '--json', '-h', '--help'],
+  },
+  {
+    // Read-only playbook catalog listing (issue #3126). Keep in sync with
+    // src/cli/kookr-playbook.ts and the root help.
+    name: 'playbook',
+    subcommands: ['list'],
+    flags: ['--json', '-h', '--help'],
   },
   {
     name: 'drain',
@@ -420,6 +433,7 @@ function renderBashCompletion(): string {
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
+  const replyFlags = flagsFor('reply');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -438,6 +452,8 @@ function renderBashCompletion(): string {
   const ralphFlags = flagsFor('ralph');
   const scheduleSubcommands = subcommandsFor('schedule');
   const scheduleFlags = flagsFor('schedule');
+  const playbookSubcommands = subcommandsFor('playbook');
+  const playbookFlags = flagsFor('playbook');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -553,6 +569,9 @@ _kookr()
     open)
       COMPREPLY=( $(compgen -W "${openFlags}" -- "\${cur}") )
       ;;
+    reply)
+      COMPREPLY=( $(compgen -W "${replyFlags}" -- "\${cur}") )
+      ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${signalKinds} ${signalFlags}" -- "\${cur}") )
@@ -607,6 +626,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${scheduleSubcommands} ${scheduleFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${scheduleFlags}" -- "\${cur}") )
+      fi
+      ;;
+    playbook)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${playbookSubcommands} ${playbookFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${playbookFlags}" -- "\${cur}") )
       fi
       ;;
     drain)
@@ -754,6 +780,7 @@ function renderZshCompletion(): string {
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
+  const replyFlags = flagsFor('reply');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -772,6 +799,8 @@ function renderZshCompletion(): string {
   const ralphFlags = flagsFor('ralph');
   const scheduleSubcommands = subcommandsFor('schedule');
   const scheduleFlags = flagsFor('schedule');
+  const playbookSubcommands = subcommandsFor('playbook');
+  const playbookFlags = flagsFor('playbook');
   const drainSubcommands = subcommandsFor('drain');
   const drainFlags = flagsFor('drain');
   const orchestrationSubcommands = subcommandsFor('orchestration');
@@ -843,6 +872,9 @@ _kookr()
     open)
       compadd -- ${openFlags}
       ;;
+    reply)
+      compadd -- ${replyFlags}
+      ;;
     signal)
       if (( CURRENT == 3 )); then
         compadd -- ${signalKinds} ${signalFlags}
@@ -903,6 +935,13 @@ _kookr()
         compadd -- ${scheduleSubcommands} ${scheduleFlags}
       else
         compadd -- ${scheduleFlags}
+      fi
+      ;;
+    playbook)
+      if (( CURRENT == 3 )); then
+        compadd -- ${playbookSubcommands} ${playbookFlags}
+      else
+        compadd -- ${playbookFlags}
       fi
       ;;
     drain)

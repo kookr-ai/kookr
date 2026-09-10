@@ -141,4 +141,36 @@ describe('FindingsPanel type-filter chips (issue #2445)', () => {
     root = renderPanel(container, []);
     expect(container.querySelector('[data-testid^="finding-type-chip-"]')).toBeNull();
   });
+
+  test('Clear appears only when a chip is active and resets the selection + persisted key (issue #3131)', () => {
+    root = renderPanel(container, findings);
+
+    // No active chip yet → no Clear affordance.
+    expect(container.querySelector('[data-testid="findings-type-filters-clear"]')).toBeNull();
+
+    act(() => chip(container, 'permission_blocked').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    act(() => chip(container, 'needs_input').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(cardNames(container)).toEqual(['Needs sudo', 'Waiting on you']);
+
+    const clear = container.querySelector<HTMLButtonElement>('[data-testid="findings-type-filters-clear"]');
+    expect(clear).not.toBeNull();
+
+    act(() => clear!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+
+    // Every card is visible again, every chip is unpressed, and the persisted
+    // key is gone so a reload shows all types.
+    expect(cardNames(container)).toEqual(['Needs sudo', 'Out of tokens', 'Waiting on you']);
+    expect(chip(container, 'permission_blocked').getAttribute('aria-pressed')).toBe('false');
+    expect(chip(container, 'needs_input').getAttribute('aria-pressed')).toBe('false');
+    expect(localStorage.getItem(FINDING_TYPE_FILTER_KEY)).toBeNull();
+    // The Clear button retracts once nothing is selected.
+    expect(container.querySelector('[data-testid="findings-type-filters-clear"]')).toBeNull();
+
+    // A fresh mount (i.e. a reload) is no longer silently pre-narrowed.
+    act(() => root?.unmount());
+    root = null;
+    root = renderPanel(container, findings);
+    expect(cardNames(container)).toEqual(['Needs sudo', 'Out of tokens', 'Waiting on you']);
+    expect(container.querySelector('[data-testid="findings-type-filters-clear"]')).toBeNull();
+  });
 });

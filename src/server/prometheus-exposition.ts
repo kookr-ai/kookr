@@ -34,6 +34,8 @@ export interface TerminalWriteMetricsSnapshot {
   pendingWriters: number;
   maxPendingWriters: number;
   writeTimeoutCount: number;
+  /** Cumulative re-attach budget exhaustion faults (issue #3114). */
+  attachFailedCount: number;
   pendingWrites: number;
   maxPendingWrites: number;
 }
@@ -514,6 +516,7 @@ const EMPTY_TERMINAL_WRITE: TerminalWriteMetricsSnapshot = {
   pendingWriters: 0,
   maxPendingWriters: 0,
   writeTimeoutCount: 0,
+  attachFailedCount: 0,
   pendingWrites: 0,
   maxPendingWrites: 0,
 };
@@ -540,6 +543,9 @@ function appendTerminalWriteMetrics(
     '# HELP kookr_terminal_write_timeouts_total Total WriteTimeoutError events from the terminal write path.',
     '# TYPE kookr_terminal_write_timeouts_total counter',
     metricLine('kookr_terminal_write_timeouts_total', {}, snapshot.writeTimeoutCount),
+    '# HELP kookr_terminal_attach_failures_total Total re-attach budget exhaustion faults (session wedged detached).',
+    '# TYPE kookr_terminal_attach_failures_total counter',
+    metricLine('kookr_terminal_attach_failures_total', {}, snapshot.attachFailedCount),
     '# HELP kookr_terminal_write_pending_writes Current in-flight TerminalInputCoordinator writes across sessions.',
     '# TYPE kookr_terminal_write_pending_writes gauge',
     metricLine('kookr_terminal_write_pending_writes', {}, snapshot.pendingWrites),

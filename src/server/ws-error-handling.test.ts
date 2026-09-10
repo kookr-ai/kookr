@@ -44,6 +44,7 @@ class FailingTerminalBackend implements TerminalBackend {
       pendingWriters: 0,
       maxPendingWriters: 0,
       writeTimeoutCount: 0,
+      attachFailedCount: 0,
       lastError: null,
       errorCount: 0,
     };

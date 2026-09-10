@@ -7,7 +7,9 @@ import {
   effectiveProviderPausedTtlMs,
   listExpiredProviderPausedTasks,
   selectExpiredProviderPausedTasks,
+  summarizeOpenPrFailsafeHoldAge,
   summarizeProviderPausedOccupancy,
+  type ProviderPausedTtlCandidateOutcome,
 } from './provider-paused-ttl.js';
 import { aSession, aTask } from './__fixtures__/task-builders.js';
 
@@ -424,5 +426,106 @@ describe('capacity-aware soft TTL (issue #2225)', () => {
     });
     expect(sel.expired).toEqual([]);
     expect(sel.skips.skipped_under_ttl).toBe(1);
+  });
+});
+
+describe('summarizeOpenPrFailsafeHoldAge (issue #3115)', () => {
+  const HARD_TTL = TTL_MS; // 2h
+
+  function outcome(
+    outcome: ProviderPausedTtlCandidateOutcome['outcome'],
+    pausedForMs?: number,
+  ): ProviderPausedTtlCandidateOutcome {
+    return { taskId: `t-${outcome}-${pausedForMs ?? 'na'}`, outcome, pausedForMs };
+  }
+
+  it('returns null oldest / zero counts when no open-PR hold is present', () => {
+    const summary = summarizeOpenPrFailsafeHoldAge(
+      [
+        outcome('selected', 3 * 60 * 60_000),
+        outcome('skipped_under_ttl', 60_000),
+        outcome('skipped_awaiting_provider_reset', 90 * 60_000),
+        outcome('skipped_no_pause_start'),
+      ],
+      HARD_TTL,
+    );
+    expect(summary).toEqual({
+      oldestHoldMs: null,
+      holdCount: 0,
+      overHardTtlCount: 0,
+    });
+  });
+
+  it('takes the max pausedForMs across confirmed + unknown open-PR skips', () => {
+    const summary = summarizeOpenPrFailsafeHoldAge(
+      [
+        outcome('skipped_open_pr_confirmed', 90 * 60_000), // 1.5h, under TTL
+        outcome('skipped_open_pr_unknown', 5 * 60 * 60_000), // 5h, oldest
+        outcome('skipped_open_pr_confirmed', 3 * 60 * 60_000), // 3h
+        outcome('selected', 8 * 60 * 60_000), // ignored — not a hold
+      ],
+      HARD_TTL,
+    );
+    expect(summary.oldestHoldMs).toBe(5 * 60 * 60_000);
+    expect(summary.holdCount).toBe(3);
+    // 5h and 3h are over the 2h hard TTL; the 1.5h hold is not.
+    expect(summary.overHardTtlCount).toBe(2);
+  });
+
+  it('counts a hold at exactly the hard TTL as over-TTL (inclusive)', () => {
+    const summary = summarizeOpenPrFailsafeHoldAge(
+      [outcome('skipped_open_pr_confirmed', HARD_TTL)],
+      HARD_TTL,
+    );
+    expect(summary.oldestHoldMs).toBe(HARD_TTL);
+    expect(summary.overHardTtlCount).toBe(1);
+  });
+
+  it('ignores holds without a usable pausedForMs', () => {
+    const summary = summarizeOpenPrFailsafeHoldAge(
+      [
+        outcome('skipped_open_pr_confirmed'), // undefined
+        { taskId: 'nan', outcome: 'skipped_open_pr_unknown', pausedForMs: NaN },
+        { taskId: 'neg', outcome: 'skipped_open_pr_unknown', pausedForMs: -5 },
+        outcome('skipped_open_pr_unknown', 4 * 60 * 60_000),
+      ],
+      HARD_TTL,
+    );
+    expect(summary.oldestHoldMs).toBe(4 * 60 * 60_000);
+    expect(summary.holdCount).toBe(1);
+    expect(summary.overHardTtlCount).toBe(1);
+  });
+
+  it('disables the over-TTL count when hardTtlMs is not positive, but still reports oldest', () => {
+    const summary = summarizeOpenPrFailsafeHoldAge(
+      [outcome('skipped_open_pr_confirmed', 3 * 60 * 60_000)],
+      0,
+    );
+    expect(summary.oldestHoldMs).toBe(3 * 60 * 60_000);
+    expect(summary.overHardTtlCount).toBe(0);
+  });
+
+  it('is computed from the real selection outcomes, not synthetic input', () => {
+    // Two paused tasks holding an open PR: the pure selector emits skip
+    // outcomes carrying pausedForMs; the summary reads them. A hold still under
+    // the TTL is `skipped_under_ttl` (never reaches the open-PR branch), so only
+    // held-a — past the hard TTL — is an open-PR fail-safe hold.
+    const base = pausedTask({ id: 'held-a' });
+    const other = pausedTask({ id: 'held-b' });
+    const startFor: Record<string, number> = {
+      'held-a': NOW.getTime() - 3 * 60 * 60_000, // 3h, past hard TTL
+      'held-b': NOW.getTime() - 90 * 60_000, // 1.5h, under TTL
+    };
+    const sel = selectExpiredProviderPausedTasks([base, other], {
+      now: NOW,
+      isProviderPaused: () => true,
+      getPauseStartedAtMs: (task) => startFor[task.id],
+      isHoldingOpenPr: () => true, // confirmed open PR → exemption holds
+    });
+    expect(sel.expired).toEqual([]); // exemption unchanged: nothing reclaimed
+    const summary = summarizeOpenPrFailsafeHoldAge(sel.outcomes, TTL_MS);
+    expect(summary.oldestHoldMs).toBe(3 * 60 * 60_000);
+    expect(summary.holdCount).toBe(1);
+    expect(summary.overHardTtlCount).toBe(1);
   });
 });

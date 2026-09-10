@@ -1203,6 +1203,21 @@ The server is discovered the same way as `kookr spawn` (`KOOKR_API_BASE_URL`, th
 
 Exit codes (specific to `kookr schedule`): `0` success; `2` user error (bad flags, missing schedule id); `3` no server reachable (fail closed); `4` server rejected the request (unknown id, capacity/drain, validation, or scheduling not configured).
 
+## `kookr playbook`
+
+List the playbooks available from the terminal — the same catalog the dashboard's launch dialog browses — so a terminal-first user or a script can discover which playbooks are installed without opening the web UI. Strictly **read-only**: there is no `run`/`launch` verb here.
+
+```bash
+kookr playbook list [--json]
+```
+
+- `list` renders one line per playbook — `<name> · <scope> · <description>` — resolved from the three discovery tiers: project (`<cwd>/.kookr/playbooks`), user (`~/.kookr/playbooks`, or `$KOOKR_USER_PLAYBOOKS_DIR`), and plugin (`<kookr-toolkit-plugin>/playbooks`). On an id collision the higher-precedence tier wins (project > user > plugin). A playbook with no description shows `(no description)`; an empty catalog prints `No playbooks found.`.
+- `--json` prints one machine-readable envelope, `{ok, code, message, details}`, matching the other list commands. `details.playbooks` is a lean projection — `{id, name, scope, description}` per playbook — so the heavy `body`/`parameters` fields never enter the envelope.
+
+Discovery reads the local filesystem directly, so **no running server is required** — unlike `kookr schedule`, this command works offline.
+
+Exit codes (specific to `kookr playbook`): `0` success; `1` discovery failed to read the playbook directories (a rare filesystem error — with `--json` this is still emitted as a `DISCOVERY_ERROR` envelope); `2` user error (bad flags, unknown verb).
+
 ## `kookr drain` / `kookr resume`
 
 Control operator drain mode on a running local Kookr instance:

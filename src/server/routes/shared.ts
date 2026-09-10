@@ -511,6 +511,27 @@ export interface RouteDeps {
   getMaintenancePruneHealth?: () =>
     import('../maintenance-prune-schedule.js').MaintenancePruneHealthSnapshot | undefined;
   /**
+   * Server-log rotation health (issue #3113). `/api/health` reads only the
+   * in-memory snapshot (last tick timestamp, last error message, last skip
+   * reason) so a persistently failing size-cap rotation (ENOSPC / EACCES /
+   * read-only FS) — which the routine otherwise only `console.error`s into the
+   * very log that is failing to rotate — is visible to a remote operator.
+   * Absent in partial test harnesses ⇒ health omits the `serverLogRotation` block.
+   */
+  getServerLogRotationHealth?: () =>
+    import('../server-log-rotation.js').ServerLogRotationHealthSnapshot | undefined;
+  /**
+   * Process-fatal counters (issue #3112). `/api/health` reads only the in-memory
+   * snapshot: since-boot `unhandledRejection` / `uncaughtException` totals plus
+   * the last (capped) message + timestamp, stamped by the fatal handlers in
+   * start.ts. Makes a daemon quietly absorbing fatal rejections — otherwise only
+   * a `[fatal] …` line in the rotated-away server.log — visible to a remote
+   * operator. Absent in partial test harnesses ⇒ health omits the `processFatal`
+   * block.
+   */
+  getProcessFatalHealth?: () =>
+    import('../fatal-error-counters.js').FatalErrorHealthSnapshot | undefined;
+  /**
    * Hook replay-checkpoint gauges (issue #2281). `/api/health` reads only the
    * slim `getReplayCheckpointStats()` snapshot — in-memory session count plus
    * `stat().size` for file bytes. Must never parse the (multi-MB) checkpoint
