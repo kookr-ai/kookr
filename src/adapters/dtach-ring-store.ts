@@ -66,6 +66,15 @@ export interface DtachRingState {
    * flush completes. Used to skip idle sessions whose ring has not changed.
    */
   lastFlushedHead: number;
+  /**
+   * Increments whenever the ring is re-linearized (shrink/expand), which resets
+   * lastFlushedHead to -1. A pending async snapshot captures this value; on
+   * completion the writer advances lastFlushedHead only when the seq is
+   * unchanged, so a late completion cannot restore a head a shrink invalidated
+   * (which would mark re-linearized/newer output as already persisted and strand
+   * it). Absent on states created before this field; treated as 0.
+   */
+  resetSeq?: number;
 }
 
 export function createDtachRingState(
@@ -79,6 +88,7 @@ export function createDtachRingState(
     lastByteAt: null,
     ringBuffer: Buffer.alloc(cap),
     lastFlushedHead: -1,
+    resetSeq: 0,
   };
 }
 
@@ -148,8 +158,11 @@ export function shrinkRing(state: DtachRingState, newCapacity: number): boolean 
   state.ringBuffer = next;
   state.ringHead = keep;
   // Force a later flush so disk meta matches the (possibly truncated) in-memory
-  // view. Full content may already have been persisted by the caller.
+  // view. Full content may already have been persisted by the caller. Bump
+  // resetSeq so a snapshot enqueued before this shrink cannot, on completion,
+  // restore the pre-shrink lastFlushedHead and strand re-linearized output.
   state.lastFlushedHead = -1;
+  state.resetSeq = (state.resetSeq ?? 0) + 1;
   return true;
 }
 
@@ -173,6 +186,7 @@ export function expandRing(state: DtachRingState, newCapacity: number): boolean 
   state.ringBuffer = next;
   state.ringHead = available;
   state.lastFlushedHead = -1;
+  state.resetSeq = (state.resetSeq ?? 0) + 1;
   return true;
 }
 
@@ -230,13 +244,14 @@ export function enforceRingFleetBudget(
 
 export class DtachRingStore {
   private readonly asyncWriter: ReturnType<typeof createLatestSnapshotWriter> | null;
-  private readonly snapshotOwners = new WeakMap<Uint8Array, { state: DtachRingState; head: number }>();
+  private readonly snapshotOwners = new WeakMap<Uint8Array, { state: DtachRingState; head: number; resetSeq: number }>();
 
-  constructor(private readonly ringsDir: string, options: { asyncPersistence?: boolean } = {}) {
+  constructor(private readonly ringsDir: string, options: { asyncPersistence?: boolean; asyncMaxBytes?: number } = {}) {
     ensureDtachDir(this.ringsDir);
     this.asyncWriter = options.asyncPersistence ? createLatestSnapshotWriter({
       commit: (id, bytes) => this.commitAsync(id, bytes),
       onError: (id, error) => console.warn(`[dtach-backend] failed to persist ring for ${id}: ${String(error)}`),
+      ...(options.asyncMaxBytes !== undefined ? { maxBytes: options.asyncMaxBytes } : {}),
     }) : null;
   }
 
@@ -281,9 +296,14 @@ export class DtachRingStore {
     try {
       if (this.asyncWriter) {
         const { head, bytes } = this.snapshot(state);
-        this.snapshotOwners.set(bytes, { state, head });
-        this.asyncWriter.enqueue(state.id, bytes);
-        return;
+        this.snapshotOwners.set(bytes, { state, head, resetSeq: state.resetSeq ?? 0 });
+        if (this.asyncWriter.enqueue(state.id, bytes)) return;
+        // The async writer is at its byte/session budget — e.g. many dirty rings
+        // flushed together at graceful shutdown exceed it. The rejected snapshot
+        // was previously dropped silently and its source ring then disposed,
+        // losing a session's newest scrollback. Fall through to a synchronous
+        // write so this ring is durable before it can be discarded.
+        this.snapshotOwners.delete(bytes);
       }
       // `rings/` sits under the /tmp instance directory and can be swept away
       // while the server runs. Re-create it here so a vanished directory costs
@@ -446,7 +466,11 @@ export class DtachRingStore {
       await writeFile(temporary, bytes, { mode: 0o600 });
       await rename(temporary, target);
       const owner = this.snapshotOwners.get(bytes);
-      if (owner) owner.state.lastFlushedHead = owner.head;
+      // Only mark this head persisted if the ring has not been re-linearized
+      // (shrunk/expanded) since the snapshot was captured. Otherwise a shrink's
+      // lastFlushedHead reset would be undone here, stranding re-linearized/newer
+      // output as "already flushed" and losing it across a restart.
+      if (owner && (owner.state.resetSeq ?? 0) === owner.resetSeq) owner.state.lastFlushedHead = owner.head;
       await Promise.all([this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
         .map((path) => unlink(path).catch(() => {})));
     } finally { await unlink(temporary).catch(() => {}); }

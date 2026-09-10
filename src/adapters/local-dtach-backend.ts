@@ -334,6 +334,11 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopTimerAndFlush();
+  }
+
+  /** Stop the periodic flush, persist every dirty ring, and dispose attaches. */
+  private stopTimerAndFlush(): void {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
@@ -350,7 +355,20 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   /** Close attach clients, then await the isolated host's final ring writes. */
   async closeAndDrain(): Promise<void> {
-    this.close();
+    if (this.closed) { await this.ringStore.drain(); return; }
+    this.closed = true;
+    // Stop the periodic flush, then DRAIN in-flight async snapshot writes BEFORE
+    // the final flush. Otherwise an older async rename still in flight can
+    // complete during the trailing drain() and rename over (clobber) the final
+    // synchronous-fallback snapshot for a session, losing its newest scrollback
+    // (#3145). After the drain no async write is outstanding for any ring, so
+    // the final flush's writes are the last to touch each file.
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    await this.ringStore.drain();
+    this.stopTimerAndFlush();
     await this.ringStore.drain();
   }
 

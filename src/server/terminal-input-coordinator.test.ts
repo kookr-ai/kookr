@@ -89,6 +89,25 @@ describe('TerminalInputCoordinator', () => {
     expect(coordinator.getSnapshot(sessionId)!.prompt.kind).toBe('unknown');
   });
 
+  it('never drops a readiness transition under a burst exceeding the write-queue cap', async () => {
+    const { coordinator, sessionId } = await setup();
+    // Hook replay dispatches state transitions synchronously without awaiting or
+    // retrying them. A burst larger than the 256 write-queue cap must not reject
+    // any of them (a dropped `stop` would leave the prompt stuck blocked/running).
+    const pending: Promise<unknown>[] = [];
+    for (let i = 0; i < 300; i++) pending.push(coordinator.markToolStarted(sessionId));
+    pending.push(coordinator.markTurnStopped(sessionId));
+    const results = await Promise.allSettled(pending);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    const snapshot = coordinator.getSnapshot(sessionId)!;
+    expect(snapshot.prompt.kind).toBe('unknown'); // the trailing stop was applied
+    // Readiness still works for this session after the burst.
+    await expect(coordinator.markPromptReady(sessionId, {
+      observedEpoch: snapshot.inputStateEpoch,
+      observedReadinessVersion: snapshot.readinessVersion,
+    })).resolves.toBe(true);
+  });
+
   it('rejects stale, blocked, unknown, and missing empty-enter intents without writing Enter', async () => {
     const { backend, coordinator, sessionId } = await setup();
     const initial = coordinator.getSnapshot(sessionId)!;

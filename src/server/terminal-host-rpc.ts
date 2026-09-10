@@ -110,8 +110,17 @@ export class TerminalHostRpcClient {
       pending.transmitting = false;
       this.transmitting = null;
       if (pending.settled) this.release(pending);
-      if (error) this.close(new TerminalHostUnavailableError(`Terminal host IPC failed: ${error.message}`));
-      else this.pump();
+      // A failed send rejects only THIS request and keeps the client draining.
+      // Channel backpressure (queue/size admission — which the channel measures
+      // on the full envelope, larger than this client's per-arg admission, and
+      // across shared non-RPC traffic) must not become a permanent brownout that
+      // fails every later request while stats keep the host `ready`. A genuine
+      // child death is owned by the terminal-host 'disconnect'/'error'/'exit'
+      // handlers (they retire and close this client) plus the stalled-stats
+      // heartbeat — not by tearing the whole client down on one send.
+      else if (error) this.finish(pending.packet.id, undefined,
+        new TerminalHostUnavailableError(`Terminal host send failed: ${error.message}`));
+      this.pump();
     };
     try { this.send(pending.packet, sent); } catch (error) { sent(error instanceof Error ? error : new Error(String(error))); }
   }

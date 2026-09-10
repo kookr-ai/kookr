@@ -44,19 +44,20 @@ function installGuestRule(
   publisher: ReturnType<typeof createSessionStreamPublisher>,
   sessionId: string,
   scopeId = `scope-${sessionId}`,
+  sessionEpoch: string = '1',
 ): void {
   expect(publisher.installPublicationRule({
     publicationScopeId: scopeId,
     principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
     sessionId: asSessionId(sessionId),
-    sessionEpoch: asSessionEpoch('1'),
+    sessionEpoch: asSessionEpoch(sessionEpoch),
     approvedAt: new Date().toISOString(),
     policyVersion: asPolicyVersion(1),
   })).toEqual(expect.objectContaining({ ok: true }));
   publisher.recordDemandProof({
     principal: { kind: 'guest-member', invitationId: 'inv-1', memberSessionId: 'member-1', deviceId: 'device-1' },
     sessionId: asSessionId(sessionId),
-    sessionEpoch: asSessionEpoch('1'),
+    sessionEpoch: asSessionEpoch(sessionEpoch),
     proof: { kind: 'guest-relay-presence', expiresAt: new Date(Date.now() + 60_000).toISOString() },
   });
 }
@@ -417,6 +418,38 @@ describe('SessionStreamPublisher', () => {
       streamEncryption,
       aad,
     })).toThrow();
+    publisher.stop();
+  });
+
+  it('retries a session whose first subscription throws so a later sync streams it', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const realOnData = backend.onData.bind(backend);
+    let failNext = true; // Models the host throwing at subscription capacity once.
+    const onData = vi.fn((id: string, cb: Parameters<typeof realOnData>[1]) => {
+      if (failNext) { failNext = false; throw new Error('Stream subscription capacity'); }
+      return realOnData(asSessionId(id), cb);
+    });
+    const events: TerminalStreamEvent[] = [];
+    const publisher = createSessionStreamPublisher({
+      terminalBackend: Object.assign(backend, { onData }),
+      remoteNodeClient: makeRemoteClient(events), env: { KOOKR_RELAY_TRUSTED: 'true' },
+    });
+
+    // First sync: the subscription throws. The provisional entry must roll back,
+    // otherwise every later sync skips the id and its terminal never streams.
+    await expect(publisher.syncSessions()).rejects.toThrow('Stream subscription capacity');
+    expect(publisher.currentCursor('s1')).toBeNull();
+
+    // Capacity freed: a later sync must retry and establish a live subscription.
+    await publisher.syncSessions();
+    const cursor = publisher.currentCursor('s1');
+    expect(cursor).not.toBeNull();
+    expect(onData).toHaveBeenCalledTimes(2);
+
+    installGuestRule(publisher, 's1', 'scope-s1', cursor!.sessionEpoch);
+    backend.emit('s1', 'after-retry');
+    expect(events).toHaveLength(1);
     publisher.stop();
   });
 });

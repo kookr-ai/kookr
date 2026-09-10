@@ -71,6 +71,45 @@ describe('DtachRingStore', () => {
     expect(existsSync(join(tmpDir, 'persisted.meta.json'))).toBe(false);
   });
 
+  it('persists a snapshot synchronously when the async writer rejects it at capacity (#3145)', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    // A tiny async budget forces the enqueue to be rejected, as happens at
+    // graceful shutdown when many dirty rings flush together past the writer's
+    // byte budget. The rejected snapshot must still reach disk (sync fallback)
+    // instead of being dropped and then losing the ring on disposal.
+    const store = new DtachRingStore(tmpDir, { asyncPersistence: true, asyncMaxBytes: 8 });
+    const state = createDtachRingState('overflow');
+    const payload = new TextEncoder().encode('scrollback that must survive shutdown');
+    store.copyInto(state, payload);
+    store.persist(state);
+    expect(store.persistenceStats().rejected).toBe(1); // enqueue was refused
+
+    const restored = createDtachRingState('overflow');
+    store.load(restored);
+    const out = Buffer.alloc(payload.length);
+    store.copyFrom(restored, restored.ringHead, out.length, out);
+    expect(out.toString('utf-8')).toBe('scrollback that must survive shutdown');
+    expect(restored.lastFlushedHead).toBe(payload.length);
+  });
+
+  it('does not restore a stale flushed head after the ring is shrunk mid-flush (#3145)', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir, { asyncPersistence: true });
+    const state = createDtachRingState('shrink-race');
+    store.copyInto(state, new TextEncoder().encode('X'.repeat(80)));
+    expect(state.ringHead).toBe(80);
+    // Enqueue an async snapshot at head 80, then re-linearize (shrink) the ring
+    // BEFORE the async write completes. The shrink resets lastFlushedHead to -1;
+    // the async completion must NOT restore the pre-shrink head 80 (that would
+    // mark the shrunk/newer content as already persisted and strand it).
+    store.persist(state);
+    expect(shrinkRing(state, 64)).toBe(true);
+    expect(state.ringHead).toBe(64);
+    await store.drain();
+    expect(state.lastFlushedHead).not.toBe(80);
+    expect(state.lastFlushedHead).toBe(-1); // still dirty -> a later flush re-persists it
+  });
+
   it('copyInto respects a shrunken capacity', () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
     const store = new DtachRingStore(tmpDir);

@@ -313,7 +313,13 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       if (Object.prototype.hasOwnProperty.call(options ?? {}, 'missing')) return options!.missing as T;
       throw new Error(`terminal input state missing for ${sessionId}`);
     }
-    if (state.queuedOperations >= 256) throw new Error('Terminal input queue capacity unavailable');
+    // The queue-depth cap is enforced at write admission (reserveInput) so tiny
+    // keystrokes cannot retain an unbounded promise chain. It must NOT be applied
+    // here as well: readiness state transitions (markToolStarted/markTurnStopped/
+    // markPromptReady/...) are lightweight, are dispatched by hook replay without
+    // being awaited or retried, and are correctness-critical — dropping one (e.g.
+    // a `stop` after a burst of tool_use events) leaves the prompt stuck and a
+    // later markPromptReady returning false. They must always enqueue.
     state.queuedOperations++;
     const run = state.queue.then(() => { this.assertCurrent(state); return fn(state); })
       .finally(() => { state.queuedOperations--; });

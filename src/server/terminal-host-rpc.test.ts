@@ -24,6 +24,21 @@ describe('NFR-TERM-001: bounded terminal-host RPC', () => {
     await rejected;
     expect(h.sent).toHaveLength(1); h.rpc.close();
   });
+  it('rejects a request whose send fails without disabling the whole client', async () => {
+    const h = harness();
+    const a = h.rpc.request('write', ['s', Uint8Array.of(65)]);
+    const aRejected = expect(a).rejects.toBeInstanceOf(TerminalHostUnavailableError);
+    // Channel backpressure fails this one send; it must not brown out the client.
+    h.callbacks.shift()!(new Error('Terminal host IPC capacity unavailable'));
+    await aRejected;
+    // A subsequent request still transmits and completes on the same client.
+    const b = h.rpc.request('listSessions', []);
+    expect(h.sent.some((packet) => packet.method === 'listSessions')).toBe(true);
+    h.callbacks.shift()!();
+    h.rpc.receive({ kind: 'response', generation: 'g', id: 2, result: ['s'] });
+    expect(await b).toEqual(['s']);
+    h.rpc.close();
+  });
   it('prioritizes input over unsent captures and expires queued work without sending it', async () => {
     vi.useFakeTimers(); const h = harness();
     const first = h.rpc.request('captureBytes', ['s']);

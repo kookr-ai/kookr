@@ -13,6 +13,7 @@ import { TerminalHostChannel } from './terminal-host-channel.js';
 import { TerminalHostRpcClient } from './terminal-host-rpc.js';
 import { waitForTerminalAttachExit } from './terminal-host-owner.js';
 import { EMPTY_TERMINAL_INPUT_RTT_SNAPSHOT } from './terminal-input-rtt-metrics.js';
+import { TerminalInputSnapshotCache } from './terminal-input-snapshot-cache.js';
 import { TerminalHostUnavailableError, terminalHostPayloadSize,
   type TerminalHostChildMessage, type TerminalHostMethod, type TerminalHostOperations,
   type TerminalHostResponse, type TerminalHostUpgrade } from './terminal-host-contract.js';
@@ -43,9 +44,19 @@ export class TerminalHostBackend implements TerminalBackend {
   private stats: BackendStats = { attachedSessions: 0, reattachCounts: {}, pendingWriters: 0,
     maxPendingWriters: 0, writeTimeoutCount: 0, attachFailedCount: 0, lastError: null, errorCount: 0 };
   private latest: StatsMessage | null = null;
-  private readonly inputSnapshots = new Map<string, { version: number; value: InputSnapshot | null }>();
+  private readonly inputSnapshots = new TerminalInputSnapshotCache<InputSnapshot>();
   private readonly inputMutations = new Map<string, number>();
   private nextInputMutation = 0;
+  // Per-session serialization for fire-and-forget readiness control RPCs (see
+  // serializeInputControl): keeps a hook-replay burst from firing hundreds of
+  // concurrent RPCs that overflow the client's in-flight cap and drop a transition.
+  private readonly inputControlChains = new Map<string, Promise<unknown>>();
+  // Global cap on concurrent readiness-control RPCs, kept well below the RPC
+  // client's 128 in-flight limit so a cross-session mark burst queues here
+  // rather than overflowing that limit and dropping a transition.
+  private readonly maxReadinessInFlight = 64;
+  private readinessSlots = this.maxReadinessInFlight;
+  private readonly readinessWaiters: Array<() => void> = [];
   private readonly diagnostics = new Map<string, { at: number; value: TerminalSessionDiagnostics | null }>();
   private readonly diagnosticPending = new Set<string>();
   private readonly subscriptions = new Map<string, Subscription>();
@@ -67,30 +78,77 @@ export class TerminalHostBackend implements TerminalBackend {
     this.inputCoordinator = {
       registerSession: (id) => { this.mutateInputSession('input.registerSession', id); },
       cleanupSession: (id) => { this.mutateInputSession('input.cleanupSession', id); },
-      dispose: () => { this.inputSnapshots.clear(); void this.request('input.dispose', []).catch(() => {}); },
+      dispose: () => { this.inputSnapshots.clear(); this.inputControlChains.clear(); void this.request('input.dispose', []).catch(() => {}); },
       getSnapshot: (id) => this.getHostHealth().status === 'ready' && !this.inputMutations.has(id)
-        ? structuredClone(this.inputSnapshots.get(id)?.value ?? null) : null,
+        ? structuredClone(this.inputSnapshots.get(id)) : null,
       getWriteMetrics: () => this.latest?.inputMetrics ?? { pendingWrites: 0, maxPendingWrites: 0 },
       writeInput: (...args) => this.request('input.writeInput', args),
       writeInputSequence: (...args) => this.request('input.writeInputSequence', args),
-      markUserPromptSubmitted: (...args) => this.request('input.markUserPromptSubmitted', args),
-      markToolStarted: (...args) => this.request('input.markToolStarted', args),
-      markPermissionBlocked: (...args) => this.request('input.markPermissionBlocked', args),
-      markStopFailure: (...args) => this.request('input.markStopFailure', args),
-      markTurnStopped: (...args) => this.request('input.markTurnStopped', args),
-      markSessionEnded: (...args) => this.request('input.markSessionEnded', args),
-      markPromptReady: (...args) => this.request('input.markPromptReady', args),
-      handleEmptyEnterIntent: (...args) => this.request('input.handleEmptyEnterIntent', args),
+      markUserPromptSubmitted: (...args) => this.serializeInputControl(args[0], () => this.request('input.markUserPromptSubmitted', args)),
+      markToolStarted: (...args) => this.serializeInputControl(args[0], () => this.request('input.markToolStarted', args)),
+      markPermissionBlocked: (...args) => this.serializeInputControl(args[0], () => this.request('input.markPermissionBlocked', args)),
+      markStopFailure: (...args) => this.serializeInputControl(args[0], () => this.request('input.markStopFailure', args)),
+      markTurnStopped: (...args) => this.serializeInputControl(args[0], () => this.request('input.markTurnStopped', args)),
+      markSessionEnded: (...args) => this.serializeInputControl(args[0], () => this.request('input.markSessionEnded', args)),
+      markPromptReady: (...args) => this.serializeInputControl(args[0], () => this.request('input.markPromptReady', args)),
+      handleEmptyEnterIntent: (...args) => this.serializeInputControl(args[0].sessionId, () => this.request('input.handleEmptyEnterIntent', args)),
     };
+  }
+
+  /**
+   * Order and rate-limit a session's readiness control RPCs (the fire-and-forget
+   * lifecycle marks plus markPromptReady/handleEmptyEnterIntent, which must
+   * observe them in order). Hook replay dispatches marks synchronously without
+   * awaiting, so firing each as an immediate RPC lets a burst overflow the
+   * client's 128 in-flight cap and silently drop a transition (e.g. a `stop`),
+   * leaving the prompt stuck. Two bounds prevent that:
+   *  - per-session chaining preserves order and bounds one session to one
+   *    in-flight RPC (a single session's replayed marks);
+   *  - a global semaphore caps concurrent readiness RPCs across ALL sessions
+   *    well below the RPC in-flight cap, so a cross-session burst (one mark for
+   *    each of many sessions) queues here instead of overflowing that cap.
+   * Callers are unaffected: the marks are already fire-and-forget and the awaited
+   * calls (markPromptReady/handleEmptyEnterIntent) still resolve with their
+   * result, just after any queue wait.
+   */
+  private serializeInputControl<T>(sessionId: string, op: () => Promise<T>): Promise<T> {
+    const prior = this.inputControlChains.get(sessionId) ?? Promise.resolve();
+    const gated = async (): Promise<T> => {
+      await this.acquireReadinessSlot();
+      try { return await op(); } finally { this.releaseReadinessSlot(); }
+    };
+    const run = prior.then(gated, gated);
+    const tail = run.then(() => {}, () => {});
+    this.inputControlChains.set(sessionId, tail);
+    void tail.then(() => { if (this.inputControlChains.get(sessionId) === tail) this.inputControlChains.delete(sessionId); });
+    return run;
+  }
+  private acquireReadinessSlot(): Promise<void> {
+    if (this.readinessSlots > 0) { this.readinessSlots--; return Promise.resolve(); }
+    return new Promise<void>((resolve) => { this.readinessWaiters.push(resolve); });
+  }
+  private releaseReadinessSlot(): void {
+    const waiter = this.readinessWaiters.shift();
+    if (waiter) waiter(); // hand the freed slot directly to the next waiter
+    else this.readinessSlots++;
   }
 
   private mutateInputSession(method: 'input.registerSession' | 'input.cleanupSession', id: string) {
     if (this.inputMutations.size >= 512 && !this.inputMutations.has(id)) return;
     const mutation = ++this.nextInputMutation; const generation = this.generation;
     this.inputMutations.set(id, mutation); this.inputSnapshots.delete(id);
-    void this.request(method, [id]).then(() => {
+    // Clear our marker once the mutation settles — on success AND on failure. A
+    // failed request (e.g. rejected at the RPC's in-flight cap during a burst
+    // registration) must not strand the marker: getSnapshot masks the session
+    // while a marker is present, so a retained marker permanently hides
+    // readiness even after a later child snapshot arrives. Clearing is not
+    // optimistic — getSnapshot then reflects the cache (still null after the
+    // delete above until a real snapshot lands) and can recover on retry. The
+    // mutation-id guard keeps a superseding register/cleanup's marker intact.
+    const settle = () => {
       if (this.generation === generation && this.inputMutations.get(id) === mutation) this.inputMutations.delete(id);
-    }).catch(() => { /* Failed readiness mutation remains unavailable, never optimistic. */ });
+    };
+    void this.request(method, [id]).then(settle, settle);
   }
 
   static async create(options: LocalDtachBackendOptions): Promise<TerminalHostBackend> {
@@ -125,6 +183,9 @@ export class TerminalHostBackend implements TerminalBackend {
   private startGeneration(): Promise<void> {
     if (this.closed || this.child) return Promise.reject(new TerminalHostUnavailableError());
     this.status = 'starting'; this.generation = randomUUID(); this.latest = null; this.snapshotAt = 0;
+    // A new child restarts its monotonic version counter at 0, so the previous
+    // generation's reclaim floor must not fence out the fresh generation.
+    this.inputSnapshots.resetGeneration();
     const generation = this.generation;
     const source = __filename.endsWith('.ts');
     const child = fork(join(__dirname, `terminal-host-entry.${source ? 'ts' : 'js'}`), [], {
@@ -166,7 +227,7 @@ export class TerminalHostBackend implements TerminalBackend {
         this.readyTimer = undefined; this.killTimer = undefined; this.heartbeat = undefined;
         this.rpc?.close(); channel.close(); this.rpc = null; this.channel = null; this.child = null;
         this.status = this.closed ? 'closed' : 'unavailable';
-        this.inputSnapshots.clear(); this.inputMutations.clear(); this.diagnostics.clear(); this.diagnosticPending.clear();
+        this.inputSnapshots.clear(); this.inputControlChains.clear(); this.inputMutations.clear(); this.diagnostics.clear(); this.diagnosticPending.clear();
         for (const registry of this.registries) registry.unregisterRemoteGeneration(generation);
         this.registries.clear();
         this.invalidateStreams();
@@ -190,7 +251,7 @@ export class TerminalHostBackend implements TerminalBackend {
     if (this.child !== child || this.killTimer) return;
     this.status = this.closed ? 'closed' : 'unavailable';
     this.rpc?.close();
-    this.inputSnapshots.clear(); this.invalidateStreams();
+    this.inputSnapshots.clear(); this.inputControlChains.clear(); this.invalidateStreams();
     if (child.connected) this.channel?.send({ kind: 'shutdown', generation: this.generation });
     child.kill('SIGTERM');
     // Only positive exit unlocks replacement. No second owner is started on a
@@ -243,18 +304,13 @@ export class TerminalHostBackend implements TerminalBackend {
     }
   }
   private cacheInput(snapshot: InputSnapshot, version: number) {
-    if (this.inputSnapshots.size >= 512 && !this.inputSnapshots.has(snapshot.sessionId)) return;
-    if ((this.inputSnapshots.get(snapshot.sessionId)?.version ?? -1) <= version)
-      this.inputSnapshots.set(snapshot.sessionId, { value: snapshot, version });
+    this.inputSnapshots.admitLive(snapshot.sessionId, snapshot, version);
   }
   private cacheResponse(response: TerminalHostResponse) {
     if (response.inputSnapshot && response.inputSnapshotVersion !== undefined)
-      this.cacheInput(response.inputSnapshot, response.inputSnapshotVersion);
-    else if (response.inputSessionId && response.inputSnapshot === null && response.inputSnapshotVersion !== undefined
-      && (this.inputSnapshots.size < 512 || this.inputSnapshots.has(response.inputSessionId))
-      && (this.inputSnapshots.get(response.inputSessionId)?.version ?? -1) <= response.inputSnapshotVersion) {
-      this.inputSnapshots.set(response.inputSessionId, { value: null, version: response.inputSnapshotVersion });
-    }
+      this.inputSnapshots.admitLive(response.inputSnapshot.sessionId, response.inputSnapshot, response.inputSnapshotVersion);
+    else if (response.inputSessionId && response.inputSnapshot === null && response.inputSnapshotVersion !== undefined)
+      this.inputSnapshots.admitTombstone(response.inputSessionId, response.inputSnapshotVersion);
   }
 
   private request<K extends TerminalHostMethod>(method: K, args: Parameters<TerminalHostOperations[K]>,

@@ -150,9 +150,18 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       unsubscribe: () => {},
     };
     states.set(id, state);
-    state.unsubscribe = opts.terminalBackend.onData(id, (data) => {
-      if (states.get(id) === state) publishBytes(state, data);
-    });
+    try {
+      state.unsubscribe = opts.terminalBackend.onData(id, (data) => {
+        if (states.get(id) === state) publishBytes(state, data);
+      });
+    } catch (err) {
+      // A synchronous onData failure (e.g. the host at subscription capacity)
+      // must not strand the provisional entry: otherwise every later sync skips
+      // this id (states.has stays true) and its terminal never streams. Roll it
+      // back so a subsequent sync retries once capacity frees.
+      states.delete(id);
+      throw err;
+    }
   };
 
   const unsubscribeMissing = (alive: Set<BackendSessionId>): void => {

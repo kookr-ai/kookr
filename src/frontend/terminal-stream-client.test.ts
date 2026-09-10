@@ -23,8 +23,9 @@ function harness(continuity: TerminalContinuity = { cursor: null, hadView: false
   const writer = createTerminalWriter({ terminal, scheduler: createTerminalWriteScheduler((task) => tasks.push(task)), onStall: vi.fn() });
   const sockets: Socket[] = [];
   const onState = vi.fn();
+  const size = { cols: 80, rows: 24 };
   const client = createTerminalStreamClient({
-    writer, continuity, getSize: () => ({ cols: 80, rows: 24 }),
+    writer, continuity, getSize: () => ({ cols: size.cols, rows: size.rows }),
     createSocket: () => { const socket = new Socket(); sockets.push(socket); return socket; },
     onState, getMetadata: () => ({}), onTelemetry: vi.fn(), requestFrame: (cb) => { cb(); return 1; },
     cancelFrame: vi.fn(),
@@ -40,7 +41,7 @@ function harness(continuity: TerminalContinuity = { cursor: null, hadView: false
   const turn = () => tasks.shift()?.();
   const parse = () => parses.shift()?.();
   const settle = () => { while (tasks.length || parses.length) { turn(); parse(); } };
-  return { client, sockets, socket, control, hello, begin, data, end, turn, parse, settle, terminal, continuity, onState, writer };
+  return { client, sockets, socket, control, hello, begin, data, end, turn, parse, settle, terminal, continuity, onState, writer, size };
 }
 
 describe('NFR-TERM-001: terminal streaming client', () => {
@@ -56,6 +57,28 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     expect(h.sockets[1].send).not.toHaveBeenCalled();
     h.client.dismissInputWarning();
     expect(h.onState.mock.lastCall?.[0].inputDeliveryUncertain).not.toBe(true);
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('reconciles the server PTY when geometry changed during seeding (resize dropped before ready)', () => {
+    const h = harness();
+    h.hello(); // attach carries the geometry at hello time (80x24)
+    // A container resize during seeding grows xterm; resize() no-ops until ready,
+    // and the fit scheduler will not re-emit it because xterm already matches.
+    h.size.cols = 100; h.size.rows = 30;
+    h.begin(); h.end(0); h.settle();
+    const sent = h.socket.send.mock.calls.map(([frame]) => JSON.parse(frame));
+    expect(sent).toContainEqual({ type: 'resize', generation: 'g', cols: 100, rows: 30 });
+    // The attach itself still carried the pre-resize geometry.
+    expect(sent.find((f) => f.type === 'attach')).toMatchObject({ cols: 80, rows: 24 });
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('does not emit a redundant resize when geometry is unchanged through seeding', () => {
+    const h = harness();
+    h.hello(); h.begin(); h.end(0); h.settle();
+    const resizes = h.socket.send.mock.calls.map(([frame]) => JSON.parse(frame)).filter((f) => f.type === 'resize');
+    expect(resizes).toHaveLength(0);
     h.client.stop(); h.writer.dispose();
   });
 

@@ -52,6 +52,8 @@ interface Attempt {
   source: TerminalSourceRange | null;
   expectedSource: { epoch: string; position: number } | null;
   requestedCursor: TerminalResumeCursor | null;
+  /** Geometry sent in the attach, so a resize during seeding can be reconciled once ready. */
+  attachedSize: { cols: number; rows: number } | null;
   ready: boolean;
   retiring: boolean;
   sentInput: boolean;
@@ -175,6 +177,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       if (attempt.helloTimer !== null) clearTimeout(attempt.helloTimer);
       attempt.helloTimer = null;
       const size = attempt.requestedCursor ?? options.getSize();
+      attempt.attachedSize = { cols: size.cols, rows: size.rows };
       send(attempt, { type: 'attach', generation: control.generation, attachId: attempt.attachId,
         cols: size.cols, rows: size.rows, ...(attempt.requestedCursor ? { cursor: attempt.requestedCursor } : { acceptGap: true }) });
       attempt.seedTimer = setTimeout(() => { close(attempt, TERMINAL_CLOSE.unavailable); }, 5000);
@@ -213,6 +216,16 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
           state(control.screenUnavailable
             ? { kind: 'unavailable', reason: 'current terminal screen unavailable' }
             : { kind: 'live', approximate: control.approximate });
+          // A resize during seeding was dropped (resize() no-ops until ready) and
+          // the fit scheduler will not re-emit it because xterm already matches the
+          // new geometry. Reconcile the server PTY to the live geometry now, or it
+          // stays stuck at the stale attach size until the next geometry change.
+          if (attempt.ready && attempt.generation && attempt.attachedSize
+            && (size.cols !== attempt.attachedSize.cols || size.rows !== attempt.attachedSize.rows)
+            && size.cols > 0 && size.rows > 0) {
+            send(attempt, { type: 'resize', generation: attempt.generation, cols: size.cols, rows: size.rows });
+            attempt.attachedSize = { cols: size.cols, rows: size.rows };
+          }
           ack(attempt);
         })) fail(attempt, 'lagged', 'parser queue full');
         break;
@@ -299,7 +312,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     const attempt: Attempt = {
       socket, writer: options.writer.begin(false), metrics, metadata, generation: null, attachId,
       wireState: 'waiting', transaction: null, source: null, expectedSource: null, requestedCursor,
-      ready: false, retiring: false, sentInput: false, processed: 0, received: 0, acknowledged: 0,
+      attachedSize: null, ready: false, retiring: false, sentInput: false, processed: 0, received: 0, acknowledged: 0,
       helloTimer: null, seedTimer: null, ackTimer: null, metricsTimer: null, healthySince: null, lastProgress: null,
     };
     active = attempt;

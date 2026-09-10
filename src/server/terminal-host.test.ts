@@ -156,6 +156,74 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     expect(new TextDecoder().decode(await backend.captureBytes('shell'))).toContain('PERSISTED_CHECKPOINT');
   });
 
+  it('reclaims completed-session cache slots so readiness survives >512 register/cleanup cycles', { timeout: 20_000 }, async () => {
+    const backend = await start();
+    const coordinator = backend.inputCoordinator;
+    // Drive more than the 512-entry readiness-cache capacity through
+    // register/cleanup cycles. Each cleanup leaves a null tombstone in the
+    // parent cache; without reclamation these permanently consume capacity and
+    // starve every later session. `isAlive` forces the ordered RPC responses
+    // (which carry the readiness snapshots/tombstones) to be processed and the
+    // per-session mutation marker to clear before the next cycle.
+    for (let i = 0; i < 520; i++) {
+      const id = `probe-${i}`;
+      coordinator.registerSession(id);
+      coordinator.cleanupSession(id);
+      await backend.isAlive(id);
+    }
+    // A fresh registration must still become readable — the defect left the
+    // parent snapshot null even though the host stayed healthy.
+    const fresh = 'fresh-after-churn';
+    coordinator.registerSession(fresh);
+    await expect.poll(() => coordinator.getSnapshot(fresh)?.readinessVersion, { timeout: 10_000 }).toBe(0);
+    const snapshot = coordinator.getSnapshot(fresh);
+    expect(snapshot).not.toBeNull();
+    // And the readiness path (what event-pipeline gates on the readable
+    // snapshot) must fire for that fresh session.
+    expect(await coordinator.markPromptReady(fresh,
+      { observedEpoch: snapshot!.inputStateEpoch, observedReadinessVersion: snapshot!.readinessVersion })).toBe(true);
+  });
+
+  it('applies a hook-replay burst of readiness transitions without dropping any past the RPC cap', { timeout: 30_000 }, async () => {
+    const backend = await start();
+    const coordinator = backend.inputCoordinator;
+    // Hook replay dispatches readiness marks synchronously without awaiting. In
+    // host mode each is an RPC; firing >128 concurrently would overflow the
+    // client's in-flight cap (128) and silently drop one (e.g. the trailing
+    // stop), leaving the prompt stuck. Serialization must let the whole burst
+    // apply. 130 just exceeds the cap while keeping the serialized round-trips
+    // (and thus the wall-clock under full-suite contention) modest.
+    const BURST = 130;
+    const pending: Promise<unknown>[] = [];
+    for (let i = 0; i < BURST; i++) pending.push(coordinator.markToolStarted('shell'));
+    pending.push(coordinator.markTurnStopped('shell'));
+    const results = await Promise.allSettled(pending);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    // The trailing stop was applied (prompt not stuck blocked/running) and every
+    // transition counted toward the readiness version.
+    await expect.poll(() => coordinator.getSnapshot('shell')?.readinessVersion, { timeout: 15_000 }).toBe(BURST + 1);
+    const snapshot = coordinator.getSnapshot('shell')!;
+    expect(snapshot.prompt.kind).toBe('unknown');
+    expect(await coordinator.markPromptReady('shell',
+      { observedEpoch: snapshot.inputStateEpoch, observedReadinessVersion: snapshot.readinessVersion })).toBe(true);
+  });
+
+  it('does not drop readiness transitions in a cross-session burst past the RPC cap', { timeout: 30_000 }, async () => {
+    const backend = await start();
+    const coordinator = backend.inputCoordinator;
+    // Hook replay across many sessions dispatches one fire-and-forget transition
+    // per session synchronously. Per-session serialization does not bound this
+    // (each session has one in-flight RPC), so without a global admission bound a
+    // >128 cross-session burst overflows the RPC client's 128 in-flight cap and
+    // rejects — dropping transitions. The global semaphore must queue them so all
+    // are accepted. (Unregistered ids resolve as no-ops, which still exercises
+    // admission — the point is that none are rejected by the cap.)
+    const pending: Promise<unknown>[] = [];
+    for (let i = 0; i < 200; i++) pending.push(coordinator.markToolStarted(`cross-${i}`));
+    const results = await Promise.allSettled(pending);
+    expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+  });
+
   it('closes child-owned sockets on parent IPC death while preserving the dtach master', async () => {
     directory = await mkdtemp('/tmp/kookr-host-test-');
     const parent = fork(join(__dirname, '__fixtures__/terminal-host-parent.ts'), [directory, resolve('vendor/dtach/dtach')],
