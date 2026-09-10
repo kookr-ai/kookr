@@ -2292,6 +2292,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
           lastEmergencyReclaimedBytes: 4096,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2308,6 +2310,8 @@ describe('diagnostics routes', () => {
         lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
         lastEmergencyReclaimedBytes: 4096,
         lastEmergencyPruneError: null,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+        emergencyPruneReclaimedZeroWhileCritical: false,
         throttleMs: 3_600_000,
       });
     });
@@ -2328,6 +2332,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: 'ENOSPC: no space left on device',
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2353,6 +2359,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');
@@ -2396,6 +2404,8 @@ describe('diagnostics routes', () => {
           lastEmergencyPruneAt: null,
           lastEmergencyReclaimedBytes: null,
           lastEmergencyPruneError: null,
+          consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+          emergencyPruneReclaimedZeroWhileCritical: false,
           throttleMs: 3_600_000,
         }),
       }).request('/api/health');

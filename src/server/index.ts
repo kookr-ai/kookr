@@ -2782,6 +2782,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         lastEmergencyPruneAt: null,
         lastEmergencyReclaimedBytes: null,
         lastEmergencyPruneError: null,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+        emergencyPruneReclaimedZeroWhileCritical: false,
         throttleMs: emergencyPruneThrottleMsResolved,
       };
       return composeMaintenancePruneHealth(maintenancePruneHealth.getSnapshot(), emergency);
@@ -3141,6 +3143,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   emergencyMaintenancePrune = new EmergencyMaintenancePruneController({
     pruneConfig: maintenancePruneConfig,
     throttleMs: emergencyPruneThrottleMsResolved,
+    // #3110: classify a 0-byte successful sweep as ineffective only when the
+    // data directory is still disk-critical when the sweep finishes.
+    isDiskStillCritical: () => diskAdmissionTracker.isCritical(),
   });
   console.log(
     `[maintenance-prune] emergency sweep armed on disk-critical admission edge ` +
@@ -3177,8 +3182,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
         },
         diskAdmissionConfig,
       );
-      if (!wasCritical && diskAdmissionTracker.isCritical()) {
+      const isCritical = diskAdmissionTracker.isCritical();
+      if (!wasCritical && isCritical) {
         void emergencyMaintenancePrune?.maybeRunOnDiskCriticalEdge();
+      } else if (wasCritical && !isCritical) {
+        // #3110: on recovery, clear the reclaimed-0-while-critical streak so the
+        // ineffective-reclaim health signal does not latch true once the disk is
+        // healthy again (sweeps only fire on the false→true edge).
+        emergencyMaintenancePrune?.noteDiskLeftCritical();
       }
     },
   });
