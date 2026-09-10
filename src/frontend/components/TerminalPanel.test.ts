@@ -366,6 +366,27 @@ describe('TerminalPanel', () => {
     expect(container.textContent).not.toContain('Input delivery is uncertain');
   });
 
+  test.each(['visibility', 'session'] as const)('retains unresolved input across %s changes without warning another session', (change) => {
+    const render = (tmuxName: string, visible = true) => act(() => root.render(React.createElement(TerminalPanel, { tmuxName, visible })));
+    render('input-warning');
+    const ws = mocks.webSocketInstances[0];
+    const terminal = mocks.terminalInstances[0];
+    act(() => { ws.onopen?.(); emitTerminalData(ws, 'ready'); terminal.dataHandler?.('hello\r'); });
+    act(() => ws.onclose?.({ code: 4408 }));
+    expect(container.textContent).toContain('Input delivery is uncertain');
+    if (change === 'visibility') render('input-warning', false);
+    else {
+      render('other-session');
+      expect(container.textContent).not.toContain('Input delivery is uncertain');
+    }
+    render('input-warning');
+    expect(container.textContent).toContain('Input delivery is uncertain');
+    act(() => container.querySelector<HTMLButtonElement>('[aria-label="Dismiss input delivery warning"]')!.click());
+    render('other-session');
+    render('input-warning');
+    expect(container.textContent).not.toContain('Input delivery is uncertain');
+  });
+
   test('FR-TERM-003: negotiates v2 and never enables typing from a partial seed', () => {
     act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'seed-gate', visible: true })));
     const ws = mocks.webSocketInstances[0];

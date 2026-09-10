@@ -18,6 +18,8 @@ export interface TerminalStreamState {
   inputDeliveryUncertain?: boolean;
 }
 export interface TerminalRetryBudget { attempts: number[]; }
+/** Retained by the pane so replacing a connection does not dismiss uncertain input. */
+export interface TerminalInputDeliveryState { uncertain: boolean; }
 interface TerminalSocket extends Pick<WebSocket, 'readyState' | 'close' | 'onopen' | 'onmessage' | 'onclose' | 'onerror'> {
   readonly protocol: string;
   binaryType: string;
@@ -27,6 +29,7 @@ interface StreamClientOptions {
   writer: ReturnType<typeof createTerminalWriter>;
   continuity: TerminalContinuity;
   retryBudget?: TerminalRetryBudget;
+  inputDelivery?: TerminalInputDeliveryState;
   createSocket(): TerminalSocket;
   getSize(): { cols: number; rows: number };
   onState(state: TerminalStreamState): void;
@@ -73,11 +76,11 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let previousState = '';
   let currentState: TerminalStreamState | null = null;
-  let inputDeliveryUncertain = false;
+  const inputDelivery = options.inputDelivery ?? { uncertain: false };
 
   function state(next: TerminalStreamState) {
     currentState = next;
-    if (inputDeliveryUncertain) next = { ...next, inputDeliveryUncertain: true };
+    if (inputDelivery.uncertain) next = { ...next, inputDeliveryUncertain: true };
     const key = JSON.stringify(next);
     if (key === previousState) return;
     previousState = key;
@@ -102,7 +105,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     attempt.retiring = true;
     // Socket enqueueing is not an agent-delivery receipt. Keep the warning
     // through output reconnection until the user checks the agent and dismisses it.
-    if (reason === 'disconnected' && attempt.sentInput) inputDeliveryUncertain = true;
+    if (reason === 'disconnected' && attempt.sentInput) inputDelivery.uncertain = true;
     ack(attempt);
     active = null;
     // A callback already inside xterm can still mutate the old parser. Without
@@ -352,7 +355,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     },
     isEstablished() { return active?.ready === true; },
     dismissInputWarning() {
-      inputDeliveryUncertain = false;
+      inputDelivery.uncertain = false;
       if (currentState) state(currentState);
     },
     sendInput(data: string | Uint8Array): boolean {

@@ -9,7 +9,7 @@ import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste } from '../terminal-paste.js';
 import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import { createTerminalStreamClient, type TerminalStreamClient, type TerminalContinuity,
-  type TerminalStreamState, type TerminalRetryBudget } from '../terminal-stream-client.js';
+  type TerminalStreamState, type TerminalRetryBudget, type TerminalInputDeliveryState } from '../terminal-stream-client.js';
 import { createTerminalWriter } from '../terminal-writer.js';
 import { createTerminalFitScheduler } from '../terminal-fit.js';
 import { createTerminalLineCounter } from '../terminal-line-counter.js';
@@ -142,6 +142,9 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   const writerRef = useRef<ReturnType<typeof createTerminalWriter> | null>(null);
   const continuityRef = useRef<TerminalContinuity>({ cursor: null, hadView: false });
   const retryBudgetRef = useRef<TerminalRetryBudget>({ attempts: [] });
+  // Keep only unresolved warnings. Pane visibility, task selection, and parser
+  // replacement are not delivery receipts; returning to a session must retain its warning.
+  const inputDeliveryBySessionRef = useRef(new Map<string, TerminalInputDeliveryState>());
   const [terminalRevision, setTerminalRevision] = useState(0);
   const [streamState, setStreamState] = useState<TerminalStreamState>({ kind: 'negotiating' });
   const [historyDiscarded, setHistoryDiscarded] = useState(false);
@@ -776,13 +779,16 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/terminal/${encodeURIComponent(tmuxName)}`;
     const renderer = rendererRef.current;
+    const inputDelivery = inputDeliveryBySessionRef.current.get(tmuxName) ?? { uncertain: false };
     const controller = createTerminalStreamClient({
-      writer, continuity, retryBudget: retryBudgetRef.current,
+      writer, continuity, retryBudget: retryBudgetRef.current, inputDelivery,
       createSocket: () => new WebSocket(url, TERMINAL_V2_PROTOCOL),
       getSize: () => getValidatedResize(terminal.cols, terminal.rows)
         ?? resolveTerminalSize(fitAddonRef.current?.proposeDimensions())
         ?? { cols: 80, rows: 24 },
       onState: (next) => {
+        if (inputDelivery.uncertain) inputDeliveryBySessionRef.current.set(tmuxName, inputDelivery);
+        else inputDeliveryBySessionRef.current.delete(tmuxName);
         setStreamState(next);
         markAttachPending(next.kind !== 'live');
         registerVisibleTerminalSend();
