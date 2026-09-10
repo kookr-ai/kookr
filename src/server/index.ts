@@ -1557,10 +1557,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       case 'manifest-corrupt':
       case 'launch-abandoned-recovery-failed':
       case 'session-recovery-unverified':
+      case 'session-attach-failed':
       case 'startup-recovery-failed':
         // A recovered session whose attach transport could not be revived, or a
         // contained startup-recovery failure that left the backend degraded, is
         // an actionable operator finding distinct from the watchdog's stale_agent.
+        // A `session-attach-failed` exhausted its re-attach budget and is now
+        // wedged detached (issue #3114) — an actionable fault, not a passing
+        // warning, and durably counted via `attachFailedCount`.
         console.error(line);
         break;
       default:

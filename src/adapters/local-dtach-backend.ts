@@ -155,6 +155,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private maxPendingWriters = 0;
   /** Cumulative write-timed-out errors (issue #1776). */
   private writeTimeoutCount = 0;
+  /** Cumulative re-attach budget exhaustion faults (issue #3114). */
+  private attachFailedCount = 0;
   /** Cumulative ring shrink events under fleet budget pressure (issue #1779). */
   private ringShrinkCount = 0;
   /** Last observed over-budget residual after enforce (issue #1779). */
@@ -613,6 +615,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       pendingWriters: pending,
       maxPendingWriters: this.maxPendingWriters,
       writeTimeoutCount: this.writeTimeoutCount,
+      attachFailedCount: this.attachFailedCount,
       lastError: this.lastError,
       errorCount: this.errorCount,
       lastErrorAt: this.lastErrorAt,
@@ -790,6 +793,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       this.errorCount += 1;
       this.lastErrorAt = Date.now();
       if (err.kind === 'write-timed-out') this.writeTimeoutCount += 1;
+      if (err.kind === 'session-attach-failed') this.attachFailedCount += 1;
     }
     for (const cb of this.errorSubscribers) {
       try {

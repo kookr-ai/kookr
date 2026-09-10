@@ -331,6 +331,7 @@ describe('renderPrometheusExposition', () => {
         pendingWriters: 2,
         maxPendingWriters: 5,
         writeTimeoutCount: 3,
+        attachFailedCount: 6,
         pendingWrites: 1,
         maxPendingWrites: 4,
       },
@@ -341,6 +342,8 @@ describe('renderPrometheusExposition', () => {
     expect(output).toContain('kookr_terminal_write_max_pending_writers 5');
     expect(output).toContain('# TYPE kookr_terminal_write_timeouts_total counter');
     expect(output).toContain('kookr_terminal_write_timeouts_total 3');
+    expect(output).toContain('# TYPE kookr_terminal_attach_failures_total counter');
+    expect(output).toContain('kookr_terminal_attach_failures_total 6');
     expect(output).toContain('kookr_terminal_write_pending_writes 1');
     expect(output).toContain('kookr_terminal_write_max_pending_writes 4');
   });

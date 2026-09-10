@@ -203,6 +203,7 @@ export function collectTerminalWriteMetrics(deps: Pick<
     pendingWriters: backend?.pendingWriters ?? 0,
     maxPendingWriters: backend?.maxPendingWriters ?? 0,
     writeTimeoutCount: backend?.writeTimeoutCount ?? 0,
+    attachFailedCount: backend?.attachFailedCount ?? 0,
     pendingWrites: coordinator?.pendingWrites ?? 0,
     maxPendingWrites: coordinator?.maxPendingWrites ?? 0,
   };

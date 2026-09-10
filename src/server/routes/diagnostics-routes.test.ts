@@ -1798,6 +1798,7 @@ describe('diagnostics routes', () => {
         pendingWriters: 0,
         maxPendingWriters: 0,
         writeTimeoutCount: 0,
+        attachFailedCount: 0,
         pendingWrites: 0,
         maxPendingWrites: 0,
       });
@@ -1815,6 +1816,7 @@ describe('diagnostics routes', () => {
             pendingWriters: 3,
             maxPendingWriters: 9,
             writeTimeoutCount: 5,
+            attachFailedCount: 7,
             lastError: { kind: 'write-timed-out', id: 's1', durationMs: 2000 },
             errorCount: 5,
           }),
@@ -1845,11 +1847,13 @@ describe('diagnostics routes', () => {
         pendingWriters: 3,
         maxPendingWriters: 9,
         writeTimeoutCount: 5,
+        attachFailedCount: 7,
       });
       expect(body.terminalWrite).toEqual({
         pendingWriters: 3,
         maxPendingWriters: 9,
         writeTimeoutCount: 5,
+        attachFailedCount: 7,
         pendingWrites: 2,
         maxPendingWrites: 4,
       });
