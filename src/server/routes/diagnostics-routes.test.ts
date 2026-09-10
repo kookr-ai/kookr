@@ -3763,6 +3763,8 @@ describe('diagnostics routes', () => {
         skippedOpenPrUnknown: 0,
         skippedNoPauseStart: 0,
         skippedAwaitingProviderReset: 0,
+        oldestOpenPrFailsafeHoldMs: null,
+        openPrFailsafeOverHardTtlCount: 0,
         lastCandidatesConsidered: 0,
         lastOutcomes: [],
         lastAttemptedTaskIds: [],
@@ -3816,6 +3818,10 @@ describe('diagnostics routes', () => {
         skippedOpenPrFailsafe: 1,
         skippedOpenPrConfirmed: 1,
         skippedOpenPrUnknown: 0,
+        // Issue #3115: p2 held by the open-PR fail-safe for 3h, past the 2h
+        // hard TTL, so it surfaces as the oldest hold and counts as over-TTL.
+        oldestOpenPrFailsafeHoldMs: 3 * 60 * 60_000,
+        openPrFailsafeOverHardTtlCount: 1,
         lastCandidatesConsidered: 3,
         lastAttemptedTaskIds: ['p1'],
         hardTtlMs: 2 * 60 * 60_000,

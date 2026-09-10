@@ -9,7 +9,9 @@ import {
   effectiveProviderPausedTtlMs,
   providerPausedOpenPrFailsafeSkipTotal,
   selectExpiredProviderPausedTasks,
+  summarizeOpenPrFailsafeHoldAge,
   summarizeProviderPausedOccupancy,
+  type OpenPrFailsafeHoldAgeSummary,
   type ProviderPausedOccupancySnapshot,
   type ProviderPausedTtlCandidateOutcome,
   type ProviderPausedTtlSkipCounts,
@@ -111,6 +113,19 @@ export interface ProviderPausedOccupancyMetricsSnapshot {
   skippedOpenPrUnknown: number;
   skippedNoPauseStart: number;
   skippedAwaitingProviderReset: number;
+  /**
+   * Oldest current open-PR fail-safe hold age (ms) — the max `pausedForMs`
+   * among `skipped_open_pr_*` outcomes on the last selection pass, or `null`
+   * when nothing is held. Surfaces a task pinned by the open-PR exemption past
+   * the TTL a normal pause would reclaim at (issue #3115).
+   */
+  oldestOpenPrFailsafeHoldMs: number | null;
+  /**
+   * Count of open-PR fail-safe holds whose pause age has passed the hard TTL on
+   * the last selection pass (issue #3115). > 0 means a slot is held past the
+   * bound a normal pause would reclaim at; the exemption is still respected.
+   */
+  openPrFailsafeOverHardTtlCount: number;
   lastCandidatesConsidered: number;
   lastOutcomes: ProviderPausedTtlCandidateOutcome[];
   lastAttemptedTaskIds: string[];
@@ -140,6 +155,12 @@ export class ProviderPausedOccupancyMetrics {
   private lastCandidatesConsidered = 0;
   private lastOutcomes: ProviderPausedTtlCandidateOutcome[] = [];
   private lastAttemptedTaskIds: string[] = [];
+  /** Last-pass open-PR fail-safe hold age summary (issue #3115). */
+  private lastOpenPrFailsafeHoldAge: OpenPrFailsafeHoldAgeSummary = {
+    oldestHoldMs: null,
+    holdCount: 0,
+    overHardTtlCount: 0,
+  };
   private lastOccupancy: ProviderPausedOccupancySnapshot = {
     count: 0,
     oldestPauseAgeMs: null,
@@ -215,6 +236,13 @@ export class ProviderPausedOccupancyMetrics {
       .filter((o) => o.outcome === 'selected')
       .map((o) => o.taskId)
       .slice(0, MAX_LAST_OUTCOMES);
+    // Issue #3115: compute open-PR fail-safe hold age from the *full* outcome
+    // list (not the capped lastOutcomes) so an oldest hold beyond the sample cap
+    // is still counted. Uses the hard TTL recorded earlier this pass.
+    this.lastOpenPrFailsafeHoldAge = summarizeOpenPrFailsafeHoldAge(
+      outcomes,
+      this.hardTtlMs,
+    );
   }
 
   getSnapshot(): ProviderPausedOccupancyMetricsSnapshot {
@@ -231,6 +259,9 @@ export class ProviderPausedOccupancyMetrics {
       skippedOpenPrUnknown: this.skips.skipped_open_pr_unknown,
       skippedNoPauseStart: this.skips.skipped_no_pause_start,
       skippedAwaitingProviderReset: this.skips.skipped_awaiting_provider_reset,
+      oldestOpenPrFailsafeHoldMs: this.lastOpenPrFailsafeHoldAge.oldestHoldMs,
+      openPrFailsafeOverHardTtlCount:
+        this.lastOpenPrFailsafeHoldAge.overHardTtlCount,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastOutcomes: this.lastOutcomes.map((o) => ({ ...o })),
       lastAttemptedTaskIds: [...this.lastAttemptedTaskIds],

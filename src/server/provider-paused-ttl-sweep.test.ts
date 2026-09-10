@@ -286,6 +286,11 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
       skippedOpenPrFailsafe: 1,
       skippedOpenPrConfirmed: 1,
       skippedOpenPrUnknown: 0,
+      // Issue #3115: end-to-end through the real sweep — the hold age reaches
+      // the snapshot (proving recordHardTtlMs runs before recordSelection), and
+      // a hold 1m past the hard TTL counts as over-TTL while reclaim still skips.
+      oldestOpenPrFailsafeHoldMs: TTL_MS + 60_000,
+      openPrFailsafeOverHardTtlCount: 1,
     });
   });
 
@@ -340,6 +345,37 @@ describe('reclaimAgedProviderPausedTasks (issue #2079)', () => {
     expect(snap.skippedOpenPrConfirmed).toBe(1);
     expect(snap.skippedOpenPrUnknown).toBe(2);
     expect(snap.skippedOpenPrFailsafe).toBe(3);
+  });
+
+  it('issue #3115: snapshot surfaces oldest open-PR failsafe hold age + over-TTL count', () => {
+    const metrics = new ProviderPausedOccupancyMetrics();
+    // Default snapshot: nothing held yet.
+    expect(metrics.getSnapshot()).toMatchObject({
+      oldestOpenPrFailsafeHoldMs: null,
+      openPrFailsafeOverHardTtlCount: 0,
+    });
+
+    metrics.recordHardTtlMs(2 * 60 * 60_000); // 2h hard TTL
+    metrics.recordSelection({
+      candidatesConsidered: 3,
+      skips: {
+        skipped_under_ttl: 0,
+        skipped_open_pr_confirmed: 1,
+        skipped_open_pr_unknown: 1,
+        skipped_no_pause_start: 0,
+        skipped_awaiting_provider_reset: 0,
+      },
+      outcomes: [
+        { taskId: 'a', outcome: 'skipped_open_pr_confirmed', pausedForMs: 5 * 60 * 60_000 },
+        { taskId: 'b', outcome: 'skipped_open_pr_unknown', pausedForMs: 90 * 60_000 },
+        { taskId: 'c', outcome: 'selected', pausedForMs: 6 * 60 * 60_000 },
+      ],
+    });
+
+    const snap = metrics.getSnapshot();
+    expect(snap.oldestOpenPrFailsafeHoldMs).toBe(5 * 60 * 60_000);
+    // Only the 5h hold is past the 2h hard TTL; the 90m one is not.
+    expect(snap.openPrFailsafeOverHardTtlCount).toBe(1);
   });
 
   it('never force-completes as delivered — disposition is always terminated/needs-human', () => {
