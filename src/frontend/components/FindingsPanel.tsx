@@ -257,7 +257,7 @@ export function FindingsPanel({
   // Load older history results are visible without a second click.
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
-  const [selectedFindingTypes, toggleFindingType] = useFindingTypeFilter();
+  const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const showCompletedSection = visibleCompleted.length > 0;
@@ -455,6 +455,17 @@ export function FindingsPanel({
                 </button>
               );
             })}
+            {activeTypeFilter.length > 0 && (
+              <button
+                type="button"
+                className="findings-type-filters-clear"
+                data-testid="findings-type-filters-clear"
+                aria-label="Clear type filter"
+                onClick={clearFindingTypes}
+              >
+                Clear
+              </button>
+            )}
           </div>
         )}
       </div>

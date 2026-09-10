@@ -661,6 +661,26 @@ kbd {
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
+/* Reset for the type-filter row, mirroring the name filter's one-click clear.
+   Borderless text so it reads as an action, not another selectable chip. */
+.findings-type-filters-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+.findings-type-filters-clear:hover {
+  color: var(--text-primary);
+}
+.findings-type-filters-clear:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}
 .findings-collapse-all-button {
   border: 1px solid var(--border-dim);
   background: transparent;
