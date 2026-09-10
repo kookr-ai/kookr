@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { TaskStore, type SessionInfo } from '../core/tasks.js';
 import { probeStartupLiveness } from './ralph-loop-service.js';
+import { TerminalHostUnavailableError } from './terminal-host-contract.js';
 
 function mkSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -46,6 +47,22 @@ function withTask(sessions: SessionInfo[]) {
 describe('probeStartupLiveness', () => {
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('NFR-TERM-001: does not convert terminal-host unavailability into a dead agent', async () => {
+    const task = withTask([mkSession()]);
+    const backend = fakeBackend(() => { throw new TerminalHostUnavailableError(); });
+    await expect(probeStartupLiveness(task, backend)).rejects.toBeInstanceOf(TerminalHostUnavailableError);
+  });
+
+  it('NFR-TERM-001: an isolated-probe timeout is unavailable, not a dead agent', async () => {
+    vi.useFakeTimers();
+    const task = withTask([mkSession()]);
+    const backend = fakeBackend(() => new Promise<boolean>(() => {}));
+    backend.getStats = () => ({ terminalHost: { status: 'ready' } }) as ReturnType<TerminalBackend['getStats']>;
+    const probe = probeStartupLiveness(task, backend);
+    const failure = expect(probe).rejects.toBeInstanceOf(TerminalHostUnavailableError);
+    await vi.advanceTimersByTimeAsync(500); await failure;
   });
 
   it('returns the live session when the backend confirms it', async () => {

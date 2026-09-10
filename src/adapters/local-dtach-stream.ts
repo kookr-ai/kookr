@@ -6,8 +6,10 @@
  * captureCurrentFrame. Split from local-dtach-backend.ts (kookr-ai/kookr#1465).
  */
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { spawn, type IPty } from 'node-pty';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalSourceRange, TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import {
   type BackendError,
   type CaptureCurrentFrameOptions,
@@ -310,6 +312,9 @@ export class LocalDtachStream {
       sock,
       pty: null,
       dataSubscribers: new Set(),
+      sourceEpoch: randomUUID(),
+      sourcePosition: 0,
+      geometryRevision: 0,
       writeMutex: Promise.resolve(),
       pendingWriters: 0,
       reattachWindow: [],
@@ -327,6 +332,7 @@ export class LocalDtachStream {
     // of returning an empty ring. Fail-open if the file is missing or
     // malformed — a fresh ring is strictly better than a crash here.
     this.host.ringStore.load(sess);
+    sess.sourcePosition = Math.min(sess.ringHead, sess.ringBuffer.length);
     this.host.attached.set(id, sess);
     // New full-size ring may push the fleet over budget — reclaim idle capacity.
     this.host.onRingStateChanged();
@@ -345,7 +351,7 @@ export class LocalDtachStream {
     // the remembered size keeps the TUI viewport stable across the crash
     // instead of snapping back to the 80x24 default.
     const size = initialSize ?? sess.currentSize ?? { cols: 80, rows: 24 };
-    sess.currentSize = size;
+    this.setGeometry(sess, size);
     sess.attachReplayUntil = suppressAttachReplay ? Date.now() + DEFAULT_RECOVERY_SETTLE_MS : 0;
     // The first non-empty chunk from normal and recovery attaches is the dtach
     // redraw/replay, even if delayed beyond the settle timer. A lazy reattach
@@ -373,18 +379,24 @@ export class LocalDtachStream {
       const isAttachReplay = sess.attachReplayPending || Date.now() < sess.attachReplayUntil;
       if (sess.attachReplayPending && bytes.length > 0) sess.attachReplayPending = false;
       const source: TerminalSessionDataSource = isAttachReplay ? 'attach-replay' : 'live';
-      // Fan out to subscribers FIRST, then update the ring. `captureBytes` is
-      // lock-free; subscribers see the stream before it is buffered for pull
-      // consumers, which matches the v7 SessionBridge semantics.
+      if (bytes.length === 0) return;
+      const start = sess.sourcePosition;
+      if (source === 'live') {
+        this.copyIntoRing(sess, bytes);
+      } else {
+        // dtach's redraw has no provable position in the previous live stream.
+        // Preserve useful history but invalidate every old resume cursor.
+        sess.sourceEpoch = randomUUID();
+      }
+      const range = this.sourceRange(sess, start);
+      // Append before fanout: a subscriber capturing during this callback
+      // must observe a snapshot that already includes the announced end.
       for (const cb of sess.dataSubscribers) {
         try {
-          cb(bytes, source);
+          cb(bytes, source, range);
         } catch {
           // a listener threw — keep serving others
         }
-      }
-      if (source === 'live') {
-        this.copyIntoRing(sess, bytes);
       }
     });
 
@@ -557,6 +569,29 @@ export class LocalDtachStream {
     }
     sess.lastByteAt = Date.now();
     this.host.ringStore.copyInto(sess, bytes);
+    sess.sourcePosition += bytes.length;
+  }
+
+  setGeometry(sess: AttachedSession, size: { cols: number; rows: number }): void {
+    if (sess.currentSize?.cols === size.cols && sess.currentSize.rows === size.rows) return;
+    sess.currentSize = { ...size };
+    sess.geometryRevision++;
+  }
+
+  private sourceRange(sess: AttachedSession, start: number): TerminalSourceRange {
+    return {
+      epoch: sess.sourceEpoch, start, end: sess.sourcePosition,
+      geometryRevision: sess.geometryRevision,
+      cols: sess.currentSize?.cols ?? 80, rows: sess.currentSize?.rows ?? 24,
+    };
+  }
+
+  captureStreamSnapshot(id: SessionId, maxBytes: number = RING_BUFFER_BYTES): TerminalStreamSnapshot {
+    const sess = this.ensureReadable(id);
+    // Both reads and the bounded ring copy are synchronous in one event-loop
+    // turn. Ring capacity changes cannot alter the separate source position.
+    const bytes = this.captureBytes(id, maxBytes);
+    return { ...this.sourceRange(sess, sess.sourcePosition - bytes.byteLength), bytes };
   }
 
   captureBytes(id: SessionId, maxBytes: number = RING_BUFFER_BYTES): Uint8Array {

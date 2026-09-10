@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
+import { TerminalHostUnavailableError } from './terminal-host-contract.js';
 import { AttentionQueue } from '../core/attention-queue.js';
 import { Monitor } from '../core/monitor.js';
 import { TokenTracker } from '../core/token-tracker.js';
@@ -81,6 +82,19 @@ describe('RalphLoopService.reconcileStartupLoops', () => {
   beforeEach(() => {
     store = new TaskStore();
     recorder = buildRecorder();
+  });
+
+  it('NFR-TERM-001: preserves an unverified loop while the terminal host is unavailable', async () => {
+    const task = createTaskForMutation(store, 'recovering terminal host', '/cwd');
+    task.ralphLoop = baseLoop();
+    const before = structuredClone(task.ralphLoop);
+    const summary = await reconcileStartupLoops(store, {
+      appendIterationRecord: recorder.appendIterationRecord,
+      probeStartupLiveness: async () => { throw new TerminalHostUnavailableError(); },
+    });
+    expect(task.ralphLoop).toEqual(before);
+    expect(recorder.appended).toHaveLength(0);
+    expect(summary).toMatchObject({ examined: 1, preserved: 1, failed: 0 });
   });
 
   it('preserves a loop when at least one session is live', async () => {

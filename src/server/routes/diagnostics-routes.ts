@@ -333,6 +333,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     let terminalBackendBlock: object | undefined;
     if (backendWriteStats) {
       terminalBackendBlock = {
+        ...(backendWriteStats.terminalHost ? { terminalHost: backendWriteStats.terminalHost } : {}),
         status: deriveTerminalBackendStatus(backendWriteStats),
         attachedSessions: backendWriteStats.attachedSessions,
         reattachCounts: backendWriteStats.reattachCounts,
@@ -2044,6 +2045,7 @@ function parseTerminalOutcomeWindowMs(windowMsRaw?: string, hoursRaw?: string): 
  * Shared by GET /api/health (reporting) and GET /api/ready (verdict, #660).
  */
 function deriveTerminalBackendStatus(stats: BackendStats): 'ok' | 'degraded' | 'error' {
+  if (stats.terminalHost && stats.terminalHost.status !== 'ready') return 'degraded';
   if (
     stats.lastError &&
     (stats.lastError.kind === 'manifest-corrupt' || stats.lastError.kind === 'dtach-unavailable')

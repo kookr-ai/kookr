@@ -315,6 +315,31 @@ describe('DtachRingStore combined-generation snapshots (issue #2829)', () => {
 });
 
 describe('ring fleet budget (issue #1779)', () => {
+  it('NFR-TERM-001: asynchronously persists a complete generation and fences deletion', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dtach-ring-async-'));
+    try {
+      const store = new DtachRingStore(dir, { asyncPersistence: true });
+      const state = createDtachRingState('s');
+      store.copyInto(state, Buffer.from('old'));
+      store.persist(state);
+      store.copyInto(state, Buffer.from('new'));
+      store.persist(state);
+      await store.drain();
+      const restored = createDtachRingState('s');
+      store.load(restored);
+      const out = Buffer.alloc(6);
+      store.copyFrom(restored, restored.ringHead, 6, out);
+      expect(out.toString()).toBe('oldnew');
+      expect(state.lastFlushedHead).toBe(6);
+      store.copyInto(state, Buffer.from('never resurrect'));
+      store.persist(state);
+      await store.remove('s');
+      await store.drain();
+      expect(existsSync(join(dir, 's.ring'))).toBe(false);
+      expect(store.persistenceStats().pendingBytes).toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('shrinkRing keeps the most recent bytes and lowers capacity', () => {
     const dir = mkdtempSync(join(tmpdir(), 'dtach-ring-shrink-'));
     try {

@@ -5,6 +5,7 @@
  */
 import type { IPty } from 'node-pty';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalSourceRange } from '../shared/terminal-stream.js';
 import type { SessionId } from './terminal-backend.js';
 import type { DtachRingState } from './dtach-ring-store.js';
 
@@ -85,7 +86,11 @@ export interface AttachedSession extends DtachRingState {
   /** Current attach child; null while transiently detached after a crash. */
   pty: IPty | null;
   /** Byte subscribers. */
-  dataSubscribers: Set<(data: Uint8Array, source?: TerminalSessionDataSource) => void>;
+  dataSubscribers: Set<(data: Uint8Array, source?: TerminalSessionDataSource, range?: TerminalSourceRange) => void>;
+  /** Resume identity and position; independent of re-linearized ringHead. */
+  sourceEpoch: string;
+  sourcePosition: number;
+  geometryRevision: number;
   /** Writer-mutex tail — chained Promise that sequences write/writeSequence. */
   writeMutex: Promise<void>;
   /** Count of callers currently queued or executing under `writeMutex`. */
@@ -135,6 +140,8 @@ export interface ReconnectBase {
 }
 
 export interface LocalDtachBackendOptions {
+  /** The isolated terminal host uses bounded, non-blocking ring persistence. */
+  asyncRingPersistence?: boolean;
   /** Shared Linux CPU list for agent children; unset leaves affinity unchanged. */
   agentCpuList?: string;
   /**

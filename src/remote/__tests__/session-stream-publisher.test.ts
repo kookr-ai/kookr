@@ -62,6 +62,30 @@ function installGuestRule(
 }
 
 describe('SessionStreamPublisher', () => {
+  it('NFR-TERM-001: upstream loss invalidates a silent cursor and fences old publication consent', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    let reportGap!: (id: string) => void;
+    const stopGaps = vi.fn();
+    const events: TerminalStreamEvent[] = [];
+    const publisher = createSessionStreamPublisher({
+      terminalBackend: Object.assign(backend, { onStreamGap: (callback: (id: string) => void) => {
+        reportGap = callback; return stopGaps;
+      } }),
+      remoteNodeClient: makeRemoteClient(events), env: { KOOKR_RELAY_TRUSTED: 'true' },
+    });
+    await publisher.start(); installGuestRule(publisher, 's1');
+    backend.emit('s1', 'before'); expect(events).toHaveLength(1);
+    reportGap('s1');
+    expect(publisher.currentCursor('s1')).toBeNull();
+    expect(publisher.droppedFrameCount('s1')).toBe(1);
+    await publisher.syncSessions();
+    expect(publisher.currentCursor('s1')?.sessionEpoch).toBe('2');
+    backend.emit('s1', 'after');
+    expect(events).toHaveLength(1); // Old consent never publishes the new epoch.
+    expect(publisher.droppedFrameCount('s1')).toBe(1);
+    publisher.stop(); expect(stopGaps).toHaveBeenCalledOnce();
+  });
   it('does not subscribe or publish unless KOOKR_RELAY_TRUSTED is true', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession({ id: 's1', command: 'agent', args: [] });

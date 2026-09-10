@@ -71,6 +71,49 @@ describe('ViewerConnectionRegistry', () => {
     vi.useRealTimers();
   });
 
+  test('NFR-TERM-001: remote viewer leases are bounded by both policy and grant expiry', () => {
+    const registry = new ViewerConnectionRegistry({ autoStartSweep: false, now: () => 1000,
+      resolveGrantLiveness: () => 'active', resolveGrantExpiryMs: () => 4500,
+      isActorAllowedTerminalSession: () => true });
+    expect(registry.terminalLeaseUntil(viewer('g'), 's')).toBe(4500);
+    const renew = vi.fn();
+    registry.registerRemote({ generation: 'child', id: 'socket', actor: viewer('g'), sessionName: 's',
+      renew, close: async () => true });
+    registry.renewRemoteTerminals();
+    expect(renew).toHaveBeenCalledWith(4500);
+    expect(registry.viewerRoster()).toHaveLength(1);
+    expect(registry.size()).toBe(1);
+    registry.unregisterRemote('wrong-generation', 'socket');
+    expect(registry.size()).toBe(1);
+    registry.unregisterRemote('child', 'socket');
+    expect(registry.size()).toBe(0);
+  });
+
+  test('NFR-TERM-001: remote revocation is pending until the child confirms closure', async () => {
+    let live: GrantLiveness = 'active';
+    let acknowledge!: (closed: boolean) => void;
+    const close = vi.fn(() => new Promise<boolean>((resolve) => { acknowledge = resolve; }));
+    const onEvict = vi.fn();
+    const registry = new ViewerConnectionRegistry({ autoStartSweep: false,
+      resolveGrantLiveness: () => live, resolveGrantExpiryMs: () => null, onEvict });
+    registry.registerRemote({ generation: 'child', id: 'socket', actor: viewer('g'), sessionName: 's', renew: vi.fn(), close });
+    live = 'revoked'; registry.sweep();
+    expect(close).toHaveBeenCalledExactlyOnceWith('revoked');
+    expect(registry.broadcasterHealth()).toMatchObject({ enforcementPending: 1 });
+    expect(onEvict).not.toHaveBeenCalled();
+    acknowledge(true); await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+    expect(registry.size()).toBe(0);
+    expect(onEvict).toHaveBeenCalledWith({ grantId: 'g', kind: 'terminal', sessionName: 's', reason: 'revoked' });
+  });
+
+  test('NFR-TERM-001: unknown grant expiry and throwing scope checks cannot renew a viewer', () => {
+    const absent = new ViewerConnectionRegistry({ autoStartSweep: false });
+    expect(absent.terminalLeaseUntil(viewer('g'), 's')).toBeNull();
+    const invalid = new ViewerConnectionRegistry({ autoStartSweep: false, resolveGrantExpiryMs: () => null,
+      isActorAllowedTerminalSession: () => { throw new Error('policy unavailable'); } });
+    expect(invalid.terminalLeaseUntil(viewer('g'), 's')).toBeNull();
+  });
+
   test('register/unregister track dashboard and terminal pools independently', () => {
     const registry = new ViewerConnectionRegistry({ autoStartSweep: false });
     const dash = fakeSocket();

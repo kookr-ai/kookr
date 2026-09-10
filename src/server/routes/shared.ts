@@ -62,7 +62,7 @@ import type { HotPathSampler } from '../../core/hot-path-sampler.js';
 import type { TerminalInputRttMetrics } from '../terminal-input-rtt-metrics.js';
 import type { TaskSaveMetricsRecorder } from '../../core/task-save-metrics.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
-import type { TerminalInputCoordinator } from '../terminal-input-coordinator.js';
+import type { TerminalInputCoordinatorPort } from '../terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from '../user-input-delivery-service.js';
 import type { SessionHealthService } from '../session-health-service.js';
 import type { DeliveryTraceReader } from '../../core/delivery-trace.js';
@@ -851,7 +851,7 @@ export interface RouteDeps {
     'getSnapshot'
   >;
   /** Optional snapshot enrichers used by admin-triggered drain/resume broadcasts. */
-  terminalInputCoordinator?: TerminalInputCoordinator;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   userInputDeliveries?: UserInputDeliveryService;
   /**
    * Resolved API-token auth posture (issue #708). When `required` is true (the
@@ -902,7 +902,7 @@ export interface RouteDeps {
    * (keystroke enqueue → backend write-ack), exposed on `/metrics` and
    * `/api/diagnostics/terminal-input-rtt` (issue #1773).
    */
-  terminalInputRttMetrics?: TerminalInputRttMetrics;
+  terminalInputRttMetrics?: Pick<TerminalInputRttMetrics, 'snapshot'>;
   /**
    * Optional override for the process-wide task-save timing ring (issue #1777).
    * Production leaves this unset and `/metrics` reads the global recorder.

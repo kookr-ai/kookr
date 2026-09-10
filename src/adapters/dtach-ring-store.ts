@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { mkdir, writeFile, rename, unlink } from 'node:fs/promises';
+import { createLatestSnapshotWriter } from './latest-snapshot-writer.js';
 import { ensureDtachDir } from './dtach-instance-dir.js';
 import { join } from 'node:path';
 import type { SessionId } from './terminal-backend.js';
@@ -227,8 +229,15 @@ export function enforceRingFleetBudget(
 }
 
 export class DtachRingStore {
-  constructor(private readonly ringsDir: string) {
+  private readonly asyncWriter: ReturnType<typeof createLatestSnapshotWriter> | null;
+  private readonly snapshotOwners = new WeakMap<Uint8Array, { state: DtachRingState; head: number }>();
+
+  constructor(private readonly ringsDir: string, options: { asyncPersistence?: boolean } = {}) {
     ensureDtachDir(this.ringsDir);
+    this.asyncWriter = options.asyncPersistence ? createLatestSnapshotWriter({
+      commit: (id, bytes) => this.commitAsync(id, bytes),
+      onError: (id, error) => console.warn(`[dtach-backend] failed to persist ring for ${id}: ${String(error)}`),
+    }) : null;
   }
 
   copyFrom(state: DtachRingState, head: number, size: number, out: Buffer): void {
@@ -270,6 +279,12 @@ export class DtachRingStore {
    */
   persist(state: DtachRingState): void {
     try {
+      if (this.asyncWriter) {
+        const { head, bytes } = this.snapshot(state);
+        this.snapshotOwners.set(bytes, { state, head });
+        this.asyncWriter.enqueue(state.id, bytes);
+        return;
+      }
       // `rings/` sits under the /tmp instance directory and can be swept away
       // while the server runs. Re-create it here so a vanished directory costs
       // one snapshot rather than every snapshot from now on (#3042).
@@ -392,7 +407,8 @@ export class DtachRingStore {
     state.lastFlushedHead = size;
   }
 
-  remove(id: SessionId): void {
+  remove(id: SessionId): void | Promise<void> {
+    if (this.asyncWriter) return this.removeAsync(id);
     for (const path of [this.ringPathFor(id), this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]) {
       try {
         if (existsSync(path)) unlinkSync(path);
@@ -400,6 +416,49 @@ export class DtachRingStore {
         // best-effort
       }
     }
+  }
+
+  /** Waits for admitted snapshots; the host supplies the shutdown deadline. */
+  async drain(): Promise<void> { await this.asyncWriter?.drain(); }
+
+  persistenceStats() {
+    return this.asyncWriter?.stats() ?? { pendingBytes: 0, sessions: 0, rejected: 0 };
+  }
+
+  private snapshot(state: DtachRingState): { head: number; bytes: Buffer } {
+    const head = state.ringHead;
+    const size = Math.min(head, state.ringBuffer.length);
+    const header = Buffer.from(JSON.stringify({ version: RING_META_VERSION_COMBINED, size,
+      savedAt: new Date().toISOString(), lastByteAt: state.lastByteAt }) + '\n');
+    // One owned allocation; the fixed-size ring can keep accepting output while
+    // this immutable generation is written off the JavaScript event loop.
+    const bytes = Buffer.allocUnsafe(header.length + size);
+    header.copy(bytes);
+    copyLogicalBytes(state.ringBuffer, head, size, bytes.subarray(header.length));
+    return { head, bytes };
+  }
+
+  private async commitAsync(id: SessionId, bytes: Uint8Array): Promise<void> {
+    await mkdir(this.ringsDir, { recursive: true, mode: 0o700 });
+    const target = this.ringPathFor(id);
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, bytes, { mode: 0o600 });
+      await rename(temporary, target);
+      const owner = this.snapshotOwners.get(bytes);
+      if (owner) owner.state.lastFlushedHead = owner.head;
+      await Promise.all([this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
+        .map((path) => unlink(path).catch(() => {})));
+    } finally { await unlink(temporary).catch(() => {}); }
+  }
+
+  private async removeAsync(id: SessionId): Promise<void> {
+    const writer = this.asyncWriter!;
+    await writer.retire(id);
+    try {
+      await Promise.all([this.ringPathFor(id), this.legacyBinPathFor(id), this.legacyMetaPathFor(id)]
+        .map((path) => unlink(path).catch(() => {})));
+    } finally { writer.release(id); }
   }
 
   private removeLegacy(id: SessionId): void {

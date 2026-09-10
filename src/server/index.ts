@@ -289,7 +289,9 @@ import type { NodeId } from '../remote/ids.js';
 import { createRemoteRelayRuntime, type RemoteRelayRuntime } from './remote-relay-runtime.js';
 import { RuntimeAttentionMissSampler } from './attention-miss-runtime-sampler.js';
 import { CoordinatorSuppressionStore } from './coordinator/suppression-store.js';
-import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import { TerminalInputCoordinator, type TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
+import type { TerminalHostBackend } from './terminal-host.js';
+import { handleTerminalInput, handleTerminalKeystroke } from './agent-lifecycle.js';
 import { TerminalInputRttMetrics } from './terminal-input-rtt-metrics.js';
 import { DashboardSelectionController } from './dashboard-selection-controller.js';
 import { DeliveryTraceBuffer } from '../core/delivery-trace.js';
@@ -330,6 +332,9 @@ export interface KookrConfig {
    * provide it; the fake test backend does not.
    */
   terminalBackend: TerminalBackend & Partial<TerminalSessionDiagnosticsSource>;
+  /** Experimental isolated owner; absent retains the in-process rollback path. */
+  terminalHost?: TerminalHostBackend;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   /**
    * Absolute path to `terminalBackend`'s dtach socket/manifest directory
    * (`LocalDtachBackend.getInstanceDir()`), when the backend is dtach-backed.
@@ -708,7 +713,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Issue #1773: keystroke → write-ack RTT histogram. Owned here so the same
   // instance both records (via the coordinator) and reports (via route deps).
   const terminalInputRttMetrics = new TerminalInputRttMetrics();
-  const terminalInputCoordinator = new TerminalInputCoordinator(
+  const terminalInputCoordinator = config.terminalInputCoordinator ?? new TerminalInputCoordinator(
     terminalBackend,
     undefined,
     terminalInputRttMetrics,
@@ -1007,6 +1012,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getSafeModeStatus,
     coordinatorSuppressions,
     resolveGrantLiveness: (grantId) => viewerGrantStore.liveness(grantId),
+    resolveGrantExpiryMs: (grantId) => {
+      const grant = viewerGrantStore.list().find((candidate) => candidate.id === grantId);
+      return grant ? grant.expiresAt ? Date.parse(grant.expiresAt) : null : undefined;
+    },
     isActorAllowedTerminalSession,
     loadShedConfig: wsLoadShedConfig,
     backpressureDisconnectAfterSkips: dashboardFanoutConfig.backpressureDisconnectAfterSkips,
@@ -2762,7 +2771,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
     diagnosticRunner,
     terminalBackend,
-    terminalInputRttMetrics,
+    terminalInputRttMetrics: config.terminalHost
+      ? { snapshot: () => config.terminalHost!.getInputRttSnapshot() } : terminalInputRttMetrics,
     sessionReaper,
     hostStaleDtachReaper,
     getPayloadDietStats,
@@ -3646,6 +3656,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
+  const stopHostActivity = config.terminalHost?.onActivity((event) => {
+    const id = event.sessionId;
+    switch (event.activity) {
+      case 'input': remoteRelayRuntime?.recordLocalTerminalActivity(id); handleTerminalInput(terminalDeps, id); break;
+      case 'keystroke': remoteRelayRuntime?.recordLocalTerminalActivity(id); handleTerminalKeystroke(terminalDeps, id); break;
+      case 'opened': sessionHealthTracker.recordBridgeOpened(id); break;
+      case 'replay': sessionHealthTracker.recordBridgeReplay(id); break;
+      case 'live': sessionHealthTracker.recordBridgeLiveBytes(id); break;
+      case 'closed': sessionHealthTracker.recordBridgeClosed(id); break;
+    }
+  });
   const { httpServer, activeBridges, close: closeHttpRuntime } = await startHttpAndWebSockets({
     app,
     port,
@@ -3654,6 +3675,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     hooksDir,
     terminalBackend,
     terminalInputWriter: terminalInputCoordinator,
+    handoffTerminalUpgrade: config.terminalHost
+      ? (req, socket, head, sessionId, actor) => config.terminalHost!.handoff(req, socket, head, sessionId, actor, connectionRegistry)
+      : undefined,
     terminalDeps,
     useFakeTerminalBridge,
     apiAuth,
@@ -3922,7 +3946,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // periodic flush hasn't picked up yet. Without this, `pnpm prod:restart`
     // races the 2 s flush cadence and the most-recent bytes are lost on
     // re-attach.
-    terminalBackend.close?.();
+    if (terminalBackend.closeAndDrain) await terminalBackend.closeAndDrain();
+    else terminalBackend.close?.();
+    stopHostActivity?.();
 
     await closeHttpRuntime();
 

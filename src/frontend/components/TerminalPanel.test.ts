@@ -20,6 +20,11 @@ class MockResizeObserver {
 
 class MockWebSocket {
   static OPEN = 1;
+  protocol = 'kookr-terminal.v2';
+  negotiated = false;
+  seeded = false;
+  sourcePosition = 0;
+  get generation() { return `g-${mocks.webSocketInstances.indexOf(this)}`; }
   readyState = 1;
   binaryType = 'blob';
   onopen: (() => void) | null = null;
@@ -31,13 +36,14 @@ class MockWebSocket {
     this.readyState = 3;
   });
 
-  constructor(_url: string) {
+  constructor(readonly url: string, readonly protocols?: string | string[]) {
     mocks.webSocketInstances.push(this);
   }
 }
 
 vi.mock('@xterm/xterm', () => {
   class MockTerminal {
+    cols = 80;
     rows = 24;
     options: Record<string, unknown>;
     resizeHandler: ((size: { cols: unknown; rows: unknown }) => void) | null = null;
@@ -46,10 +52,14 @@ vi.mock('@xterm/xterm', () => {
     keyHandler: ((event: KeyboardEvent) => boolean) | null = null;
     clear = vi.fn();
     reset = vi.fn();
-    write = vi.fn();
+    write = vi.fn((_data: string | Uint8Array, callback?: () => void) => callback?.());
     open = vi.fn();
     loadAddon = vi.fn();
     registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
+    registerMarker = vi.fn(() => undefined);
+    getSelectionPosition = vi.fn(() => undefined);
+    clearSelection = vi.fn();
+    onSelectionChange = vi.fn(() => ({ dispose: vi.fn() }));
     attachCustomKeyEventHandler = vi.fn((handler: (event: KeyboardEvent) => boolean) => {
       this.keyHandler = handler;
     });
@@ -66,6 +76,10 @@ vi.mock('@xterm/xterm', () => {
       return { dispose: vi.fn() };
     });
     scrollLines = vi.fn();
+    resize = vi.fn((cols: number, rows: number) => {
+      this.cols = cols; this.rows = rows;
+      this.resizeHandler?.({ cols, rows });
+    });
     scrollToBottom = vi.fn();
     refresh = vi.fn();
     dispose = vi.fn();
@@ -142,6 +156,11 @@ vi.mock('@xterm/addon-webgl', () => ({
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}));
 vi.mock('../terminal-send.js', () => ({ registerTerminalSend: vi.fn() }));
 vi.mock('../telemetry.js', () => ({ track: vi.fn() }));
+vi.mock('../terminal-writer.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../terminal-writer.js')>();
+  return { ...actual, createTerminalWriter: (options: Parameters<typeof actual.createTerminalWriter>[0]) =>
+    actual.createTerminalWriter({ ...options, scheduler: actual.createTerminalWriteScheduler((task) => task()) }) };
+});
 
 import { TerminalPanel } from './TerminalPanel.js';
 import { buildPasteFrame } from '../terminal-paste.js';
@@ -186,6 +205,40 @@ function arrayBufferFrom(bytes: Uint8Array): ArrayBuffer {
   const buffer = new ArrayBuffer(bytes.byteLength);
   new Uint8Array(buffer).set(bytes);
   return buffer;
+}
+
+function terminalFrame(ws: MockWebSocket, payload: Record<string, unknown>): string {
+  return JSON.stringify({ type: payload.type, generation: ws.generation, ...payload });
+}
+
+function negotiateTerminal(ws: MockWebSocket) {
+  if (ws.negotiated) return;
+  ws.negotiated = true;
+  ws.onmessage?.({ data: terminalFrame(ws, { type: 'hello', version: 2, creditBytes: 131072, frameBytes: 8192 }) });
+}
+
+/** Business/UI tests use valid wire fixtures; protocol rejection has its own tests. */
+function emitTerminalData(ws: MockWebSocket, data: string | ArrayBuffer) {
+  negotiateTerminal(ws);
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data);
+  const initial = !ws.seeded;
+  const attach = ws.send.mock.calls.map(([frame]) => JSON.parse(String(frame))).find((frame) => frame.type === 'attach');
+  const source = { epoch: ws.url, geometryRevision: 1, cols: attach?.cols ?? 80, rows: attach?.rows ?? 24 };
+  if (initial) {
+    ws.sourcePosition = attach?.cursor?.position ?? 0;
+    ws.onmessage?.({ data: terminalFrame(ws, { type: 'seed-begin', transaction: 't', mode: attach?.cursor ? 'resume' : 'replace' }) });
+  }
+  for (let offset = 0; offset < bytes.length; offset += 8192) {
+    const chunk = bytes.subarray(offset, offset + 8192);
+    if (!initial) ws.onmessage?.({ data: terminalFrame(ws, { type: 'source', ...source, start: ws.sourcePosition, end: ws.sourcePosition + chunk.length }) });
+    ws.sourcePosition += chunk.length;
+    ws.onmessage?.({ data: arrayBufferFrom(chunk) });
+  }
+  if (initial) {
+    ws.seeded = true;
+    ws.onmessage?.({ data: terminalFrame(ws, { type: 'seed-end', transaction: 't',
+      cursor: { ...source, position: ws.sourcePosition }, approximate: false, historyAvailable: false }) });
+  }
 }
 
 function openSearchViaShortcut(terminal: { keyHandler: ((event: KeyboardEvent) => boolean) | null }) {
@@ -280,6 +333,60 @@ describe('TerminalPanel', () => {
     vi.unstubAllGlobals();
   });
 
+  test('FR-TERM-003: negotiates v2 and never enables typing from a partial seed', () => {
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'seed-gate', visible: true })));
+    const ws = mocks.webSocketInstances[0];
+    expect(ws.protocols).toBe('kookr-terminal.v2');
+    const terminal = mocks.terminalInstances[0];
+    const callbacks: Array<() => void> = [];
+    terminal.write.mockImplementation((_bytes: unknown, callback?: () => void) => { if (callback) callbacks.push(callback); });
+    act(() => {
+      ws.onopen?.();
+      ws.onmessage?.({ data: JSON.stringify({ type: 'hello', version: 2, generation: 'g', creditBytes: 131072, frameBytes: 8192 }) });
+      ws.onmessage?.({ data: JSON.stringify({ type: 'seed-begin', generation: 'g', transaction: 't', mode: 'replace' }) });
+      ws.onmessage?.({ data: arrayBufferFrom(new TextEncoder().encode('first')) });
+      ws.onmessage?.({ data: arrayBufferFrom(new TextEncoder().encode('last')) });
+      ws.onmessage?.({ data: JSON.stringify({ type: 'seed-end', generation: 'g', transaction: 't', cursor: null, approximate: false, historyAvailable: false }) });
+    });
+    act(() => callbacks.shift()?.());
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
+    act(() => callbacks.shift()?.());
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
+  });
+
+  test('FR-TERM-001: accumulates captured trackpad events once per frame without sending agent input', () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
+      frames.set(++frameId, cb);
+      return frameId;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'wheel-test', visible: true })));
+    act(() => {
+      const pending = [...frames.values()]; frames.clear();
+      pending.forEach((cb) => cb(0));
+    });
+    const terminal = mocks.terminalInstances[0];
+    setTerminalScroll(terminal, { viewportY: 50, baseY: 100, length: 124 });
+    const terminalContainer = container.querySelector('.terminal-xterm');
+    expect(terminalContainer).not.toBeNull();
+    const ws = mocks.webSocketInstances[0];
+    ws.send.mockClear();
+    for (let i = 0; i < 8; i++) {
+      const event = new WheelEvent('wheel', { deltaY: 5, deltaMode: 0, bubbles: true, cancelable: true });
+      act(() => terminalContainer!.dispatchEvent(event));
+      expect(event.defaultPrevented).toBe(true);
+    }
+    expect(terminal.scrollLines).not.toHaveBeenCalled();
+    act(() => {
+      const pending = [...frames.values()]; frames.clear();
+      pending.forEach((cb) => cb(16));
+    });
+    expect(terminal.scrollLines).toHaveBeenCalledExactlyOnceWith(1);
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('forces an xterm repaint when the hidden pane becomes visible again', () => {
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: null, visible: false }));
@@ -295,14 +402,14 @@ describe('TerminalPanel', () => {
     expect(terminal.loadAddon).toHaveBeenCalledWith(searchAddon);
     expect(terminal.open).toHaveBeenCalledTimes(1);
 
-    fitAddon.fit.mockClear();
+    fitAddon.proposeDimensions.mockClear();
     terminal.refresh.mockClear();
 
     act(() => {
       root.render(React.createElement(TerminalPanel, { tmuxName: null, visible: true }));
     });
 
-    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(fitAddon.proposeDimensions).toHaveBeenCalledOnce();
     expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
   });
 
@@ -334,14 +441,14 @@ describe('TerminalPanel', () => {
     expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
 
     act(() => {
-      ws.onmessage?.({ data: 'seed-bytes' });
+      emitTerminalData(ws, 'seed-bytes');
     });
     expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
 
     const visibleSender = [...registerMock.mock.calls].reverse().find(([candidate]) => typeof candidate === 'function')?.[0];
     expect(typeof visibleSender).toBe('function');
     (visibleSender as (data: string) => void)('1');
-    expect(ws.send).toHaveBeenCalledWith('1');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '1' }));
   });
 
   test('blocks terminal keystrokes until first paint of the new session', () => {
@@ -363,17 +470,17 @@ describe('TerminalPanel', () => {
     expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
 
     act(() => {
-      ws.onmessage?.({ data: arrayBufferFrom(new TextEncoder().encode('frame')) });
+      emitTerminalData(ws, arrayBufferFrom(new TextEncoder().encode('frame')));
     });
     expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
 
     act(() => {
       terminal.dataHandler?.('y');
     });
-    expect(ws.send).toHaveBeenCalledWith('y');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: 'y' }));
   });
 
-  test('includes attach join keys on terminal_switch_latency after attach_timing', async () => {
+  test('FR-TERM-002: includes versioned attach join keys after attach_timing', async () => {
     const { track } = await import('../telemetry.js');
     const trackMock = vi.mocked(track);
     vi.useFakeTimers();
@@ -388,10 +495,11 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       ws.onopen?.();
+      negotiateTerminal(ws);
     });
 
     const resizeCall = ws.send.mock.calls.find(
-      (call) => typeof call[0] === 'string' && String(call[0]).includes('"resize"'),
+      (call) => typeof call[0] === 'string' && String(call[0]).includes('"attach"'),
     );
     expect(resizeCall).toBeDefined();
     const resizePayload = JSON.parse(String(resizeCall![0]));
@@ -402,6 +510,10 @@ describe('TerminalPanel', () => {
       ws.onmessage?.({
         data: JSON.stringify({
           type: 'attach_timing',
+          generation: ws.generation,
+          protocolVersion: 2,
+          historyAvailable: false,
+          attachSeed: 'full',
           attachId: resizePayload.attachId,
           strategy: 'full-ring',
           seedCacheHit: false,
@@ -414,7 +526,7 @@ describe('TerminalPanel', () => {
           earlySeedBytes: 0,
         }),
       });
-      ws.onmessage?.({ data: 'hello' });
+      emitTerminalData(ws, 'hello');
     });
 
     // Telemetry may flush on attach_timing-after-paint or the 80ms fallback.
@@ -427,6 +539,7 @@ describe('TerminalPanel', () => {
       .find((e) => e.type === 'terminal_switch_latency');
     expect(latency).toMatchObject({
       type: 'terminal_switch_latency',
+      measurementVersion: 2,
       attachId: resizePayload.attachId,
       warmLabel: 'cold',
       clientWarm: false,
@@ -435,7 +548,43 @@ describe('TerminalPanel', () => {
       recoveryUsed: false,
       agentType: 'claude-code',
     });
-    expect(typeof latency?.selectionToFirstPaintMs).toBe('number');
+    expect(typeof latency?.selectionToFirstParseMs).toBe('number');
+    expect(typeof latency?.selectionToRenderOpportunityMs).toBe('number');
+    expect(latency).not.toHaveProperty('selectionToFirstPaintMs');
+  });
+
+  test('FR-TERM-002: does not mistake a queued xterm write for completed parsing', async () => {
+    const { track } = await import('../telemetry.js');
+    vi.useFakeTimers();
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-slow-parse', visible: true })));
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    let parsed: (() => void) | undefined;
+    terminal.write.mockImplementation((_data: unknown, callback?: () => void) => { parsed = callback; });
+    act(() => {
+      ws.onopen?.();
+      emitTerminalData(ws, 'hello');
+      vi.advanceTimersByTime(100);
+    });
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
+    expect(vi.mocked(track).mock.calls.some(([event]) => event.type === 'terminal_switch_latency')).toBe(false);
+    act(() => { parsed?.(); vi.advanceTimersByTime(80); });
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).toBeNull();
+    expect(vi.mocked(track).mock.calls.some(([event]) => event.measurementVersion === 2)).toBe(true);
+  });
+
+  test('FR-TERM-002: stale parse callbacks cannot unlock a newly selected session', () => {
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-old', visible: true })));
+    const terminal = mocks.terminalInstances[0];
+    const oldSocket = mocks.webSocketInstances[0];
+    let oldParsed: (() => void) | undefined;
+    terminal.write.mockImplementation((_data: unknown, callback?: () => void) => { oldParsed = callback; });
+    act(() => { oldSocket.onopen?.(); emitTerminalData(oldSocket, 'old'); });
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-new', visible: true })));
+    const newSocket = mocks.webSocketInstances[1];
+    act(() => { newSocket.onopen?.(); oldParsed?.(); terminal.dataHandler?.('x'); });
+    expect(newSocket.send).not.toHaveBeenCalledWith(terminalFrame(newSocket, { type: 'input', text: 'x' }));
+    expect(container.querySelector('[data-testid="terminal-attach-pending"]')).not.toBeNull();
   });
 
   test('shows counted jump-to-latest pill for new output while scrolled up', () => {
@@ -448,7 +597,7 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
-      ws.onmessage?.({ data: 'one\r\ntwo\r\nthree\r\n' });
+      emitTerminalData(ws, 'one\r\ntwo\r\nthree\r\n');
     });
 
     expect(container.querySelector('button[aria-label="3 new lines, jump to latest"]')).toBeNull();
@@ -471,7 +620,7 @@ describe('TerminalPanel', () => {
     const encoded = new TextEncoder().encode('one\r\ntwo\r\n');
     act(() => {
       setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
-      ws.onmessage?.({ data: arrayBufferFrom(encoded) });
+      emitTerminalData(ws, arrayBufferFrom(encoded));
       vi.advanceTimersByTime(80);
     });
 
@@ -488,7 +637,7 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       setTerminalScroll(terminal, { baseY: 76, viewportY: 40, length: 100, rows: 24 });
-      ws.onmessage?.({ data: 'new line\r\n' });
+      emitTerminalData(ws, 'new line\r\n');
       vi.advanceTimersByTime(80);
     });
 
@@ -514,7 +663,7 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       setTerminalScroll(terminal, { baseY: 76, viewportY: 76, length: 100, rows: 24 });
-      ws.onmessage?.({ data: 'new line\r\n' });
+      emitTerminalData(ws, 'new line\r\n');
       vi.advanceTimersByTime(120);
     });
 
@@ -561,7 +710,7 @@ describe('TerminalPanel', () => {
     act(() => {
       firstWs.onopen?.();
       // Attach must paint before keystrokes reach the PTY (R3 send gate).
-      firstWs.onmessage?.({ data: 'seed' });
+      emitTerminalData(firstWs, 'seed');
       terminal.dataHandler?.('hello');
     });
 
@@ -584,7 +733,7 @@ describe('TerminalPanel', () => {
     const secondWs = mocks.webSocketInstances[1];
     act(() => {
       secondWs.onopen?.();
-      secondWs.onmessage?.({ data: 'seed' });
+      emitTerminalData(secondWs, 'seed');
     });
     secondWs.send.mockClear();
 
@@ -593,7 +742,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(secondWs.send).toHaveBeenCalledWith('\r');
+    expect(secondWs.send).toHaveBeenCalledWith(terminalFrame(secondWs, { type: 'input', text: '\r' }));
   });
 
   test('hiding a terminal clears interactive state and blocks search shortcuts', () => {
@@ -658,6 +807,7 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       ws.onopen?.();
+      emitTerminalData(ws, 'seed');
     });
     ws.send.mockClear();
 
@@ -679,18 +829,16 @@ describe('TerminalPanel', () => {
       const ws = mocks.webSocketInstances[0];
       act(() => {
         ws.onopen?.();
+        emitTerminalData(ws, 'seed');
       });
       ws.send.mockClear();
 
       act(() => {
         terminal.resizeHandler?.({ cols: 80, rows: 24 });
       });
-      // FitAddon thrash is debounced (~80ms) before a resize control frame is sent.
-      act(() => {
-        vi.advanceTimersByTime(100);
-      });
-
-      expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+      // A valid xterm resize is sent immediately; layout requests are already
+      // frame-coalesced, and the server owns the remaining PTY resize debounce.
+      expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'resize', cols: 80, rows: 24 }));
     } finally {
       vi.useRealTimers();
     }
@@ -705,7 +853,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n╭────────────────╮\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n╭────────────────╮\r\n❯ \r\n');
     });
     ws.send.mockClear();
 
@@ -725,7 +873,7 @@ describe('TerminalPanel', () => {
 
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n╭────────────────╮\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n╭────────────────╮\r\n❯ \r\n');
     });
     ws.send.mockClear();
     const xtermContainer = container.querySelector('.terminal-xterm');
@@ -754,7 +902,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'Working (3s • esc to interrupt)' });
+      emitTerminalData(ws, 'Working (3s • esc to interrupt)');
     });
     setTerminalBufferLines(terminal, ['older output', '❯']);
     ws.send.mockClear();
@@ -785,7 +933,7 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       const encoded = new TextEncoder().encode('\r\n❯ \r\n');
-      ws.onmessage?.({ data: arrayBufferFrom(encoded) });
+      emitTerminalData(ws, arrayBufferFrom(encoded));
     });
     ws.send.mockClear();
 
@@ -807,8 +955,8 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     const encoded = new TextEncoder().encode('\r\n❯ \r\n');
     act(() => {
-      ws.onmessage?.({ data: arrayBufferFrom(encoded.slice(0, 4)) });
-      ws.onmessage?.({ data: arrayBufferFrom(encoded.slice(4)) });
+      emitTerminalData(ws, arrayBufferFrom(encoded.slice(0, 4)));
+      emitTerminalData(ws, arrayBufferFrom(encoded.slice(4)));
     });
     ws.send.mockClear();
 
@@ -829,7 +977,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'Working (3s • esc to interrupt)\r❯ \r\n' });
+      emitTerminalData(ws, 'Working (3s • esc to interrupt)\r❯ \r\n');
     });
     ws.send.mockClear();
 
@@ -868,7 +1016,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
 
@@ -878,8 +1026,8 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenNthCalledWith(1, 'hello');
-    expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
+    expect(ws.send).toHaveBeenNthCalledWith(1, terminalFrame(ws, { type: 'input', text: 'hello' }));
+    expect(ws.send).toHaveBeenNthCalledWith(2, terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('forwards Enter when the visible composer has an adapter-injected draft', () => {
@@ -891,7 +1039,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
     setTerminalBufferLines(terminal, [
       'IGNORED_EARLY_ENTER:browser-pre-fix-reply',
@@ -904,7 +1052,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('navigates when a historical composer draft is followed by the current empty prompt', () => {
@@ -942,7 +1090,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
     setTerminalBufferLines(terminal, [
       'Choose the text style that looks best with your terminal',
@@ -958,7 +1106,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('real keyboard Enter on a Codex selection menu is forwarded, not navigated', () => {
@@ -1022,7 +1170,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
     setTerminalBufferLines(terminal, [
       ' 1. Auto (match terminal)',
@@ -1036,7 +1184,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('menu veto fires on the footer signal alone (no marked row present)', () => {
@@ -1048,7 +1196,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
     setTerminalBufferLines(terminal, [
       'Pick a base branch',
@@ -1063,7 +1211,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('a markdown blockquote in agent output is NOT treated as a menu (ASCII > excluded)', () => {
@@ -1101,7 +1249,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n› \r\n  gpt-5.3-codex high 75% left\r\n' });
+      emitTerminalData(ws, '\r\n› \r\n  gpt-5.3-codex high 75% left\r\n');
     });
 
     act(() => {
@@ -1127,7 +1275,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n› run tests\r\n  gpt-5.3-codex high 75% left\r\n' });
+      emitTerminalData(ws, '\r\n› run tests\r\n  gpt-5.3-codex high 75% left\r\n');
     });
     ws.send.mockClear();
 
@@ -1148,7 +1296,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ run tests\r\n' });
+      emitTerminalData(ws, '\r\n❯ run tests\r\n');
     });
     ws.send.mockClear();
 
@@ -1169,7 +1317,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n────────────────────────\r\n❯ ────────────────────────\r\n  esc to interrupt · ctrl+t to hide tasks\r\n' });
+      emitTerminalData(ws, '\r\n────────────────────────\r\n❯ ────────────────────────\r\n  esc to interrupt · ctrl+t to hide tasks\r\n');
     });
     ws.send.mockClear();
 
@@ -1190,7 +1338,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n• Working (7m 32s • esc to interrupt)\r\n' });
+      emitTerminalData(ws, '\r\n• Working (7m 32s • esc to interrupt)\r\n');
     });
     ws.send.mockClear();
 
@@ -1210,7 +1358,7 @@ describe('TerminalPanel', () => {
 
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n• Working (7m 32s • esc to interrupt)\r\n' });
+      emitTerminalData(ws, '\r\n• Working (7m 32s • esc to interrupt)\r\n');
     });
     ws.send.mockClear();
     const xtermContainer = container.querySelector('.terminal-xterm');
@@ -1239,7 +1387,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1251,8 +1399,8 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenNthCalledWith(1, '\x1b[A');
-    expect(ws.send).toHaveBeenNthCalledWith(2, '\r');
+    expect(ws.send).toHaveBeenNthCalledWith(1, terminalFrame(ws, { type: 'input', text: '\x1b[A' }));
+    expect(ws.send).toHaveBeenNthCalledWith(2, terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   // Claude Code enables focus tracking (DECSET 1004), so xterm forwards `ESC [ I`
@@ -1269,7 +1417,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1283,7 +1431,7 @@ describe('TerminalPanel', () => {
     expect(onEmptySubmit).toHaveBeenCalledOnce();
     // The focus byte is still forwarded to the PTY so the agent knows about
     // focus, but `\r` must not reach it — empty-Enter is navigation, not submit.
-    expect(ws.send).not.toHaveBeenCalledWith('\r');
+    expect(ws.send).not.toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('blur tracking sequence is also filtered out of the input draft', () => {
@@ -1295,7 +1443,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1309,7 +1457,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).toHaveBeenCalledOnce();
-    expect(ws.send).not.toHaveBeenCalledWith('\r');
+    expect(ws.send).not.toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   // Real Claude / Codex sessions emit `\x1b[c` (Primary Device Attributes
@@ -1327,7 +1475,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1340,7 +1488,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).toHaveBeenCalledOnce();
-    expect(ws.send).not.toHaveBeenCalledWith('\r');
+    expect(ws.send).not.toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   // DA2 reply (`\x1b[>0;276;0c`) and Cursor Position Report (`\x1b[24;1R`)
@@ -1355,7 +1503,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1369,7 +1517,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).toHaveBeenCalledOnce();
-    expect(ws.send).not.toHaveBeenCalledWith('\r');
+    expect(ws.send).not.toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   // Negative control: the focus-tracking filter must be narrow enough that real
@@ -1385,7 +1533,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\n❯ \r\n');
     });
     ws.send.mockClear();
     act(() => {
@@ -1398,8 +1546,8 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('a');
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: 'a' }));
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('captures empty terminal Enter without inspecting permission-looking output', () => {
@@ -1411,7 +1559,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\nAllow this command? Allow  Deny\r\n❯ \r\n' });
+      emitTerminalData(ws, '\r\nAllow this command? Allow  Deny\r\n❯ \r\n');
     });
     ws.send.mockClear();
 
@@ -1432,7 +1580,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: '\r\nuser@host:~/repo$ \r\n' });
+      emitTerminalData(ws, '\r\nuser@host:~/repo$ \r\n');
     });
     ws.send.mockClear();
 
@@ -1452,6 +1600,7 @@ describe('TerminalPanel', () => {
     });
 
     const ws = mocks.webSocketInstances[0];
+    act(() => emitTerminalData(ws, 'seed'));
     ws.send.mockClear();
     const xtermContainer = container.querySelector('.terminal-xterm');
     expect(xtermContainer).not.toBeNull();
@@ -1465,7 +1614,7 @@ describe('TerminalPanel', () => {
     expect(evt!.defaultPrevented).toBe(true);
     // Exactly one frame — not one per line.
     expect(ws.send).toHaveBeenCalledTimes(1);
-    expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: 'line1\nline2\nline3' }));
   });
 
   test('routes Ctrl+V multiline clipboard text through one structured paste frame', async () => {
@@ -1476,6 +1625,7 @@ describe('TerminalPanel', () => {
     });
 
     const ws = mocks.webSocketInstances[0];
+    act(() => emitTerminalData(ws, 'seed'));
     ws.send.mockClear();
     const xtermContainer = container.querySelector('.terminal-xterm');
     expect(xtermContainer).not.toBeNull();
@@ -1494,7 +1644,30 @@ describe('TerminalPanel', () => {
     expect(event.defaultPrevented).toBe(false);
     expect(readText).toHaveBeenCalledOnce();
     expect(ws.send).toHaveBeenCalledTimes(1);
-    expect(ws.send).toHaveBeenCalledWith(buildPasteFrame('line1\nline2\nline3'));
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: 'line1\nline2\nline3' }));
+  });
+
+  test('discards a clipboard result after switching to another ready agent', async () => {
+    let resolveClipboard!: (text: string) => void;
+    const readText = vi.fn(() => new Promise<string>((resolve) => { resolveClipboard = resolve; }));
+    vi.stubGlobal('navigator', { clipboard: { readText } });
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'old', visible: true })));
+    const old = mocks.webSocketInstances[0];
+    act(() => emitTerminalData(old, 'seed'));
+    await act(async () => {
+      container.querySelector('.terminal-xterm')!.dispatchEvent(new KeyboardEvent('keydown', {
+        key: 'v', ctrlKey: true, bubbles: true,
+      }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(readText).toHaveBeenCalledOnce();
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'new', visible: true })));
+    const next = mocks.webSocketInstances[1];
+    act(() => emitTerminalData(next, 'seed'));
+    next.send.mockClear(); old.send.mockClear();
+    await act(async () => resolveClipboard('private\ntext'));
+    expect(next.send).not.toHaveBeenCalled();
+    expect(old.send).not.toHaveBeenCalled();
   });
 
   test('forwards Enter after a multiline safe paste marks the local draft non-empty', () => {
@@ -1506,7 +1679,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
     const xtermContainer = container.querySelector('.terminal-xterm');
     expect(xtermContainer).not.toBeNull();
@@ -1521,7 +1694,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('leaves a single-line paste on xterm\'s raw byte-transparent path', () => {
@@ -1594,8 +1767,10 @@ describe('TerminalPanel', () => {
     const ws = mocks.webSocketInstances[0];
     act(() => {
       ws.onopen?.();
+      emitTerminalData(ws, 'seed');
     });
-    fitAddon.fit.mockClear();
+    fitAddon.proposeDimensions.mockClear();
+    fitAddon.proposeDimensions.mockReturnValue({ cols: 90, rows: 24 });
     terminal.refresh.mockClear();
     ws.send.mockClear();
 
@@ -1609,9 +1784,9 @@ describe('TerminalPanel', () => {
     expect(shortcut?.stopPropagation).toHaveBeenCalledOnce();
     expect(terminal.options.fontSize).toBe(DEFAULT_TERMINAL_FONT_SIZE + 1);
     expect(localStorage.getItem(TERMINAL_FONT_SIZE_STORAGE_KEY)).toBe(String(DEFAULT_TERMINAL_FONT_SIZE + 1));
-    expect(fitAddon.fit).toHaveBeenCalledOnce();
+    expect(fitAddon.proposeDimensions).toHaveBeenCalledOnce();
     expect(terminal.refresh).toHaveBeenCalledWith(0, terminal.rows - 1);
-    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: 'resize', cols: 80, rows: 24 }));
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'resize', cols: 90, rows: 24 }));
 
     act(() => {
       dispatchTerminalShortcut(terminal, '-');
@@ -1823,7 +1998,7 @@ describe('TerminalPanel', () => {
 
     function streamAndPressEnter() {
       const ws = mocks.webSocketInstances[mocks.webSocketInstances.length - 1];
-      act(() => { ws.onmessage?.({ data: '\r\n╭────────╮\r\n❯ \r\n' }); });
+      act(() => { emitTerminalData(ws, '\r\n╭────────╮\r\n❯ \r\n'); });
       ws.send.mockClear();
       act(() => { terminal.dataHandler?.('\r'); });
       return ws;
@@ -1859,7 +2034,7 @@ describe('TerminalPanel', () => {
       root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-task-C', visible: true, onEmptySubmit }));
     });
     const wsC = mocks.webSocketInstances[mocks.webSocketInstances.length - 1];
-    act(() => { wsC.onmessage?.({ data: '\r\n› \r\n  gpt-5.5 high · ~/git/kookr\r\n' }); });
+    act(() => { emitTerminalData(wsC, '\r\n› \r\n  gpt-5.5 high · ~/git/kookr\r\n'); });
     wsC.send.mockClear();
     act(() => { terminal.dataHandler?.('\r'); });
     expect(onEmptySubmit).toHaveBeenCalledTimes(3);
@@ -1933,7 +2108,7 @@ describe('TerminalPanel', () => {
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
     act(() => {
-      ws.onmessage?.({ data: 'seed' });
+      emitTerminalData(ws, 'seed');
     });
 
     act(() => {
@@ -1946,7 +2121,7 @@ describe('TerminalPanel', () => {
     });
 
     expect(onEmptySubmit).not.toHaveBeenCalled();
-    expect(ws.send).toHaveBeenCalledWith('\r');
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
   test('empty Enter survives the tmuxName transition before the new session streams', () => {
@@ -1964,7 +2139,7 @@ describe('TerminalPanel', () => {
     });
     const terminal = mocks.terminalInstances[0];
     const wsA = mocks.webSocketInstances[0];
-    act(() => { wsA.onmessage?.({ data: '\r\n❯ \r\n' }); });
+    act(() => { emitTerminalData(wsA, '\r\n❯ \r\n'); });
     wsA.send.mockClear();
 
     // First Enter at A's idle prompt fires empty-Enter.
@@ -2057,7 +2232,7 @@ describe('TerminalPanel', () => {
     expect(ws.send).not.toHaveBeenCalled();
   });
 
-  test('reconnects after an abnormal close and resets the terminal before the ring-buffer replay', () => {
+  test('reconnects after an abnormal close without resetting a resumable parser', () => {
     // Server restart / host offline: the byte stream must come back on its
     // own. Reset is deferred until the first server byte of each attach so the
     // pane stays painted during the handshake (no blank flash).
@@ -2075,16 +2250,16 @@ describe('TerminalPanel', () => {
       expect(terminal.reset).toHaveBeenCalledTimes(0);
 
       act(() => {
-        first.onmessage?.({ data: 'seed-a' });
+        emitTerminalData(first, 'seed-a');
       });
       expect(terminal.reset).toHaveBeenCalledTimes(1);
 
       act(() => {
         first.onclose?.({ code: 1006 });
       });
-      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
-      expect(written).toContain('reconnecting');
-      expect(written).not.toContain('Session ended.');
+      const written = terminal.write.mock.calls.map(([data]: [Uint8Array]) => new TextDecoder().decode(data)).join('');
+      expect(written).toBe('seed-a');
+      expect(container.textContent).toContain('Terminal connection unavailable.');
       expect(mocks.webSocketInstances).toHaveLength(1);
 
       act(() => {
@@ -2099,17 +2274,16 @@ describe('TerminalPanel', () => {
       // Second open still defers reset until first byte of the new attach.
       expect(terminal.reset).toHaveBeenCalledTimes(1);
       act(() => {
-        second.onmessage?.({ data: 'seed-b' });
+        emitTerminalData(second, 'seed-b');
       });
-      expect(terminal.reset).toHaveBeenCalledTimes(2);
+      expect(terminal.reset).toHaveBeenCalledTimes(1);
     } finally {
       vi.useRealTimers();
     }
   });
 
   test.each([
-    ['clean PTY exit', 1000],
-    ['backend session gone', 1011],
+    ['confirmed PTY exit', 4404],
   ])('a session-over close (%s, code %i) shows "Session ended." and never reconnects', (_label, code) => {
     vi.useFakeTimers();
     try {
@@ -2126,9 +2300,8 @@ describe('TerminalPanel', () => {
       act(() => {
         ws.onclose?.({ code });
       });
-      const written = terminal.write.mock.calls.map(([data]: [unknown]) => String(data)).join('');
-      expect(written).toContain('Session ended.');
-      expect(written).not.toContain('reconnecting');
+      expect(terminal.write).not.toHaveBeenCalled();
+      expect(container.textContent).toContain('Session ended.');
 
       act(() => {
         vi.advanceTimersByTime(120_000);
@@ -2151,7 +2324,7 @@ describe('TerminalPanel', () => {
     });
     const terminal = mocks.terminalInstances[0];
     const ws = mocks.webSocketInstances[0];
-    act(() => { ws.onmessage?.({ data: '\r\n❯ \r\n' }); });
+    act(() => { emitTerminalData(ws, '\r\n❯ \r\n'); });
 
     for (let i = 1; i <= 5; i++) {
       ws.send.mockClear();

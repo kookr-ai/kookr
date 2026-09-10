@@ -109,8 +109,15 @@ test.describe('Terminal viewport budgets', () => {
     const githubResponse = await request.post('/api/test/broadcast-github', {
       data: {
         taskId,
-        prs: [{ number: 77, title: 'Viewport budget PR', url: 'https://github.com/org/terminal-budget/pull/77', state: 'open' }],
-        issues: [{ number: 561, title: 'Viewport budget issue', url: 'https://github.com/org/terminal-budget/issues/561', state: 'open' }],
+        prs: [{ ref: { type: 'pr', owner: 'org', repo: 'terminal-budget', number: 77,
+          url: 'https://github.com/org/terminal-budget/pull/77', taskId },
+          title: 'Viewport budget PR', status: 'open', mergeable: 'UNKNOWN',
+          author: 'fixture', branch: 'feature', baseBranch: 'main', reviewDecision: null,
+          reviewers: [], unresolvedThreads: [], totalComments: 0, checks: [], lastFetchedAt: new Date().toISOString() }],
+        issues: [{ ref: { type: 'issue', owner: 'org', repo: 'terminal-budget', number: 561,
+          url: 'https://github.com/org/terminal-budget/issues/561', taskId },
+          title: 'Viewport budget issue', status: 'open', labels: [], author: 'fixture',
+          commentCount: 0, lastFetchedAt: new Date().toISOString() }],
       },
     });
     expect(githubResponse.ok()).toBe(true);
@@ -118,7 +125,7 @@ test.describe('Terminal viewport budgets', () => {
     await selectBudgetTask(page);
     await expect(page.locator('.detail-split-left')).toBeVisible();
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.getByRole('button', { name: /GitHub/ })).toBeVisible();
+    await expect(page.locator('.detail-split-left').getByRole('button', { name: /^GitHub/ })).toBeVisible();
 
     await expectTerminalBudget(page, { width: 400, height: 480, cols: 50, rows: 34 }, 'desktop terminal');
   });

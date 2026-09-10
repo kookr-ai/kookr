@@ -34,7 +34,7 @@ import type { RepoPolicyResolver } from '../core/repo-policy-resolver.js';
 import type { WorktreeLeaseService } from '../core/worktree-lease-service.js';
 import type { CoordinatorAuditTailProvider } from './coordinator/detectors.js';
 import type { CoordinatorSuppressionReader } from './coordinator/suppression-store.js';
-import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
 import type { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
@@ -145,7 +145,7 @@ export interface MessageRouterDeps {
   hooksDir?: string;
   connectionId?: string;
   selectionController?: DashboardSelectionController;
-  terminalInputCoordinator?: TerminalInputCoordinator;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   userInputDeliveries?: UserInputDeliveryService;
   /** Shared reap-warning coordinator for the `keepTaskAlive` veto (RFC rfc-reap-grace-warning.md). */
   reapWarningCoordinator?: ReapWarningCoordinator;

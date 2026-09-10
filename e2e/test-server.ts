@@ -99,7 +99,7 @@ async function main() {
     hooksDir: join(tempDir, 'hooks'),
     settingsDir: join(tempDir, 'settings'),
     serverCwd: '/home/user/projects',
-    frontendDir: './dist/frontend',
+    frontendDir: process.env.E2E_FRONTEND_DIR ?? './dist/frontend',
     saveIntervalMs: 600_000,
     livenessIntervalMs: 600_000,
     terminalBackend: terminal,

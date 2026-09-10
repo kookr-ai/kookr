@@ -19,6 +19,7 @@
  */
 
 import type { TerminalSessionStreamPort } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 
 /** Opaque session identifier. Same value used for the dtach socket filename. */
 export type SessionId = string;
@@ -170,6 +171,13 @@ export interface StartupRecoveryState {
  * `status` derivation lives in the server; this struct reports raw counts.
  */
 export interface BackendStats {
+  /** Isolated transport health is separate from evidence that an agent exited. */
+  terminalHost?: { status: 'ready' | 'starting' | 'unavailable' | 'closed'; generation: string;
+    snapshotAgeMs: number | null; pendingRequests: number; pendingBytes: number;
+    /** Child gauges are sampled; interpret them together with snapshotAgeMs. */
+    connections: number; legacyConnections: number; restarts: number;
+    channelBytes: number; streamBytes: number; reconstructionBytes: number;
+    outputBytes: number; persistenceBytes: number; rssBytes: number };
   attachedSessions: number;
   reattachCounts: Record<SessionId, number>;
   /** Callers currently queued or executing under a session writeMutex. */
@@ -511,19 +519,21 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
    * post-process.
    */
   captureBytes(id: SessionId, maxBytes?: number): Promise<Uint8Array>;
+  /** Optional during protocol migration; missing capability forbids exact resume. */
+  captureStreamSnapshot?(id: SessionId, maxBytes?: number): Promise<TerminalStreamSnapshot>;
 
   /**
    * Subscribe to bytes emitted by the session as they arrive. Returns an
    * unsubscribe function. Subscribers do NOT receive history — they see
-   * bytes from subscription time forward. To get history, call
-   * `captureBytes()` first, then subscribe.
+   * bytes from subscription time forward. For a gap-free view, subscribe first,
+   * capture an atomic source snapshot, then retain only bytes after its end.
    *
    * Lifetime: subscribers are held by strong reference for the subscription's
    * lifetime. Callers MUST invoke the unsubscribe function on client
    * disconnect (failure = listener leak). The backend scrubs subscribers on
    * `killSession` / session exit.
    */
-  onData(id: SessionId, cb: (data: Uint8Array) => void): () => void;
+  onData(id: SessionId, cb: Parameters<TerminalSessionStreamPort['onData']>[1]): () => void;
 
   /**
    * Subscribe to transport-level error events. Returns an unsubscribe
@@ -572,6 +582,8 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
    * survive Kookr restart by design (dtach masters detached via setsid).
    */
   close?(): void;
+  /** Await bounded persistence and process exit when the backend owns async work. */
+  closeAndDrain?(): Promise<void>;
 
   /**
    * Safely reconnect the session's terminal *transport* without disturbing the
@@ -649,7 +661,7 @@ export interface TerminalBackend extends TerminalSessionStreamPort {
 
 /** Typed error: session manifest entry / socket is gone. */
 export class SessionGoneError extends Error {
-  constructor(id: SessionId, cause?: Error) {
+  constructor(readonly id: SessionId, cause?: Error) {
     super(`session ${id} is gone`);
     this.name = 'SessionGoneError';
     if (cause) this.cause = cause;

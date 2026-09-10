@@ -23,8 +23,10 @@
 
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
+import type { TerminalSourceRange } from '../shared/terminal-stream.js';
 
 export interface ReconstructAbsoluteTuiScreenOptions {
+  source?: TerminalSourceRange;
   cols?: number;
   rows?: number;
   /** Minimum non-space cells required to treat the result as useful. */
@@ -134,6 +136,17 @@ const stats: ReconstructAbsoluteTuiScreenStats = {
   queueDepth: 0,
 };
 
+export interface AbsoluteTuiReconstructionExecutor {
+  reconstruct(bytes: Uint8Array, options?: ReconstructAbsoluteTuiScreenOptions): Promise<AbsoluteTuiScreenResult>;
+  getStats(): ReconstructAbsoluteTuiScreenStats;
+}
+let externalExecutor: AbsoluteTuiReconstructionExecutor | null = null;
+
+/** The isolated host installs its single worker; ordinary in-process mode is unchanged. */
+export function setAbsoluteTuiReconstructionExecutor(executor: AbsoluteTuiReconstructionExecutor | null): void {
+  externalExecutor = executor;
+}
+
 function snapshotConcurrencyFields(): Pick<
   ReconstructAbsoluteTuiScreenStats,
   'inFlight' | 'inFlightCount' | 'queueDepth'
@@ -146,6 +159,7 @@ function snapshotConcurrencyFields(): Pick<
 }
 
 export function getReconstructAbsoluteTuiScreenStats(): ReconstructAbsoluteTuiScreenStats {
+  if (externalExecutor) return externalExecutor.getStats();
   return {
     ...stats,
     ...snapshotConcurrencyFields(),
@@ -280,7 +294,29 @@ export async function reconstructAbsoluteTuiScreen(
   bytes: Uint8Array,
   options: ReconstructAbsoluteTuiScreenOptions = {},
 ): Promise<Uint8Array | null> {
-  if (bytes.length === 0) return null;
+  return (await reconstructAbsoluteTuiScreenResult(bytes, options)).bytes;
+}
+
+/** A reconstructed grid is display-only even when every source byte was walked. */
+export type AbsoluteTuiScreenResult = (
+  | { kind: 'display-only'; completeness: 'complete' | 'partial'; bytes: Uint8Array; consumedBytes: number; totalBytes: number }
+  | { kind: 'unavailable'; reason: 'empty' | 'busy' | 'insufficient-cells'; bytes: null; consumedBytes: number; totalBytes: number }
+) & { source?: TerminalSourceRange };
+
+export async function reconstructAbsoluteTuiScreenResult(
+  bytes: Uint8Array,
+  options: ReconstructAbsoluteTuiScreenOptions = {},
+): Promise<AbsoluteTuiScreenResult> {
+  if (externalExecutor) return externalExecutor.reconstruct(bytes, options);
+  const result = await reconstructLocally(bytes, options);
+  return options.source ? { ...result, source: options.source } : result;
+}
+
+async function reconstructLocally(
+  bytes: Uint8Array,
+  options: ReconstructAbsoluteTuiScreenOptions,
+): Promise<AbsoluteTuiScreenResult> {
+  if (bytes.length === 0) return { kind: 'unavailable', reason: 'empty', bytes: null, consumedBytes: 0, totalBytes: 0 };
 
   const concurrencyCap = options.concurrencyCap !== false;
   const nowMs = options.nowMs ?? (() => performance.now());
@@ -300,7 +336,7 @@ export async function reconstructAbsoluteTuiScreen(
     maxSessionQueueDepth,
     nowMs,
   });
-  if (!acquired) return null;
+  if (!acquired) return { kind: 'unavailable', reason: 'busy', bytes: null, consumedBytes: 0, totalBytes: bytes.length };
 
   const startedAt = nowMs();
   const yieldFn = options.yieldFn ?? defaultYield;
@@ -511,7 +547,10 @@ export async function reconstructAbsoluteTuiScreen(
       stats.completed += 1;
     }
 
-    return serializeGrid(grid, rows, cols, minPrintable);
+    const frame = serializeGrid(grid, rows, cols, minPrintable);
+    return frame
+      ? { kind: 'display-only', completeness: budgetExceeded ? 'partial' : 'complete', bytes: frame, consumedBytes: i, totalBytes: n }
+      : { kind: 'unavailable', reason: 'insufficient-cells', bytes: null, consumedBytes: i, totalBytes: n };
   } finally {
     releaseReconstructSlot();
   }

@@ -47,6 +47,7 @@ describe('installTerminalRenderer', () => {
     });
 
     expect(installed.renderer).toBe('dom');
+    expect(installed.fallbackReason).toBe('automation');
     expect(terminal.loadAddon).not.toHaveBeenCalled();
     expect(webgl.addon.onContextLoss).not.toHaveBeenCalled();
   });
@@ -106,6 +107,7 @@ describe('installTerminalRenderer', () => {
     });
 
     expect(installed.renderer).toBe('dom');
+    expect(installed.fallbackReason).toBe('webgl2-unavailable');
     expect(terminal.loadAddon).not.toHaveBeenCalled();
     expect(webgl.addon.onContextLoss).not.toHaveBeenCalled();
   });
@@ -140,16 +142,24 @@ describe('installTerminalRenderer', () => {
       refresh: vi.fn(),
     };
     const webgl = fakeWebglAddon();
+    const onChange = vi.fn();
 
-    installTerminalRenderer(terminal, {
+    const installed = installTerminalRenderer(terminal, {
       document: fakeDocumentWithWebgl2(true),
       createWebglAddon: () => webgl.addon,
+      onChange,
     });
 
     webgl.loseContext();
 
+    expect(installed.renderer).toBe('dom');
+    expect(installed.fallbackReason).toBe('context-lost');
     expect(webgl.addon.dispose).toHaveBeenCalledOnce();
     expect(terminal.refresh).toHaveBeenCalledWith(0, 23);
+    expect(onChange).toHaveBeenLastCalledWith({ renderer: 'dom', fallbackReason: 'context-lost' });
+    onChange.mockClear();
+    webgl.loseContext();
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   test('falls back to the DOM renderer when WebGL loading throws', () => {
@@ -168,6 +178,7 @@ describe('installTerminalRenderer', () => {
     });
 
     expect(installed.renderer).toBe('dom');
+    expect(installed.fallbackReason).toBe('initialization-failed');
     expect(webgl.disposeContextLoss).toHaveBeenCalledOnce();
     expect(webgl.addon.dispose).toHaveBeenCalledOnce();
   });

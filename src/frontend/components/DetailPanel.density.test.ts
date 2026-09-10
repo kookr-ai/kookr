@@ -9,6 +9,8 @@ import { getDefaultShortcutBindings } from '../../shared/contracts/shortcut-bind
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { DetailPanel } from './DetailPanel.js';
 
+const terminalRender = vi.hoisted(() => vi.fn());
+
 vi.mock('../telemetry.js', () => ({ track: vi.fn(), trackClick: vi.fn() }));
 vi.mock('./ActivityPanel.js', () => ({
   ActivityPanel: ({ onOpenDiff }: { onOpenDiff?: (target: { toolUseId: string; filePath: string }) => void }) => React.createElement(
@@ -26,10 +28,13 @@ vi.mock('./ActivityPanel.js', () => ({
 }));
 vi.mock('./GitHubPanel.js', () => ({ GitHubPanel: () => React.createElement('div', { 'data-testid': 'github-panel' }) }));
 vi.mock('./TerminalPanel.js', () => ({
-  TerminalPanel: ({ visible }: { visible?: boolean }) => React.createElement('div', {
+  TerminalPanel: (props: { visible?: boolean }) => {
+    terminalRender(props);
+    return React.createElement('div', {
     'data-testid': 'terminal-panel',
-    'data-visible': String(Boolean(visible)),
-  }),
+    'data-visible': String(Boolean(props.visible)),
+    });
+  },
 }));
 vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
@@ -146,6 +151,37 @@ describe('DetailPanel dense metadata', () => {
     expect(metaMenu.querySelector('.detail-branch')?.textContent).toContain('main');
     expect(metaMenu.textContent).toContain('$0.42');
     expect(metaMenu.textContent).toContain('1.5k tok');
+  });
+
+  test('FR-TERM-005: unrelated agent updates do not render the terminal', async () => {
+    root = renderFocusedDetailPanel(container, makeAgent());
+    await act(async () => {});
+    expect(terminalRender).toHaveBeenCalled();
+    terminalRender.mockClear();
+    act(() => useKookrStore.setState({ agents: [makeAgent({ agentId: 'other' })] }));
+    expect(terminalRender).not.toHaveBeenCalled();
+  });
+
+  test('FR-TERM-005: selecting and clearing a task preserves React hook order', async () => {
+    root = renderFocusedDetailPanel(container, makeAgent());
+    await act(async () => {});
+    const props = { send: vi.fn(() => true), onLaunch: vi.fn(), onRequestComplete: vi.fn() };
+    expect(() => act(() => root!.render(React.createElement(DetailPanel, { ...props, agent: null })))).not.toThrow();
+    expect(() => act(() => root!.render(React.createElement(DetailPanel, { ...props, agent: makeAgent() })))).not.toThrow();
+  });
+
+  test('FR-TERM-005: terminal callbacks survive selected-agent metadata changes', async () => {
+    const agent = makeAgent();
+    root = renderFocusedDetailPanel(container, agent);
+    await act(async () => {});
+    const before = terminalRender.mock.lastCall![0];
+    act(() => root!.render(React.createElement(DetailPanel, {
+      agent: { ...agent, taskName: 'Updated title' }, send: vi.fn(() => true),
+      onLaunch: vi.fn(), onRequestComplete: vi.fn(), terminalFocusMode: true,
+    })));
+    const after = terminalRender.mock.lastCall![0];
+    expect(after.onOpenFile).toBe(before.onOpenFile);
+    expect(after.onEmptySubmit).toBe(before.onEmptySubmit);
   });
 
   test('shows $X.XX/h on the Cost row when the session is older than two minutes', () => {

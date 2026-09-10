@@ -596,7 +596,7 @@ export class LocalDtachRecovery {
    *      socket dir scan, emit `manifest-corrupt`.
    */
   async recoverOnStartup(): Promise<void> {
-    await this.host.manifestStore.withLock(() => {
+    await this.host.manifestStore.withLock(async () => {
       const recovery = this.host.manifestStore.readForRecovery();
       if (recovery.kind === 'missing') return;
 
@@ -612,6 +612,7 @@ export class LocalDtachRecovery {
 
       const now = Date.now();
       const before = manifest.entries.length;
+      const staleRings: string[] = [];
 
       manifest.entries = manifest.entries.flatMap((e) => {
         if (e.status === 'pending') {
@@ -624,7 +625,7 @@ export class LocalDtachRecovery {
           // any ring snapshot that may have been left behind (otherwise a
           // future session reusing this id would inherit stale scrollback
           // from a different agent process).
-          this.host.ringStore.remove(e.sessionId);
+          staleRings.push(e.sessionId);
           return [];
         }
         // Active or recovered: verify pid ownership. Unverifiable entries
@@ -635,12 +636,13 @@ export class LocalDtachRecovery {
           // Manifest entry whose dtach master and socket are both gone — the
           // session is dead. Clean up its ring snapshot for the same reason
           // as the pending-aged-out branch above.
-          this.host.ringStore.remove(e.sessionId);
+          staleRings.push(e.sessionId);
           return [];
         }
         return [{ ...e, status: 'recovered' as const }];
       });
 
+      for (const id of staleRings) await this.host.ringStore.remove(id);
       if (manifest.entries.length !== before) {
         this.host.manifestStore.writeAtomic(manifest);
       }

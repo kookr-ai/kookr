@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, PermissionRequestBinding } from '../../shared/protocol.js';
 import { isTerminalStatus } from '../../shared/contracts/task-status.js';
@@ -389,7 +390,32 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
     typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
   );
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore();
+  const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore(useShallow((state) => ({
+    selectAgent: state.selectAgent,
+    nextBottleneck: state.nextBottleneck,
+    advanceEmptyEnter: state.advanceEmptyEnter,
+    snoozeAgent: state.snoozeAgent,
+    setRelaunchTask: state.setRelaunchTask,
+    showSentOverlay: state.showSentOverlay,
+    githubState: state.githubState,
+    leftPane: state.leftPane,
+    setLeftPane: state.setLeftPane,
+    narrowTab: state.narrowTab,
+    setNarrowTab: state.setNarrowTab,
+    detailPaneMode: state.detailPaneMode,
+    setDetailPaneMode: state.setDetailPaneMode,
+    handleAlert: state.handleAlert,
+    suggestions: state.suggestions,
+    clearSuggestion: state.clearSuggestion,
+    setFocusZone: state.setFocusZone,
+    focusZone: state.focusZone,
+    sttUrl: state.sttUrl,
+    respondAllAgentIds: state.respondAllAgentIds,
+    setRespondAllAgentIds: state.setRespondAllAgentIds,
+    shortcutsArmed: state.shortcutsArmed,
+    armShortcuts: state.armShortcuts,
+  })));
+  const hasAgent = agent !== null;
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
@@ -538,13 +564,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
     setRightPane('diff');
   }
 
-  function handleOpenFile(filePath: string) {
-    if (!agent) return;
+  const handleOpenFile = useCallback((filePath: string) => {
+    if (!hasAgent) return;
     const active = document.activeElement;
     fileTriggerRef.current = active instanceof HTMLElement ? active : null;
     setActiveFile({ filePath, openedAt: serverStartedAt });
     setRightPane('file');
-  }
+  }, [hasAgent, serverStartedAt]);
 
   function handleCloseFile() {
     setRightPane('terminal');
@@ -622,6 +648,18 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
   useEffect(() => {
     setPermissionButtonsDisabled(false);
   }, [agent?.agentId, suggestion]);
+
+  const handleEmptyEnterAdvance = useCallback(() => {
+    if (!hasAgent) return;
+    // Empty Enter is pure navigation — it never dismisses a finding. The
+    // finding-vs-healthy cursor rule lives in the store (advanceEmptyEnter) so
+    // the reply input, the terminal, and the global window handler stay in sync.
+    // Local dashboard navigation must not depend on terminal readiness: the
+    // server-side terminal-input coordinator can lag until an idle notification
+    // arrives, which made empty Enter appear to work once and then stall.
+    track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
+    advanceEmptyEnter();
+  }, [hasAgent, advanceEmptyEnter]);
 
   if (!agent) {
     return (
@@ -821,17 +859,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
     send({ type: 'cancelTask', taskId: agent.taskId });
   }
 
-  function handleEmptyEnterAdvance() {
-    if (!agent) return;
-    // Empty Enter is pure navigation — it never dismisses a finding. The
-    // finding-vs-healthy cursor rule lives in the store (advanceEmptyEnter) so
-    // the reply input, the terminal, and the global window handler stay in sync.
-    // Local dashboard navigation must not depend on terminal readiness: the
-    // server-side terminal-input coordinator can lag until an idle notification
-    // arrives, which made empty Enter appear to work once and then stall.
-    track({ type: 'shortcut_used', key: 'Enter', action: 'advance_empty_input', context: 'input_focused' });
-    advanceEmptyEnter();
-  }
 
   function handleKeyDown(e: React.KeyboardEvent) {
     // Ctrl/Cmd+Enter: send and jump to the next finding.

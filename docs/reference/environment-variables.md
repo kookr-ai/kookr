@@ -185,14 +185,20 @@ not user configuration knobs.
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_BACKEND` | unset, treated as `dtach` | unset or `dtach` | Compatibility guard only. Any other value hard-fails startup because the tmux backend was removed. |
+| `KOOKR_TERMINAL_HOST` | unset (off) | Exact string `true` enables; otherwise disabled | Experimental terminal-process isolation. One child owns dtach attaches, terminal sockets, input serialization, asynchronous ring persistence, and a bounded reconstruction worker. The main server still authenticates socket upgrades. Leave unset for the existing in-process backend; platform and mixed-dashboard performance qualification remain incomplete. See the [validation report](../reports/terminal-responsiveness-validation.md). |
 | `KOOKR_DTACH_SOCK_DIR` | `/tmp/kookr-dtach/$(id -u)` | Directory path | Overrides the dtach socket root used by `scripts/rollback-dtach.sh`. |
 | `KOOKR_AGENT_CPU_LIST` | unset | Linux CPU list, e.g. `0-15` or `0-3,8-11` | Restricts all newly launched agents and their descendants to the same CPU allocation using `taskset`. Server and terminal transport remain unrestricted. Choose CPUs for the host; existing sessions are not changed. Explicit use on non-Linux platforms is rejected. |
 
 ## Terminal Streaming
 
-These variables tune live PTY-output forwarding from `SessionBridge` to browser
-terminal sockets. The defaults are intended for normal local use; change them
-only when diagnosing slow viewers or unusually high terminal-output volume.
+The batching and backpressure variables below tune legacy version 1 terminal
+sockets only. Version 2 uses fixed 8 KiB output frames, 128 KiB of credit returned
+after browser parsing, and queue limits of 2 MiB per viewer and 32 MiB across
+viewers. Its queue bounds do not change with these legacy settings.
+
+The resize debounce applies to both versions. The initial resize wait and live
+redraw nudge apply only to legacy sockets; version 2 uses an explicit attach
+handshake and does not automatically nudge the agent to recover a screen.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
