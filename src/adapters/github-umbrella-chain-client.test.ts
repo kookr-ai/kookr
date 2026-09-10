@@ -44,6 +44,120 @@ describe('GhUmbrellaChainClient.refreshBase', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toEqual(['git', '-C', '/repo', 'fetch', '--prune', 'origin', 'main']);
   });
+
+  test('retries a ref-lock fetch failure then succeeds instead of surfacing a skip (#3111)', async () => {
+    // A ref-update race (or stale `.lock`) makes `git fetch` emit `cannot lock
+    // ref …` on stderr. The advancer turns any rejection here into a whole-
+    // project skip, so a recoverable ref-lock error must be retried in-tick.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      if (n === 1) {
+        throw Object.assign(
+          new Error("Command failed: git -C /repo fetch --prune origin main\nerror: cannot lock ref 'refs/remotes/origin/main'"),
+          { code: 128, stderr: "error: cannot lock ref 'refs/remotes/origin/main': is at 0000000 but expected 1111111" },
+        );
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await client.refreshBase('/repo', 'main');
+    expect(n).toBe(2); // first (ref-lock) + retried success
+    expect(sleeps).toEqual([1_000]); // one bounded back-off, no real delay incurred
+  });
+
+  test('retries a stale-lock "File exists" fetch failure (#3111)', async () => {
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      if (n === 1) {
+        throw Object.assign(new Error('git fetch failed'), {
+          code: 128,
+          stderr: "fatal: Unable to create '/repo/.git/refs/remotes/origin/main.lock': File exists.",
+        });
+      }
+      return { stdout: '', stderr: '' };
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await client.refreshBase('/repo', 'main');
+    expect(n).toBe(2);
+    expect(sleeps).toEqual([1_000]);
+  });
+
+  test('bounds a persistent lock-contention fetch failure at the attempt cap, then rethrows so the project is skipped (#3111)', async () => {
+    // A genuinely wedged lock must still be bounded by the same cap as any other
+    // transient class — retried up to maxAttempts, then rethrown so the advancer
+    // records a project-scan skip rather than looping forever.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(
+        new Error('Command failed: git ... fetch\nfatal: another git process seems to be running in this repository'),
+        { code: 128, stderr: 'fatal: another git process seems to be running in this repository' },
+      );
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.refreshBase('/repo', 'main')).rejects.toThrow(/another git process/);
+    expect(n).toBe(3); // default maxAttempts — no unbounded loop
+    expect(sleeps).toEqual([1_000, 3_000]);
+  });
+
+  test('does not retry a non-ref-lock, non-network fetch failure — it surfaces after one attempt (#3111)', async () => {
+    // A genuine fetch error (e.g. an unknown revision) is not a recoverable
+    // contention fault; it must reach the advancer as a project-scan-error skip
+    // unchanged, without burning the retry budget.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(
+        new Error("Command failed: git ... fetch\nfatal: couldn't find remote ref nonexistent-branch"),
+        { code: 128, stderr: "fatal: couldn't find remote ref nonexistent-branch" },
+      );
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.refreshBase('/repo', 'main')).rejects.toThrow(/couldn't find remote ref/);
+    expect(n).toBe(1); // no retry for a non-transient fetch error
+    expect(sleeps).toEqual([]); // never slept
+  });
+
+  test('classifies on stderr, not the command line — a ref-lock phrase only in the message is not retried (#3111)', async () => {
+    // promisify(execFile) rejects with message `Command failed: git -C <path>
+    // fetch …` — the repoPath is embedded in the message. A benign failure whose
+    // stderr carries no ref-lock text must NOT be retried even if the repoPath
+    // happens to contain a trigger phrase; only git's own stderr decides.
+    const sleeps: number[] = [];
+    let n = 0;
+    const exec = async () => {
+      n += 1;
+      throw Object.assign(
+        new Error("Command failed: git -C /repo/cannot lock ref fetch --prune origin main\nfatal: not a git repository"),
+        { code: 128, stderr: 'fatal: not a git repository' },
+      );
+    };
+    const client = new GhUmbrellaChainClient({
+      exec: exec as never,
+      retryOptions: { sleep: async (ms) => { sleeps.push(ms); } },
+    });
+    await expect(client.refreshBase('/repo/cannot lock ref', 'main')).rejects.toThrow(/not a git repository/);
+    expect(n).toBe(1); // the "cannot lock ref" in the message/path must not trigger a retry
+    expect(sleeps).toEqual([]); // never slept
+  });
 });
 
 describe('GhUmbrellaChainClient.updateIssueBody', () => {
