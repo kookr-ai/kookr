@@ -11,6 +11,8 @@ import {
   resolveShortcutBindings,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { ShortcutsHelp } from './ShortcutsHelp.js';
+import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
+import { GETTING_STARTED_GUIDE_URL } from './OverviewEmptyState.js';
 
 describe('ShortcutsHelp', () => {
   let container: HTMLDivElement;
@@ -93,7 +95,9 @@ describe('ShortcutsHelp', () => {
 
     act(render);
     const close = container.querySelector<HTMLButtonElement>('.shortcuts-close')!;
-    const tour = container.querySelector<HTMLButtonElement>('.shortcuts-tour-cta')!;
+    // Shift+Tab from the first focusable wraps to the last one in the dialog,
+    // which is the Getting Started CTA once the demo/guide links are present.
+    const lastCta = container.querySelector<HTMLAnchorElement>('[data-testid="shortcuts-getting-started-link"]')!;
     close.focus();
 
     act(() => {
@@ -104,7 +108,7 @@ describe('ShortcutsHelp', () => {
         cancelable: true,
       }));
     });
-    expect(document.activeElement).toBe(tour);
+    expect(document.activeElement).toBe(lastCta);
 
     act(() => {
       window.dispatchEvent(new KeyboardEvent('keydown', {
@@ -142,6 +146,11 @@ describe('ShortcutsHelp', () => {
       .find((btn) => btn.textContent?.includes('Share read-only view'));
     expect(shareCta).toBeTruthy();
 
+    // The demo/Getting Started links are always available: they stay present
+    // even in the share-enabled render, not only in the no-onShareView path.
+    expect(container.querySelector('[data-testid="shortcuts-demo-link"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="shortcuts-getting-started-link"]')).toBeTruthy();
+
     act(() => {
       shareCta?.click();
     });
@@ -161,6 +170,30 @@ describe('ShortcutsHelp', () => {
     expect(shareCta).toBeUndefined();
     // The overlay stays usable — the tour CTA still renders.
     expect(container.querySelector('.shortcuts-tour-cta')).not.toBeNull();
+  });
+
+  test('always surfaces the demo and Getting Started links pointing at the shared constants', () => {
+    act(() => {
+      root.render(React.createElement(ShortcutsHelp, { bindings, onClose: () => root.render(React.createElement(React.Fragment)) }));
+    });
+
+    const demoLink = container.querySelector<HTMLAnchorElement>('[data-testid="shortcuts-demo-link"]');
+    expect(demoLink).toBeTruthy();
+    expect(demoLink?.textContent).toContain('Watch the 2-minute demo');
+    expect(demoLink?.getAttribute('href')).toBe(NARRATED_DEMO_YOUTUBE_URL);
+    expect(demoLink?.getAttribute('target')).toBe('_blank');
+    expect(demoLink?.getAttribute('rel')).toBe('noopener noreferrer');
+
+    const guideLink = container.querySelector<HTMLAnchorElement>('[data-testid="shortcuts-getting-started-link"]');
+    expect(guideLink).toBeTruthy();
+    expect(guideLink?.textContent).toContain('Getting Started');
+    expect(guideLink?.getAttribute('href')).toBe(GETTING_STARTED_GUIDE_URL);
+    expect(guideLink?.getAttribute('target')).toBe('_blank');
+    expect(guideLink?.getAttribute('rel')).toBe('noopener noreferrer');
+
+    // Both external links carry the screen-reader new-tab cue used elsewhere.
+    expect(demoLink?.querySelector('.sr-only')?.textContent).toContain('opens in a new tab');
+    expect(guideLink?.querySelector('.sr-only')?.textContent).toContain('opens in a new tab');
   });
 
   test('renders active custom bindings from the resolved shortcut map', () => {
