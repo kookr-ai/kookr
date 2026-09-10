@@ -2480,6 +2480,71 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — processFatal block (issue #3112)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health processFatal block (issue #3112)', () => {
+    test('omits processFatal when getProcessFatalHealth is not wired', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { processFatal?: unknown };
+      expect(body.processFatal).toBeUndefined();
+    });
+
+    test('projects fatal counters + last-error fields from the getter', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getProcessFatalHealth: () => ({
+          unhandledRejectionTotal: 3,
+          uncaughtExceptionTotal: 1,
+          lastFatalError: 'leaked promise',
+          lastFatalAt: '2026-09-10T00:00:00.000Z',
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as { processFatal: Record<string, unknown> };
+      expect(body.processFatal).toEqual({
+        unhandledRejectionTotal: 3,
+        uncaughtExceptionTotal: 1,
+        lastFatalError: 'leaked promise',
+        lastFatalAt: '2026-09-10T00:00:00.000Z',
+      });
+    });
+
+    test('reports a clean baseline (zero counts, null last-error) when nothing has been absorbed', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getProcessFatalHealth: () => ({
+          unhandledRejectionTotal: 0,
+          uncaughtExceptionTotal: 0,
+          lastFatalError: null,
+          lastFatalAt: null,
+        }),
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        processFatal: {
+          unhandledRejectionTotal: number;
+          uncaughtExceptionTotal: number;
+          lastFatalError: string | null;
+          lastFatalAt: string | null;
+        };
+      };
+      expect(body.processFatal.unhandledRejectionTotal).toBe(0);
+      expect(body.processFatal.uncaughtExceptionTotal).toBe(0);
+      expect(body.processFatal.lastFatalError).toBeNull();
+      expect(body.processFatal.lastFatalAt).toBeNull();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — hookReplayCheckpoints block (issue #2281)
   // ---------------------------------------------------------------------------
   describe('GET /api/health hookReplayCheckpoints block (issue #2281)', () => {

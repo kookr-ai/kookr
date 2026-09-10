@@ -27,6 +27,7 @@ import { DEFAULT_TTS_VOICE, parseTTSDeviceFromEnv, startTTS, type TTSManager } f
 import { createShutdownHandler } from './shutdown.js';
 import { BootMarkerStore } from './boot-marker.js';
 import { readRingFleetBudgetBytesFromEnv } from './config.js';
+import { installProcessFatalHandlers } from './fatal-error-counters.js';
 import { validateSpeechServiceUrl } from './speech-service-url.js';
 
 const HOST = process.env.KOOKR_HOST ?? '127.0.0.1';
@@ -314,12 +315,13 @@ async function main(): Promise<void> {
   // matters: future code paths may forget to `.catch()` once, and we would
   // rather log a loud error than kill every live agent session. We do NOT
   // re-raise or exit — operators see the log and can decide to restart.
-  process.on('uncaughtException', (err, origin) => {
-    console.error(`[fatal] uncaughtException (${origin}):`, err);
-  });
-  process.on('unhandledRejection', (reason) => {
-    console.error('[fatal] unhandledRejection:', reason);
-  });
+  // The handlers also stamp a since-boot counter + last message/timestamp
+  // (issue #3112) so a daemon quietly absorbing fatal rejections surfaces on
+  // /api/health instead of only in server.log, which rotates away. They still
+  // log-and-continue exactly as described above — never re-raise or exit.
+  // Registration lives in fatal-error-counters.ts so the log-and-continue +
+  // counter-stamping behavior is unit-testable without booting the server.
+  installProcessFatalHandlers();
 }
 
 main().catch((err) => {

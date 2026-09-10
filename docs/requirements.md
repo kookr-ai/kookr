@@ -1291,6 +1291,20 @@ The system SHALL launch a resource-watchdog task only after its throttle reserva
 
 **Evidence:** `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/resource-watchdog-service.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
 
+### R6.15: Publish Process-Fatal Counters on GET /api/health [#3112] — SHALL — `done`
+
+The system SHALL publish since-boot process-fatal counters on `GET /api/health` so a remote operator can see a daemon quietly absorbing unhandled rejections / uncaught exceptions without reading the rotated-away server log.
+
+**Acceptance criteria:**
+- `GET /api/health` includes `processFatal.unhandledRejectionTotal`, `processFatal.uncaughtExceptionTotal`, `processFatal.lastFatalError`, and `processFatal.lastFatalAt`
+- The counters increment from the existing `uncaughtException` / `unhandledRejection` handlers without changing their log-and-continue behavior
+- `lastFatalError` stores the message string only (never the error object) and is length-capped
+- The `processFatal` block is omitted when the getter is not wired (partial test harnesses)
+
+**Dependencies:** R6.8.
+
+**Evidence:** `src/server/fatal-error-counters.ts`, `src/server/start.ts` (fatal handlers), `src/server/index.ts` (`getProcessFatalHealth` wiring), `src/server/routes/diagnostics-routes.ts`, `src/server/fatal-error-counters.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -1842,6 +1856,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R6.12 | #2912 | SHALL | done | background queue-feeder invent-class refresher, in-memory health projection |
 | R6.13 | #2911 | SHALL | done | resource-watchdog state, service, and cached health projection |
 | R6.14 | #2902 | SHALL | done | resource-watchdog fail-closed spawn reservation and persistence health |
+| R6.15 | #3112 | SHALL | done | fatal-error-counters, processFatal health projection |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

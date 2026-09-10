@@ -146,6 +146,7 @@ import {
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './maintenance-prune-schedule.js';
+import { getFatalErrorHealth } from './fatal-error-counters.js';
 import { resolveServerLogRotationEnv, ServerLogRotationHealth } from './server-log-rotation.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import {
@@ -2798,6 +2799,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       return composeMaintenancePruneHealth(maintenancePruneHealth.getSnapshot(), emergency);
     },
     getHookReplayCheckpointStats: () => hookWatcher.getReplayCheckpointStats(),
+    // Process-fatal counters (issue #3112): since-boot unhandledRejection /
+    // uncaughtException totals + last message/timestamp, stamped by the fatal
+    // handlers in start.ts. Cheap in-memory read; makes a daemon silently
+    // absorbing fatal rejections visible on /api/health.
+    getProcessFatalHealth: () => getFatalErrorHealth(),
     nonCriticalTimerPause: nonCriticalTimerPauseGate,
     snapshotShed: { getSnapshotShedMetrics },
     finishedAwaitingAckTtlReclaimMetrics,
