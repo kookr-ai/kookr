@@ -12,6 +12,7 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
+import { PathCopyButton } from './PathCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { getSettingsSnapshot, getTaskShares } from '../api/index.js';
@@ -283,7 +284,7 @@ function DetailMetadataMenu({
   const hasProject = Boolean(agentProjectLabel(agent));
   const hasBranch = Boolean(agent.gitBranch || agent.gitCommit);
   const hasAgentType = Boolean(agent.agentType && provider);
-  const hasAnyDetail = hasUsageCost || hasTokenCount || hasCacheReads || hasProject || hasBranch || hasAgentType;
+  const hasAnyDetail = hasUsageCost || hasTokenCount || hasCacheReads || hasProject || hasBranch || hasAgentType || Boolean(agent.cwd);
 
   if (!hasAnyDetail) return null;
 
@@ -315,6 +316,12 @@ function DetailMetadataMenu({
             <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
             </span>
+          </div>
+        )}
+        {agent.cwd && (
+          <div className="detail-meta-row">
+            <span className="detail-meta-label">Directory</span>
+            <PathCopyButton cwd={agent.cwd} />
           </div>
         )}
         {agent.gitBranch && (
