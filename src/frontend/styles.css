@@ -10336,7 +10336,12 @@ button.project-drawer-link:focus-visible {
 .stats-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  /* Wrap the metric spans onto a second line at narrow widths instead of
+     clipping them: stats-type (flex:1) takes the first line and the fixed
+     min-width count/checks/rate/FP/FN spans reflow below when they no longer
+     fit (e.g. a ~320px panel). Keeps the row readable per issue #3130. */
+  flex-wrap: wrap;
+  gap: 4px 8px;
   font-size: 11px;
   color: var(--text-secondary);
   padding: 3px 6px;
@@ -10354,6 +10359,12 @@ button.project-drawer-link:focus-visible {
   font-weight: 700;
   color: var(--text-bright);
   min-width: 24px;
+  text-align: right;
+}
+.stats-checks {
+  color: var(--text-muted);
+  font-size: 10px;
+  min-width: 56px;
   text-align: right;
 }
 .stats-rate {

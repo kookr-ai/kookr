@@ -246,6 +246,13 @@ export function DetectionStatsPanel({ defaultExpanded = false, showEmpty = false
                   </span>
                 )}
                 <span
+                  className="stats-checks"
+                  title={FIRE_RATE_EXPLAINER}
+                  aria-label={`${checks} checks, the fire-rate denominator.`}
+                >
+                  {checks} checks
+                </span>
+                <span
                   className="stats-rate"
                   title={FIRE_RATE_EXPLAINER}
                   aria-label={`${rate}% fire rate. ${FIRE_RATE_EXPLAINER}`}
