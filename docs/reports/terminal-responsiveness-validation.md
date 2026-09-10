@@ -7,7 +7,9 @@ from supervision. These changes improve the measured terminal path, but the
 full dashboard still misses the approved frame and output-latency targets.
 
 Implementation follows the [approved RFC](../rfc/rfc-terminal-responsiveness.md).
-Functional requirements FR-TERM-001 through FR-TERM-005 are implemented.
+Functional requirements FR-TERM-001, 002, 003 and 005 are implemented.
+FR-TERM-004 is partial: source continuity works for a verified retained parser,
+but a retiring in-flight parse conservatively invalidates its saved cursor.
 NFR-TERM-001 remains **partial**, not qualified. Isolation is experimental and
 off by default; no production deployment is part of this validation.
 
@@ -52,6 +54,12 @@ control; socket-transfer and authorization traffic have reserved capacity.
 Input queues retain owned byte copies and reject excess work. Retiring a session
 or coordinator cancels queued and delayed input, without retrying uncertain writes.
 
+Output allocations remain charged until both browser acknowledgement and local
+socket-send completion. Pending control frames share the ownership budget, and
+eviction pressure includes acknowledged bytes still held by the socket. Closing
+a backlogged socket terminates its transport so queued data is not retained
+through a close-handshake timeout.
+
 Viewer leases expire in the child even if the main process stops responding.
 Revocation is considered complete only after closure acknowledgement or confirmed
 child exit. A replacement host cannot start until its predecessor and attach
@@ -61,6 +69,13 @@ it does not authorize killing an unknown process. Dtached agent masters survive.
 Synchronous diagnostics use age-bounded caches. An unreachable host must not be
 mistaken for a dead coding agent or a verified input prompt. Ralph startup now
 preserves an unverified loop during a host outage, without claiming prompt ownership.
+Launch deduplication likewise keeps the original task protected when host
+unavailability prevents a liveness check; only verified dead sessions are reconciled.
+
+If a connection carrying input disconnects unexpectedly, the browser displays
+an input-delivery warning until dismissed. Output reconnection does not clear
+that warning or replay input. The protocol has no agent-delivery receipt, so this
+warning is conservative: it can appear even when the agent received the input.
 
 `GET /api/health` exposes the host's sampled queue sizes, connection counts,
 restart count, memory use, and snapshot age under `terminalBackend.terminalHost`.
@@ -147,7 +162,7 @@ startup and settling time. This competing dashboard work remains material.
 
 ### Local regression gates
 
-`pnpm test` passed all 1,095 test files: 17,815 tests passed, three were expected
+At implementation commit `d141ddd0`, `pnpm test` passed all 1,095 test files: 17,815 tests passed, three were expected
 failures, and eighteen were skipped (17,836 total). The final run took 374.21
 seconds. On this WSL host it ran under a test-only Linux subreaper so orphaned
 native-test processes were reaped; production process-liveness rules were not
@@ -175,7 +190,15 @@ their transitive frontend imports is **not green**. It reports twenty existing
 errors, compared with twenty-seven on the baseline. Comparing diagnostics with
 file positions normalized found no new errors and seven resolved terminal
 errors. The successful frontend build transpiles code; it is not evidence of a
-clean whole-frontend typecheck.
+clean whole-frontend typecheck. These counts and the performance observations
+above precede the delivery merge from current main and the review corrections;
+the PR test plan records the final-head verification separately.
+
+Delivery review added regressions for premature acknowledgements, delayed socket
+completion, host-unavailable duplicate launches, interrupted input, split control
+sequences in real xterm, and the actual memoized terminal boundary. A real loopback
+slow-reader reproduction retained over sixteen MiB before the ownership fix;
+afterward it closed at roughly two MiB and released all queued transport bytes.
 
 The explicit frontend check was:
 
@@ -238,3 +261,6 @@ part of the repository and may be removed by the operating system's cleanup.
 - A retained parser whose geometry changed or whose source history expired
   requires an explicit new view. This safety tradeoff can interrupt convenience;
   it must not be described as seamless universal recovery.
+- A disconnect during an in-flight parse also requires a new view, even if the
+  retired parse later completes. The RFC's retiring-chunk continuity promise is
+  not implemented; FR-TERM-004 remains partial rather than claiming equivalence.

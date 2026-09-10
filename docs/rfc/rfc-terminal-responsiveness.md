@@ -395,6 +395,10 @@ and corrupt everything afterward. Budget exhaustion retires that viewer's
 connection and shows: “Terminal display fell behind. Agent is still running.”
 Preserve the last visible screen and a Reconnect action; do not label it ended.
 
+**Implementation status:** The initial implementation conservatively invalidates
+the cursor when a parse is in flight at disconnect. The retiring-chunk behavior
+specified below remains deferred; FR-TERM-004 is tracked as partial.
+
 The first recovery mechanism is exact continuity, not reconstruction. The writer
 retains the original stream epoch and parsed position, including the retiring
 in-flight chunk's completion. If the server still retains every following byte

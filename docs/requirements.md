@@ -1045,7 +1045,7 @@ task scheduling across panes. Transport credit returns only after parsing.
 
 **Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
 
-### FR-TERM-004: Source-position terminal continuity [F5.2] — SHALL — `done`
+### FR-TERM-004: Source-position terminal continuity [F5.2] — SHALL — `partial`
 
 **Status:** Approved
 **Priority:** High
@@ -1061,6 +1061,10 @@ indices and transport acknowledgements.
   replay invalidates the epoch; changed dimensions invalidate geometry continuity.
 - Exact resume requires the same epoch and geometry, with all missing bytes
   retained. Missing continuity is disclosed, never repaired by content overlap.
+
+**Remaining gap:** A disconnect during an in-flight parse conservatively
+invalidates the cursor, even if that parse later completes. Carrying the retiring
+chunk's completion into exact resume, as specified by the RFC, remains deferred.
 
 **Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/shared/terminal-protocol.test.ts`.
 
