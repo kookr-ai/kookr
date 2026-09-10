@@ -1,6 +1,8 @@
 import React, { useEffect, useRef } from 'react';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { open as openOnboardingTour } from '../store/onboarding-store.js';
+import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
+import { GETTING_STARTED_GUIDE_URL } from './OverviewEmptyState.js';
 import {
   commandPaletteHintKeys,
   detectShortcutPlatform,
@@ -105,6 +107,30 @@ export function ShortcutsHelp({ bindings, onClose, onShareView }: Props) {
             >
               Take the product tour <span aria-hidden="true">{'->'}</span>
             </button>
+            <a
+              className="shortcuts-tour-cta"
+              style={{ textDecoration: 'none' }}
+              href={NARRATED_DEMO_YOUTUBE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="shortcuts-demo-link"
+            >
+              Watch the 2-minute demo
+              <span className="sr-only"> (opens in a new tab)</span>
+              <span aria-hidden="true"> {'->'}</span>
+            </a>
+            <a
+              className="shortcuts-tour-cta"
+              style={{ textDecoration: 'none' }}
+              href={GETTING_STARTED_GUIDE_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              data-testid="shortcuts-getting-started-link"
+            >
+              Getting Started
+              <span className="sr-only"> (opens in a new tab)</span>
+              <span aria-hidden="true"> {'->'}</span>
+            </a>
             {onShareView && (
               <button
                 type="button"
