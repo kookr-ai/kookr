@@ -56,7 +56,7 @@ export type HelperLlmUseCaseProviderDiagnostics = HelperLlmDiagnosticsCounters &
   model: string;
 };
 
-/** Provider/model currently skipped by FallbackLlmClient after an auth or HTTP 410 Gone failure. */
+/** Provider/model currently skipped by FallbackLlmClient after an auth, HTTP 402 Payment Required, or HTTP 410 Gone failure. */
 export interface HelperLlmPausedProvider {
   provider: string;
   model: string;
@@ -103,7 +103,7 @@ export interface HelperLlmDiagnosticsSnapshot {
   byUseCase: HelperLlmUseCaseDiagnostics[];
   byProvider: HelperLlmProviderDiagnostics[];
   byUseCaseProvider: HelperLlmUseCaseProviderDiagnostics[];
-  /** Providers currently in the auth / HTTP 410 Gone cool-down window. */
+  /** Providers currently in the auth / HTTP 402 Payment Required / HTTP 410 Gone cool-down window. */
   pausedProviders: HelperLlmPausedProvider[];
   /**
    * Lifetime count of provider network attempts refused because the process-wide

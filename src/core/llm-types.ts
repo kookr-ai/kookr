@@ -98,9 +98,15 @@ export function isLlmProviderFailureCategory(value: unknown): value is LlmProvid
 }
 
 export function classifyLlmProviderHttpStatus(status: number): LlmProviderFailureCategory {
+  // 402 Payment Required: the provider has run out of credit. Like 410 below,
+  // this is durable (unlike a 429 rate-limit), so it joins the auth cooldown
+  // class — the provider is parked for the cool-down instead of re-hit on every
+  // helper call while it stays out of credit (issue #3109). The health surface
+  // reports it under the `auth` category; credit-exhaustion is folded into
+  // `auth` rather than given a distinct category (see FallbackLlmClient).
   // 410 Gone: the provider removed the model. Same cooldown class as auth so a
   // dead namer is not re-hit on every spawn (issue #2634).
-  if (status === 401 || status === 403 || status === 410) return 'auth';
+  if (status === 401 || status === 402 || status === 403 || status === 410) return 'auth';
   if (status >= 500 && status <= 599) return 'server_5xx';
   return 'other';
 }

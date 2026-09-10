@@ -219,7 +219,7 @@ export async function generateTaskName(
       if ((err as { name?: string } | null)?.name === 'AbortError') throw err;
       lastFailure = `error (mode=${mode}): ${err instanceof Error ? err.message : String(err)}`;
       // A permanent/cooldown-class provider failure (the 'auth' category, which
-      // covers 401/403/410 Gone) fails identically for every mode: they share
+      // covers 401/402/403/410 Gone) fails identically for every mode: they share
       // one client, so a dead or deprecated provider will reject the remaining
       // modes the same way. Stop after the first — like a returned circuit_open
       // — instead of paying two more dead round-trips per spawn (issue #2960).

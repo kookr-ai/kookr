@@ -348,11 +348,15 @@ describe('classifyLlmProviderFailure', () => {
 });
 
 describe('classifyLlmProviderHttpStatus', () => {
-  test('maps 401/403/410 to the auth cooldown class and leaves 404/429 as other', () => {
+  test('maps 401/402/403/410 to the auth cooldown class and leaves 404/429 as other', () => {
     expect(classifyLlmProviderHttpStatus(401)).toBe('auth');
+    // 402 Payment Required (credit exhaustion) is durable — folded into the
+    // auth cooldown class so a broke provider is parked, not re-hit (issue #3109).
+    expect(classifyLlmProviderHttpStatus(402)).toBe('auth');
     expect(classifyLlmProviderHttpStatus(403)).toBe('auth');
     expect(classifyLlmProviderHttpStatus(410)).toBe('auth');
     expect(classifyLlmProviderHttpStatus(404)).toBe('other');
+    // 429 stays transient (bounded by the 429-storm attempt budget), not parked.
     expect(classifyLlmProviderHttpStatus(429)).toBe('other');
     expect(classifyLlmProviderHttpStatus(400)).toBe('other');
     expect(classifyLlmProviderHttpStatus(500)).toBe('server_5xx');
@@ -415,6 +419,49 @@ describe('FallbackLlmClient auth cool-down', () => {
         skipCount: 1,
         lastMessage: 'Baseten request failed: 410 Gone - model removed',
       }),
+    ]);
+    warn.mockRestore();
+  });
+
+  test('after one HTTP 402 Payment Required subsequent complete() calls skip that provider for the cool-down', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const brokeErr = Object.assign(
+      new Error('openrouter request failed: 402 Payment Required - insufficient credits'),
+      { status: 402 },
+    );
+    const a = client('openrouter', async () => { throw brokeErr; });
+    const b = client('gemini', async () => 'from-gemini');
+    const fb = new FallbackLlmClient([a, b]);
+
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'hi' })).resolves.toBe('from-gemini');
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pausing until'));
+
+    // Second call must skip the credit-exhausted provider for the cool-down.
+    await expect(fb.complete({ maxTokens: 10, userMessage: 'again' })).resolves.toBe('from-gemini');
+    expect(a.complete).toHaveBeenCalledOnce();
+    expect(b.complete).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('skipped category=auth'));
+
+    expect(getHelperLlmDiagnosticsSnapshot().pausedProviders).toEqual([
+      expect.objectContaining({
+        provider: 'openrouter',
+        model: 'openrouter-model',
+        reason: 'auth',
+        skipCount: 1,
+        lastMessage: 'openrouter request failed: 402 Payment Required - insufficient credits',
+      }),
+    ]);
+    // The parked 402 provider surfaces in the secret-free health snapshot; the
+    // credit-exhaustion category is folded into `auth` (issue #3109).
+    expect(getHelperLlmHealthSnapshot().paused).toEqual([
+      {
+        provider: 'openrouter',
+        model: 'openrouter-model',
+        category: 'auth',
+        pausedUntil: '2026-01-01T00:01:00.000Z',
+      },
     ]);
     warn.mockRestore();
   });
