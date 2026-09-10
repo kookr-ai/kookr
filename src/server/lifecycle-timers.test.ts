@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,8 +28,10 @@ import {
   RELAY_ORPHAN_SWEEP_STARTUP_DELAY_MS,
   HOST_STALE_DTACH_REAP_STARTUP_DELAY_MS,
   HOURLY_SAFETY_NET_STARTUP_DELAY_MS,
+  runServerLogRotationTick,
   type TimerDeps,
 } from './lifecycle-timers.js';
+import { ServerLogRotationHealth } from './server-log-rotation.js';
 import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import {
   AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
@@ -2284,6 +2286,47 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     const callsAfterClear = run.mock.calls.length;
     await vi.advanceTimersByTimeAsync(3_000);
     expect(run.mock.calls.length).toBe(callsAfterClear);
+  });
+
+  test('runServerLogRotationTick records the tick result onto health (issue #3113)', () => {
+    // A missing live log is the cheapest deterministic non-error result: the
+    // routine returns skippedReason 'missing' with no error, which health retains.
+    const health = new ServerLogRotationHealth();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    runServerLogRotationTick({
+      logPath: '/definitely/missing/server.log',
+      maxBytes: 1024,
+      generations: 3,
+      intervalMs: 1_000,
+      health,
+    });
+    const snap = health.getHealthSnapshot();
+    expect(snap.lastRotationAt).not.toBeNull();
+    expect(snap.lastSkippedReason).toBe('missing');
+    expect(snap.lastRotationError).toBeNull();
+  });
+
+  test('runServerLogRotationTick records a real stat failure onto health as an error (issue #3113)', async () => {
+    // Drive the error branch end-to-end through the production wiring
+    // (`config.health?.record(result)`), not a hand-built result: place the log
+    // path under a regular file so statSync throws ENOTDIR (a non-ENOENT error),
+    // which the routine reports as skippedReason 'error' with a message.
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-rotation-health-'));
+    const blocker = join(dir, 'blocker');
+    await writeFile(blocker, 'not a directory');
+    const health = new ServerLogRotationHealth();
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    runServerLogRotationTick({
+      logPath: join(blocker, 'server.log'),
+      maxBytes: 1024,
+      generations: 3,
+      intervalMs: 1_000,
+      health,
+    });
+    const snap = health.getHealthSnapshot();
+    expect(snap.lastSkippedReason).toBe('error');
+    expect(snap.lastRotationError).toBeTruthy();
+    expect(snap.lastRotationAt).not.toBeNull();
   });
 
   test('does not schedule server.log rotation when disabled (issue #1991)', () => {

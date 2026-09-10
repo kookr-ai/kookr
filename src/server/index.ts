@@ -146,7 +146,7 @@ import {
   resolveMaintenancePruneIntervalHours,
   type PayloadDietStats,
 } from './maintenance-prune-schedule.js';
-import { resolveServerLogRotationEnv } from './server-log-rotation.js';
+import { resolveServerLogRotationEnv, ServerLogRotationHealth } from './server-log-rotation.js';
 import { resolveRelayOrphanSweepIntervalHours } from './relay-orphan-sweep.js';
 import {
   HostStaleDtachReaperService,
@@ -2634,6 +2634,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let emergencyMaintenancePrune: EmergencyMaintenancePruneController | undefined;
   let maintenancePruneHealth: MaintenancePruneHealth | undefined;
   const emergencyPruneThrottleMsResolved = resolveEmergencyPruneThrottleMs(process.env);
+  // Server-log rotation health (issue #3113): shared between the rotation timer
+  // (which records each tick's result) and createRoutes (which projects it onto
+  // /api/health). Constructed here so both close over the same live instance.
+  const serverLogRotationHealth = new ServerLogRotationHealth();
   // Delivery-bridge health (issue #3046): the SignalDeliveryService is
   // constructed after createRoutes, so /api/health reads its status() through a
   // holder the getter closes over. Absent (unconfigured) ⇒ health omits the block.
@@ -2773,6 +2777,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Delivery-bridge health (issue #3046). Undefined until the service is
     // constructed and never wired when the bridge is unconfigured.
     getSignalDeliveryStatus: () => signalDeliveryServiceHolder?.status(),
+    // Server-log rotation health (issue #3113): last tick timestamp, error
+    // message, and skip reason from the size-cap rotation timer. Cheap in-memory
+    // read — surfaces a persistently failing rotation (ENOSPC / EACCES /
+    // read-only FS) that would otherwise only console.error into the failing log.
+    getServerLogRotationHealth: () => serverLogRotationHealth.getHealthSnapshot(),
     getMaintenancePruneHealth: () => {
       // Combined schedule (#2345) + emergency (#2344) block. Schedule tracker is
       // always present; emergency may lag until post-takePredelete wiring fills in.
@@ -3592,6 +3601,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           maxBytes: resolved.maxBytes,
           generations: resolved.generations,
           intervalMs: resolved.intervalMs,
+          // Retain each tick's result so /api/health surfaces a persistently
+          // failing rotation (issue #3113).
+          health: serverLogRotationHealth,
         };
       })(),
       // Relay-orphan sweep (issue #1723 / #1885). ON by default (1h); set
