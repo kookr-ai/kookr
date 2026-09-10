@@ -50,7 +50,7 @@ Use the production-style instance for normal Kookr usage. It runs from the sibli
 
 Use `pnpm dev` only when you are actively developing Kookr and need hot reload on your modifications. Dev mode runs on `4801` with Vite on `5173`; because it restarts and can break while source changes are being applied, it is a poor supervisor for real agent work. The usual contributor setup is stable Kookr on `4800` plus a separate `pnpm dev` instance for live verification.
 
-Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules. Claude Code is only required when you want Kookr to launch Claude Code agents; install it with `curl -fsSL https://claude.ai/install.sh | bash`, then authenticate once with `claude /login` (or export `ANTHROPIC_API_KEY`) so launches can start — see [Claude Code Setup](https://code.claude.com/docs/en/setup).
+Prerequisites: `git`, Node.js `>=22`, `pnpm >=10`, and build tools for native modules — including `python3`, which `node-gyp`/`node-pty` need and which `build-essential` does **not** include. Claude Code is only required when you want Kookr to launch Claude Code agents; install it with `curl -fsSL https://claude.ai/install.sh | bash`, then authenticate once with `claude /login` (or export `ANTHROPIC_API_KEY`) so launches can start — see [Claude Code Setup](https://code.claude.com/docs/en/setup).
 
 **Works with Codex CLI** via a maintained fork that adds the Claude-compatible hooks Kookr depends on. See [Codex CLI Setup](docs/codex-cli-setup.md).
 
