@@ -151,6 +151,7 @@ describe('metrics routes', () => {
           pendingWriters: 2,
           maxPendingWriters: 7,
           writeTimeoutCount: 4,
+          attachFailedCount: 5,
           lastError: null,
           errorCount: 4,
         }),
@@ -165,6 +166,7 @@ describe('metrics routes', () => {
     expect(body).toContain('kookr_terminal_write_pending_writers 2');
     expect(body).toContain('kookr_terminal_write_max_pending_writers 7');
     expect(body).toContain('kookr_terminal_write_timeouts_total 4');
+    expect(body).toContain('kookr_terminal_attach_failures_total 5');
     expect(body).toContain('kookr_terminal_write_pending_writes 1');
     expect(body).toContain('kookr_terminal_write_max_pending_writes 3');
   });

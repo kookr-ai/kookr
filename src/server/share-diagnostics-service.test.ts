@@ -100,6 +100,7 @@ describe('ShareDiagnosticsService', () => {
       pendingWriters: 0,
       maxPendingWriters: 0,
       writeTimeoutCount: 0,
+      attachFailedCount: 0,
       lastError: { kind: 'dtach-unavailable', binary: 'dtach' },
       errorCount: 1,
     })).toBe(false);
@@ -109,6 +110,7 @@ describe('ShareDiagnosticsService', () => {
       pendingWriters: 1,
       maxPendingWriters: 1,
       writeTimeoutCount: 1,
+      attachFailedCount: 0,
       lastError: { kind: 'write-timed-out', id: 'session-1', durationMs: 2000 },
       errorCount: 1,
     })).toBe(true);

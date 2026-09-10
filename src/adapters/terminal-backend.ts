@@ -179,6 +179,14 @@ export interface BackendStats {
   /** Cumulative `WriteTimeoutError` / `write-timed-out` events. */
   writeTimeoutCount: number;
   /**
+   * Cumulative `session-attach-failed` events — a session that exhausted its
+   * bounded re-attach budget (3 attempts / 60s) and is now wedged detached, so
+   * every later input/signal write to it fails (issue #3114). Durable across the
+   * process lifetime and never reset by an unrelated session recovering, unlike
+   * the transient `lastError` projection which self-clears on any recovery.
+   */
+  attachFailedCount: number;
+  /**
    * The *current* fault, or `null` when the backend is healthy right now — the
    * authoritative current-status signal (the timestamps below are advisory). A
    * recovery signal for the same session clears a resolved transient fault

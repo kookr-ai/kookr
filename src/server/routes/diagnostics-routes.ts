@@ -339,6 +339,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
         pendingWriters: backendWriteStats.pendingWriters,
         maxPendingWriters: backendWriteStats.maxPendingWriters,
         writeTimeoutCount: backendWriteStats.writeTimeoutCount,
+        // Re-attach budget exhaustion (issue #3114): durable process-lifetime
+        // count of sessions wedged detached after exhausting their 3/60s
+        // re-attach budget. Unlike `lastError`, it is never reset by an
+        // unrelated session recovering.
+        attachFailedCount: backendWriteStats.attachFailedCount,
         lastError: backendWriteStats.lastError,
         errorCount: backendWriteStats.errorCount,
         // Recovery recency (issue #2810): `lastError` is cleared once a
@@ -369,6 +374,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       pendingWriters: backendWriteStats?.pendingWriters ?? 0,
       maxPendingWriters: backendWriteStats?.maxPendingWriters ?? 0,
       writeTimeoutCount: backendWriteStats?.writeTimeoutCount ?? 0,
+      attachFailedCount: backendWriteStats?.attachFailedCount ?? 0,
       pendingWrites: coordinatorWriteMetrics?.pendingWrites ?? 0,
       maxPendingWrites: coordinatorWriteMetrics?.maxPendingWrites ?? 0,
     };
