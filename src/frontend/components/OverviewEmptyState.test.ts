@@ -1218,4 +1218,92 @@ describe('OverviewEmptyState', () => {
       expect(container.querySelector('[data-testid="overview-runtime-mix"]')).toBeNull();
     });
   });
+
+  describe('live fleet spend (#3136)', () => {
+    const usage = (costUsd: number): AgentState['tokenUsage'] => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd,
+    });
+
+    test('sums costUsd across every live bucket and renders the formatted total', () => {
+      render({
+        waiting: [makeWaitingAgent('w-1', 'Fix the build', { tokenUsage: usage(1.25) })],
+        running: [
+          makeRunningAgent('r-1', 'Watch logs', { tokenUsage: usage(2.5) }),
+          makeRunningAgent('r-2', 'Ship it', { tokenUsage: usage(0.75) }),
+        ],
+        completed: [makeCompletedAgent('c-1', 'Ship the fix', { tokenUsage: usage(0.5) })],
+      });
+
+      const chip = container.querySelector('[data-testid="overview-fleet-cost"]');
+      expect(chip).not.toBeNull();
+      // 1.25 + 2.50 + 0.75 + 0.50 = $5.00, formatted by formatCost.
+      expect(chip?.textContent).toBe('$5.00 live spend');
+    });
+
+    test('is zero-safe: agents with missing or zero cost do not break the total', () => {
+      render({
+        waiting: [makeWaitingAgent('w-1', 'No usage at all')],
+        running: [
+          makeRunningAgent('r-1', 'Priced', { tokenUsage: usage(1.5) }),
+          makeRunningAgent('r-2', 'Subscription, zero cost', { tokenUsage: usage(0) }),
+        ],
+      });
+
+      const chip = container.querySelector('[data-testid="overview-fleet-cost"]');
+      expect(chip).not.toBeNull();
+      expect(chip?.textContent).toBe('$1.50 live spend');
+    });
+
+    test('hides the chip when the total spend is zero', () => {
+      render({
+        running: [
+          makeRunningAgent('r-1', 'Subscription', { tokenUsage: usage(0) }),
+          makeRunningAgent('r-2', 'No usage'),
+        ],
+      });
+
+      expect(container.querySelector('[data-testid="overview-fleet-cost"]')).toBeNull();
+    });
+
+    test('hides the chip when there are no tasks at all', () => {
+      render();
+      expect(container.querySelector('[data-testid="overview-fleet-cost"]')).toBeNull();
+    });
+
+    test('renders the spend chip even when no agent has a nameable runtime', () => {
+      // Untyped agents produce no runtime-mix entries, but the spend chip still
+      // shows because cost is independent of agentType.
+      render({
+        running: [makeRunningAgent('r-1', 'Untyped but metered', { tokenUsage: usage(0.5) })],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      expect(mix).not.toBeNull();
+      expect(mix?.textContent).toBe('$0.50 live spend');
+      expect(container.querySelector('[data-testid="overview-fleet-cost"]')?.textContent)
+        .toBe('$0.50 live spend');
+    });
+
+    test('renders the runtime mix and the spend chip together, separated once', () => {
+      // Both signals present at once: the cost chip trails the mix entries with
+      // exactly one separator, so it never duplicates or drops the ` · ` divider
+      // and always comes after the runtime tally.
+      render({
+        running: [
+          makeRunningAgent('r-1', 'Watch logs', { agentType: 'claude-code', tokenUsage: usage(2) }),
+          makeRunningAgent('r-2', 'Ship it', { agentType: 'claude-code', tokenUsage: usage(0.5) }),
+        ],
+      });
+
+      const mix = container.querySelector('[data-testid="overview-runtime-mix"]');
+      // Runtime tally first, then a single separator, then the summed spend chip.
+      expect(mix?.textContent).toBe('Claude 2 · $2.50 live spend');
+      expect(container.querySelector('[data-testid="overview-fleet-cost"]')?.textContent)
+        .toBe('$2.50 live spend');
+    });
+  });
 });
