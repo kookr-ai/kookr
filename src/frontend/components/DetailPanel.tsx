@@ -12,6 +12,7 @@ import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus
 import { computeTerminalVisible } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
+import { PathCopyButton } from './PathCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { getSettingsSnapshot, getTaskShares } from '../api/index.js';
@@ -315,6 +316,7 @@ function DetailMetadataMenu({
             <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
               {agentProjectLabel(agent)}
             </span>
+            <PathCopyButton cwd={agent.cwd} />
           </div>
         )}
         {agent.gitBranch && (
