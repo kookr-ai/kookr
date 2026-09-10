@@ -96,6 +96,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Terminal reply to a task's live agent (#3103). Positionals are the
+    // taskId|name and the reply text; keep in sync with src/cli/kookr-reply.ts.
+    name: 'reply',
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     name: 'signal',
     positionalValues: ['completion-ready'],
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
@@ -420,6 +426,7 @@ function renderBashCompletion(): string {
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
+  const replyFlags = flagsFor('reply');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -552,6 +559,9 @@ _kookr()
       ;;
     open)
       COMPREPLY=( $(compgen -W "${openFlags}" -- "\${cur}") )
+      ;;
+    reply)
+      COMPREPLY=( $(compgen -W "${replyFlags}" -- "\${cur}") )
       ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -754,6 +764,7 @@ function renderZshCompletion(): string {
   const stopFlags = flagsFor('stop');
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
+  const replyFlags = flagsFor('reply');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -842,6 +853,9 @@ _kookr()
       ;;
     open)
       compadd -- ${openFlags}
+      ;;
+    reply)
+      compadd -- ${replyFlags}
       ;;
     signal)
       if (( CURRENT == 3 )); then
