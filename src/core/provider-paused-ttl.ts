@@ -181,6 +181,80 @@ export interface ProviderPausedTtlSelection {
   outcomes: ProviderPausedTtlCandidateOutcome[];
 }
 
+/** Skip outcomes that mean the open-PR fail-safe held reclaim (issue #3115). */
+export const OPEN_PR_FAILSAFE_SKIP_OUTCOMES: readonly ProviderPausedTtlSkipReason[] = [
+  'skipped_open_pr_confirmed',
+  'skipped_open_pr_unknown',
+] as const;
+
+function isOpenPrFailsafeSkip(
+  outcome: 'selected' | ProviderPausedTtlSkipReason,
+): boolean {
+  return (OPEN_PR_FAILSAFE_SKIP_OUTCOMES as readonly string[]).includes(outcome);
+}
+
+/**
+ * Age of the current open-PR fail-safe holds (issue #3115).
+ *
+ * The open-PR fail-safe correctly refuses to reclaim a paused task while it
+ * still holds an open delivery PR (`skipped_open_pr_confirmed` /
+ * `skipped_open_pr_unknown`), even after the pause exceeds the hard/max TTL a
+ * normal pause would reclaim at. That skip is applied every tick regardless of
+ * `pausedForMs`, so a task pinned indefinitely by the fail-safe holds a slot
+ * silently. This is the pure, observability-only summary of *how long* those
+ * holds have run — it never changes the exemption; it only makes an over-TTL
+ * hold visible on `/api/health`.
+ */
+export interface OpenPrFailsafeHoldAgeSummary {
+  /**
+   * Maximum `pausedForMs` among open-PR fail-safe skip outcomes this pass, or
+   * `null` when no such hold exists. The oldest current hold age.
+   */
+  oldestHoldMs: number | null;
+  /** How many open-PR fail-safe skip outcomes carried a usable `pausedForMs`. */
+  holdCount: number;
+  /**
+   * How many of those holds have run past the hard TTL — i.e. slots a normal
+   * pause would have reclaimed by now but the open-PR exemption still pins.
+   */
+  overHardTtlCount: number;
+}
+
+/**
+ * Summarize open-PR fail-safe hold age from one selection pass (issue #3115).
+ *
+ * Reads only `skipped_open_pr_*` outcomes; every other outcome (selected,
+ * under-TTL, no-pause-start, awaiting-reset) is ignored. Outcomes without a
+ * finite non-negative `pausedForMs` do not contribute. `hardTtlMs` <= 0 (or
+ * non-finite) disables the over-TTL count but still yields `oldestHoldMs`.
+ */
+export function summarizeOpenPrFailsafeHoldAge(
+  outcomes: readonly ProviderPausedTtlCandidateOutcome[],
+  hardTtlMs: number,
+): OpenPrFailsafeHoldAgeSummary {
+  const hasHardTtl = Number.isFinite(hardTtlMs) && hardTtlMs > 0;
+  let oldestHoldMs: number | null = null;
+  let holdCount = 0;
+  let overHardTtlCount = 0;
+
+  for (const outcome of outcomes) {
+    if (!isOpenPrFailsafeSkip(outcome.outcome)) continue;
+    const paused = outcome.pausedForMs;
+    if (typeof paused !== 'number' || !Number.isFinite(paused) || paused < 0) {
+      continue;
+    }
+    holdCount += 1;
+    if (oldestHoldMs === null || paused > oldestHoldMs) {
+      oldestHoldMs = paused;
+    }
+    if (hasHardTtl && paused >= hardTtlMs) {
+      overHardTtlCount += 1;
+    }
+  }
+
+  return { oldestHoldMs, holdCount, overHardTtlCount };
+}
+
 export interface SelectExpiredProviderPausedTasksOpts {
   now?: Date;
   /** Hard TTL (default {@link DEFAULT_PROVIDER_PAUSED_HARD_TTL_MS}). */
