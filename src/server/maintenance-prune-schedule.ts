@@ -139,6 +139,19 @@ export interface MaintenancePruneHealthSnapshot extends MaintenancePruneSchedule
   lastEmergencyReclaimedBytes: number | null;
   /** Error message from the last failed *emergency* sweep, or null after success. */
   lastEmergencyPruneError: string | null;
+  /**
+   * Consecutive successful emergency sweeps that reclaimed 0 bytes while the
+   * data directory stayed disk-critical (issue #3110). An ineffective reclaim:
+   * the sweep ran and succeeded but freed nothing on a still-critical disk.
+   * Resets on an effective (>0) reclaim or when the disk leaves critical.
+   */
+  consecutiveEmergencyPrunesReclaimedZeroWhileCritical: number;
+  /**
+   * True when the most recent emergency outcome was an ineffective reclaim
+   * (issue #3110): reclaimed 0 bytes while still disk-critical. Mirrors
+   * `consecutiveEmergencyPrunesReclaimedZeroWhileCritical > 0`.
+   */
+  emergencyPruneReclaimedZeroWhileCritical: boolean;
   /** Configured min gap between emergency runs (ms). */
   throttleMs: number;
 }
@@ -153,6 +166,14 @@ export interface EmergencyMaintenancePruneHealthSnapshot {
   lastEmergencyReclaimedBytes: number | null;
   /** Error message from the last failed *emergency* sweep, or null after success. */
   lastEmergencyPruneError: string | null;
+  /**
+   * Consecutive successful emergency sweeps that reclaimed 0 bytes while the
+   * disk stayed critical (issue #3110). Resets on an effective (>0) reclaim or
+   * when the disk leaves critical.
+   */
+  consecutiveEmergencyPrunesReclaimedZeroWhileCritical: number;
+  /** True when the last emergency outcome was reclaimed-0-while-critical (#3110). */
+  emergencyPruneReclaimedZeroWhileCritical: boolean;
   /** Configured min gap between emergency runs (ms). */
   throttleMs: number;
 }
@@ -168,6 +189,10 @@ export function composeMaintenancePruneHealth(
     lastEmergencyPruneAt: emergency.lastEmergencyPruneAt,
     lastEmergencyReclaimedBytes: emergency.lastEmergencyReclaimedBytes,
     lastEmergencyPruneError: emergency.lastEmergencyPruneError,
+    consecutiveEmergencyPrunesReclaimedZeroWhileCritical:
+      emergency.consecutiveEmergencyPrunesReclaimedZeroWhileCritical,
+    emergencyPruneReclaimedZeroWhileCritical:
+      emergency.emergencyPruneReclaimedZeroWhileCritical,
     throttleMs: emergency.throttleMs,
   };
 }
@@ -187,6 +212,15 @@ export interface EmergencyMaintenancePruneControllerOptions {
   throttleMs?: number;
   /** Injectable clock (tests). */
   now?: () => number;
+  /**
+   * Reports whether the data directory is *still* disk-critical at the moment a
+   * sweep finishes (issue #3110). Wired from `index.ts` as
+   * `() => diskAdmissionTracker.isCritical()`. Used only to classify a 0-byte
+   * successful sweep as ineffective (reclaimed nothing while still critical) vs.
+   * a benign 0-byte sweep on a recovered disk. When omitted the controller
+   * cannot know the disk state and never flags an ineffective reclaim.
+   */
+  isDiskStillCritical?: () => boolean;
 }
 
 /**
@@ -209,6 +243,11 @@ export class EmergencyMaintenancePruneController {
   private lastReclaimedBytes: number | null = null;
   /** Message from the last failed emergency sweep, or null after success (issue #3078). */
   private lastEmergencyPruneError: string | null = null;
+  /**
+   * Consecutive successful sweeps that reclaimed 0 bytes while still disk-critical
+   * (issue #3110). Reset on an effective (>0) reclaim or when the disk recovers.
+   */
+  private consecutiveReclaimedZeroWhileCritical = 0;
   /** Epoch-ms of the last started run, or `null` before the first. */
   private lastRunStartedAtMs: number | null = null;
   private inFlight = false;
@@ -227,6 +266,10 @@ export class EmergencyMaintenancePruneController {
       lastEmergencyPruneAt: this.lastEmergencyPruneAt,
       lastEmergencyReclaimedBytes: this.lastReclaimedBytes,
       lastEmergencyPruneError: this.lastEmergencyPruneError,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical:
+        this.consecutiveReclaimedZeroWhileCritical,
+      emergencyPruneReclaimedZeroWhileCritical:
+        this.consecutiveReclaimedZeroWhileCritical > 0,
       throttleMs: this.throttleMs,
     };
   }
@@ -278,6 +321,7 @@ export class EmergencyMaintenancePruneController {
       const result = await runScheduledMaintenancePrune(emergencyConfig);
       if (result) {
         this.lastReclaimedBytes = result.reclaimedBytes;
+        this.recordReclaimEffectiveness(result.reclaimedBytes);
         return 'ran';
       }
       // Failed attempt (the runner caught the throw and recorded the message via
@@ -294,6 +338,48 @@ export class EmergencyMaintenancePruneController {
     } finally {
       this.inFlight = false;
     }
+  }
+
+  /**
+   * Reset the reclaimed-0-while-critical streak when the data directory leaves
+   * disk-critical (issue #3110). Wired from `index.ts` to the true→false disk
+   * admission edge, symmetric with the false→true edge that fires a sweep. This
+   * makes the ineffective-reclaim signal clear promptly on recovery instead of
+   * latching until the next critical edge happens to run a sweep — otherwise the
+   * boolean could read `true` while the disk is already healthy, contradicting
+   * the field contract and acceptance criterion.
+   */
+  noteDiskLeftCritical(): void {
+    this.consecutiveReclaimedZeroWhileCritical = 0;
+  }
+
+  /**
+   * Classify a *successful* sweep's reclaim (issue #3110). An emergency sweep
+   * only removes aged/terminal artifacts, so a genuinely full disk with none of
+   * those yields a 0-byte "success" that looks healthy while the disk stays
+   * critical — the exact operator-less disk-full failure this counter surfaces.
+   *
+   * - `reclaimedBytes > 0`: effective reclaim → reset the streak.
+   * - `reclaimedBytes === 0` and disk still critical → increment the streak.
+   * - `reclaimedBytes === 0` and disk not critical (or state unknown) → reset:
+   *   a benign 0-byte sweep on a recovered disk is not an ineffective reclaim.
+   */
+  private recordReclaimEffectiveness(reclaimedBytes: number): void {
+    if (reclaimedBytes > 0) {
+      this.consecutiveReclaimedZeroWhileCritical = 0;
+      return;
+    }
+    const stillCritical = this.options.isDiskStillCritical?.() ?? false;
+    if (!stillCritical) {
+      this.consecutiveReclaimedZeroWhileCritical = 0;
+      return;
+    }
+    this.consecutiveReclaimedZeroWhileCritical += 1;
+    console.warn(
+      `[maintenance-prune] emergency sweep reclaimed 0 byte(s) while data directory ` +
+        `is still disk-critical (consecutive=${this.consecutiveReclaimedZeroWhileCritical}); ` +
+        `no aged/terminal artifacts to remove — disk may be genuinely full`,
+    );
   }
 }
 

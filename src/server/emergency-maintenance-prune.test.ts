@@ -97,6 +97,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       lastEmergencyPruneAt: new Date(1_000_000).toISOString(),
       lastEmergencyReclaimedBytes: 8192,
       lastEmergencyPruneError: null,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 60 * 60 * 1000,
     });
     expect(logSpy.mock.calls.flat().join('\n')).toMatch(/emergency sweep triggered/);
@@ -227,6 +229,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       lastEmergencyPruneAt: new Date(42_000).toISOString(),
       lastEmergencyReclaimedBytes: null,
       lastEmergencyPruneError: 'disk exploded',
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 0,
     });
   });
@@ -265,6 +269,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       lastEmergencyPruneAt: null,
       lastEmergencyReclaimedBytes: null,
       lastEmergencyPruneError: null,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 3_600_000,
     });
   });
@@ -290,6 +296,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       lastEmergencyPruneAt: new Date(0).toISOString(),
       lastEmergencyReclaimedBytes: null,
       lastEmergencyPruneError: 'ENOSPC: no space left on device',
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 0,
     });
 
@@ -301,7 +309,170 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       lastEmergencyPruneAt: new Date(10).toISOString(),
       lastEmergencyReclaimedBytes: 512,
       lastEmergencyPruneError: null,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 0,
+    });
+  });
+
+  test('reclaimed-0-while-critical increments a consecutive counter and sets the boolean (issue #3110)', async () => {
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 0 }));
+    let nowMs = 0;
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      now: () => nowMs,
+      isDiskStillCritical: () => true,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // First ineffective sweep: succeeded, reclaimed 0, disk still critical.
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      emergencyPruneTriggeredTotal: 1,
+      lastEmergencyReclaimedBytes: 0,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
+      emergencyPruneReclaimedZeroWhileCritical: true,
+    });
+
+    // A second ineffective sweep advances the streak.
+    nowMs = 10;
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 2,
+      emergencyPruneReclaimedZeroWhileCritical: true,
+    });
+    expect(warnSpy.mock.calls.flat().join('\n')).toMatch(/reclaimed 0 byte\(s\) while/);
+  });
+
+  test('an effective (>0) reclaim resets the reclaimed-0-while-critical streak (issue #3110)', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResult({ reclaimedBytes: 0 }))
+      .mockResolvedValueOnce(fakeResult({ reclaimedBytes: 4096 }));
+    let nowMs = 0;
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      now: () => nowMs,
+      isDiskStillCritical: () => true,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot().consecutiveEmergencyPrunesReclaimedZeroWhileCritical).toBe(1);
+
+    nowMs = 10;
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
+    });
+  });
+
+  test('a 0-byte sweep whose disk recovered mid-flight resets the streak, not increments it (issue #3110)', async () => {
+    // Reachable case: a sweep fired on the critical edge, but by the time it
+    // finishes a fresh resource sample has flipped the disk out of critical.
+    // The 0-byte reclaim must then reset (benign), never count as ineffective.
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 0 }));
+    let nowMs = 0;
+    let stillCritical = true;
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      now: () => nowMs,
+      isDiskStillCritical: () => stillCritical,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    // Ineffective while critical → streak 1.
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot().consecutiveEmergencyPrunesReclaimedZeroWhileCritical).toBe(1);
+
+    // Disk recovered before this sweep completed; a benign 0-byte sweep resets.
+    stillCritical = false;
+    nowMs = 10;
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
+    });
+  });
+
+  test('noteDiskLeftCritical clears the streak when the disk recovers between edges (issue #3110)', async () => {
+    // Production path: the disk recovers with no sweep in flight. The true→false
+    // admission edge (wired in index.ts) must clear the latched signal so the
+    // boolean does not stay true while the disk is healthy.
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 0 }));
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      isDiskStillCritical: () => true,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
+      emergencyPruneReclaimedZeroWhileCritical: true,
+    });
+
+    // Disk leaves critical (no sweep runs) → the edge reset clears the signal.
+    controller.noteDiskLeftCritical();
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
+    });
+  });
+
+  test('a failed sweep leaves an existing reclaimed-0-while-critical streak unchanged (issue #3110)', async () => {
+    const run = vi
+      .fn()
+      .mockResolvedValueOnce(fakeResult({ reclaimedBytes: 0 }))
+      .mockRejectedValueOnce(new Error('disk exploded'));
+    let nowMs = 0;
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+      now: () => nowMs,
+      isDiskStillCritical: () => true,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Ineffective success → streak 1.
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot().consecutiveEmergencyPrunesReclaimedZeroWhileCritical).toBe(1);
+
+    // A subsequent *failed* sweep must not reset or increment the streak — the
+    // counter is a success-path classifier; failures go to lastEmergencyPruneError.
+    nowMs = 10;
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
+      emergencyPruneReclaimedZeroWhileCritical: true,
+      lastEmergencyPruneError: 'disk exploded',
+    });
+  });
+
+  test('without an isDiskStillCritical callback a 0-byte sweep never flags an ineffective reclaim (issue #3110)', async () => {
+    const run = vi.fn(async () => fakeResult({ reclaimedBytes: 0 }));
+    const controller = new EmergencyMaintenancePruneController({
+      pruneConfig: { dataDir: '/tmp/data', intervalHours: 0, run },
+      throttleMs: 0,
+    });
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(controller.getHealthSnapshot()).toMatchObject({
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
     });
   });
 });
@@ -322,11 +493,27 @@ describe('composeMaintenancePruneHealth (issue #3078)', () => {
       lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
       lastEmergencyReclaimedBytes: null,
       lastEmergencyPruneError: 'ENOSPC: no space left on device',
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 3_600_000,
     });
     expect(composed.lastEmergencyPruneError).toBe('ENOSPC: no space left on device');
     // The scheduled leg's own lastError is independent of the emergency error.
     expect(composed.lastError).toBeNull();
+  });
+
+  test('carries the reclaimed-0-while-critical counter and boolean onto the wire shape (issue #3110)', () => {
+    const composed = composeMaintenancePruneHealth(scheduleSnapshot, {
+      emergencyPruneTriggeredTotal: 4,
+      lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
+      lastEmergencyReclaimedBytes: 0,
+      lastEmergencyPruneError: null,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 3,
+      emergencyPruneReclaimedZeroWhileCritical: true,
+      throttleMs: 3_600_000,
+    });
+    expect(composed.consecutiveEmergencyPrunesReclaimedZeroWhileCritical).toBe(3);
+    expect(composed.emergencyPruneReclaimedZeroWhileCritical).toBe(true);
   });
 
   test('forwards a cleared (null) emergency error', () => {
@@ -335,6 +522,8 @@ describe('composeMaintenancePruneHealth (issue #3078)', () => {
       lastEmergencyPruneAt: '2026-08-12T00:00:00.000Z',
       lastEmergencyReclaimedBytes: 512,
       lastEmergencyPruneError: null,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+      emergencyPruneReclaimedZeroWhileCritical: false,
       throttleMs: 3_600_000,
     });
     expect(composed.lastEmergencyPruneError).toBeNull();
