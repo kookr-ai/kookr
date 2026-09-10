@@ -32,7 +32,7 @@ export class TerminalProtocolConnection {
   constructor(private readonly options: ConnectionOptions) {
     this.output = new TerminalOutputQueue({
       id: this.generation, generation: this.generation,
-      send: (data) => options.ws.send(data),
+      send: (data, flushed) => options.ws.send(data, flushed),
       close: (reason) => this.close(TERMINAL_CLOSE.lagged, reason),
     });
   }
@@ -117,7 +117,12 @@ export class TerminalProtocolConnection {
   close(code: number, reason: string): void {
     if (this.disposed) return;
     this.dispose();
-    try { this.options.ws.close(code, reason); } catch { /* Already disconnected. */ }
+    try {
+      this.options.ws.close(code, reason);
+      // A close handshake queues behind pending output. Do not retain a
+      // non-reading viewer's allocations until the socket's close timeout.
+      if (this.options.ws.bufferedAmount > 0) this.options.ws.terminate();
+    } catch { /* Already disconnected. */ }
   }
 
   dispose(): void {

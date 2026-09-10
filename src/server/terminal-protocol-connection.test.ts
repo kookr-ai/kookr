@@ -1,5 +1,6 @@
-import { EventEmitter } from 'node:events';
-import type { WebSocket } from 'ws';
+import { EventEmitter, once } from 'node:events';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TerminalProtocolConnection } from './terminal-protocol-connection.js';
 import { TERMINAL_CLOSE } from '../shared/terminal-protocol.js';
@@ -17,6 +18,48 @@ function setup(readOnly = false) {
 
 describe('NFR-TERM-001: terminal protocol connection', () => {
   afterEach(() => vi.useRealTimers());
+
+  test('bounds real socket memory when acknowledgements arrive before the viewer reads', async () => {
+    const server = new WebSocketServer({ port: 0, host: '127.0.0.1', perMessageDeflate: false });
+    await once(server, 'listening');
+    let connection: TerminalProtocolConnection | undefined;
+    let socket: WebSocket | undefined;
+    let attached = false;
+    server.on('connection', (ws) => {
+      socket = ws;
+      connection = new TerminalProtocolConnection({ ws, readOnly: true,
+        onAttach: () => { attached = true; connection!.markReady(); }, onControl: () => {} });
+      connection.start();
+    });
+    const address = server.address();
+    if (typeof address === 'string') throw new Error('Expected TCP address');
+    const viewer = new WebSocket(`ws://127.0.0.1:${address.port}`);
+    viewer.on('error', () => {});
+    try {
+      const [hello] = await once(viewer, 'message');
+      const { generation } = JSON.parse(hello.toString());
+      viewer.send(JSON.stringify({ type: 'attach', generation, attachId: 'slow-reader', cols: 80, rows: 24 }));
+      await expect.poll(() => attached).toBe(true);
+      viewer.pause();
+      let processed = 0;
+      let peakBuffered = 0;
+      for (let round = 0; round < 160 && socket!.readyState === WebSocket.OPEN; round++) {
+        connection!.output.enqueue(new Uint8Array(128 * 1024));
+        for (let i = 0; i < 20; i++) await nextTurn();
+        peakBuffered = Math.max(peakBuffered, socket!.bufferedAmount);
+        if (socket!.readyState !== WebSocket.OPEN) break;
+        processed += 128 * 1024;
+        viewer.send(JSON.stringify({ type: 'ack', generation, processed }));
+        for (let i = 0; i < 5; i++) await nextTurn();
+      }
+      // The allowance covers WebSocket headers, not another output payload.
+      expect(peakBuffered).toBeLessThanOrEqual(2 * 1024 * 1024 + 4096);
+      if (socket!.readyState !== WebSocket.OPEN) expect(connection!.output.reservedBytes).toBe(0);
+    } finally {
+      connection?.dispose(); viewer.terminate(); socket?.terminate();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
 
   test('sends an explicit hello and rejects input before attach', () => {
     const h = setup();

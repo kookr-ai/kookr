@@ -1,7 +1,6 @@
 import type { TerminalSourceRange } from '../shared/terminal-stream.js';
+import { TERMINAL_CREDIT_BYTES as CREDIT_BYTES, TERMINAL_FRAME_BYTES as FRAME_BYTES } from '../shared/terminal-protocol.js';
 
-const FRAME_BYTES = 8 * 1024;
-const CREDIT_BYTES = 128 * 1024;
 const VIEWER_BYTES = 2 * 1024 * 1024;
 const ACK_STALL_MS = 5000;
 type LagReason = 'viewer-budget' | 'fleet-budget' | 'control-budget' | 'ack-stalled' | 'send-failed';
@@ -15,9 +14,9 @@ export class TerminalOutputFleet {
   reserve(viewer: TerminalOutputQueue, bytes: number): boolean {
     while (bytes > this.limit - this.reservedBytes) {
       const largest = [...this.viewers].filter((candidate) => candidate !== viewer)
-        .sort((a, b) => b.outstandingBytes - a.outstandingBytes
+        .sort((a, b) => b.retainedPressure - a.retainedPressure
           || a.lastProgressAt - b.lastProgressAt || a.id.localeCompare(b.id))[0];
-      if (!largest || largest.outstandingBytes <= viewer.outstandingBytes) {
+      if (!largest || largest.retainedPressure <= viewer.retainedPressure) {
         viewer.retire('fleet-budget');
         return false;
       }
@@ -47,6 +46,7 @@ interface Segment {
   source?: TerminalSourceRange;
   /** Cumulative transport position once the entire segment has been sent. */
   sentEnd: number | null;
+  transmitting: number;
 }
 type Entry = Segment | { kind: 'control'; text: string };
 
@@ -54,7 +54,7 @@ interface OutputQueueOptions {
   id: string;
   generation: string;
   fleet?: TerminalOutputFleet;
-  send(data: string | Uint8Array): void;
+  send(data: string | Uint8Array, flushed: (error?: Error) => void): void;
   close(reason: LagReason): void;
   defer?: (task: () => void) => void;
 }
@@ -71,6 +71,7 @@ export class TerminalOutputQueue {
   private sent = 0;
   private acknowledged = 0;
   private controlCount = 0;
+  private transmittingControls = 0;
   private scheduled = false;
   private paused = false;
   private disposed = false;
@@ -80,6 +81,9 @@ export class TerminalOutputQueue {
     this.id = options.id;
     this.fleet = options.fleet ?? sharedFleet;
   }
+
+  /** Peer credit cannot hide bytes still owned by the local socket. */
+  get retainedPressure(): number { return Math.max(this.outstandingBytes, this.reservedBytes); }
 
   enqueue(bytes: Uint8Array, source?: TerminalSourceRange): boolean {
     if (this.disposed) return false;
@@ -104,7 +108,7 @@ export class TerminalOutputQueue {
         if (!this.fleet.reserve(this, FRAME_BYTES)) return false;
         this.reservedBytes += FRAME_BYTES;
         segment = {
-          kind: 'bytes', data: Buffer.allocUnsafe(FRAME_BYTES), length: 0, offset: 0, sentEnd: null,
+          kind: 'bytes', data: Buffer.allocUnsafe(FRAME_BYTES), length: 0, offset: 0, sentEnd: null, transmitting: 0,
           source: source ? {
             epoch: source.epoch, start: source.start + offset, end: source.start + offset,
             geometryRevision: source.geometryRevision, cols: source.cols, rows: source.rows,
@@ -126,7 +130,7 @@ export class TerminalOutputQueue {
   control(message: Record<string, unknown>): boolean {
     if (this.disposed) return false;
     const text = JSON.stringify(message);
-    if (Buffer.byteLength(text) > 4096 || this.controlCount >= 64) {
+    if (Buffer.byteLength(text) > 4096 || this.controlCount + this.transmittingControls >= 64) {
       this.retire('control-budget');
       return false;
     }
@@ -216,7 +220,9 @@ export class TerminalOutputQueue {
     // Snapshot insertion can reorder unsent segments, so allocation ownership
     // is a bounded set rather than a FIFO ordered by original admission time.
     for (const segment of this.held) {
-      if (segment.sentEnd !== null && segment.sentEnd <= this.acknowledged) this.releaseSegment(segment);
+      if (segment.transmitting === 0 && segment.sentEnd !== null && segment.sentEnd <= this.acknowledged) {
+        this.releaseSegment(segment);
+      }
     }
   }
 
@@ -251,28 +257,60 @@ export class TerminalOutputQueue {
     if (next.kind === 'control') {
       this.pending.shift();
       this.controlCount--;
-      this.options.send(next.text);
+      this.sendControl(next.text);
       return;
     }
     const count = Math.min(next.length - next.offset, CREDIT_BYTES - (this.sent - this.acknowledged));
     if (count <= 0) return;
     if (next.source) {
-      this.options.send(JSON.stringify({
+      if (!this.sendControl(JSON.stringify({
         type: 'source', ...next.source, generation: this.options.generation,
         start: next.source.start + next.offset, end: next.source.start + next.offset + count,
-      }));
+      }))) return;
     }
-    this.options.send(next.data.subarray(next.offset, next.offset + count));
+    const frame = next.data.subarray(next.offset, next.offset + count);
     this.sent += count;
     next.offset += count;
     if (next.offset === next.length) {
       next.sentEnd = this.sent;
       this.pending.shift();
     }
+    // Register all ownership before send: test transports can finish inline,
+    // while real sockets can finish after the peer has already returned credit.
+    next.transmitting++;
+    let completed = false;
+    this.options.send(frame, (error) => {
+      if (completed || this.disposed) return;
+      completed = true;
+      next.transmitting--;
+      if (error) this.retire('send-failed');
+      else this.releaseAcknowledged();
+    });
     this.armStallTimer(false);
   }
 
+  /** Source metadata and ordinary controls also consume local transport memory. */
+  private sendControl(text: string): boolean {
+    const bytes = Buffer.byteLength(text);
+    if (this.transmittingControls >= 64) { this.retire('control-budget'); return false; }
+    if (bytes > VIEWER_BYTES - this.reservedBytes) { this.retire('viewer-budget'); return false; }
+    if (!this.fleet.reserve(this, bytes)) return false;
+    this.reservedBytes += bytes;
+    this.transmittingControls++;
+    let completed = false;
+    this.options.send(text, (error) => {
+      if (completed || this.disposed) return;
+      completed = true;
+      this.transmittingControls--;
+      this.reservedBytes -= bytes;
+      this.fleet.release(this, bytes);
+      if (error) this.retire('send-failed');
+    });
+    return !this.disposed;
+  }
+
   private armStallTimer(progress: boolean): void {
+    if (this.disposed) return;
     if (progress && this.stallTimer !== null) {
       clearTimeout(this.stallTimer);
       this.stallTimer = null;

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TerminalOutputFleet, TerminalOutputQueue } from './terminal-output-queue.js';
 
-function setup(fleet = new TerminalOutputFleet(), id = 'test') {
+function setup(fleet = new TerminalOutputFleet(), id = 'test', flushImmediately = true) {
   const tasks: Array<() => void> = [];
-  const send = vi.fn();
+  const send = vi.fn((_data: string | Uint8Array, flushed?: (error?: Error) => void) => {
+    if (flushImmediately) flushed?.();
+  });
   const close = vi.fn();
   const queue = new TerminalOutputQueue({ id, generation: 'g', fleet, send, close, defer: (task) => tasks.push(task) });
   return { queue, send, close, turn: () => tasks.shift()?.(), drain: () => { while (tasks.length) tasks.shift()?.(); } };
@@ -11,6 +13,73 @@ function setup(fleet = new TerminalOutputFleet(), id = 'test') {
 
 describe('NFR-TERM-001: rendering-aware output credit', () => {
   afterEach(() => vi.useRealTimers());
+
+  test('peer ACK cannot release a segment still retained by the socket', () => {
+    const fleet = new TerminalOutputFleet();
+    const h = setup(fleet, 'forged-ack', false);
+    h.queue.enqueue(new Uint8Array(8192)); h.drain();
+    expect(h.queue.acknowledge('g', 8192)).toBe(true);
+    expect(fleet.reservedBytes).toBe(8192);
+    h.send.mock.calls[0][1]?.();
+    expect(fleet.reservedBytes).toBe(0);
+    h.queue.dispose();
+  });
+
+  test('fleet pressure counts ACKed output whose socket send has not completed', () => {
+    const fleet = new TerminalOutputFleet(24 * 1024);
+    const slow = setup(fleet, 'forged-ack', false);
+    const fast = setup(fleet, 'healthy');
+    slow.queue.enqueue(new Uint8Array(24 * 1024)); slow.drain();
+    slow.queue.acknowledge('g', 24 * 1024);
+    expect(fast.queue.enqueue(new Uint8Array(1))).toBe(true);
+    expect(slow.close).toHaveBeenCalledWith('fleet-budget');
+    for (const [, flushed] of slow.send.mock.calls) flushed?.();
+    expect(fleet.reservedBytes).toBe(8192);
+    fast.queue.dispose();
+  });
+
+  test('text controls retain a bounded transport reservation until send completion', () => {
+    const fleet = new TerminalOutputFleet();
+    const h = setup(fleet, 'control-flood', false);
+    for (let i = 0; i < 64; i++) {
+      expect(h.queue.control({ type: 'notice', text: 'x'.repeat(100) })).toBe(true);
+      h.drain();
+    }
+    expect(fleet.reservedBytes).toBeGreaterThan(0);
+    expect(h.queue.control({ type: 'notice' })).toBe(false);
+    expect(h.close).toHaveBeenCalledWith('control-budget');
+    for (const [, flushed] of h.send.mock.calls) flushed?.();
+    expect(fleet.reservedBytes).toBe(0);
+  });
+
+  test('holds a split segment until every transport fragment and its peer ACK complete', () => {
+    const fleet = new TerminalOutputFleet();
+    const h = setup(fleet, 'partial-credit', false);
+    h.queue.enqueue(new Uint8Array(128 * 1024 + 8192)); h.drain();
+    h.queue.acknowledge('g', 4096); h.drain();
+    h.queue.acknowledge('g', 128 * 1024 + 4096); h.drain();
+    h.queue.acknowledge('g', 128 * 1024 + 8192);
+    for (const [, flushed] of h.send.mock.calls.slice(0, 16)) flushed?.();
+    expect(fleet.reservedBytes).toBe(8192);
+    h.send.mock.calls[17][1]?.();
+    expect(fleet.reservedBytes).toBe(8192);
+    h.send.mock.calls[16][1]?.();
+    h.send.mock.calls[16][1]?.();
+    expect(fleet.reservedBytes).toBe(0);
+    h.queue.dispose();
+  });
+
+  test('a failed metadata send aborts the matching binary payload and leaves no stall timer', () => {
+    vi.useFakeTimers();
+    const h = setup();
+    h.send.mockImplementation((_data, flushed) => flushed?.(new Error('socket closed')));
+    h.queue.enqueue(new Uint8Array(10), { epoch: 'e', start: 0, end: 10, geometryRevision: 1, cols: 80, rows: 24 });
+    h.drain();
+    expect(h.send).toHaveBeenCalledOnce();
+    expect(typeof h.send.mock.calls[0][0]).toBe('string');
+    expect(h.close).toHaveBeenCalledWith('send-failed');
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   test('chunks seed and live data through the same window and ordered controls', () => {
     const h = setup();
