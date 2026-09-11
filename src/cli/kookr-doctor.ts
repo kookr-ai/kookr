@@ -407,10 +407,26 @@ const STATUS_LABEL: Record<DoctorCheckStatus, string> = {
 };
 
 /**
+ * Documented user dashboard URL when no server target is configured — the
+ * first-install default port (see docs/getting-started.md). Used only for the
+ * all-ok next-steps footer; a configured KOOKR_API_BASE_URL / KOOKR_PORT wins.
+ */
+export const DEFAULT_DASHBOARD_URL = 'http://127.0.0.1:4800';
+
+/**
  * Render a doctor report as an aligned text table (mirrors scripts/doctor.sh
  * print_row: fixed-width label + status + summary, then recommended actions).
+ * When every check is `ok`, appends a next-steps footer (issue #3143) with the
+ * documented user start command and the dashboard URL so a green first run does
+ * not dead-end without a next step. `dashboardUrl` defaults to the documented
+ * first-install port when omitted; pass `null` when the port is unknowable
+ * (`KOOKR_PORT=auto`) so the footer points at the URL the server prints instead
+ * of asserting a wrong port.
  */
-export function formatDoctorReport(report: DoctorJsonReport): string {
+export function formatDoctorReport(
+  report: DoctorJsonReport,
+  options: { dashboardUrl?: string | null } = {},
+): string {
   const lines: string[] = [
     'Kookr doctor — launch preflight',
     '',
@@ -439,6 +455,22 @@ export function formatDoctorReport(report: DoctorJsonReport): string {
 
   lines.push('');
   lines.push(`Overall: ${STATUS_LABEL[report.status]}${report.ok ? '' : ' (required checks failed)'}`);
+
+  // Every check is ok (no warn/fail) — so a green first run does not dead-end
+  // without a next step. Uses the documented user start path, never the operator
+  // `pnpm prod:*` scripts (issue #3143).
+  if (report.status === 'ok') {
+    // undefined ⇒ documented default (direct callers/tests); null ⇒ auto, where
+    // the port is unknowable so we point at what the server prints on startup.
+    const dashboardUrl =
+      options.dashboardUrl === undefined ? DEFAULT_DASHBOARD_URL : options.dashboardUrl;
+    lines.push('');
+    lines.push(
+      dashboardUrl
+        ? `✓ All checks passed. Start Kookr with \`kookr\` (or \`npx kookr\`), then open ${dashboardUrl}`
+        : '✓ All checks passed. Start Kookr with `kookr` (or `npx kookr`), then open the dashboard on the port it prints at startup (KOOKR_PORT=auto selects a free one).',
+    );
+  }
   return lines.join('\n');
 }
 
@@ -461,7 +493,8 @@ export async function runDoctorCli(argv = process.argv.slice(2), deps: RunDoctor
   if (args.json) {
     out.log(JSON.stringify(report, null, 2));
   } else {
-    out.log(formatDoctorReport(report));
+    const dashboardUrl = resolveDashboardUrl(deps.env ?? process.env);
+    out.log(formatDoctorReport(report, { dashboardUrl }));
   }
   // Default: only required FAIL checks fail the process (advisory WARNs allowed).
   // --strict: any advisory WARN also exits non-zero so unattended gates can act.
@@ -2447,6 +2480,25 @@ function resolveOptionalHealthBase(env: NodeJS.ProcessEnv): string | null {
   const port = Number(portRaw);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
   return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * Dashboard URL for the all-ok doctor footer (issue #3143). Reuses the same
+ * server-target resolution as the health probes (`KOOKR_API_BASE_URL`, then a
+ * numeric `KOOKR_PORT`); falls back to the documented first-install port when
+ * no target is configured. Returns `null` for `KOOKR_PORT=auto`, where the
+ * server scans for a free port at startup (4800–4810, see resolve-listen-port)
+ * and doctor cannot know which one it will pick — the footer then points the
+ * user at the URL the server prints rather than asserting a wrong port.
+ */
+function resolveDashboardUrl(env: NodeJS.ProcessEnv): string | null {
+  const base = resolveOptionalHealthBase(env);
+  if (base) return base;
+  // resolveOptionalHealthBase returns null for an unset port, `auto`, and an
+  // invalid port alike. `auto` is genuinely unknowable here; the rest resolve to
+  // the documented default (an unset KOOKR_PORT makes the server use 4800).
+  if (env.KOOKR_PORT?.trim().toLowerCase() === 'auto') return null;
+  return DEFAULT_DASHBOARD_URL;
 }
 
 async function checkKbLaunchDependency(run: CommandRunner): Promise<DoctorCheck[]> {
