@@ -17,13 +17,20 @@ const cursorSchema = z.strictObject({ epoch: identity, position, geometryRevisio
 const rangeShape = { epoch: identity, start: position, end: position, geometryRevision: position, ...dimensions };
 export type TerminalResumeCursor = z.infer<typeof cursorSchema>;
 
+/** Avoid repeated regex groups: valid multi-megabyte pastes can exhaust their stack. */
+function isBase64(value: string): boolean {
+  if (value.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(value)) return false;
+  const padding = value.indexOf('=');
+  return padding === -1 || (padding >= value.length - 2 && /^={1,2}$/.test(value.slice(padding)));
+}
+
 const clientSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('attach'), generation: identity, ...dimensions,
     attachId: identity, cursor: cursorSchema.optional(), acceptGap: z.boolean().optional() }),
   z.strictObject({ type: z.literal('ack'), generation: identity, processed: position }),
   z.strictObject({ type: z.literal('input'), generation: identity, text: z.string() }),
   z.strictObject({ type: z.literal('input-bytes'), generation: identity,
-    base64: z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/) }),
+    base64: z.string().refine(isBase64) }),
   z.strictObject({ type: z.literal('paste'), generation: identity, text: z.string() }),
   z.strictObject({ type: z.literal('resize'), generation: identity, ...dimensions }),
   z.strictObject({ type: z.literal('request-history'), generation: identity }),
