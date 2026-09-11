@@ -616,12 +616,21 @@ export interface ParkedLaunchDependencyStatusRow {
 
 /**
  * Slim projection of `GET /api/health.launchDependencies` for the status-bar
- * warn pill (issue #2364). The pill is elevated when dependency degradation
- * or parked launch work is present; the poll may still store a zeroed
- * projection when the block is present.
+ * warn pill (issue #2364). The pill is elevated when confirmed dependency
+ * degradation or parked launch work is present; the poll may still store a
+ * zeroed projection when the block is present.
+ *
+ * `totalDegradedTasks` conflates confirmed degradation with unknown
+ * (probe-unavailable) findings. When the server exposes the split (issue
+ * #3153), `totalConfirmedDegradedTasks` / `totalUnknownTasks` carry it — each
+ * is omitted by the builder when its count is zero, so an older server (or a
+ * fleet with no findings) leaves both undefined and the pill falls back to the
+ * conflated total.
  */
 export interface LaunchDependenciesStatus {
   totalDegradedTasks: number;
+  totalConfirmedDegradedTasks?: number;
+  totalUnknownTasks?: number;
   totalFindings?: number;
   dependencies: LaunchDependencyStatusRow[];
   parkedTaskCount?: number;

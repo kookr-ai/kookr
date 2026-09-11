@@ -29,6 +29,12 @@ function parseOptionalString(value: unknown): string | null | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+/** A finite, non-negative count floored to an int, or undefined when absent/malformed. */
+function parseOptionalNonNegInt(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return undefined;
+  return Math.floor(value);
+}
+
 function parseProdSmokeTick(value: unknown): ProdSmokeTickStatus | null {
   const rec = asRecord(value);
   if (!rec) return null;
@@ -95,7 +101,11 @@ export function parseCapacityResidual(value: unknown): CapacityResidualStatus | 
 /**
  * Parse `GET /api/health.launchDependencies` for the status-bar deps pill
  * (issue #2364). Returns null when the block is missing or totalDegradedTasks
- * is non-numeric. Slim rows drop affectedTaskIds.
+ * is non-numeric. Slim rows drop affectedTaskIds. When present, the
+ * confirmed/unknown split (`totalConfirmedDegradedTasks` / `totalUnknownTasks`,
+ * issue #3153) is carried through so the pill can avoid a degradation alarm for
+ * unknown-only (probe-unavailable) findings; both stay undefined for an older
+ * server that omits them.
  */
 export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatus | null {
   const rec = asRecord(value);
@@ -134,6 +144,13 @@ export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatu
       ? Math.floor(findingsRaw)
       : undefined;
 
+  // The builder emits the confirmed/unknown split only when the count is
+  // non-zero (issue #3153). Keep each optional and undefined otherwise so the
+  // pill can tell an unknown-only fleet from an older server that omits the
+  // split entirely.
+  const totalConfirmedDegradedTasks = parseOptionalNonNegInt(rec.totalConfirmedDegradedTasks);
+  const totalUnknownTasks = parseOptionalNonNegInt(rec.totalUnknownTasks);
+
   const parked = asRecord(rec.parkedTasks);
   const parkedTotalRaw = parked?.total;
   const parkedTaskCount =
@@ -158,6 +175,8 @@ export function parseLaunchDependencies(value: unknown): LaunchDependenciesStatu
 
   return {
     totalDegradedTasks: Math.floor(totalRaw),
+    ...(totalConfirmedDegradedTasks !== undefined ? { totalConfirmedDegradedTasks } : {}),
+    ...(totalUnknownTasks !== undefined ? { totalUnknownTasks } : {}),
     ...(totalFindings !== undefined ? { totalFindings } : {}),
     dependencies,
     ...(parkedTaskCount !== undefined ? { parkedTaskCount } : {}),
