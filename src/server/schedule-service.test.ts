@@ -9,6 +9,7 @@ import {
   buildScheduleFailureAlert,
   deriveLedgerEnrichment,
   describeScheduleTerminalReason,
+  isExecutionReceiptNotFoundError,
   isGenuineExecutionFailure,
   nextConsecutiveFailures,
   shouldAutoPauseForConsecutiveFailures,
@@ -3058,6 +3059,93 @@ describe('ScheduleService archive (issue #2981)', () => {
     await withService(async (service) => {
       await expect(service.archive('missing')).rejects.toThrow(/not found/i);
       await expect(service.unarchive('missing')).rejects.toThrow(/not found/i);
+    });
+  });
+});
+
+// Receipt/launch boundary durability (issue #3146). A task the launcher already
+// created is LIVE; its schedule receipt must survive even when the reserved
+// receipt rotated out of `currentExecution` before it could be recorded.
+describe('ScheduleService accepted-receipt durability (issue #3146)', () => {
+  it('rebinds a live task to a synthesized receipt when the reserved one rotated', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Sentinel',
+        cron: '4,19,34,49 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Reserve the fire that will "launch", then rotate the current execution
+      // out from under it (a second reserve — restart refresh / legacy race).
+      const reserved = await service.reserveExecution(schedule, 'cron', '2026-09-10T20:04:00.000Z');
+      const rotated = await service.reserveExecution(store.get(schedule.id)!, 'manual');
+      expect(store.get(schedule.id)!.currentExecution?.id).toBe(rotated.id);
+
+      // Without the fallback context the write refuses (the guarded #3075 error).
+      await expect(
+        service.markExecutionAccepted(schedule.id, reserved.id, 'task-live', false),
+      ).rejects.toSatisfy(isExecutionReceiptNotFoundError);
+
+      // With the launched task's trigger/decision as fallback, the receipt is
+      // synthesized so the LIVE task is never orphaned from the ledger.
+      await service.markExecutionAccepted(
+        schedule.id,
+        reserved.id,
+        'task-live',
+        false,
+        {},
+        { trigger: 'cron', decision: 'cron_due', scheduledFor: '2026-09-10T20:04:00.000Z' },
+      );
+
+      const after = store.get(schedule.id)!;
+      expect(after.latestExecution?.taskId).toBe('task-live');
+      expect(after.latestExecution?.outcome).toBe('running');
+      expect(after.lastRunTaskId).toBe('task-live');
+      const running = after.executionLedger.filter((e) => e.outcome === 'running');
+      expect(running).toHaveLength(1);
+      expect(running[0]).toMatchObject({ taskId: 'task-live', trigger: 'cron', scheduledFor: '2026-09-10T20:04:00.000Z' });
+    });
+  });
+
+  it('records an overlap loser as skipped_active without disturbing the winner receipt', async () => {
+    await withService(async (service, store) => {
+      const schedule = store.create({
+        name: 'Sentinel',
+        cron: '4,19,34,49 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Winner reserves + accepts a running task.
+      const winner = await service.reserveExecution(schedule, 'cron', '2026-09-10T20:04:00.000Z');
+      await service.markExecutionAccepted(schedule.id, winner.id, 'task-winner', false);
+      const currentBefore = store.get(schedule.id)!.currentExecution;
+
+      // A concurrent manual loser records skipped_active referencing the winner.
+      await service.recordOverlapSkipped(schedule.id, {
+        trigger: 'manual',
+        decision: 'manual_run',
+        blockingTaskId: 'task-winner',
+        blockingReceiptId: winner.id,
+        blockingExecutionToken: winner.executionToken,
+        message: 'Previous run still active',
+      });
+
+      const after = store.get(schedule.id)!;
+      // The winner's currentExecution + running latestExecution are untouched.
+      expect(after.currentExecution).toEqual(currentBefore);
+      expect(after.latestExecution?.taskId).toBe('task-winner');
+      expect(after.latestExecution?.outcome).toBe('running');
+      // The loser is durably recorded and references the winning execution.
+      const skip = after.executionLedger.find((e) => e.outcome === 'skipped_active');
+      expect(skip).toMatchObject({
+        outcome: 'skipped_active',
+        reasonCode: 'previous_run_active',
+        trigger: 'manual',
+        blockingTaskId: 'task-winner',
+        receiptId: winner.id,
+      });
+      // An overlap skip is a healthy deferral, never a failure.
+      expect(after.consecutiveFailures ?? 0).toBe(0);
     });
   });
 });

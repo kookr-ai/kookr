@@ -10,6 +10,7 @@ import {
   type ScheduleExecutionLedgerEntry,
   type ScheduleExecutionOutcome,
   type ScheduleExecutionReasonCode,
+  type ScheduleExecutionReceipt,
   type SchedulePlaybookCheckoutSource,
   type ScheduleListResponse,
   type ScheduleResponse,
@@ -1247,9 +1248,42 @@ export class ScheduleService {
       dependencyParked?: boolean;
       playbookSource?: SchedulePlaybookCheckoutSource;
     } = {},
+    // issue #3146: context to synthesize a receipt when the reserved one
+    // rotated out of `currentExecution` between reservation and this write
+    // (a restart-driven refresh, or a legacy pre-serialization race). The task
+    // is already LIVE, so it must still get a durable schedule receipt rather
+    // than be orphaned; without this the accept write throws `receipt not_found`
+    // and the launched task is left with no ledger link at all.
+    fallback?: {
+      trigger: 'cron' | 'manual';
+      decision: ScheduleExecutionDecision;
+      scheduledFor?: string;
+    },
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
-    const receipt = this.requireReceipt(schedule, receiptId);
+    let receipt: ScheduleExecutionReceipt;
+    try {
+      receipt = this.requireReceipt(schedule, receiptId);
+    } catch (err) {
+      if (!fallback || !isExecutionReceiptNotFoundError(err)) throw err;
+      // Rebind the live task to a synthesized receipt (issue #3146). It carries
+      // the launched task's real trigger/decision so the ledger row and blocking
+      // pointer are accurate; `currentExecution` is re-pointed at this task.
+      console.warn(
+        '[schedule] accepted-receipt rebind — reserved execution receipt rotated before the launched task could be recorded; synthesizing a durable receipt so the live task is not orphaned (issue #3146)',
+        { scheduleId, receiptId, taskId },
+      );
+      receipt = {
+        id: receiptId,
+        scheduleId,
+        executionToken: receiptId,
+        trigger: fallback.trigger,
+        decision: fallback.decision,
+        ...(fallback.scheduledFor ? { scheduledFor: fallback.scheduledFor } : {}),
+        evaluatedAt: new Date().toISOString(),
+        status: 'reserved',
+      };
+    }
     const triggeredAt = new Date().toISOString();
     const outcome = details.dependencyParked
       ? 'parked_dependency'
@@ -1294,6 +1328,57 @@ export class ScheduleService {
         status: 'accepted',
         ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
       },
+    });
+    await this.store.persist();
+    this.broadcastSchedules();
+  }
+
+  /**
+   * Record a concurrent-overlap loser (issue #3146): a manual and a cron fire
+   * (or two fires from any mix of paths) raced for the same schedule, one was
+   * admitted and launched, and this one lost the synchronous admission gate.
+   *
+   * Deliberately does NOT reserve or touch `currentExecution` / `latestExecution`
+   * — the winning fire owns those and is still in flight, so a reserve here would
+   * rotate the winner's receipt out from under it (the exact corruption this
+   * serialization closes). It appends ONE durable `skipped_active` ledger row,
+   * keyed by a fresh id so it never collides with the winner's row, that
+   * references the winning execution (its receipt + blocking task) so the loser
+   * is auditable without masking the admitted run. No counter/status side effects
+   * (an overlap skip is a healthy deferral, never a failure — issue #2458).
+   */
+  async recordOverlapSkipped(
+    scheduleId: string,
+    details: {
+      trigger: 'cron' | 'manual';
+      decision: ScheduleExecutionDecision;
+      scheduledFor?: string;
+      blockingTaskId?: string;
+      blockingReceiptId?: string;
+      blockingExecutionToken?: string;
+      message: string;
+    },
+  ): Promise<void> {
+    const schedule = this.requireSchedule(scheduleId);
+    const evaluatedAt = new Date().toISOString();
+    this.store.replace({
+      ...schedule,
+      executionLedger: upsertLedgerEntry(schedule.executionLedger, {
+        id: randomUUID(),
+        scheduleId: schedule.id,
+        ...(details.blockingReceiptId ? { receiptId: details.blockingReceiptId } : {}),
+        ...(details.blockingExecutionToken ? { executionToken: details.blockingExecutionToken } : {}),
+        trigger: details.trigger,
+        decision: details.decision,
+        ...(details.scheduledFor ? { scheduledFor: details.scheduledFor } : {}),
+        evaluatedAt,
+        completedAt: evaluatedAt,
+        outcome: 'skipped_active',
+        reasonCode: 'previous_run_active',
+        ...(details.blockingTaskId ? { blockingTaskId: details.blockingTaskId } : {}),
+        message: details.message,
+      }),
+      updatedAt: evaluatedAt,
     });
     await this.store.persist();
     this.broadcastSchedules();

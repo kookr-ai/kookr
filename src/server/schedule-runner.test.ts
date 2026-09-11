@@ -979,6 +979,298 @@ Do dependency-gated work.
     expect(after.operatorHold).toBeUndefined();
   });
 
+  // Barrier-controlled regression for the manual+cron overlap race (issue
+  // #3146). A manual `runNow` lands beside a cron fire that is already in
+  // flight (past the admission gate, blocked mid-launch with no accepted
+  // receipt yet). Before the fix both reserved and both launched a task for the
+  // same schedule; the loser's accept write then threw on the rotated receipt,
+  // leaving a LIVE task with no schedule receipt behind an HTTP error.
+  it('admits at most one task when a manual Run Now races an in-flight cron fire (issue #3146)', async () => {
+    const schedule = store.create({
+      name: 'KB-Scout Finetune Program Sentinel',
+      cron: '4,19,34,49 * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+      modelTier: 'small',
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    });
+
+    // Schedule-definition patch issued next to the tick, mirroring the incident's
+    // PATCH {"modelTier":null} — it must not open a second admission window.
+    await service.updateDefinition(schedule.id, { modelTier: null });
+
+    // Barrier launcher: hold the WINNER (first launch) inside the launcher —
+    // task not yet created, no accepted receipt — so a second fire can race it.
+    // Only the first call blocks; a second launch (the bug) would proceed
+    // immediately and be caught by the launcher-call count, so the regression
+    // fails fast on an assertion rather than deadlocking.
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    let signalEntered!: () => void;
+    const launcherEntered = new Promise<void>((resolve) => { signalEntered = resolve; });
+    let launcherCalls = 0;
+
+    const runner = createRunner({
+      // Large cap so the held fire is not timed out by the #1708 wall-clock
+      // bound while the barrier is engaged.
+      fireTimeoutMs: 60_000,
+      launcher: async (opts) => {
+        const call = ++launcherCalls;
+        const taskId = `task-${++taskIdCounter}`;
+        if (call === 1) {
+          signalEntered();
+          await launchGate;
+        }
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        launched.push({
+          prompt: opts.prompt,
+          cwd: opts.cwd,
+          modelTier: opts.modelTier,
+          launchSource: opts.launchSource,
+        });
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+    });
+
+    // Winner: cron tick. Do not await — it blocks inside the launcher.
+    const cronFire = runner.tick();
+    await launcherEntered;
+
+    // Loser: manual Run Now lands while the cron fire is still in flight. It
+    // must be refused at the admission gate before it can reach the launcher.
+    const manual = await runner.runNow(schedule.id);
+    expect(manual.error).toBe('Previous run still active');
+    expect(manual.taskId).toBeUndefined();
+
+    releaseLaunch();
+    await cronFire;
+
+    // AC2 / AC4: exactly one task admitted; no duplicate successor launch.
+    expect(launcherCalls).toBe(1);
+    expect(launched).toHaveLength(1);
+    // Incident mirror: the cleared tier means the launched task has no override.
+    expect(launched[0].modelTier).toBeUndefined();
+
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.taskId).toBe('task-1');
+    expect(after.latestExecution?.outcome).toBe('running');
+
+    // The loser is durably recorded as skipped_active referencing the winner.
+    const skip = after.executionLedger.find((e) => e.outcome === 'skipped_active');
+    expect(skip).toMatchObject({ outcome: 'skipped_active', reasonCode: 'previous_run_active' });
+    expect(skip!.receiptId).toBe(after.currentExecution?.id);
+    // Exactly one running row for the winning fire — no duplicate launch receipt.
+    expect(after.executionLedger.filter((e) => e.outcome === 'running')).toHaveLength(1);
+    // An overlap skip is a healthy deferral — never a failure.
+    expect(after.consecutiveFailures ?? 0).toBe(0);
+  });
+
+  // AC3: a TRANSIENT accept-write fault after a successful launch must not orphan
+  // the live task behind a bare `reserved` receipt — the durable, task-linked
+  // binding is recovered on retry so a later restart can reconcile it.
+  it('recovers the durable accepted receipt on retry after a transient write fault (issue #3146)', async () => {
+    const schedule = store.create({
+      name: 'Sentinel',
+      cron: '4,19,34,49 * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    });
+
+    // Fail the first accept write, then fall through to the real implementation:
+    // the retry must land the durable task-linked receipt.
+    const original = service.markExecutionAccepted.bind(service);
+    let acceptCalls = 0;
+    vi.spyOn(service, 'markExecutionAccepted').mockImplementation(async (...args) => {
+      acceptCalls += 1;
+      if (acceptCalls === 1) throw new Error('transient write fault');
+      return original(...(args as Parameters<typeof original>));
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const runner = createRunner();
+    const result = await runner.runNow(schedule.id);
+
+    expect(result.error).toBeUndefined();
+    expect(result.taskId).toBe('task-1');
+    expect(acceptCalls).toBe(2); // failed once, recovered on the retry
+    // The live task now has a durable, task-linked receipt (a restart can find it).
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.taskId).toBe('task-1');
+    expect(after.latestExecution?.outcome).toBe('running');
+    expect(after.executionLedger.some((e) => e.outcome === 'running' && e.taskId === 'task-1')).toBe(true);
+    expect(after.consecutiveFailures ?? 0).toBe(0);
+    warnSpy.mockRestore();
+    errorSpy.mockRestore();
+  });
+
+  // AC3: even when the accept write fails PERSISTENTLY (retry included), the live
+  // task is never hidden behind an error — the runner still returns the task id.
+  it('never hides a live task when the accepted-receipt write keeps failing (issue #3146)', async () => {
+    const schedule = store.create({
+      name: 'Sentinel',
+      cron: '4,19,34,49 * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    });
+
+    // Force the accept write to blow up on every attempt for a reason the
+    // fallback does not absorb; the launched task is still live.
+    const acceptSpy = vi.spyOn(service, 'markExecutionAccepted').mockRejectedValue(new Error('accept write exploded'));
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const runner = createRunner();
+    const result = await runner.runNow(schedule.id);
+
+    expect(result.error).toBeUndefined();
+    expect(result.taskId).toBe('task-1');
+    expect(launched).toHaveLength(1);
+    expect(acceptSpy).toHaveBeenCalledTimes(2); // recovery was attempted
+    // The final failure is surfaced in logs (naming the live task), not to the caller.
+    expect(errorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('the task is LIVE'),
+      expect.objectContaining({ taskId: 'task-1', attempt: 2 }),
+    );
+    // The schedule was NOT marked failed by the swallowed bookkeeping fault.
+    expect(store.get(schedule.id)!.consecutiveFailures ?? 0).toBe(0);
+    errorSpy.mockRestore();
+  });
+
+  // Symmetric to the accept-write guard above: a failed overlap-skip AUDIT write
+  // (loser side) must never turn the overlap into a thrown fire — the guarantee
+  // that matters (no duplicate launch) is already met, so the manual caller
+  // still gets the documented `Previous run still active` (issue #3146).
+  it('never throws when the overlap-skip audit write fails (issue #3146)', async () => {
+    const schedule = store.create({
+      name: 'Sentinel',
+      cron: '4,19,34,49 * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 20 * 60_000).toISOString(),
+    });
+
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    let signalEntered!: () => void;
+    const launcherEntered = new Promise<void>((resolve) => { signalEntered = resolve; });
+
+    const runner = createRunner({
+      fireTimeoutMs: 60_000,
+      launcher: async (opts) => {
+        const taskId = `task-${++taskIdCounter}`;
+        signalEntered();
+        await launchGate;
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+    });
+
+    const skipWrite = new Error('overlap-skip write exploded');
+    vi.spyOn(service, 'recordOverlapSkipped').mockRejectedValueOnce(skipWrite);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const cronFire = runner.tick();
+    await launcherEntered;
+
+    // The loser's audit write throws, but runNow still resolves to the refusal.
+    const manual = await runner.runNow(schedule.id);
+    expect(manual.error).toBe('Previous run still active');
+    expect(manual.taskId).toBeUndefined();
+
+    releaseLaunch();
+    await cronFire;
+
+    // Still only one task admitted; the write fault is logged, not thrown.
+    expect(launched).toHaveLength(1);
+    expect(errorSpy).toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  // The mirror of the barrier test: when a MANUAL fire wins and is in flight, a
+  // due cron tick that lands during the launch must NOT launch a second task —
+  // it skips synchronously at the in-flight pre-check (kept cheap so a stalled
+  // winner cannot freeze the tick). The occurrence is not lost: once the manual
+  // fire is accepted, the next due tick records it as skipped_active referencing
+  // the winner through the normal blocking-guard path (AC2, issue #3146).
+  it('does not double-launch when a cron tick lands during an in-flight manual fire, and audits the loser on the next tick (issue #3146)', async () => {
+    const schedule = store.create({
+      name: 'Sentinel',
+      cron: '* * * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+    replaceSchedule(schedule.id, {
+      createdAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+
+    let releaseLaunch!: () => void;
+    const launchGate = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    let signalEntered!: () => void;
+    const launcherEntered = new Promise<void>((resolve) => { signalEntered = resolve; });
+    let launcherCalls = 0;
+
+    const runner = createRunner({
+      fireTimeoutMs: 60_000,
+      launcher: async (opts) => {
+        launcherCalls += 1;
+        const taskId = `task-${++taskIdCounter}`;
+        signalEntered();
+        await launchGate;
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        launched.push({ prompt: opts.prompt, cwd: opts.cwd });
+        return { task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd }), queued: false };
+      },
+    });
+
+    // Winner: manual Run Now. Do not await — it blocks inside the launcher.
+    const manualFire = runner.runNow(schedule.id);
+    await launcherEntered;
+
+    // A due cron tick lands while the manual fire holds the marker: it must skip
+    // (no duplicate launch) without blocking on any ledger write.
+    await runner.tick();
+    expect(launcherCalls).toBe(1);
+
+    releaseLaunch();
+    const manual = await manualFire;
+    expect(manual.taskId).toBe('task-1');
+    expect(launched).toHaveLength(1);
+
+    // The occurrence stays due; the next tick records it as skipped_active
+    // referencing the still-active manual task — no second task launched.
+    replaceSchedule(schedule.id, {
+      lastScheduledFor: new Date(Date.now() - 2 * 60_000).toISOString(),
+    });
+    await runner.tick();
+
+    expect(launcherCalls).toBe(1);
+    expect(launched).toHaveLength(1);
+    const after = store.get(schedule.id)!;
+    expect(after.latestExecution?.outcome).toBe('skipped_active');
+    expect(after.latestExecution?.reasonCode).toBe('previous_run_active');
+    expect(after.latestExecution?.taskId).toBe('task-1');
+    expect(after.executionLedger.at(-1)).toMatchObject({
+      outcome: 'skipped_active',
+      reasonCode: 'previous_run_active',
+      blockingTaskId: 'task-1',
+    });
+    expect(after.consecutiveFailures ?? 0).toBe(0);
+  });
+
   it('re-arms a leftover launch_error pause on tick when the daemon is healthy (issue #2459)', async () => {
     const healthyService = new ScheduleService({
       store,
