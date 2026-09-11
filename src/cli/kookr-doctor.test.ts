@@ -2860,6 +2860,31 @@ describe('kookr doctor (human)', () => {
     expect(text).toContain('then open http://127.0.0.1:4800');
   });
 
+  it('footer avoids a concrete URL when the dashboard port is unknowable (issue #3143)', () => {
+    const text = formatDoctorReport(
+      {
+        ok: true,
+        status: 'ok',
+        generatedAt: '2026-06-21T07:30:00.000Z',
+        checks: [
+          {
+            id: 'runtime.node',
+            label: 'Node.js',
+            category: 'runtime',
+            status: 'ok',
+            required: true,
+            summary: 'Node.js v22.0.0',
+          },
+        ],
+      },
+      { dashboardUrl: null },
+    );
+
+    expect(text).toContain('Start Kookr with `kookr` (or `npx kookr`)');
+    expect(text).toContain('the port it prints at startup');
+    expect(text).not.toContain('http://127.0.0.1');
+  });
+
   it('omits the next-steps footer when any check is non-ok (issue #3143)', () => {
     // An advisory WARN keeps report.ok true but must still suppress the footer,
     // so recommended actions remain the only guidance for a non-green run.
@@ -2966,6 +2991,31 @@ describe('kookr doctor (human)', () => {
     expect(logs[0]).toContain('Overall: OK');
     expect(logs[0]).toContain('then open http://127.0.0.1:9999');
     expect(logs[0]).not.toContain('then open http://127.0.0.1:4801');
+  });
+
+  it('next-steps footer does not assert a port under KOOKR_PORT=auto (issue #3143)', async () => {
+    // auto scans for a free port at startup (4800–4810), so doctor cannot know
+    // which one the server picks — the footer must not claim a specific URL.
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli([], {
+      env: { ...opsOkEnv, KOOKR_PORT: 'auto' },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: () => {},
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(logs[0]).toContain('Overall: OK');
+    expect(logs[0]).toContain('Start Kookr with `kookr` (or `npx kookr`)');
+    expect(logs[0]).toContain('the port it prints at startup');
+    expect(logs[0]).not.toContain('then open http://127.0.0.1:4800');
   });
 
   it('human path returns exit code 1 when a required check fails', async () => {
