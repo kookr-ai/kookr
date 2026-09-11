@@ -53,12 +53,17 @@ byte limits, and count limits. Unsent bulk captures yield to input and lifecycle
 control. The parent and child reserve sixty-four of 128 requests and two MiB
 of the sixteen-MiB request budget for readiness. Socket transfers cannot consume
 the IPC queue's reserved control capacity.
+Truncated rings and viewport suffixes are display-only previews: they carry no
+resumable cursor and cannot accept input. Full replay from a known origin, or
+continuation in an already verified retained parser, is required for input.
+Parser replacement preserves keyboard focus only if the old terminal owned it.
 Input queues retain owned byte copies and reject excess work. Retiring a session
 or coordinator cancels queued and delayed input, without retrying uncertain writes.
 
 Output allocations remain charged until both browser acknowledgement and local
-socket-send completion. Pending control frames share the ownership budget, and
-eviction pressure includes acknowledged bytes still held by the socket. Closing
+socket-send completion. Queued control frames have separate count and envelope-size bounds. Once
+submitted to the socket, their bytes share the ownership budget until send
+completion. Eviction pressure includes acknowledged bytes still held by the socket. Closing
 a backlogged socket terminates its transport so queued data is not retained
 through a close-handshake timeout.
 

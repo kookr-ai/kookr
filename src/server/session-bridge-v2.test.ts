@@ -66,6 +66,23 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(output().at(-1)?.toString()).toBe('live');
   });
 
+  test.each(['ring', 'viewport'] as const)('a truncated %s seed stays display-only without a resumable cursor', async (kind) => {
+    const bytes = new Uint8Array(kind === 'viewport' ? 140 * 1024 : 15).fill(65);
+    const h = await setup(bytes);
+    if (kind === 'ring') h.backend.captureStreamSnapshot.mockResolvedValue({
+      bytes, epoch: 'e', start: 100, end: 115, geometryRevision: 1, cols: 80, rows: 24,
+    });
+    h.attach(); await drain();
+    h.send({ type: 'ack', processed: kind === 'viewport' ? 64 * 1024 : 15 });
+    await drain();
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true, screenUnavailable: true,
+    });
+    h.send({ type: 'input', text: 'unsafe preview input' });
+    expect(h.write).not.toHaveBeenCalled();
+  });
+
   test('an unavailable reconstructed screen cannot claim a cursor or accept input', async () => {
     const h = await setup(new Uint8Array(0), false, true);
     h.attach(); await drain();

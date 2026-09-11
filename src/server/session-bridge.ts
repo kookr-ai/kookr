@@ -919,11 +919,16 @@ export class SessionBridge {
             : cutStreamingAttachSeed(snapshot.bytes, this.streamingAttachViewportBytes);
       if (this.closed) return;
       const replayFallback = seed.byteLength === 0 && connection.output.hasUnpositionedOutput;
-      const screenUnavailable = reconstruction?.kind === 'unavailable' && !replayFallback;
+
       this.lastAttachSeed = absolute ? 'absolute' : seed.byteLength < snapshot.bytes.byteLength ? 'viewport' : 'full';
       this.historyAvailable = !absolute && !request.cursor && seed.byteLength < snapshot.bytes.byteLength;
       const transaction = randomUUID();
-      const resumable = !absolute && !replayFallback;
+      // A suffix can omit persistent modes or a partial control sequence.
+      // Only a complete origin seed or an already retained parser can supply
+      // an exact cursor; approximate previews never become input authority.
+      const resumable = !absolute && !replayFallback && (!!request.cursor
+        || (snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
+      const screenUnavailable = !resumable;
       const cursor = resumable ? {
         epoch: snapshot.epoch, position: snapshot.end, geometryRevision: snapshot.geometryRevision,
         cols: snapshot.cols, rows: snapshot.rows,
@@ -933,7 +938,7 @@ export class SessionBridge {
         { type: 'seed-end', generation: connection.generation, transaction, cursor,
           historyAvailable: this.historyAvailable,
           ...(screenUnavailable ? { screenUnavailable: true } : {}),
-          approximate: !resumable || (!request.cursor && (snapshot.start > 0 || seed.byteLength < snapshot.bytes.byteLength)) }, replayFallback)) {
+          approximate: !resumable }, replayFallback)) {
         connection.close(TERMINAL_CLOSE.continuityLost, 'terminal changed during capture');
         return;
       }

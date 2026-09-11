@@ -139,6 +139,7 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const restoreTerminalFocusRef = useRef(false);
   const writerRef = useRef<ReturnType<typeof createTerminalWriter> | null>(null);
   const continuityRef = useRef<TerminalContinuity>({ cursor: null, hadView: false });
   const retryBudgetRef = useRef<TerminalRetryBudget>({ attempts: [] });
@@ -618,8 +619,13 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
       fitScheduler.request();
     });
     resizeObserver.observe(container);
+    if (restoreTerminalFocusRef.current && visibleRef.current && !searchOpenRef.current) terminal.focus();
+    restoreTerminalFocusRef.current = false;
 
     return () => {
+      // Parser recovery replaces the textarea. Preserve its focus only when it
+      // owns focus at teardown; search and other panes keep their own focus.
+      restoreTerminalFocusRef.current = terminal.textarea === document.activeElement;
       container.removeEventListener('focusin', handleTermFocus);
       container.removeEventListener('focusout', handleTermBlur);
       container.removeEventListener('wheel', handleWheelOverride, { capture: true });
@@ -955,7 +961,9 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
                     : streamState.kind === 'access-denied' ? 'Terminal access denied.'
                       : streamState.kind === 'ended' ? 'Session ended.'
                         : streamState.kind === 'suspended' ? 'Terminal view paused while this tab is hidden.'
-                          : 'Terminal connection unavailable.'}
+                          : streamState.kind === 'unavailable' && streamState.reason === 'current terminal screen unavailable'
+                            ? 'Current terminal screen unavailable. Preview only; input is paused.'
+                            : 'Terminal connection unavailable.'}
           {(streamState.kind === 'lagged' || streamState.kind === 'continuity-unavailable' || streamState.kind === 'unavailable') && (
             <button type="button" onClick={() => {
               controllerRef.current?.retry(streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor);

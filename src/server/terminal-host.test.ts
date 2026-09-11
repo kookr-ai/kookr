@@ -279,17 +279,15 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
   it('does not drop readiness transitions in a cross-session burst past the RPC cap', { timeout: 30_000 }, async () => {
     const backend = await start();
     const coordinator = backend.inputCoordinator;
-    // Hook replay across many sessions dispatches one fire-and-forget transition
-    // per session synchronously. Per-session serialization does not bound this
-    // (each session has one in-flight RPC), so without a global admission bound a
-    // >128 cross-session burst overflows the RPC client's 128 in-flight cap and
-    // rejects — dropping transitions. The global semaphore must queue them so all
-    // are accepted. (Unregistered ids resolve as no-ops, which still exercises
-    // admission — the point is that none are rejected by the cap.)
-    const pending: Promise<unknown>[] = [];
-    for (let i = 0; i < 200; i++) pending.push(coordinator.markToolStarted(`cross-${i}`));
-    const results = await Promise.allSettled(pending);
+    // Register real coordinator states so this verifies applied transitions,
+    // as well as admission, across a burst larger than the shared RPC cap.
+    for (let i = 0; i < 200; i++) coordinator.registerSession(`cross-${i}`);
+    const results = await Promise.allSettled(Array.from({ length: 200 }, (_, i) =>
+      coordinator.markToolStarted(`cross-${i}`)));
     expect(results.every((r) => r.status === 'fulfilled')).toBe(true);
+    for (let i = 0; i < 200; i++) expect(coordinator.getSnapshot(`cross-${i}`)).toMatchObject({
+      readinessVersion: 1, prompt: { kind: 'blocked', reason: 'running' },
+    });
   });
 
   it('closes child-owned sockets on parent IPC death while preserving the dtach master', async () => {

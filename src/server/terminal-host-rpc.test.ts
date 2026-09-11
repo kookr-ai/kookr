@@ -53,9 +53,9 @@ describe('NFR-TERM-001: bounded terminal-host RPC', () => {
     h.rpc.close(); await settled;
     expect(h.rpc.pendingBytes).toBe(0);
   });
-  it('reserves readiness slots and bytes when writes fill ordinary admission', async () => {
+  it.each([128, 256])('reserves readiness admission while %i-KiB writes fill ordinary capacity', async (kib) => {
     const h = harness();
-    const work = Array.from({ length: 128 }, () => h.rpc.request('write', ['s', new Uint8Array(128 * 1024)]));
+    const work = Array.from({ length: 128 }, () => h.rpc.request('write', ['s', new Uint8Array(kib * 1024)]));
     const workResults = Promise.allSettled(work);
     const readiness = h.rpc.request('input.markTurnStopped', ['s']);
     const readinessResult = Promise.allSettled([readiness]);

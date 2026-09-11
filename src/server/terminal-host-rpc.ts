@@ -119,9 +119,7 @@ export class TerminalHostRpcClient {
       this.transmitting = null;
       if (pending.settled) this.release(pending);
       // A failed send rejects only THIS request and keeps the client draining.
-      // Channel backpressure (queue/size admission — which the channel measures
-      // on the full envelope, larger than this client's per-arg admission, and
-      // across shared non-RPC traffic) must not become a permanent brownout that
+      // Channel backpressure (queue/size admission, including shared non-RPC traffic) must not become a permanent brownout that
       // fails every later request while stats keep the host `ready`. A genuine
       // child death is owned by the terminal-host 'disconnect'/'error'/'exit'
       // handlers (they retire and close this client) plus the stalled-stats

@@ -53,7 +53,8 @@ vi.mock('@xterm/xterm', () => {
     clear = vi.fn();
     reset = vi.fn();
     write = vi.fn((_data: string | Uint8Array, callback?: () => void) => callback?.());
-    open = vi.fn();
+    textarea = document.createElement('textarea');
+    open = vi.fn((container: HTMLElement) => container.appendChild(this.textarea));
     loadAddon = vi.fn();
     registerLinkProvider = vi.fn(() => ({ dispose: vi.fn() }));
     registerMarker = vi.fn(() => undefined);
@@ -82,11 +83,11 @@ vi.mock('@xterm/xterm', () => {
     });
     scrollToBottom = vi.fn();
     refresh = vi.fn();
-    dispose = vi.fn();
+    dispose = vi.fn(() => this.textarea.remove());
     hasSelection = vi.fn(() => false);
     getSelection = vi.fn(() => '');
     paste = vi.fn();
-    focus = vi.fn();
+    focus = vi.fn(() => this.textarea.focus());
     buffer = {
       active: {
         baseY: 0,
@@ -347,6 +348,29 @@ describe('TerminalPanel', () => {
       await act(async () => root.render(React.createElement(Parent, { title: 'after', session: 'changed' })));
       expect(renderProbe.mock.calls.length).toBeGreaterThan(renders);
     } finally { renderProbe.mockRestore(); }
+  });
+
+  test.each(['terminal', 'search', 'other'] as const)('preserves %s focus when a stalled parser is replaced', (focusOwner) => {
+    vi.useFakeTimers();
+    act(() => root.render(React.createElement(TerminalPanel, { tmuxName: 'stalled', visible: true })));
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    terminal.write.mockImplementation(() => {});
+    const other = document.createElement('button');
+    container.appendChild(other);
+    act(() => {
+      if (focusOwner === 'terminal') terminal.textarea.focus();
+      else if (focusOwner === 'search') openSearchViaShortcut(terminal);
+      else other.focus();
+    });
+    if (focusOwner === 'search') act(() => container.querySelector<HTMLInputElement>('.terminal-search input')!.focus());
+    const previousFocus = document.activeElement;
+    act(() => { ws.onopen?.(); emitTerminalData(ws, 'waiting for parser'); });
+    act(() => vi.advanceTimersByTime(2100));
+    expect(mocks.terminalInstances).toHaveLength(2);
+    expect(terminal.textarea.isConnected).toBe(false);
+    const replacement = mocks.terminalInstances[1];
+    expect(document.activeElement).toBe(focusOwner === 'terminal' ? replacement.textarea : previousFocus);
   });
 
   test('keeps interrupted input visible until dismissed and returns recovery focus to the terminal', () => {
