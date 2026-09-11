@@ -51,6 +51,22 @@ async function handleOssAttemptEvent(c: Context, deps: RouteDeps) {
   const event = body as Record<string, unknown>;
   const kind = event.kind;
 
+  // Bound the externally-supplied free-text/URL fields at ingest. They are
+  // persisted verbatim into oss-attempts.json (rewritten wholesale on every
+  // save) and broadcast in the snapshot sent to every connected dashboard
+  // client, yet a caller is otherwise limited only by the ~1 MB request-body
+  // ceiling — so one event could bloat the durable store and every client's
+  // payload. These fields feed record ids, dedup and history, so we reject
+  // over-cap values rather than silently truncating them. Cf. the caps on the
+  // sibling self-report route (src/server/routes/self-report-routes.ts).
+  const overLimit = overLengthField(event);
+  if (overLimit) {
+    return c.json(
+      { error: `${overLimit} exceeds maximum length of ${FIELD_MAX_CHARS[overLimit]} characters` },
+      400,
+    );
+  }
+
   try {
     if (kind === 'pr_open') {
       const repo = asString(event.repo);
@@ -112,6 +128,31 @@ async function handleOssAttemptRefresh(c: Context, deps: RouteDeps) {
   const result = await deps.ossRefresher.refresh();
   deps.broadcastOssAttempts?.();
   return c.json(result);
+}
+
+/**
+ * Per-field character caps for the free-text/URL fields accepted on the ingest
+ * route. Short cap for the free-text fields, a URL-length cap for the URLs —
+ * generous enough not to clip real PR titles, notes, or URLs.
+ */
+const FIELD_MAX_CHARS: Record<string, number> = {
+  prTitle: 500,
+  note: 500,
+  prUrl: 2_000,
+  issueUrl: 2_000,
+};
+
+/**
+ * Returns the name of the first bounded field whose value is a string longer
+ * than its cap, or null when every present field is within bounds. Absent
+ * fields and non-string values are left to the existing per-kind validation.
+ */
+function overLengthField(event: Record<string, unknown>): string | null {
+  for (const [field, max] of Object.entries(FIELD_MAX_CHARS)) {
+    const v = event[field];
+    if (typeof v === 'string' && v.length > max) return field;
+  }
+  return null;
 }
 
 function asString(v: unknown): string | null {

@@ -141,6 +141,91 @@ describe('registerOssAttemptRoutes', () => {
     expect(body.id).toBe('grafana/grafana#issue-100');
   });
 
+  test('POST /api/oss-attempts/events rejects an over-length free-text field', async () => {
+    await store.load();
+    const { app } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'pr_open',
+        repo: 'grafana/grafana',
+        prNumber: 7,
+        prUrl: 'https://github.com/grafana/grafana/pull/7',
+        prTitle: 'x'.repeat(501),
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('prTitle');
+    // Nothing oversized is persisted.
+    expect(store.getAllAttempts()).toHaveLength(0);
+  });
+
+  test('POST /api/oss-attempts/events rejects an over-length URL field', async () => {
+    await store.load();
+    const { app } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'scouted',
+        repo: 'grafana/grafana',
+        issueNumber: 200,
+        issueUrl: `https://github.com/grafana/grafana/issues/${'0'.repeat(2001)}`,
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('issueUrl');
+    expect(store.getAllAttempts()).toHaveLength(0);
+  });
+
+  test('POST /api/oss-attempts/events rejects an over-length prUrl field', async () => {
+    await store.load();
+    const { app } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'pr_open',
+        repo: 'grafana/grafana',
+        prNumber: 9,
+        prUrl: `https://github.com/grafana/grafana/pull/${'9'.repeat(2001)}`,
+        prTitle: 'ok',
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('prUrl');
+    expect(store.getAllAttempts()).toHaveLength(0);
+  });
+
+  test('POST /api/oss-attempts/events accepts an in-range free-text field at the cap', async () => {
+    await store.load();
+    const { app } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'pr_open',
+        repo: 'grafana/grafana',
+        prNumber: 8,
+        prUrl: 'https://github.com/grafana/grafana/pull/8',
+        prTitle: 'y'.repeat(500),
+        note: 'z'.repeat(500),
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.accepted).toBe(true);
+    const attempts = store.getAllAttempts();
+    expect(attempts).toHaveLength(1);
+    // Persisted unchanged — no truncation of legitimately sized fields.
+    expect(attempts[0].prTitle).toBe('y'.repeat(500));
+    expect(attempts[0].history[0].note).toBe('z'.repeat(500));
+  });
+
   test('POST /api/oss-attempts/refresh runs the refresher', async () => {
     await store.load();
     const refresher = new OssRefresher({
