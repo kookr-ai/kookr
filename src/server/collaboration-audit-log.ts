@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
@@ -10,6 +10,25 @@ import {
   type CollaborationAuditFailure,
   type CollaborationAuditTransportKind,
 } from '../shared/contracts/collaboration-audit.js';
+
+/** File name of the append-only collaboration-audit log under the data dir. */
+export const COLLABORATION_AUDIT_FILE_NAME = 'collaboration-audit.jsonl';
+
+/**
+ * Measure the on-disk size of the active `collaboration-audit.jsonl` (issue
+ * #3158). This append-only log has no rotation and no prune sweep reaches it,
+ * so surfacing its size on `/api/health` makes otherwise-silent growth visible
+ * before it can fill the disk. `stat`-only — never reads the file contents.
+ * Returns null when the file is absent.
+ */
+export async function statCollaborationAuditLogSize(kookrDir: string): Promise<number | null> {
+  try {
+    return (await stat(join(kookrDir, COLLABORATION_AUDIT_FILE_NAME))).size;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+}
 
 export interface CollaborationAuditStatus {
   configured: boolean;
@@ -47,7 +66,7 @@ export class CollaborationAuditLog {
     idGenerator?: () => string;
     ownerNodeId?: string | (() => string);
   } = {}) {
-    this.filePath = opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, 'collaboration-audit.jsonl') : null);
+    this.filePath = opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, COLLABORATION_AUDIT_FILE_NAME) : null);
     this.now = opts.now ?? (() => new Date());
     this.idGenerator = opts.idGenerator ?? (() => randomUUID());
     const configuredOwnerNodeId = opts.ownerNodeId;

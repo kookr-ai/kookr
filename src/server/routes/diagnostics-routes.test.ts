@@ -921,6 +921,66 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — audit-log size gauge (issue #3158)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health auditLogSizes block (issue #3158)', () => {
+    let kookrDir: string;
+
+    beforeEach(() => {
+      kookrDir = mkdtempSync(join(tmpdir(), 'kookr-health-audit-sizes-'));
+    });
+    afterEach(() => {
+      rmSync(kookrDir, { recursive: true, force: true });
+    });
+
+    test('TS-HEALTH-AUDIT-001: reports active + archive bytes without exposing paths', async () => {
+      writeFileSync(join(kookrDir, 'audit.jsonl'), 'x'.repeat(40), 'utf8');
+      // Sidecar snapshot must not be counted as an archive.
+      writeFileSync(join(kookrDir, 'audit.snapshot.json'), '{}\n', 'utf8');
+      writeFileSync(join(kookrDir, 'audit.2026-01-01.1.1.jsonl'), 'y'.repeat(10), 'utf8');
+      writeFileSync(join(kookrDir, 'audit.2026-01-02.1.2.jsonl'), 'z'.repeat(15), 'utf8');
+      writeFileSync(join(kookrDir, 'collaboration-audit.jsonl'), 'c'.repeat(25), 'utf8');
+
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+      }).request('/api/health')).json() as { auditLogSizes?: Record<string, unknown> };
+
+      expect(body.auditLogSizes).toEqual({
+        commandAudit: { activeBytes: 40, archiveCount: 2, archiveBytes: 25 },
+        collaborationAudit: { activeBytes: 25 },
+      });
+      expect(JSON.stringify(body.auditLogSizes)).not.toContain(kookrDir);
+    });
+
+    test('TS-HEALTH-AUDIT-002: degrades to nulls / zeros when both logs are absent', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+      }).request('/api/health')).json() as { auditLogSizes?: Record<string, unknown> };
+
+      expect(body.auditLogSizes).toEqual({
+        commandAudit: { activeBytes: null, archiveCount: 0, archiveBytes: 0 },
+        collaborationAudit: { activeBytes: null },
+      });
+    });
+
+    test('TS-HEALTH-AUDIT-003: omits the block when kookrDir is unwired', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { auditLogSizes?: unknown };
+
+      expect(body).not.toHaveProperty('auditLogSizes');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — signalDelivery block (issue #3046)
   // ---------------------------------------------------------------------------
   describe('GET /api/health signalDelivery block (issue #3046)', () => {

@@ -56,6 +56,18 @@ timestamp). This reuses the single already-fetched sample — no re-sample, no
 operator-visible health. `unavailable` is the sampler's fixed enum of
 degraded-field reasons, never unbounded history.
 
+When `kookrDir` is wired, the path-free `auditLogSizes` block reports the
+on-disk size of the two append-only audit logs that no maintenance-prune sweep
+reaches — so their otherwise-silent growth is visible before it can fill the
+disk (issue #3158). It is `{ commandAudit: { activeBytes, archiveCount,
+archiveBytes }, collaborationAudit: { activeBytes } }`: `commandAudit` covers the
+command-journal active `audit.jsonl` plus its rotated `audit.*.jsonl` archives,
+and `collaborationAudit` the active `collaboration-audit.jsonl`. `activeBytes` is
+`null` when a file is absent. The gauge uses `stat` plus one bounded, single-level
+directory listing — it never reads file contents and never exposes a file path.
+It is a bounded health-component read: omitted when `kookrDir` is unwired or the
+read exceeds its component budget, and it does not delete or rotate anything.
+
 When post-recovery queue fill is wired, `GET /api/health` includes the optional
 `postRecoveryQueueFill` block. It reports the last process-local evaluation's
 lifecycle `state`, `evaluatedAt`/`ageMs` freshness, stable path-free reasons,
