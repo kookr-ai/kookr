@@ -6,7 +6,17 @@ export default defineConfig({
     // run rather than letting every agent allocate workers for the whole CPU.
     maxWorkers: 4,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx', 'relay/**/*.test.ts', 'scripts/**/*.test.ts', 'demo/**/*.test.ts', 'test/**/*.test.ts'],
-    exclude: ['src/**/*.integration.test.ts', 'src/**/*-e2e.test.ts'],
+    // Integration-style files run via `pnpm test:integration` /
+    // `pnpm test:integration:live` (#2823). Patterns cover hyphen, dot, and e2e
+    // naming under both src/ and relay/.
+    exclude: [
+      'src/**/*.integration.test.ts',
+      'src/**/*-integration.test.ts',
+      'src/**/*-e2e.test.ts',
+      'relay/**/*.integration.test.ts',
+      'relay/**/*-integration.test.ts',
+      'relay/**/*-e2e.test.ts',
+    ],
     // Multi-server integration tests (relay + createKookrServerInternal) regularly
     // need >5s under concurrent suite load on a busy workstation. Unit tests still
     // finish in ms; this only raises the hang ceiling.
