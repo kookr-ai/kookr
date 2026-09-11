@@ -10,7 +10,12 @@ import { readDispositionEntries } from '../core/disposition-ledger.js';
 import type { Task } from '../core/tasks.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
-import { reapHungTask, type HungTaskReapEvidence } from './hung-task-reaper.js';
+import {
+  HungTaskReaperMetrics,
+  categorizeReapFailure,
+  reapHungTask,
+  type HungTaskReapEvidence,
+} from './hung-task-reaper.js';
 
 /**
  * Record a merged PR on a `GitHubStateStore` for `taskId`, detected from the
@@ -317,6 +322,112 @@ describe('reapHungTask', () => {
     });
     expect(entries[0].detail).toContain('needs-human');
     expect(entries[0].detail).toContain('no confirmed delivery');
+  });
+});
+
+describe('reapHungTask — terminate-failure counter (issue #3154)', () => {
+  const REAP_NOW = new Date('2026-06-21T00:00:00.000Z');
+
+  /** A lifecycleDeps whose `adapter.stop` rejects — the unguarded throw path. */
+  function rejectingLifecycleDeps(taskStore: TaskStore, err: Error) {
+    return {
+      ...lifecycleDeps(taskStore),
+      adapter: { stop: vi.fn(async () => { throw err; }) },
+    };
+  }
+
+  test('a terminate rejection increments the counter, records last-failure fields, and re-throws — audit/disposition/alert stay skipped', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const metrics = new HungTaskReaperMetrics();
+    const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+    const broadcastToAll = vi.fn();
+    // terminateTask awaits adapter.stop; a rejection there is the exact
+    // unguarded throw (hung-task-reaper.ts:164) this issue closes.
+    const boom = new Error('tmux server not found: no server running');
+
+    await expect(
+      reapHungTask(task, evidence(), {
+        taskStore,
+        lifecycleDeps: rejectingLifecycleDeps(taskStore, boom),
+        auditLogPath,
+        broadcastToAll,
+        metrics,
+        now: () => REAP_NOW,
+      }),
+    ).rejects.toThrow(boom);
+
+    const snap = metrics.getSnapshot();
+    expect(snap.reapFailedTotal).toBe(1);
+    expect(snap.lastReapFailureAt).toBe(REAP_NOW.getTime());
+    expect(snap.lastReapFailureCategory).toBe('session_gone');
+
+    // The reap aborted before the disposition / audit row / alert — none of
+    // those may run when terminate failed and the slot was never freed.
+    expect(taskStore.getTask(task.id)?.disposition).toBeUndefined();
+    expect(await readAuditRows(auditLogPath)).toEqual([]);
+    expect(broadcastToAll).not.toHaveBeenCalled();
+  });
+
+  test('a terminate rejection does not abort the sweep for other tasks', async () => {
+    const taskStore = new TaskStore();
+    const stuck = makeTask(taskStore);
+    const healthy = makeTask(taskStore);
+    const metrics = new HungTaskReaperMetrics();
+    const broadcastToAll = vi.fn();
+
+    // Verifies reapHungTask's own isolation property directly: a rejecting reap
+    // shares no state that would poison the next reap on the same metrics
+    // instance. Each call runs in its own try/catch — exactly how the watchdog
+    // sweep's per-agent loop (lifecycle-timers.ts) treats one throwing agent —
+    // so the stuck task's terminate throws while the healthy task that follows
+    // is still fully reaped. The sweep-level wiring itself (maybeReapHungTask →
+    // metrics) is covered separately in lifecycle-timers.test.ts (issue #3154).
+    const order: Array<{ task: Task; deps: Parameters<typeof reapHungTask>[2] }> = [
+      { task: stuck, deps: { taskStore, lifecycleDeps: rejectingLifecycleDeps(taskStore, new Error('kill -9 failed: EPERM')), broadcastToAll, metrics, now: () => REAP_NOW } },
+      { task: healthy, deps: { taskStore, lifecycleDeps: lifecycleDeps(taskStore), broadcastToAll, metrics, now: () => REAP_NOW } },
+    ];
+    for (const { task, deps } of order) {
+      try {
+        await reapHungTask(task, evidence(), deps);
+      } catch {
+        // swallowed by the caller's generic watchdog catch — the fallback
+      }
+    }
+
+    // One failure counted; the sweep continued to the healthy task.
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+    expect(taskStore.getTask(stuck.id)?.status).not.toBe('terminated');
+    expect(taskStore.getTask(healthy.id)?.status).toBe('terminated');
+    expect(broadcastToAll).toHaveBeenCalledTimes(1); // only the healthy reap alerts
+  });
+
+  test('a successful reap never touches the failure counter', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const metrics = new HungTaskReaperMetrics();
+
+    await reapHungTask(task, evidence(), {
+      taskStore,
+      lifecycleDeps: lifecycleDeps(taskStore),
+      metrics,
+      now: () => REAP_NOW,
+    });
+
+    expect(metrics.getSnapshot()).toEqual({
+      reapFailedTotal: 0,
+      lastReapFailureAt: null,
+      lastReapFailureCategory: null,
+    });
+  });
+
+  test('categorizeReapFailure buckets terminate errors, defaulting to unknown', () => {
+    expect(categorizeReapFailure(new Error('no server running'))).toBe('session_gone');
+    expect(categorizeReapFailure(new Error('ENOENT: session gone'))).toBe('session_gone');
+    expect(categorizeReapFailure(new Error('operation timed out'))).toBe('timeout');
+    expect(categorizeReapFailure(new Error('kill: EPERM'))).toBe('permission');
+    expect(categorizeReapFailure(new Error('something odd happened'))).toBe('unknown');
+    expect(categorizeReapFailure(undefined)).toBe('unknown');
   });
 });
 

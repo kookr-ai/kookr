@@ -32,6 +32,7 @@ import {
   type TimerDeps,
 } from './lifecycle-timers.js';
 import { ServerLogRotationHealth } from './server-log-rotation.js';
+import { HungTaskReaperMetrics } from './hung-task-reaper.js';
 import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import {
   AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
@@ -651,6 +652,43 @@ describe('maybeReapHungTask (issue #1526 Phase A)', () => {
 
     expect(reaped).toBe(true);
     expect(taskStore.getTask(task.id)?.status).toBe('terminated');
+  });
+
+  test('issue #3154: a terminate rejection increments hungTaskReaperMetrics through the sweep wiring', async () => {
+    // Covers the TimerDeps → reapHungTask wiring (`metrics: deps.hungTaskReaperMetrics`)
+    // at the actual watchdog-sweep entry point, which the reaper-level tests
+    // bypass by passing `metrics` directly. Delete that wiring line and this
+    // test — and only this test — goes red.
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-hung-stuck';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const metrics = new HungTaskReaperMetrics();
+    // terminateTask awaits adapter.stop; a rejection there re-throws out of
+    // reapHungTask, which the real sweep loop catches per-agent (the generic
+    // "Watchdog error" fallback) — reproduced here with `rejects`.
+    const deps = {
+      ...lifecycleDeps(taskStore),
+      adapter: { stop: vi.fn(async () => { throw new Error('no server running'); }) },
+    };
+
+    await expect(
+      maybeReapHungTask(
+        agentId,
+        'frozen pane',
+        timerDeps({ watchdog, getHungTaskReapMs: () => REAP_THRESHOLD_MS, hungTaskReaperMetrics: metrics }),
+        taskStore,
+        deps,
+        now,
+      ),
+    ).rejects.toThrow('no server running');
+
+    const snap = metrics.getSnapshot();
+    expect(snap.reapFailedTotal).toBe(1);
+    expect(snap.lastReapFailureAt).toBe(NOW);
+    expect(snap.lastReapFailureCategory).toBe('session_gone');
+    // The terminate failed before the status transition — the slot is not freed.
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
   });
 
   test('does not reap a task not yet silent long enough', async () => {

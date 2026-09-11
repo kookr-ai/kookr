@@ -26,6 +26,7 @@ import {
   buildHookIngestionHealthSummary,
 } from './diagnostics-routes.js';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
+import { HungTaskReaperMetrics } from '../hung-task-reaper.js';
 import { RequestDurationMetrics } from '../request-duration-metrics.js';
 import { ControlPlaneLatencyMetrics } from '../control-plane-latency-metrics.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
@@ -1026,6 +1027,53 @@ describe('diagnostics routes', () => {
       }).request('/api/health')).json() as { signalDelivery?: unknown };
 
       expect(body).not.toHaveProperty('signalDelivery');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — hungTaskReaper block (issue #3154)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health hungTaskReaper block (issue #3154)', () => {
+    test('projects the reap terminate-failure counter + last-failure fields', async () => {
+      const metrics = new HungTaskReaperMetrics();
+      metrics.recordReapFailure(new Error('no server running'), Date.parse('2026-09-11T00:00:00.000Z'));
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungTaskReaperMetrics: metrics,
+      }).request('/api/health')).json() as { hungTaskReaper?: Record<string, unknown> };
+
+      expect(body.hungTaskReaper).toEqual({
+        reapFailedTotal: 1,
+        lastReapFailureAt: Date.parse('2026-09-11T00:00:00.000Z'),
+        lastReapFailureCategory: 'session_gone',
+      });
+    });
+
+    test('projects the zeroed snapshot when the reaper has had no failures', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungTaskReaperMetrics: new HungTaskReaperMetrics(),
+      }).request('/api/health')).json() as { hungTaskReaper?: Record<string, unknown> };
+
+      expect(body.hungTaskReaper).toEqual({
+        reapFailedTotal: 0,
+        lastReapFailureAt: null,
+        lastReapFailureCategory: null,
+      });
+    });
+
+    test('omits the block when the metrics dep is absent', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { hungTaskReaper?: unknown };
+
+      expect(body).not.toHaveProperty('hungTaskReaper');
     });
   });
 

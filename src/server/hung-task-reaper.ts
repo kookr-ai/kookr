@@ -64,6 +64,14 @@ export interface HungTaskReaperDeps {
    * sets it, so operationally the default always applies.
    */
   reportPersistTimeoutMs?: number;
+  /**
+   * Reap-failure counters (issue #3154). When wired, a rejecting
+   * {@link terminateTask} — the call that actually frees the slot — is recorded
+   * here before the reap re-throws, so an un-terminable hung task is no longer
+   * indistinguishable from any generic watchdog error. Absent → the reap still
+   * re-throws (the generic watchdog catch stays the fallback), just uncounted.
+   */
+  metrics?: HungTaskReaperMetrics;
   now?: () => Date;
 }
 
@@ -78,6 +86,86 @@ export interface HungTaskReapResult {
    * `outcome` (the lifecycle disposition) — the reap itself always succeeded.
    */
   reportPersistence: ReapReportPersistOutcome['status'];
+}
+
+/**
+ * Coarse bucket for a reap terminate-failure, surfaced as
+ * `lastReapFailureCategory` so an operator can tell a recurring stuck-slot apart
+ * from a one-off race without log spelunking (issue #3154). Derived from the
+ * error text; `unknown` when nothing recognizable is present rather than
+ * guessing.
+ */
+export type HungTaskReapFailureCategory =
+  | 'session_gone'
+  | 'timeout'
+  | 'permission'
+  | 'unknown';
+
+/** Classify a terminate rejection into a {@link HungTaskReapFailureCategory}. */
+export function categorizeReapFailure(err: unknown): HungTaskReapFailureCategory {
+  const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (!msg) return 'unknown';
+  if (
+    msg.includes('enoent')
+    || msg.includes('no such')
+    || msg.includes('not found')
+    || msg.includes('gone')
+    || msg.includes('no server')
+  ) {
+    return 'session_gone';
+  }
+  if (msg.includes('timeout') || msg.includes('timed out')) return 'timeout';
+  if (msg.includes('eperm') || msg.includes('eacces') || msg.includes('permission')) {
+    return 'permission';
+  }
+  return 'unknown';
+}
+
+/**
+ * Read-only projection of the hung-task reap-failure counters (issue #3154),
+ * carried on the reaper's `/api/health` block alongside the session/host-stale
+ * reaper snapshots.
+ */
+export interface HungTaskReaperMetricsSnapshot {
+  /**
+   * Cumulative hung-task reaps whose {@link terminateTask} rejected — the slot
+   * could not be freed (the issue's `hungReapFailedTotal`). A sustained climb is
+   * the offline signal of a reap looping and failing on one un-terminable slot,
+   * previously buried inside the generic "Watchdog error" log with no counter.
+   */
+  reapFailedTotal: number;
+  /** Epoch-ms of the most recent terminate failure, or null if none yet. */
+  lastReapFailureAt: number | null;
+  /** Coarse category of the most recent terminate failure, or null if none yet. */
+  lastReapFailureCategory: HungTaskReapFailureCategory | null;
+}
+
+/**
+ * Process-lifetime counters for hung-task reap terminate-failures (issue #3154).
+ * A single instance is wired through the timer deps into {@link reapHungTask}
+ * and read back on `/api/health`. Mirrors the FAA ack-path reaper's
+ * `FinishedAwaitingAckAckReaperMetrics.reapFailedTotal` signal (issue #3156) for
+ * the hung-task capacity class.
+ */
+export class HungTaskReaperMetrics {
+  private reapFailedTotal = 0;
+  private lastReapFailureAt: number | null = null;
+  private lastReapFailureCategory: HungTaskReapFailureCategory | null = null;
+
+  /** Record one terminate rejection at `atMs`, bucketing `err` for the operator. */
+  recordReapFailure(err: unknown, atMs: number): void {
+    this.reapFailedTotal += 1;
+    this.lastReapFailureAt = atMs;
+    this.lastReapFailureCategory = categorizeReapFailure(err);
+  }
+
+  getSnapshot(): HungTaskReaperMetricsSnapshot {
+    return {
+      reapFailedTotal: this.reapFailedTotal,
+      lastReapFailureAt: this.lastReapFailureAt,
+      lastReapFailureCategory: this.lastReapFailureCategory,
+    };
+  }
 }
 
 function formatAgeFromNow(now: Date, at: number): string {
@@ -161,10 +249,29 @@ export async function reapHungTask(
   // release indefinitely — exactly during the disk pressure when unattended
   // recovery matters most. The report is persisted best-effort further down,
   // bounded so a never-settling write cannot delay the reap.
-  await terminateTask(task.id, deps.lifecycleDeps, {
-    reason: 'timeout',
-    detail: `hung-task-reaper: silent for ${Math.round(evidence.silentForMs / 1000)}s (threshold ${Math.round(evidence.thresholdMs / 1000)}s)`,
-  });
+  try {
+    await terminateTask(task.id, deps.lifecycleDeps, {
+      reason: 'timeout',
+      detail: `hung-task-reaper: silent for ${Math.round(evidence.silentForMs / 1000)}s (threshold ${Math.round(evidence.thresholdMs / 1000)}s)`,
+    });
+  } catch (err) {
+    // The terminate that frees the slot rejected (issue #3154). Previously this
+    // throw was unguarded: it skipped the audit row + disposition below and
+    // surfaced only as a generic "Watchdog error" in the one caller — a hung
+    // task that cannot be terminated re-warned and re-failed every watchdog tick
+    // with nothing reap-specific to see. Record a reap-specific failure
+    // (counter + last-failure fields, read back on /api/health) and keep a loud,
+    // retained log line so a genuinely broken terminate is never silent, then
+    // re-throw so the disposition/audit/alert for a *successful* reap below stay
+    // correctly skipped and the caller's generic watchdog catch stays the
+    // fallback that keeps the rest of the sweep going.
+    deps.metrics?.recordReapFailure(err, now.getTime());
+    console.error(
+      `[hung-task-reaper] terminate failed for task ${task.id} — slot still held, reap will retry next tick:`,
+      err,
+    );
+    throw err;
+  }
 
   // Record the disposition on the (still-present) terminated task record. The
   // store keeps reaped tasks, and setDisposition is first-write-wins, so this

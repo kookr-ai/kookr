@@ -50,7 +50,7 @@ import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-ta
 import { DEFAULT_REAP_GRACE_SECONDS } from '../core/reap-warning-coordinator.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
-import { reapHungTask } from './hung-task-reaper.js';
+import { reapHungTask, type HungTaskReaperMetrics } from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
 import type { DeployConvergenceController } from './deploy-convergence-controller.js';
@@ -415,6 +415,8 @@ export interface TimerDeps {
   getHungTaskReapWarningEnabled?: () => boolean;
   /** Live getter — grace-period countdown, in milliseconds. */
   getHungTaskReapGraceMs?: () => number;
+  /** Optional reap-failure counters, exposed read-only on `/api/health` (issue #3154). */
+  hungTaskReaperMetrics?: HungTaskReaperMetrics;
   /**
    * finishedAwaitingAck ack-path reaper (issue #2170). Bounds the
    * `awaiting_poll` FAA dwell: a finished task unacknowledged past
@@ -900,6 +902,7 @@ export async function maybeReapHungTask(
       dispositionLedgerPath: deps.dispositionLedgerPath,
       broadcastToAll: deps.broadcastToAll,
       resolveMergedPr: deps.resolveMergedPr,
+      metrics: deps.hungTaskReaperMetrics,
       now,
     },
   );
