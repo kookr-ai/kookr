@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { GROK_DEFAULT_AUTH_SCOPE } from '../adapters/grok-auth-preflight.js';
 import {
   buildDoctorJsonReport,
+  DEFAULT_DASHBOARD_URL,
   DEFAULT_HOOK_REPLAY_FILE_BYTES_SOFT_BOUND,
   DEFAULT_HOOK_REPLAY_SESSION_SOFT_BOUND,
   formatDoctorBytes,
@@ -2808,6 +2809,91 @@ describe('kookr doctor (human)', () => {
     expect(text).toContain('Overall: FAIL (required checks failed)');
   });
 
+  it('appends an all-ok next-steps footer with the start command and dashboard URL (issue #3143)', () => {
+    const text = formatDoctorReport(
+      {
+        ok: true,
+        status: 'ok',
+        generatedAt: '2026-06-21T07:30:00.000Z',
+        checks: [
+          {
+            id: 'runtime.node',
+            label: 'Node.js',
+            category: 'runtime',
+            status: 'ok',
+            required: true,
+            summary: 'Node.js v22.0.0',
+          },
+        ],
+      },
+      { dashboardUrl: 'http://127.0.0.1:4801' },
+    );
+
+    expect(text).toContain('Overall: OK');
+    // Footer names the documented user start path, never operator pnpm prod:* scripts.
+    expect(text).toContain('✓ All checks passed.');
+    expect(text).toContain('Start Kookr with `kookr` (or `npx kookr`)');
+    expect(text).toContain('http://127.0.0.1:4801');
+    expect(text).not.toContain('pnpm prod');
+  });
+
+  it('falls back to the documented default dashboard URL when none is supplied (issue #3143)', () => {
+    const text = formatDoctorReport({
+      ok: true,
+      status: 'ok',
+      generatedAt: '2026-06-21T07:30:00.000Z',
+      checks: [
+        {
+          id: 'runtime.node',
+          label: 'Node.js',
+          category: 'runtime',
+          status: 'ok',
+          required: true,
+          summary: 'Node.js v22.0.0',
+        },
+      ],
+    });
+
+    // Pin the literal documented port so a drift in DEFAULT_DASHBOARD_URL (wrong
+    // port/scheme/host) fails here rather than moving in lockstep with the impl.
+    expect(DEFAULT_DASHBOARD_URL).toBe('http://127.0.0.1:4800');
+    expect(text).toContain('then open http://127.0.0.1:4800');
+  });
+
+  it('omits the next-steps footer when any check is non-ok (issue #3143)', () => {
+    // An advisory WARN keeps report.ok true but must still suppress the footer,
+    // so recommended actions remain the only guidance for a non-green run.
+    const text = formatDoctorReport({
+      ok: true,
+      status: 'warn',
+      generatedAt: '2026-06-21T07:30:00.000Z',
+      checks: [
+        {
+          id: 'runtime.node',
+          label: 'Node.js',
+          category: 'runtime',
+          status: 'ok',
+          required: true,
+          summary: 'Node.js v22.0.0',
+        },
+        {
+          id: 'github.gh-auth',
+          label: 'GitHub auth',
+          category: 'github',
+          status: 'warn',
+          required: false,
+          summary: 'gh authentication is unavailable or not configured',
+          recommendedAction: 'Run `gh auth login`.',
+        },
+      ],
+    });
+
+    expect(text).toContain('Overall: WARN');
+    expect(text).toContain('Recommended actions:');
+    expect(text).not.toContain('All checks passed');
+    expect(text).not.toContain('Start Kookr with');
+  });
+
   it('prints a human table without --json and returns the aggregated exit code', async () => {
     const run = commandRunner(happyFixtures());
     const logs: string[] = [];
@@ -2831,8 +2917,55 @@ describe('kookr doctor (human)', () => {
     expect(logs[0]).toContain('Kookr doctor — launch preflight');
     expect(logs[0]).toMatch(/Node\.js\s+OK\s+/);
     expect(logs[0]).toContain('Overall: OK');
+    // All-ok run ends with the next-steps footer; no KOOKR_PORT ⇒ default URL (issue #3143).
+    expect(logs[0]).toContain('Start Kookr with `kookr` (or `npx kookr`)');
+    expect(logs[0]).toContain(`then open ${DEFAULT_DASHBOARD_URL}`);
     // Human path must not emit JSON
     expect(() => JSON.parse(logs[0]!)).toThrow();
+  });
+
+  it('next-steps footer uses the configured KOOKR_PORT dashboard URL (issue #3143)', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli([], {
+      env: { ...opsOkEnv, KOOKR_PORT: '4801' },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: () => {},
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(logs[0]).toContain('Overall: OK');
+    expect(logs[0]).toContain('then open http://127.0.0.1:4801');
+  });
+
+  it('next-steps footer prefers KOOKR_API_BASE_URL over KOOKR_PORT (issue #3143)', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli([], {
+      // API base wins over the port, mirroring resolveOptionalHealthBase precedence.
+      env: { ...opsOkEnv, KOOKR_API_BASE_URL: 'http://127.0.0.1:9999/', KOOKR_PORT: '4801' },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      out: {
+        log: (msg: string) => logs.push(msg),
+        error: () => {},
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(logs[0]).toContain('Overall: OK');
+    expect(logs[0]).toContain('then open http://127.0.0.1:9999');
+    expect(logs[0]).not.toContain('then open http://127.0.0.1:4801');
   });
 
   it('human path returns exit code 1 when a required check fails', async () => {
@@ -2856,6 +2989,9 @@ describe('kookr doctor (human)', () => {
     expect(code).toBe(1);
     expect(logs[0]).toContain('Overall: FAIL');
     expect(logs[0]).toMatch(/Node\.js\s+FAIL\s+/);
+    // A failing run must not print the next-steps footer (issue #3143).
+    expect(logs[0]).not.toContain('All checks passed');
+    expect(logs[0]).not.toContain('Start Kookr with');
   });
 
   it('does not redirect humans to pnpm doctor anymore', async () => {
