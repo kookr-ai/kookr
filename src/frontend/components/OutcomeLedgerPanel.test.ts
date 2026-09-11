@@ -166,6 +166,10 @@ async function flush() {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(fetchResponse(response()))));
+  // The panel now persists its window/scope in localStorage (issue #3144), and
+  // jsdom's localStorage is shared across tests in this file — clear it so each
+  // test starts from the panel defaults rather than a prior test's selection.
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -1240,5 +1244,155 @@ describe('OutcomeLedgerPanel', () => {
     const el = mount();
     await flush();
     expect(el.textContent).toContain('Failed to load outcome ledger: invalid outcome ledger response');
+  });
+
+  test('restores a persisted window and project scope on mount (issue #3144)', async () => {
+    localStorage.setItem(
+      'kookr:outcomeScoreboardPrefs',
+      JSON.stringify({ window: '30d', project: 'assigned:org/repo' }),
+    );
+
+    const el = mount({ projects: [{ id: 'org/repo', label: 'Repo' }] });
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.outcome-window-select')!.value).toBe('30d');
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('assigned:org/repo');
+    // The restored scope drives the initial fetch, not the '7d / all' defaults.
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=30d&projectScope=assigned&projectId=org%2Frepo',
+      expect.any(Object),
+    );
+  });
+
+  test('persists the selected window across a fresh mount (issue #3144)', async () => {
+    const first = mount();
+    await flush();
+    await act(async () => {
+      const select = first.querySelector<HTMLSelectElement>('.outcome-window-select')!;
+      select.value = '24h';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    // A brand-new panel (simulating a reload) reads the stored selection.
+    act(() => root!.unmount());
+    const second = mount();
+    await flush();
+
+    expect(second.querySelector<HTMLSelectElement>('.outcome-window-select')!.value).toBe('24h');
+  });
+
+  test('persists the selected project scope across a fresh mount (issue #3144)', async () => {
+    const first = mount({ projects: [{ id: 'org/repo', label: 'Repo' }] });
+    await flush();
+    await act(async () => {
+      const select = first.querySelector<HTMLSelectElement>('.outcome-project-select')!;
+      select.value = 'assigned:org/repo';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    // A brand-new panel (simulating a reload) restores the chosen scope and
+    // fetches with it, provided the project is still tracked.
+    act(() => root!.unmount());
+    const second = mount({ projects: [{ id: 'org/repo', label: 'Repo' }] });
+    await flush();
+
+    expect(second.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('assigned:org/repo');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=7d&projectScope=assigned&projectId=org%2Frepo',
+      expect.any(Object),
+    );
+  });
+
+  test('recovers the saved scope when the project loads into the same panel (issue #3144)', async () => {
+    localStorage.setItem(
+      'kookr:outcomeScoreboardPrefs',
+      JSON.stringify({ window: '7d', project: 'assigned:org/repo' }),
+    );
+
+    // The panel mounts before the project list has loaded (projects still empty).
+    // The saved project is not yet selectable, so the effective scope falls back
+    // to All projects — but the preference is untouched in storage.
+    const el = mount({ projects: [] });
+    await flush();
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('all');
+    expect(JSON.parse(localStorage.getItem('kookr:outcomeScoreboardPrefs')!)).toEqual({
+      window: '7d',
+      project: 'assigned:org/repo',
+    });
+
+    // The project snapshot then arrives on the SAME mounted panel (no reload).
+    // The effective scope must recover to the saved project and re-query it.
+    await act(async () => {
+      root!.render(React.createElement(OutcomeLedgerPanel, { projects: [{ id: 'org/repo', label: 'Repo' }] }));
+    });
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('assigned:org/repo');
+    expect(fetch).toHaveBeenCalledWith(
+      '/api/outcome-ledger?window=7d&projectScope=assigned&projectId=org%2Frepo',
+      expect.any(Object),
+    );
+  });
+
+  test('changing the window while a saved project is not yet loaded keeps that project (issue #3144)', async () => {
+    localStorage.setItem(
+      'kookr:outcomeScoreboardPrefs',
+      JSON.stringify({ window: '7d', project: 'assigned:org/repo' }),
+    );
+
+    // Project list not loaded yet → effective scope shows All projects.
+    const el = mount({ projects: [] });
+    await flush();
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('all');
+
+    // The operator changes only the window. The write must preserve the PREFERRED
+    // project, not the All-projects fallback currently on screen.
+    await act(async () => {
+      const select = el.querySelector<HTMLSelectElement>('.outcome-window-select')!;
+      select.value = '30d';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(JSON.parse(localStorage.getItem('kookr:outcomeScoreboardPrefs')!)).toEqual({
+      window: '30d',
+      project: 'assigned:org/repo',
+    });
+
+    // A fresh reload with the project present restores both the window and scope.
+    act(() => root!.unmount());
+    const second = mount({ projects: [{ id: 'org/repo', label: 'Repo' }] });
+    await flush();
+    expect(second.querySelector<HTMLSelectElement>('.outcome-window-select')!.value).toBe('30d');
+    expect(second.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('assigned:org/repo');
+  });
+
+  test('a saved project that is no longer tracked falls back to All projects (issue #3144)', async () => {
+    localStorage.setItem(
+      'kookr:outcomeScoreboardPrefs',
+      JSON.stringify({ window: '7d', project: 'assigned:gone/repo' }),
+    );
+
+    // The saved project is absent from the loaded tracked list → the existing
+    // reset guard falls the selection back to All projects.
+    const el = mount({ projects: [{ id: 'other/repo', label: 'Other' }] });
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('all');
+    // The settled selection queries All projects, not the gone scope.
+    expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=7d', expect.any(Object));
+  });
+
+  test('falls back to defaults for a malformed stored value without crashing (issue #3144)', async () => {
+    localStorage.setItem('kookr:outcomeScoreboardPrefs', 'not-json{');
+
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.outcome-window-select')!.value).toBe('7d');
+    expect(el.querySelector<HTMLSelectElement>('.outcome-project-select')!.value).toBe('all');
+    expect(fetch).toHaveBeenCalledWith('/api/outcome-ledger?window=7d', expect.any(Object));
   });
 });
