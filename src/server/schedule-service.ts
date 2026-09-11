@@ -108,12 +108,30 @@ export function holdPredatesWatermark(
 }
 
 /**
+ * Compact human label for a classified terminal reason (issue #3157), e.g.
+ * `timeout`, `provider_failure (claude-code)`, `unknown`. Empty when no reason
+ * was resolved (legacy fires, non-terminal paths). Never a prompt or raw error.
+ */
+export function describeScheduleTerminalReason(
+  terminalReason?: Pick<ScheduleTerminalReason, 'reasonCode' | 'provider'>,
+): string {
+  if (!terminalReason) return '';
+  const provider =
+    terminalReason.reasonCode === 'provider_failure' && terminalReason.provider
+      ? ` (${terminalReason.provider})`
+      : '';
+  return `${terminalReason.reasonCode}${provider}`;
+}
+
+/**
  * Edge-triggered per-schedule failure alert (issue #1665): one `warning` alert
  * the moment the consecutive-failure streak crosses the threshold, one `info`
  * recovery alert when a later `completed` run clears a firing streak. Keyed per
  * schedule id so distinct failing schedules don't collide on one alert key.
  * When auto-pause is engaged (issue #2353) the details mention that the
- * schedule was disabled until an operator re-enables it.
+ * schedule was disabled until an operator re-enables it. The classified terminal
+ * reason (issue #3157), when known, is folded into the summary and details so an
+ * offline operator learns WHY the belt died.
  */
 export function buildScheduleFailureAlert(
   schedule: Pick<Schedule, 'id' | 'name'>,
@@ -121,8 +139,17 @@ export function buildScheduleFailureAlert(
   threshold: number,
   lastMessage?: string,
   autoPaused = false,
+  terminalReason?: Pick<ScheduleTerminalReason, 'reasonCode' | 'provider'>,
 ): Extract<ServerMessage, { type: 'alert' }> {
   const detail = lastMessage ? ` Last error: ${lastMessage}.` : '';
+  // Surface the classified failure reason (issue #3157) so an offline operator
+  // learns WHY the belt died (timeout / provider outage / OOM) from the page
+  // itself, not just "auto-paused after N failures".
+  const reasonLabel = describeScheduleTerminalReason(terminalReason);
+  const reasonSuffix = reasonLabel ? ` (last failure: ${reasonLabel})` : '';
+  const classification = reasonLabel
+    ? ` The most recent failure was classified as ${reasonLabel}.`
+    : '';
   const pauseNote = autoPaused
     ? ` The schedule has been auto-paused (enabled=false, stopReason=consecutive_failures) ` +
       'to stop thrashing capacity; re-enable it after inspecting the loop to clear the ' +
@@ -133,13 +160,13 @@ export function buildScheduleFailureAlert(
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
     summary: autoPaused
-      ? `Schedule "${schedule.name}" auto-paused after ${consecutiveFailures} consecutive failures`
-      : `Schedule "${schedule.name}" has failed ${consecutiveFailures} consecutive runs`,
+      ? `Schedule "${schedule.name}" auto-paused after ${consecutiveFailures} consecutive failures${reasonSuffix}`
+      : `Schedule "${schedule.name}" has failed ${consecutiveFailures} consecutive runs${reasonSuffix}`,
     details:
       `Schedule "${schedule.name}" (${schedule.id}) has now failed ${consecutiveFailures} ` +
       `consecutive runs, crossing the threshold of ${threshold} ` +
       '(scheduleFailureAlertThreshold setting).' +
-      `${detail}${pauseNote}`,
+      `${detail}${classification}${pauseNote}`,
     severity: 'warning',
     operationalAlert: {
       key: `schedule:failures:${schedule.id}`,
@@ -149,16 +176,34 @@ export function buildScheduleFailureAlert(
   };
 }
 
+/**
+ * How a firing `schedule:failures` alert cleared (issue #3157):
+ * - `completed_run`: a later `completed` run reset the streak on its own.
+ * - `re_enabled`: an operator / transient re-arm / bulk-recover re-enabled the
+ *   fail-closed-paused schedule. NO run completed — the loop was force-cleared,
+ *   so the recovery text must not claim it self-healed by completing a run
+ *   (that would mislead an offline operator into thinking the fault is gone).
+ */
+export type ScheduleFailureRecoveryCause = 'completed_run' | 're_enabled';
+
 export function buildScheduleFailureRecoveryAlert(
   schedule: Pick<Schedule, 'id' | 'name'>,
+  cause: ScheduleFailureRecoveryCause = 'completed_run',
 ): Extract<ServerMessage, { type: 'alert' }> {
+  const reEnabled = cause === 're_enabled';
   return {
     type: 'alert',
     agentId: OPERATIONAL_ALERT_AGENT_ID,
-    summary: `Recovered: schedule "${schedule.name}" completed a run again`,
-    details:
-      `Schedule "${schedule.name}" (${schedule.id}) completed a run, ` +
-      'resetting its consecutive-failure counter to 0 and clearing the failure alert.',
+    summary: reEnabled
+      ? `Recovered: schedule "${schedule.name}" was re-enabled after a consecutive-failure pause`
+      : `Recovered: schedule "${schedule.name}" completed a run again`,
+    details: reEnabled
+      ? `Schedule "${schedule.name}" (${schedule.id}) was re-enabled after a ` +
+        'consecutive-failure pause, resetting its consecutive-failure counter to 0 and ' +
+        'clearing the failure alert. This was a re-enable, not a completed run — the ' +
+        'underlying failure was force-cleared, so confirm the loop actually recovered.'
+      : `Schedule "${schedule.name}" (${schedule.id}) completed a run, ` +
+        'resetting its consecutive-failure counter to 0 and clearing the failure alert.',
     severity: 'info',
     operationalAlert: {
       key: `schedule:failures:${schedule.id}`,
@@ -515,6 +560,7 @@ export class ScheduleService {
     nextCount: number,
     lastMessage?: string,
     autoPaused = false,
+    terminalReason?: Pick<ScheduleTerminalReason, 'reasonCode' | 'provider'>,
   ): void {
     if (!this.emitAlert) return;
     // An archived schedule is retired and dark on every health surface
@@ -526,15 +572,37 @@ export class ScheduleService {
     if (threshold <= 0) return;
 
     if (priorCount < threshold && nextCount >= threshold) {
-      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, autoPaused));
+      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, autoPaused, terminalReason));
     } else if (priorCount >= threshold && nextCount === 0) {
       this.emitAlert(buildScheduleFailureRecoveryAlert(previous));
     } else if (autoPaused && priorCount >= threshold && nextCount >= threshold) {
       // Enforce path: schedule was already over threshold but still enabled
       // (e.g. pre-#2353 persisted state). Emit once so the operator learns it
       // was parked, even though the counter edge already fired historically.
-      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, true));
+      this.emitAlert(buildScheduleFailureAlert(previous, nextCount, threshold, lastMessage, true, terminalReason));
     }
+  }
+
+  /**
+   * Emit the failure recovery alert (issue #3157) when a re-enable clears a
+   * schedule that was in the fired `schedule:failures` state. Mirrors the
+   * completed-run recovery branch of {@link emitFailureAlertOnEdge} — same
+   * archived / threshold / `priorCount >= threshold` guards — but carries a
+   * re-enable-specific message (no run completed; the loop was force-cleared).
+   * Every re-enable path (operator {@link setEnabled}, transient re-arm #2459,
+   * bulk-recover #2520) funnels through `setEnabled`, so calling this there
+   * fires the recovery signal exactly once, never per-path.
+   */
+  private emitFailureRecoveryOnReEnable(previous: Schedule): void {
+    if (!this.emitAlert) return;
+    if (previous.archived) return;
+    const threshold = this.resolveFailureAlertThreshold();
+    if (threshold <= 0) return;
+    // Guard on the prior streak, not the cleared value: a re-enable of a
+    // schedule that never crossed the threshold (a low-count or manual toggle)
+    // never fired a `schedule:failures` alert, so it has nothing to recover.
+    if ((previous.consecutiveFailures ?? 0) < threshold) return;
+    this.emitAlert(buildScheduleFailureRecoveryAlert(previous, 're_enabled'));
   }
 
   private resolveFailureAlertThreshold(): number {
@@ -933,6 +1001,11 @@ export class ScheduleService {
         (after.consecutiveFailures ?? 0) > 0
         || after.stopReason === 'consecutive_failures'
       )) {
+        // Recovery edge (issue #3157): re-enabling a fail-closed-paused schedule
+        // clears a firing `schedule:failures` alert exactly once. `after` is the
+        // pre-clear snapshot, so its counter is the real prior streak the guard
+        // reads. Mirrors schedule-liveness.ts's own keyed recovery guard.
+        this.emitFailureRecoveryOnReEnable(after);
         const cleared: Schedule = {
           ...after,
           consecutiveFailures: 0,
@@ -1483,7 +1556,11 @@ export class ScheduleService {
     });
     await this.store.persist();
     this.broadcastSchedules();
-    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, undefined, Object.keys(autoPause).length > 0);
+    // Carry the classified terminal reason (issue #3157) into the edge alert so
+    // an auto-pause page names WHY the belt died (timeout / provider_failure /
+    // unknown), not just the failure count. Resolved above (#2877) but was being
+    // dropped here.
+    this.emitFailureAlertOnEdge(schedule, consecutiveFailures, undefined, Object.keys(autoPause).length > 0, terminalReason);
   }
 
   async reconcileOnStartup(taskStore: TaskStore): Promise<void> {
@@ -1698,6 +1775,7 @@ export class ScheduleService {
           reconciledFailures,
           undefined,
           Object.keys(autoPause).length > 0,
+          reconciledTerminalReason,
         );
       }
     }

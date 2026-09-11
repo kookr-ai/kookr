@@ -3,10 +3,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ScheduleStore, MAX_LEDGER_ENTRIES } from '../core/schedule.js';
-import type { ScheduleExecutionOutcome } from '../core/schedule.js';
+import type { ScheduleExecutionOutcome, ScheduleTerminalReason } from '../core/schedule.js';
 import { TaskStore } from '../core/tasks.js';
 import {
+  buildScheduleFailureAlert,
   deriveLedgerEnrichment,
+  describeScheduleTerminalReason,
   isGenuineExecutionFailure,
   nextConsecutiveFailures,
   shouldAutoPauseForConsecutiveFailures,
@@ -873,8 +875,60 @@ describe('shouldAutoPauseForConsecutiveFailures (issue #2353)', () => {
   });
 });
 
+describe('describeScheduleTerminalReason (issue #3157)', () => {
+  it('renders the reason code, adding the provider only for provider_failure', () => {
+    expect(describeScheduleTerminalReason(undefined)).toBe('');
+    expect(describeScheduleTerminalReason({ reasonCode: 'timeout' })).toBe('timeout');
+    expect(describeScheduleTerminalReason({ reasonCode: 'unknown' })).toBe('unknown');
+    // Provider is surfaced only when the class is provider_failure.
+    expect(
+      describeScheduleTerminalReason({ reasonCode: 'provider_failure', provider: 'claude-code' }),
+    ).toBe('provider_failure (claude-code)');
+    // A stray provider on a non-provider reason is ignored (never leaks).
+    expect(
+      describeScheduleTerminalReason({ reasonCode: 'timeout', provider: 'claude-code' }),
+    ).toBe('timeout');
+    // provider_failure with no resolved provider degrades to the bare class.
+    expect(describeScheduleTerminalReason({ reasonCode: 'provider_failure' })).toBe('provider_failure');
+  });
+
+  it('buildScheduleFailureAlert folds the classified reason into summary and details', () => {
+    const alert = buildScheduleFailureAlert(
+      { id: 's1', name: 'Belt' },
+      3,
+      3,
+      undefined,
+      true,
+      { reasonCode: 'timeout' },
+    );
+    expect(alert.summary).toContain('auto-paused');
+    expect(alert.summary).toContain('(last failure: timeout)');
+    expect(alert.details).toContain('classified as timeout');
+    // No terminalReason → no reason clause (back-compat with legacy fires).
+    const bare = buildScheduleFailureAlert({ id: 's1', name: 'Belt' }, 3, 3, undefined, true);
+    expect(bare.summary).not.toContain('last failure:');
+    expect(bare.details).not.toContain('classified as');
+    // The reason suffix is folded into the non-auto-paused warning branch too,
+    // not just the auto-paused one.
+    const warning = buildScheduleFailureAlert(
+      { id: 's1', name: 'Belt' },
+      3,
+      3,
+      undefined,
+      false,
+      { reasonCode: 'provider_failure', provider: 'grok-build' },
+    );
+    expect(warning.summary).toContain('has failed 3 consecutive runs (last failure: provider_failure (grok-build))');
+    expect(warning.summary).not.toContain('auto-paused');
+    expect(warning.details).toContain('classified as provider_failure (grok-build)');
+  });
+});
+
 describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
-  function alertServiceHarness(threshold: number): {
+  function alertServiceHarness(
+    threshold: number,
+    resolveTerminalReason?: (taskId: string) => ScheduleTerminalReason | undefined,
+  ): {
     service: ScheduleService;
     store: ScheduleStore;
     dir: string;
@@ -889,6 +943,7 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       validator: new ScheduleValidator(),
       emitAlert: (message) => alerts.push(message),
       getFailureAlertThreshold: () => threshold,
+      ...(resolveTerminalReason ? { resolveTerminalReason } : {}),
     });
     return { service, store, dir, alerts, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
   }
@@ -1014,6 +1069,216 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
       const recovery = alerts.filter((a) => a.operationalAlert?.state === 'recovered');
       expect(recovery).toHaveLength(1);
       expect(recovery[0].severity).toBe('info');
+    } finally {
+      cleanup();
+    }
+  });
+
+  // ---- issue #3157: classified auto-pause page + recovery on every re-enable ----
+
+  it('the terminal-path auto-pause alert names the classified failure reason (issue #3157)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2, (taskId) =>
+      taskId === 'task-timeout'
+        ? { reasonCode: 'timeout', source: 'watchdog', at: '2026-01-01T09:06:00.000Z' }
+        : undefined,
+    );
+    try {
+      const schedule = store.create({
+        name: 'Requirements-Redundancy Research Loop',
+        cron: '* * * * *',
+        playbook: { path: 'research.md', parameters: {} },
+        cwd: '/tmp',
+      });
+
+      // One dispatch failure, then a genuine timeout crash crosses the threshold
+      // of 2 and fail-closed pauses on the terminal path.
+      await pauseByFailures(service, store, schedule.id, 'task-timeout');
+
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).toContain('auto-paused');
+      // The offline operator now learns WHY the belt died, not just the count.
+      expect(fired[0].summary).toContain('(last failure: timeout)');
+      expect(fired[0].details).toContain('classified as timeout');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('surfaces the provider on a provider_failure auto-pause alert (issue #3157)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2, () => ({
+      reasonCode: 'provider_failure',
+      source: 'provider_admission',
+      provider: 'claude-code',
+      at: '2026-01-01T09:06:00.000Z',
+    }));
+    try {
+      const schedule = store.create({
+        name: 'ProviderOutageLoop',
+        cron: '* * * * *',
+        playbook: { path: 'research.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-prov', false);
+      await service.recordTaskTerminalOutcome('task-prov', 'cancelled', 'oom');
+
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).toContain('(last failure: provider_failure (claude-code))');
+      // The terminationReason arg is `oom` but the surfaced label is
+      // provider_failure — proving the classified reason (resolveTerminalReason),
+      // not the raw arg, is what reaches the page. Assert details parity too.
+      expect(fired[0].details).toContain('classified as provider_failure (claude-code)');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('surfaces an unknown-class terminal failure on the auto-pause alert (issue #3157, AC1)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2, () => ({
+      reasonCode: 'unknown',
+      source: 'restart_recovery',
+      at: '2026-01-01T09:06:00.000Z',
+    }));
+    try {
+      const schedule = store.create({
+        name: 'UnknownDeathLoop',
+        cron: '* * * * *',
+        playbook: { path: 'research.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      const receipt = await service.reserveExecution(store.get(schedule.id)!, 'cron', '2026-01-01T09:05:00.000Z');
+      await service.markExecutionAccepted(schedule.id, receipt.id, 'task-unknown', false);
+      // A hard crash surfaces as `unknown` (session death, not restart-excused).
+      await service.recordTaskTerminalOutcome('task-unknown', 'cancelled', 'unknown');
+
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].summary).toContain('(last failure: unknown)');
+      expect(fired[0].details).toContain('classified as unknown');
+    } finally {
+      cleanup();
+    }
+  });
+
+  /**
+   * Drive a schedule to a fail-closed `consecutive_failures` pause via the
+   * terminal path (threshold 2: one dispatch failure + one genuine timeout).
+   */
+  async function pauseByFailures(service: ScheduleService, store: ScheduleStore, scheduleId: string, taskId: string): Promise<void> {
+    await failOnce(service, store, scheduleId, '2026-01-01T09:00:00.000Z');
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', '2026-01-01T09:05:00.000Z');
+    await service.markExecutionAccepted(scheduleId, receipt.id, taskId, false);
+    await service.recordTaskTerminalOutcome(taskId, 'cancelled', 'timeout');
+  }
+
+  it('operator re-enable clears the fired schedule:failures state with one recovery alert (issue #3157)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'ReenableRecovery',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await pauseByFailures(service, store, schedule.id, 'task-a');
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+
+      await service.setEnabled(schedule.id, true);
+
+      const recovery = alerts.filter((a) => a.operationalAlert?.state === 'recovered');
+      expect(recovery).toHaveLength(1);
+      expect(recovery[0].severity).toBe('info');
+      expect(recovery[0].operationalAlert?.key).toBe(`schedule:failures:${schedule.id}`);
+      // The re-enable recovery must NOT claim the loop self-healed by completing
+      // a run (issue #3157 correctness): no run completed, it was force-cleared.
+      expect(recovery[0].summary).toContain('re-enabled');
+      expect(recovery[0].summary).not.toContain('completed a run');
+      expect(recovery[0].details).toContain('not a completed run');
+      const after = store.get(schedule.id)!;
+      expect(after.consecutiveFailures).toBe(0);
+      expect(after.stopReason).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('transient re-arm clears the fired schedule:failures state with one recovery alert (issue #3157)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'LaunchErrorLoop',
+        cron: '*/15 * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // Three launch_error failures cross threshold 3 and fail-closed pause.
+      await failOnce(service, store, schedule.id, '2026-08-12T12:30:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-08-12T12:45:00.000Z');
+      await failOnce(service, store, schedule.id, '2026-08-12T13:00:00.000Z');
+      expect(store.get(schedule.id)!.enabled).toBe(false);
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'fired')).toHaveLength(1);
+      stampLastEvaluatedAt(store, schedule.id, '2026-08-12T13:00:00.000Z');
+
+      const result = await service.rearmTransientFailureHolds(true, '2026-08-13T08:34:00.000Z');
+      expect(result.rearmed.map((r) => r.id)).toEqual([schedule.id]);
+
+      const recovery = alerts.filter((a) => a.operationalAlert?.state === 'recovered');
+      expect(recovery).toHaveLength(1);
+      expect(store.get(schedule.id)!.enabled).toBe(true);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('bulk-recover clears the fired schedule:failures state with one recovery alert per schedule (issue #3157)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(2);
+    try {
+      const schedule = store.create({
+        name: 'BulkRecoverLoop',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      await pauseByFailures(service, store, schedule.id, 'task-b');
+      expect(store.get(schedule.id)!.stopReason).toBe('consecutive_failures');
+
+      const result = await service.recoverConsecutiveFailureHolds();
+      expect(result.recovered.map((r) => r.id)).toEqual([schedule.id]);
+
+      const recovery = alerts.filter((a) => a.operationalAlert?.state === 'recovered');
+      expect(recovery).toHaveLength(1);
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('re-enabling a schedule that never crossed the threshold emits no recovery alert (issue #3157 guard)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const schedule = store.create({
+        name: 'BelowThresholdToggle',
+        cron: '* * * * *',
+        playbook: { path: 'daily.md', parameters: {} },
+        cwd: '/tmp',
+      });
+      // One failure (count 1 < threshold 3): no fired alert ever emitted.
+      await failOnce(service, store, schedule.id, '2026-01-01T09:00:00.000Z');
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(1);
+      // Operator toggles it off then on again.
+      await service.setEnabled(schedule.id, false);
+      await service.setEnabled(schedule.id, true);
+
+      expect(alerts.filter((a) => a.operationalAlert?.state === 'recovered')).toHaveLength(0);
+      // The counter still resets on re-enable (existing #2353 behavior).
+      expect(store.get(schedule.id)!.consecutiveFailures).toBe(0);
     } finally {
       cleanup();
     }
