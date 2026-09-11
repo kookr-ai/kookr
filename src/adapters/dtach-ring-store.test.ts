@@ -92,6 +92,30 @@ describe('DtachRingStore', () => {
     expect(restored.lastFlushedHead).toBe(payload.length);
   });
 
+  it('defers an over-budget snapshot until older writes finish, including after resize', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
+    const store = new DtachRingStore(tmpDir, { asyncPersistence: true, asyncMaxBytes: 200 });
+    const state = createDtachRingState('fallback-race', 128);
+    store.copyInto(state, Buffer.from('A'.repeat(80)));
+    store.persist(state);
+    shrinkRing(state, 64);
+    store.copyInto(state, Buffer.from('B'.repeat(16)));
+    store.persist(state);
+    expect(store.persistenceStats().rejected).toBe(1);
+    await store.drain();
+    // The last-flushed marker must request another flush while the newest
+    // bytes are still only in memory. Shutdown performs this after draining.
+    expect(state.lastFlushedHead).not.toBe(state.ringHead);
+    store.persist(state);
+    await store.drain();
+    const restored = createDtachRingState(state.id, 128);
+    store.load(restored);
+    const out = Buffer.alloc(restored.ringHead);
+    store.copyFrom(restored, restored.ringHead, out.length, out);
+    expect(out.toString()).toBe('A'.repeat(48) + 'B'.repeat(16));
+    expect(state.lastFlushedHead).toBe(state.ringHead);
+  });
+
   it('does not restore a stale flushed head after the ring is shrunk mid-flush (#3145)', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'dtach-ring-test-'));
     const store = new DtachRingStore(tmpDir, { asyncPersistence: true });

@@ -57,6 +57,8 @@ export function createLatestSnapshotWriter(options: SnapshotWriterOptions) {
       else start(id, state, bytes);
       return true;
     },
+    /** True while any write or removal still owns this session's file. */
+    owns(id: string): boolean { return sessions.has(id); },
     /** Fence removal against an in-flight atomic rename and reject new flushes. */
     async retire(id: string): Promise<void> {
       let state = sessions.get(id);

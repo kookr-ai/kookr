@@ -172,6 +172,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   /** True after `close()` has torn down the backend. Prevents double-close. */
   private closed = false;
+  private closePromise: Promise<void> | null = null;
+  private readonly asyncRingPersistence: boolean;
 
   /**
    * Stable outcome of constructor-time startup recovery (issue #2828). Starts
@@ -196,6 +198,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private readonly recovery: LocalDtachRecovery;
 
   constructor(options: LocalDtachBackendOptions = {}) {
+    this.asyncRingPersistence = options.asyncRingPersistence === true;
     this.instanceId = options.instanceId ?? 'default';
     this.dtachBinary = options.dtachBinary ?? 'dtach';
     this.agentCpuList = validateAgentCpuList(options.agentCpuList, process.platform);
@@ -332,6 +335,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
    * re-attach to them. Idempotent.
    */
   close(): void {
+    if (this.asyncRingPersistence) { void this.closeAndDrain(); return; }
     if (this.closed) return;
     this.closed = true;
     this.stopTimerAndFlush();
@@ -353,23 +357,24 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     }
   }
 
-  /** Close attach clients, then await the isolated host's final ring writes. */
-  async closeAndDrain(): Promise<void> {
-    if (this.closed) { await this.ringStore.drain(); return; }
+  /** Freeze ring producers, drain older writes, then persist the final snapshot. */
+  closeAndDrain(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    if (this.closed) return this.ringStore.drain();
     this.closed = true;
-    // Stop the periodic flush, then DRAIN in-flight async snapshot writes BEFORE
-    // the final flush. Otherwise an older async rename still in flight can
-    // complete during the trailing drain() and rename over (clobber) the final
-    // synchronous-fallback snapshot for a session, losing its newest scrollback
-    // (#3145). After the drain no async write is outstanding for any ring, so
-    // the final flush's writes are the last to touch each file.
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
-    await this.ringStore.drain();
-    this.stopTimerAndFlush();
-    await this.ringStore.drain();
+    // Preserve ring state while preventing new output or resize-triggered
+    // flushes from racing the drain. The dtach masters continue running.
+    for (const session of this.attached.values()) this.stream.disposeAttachChildOnly(session);
+    this.closePromise = (async () => {
+      await this.ringStore.drain();
+      this.stopTimerAndFlush();
+      await this.ringStore.drain();
+    })();
+    return this.closePromise;
   }
 
   getPersistenceStats() { return this.ringStore.persistenceStats(); }

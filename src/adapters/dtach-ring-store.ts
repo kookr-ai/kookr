@@ -298,12 +298,12 @@ export class DtachRingStore {
         const { head, bytes } = this.snapshot(state);
         this.snapshotOwners.set(bytes, { state, head, resetSeq: state.resetSeq ?? 0 });
         if (this.asyncWriter.enqueue(state.id, bytes)) return;
-        // The async writer is at its byte/session budget — e.g. many dirty rings
-        // flushed together at graceful shutdown exceed it. The rejected snapshot
-        // was previously dropped silently and its source ring then disposed,
-        // losing a session's newest scrollback. Fall through to a synchronous
-        // write so this ring is durable before it can be discarded.
         this.snapshotOwners.delete(bytes);
+        // A synchronous rename must never pass an older async rename for the
+        // same file. Keep this ring dirty for a later tick; shutdown drains old
+        // writes before its final flush. An unrelated session's budget pressure
+        // can still use the synchronous fallback safely.
+        if (this.asyncWriter.owns(state.id)) return;
       }
       // `rings/` sits under the /tmp instance directory and can be swept away
       // while the server runs. Re-create it here so a vanished directory costs
