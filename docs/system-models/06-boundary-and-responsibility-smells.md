@@ -35,7 +35,13 @@ None found. V1 is simple enough that control paths are singular.
 |---|---|---|---|---|
 | 1 | **Backend monolith** — the single backend process mixes HTTP serving, WebSocket handling, process management, supervisor logic, and task persistence | server/index.ts | Medium — **Accepted simplification** |
 
-**#1 Decision (accepted, updated 2026-05-19):** This is a known architectural simplification for V1, not a smell. The process is one, but the code is modular: `server/` (HTTP + WS), `core/` (tasks, supervisor), `adapters/` (dtach + agent I/O), `remote/` (session-sharing policy/transport domain), and `frontend/` (SPA). Each concern has defined interfaces and is independently testable. **Extraction trigger:** revisit if supervisor CPU usage interferes with HTTP/WS responsiveness, or if the module count exceeds what a single process can cleanly organize.
+**#1 Decision (updated 2026-09-10):** The default backend remains one process,
+with modular server, core, adapter, remote and frontend code. Terminal transport
+can now run in an experimental child process with `KOOKR_TERMINAL_HOST=true`;
+supervision, task policy, HTTP and dashboard updates stay in the main process.
+This responds to the original extraction trigger: supervision competing with
+terminal responsiveness. Isolation is off by default while platform and
+mixed-load qualification remain incomplete; it is not a general service split.
 
 ### Resolved: Design-vs-Reality for AskUserQuestion (issue #3)
 

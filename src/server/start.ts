@@ -11,6 +11,7 @@ import { accessSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { LocalDtachBackend } from '../adapters/local-dtach-backend.js';
+import { TerminalHostBackend } from './terminal-host.js';
 import { createKookrServer } from './index.js';
 import { createSystemdNotifier } from './systemd-notify.js';
 import { resolveApiAuth, type ApiAuthConfig } from './auth.js';
@@ -219,12 +220,17 @@ async function main(): Promise<void> {
   // Fleet ring budget (issue #1779): caps sum of live ring capacities and
   // shrinks least-recently-active rings under pressure. `0` disables.
   const ringFleetBudgetBytes = readRingFleetBudgetBytesFromEnv();
-  const terminalBackend = new LocalDtachBackend({
+  // Opt-in until the cross-platform fault matrix and sustained load gates are
+  // qualified. The default remains the in-process rollback for this release.
+  const terminalOptions = {
     instanceId: INSTANCE_ID,
     dtachBinary,
     ringFleetBudgetBytes,
     agentCpuList: process.env.KOOKR_AGENT_CPU_LIST,
-  });
+  };
+  const terminalHost = process.env.KOOKR_TERMINAL_HOST === 'true'
+    ? await TerminalHostBackend.create(terminalOptions) : undefined;
+  const terminalBackend = terminalHost ?? new LocalDtachBackend(terminalOptions);
   console.log(
     `[terminal] backend=dtach instanceId=${INSTANCE_ID} dtach=${dtachBinary}`
     + ` ringFleetBudgetBytes=${ringFleetBudgetBytes}`,
@@ -265,6 +271,8 @@ async function main(): Promise<void> {
     saveIntervalMs: 5000,
     livenessIntervalMs: 5000,
     terminalBackend,
+    terminalHost,
+    terminalInputCoordinator: terminalHost?.inputCoordinator,
     terminalInstanceDir: terminalBackend.getInstanceDir(),
     sttUrl,
     ttsUrl,

@@ -1,147 +1,127 @@
 ---
 name: kookr-terminal-backend
-description: How Kookr runs agent terminal sessions — TerminalBackend interface, dtach persistence, KOOKR_BACKEND env var, SessionBridge routing, legacy tmux paths. Use when touching adapter launch code, session I/O, stuck detection's paneContent, reconciliation, or the circuit-breaker-registry terminal entry.
-keywords: terminal, dtach, tmux, TerminalBackend, LocalDtachBackend, SessionBridge, TerminalBridge, TmuxTerminalManager, CircuitBreakerTerminalManager, KOOKR_BACKEND, bridgeKind, reconcile, captureDisplay, sendInput, agent launch
-related: claude-code-hooks, logging-design-patterns
+description: Maintain Kookr's dtach terminal backend, browser streaming, terminal-host isolation, and session recovery. Use for session I/O or terminal responsiveness work in the Kookr source checkout.
 ---
 
-# Kookr Terminal Backend
+# Kookr terminal backend
 
-Kookr runs agents (Claude Code, Codex CLI) in persistent terminal sessions so the agent survives Kookr restart. Two backends coexist in the code:
+Coding agents survive a Kookr restart because dtach owns their processes. Kookr
+owns an attach client, not the lifetime of the shell. Terminal transport failure
+must remain distinct from evidence that an agent exited.
 
-- **dtach** (`LocalDtachBackend` at `src/adapters/local-dtach-backend.ts`) — current default as of v7 Main B.b (#343, 2026-04-21). Byte-transparent. Unix-socket-based. Selected when `KOOKR_BACKEND !== 'tmux'`.
-- **tmux** (`TmuxTerminalManager` at `src/adapters/tmux-terminal-manager.ts`) — legacy. Still constructed at startup. Kept for the `KOOKR_BACKEND=tmux` rollback path. Scheduled for deletion in V8 (`docs/rfc/rfc-v8-tmux-removal.md`).
+## Find the owner before editing
 
-## Two interface shapes (know which one you're holding)
+- `src/adapters/terminal-backend.ts` is the current contract. There is no tmux
+  rollback backend or returned `SessionHandle`. Lifecycle, byte writes, capture,
+  resize, stream subscriptions, and diagnostics use one `TerminalBackend`.
+- `LocalDtachBackend` owns the manifest, rings, and one persistent attach per
+  session. `local-dtach-stream.ts` owns the byte path; recovery is in
+  `local-dtach-recovery.ts`.
+- `src/server/start.ts` selects the default in-process backend. The experimental
+  `KOOKR_TERMINAL_HOST=true` path instead constructs `TerminalHostBackend`; its
+  child owns the real backend, input coordinator, terminal sockets, asynchronous
+  ring persistence, and reconstruction worker. Never construct both real owners
+  for the same instance directory.
+- `TerminalInputCoordinator` serializes input and tracks prompt ownership.
+  Preserve its epoch and cleanup fences for HTTP, WebSocket, and adapter input.
+  No transport retry may silently replay an input whose delivery is uncertain.
 
-```
-TerminalManager (legacy, tmux-shaped)
-├── createSession(name, command, options)
-├── sendKeys(name, keys)           // text + Enter
-├── pasteText(name, text)          // bracketed paste (Codex only)
-├── sendKeystroke(name, key)       // single key, no Enter
-├── capturePane(name, lines?)      // rendered screen text
-├── isAlive(name)
-├── killSession(name)
-├── listSessions(prefix?)
-└── setSessionOption(name, opt, val)  // tmux-only
+The legacy names `tmuxName` and `session.tmuxSession` identify dtach sessions.
+Renaming the persisted field requires a schema migration; it is not a switch of
+terminal technology.
 
-TerminalBackend (new, backend-agnostic)
-├── createSession(spec: SessionSpec): Promise<SessionHandle>
-├── attachSession(id): Promise<SessionHandle>
-├── listSessions(): Promise<SessionId[]>
-├── isAlive(id)
-└── killSession(id)
+## Browser streaming invariants
 
-SessionHandle (returned by createSession/attachSession)
-├── write(data: Uint8Array)    // byte-transparent
-├── resize(cols, rows)
-├── onData(cb)                 // subscribe to child PTY bytes
-├── onExit(cb)
-└── dispose()                  // detach; child survives
-```
+`session-bridge.ts`, `terminal-protocol-connection.ts`, and
+`terminal-output-queue.ts` serve the terminal socket. The fake bridge is for
+functional tests, not native transport measurements.
 
-## Backend selection at startup
+- Protocol v2 is explicitly negotiated. Browser credit acknowledges bytes only
+  after xterm parses them; socket receipt is not consumption. Keep the legacy
+  protocol until migration usage has actually been measured.
+- Source epochs and absolute positions belong to backend output, independently
+  of ring indices. Append before publishing, and return owned atomic capture
+  snapshots. A relay stream gap invalidates its cursor immediately, even if no
+  later output arrives.
+- `terminal-writer.ts` is the sole browser write/reset owner. It chunks writes
+  and shares a fair scheduler between panes. Old asynchronous parser callbacks
+  must drain before a new session resets the same emulator.
+- Exact resume needs the same retained parser, source epoch, byte range, and
+  geometry. Initial and explicitly requested new views may remain interactive
+  with an approximation warning, but truncated or reconstructed bytes cannot
+  certify an exact-resume cursor. Persisted rings restart their offsets at zero
+  without proving that the original prefix survived; carry origin completeness
+  separately. Show unavailable recovery explicitly; do not inject Ctrl+L or
+  secretly resize an agent to manufacture a redraw.
+- Keep scrolling local to xterm. Preserve fractional wheel movement, selection,
+  and the viewed history until eviction makes preservation impossible. Hidden
+  panes must not schedule input, fit work, or stale scroll callbacks.
 
-`src/server/start.ts:42`:
-```ts
-const BACKEND_KIND: 'tmux' | 'dtach' = process.env.KOOKR_BACKEND === 'tmux' ? 'tmux' : 'dtach';
-```
+## Isolated host failure and authentication
 
-- `BACKEND_KIND === 'dtach'` → `LocalDtachBackend` constructed + passed to adapters as `options.backend`.
-- `TmuxTerminalManager` is **always** constructed (`start.ts:180`) and passed as `terminal`, regardless of BACKEND_KIND. This is intentional — the adapters' legacy method paths still thread through it.
+The main HTTP upgrade handler checks origin, authentication, canonical session
+identity, and viewer scope before transferring a paused socket. The child opens
+no network listener. Read-only viewers need a renewable, expiring authorization
+lease; loss of the main process must not leave an authorized socket open forever.
 
-## The critical seam: adapter partial wiring
+Every IPC request and socket handoff is generation-fenced and bounded. Control
+traffic has reserved queue capacity. Main-process diagnostics are cached and
+become unavailable when stale; they must not invent a live prompt epoch.
 
-`ClaudeCodeAdapter` / `CodexCliAdapter` receive both `terminal` and `backend`:
+Before restarting a host, confirm the old child exited and its attach clients
+released the instance. Never kill an unverified process to force that proof.
+An unavailable host must not make reconciliation or Ralph startup declare live
+agents dead. Restore parent-owned session membership into each new child before
+later readiness marks, using fresh epochs. Test registrations and cleanup during
+an outage as well as interrupted input and surviving dtach masters. Saturate
+ordinary RPCs while asserting readiness admission at both ends; a shared count
+cap alone does not reserve capacity. Catch fire-and-forget hook-update failures.
+A rejected WebSocket handshake may close its raw socket without throwing or
+calling the upgrade callback; release its reservation from that closure too.
 
-```ts
-// launch() — uses backend when set:
-if (this.backend) {
-  await this.backend.createSession({...});   // dtach path
-} else {
-  await this.terminal.createSession(...);    // tmux path
-}
+## Persistence and reaping
 
-// sendInput / sendKeystroke / stop / captureDisplay — ALWAYS use terminal:
-await this.terminal.sendKeys(tmuxName, text);
-```
+Default sockets live under `/tmp/kookr-dtach/<uid>/<instanceId>/`; production and
+development use different instance IDs. `DtachManifestStore` owns atomic
+manifest updates. Instance directories can disappear under a temp sweeper, so
+write paths recreate them immediately before writing.
 
-**Consequence:** when `KOOKR_BACKEND=dtach`, sessions live in dtach, but per-session ops still call `tmux send-keys -t kookr-XXXX` → throws "no such session" → breaker increments.
+Async ring persistence retains at most one active and one latest pending
+snapshot per session, with a fleet budget. Deletion retires pending writes before
+unlinking a ring. Never use synchronous fallback while an async write or removal
+owns the same file: an older rename can land last. Leave the source ring dirty
+for retry. Shutdown freezes producers, drains older writes, then performs and
+drains the final flush. All concurrent close callers share its completion.
 
-**V8 fixes this by porting per-session ops onto the backend** (new `backend.write(id, bytes)` + `writeSequence(id, payloads[])`).
+`reconciliation.ts` computes live/orphan state. `SessionReaperService` separately
+applies age and ownership policy via `killSession`; it must not race a pending
+launch or cross instance boundaries. The startup attach sweep is not permission
+to kill agents or another server's attach clients.
 
-## The CircuitBreaker (currently named `'tmux'`)
+## Verify the path being claimed
 
-`src/server/index.ts:220`:
-```ts
-const tmuxBreaker = new CircuitBreaker({ name: 'tmux', failureThreshold: 5, failureWindowMs: 60_000, resetTimeoutMs: 15_000 });
-const wrappedTerminal = new CircuitBreakerTerminalManager(terminal, tmuxBreaker);
-```
+Use focused Vitest suites for byte order, source continuity, parser transitions,
+bounded queues, input epochs, leases, and host failure. Real xterm tests cover
+UTF-8, control sequences, modes, cursor state, and viewport retention.
 
-- Only wraps `TerminalManager` calls (the legacy path).
-- Does **not** wrap dtach backend calls.
-- The "tmux" label is correct re: implementation but misleading re: operator intent — failures it catches are always adapter-legacy-path calls failing for missing tmux sessions.
+For rendering measurements, run `scripts/terminal-perf/run.ts` in a headed
+browser on the native dtach backend. `--mixed` includes the real dashboard,
+hooks, transcript ingestion, and captures; `--isolated` exercises the child.
+Record active producers separately from stored tasks and delivered browser rows.
+A fast terminal-only probe does not prove the dashboard stays responsive.
+`--profile` adds CPU profiling and disables minification: use it to diagnose,
+not as the timed release comparison.
 
-**Dashboard symptom:** breaker showing `open` state with 3+ failures when `KOOKR_BACKEND=dtach` is the default = not a tmux bug, it's the adapter-partial-wiring bug. RFC v8 deletes the breaker entirely in favor of backend-emitted structured `BackendError` events.
+Inspect the emitted screenshot and JSON report. Marker timing starts outside
+the server and ends after xterm's render event plus a browser frame opportunity;
+it is not GPU presentation timing or input echo latency. Report missing markers,
+the actual renderer, and incomplete platform/agent-fixture coverage.
 
-## WebSocket routing: three bridge kinds
+On WSL, native process tests can mistake orphan zombies for live processes if
+PID 1 does not reap them. Run those tests under a test-only subreaper when needed;
+do not alter production liveness rules to hide the test-environment artifact.
+Avoid running the full test suite alongside performance measurements.
 
-`src/server/index.ts:745-786` — when a browser xterm.js connects to `/ws/terminal/<session>`:
-
-1. **FakeTerminalBridge** — E2E / demo mode (`useFakeTerminalBridge`).
-2. **SessionBridge** (new, byte-transparent) — if `terminalBackend?.isAlive(id)` returns true. Uses `backend.attachSession()` + ring buffer.
-3. **TerminalBridge** (legacy, tmux) — fallback. Spawns `tmux attach -t <id>` via node-pty. Used when dtach doesn't know the session (e.g., pre-V7 tmux-era session, or a stale session ID from task store).
-
-Sessions with `kind=terminal` bridge opens in the log are the tell-tale sign of a task whose session ID points to a session that dtach does not have.
-
-## dtach on-disk layout
-
-- **Sockets:** `/tmp/kookr-dtach/<uid>/<instanceId>/<sessionId>.sock` (e.g. `/tmp/kookr-dtach/1000/port-4800/kookr-c1c8bcc4.sock`).
-- **Manifest:** `/tmp/kookr-dtach/<uid>/<instanceId>/manifest.json` — array of `{sessionId, pid, startedAt, status, sock}`. Written atomically via temp+rename. `LocalDtachBackend` owns this exclusively.
-- **Per-instance isolation:** `instanceId = port-${PORT}`. `kookr-prod` (port 4800) and dev (4801) never collide.
-- **Session ID cap 40 chars** — keeps socket paths under Linux UDS 107-byte limit.
-- **The instance directory self-heals (#3042).** It lives in `/tmp`, so an OS temp sweeper, `scripts/rollback-dtach.sh`, or a stray `rm` can delete it while the server runs. Every write path (`DtachManifestStore.writeAtomic`, `LocalDtachBackend.createSession`, `DtachRingStore.persist`) re-creates it via `ensureDtachDir` immediately before writing. Before that fix it was created once in the backend constructor, so losing it made **every** launch fail with a bare `ENOENT` on the manifest temp file until the server was restarted. If you see that ENOENT in `~/.kookr/server.log`, `mkdir -p` the directory — no restart needed.
-
-## Reconciliation
-
-`src/server/reconciliation.ts`:
-- Takes a `TerminalManager` (NOT wrappedTerminal — not breaker-guarded). Calls `terminal.listSessions('kookr-')`.
-- **Problem for dtach:** tmux's list returns `[]` when there's no tmux server running; this silently makes ALL task sessions look dead to reconcile.
-- Fixed partially in PR #346 (commit `a42ccfd` — "reconcile queries dtach backend") but reconcile still calls `TerminalManager`.
-- V8 changes the signature to `reconcile(taskStore, backend: TerminalBackend)`.
-- `reconcile()` only COMPUTES the orphan set (sessions the backend reports live that no task accounts for — including a session whose OWN record already carries `lastStatus: 'completed'`/`'aborted'`, since the loop `continue`s past those without marking them accounted-for). It never acts on it.
-
-## Session reaping (issue #1720)
-
-`src/server/session-reaper.ts` (`SessionReaperService`) is the separate "act on it" step run after every `reconcile()` call (boot + periodic liveness tick, wired from `index.ts` / `lifecycle-timers.ts`):
-- Cross-references every backend-reported live session against the TaskStore itself (not reconcile's output) and classifies each with the pure `src/core/session-reap-policy.ts` logic into `unowned` (leak class 1 — the original orphan report) or `terminal-task-leak` (leak class 2 — task already `completed`/`terminated`/`cancelled`, or its session record already terminal, but the process tree is still resident; e.g. `completeTask`'s fire-and-forget `adapter.stop()` silently failed).
-- Reaps via the backend's existing `killSession` (TERM → grace → KILL + socket removal) once past an age/grace threshold (`KOOKR_REAP_ORPHAN_AGE_MS` default 24h for unowned sessions — never race a mid-launch session per #1537 item 2 — or the shorter `KOOKR_REAP_ORPHAN_AGE_UNDER_PRESSURE_MS` default 2h when dtach count ≥ soft bound 20, issue #2081; `KOOKR_REAP_TERMINAL_TASK_GRACE_MS` default 60s for owned leaks, since the owning task is already known to be done). Master flag `KOOKR_REAP_ORPHAN_SESSIONS` (default on). Each sweep logs `effectiveOrphanAgeMs` and surfaces it on `/api/health` → `sessionReaper`.
-- Boot-only `runStaleAttacherSweep` (backed by `src/adapters/dtach-attach-reaper.ts`) kills leaked `dtach -a` attach-client processes from dead server generations (leak class 3), scoped to `LocalDtachBackend.getInstanceDir()` so it never touches another port's sessions or a user's own terminal.
-- Every reap is logged to `audit.jsonl` and surfaced cheaply (cached counters, no re-scan) on `GET /api/health`'s `sessionReaper` block.
-
-## Gotchas
-
-- **`tmuxName` parameter name is load-bearing in logs** but has nothing to do with tmux post-v7. Leaky abstraction. Planned for rename in a follow-up PR.
-- **`session.tmuxSession` field in persisted `tasks.json`** — same story. Renaming requires a schema-migration step.
-- **TmuxTerminalManager swallows some errors, throws others.** `listSessions`, `killSession`, `isAlive`, `setSessionOption` swallow "no such session." `sendKeys`, `capturePane`, `pasteText`, `sendKeystroke` throw it. Breaker sees only the throwing paths.
-- **TerminalBridge spawns `tmux attach` via node-pty directly** — does NOT go through the breaker. So bridge open failures don't count toward breaker.
-- **Cutover detection runs on every dtach startup** (`start.ts:124-164`) — runs `tmux list-sessions`, warns about stale `kookr-*` sessions. Noise after V7 has baked; V8 removes this.
-
-## Where to make changes
-
-| Task | File |
-|---|---|
-| Change how sessions are spawned | `ClaudeCodeAdapter.launch` / `CodexCliAdapter.launch` |
-| Change per-session I/O | Same adapters' `sendInput`/`sendKeystroke`/`stop`/`captureDisplay` |
-| Change backend selection / startup | `src/server/start.ts:42, 108-167, 180` |
-| Change WS routing | `src/server/index.ts:733-794` |
-| Change reconciliation | `src/server/reconciliation.ts` + `src/server/index.ts:409, 419-421` |
-| Change breaker | `src/server/index.ts:220, 224, 237` + `src/adapters/circuit-breaker-terminal-manager.ts` |
-
-## References
-
-- V7 RFC: `docs/rfc/rfc-claude-code-terminal-parity.md`
-- V8 RFC: `docs/rfc/rfc-v8-tmux-removal.md`
-- ADR-014 local-dtach-backend.
-- ADR-007 managed-terminal-sessions (to be superseded).
+Read `docs/reports/terminal-responsiveness-validation.md` for the measured scope
+and remaining qualification limits, and
+`docs/rfc/rfc-terminal-responsiveness.md` for the approved protocol and budgets.

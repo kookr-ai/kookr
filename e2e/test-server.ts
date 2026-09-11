@@ -99,7 +99,7 @@ async function main() {
     hooksDir: join(tempDir, 'hooks'),
     settingsDir: join(tempDir, 'settings'),
     serverCwd: '/home/user/projects',
-    frontendDir: './dist/frontend',
+    frontendDir: process.env.E2E_FRONTEND_DIR ?? './dist/frontend',
     saveIntervalMs: 600_000,
     livenessIntervalMs: 600_000,
     terminalBackend: terminal,
@@ -469,6 +469,10 @@ async function main() {
     terminal.sessions.clear();
     FakeTerminalBridge.clearContent();
     injectedSessionIds.clear();
+    // Prior replies otherwise keep the live-friction footer visible in later
+    // tests, changing the available terminal height on mobile.
+    const interactionPath = server.interactionLog.getFilePath();
+    if (interactionPath) rmSync(interactionPath, { force: true });
     rmSync(join(tempDir, 'coordinator-suppressions.json'), { force: true });
     rmSync(join(tempDir, 'coordinator-feedback.jsonl'), { force: true });
 

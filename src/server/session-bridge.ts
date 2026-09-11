@@ -12,9 +12,12 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalSourceRange } from '../shared/terminal-stream.js';
+import { TERMINAL_CLOSE, TERMINAL_V2_PROTOCOL } from '../shared/terminal-protocol.js';
+import { TerminalProtocolConnection, type TerminalAttachRequest } from './terminal-protocol-connection.js';
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
-import { reconstructAbsoluteTuiScreen } from './absolute-position-tui-screen.js';
+import { reconstructAbsoluteTuiScreen, reconstructAbsoluteTuiScreenResult } from './absolute-position-tui-screen.js';
 import { getHotPathSampler } from '../core/hot-path-sampler.js';
 import {
   getTerminalSeedFrameCache,
@@ -68,7 +71,8 @@ export interface AttachTimingControlFrame {
    * extra fields ignore them; those that do gate `request-history` on
    * `historyAvailable` + this version.
    */
-  protocolVersion: typeof TERMINAL_ATTACH_PROTOCOL_VERSION;
+  protocolVersion: 1 | 2;
+  generation?: string;
   /** True when more ring bytes exist than the attach seed (streaming only). */
   historyAvailable: boolean;
   /** How the default attach seed was chosen. */
@@ -396,6 +400,10 @@ export class SessionBridge {
   private historyAvailable = false;
   /** True once a request-history full payload has been sent on this bridge. */
   private historyDelivered = false;
+  private v2: TerminalProtocolConnection | null = null;
+  private v2LastRange: TerminalSourceRange | null = null;
+  private v2ReplayEpoch: string | null = null;
+  private v2Seeding = false;
 
   constructor(
     sessionId: SessionId,
@@ -473,6 +481,10 @@ export class SessionBridge {
   }
 
   async start(_cols = 120, _rows = 40): Promise<void> {
+    if (this.ws.protocol === TERMINAL_V2_PROTOCOL) {
+      this.startV2();
+      return;
+    }
     const startedAt = performance.now();
     let resizeWaitMs = 0;
     let captureMs = 0;
@@ -788,6 +800,169 @@ export class SessionBridge {
     });
   }
 
+  private startV2(): void {
+    if (this.v2 || this.closed) return;
+    this.onBridgeOpened?.(this.sessionId);
+    this.bridgeHealthStarted = true;
+    this.v2 = new TerminalProtocolConnection({
+      ws: this.ws, readOnly: this.readOnly,
+      onAttach: (request) => this.attachV2(request),
+      onClosed: () => this.dispose(),
+      onControl: (control) => {
+        switch (control.type) {
+          case 'input': {
+            const bytes = new TextEncoder().encode(control.text);
+            this.safeForwardWrite(bytes);
+            this.notifyInput(bytes);
+            break;
+          }
+          case 'input-bytes': {
+            const bytes = Buffer.from(control.base64, 'base64');
+            this.safeForwardWrite(bytes);
+            this.notifyInput(bytes);
+            break;
+          }
+          case 'paste': this.forwardPaste(control.text); break;
+          case 'resize': this.handleResizeControl(control.cols, control.rows); break;
+          case 'request-history': {
+            if (this.v2Seeding || this.lastAttachSeed === 'absolute' || !this.historyAvailable) {
+              this.v2?.output.control({ type: 'history-unavailable', generation: this.v2.generation });
+              break;
+            }
+            const size = this.lastAppliedResize ?? { cols: 80, rows: 24 };
+            void this.attachV2({ type: 'attach', generation: control.generation,
+              attachId: this.attachId ?? randomUUID(), ...size, acceptGap: true }, true);
+            break;
+          }
+        }
+      },
+    });
+    this.v2.start();
+  }
+
+  private async attachV2(request: TerminalAttachRequest, history = false): Promise<void> {
+    const startedAt = performance.now();
+    let resizeWaitMs = 0;
+    const connection = this.v2;
+    if (!connection || this.closed || this.v2Seeding) return;
+    if (!this.backend.captureStreamSnapshot) {
+      connection.close(TERMINAL_CLOSE.incompatible, 'terminal source positions unavailable');
+      return;
+    }
+    this.v2Seeding = true;
+    this.v2ReplayEpoch = null;
+    this.startupComplete = false;
+    this.attachId = request.attachId;
+    connection.output.setPaused(true);
+    try {
+      if (!this.unsubscribeData) {
+        this.unsubscribeData = this.backend.onData(this.sessionId, (bytes, source, range) => {
+          if (this.closed || !bytes.byteLength) return;
+          if (source === 'attach-replay') {
+            if (this.startupComplete) {
+              connection.close(TERMINAL_CLOSE.continuityLost, 'terminal attach replay changed continuity');
+              return;
+            }
+            this.v2ReplayEpoch = range?.epoch ?? null;
+            connection.output.enqueue(bytes);
+            return;
+          }
+          if (!range || (this.startupComplete && this.v2LastRange
+            && (range.epoch !== this.v2LastRange.epoch || range.start !== this.v2LastRange.end))) {
+            connection.close(TERMINAL_CLOSE.continuityLost, 'terminal source gap');
+            return;
+          }
+          this.v2LastRange = range;
+          connection.output.enqueue(bytes, range);
+          this.onBridgeLiveBytes?.(this.sessionId);
+        });
+      }
+      // A continuity probe must not resize the shared PTY before its answer.
+      if (!request.cursor && !this.readOnly) {
+        const resizeStarted = performance.now();
+        await this.backend.resize(this.sessionId, request.cols, request.rows);
+        resizeWaitMs = performance.now() - resizeStarted;
+        this.lastAppliedResize = { cols: request.cols, rows: request.rows };
+      }
+      const captureStarted = performance.now();
+      const snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+      const captureMs = performance.now() - captureStarted;
+      if (this.closed) return;
+      if (request.cursor) {
+        const cursor = request.cursor;
+        const reason = cursor.epoch !== snapshot.epoch ? 'epoch'
+          : cursor.geometryRevision !== snapshot.geometryRevision || cursor.cols !== snapshot.cols
+            || cursor.rows !== snapshot.rows || request.cols !== cursor.cols || request.rows !== cursor.rows ? 'geometry'
+            : cursor.position < snapshot.start || cursor.position > snapshot.end ? 'history' : null;
+        if (reason) {
+          // No output or inputful recovery follows a failed probe. The user
+          // explicitly starts a new view, retaining the current screen meanwhile.
+          connection.output.discardUnsent();
+          connection.output.control({ type: 'continuity-unavailable', generation: connection.generation, reason });
+          connection.output.setPaused(false);
+          connection.allowNewAttach();
+          this.unsubscribeData?.();
+          this.unsubscribeData = null;
+          return;
+        }
+      }
+      const absolute = !request.cursor && this.shouldSkipRingReplay(snapshot.bytes);
+      const seedStarted = performance.now();
+      const reconstruction = absolute ? await reconstructAbsoluteTuiScreenResult(snapshot.bytes, {
+        cols: request.cols, rows: request.rows, sessionKey: this.sessionId,
+        source: { epoch: snapshot.epoch, start: snapshot.start, end: snapshot.end,
+          geometryRevision: snapshot.geometryRevision, cols: snapshot.cols, rows: snapshot.rows },
+      }) : null;
+      const seed = request.cursor ? snapshot.bytes.subarray(request.cursor.position - snapshot.start)
+        : absolute ? reconstruction?.bytes ?? new Uint8Array(0)
+          : history || this.forceFullRingAttach || this.ringReplayPolicy === 'full' ? snapshot.bytes
+            : cutStreamingAttachSeed(snapshot.bytes, this.streamingAttachViewportBytes);
+      if (this.closed) return;
+      const replayFallback = seed.byteLength === 0 && connection.output.hasUnpositionedOutput;
+
+      this.lastAttachSeed = absolute ? 'absolute' : seed.byteLength < snapshot.bytes.byteLength ? 'viewport' : 'full';
+      this.historyAvailable = !absolute && !request.cursor && seed.byteLength < snapshot.bytes.byteLength;
+      const transaction = randomUUID();
+      // A suffix can omit persistent modes or a partial control sequence.
+      // Only a complete origin seed or an already retained parser can supply
+      // an exact cursor. Explicit initial/new views keep best-effort input
+      // separately, as the RFC requires; they cannot claim exact recovery.
+      const resumable = !absolute && !replayFallback && (!!request.cursor
+        || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
+      const screenUnavailable = reconstruction?.kind === 'unavailable' && !replayFallback;
+      const cursor = resumable ? {
+        epoch: snapshot.epoch, position: snapshot.end, geometryRevision: snapshot.geometryRevision,
+        cols: snapshot.cols, rows: snapshot.rows,
+      } : null;
+      if ((this.v2ReplayEpoch && this.v2ReplayEpoch !== snapshot.epoch) || !connection.output.seed(snapshot, seed,
+        { type: 'seed-begin', generation: connection.generation, transaction, mode: request.cursor ? 'resume' : 'replace' },
+        { type: 'seed-end', generation: connection.generation, transaction, cursor,
+          historyAvailable: this.historyAvailable,
+          ...(screenUnavailable ? { screenUnavailable: true } : {}),
+          approximate: !resumable }, replayFallback)) {
+        connection.close(TERMINAL_CLOSE.continuityLost, 'terminal changed during capture');
+        return;
+      }
+      this.v2LastRange = this.v2LastRange && this.v2LastRange.epoch === snapshot.epoch && this.v2LastRange.end > snapshot.end
+        ? this.v2LastRange : snapshot;
+      this.startupComplete = true;
+      if (!screenUnavailable) connection.markReady();
+      connection.output.setPaused(false);
+      this.onBridgeReplay?.(this.sessionId);
+      this.recordBridgeTiming({
+        startedAt, resizeWaitMs, captureMs, reconstructMs: absolute ? performance.now() - seedStarted : 0,
+        seedCacheHit: false, strategy: request.cursor ? 'source-resume' : absolute ? 'absolute-display-only'
+          : seed.byteLength < snapshot.bytes.byteLength ? 'viewport-ring' : 'full-ring',
+        replayBytes: seed.byteLength, earlySeedBytes: 0,
+      });
+    } catch (error) {
+      connection.close(error instanceof SessionGoneError ? TERMINAL_CLOSE.ended : TERMINAL_CLOSE.unavailable,
+        error instanceof SessionGoneError ? 'terminal session ended' : 'terminal capture unavailable');
+    } finally {
+      this.v2Seeding = false;
+    }
+  }
+
   private rememberSeedFrame(
     bytes: Uint8Array,
     kind: TerminalSeedKind,
@@ -844,7 +1019,7 @@ export class SessionBridge {
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
       readOnly: this.readOnly,
-      protocolVersion: TERMINAL_ATTACH_PROTOCOL_VERSION,
+      protocolVersion: this.v2 ? 2 : TERMINAL_ATTACH_PROTOCOL_VERSION,
       historyAvailable,
       attachSeed,
     };
@@ -895,14 +1070,15 @@ export class SessionBridge {
       reconstructMs: parts.reconstructMs,
       replayBytes: parts.replayBytes,
       earlySeedBytes: parts.earlySeedBytes,
-      protocolVersion: TERMINAL_ATTACH_PROTOCOL_VERSION,
+      protocolVersion: this.v2 ? 2 : TERMINAL_ATTACH_PROTOCOL_VERSION,
       historyAvailable: parts.historyAvailable,
       attachSeed: parts.attachSeed,
     };
     // Text frame (string), not binary — browser clients parse JSON strings;
     // binaryType=arraybuffer would otherwise surface a Buffer as ArrayBuffer.
     try {
-      this.ws.send(JSON.stringify(control));
+      if (this.v2) this.v2.output.control({ ...control, generation: this.v2.generation });
+      else this.ws.send(JSON.stringify(control));
     } catch (err) {
       console.error(`[session-bridge] attach_timing send failed for ${this.sessionId}:`, err);
       this.closeBridgeForFailure('attach_timing send failed');
@@ -1515,6 +1691,11 @@ export class SessionBridge {
     // rejections get a single no-op instead of duplicate close attempts
     // and duplicate log lines.
     if (this.closed) return;
+    if (this.v2) {
+      this.v2.close(err instanceof SessionGoneError ? TERMINAL_CLOSE.ended : TERMINAL_CLOSE.unavailable,
+        err instanceof SessionGoneError ? 'terminal session ended' : `terminal ${op} unavailable`);
+      return;
+    }
     if (this.isBackendSessionFailure(err)) {
       // Session genuinely gone from under us — retire this WS.
       console.warn(`[session-bridge] ${op} rejected for ${this.sessionId}: ${String(err)}`);
@@ -1560,6 +1741,7 @@ export class SessionBridge {
   dispose(): void {
     const wasClosed = this.closed;
     this.closed = true;
+    this.v2?.dispose();
     if (this.outputFlushTimer) {
       clearTimeout(this.outputFlushTimer);
       this.outputFlushTimer = null;

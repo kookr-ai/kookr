@@ -11,6 +11,7 @@ flowchart LR
   subgraph Developer Machine
     Browser[Browser SPA<br/>React + Vite]
     Backend[Kookr Backend<br/>Node.js process]
+    Host[Optional Terminal Host<br/>Node.js child process<br/>bounded reconstruction worker thread]
     Term1[Terminal Session #1<br/>dtach]
     Term2[Terminal Session #2<br/>dtach]
     CC[Claude Code<br/>interactive mode]
@@ -23,11 +24,15 @@ flowchart LR
   HostedRelay[Hosted Relay<br/>optional external service]
 
   Browser <-->|"WebSocket<br/>snapshot + delta + alert"| Backend
-  Browser <-->|"binary WS<br/>byte-stream (dtach)"| Backend
+  Browser <-->|"default terminal WebSocket"| Backend
+  Browser <-.->|"isolated terminal WebSocket"| Host
+  Backend -.->|"authenticated socket transfer + bounded RPC"| Host
   Browser -->|"HTTP"| Backend
 
   Backend -->|"createSession / attachSession /<br/>input bytes + output stream"| Term1
   Backend -->|"createSession / attachSession /<br/>input bytes + output stream"| Term2
+  Host -.->|"isolated session I/O"| Term1
+  Host -.->|"isolated session I/O"| Term2
   Term1 -->|"hosts"| CC
   Term2 -->|"hosts"| Codex
   Backend -->|"read/write"| TasksFile
@@ -49,9 +54,10 @@ flowchart LR
 | Container | Technology | Responsibility |
 |---|---|---|
 | **Kookr Backend** | Node.js (TypeScript) | HTTP server, WebSocket server, terminal session management, supervisor logic, task storage, schedules, workspace cleanup, OSS contribution refresh, optional speech/Telegram integration |
+| **Terminal host (optional)** | Node.js child process | Enabled by `KOOKR_TERMINAL_HOST=true`. Owns the dtach backend, terminal sockets, input coordinator, asynchronous ring persistence and a bounded reconstruction worker thread. The main process authenticates and authorizes upgrades before transferring sockets; the child opens no listener |
 | **Browser SPA** | React + Vite (ADR-002) | Findings panel, terminal panel, input box, status bar, notifications |
 | **Hosted Relay** | Optional external service | Public session-sharing transport. The local backend still owns the agent process and publishes/accepts only policy-gated session data and commands |
-| **Terminal Session** | dtach (ADR-014, sole backend post-V8) | Managed terminal hosting a single agent process. A persistent dtach master owns the child PTY; `SessionBridge` attaches a byte-transparent `dtach -a -E` client per browser viewer. One session per agent |
+| **Terminal Session** | dtach (ADR-014, sole backend post-V8) | Managed terminal hosting a single agent process. A persistent dtach master owns the child PTY; the terminal backend owns one persistent byte-transparent attach client per session, shared by its browser viewers. One session per agent |
 | **Claude Code (managed)** | External CLI process | Interactive agent execution inside a managed terminal session. Selected by `agentType: 'claude-code'` |
 | **Codex CLI (managed)** | External CLI process (forked, see project `CLAUDE.md`) | Interactive agent execution inside a managed terminal session. Selected by `agentType: 'codex-cli'`. Advertises its supported hook subset via `codexHookCapabilities` on `session_start` |
 | **tasks.sqlite** | Embedded SQLite DB on disk (WAL) | Task lifecycle state, description, completion criteria, and inline agent session metadata (dtach session name — field still historically named `tmuxSession`, agent type, transcript path, hook output path, last known status) per task (ADR-008 — persistence layer now dtach per ADR-014). Default backend since #1755; a pre-existing `tasks.json` is imported once and renamed `.pre-sqlite-*`. `KOOKR_TASK_STORE=json` selects the legacy JSON file |
@@ -62,6 +68,7 @@ flowchart LR
 ## Data And Control Ownership Notes
 
 - **Backend owns** all agent lifecycle operations (create terminal session, send keystrokes, kill) and supervisor logic
+- **Isolation changes execution, not policy:** with the optional host, the main process still decides task lifecycle and access policy; the child executes terminal I/O. Default and isolated paths never own the same instance concurrently.
 - **Backend serves** the SPA as static files and pushes updates via WebSocket
 - **SPA owns** UI state and rendering; sends commands (respond, skip, snooze, navigate, getNext) to backend
 - **Embedded database, no server** in the local deployment — task/session state lives in an embedded SQLite DB (`~/.kookr/tasks.sqlite`, default since #1755; `KOOKR_TASK_STORE=json` for the legacy file-backed JSON path), and other operational state (settings, schedules, OSS/workspace attempts) remains file-backed JSON under `~/.kookr/`. No separate database *process/server* is run; active queue state remains in-memory with persisted snooze snapshots
@@ -80,4 +87,9 @@ flowchart LR
 
 ## Observed Smells
 
-None remaining. The single-process backend is an accepted V1 simplification — the code is modular (`server/`, `core/`, `adapters/`) even though the process is one. See `06-boundary-and-responsibility-smells.md` Mixed Abstraction #1.
+The default backend remains one process. Experimental terminal isolation moves
+terminal transport into one child when `KOOKR_TERMINAL_HOST=true`; task policy,
+supervision, HTTP and dashboard updates remain in the main process. Isolation is
+off by default pending platform and mixed-load qualification. See the
+[validation report](../reports/terminal-responsiveness-validation.md) and
+`06-boundary-and-responsibility-smells.md` Mixed Abstraction #1.

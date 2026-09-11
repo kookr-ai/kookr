@@ -13,11 +13,18 @@ test.describe('Terminal focus indicator', () => {
   });
 
   test('uses border focus state without rendering a text badge over the terminal', async ({ page, request }) => {
+    // This test launches a fake agent. The operator's live provider quota must
+    // not decide whether its terminal focus styling can be exercised.
+    const settings = await (await request.get('/api/settings')).json();
+    const configured = await request.put('/api/settings', { data: { ...settings, quotaHeadroomThreshold: 0 } });
+    expect(configured.ok()).toBe(true);
     const response = await request.post('/api/tasks', {
       headers: { 'X-Kookr-Launch-Source': 'ui' },
       data: { prompt: 'Terminal focus indicator check', cwd: '/test/project' },
     });
-    expect(response.ok()).toBe(true);
+    const restored = await request.put('/api/settings', { data: settings });
+    expect(restored.ok()).toBe(true);
+    expect(response.ok(), await response.text()).toBe(true);
     const task = await response.json() as {
       sessions?: Array<{ tmuxSession: string }>;
     };

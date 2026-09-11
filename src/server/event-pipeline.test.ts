@@ -24,6 +24,7 @@ import {
   SNAPSHOT_COALESCE_MS_PER_AGENT,
   type EventPipelineDeps,
 } from './event-pipeline.js';
+import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { AgentEvent, EventMeta } from '../core/types.js';
 import type { ServerMessage } from '../shared/protocol.js';
@@ -51,6 +52,24 @@ function createTaskForMutation(targetStore: TaskStore, ...args: unknown[]) {
   if (!task) throw new Error(`missing task ${created.id}`);
   return task;
 }
+
+test('continues processing hooks when the terminal host rejects a readiness update', async () => {
+  const { deps, fireEvent } = createMockDeps();
+  const coordinator = new TerminalInputCoordinator(new FakeTerminalBackend());
+  deps.terminalInputCoordinator = coordinator;
+  const failure = new Error('Terminal host unavailable');
+  vi.spyOn(coordinator, 'markToolStarted').mockRejectedValue(failure);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    wireEventPipeline(deps);
+    fireEvent('session', { type: 'tool_use', toolName: 'Read', toolUseId: 'host-outage' });
+    await vi.waitFor(() => expect(warning).toHaveBeenCalledWith(
+      '[event-pipeline] Terminal readiness update failed',
+      { sessionId: 'session', eventType: 'tool_use', error: failure.message },
+    ));
+    expect(deps.monitor.processEvents).toHaveBeenCalled();
+  } finally { warning.mockRestore(); coordinator.dispose(); }
+});
 
 // ---------------------------------------------------------------------------
 // Mock-based tests: controlled pre/post anomaly snapshots

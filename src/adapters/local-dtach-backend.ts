@@ -46,6 +46,7 @@ import {
 import { access as fsAccess } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalSourceRange, TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import {
   isBackendRecoverySignal,
   isRecoverableSessionFault,
@@ -171,6 +172,8 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
   /** True after `close()` has torn down the backend. Prevents double-close. */
   private closed = false;
+  private closePromise: Promise<void> | null = null;
+  private readonly asyncRingPersistence: boolean;
 
   /**
    * Stable outcome of constructor-time startup recovery (issue #2828). Starts
@@ -195,6 +198,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   private readonly recovery: LocalDtachRecovery;
 
   constructor(options: LocalDtachBackendOptions = {}) {
+    this.asyncRingPersistence = options.asyncRingPersistence === true;
     this.instanceId = options.instanceId ?? 'default';
     this.dtachBinary = options.dtachBinary ?? 'dtach';
     this.agentCpuList = validateAgentCpuList(options.agentCpuList, process.platform);
@@ -212,7 +216,9 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     this.instanceDir = join(baseDir, this.instanceId);
     ensureDtachDir(this.instanceDir);
     this.manifestStore = new DtachManifestStore(join(this.instanceDir, 'manifest.json'), this.instanceId);
-    this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME));
+    this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME), {
+      asyncPersistence: options.asyncRingPersistence,
+    });
 
     this.stream = new LocalDtachStream({
       attached: this.attached,
@@ -329,8 +335,14 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
    * re-attach to them. Idempotent.
    */
   close(): void {
+    if (this.asyncRingPersistence) { void this.closeAndDrain(); return; }
     if (this.closed) return;
     this.closed = true;
+    this.stopTimerAndFlush();
+  }
+
+  /** Stop the periodic flush, persist every dirty ring, and dispose attaches. */
+  private stopTimerAndFlush(): void {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
@@ -344,6 +356,28 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       this.stream.disposeAttach(id);
     }
   }
+
+  /** Freeze ring producers, drain older writes, then persist the final snapshot. */
+  closeAndDrain(): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    if (this.closed) return this.ringStore.drain();
+    this.closed = true;
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    // Preserve ring state while preventing new output or resize-triggered
+    // flushes from racing the drain. The dtach masters continue running.
+    for (const session of this.attached.values()) this.stream.disposeAttachChildOnly(session);
+    this.closePromise = (async () => {
+      await this.ringStore.drain();
+      this.stopTimerAndFlush();
+      await this.ringStore.drain();
+    })();
+    return this.closePromise;
+  }
+
+  getPersistenceStats() { return this.ringStore.persistenceStats(); }
 
   // ─── TerminalBackend surface ────────────────────────────────────────────
 
@@ -439,7 +473,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
     // Step 6: open the persistent internal attach. From this point all I/O
     // flows through `this.attached.get(id)`.
-    this.stream.openAttach(spec.id, sock, spec.size);
+    this.stream.openAttach(spec.id, sock, spec.size, true);
   }
 
   async listSessions(): Promise<SessionId[]> {
@@ -478,7 +512,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // removed the session from `this.attached`, so `flushAllRings` won't see
     // it either.
     this.stream.disposeAttach(id);
-    this.ringStore.remove(id);
+    await this.ringStore.remove(id);
 
     if (!entry) return;
 
@@ -531,6 +565,10 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     return this.stream.captureBytes(id, maxBytes);
   }
 
+  async captureStreamSnapshot(id: SessionId, maxBytes: number = RING_BUFFER_BYTES): Promise<TerminalStreamSnapshot> {
+    return this.stream.captureStreamSnapshot(id, maxBytes);
+  }
+
   async captureCurrentFrame(
     id: SessionId,
     options: CaptureCurrentFrameOptions = {},
@@ -538,7 +576,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     return this.stream.captureCurrentFrame(id, options);
   }
 
-  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {
+  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource, range?: TerminalSourceRange) => void): () => void {
     const sess = this.stream.ensureReadable(id);
     sess.dataSubscribers.add(cb);
     return () => {
@@ -558,7 +596,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // Remember the size even if the attach is currently detached — the size
     // will be reapplied to the next pty by `attachPtyInto` so re-attaches
     // keep the viewport stable.
-    sess.currentSize = { cols, rows };
+    this.stream.setGeometry(sess, { cols, rows });
     if (!sess.pty) return;
     try {
       sess.pty.resize(cols, rows);

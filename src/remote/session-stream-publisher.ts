@@ -66,12 +66,15 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
   const publicationGate = opts.publicationGate ?? new TerminalPublicationGate(now);
   const states = new Map<BackendSessionId, SessionStreamState>();
   const lastEpochBySession = new Map<BackendSessionId, number>();
+  const droppedBySession = new Map<BackendSessionId, number>();
   const trusted = isRelayTerminalStreamingTrusted(opts.env);
   let syncTimer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
+  let stopGapSubscription: (() => void) | undefined;
 
   const notePublishDrop = (state: SessionStreamState): void => {
     state.droppedFrames += 1;
+    droppedBySession.set(state.sessionId, state.droppedFrames);
     const nowMs = now().getTime();
     if (nowMs - state.lastDropWarnAtMs < DROP_WARN_MIN_INTERVAL_MS) return;
     state.lastDropWarnAtMs = nowMs;
@@ -142,14 +145,23 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       sessionId: asSessionId(id),
       sessionEpoch: asSessionEpoch(String(epoch)),
       nextSeq: 1,
-      droppedFrames: 0,
+      droppedFrames: droppedBySession.get(id) ?? 0,
       lastDropWarnAtMs: Number.NEGATIVE_INFINITY,
       unsubscribe: () => {},
     };
-    state.unsubscribe = opts.terminalBackend.onData(id, (data) => {
-      publishBytes(state, data);
-    });
     states.set(id, state);
+    try {
+      state.unsubscribe = opts.terminalBackend.onData(id, (data) => {
+        if (states.get(id) === state) publishBytes(state, data);
+      });
+    } catch (err) {
+      // A synchronous onData failure (e.g. the host at subscription capacity)
+      // must not strand the provisional entry: otherwise every later sync skips
+      // this id (states.has stays true) and its terminal never streams. Roll it
+      // back so a subsequent sync retries once capacity frees.
+      states.delete(id);
+      throw err;
+    }
   };
 
   const unsubscribeMissing = (alive: Set<BackendSessionId>): void => {
@@ -171,6 +183,15 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
         }
         return;
       }
+      stopGapSubscription = opts.terminalBackend.onStreamGap?.((id) => {
+        const state = states.get(id);
+        if (!state) return;
+        // Deleting now invalidates remote-input cursors even if the source is
+        // silent after the loss. Resubscription creates a new epoch, which the
+        // previous publication rule cannot authorize.
+        states.delete(id); state.unsubscribe();
+        droppedBySession.set(id, state.droppedFrames + 1);
+      });
       await publisher.syncSessions();
       syncTimer = setInterval(() => {
         void publisher.syncSessions().catch((err) => {
@@ -180,6 +201,7 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
     },
     stop(): void {
       stopped = true;
+      stopGapSubscription?.(); stopGapSubscription = undefined;
       if (syncTimer) {
         clearInterval(syncTimer);
         syncTimer = null;
@@ -202,7 +224,7 @@ export function createSessionStreamPublisher(opts: SessionStreamPublisherOptions
       };
     },
     droppedFrameCount(sessionId: string): number {
-      return states.get(sessionId)?.droppedFrames ?? 0;
+      return states.get(sessionId)?.droppedFrames ?? droppedBySession.get(sessionId) ?? 0;
     },
     installPublicationRule(rule): TerminalPublicationInstallResult {
       return publicationGate.installRule(

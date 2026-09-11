@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { Socket } from 'node:net';
 import { performance } from 'node:perf_hooks';
 
 import { getRequestListener } from '@hono/node-server';
@@ -15,6 +16,7 @@ import { HOOK_EVENTS, LOAD_BEARING_HOOKS } from '../../core/hook-spec.js';
 import { handleTerminalInput, handleTerminalKeystroke, type TerminalInputDeps } from '../agent-lifecycle.js';
 import { FakeTerminalBridge } from '../fake-terminal-bridge.js';
 import { SessionBridge } from '../session-bridge.js';
+import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import {
   isLoopbackUpgradeOriginAllowed,
   resolveUpgradeIdentity,
@@ -61,6 +63,8 @@ export interface HttpAndWebSocketsDeps {
   hooksDir: string;
   terminalBackend: TerminalBackend;
   terminalInputWriter?: TerminalInputWriterPort;
+  /** Called only after the HTTP authentication and canonical-session scope gates. */
+  handoffTerminalUpgrade?: (req: IncomingMessage, socket: Socket, head: Buffer, sessionId: string, actor: Actor) => void;
   terminalDeps: TerminalInputDeps;
   useFakeTerminalBridge?: boolean;
   /**
@@ -219,6 +223,9 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
   const terminalWss = new WebSocketServer({
     noServer: true,
+    // ws otherwise echoes the first offered protocol even on a legacy handler.
+    // An explicit selection plus the application hello proves v2 support.
+    handleProtocols: (protocols) => protocols.has(TERMINAL_V2_PROTOCOL) ? TERMINAL_V2_PROTOCOL : false,
     maxPayload: TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
   });
@@ -340,6 +347,12 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
       // Hand the vetted actor + canonical session name to the connection handler
       // so the registry registration and the read-only bridge use exactly what the
       // gate just cleared.
+      if (deps.handoffTerminalUpgrade && !deps.useFakeTerminalBridge) {
+        if (!(socket instanceof Socket)) { socket.destroy(); return; }
+        try { deps.handoffTerminalUpgrade(req, socket, head, sessionName, terminalActor); }
+        catch { socket.destroy(); }
+        return;
+      }
       terminalUpgrades.set(req, { actor: terminalActor, sessionName });
       terminalWss.handleUpgrade(req, socket, head, (ws) => {
         terminalWss.emit('connection', ws, req);

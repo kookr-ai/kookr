@@ -20,12 +20,17 @@ export interface TerminalInputRttRecorder {
   record(durationMs: number): void;
 }
 
+/** Public coordinator operations, shared by local and isolated implementations. */
+export type TerminalInputCoordinatorPort = Pick<TerminalInputCoordinator, keyof TerminalInputCoordinator>;
+
 interface TerminalInputState {
   sessionId: string;
   inputStateEpoch: string;
   readinessVersion: number;
   prompt: PromptStatus;
   pendingWrites: number;
+  queuedOperations: number;
+  retainedInputBytes: number;
   queue: Promise<unknown>;
 }
 
@@ -44,6 +49,8 @@ function sleep(ms: number): Promise<void> {
 export class TerminalInputCoordinator implements TerminalInputWriterPort {
   private readonly states = new Map<SessionId, TerminalInputState>();
   private maxPendingWrites = 0;
+  private retainedInputBytes = 0;
+  private disposed = false;
 
   constructor(
     private readonly backend: Pick<TerminalBackend, 'write' | 'writeSequence' | 'isAlive'>,
@@ -52,6 +59,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
   ) {}
 
   registerSession(sessionId: SessionId): void {
+    if (this.disposed) throw new Error('Terminal input owner retired');
     if (this.states.has(sessionId)) return;
     this.states.set(sessionId, {
       sessionId,
@@ -59,6 +67,8 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       readinessVersion: 0,
       prompt: { kind: 'unknown' },
       pendingWrites: 0,
+      queuedOperations: 0,
+      retainedInputBytes: 0,
       queue: Promise.resolve(),
     });
   }
@@ -66,6 +76,9 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
   cleanupSession(sessionId: SessionId): void {
     this.states.delete(sessionId);
   }
+
+  /** Cancel queued work before the transport owner releases its PTYs. */
+  dispose(): void { this.disposed = true; this.states.clear(); }
 
   /**
    * Process-wide write-queue gauges for terminal input saturation (issue #1776).
@@ -102,13 +115,14 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     _meta?: { reason?: string },
   ): Promise<TerminalInputWriteResult> {
     this.getOrRegisterState(sessionId);
+    const reservation = this.reserveInput(sessionId, [bytes]);
     // Issue #1773: time keystroke-enqueue → write-ack (includes queue wait, the
     // lag users actually feel) so /metrics can surface p50/p95/p99 typing RTT.
     const startedAt = this.rttMetrics?.now();
     return this.withSessionQueue(sessionId, async (state) => {
       const readinessVersion = this.acceptWrite(state);
       try {
-        await this.backend.write(sessionId, bytes);
+        await this.backend.write(sessionId, reservation.payloads[0]!);
         // Record only on a successful ack. A rejected write (e.g. a 2s
         // WriteTimeoutError) has no round-trip and would otherwise inflate
         // the latency quantiles with what is really a failure signal.
@@ -117,7 +131,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
         state.pendingWrites -= 1;
       }
       return { sessionId, readinessVersion };
-    });
+    }).finally(reservation.release);
   }
 
   async writeInputSequence(
@@ -130,6 +144,8 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       const state = this.getOrRegisterState(sessionId);
       return { sessionId, readinessVersion: state.readinessVersion };
     }
+    const reservation = this.reserveInput(sessionId, payloads);
+    payloads = reservation.payloads;
     // Issue #1773: start the RTT clock only once we know a real write follows
     // (the empty-payload path above returns without touching the backend).
     const startedAt = this.rttMetrics?.now();
@@ -145,6 +161,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
           await this.backend.write(sessionId, payloads[0]!);
           for (const payload of payloads.slice(1)) {
             await this.sleepFn(delayMs);
+            this.assertCurrent(state);
             await this.backend.write(sessionId, payload);
           }
         } else {
@@ -155,7 +172,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
         state.pendingWrites -= 1;
       }
       return { sessionId, readinessVersion };
-    });
+    }).finally(reservation.release);
   }
 
   markUserPromptSubmitted(sessionId: string): Promise<void> {
@@ -264,6 +281,28 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
     return state;
   }
 
+  private assertCurrent(state: TerminalInputState): void {
+    if (this.states.get(state.sessionId) !== state) throw new Error('Terminal input owner retired');
+  }
+
+  private reserveInput(sessionId: string, payloads: Uint8Array[]) {
+    const state = this.getOrRegisterState(sessionId);
+    const bytes = payloads.reduce((sum, payload) => sum + payload.byteLength, 0);
+    // Count admission happens before copying. The one-current-session cap is
+    // eight MiB; the fleet cap is sixteen MiB. Queued operations have a separate
+    // count limit so tiny keystrokes cannot retain an unbounded promise chain.
+    if (payloads.length > 4096 || state.queuedOperations >= 256
+      || state.retainedInputBytes + bytes > 8 * 1024 * 1024
+      || this.retainedInputBytes + bytes > 16 * 1024 * 1024) {
+      throw new Error('Terminal input capacity unavailable');
+    }
+    const owned = payloads.map((payload) => Uint8Array.from(payload));
+    state.retainedInputBytes += bytes; this.retainedInputBytes += bytes;
+    return { payloads: owned, release: () => {
+      state.retainedInputBytes -= bytes; this.retainedInputBytes -= bytes;
+    } };
+  }
+
   private async withSessionQueue<T>(
     sessionId: string,
     fn: (state: TerminalInputState) => Promise<T> | T,
@@ -274,7 +313,16 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       if (Object.prototype.hasOwnProperty.call(options ?? {}, 'missing')) return options!.missing as T;
       throw new Error(`terminal input state missing for ${sessionId}`);
     }
-    const run = state.queue.then(() => fn(state));
+    // The queue-depth cap is enforced at write admission (reserveInput) so tiny
+    // keystrokes cannot retain an unbounded promise chain. It must NOT be applied
+    // here as well: readiness state transitions (markToolStarted/markTurnStopped/
+    // markPromptReady/...) are lightweight, are dispatched by hook replay without
+    // being awaited or retried, and are correctness-critical — dropping one (e.g.
+    // a `stop` after a burst of tool_use events) leaves the prompt stuck and a
+    // later markPromptReady returning false. They must always enqueue.
+    state.queuedOperations++;
+    const run = state.queue.then(() => { this.assertCurrent(state); return fn(state); })
+      .finally(() => { state.queuedOperations--; });
     state.queue = run.catch(() => undefined);
     return run;
   }

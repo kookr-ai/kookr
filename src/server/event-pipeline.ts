@@ -24,7 +24,7 @@ import { createResponseAssistProcessor } from './event-processors/response-assis
 import { createSessionActivityProcessor } from './event-processors/session-activity-processor.js';
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
-import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { buildSnapshotProjection } from './use-cases/snapshot-projection.js';
 
@@ -136,7 +136,7 @@ export interface EventPipelineDeps {
   hookIngestion?: HookIngestion;
   /** Optional publisher for refreshing remote task-share projections after local task state changes. */
   taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
-  terminalInputCoordinator?: TerminalInputCoordinator;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   /**
    * Fixed coalescing window (ms) for centralized snapshot broadcasts (#704 / #1778).
    * A burst of events within this window collapses to a single full-snapshot
@@ -525,6 +525,14 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     const pipelineEvent: AgentEvent = event.type === 'user_prompt' && !event.hookLineId
       ? { ...event, hookLineId: String(meta.sequence) }
       : event;
+    // Hook ingestion cannot await readiness I/O. A retiring host can reject
+    // these updates; contain that failure without stopping supervision/replay.
+    const observeInputUpdate = (update: Promise<unknown> | undefined) => {
+      void update?.catch((error: unknown) => {
+        console.warn('[event-pipeline] Terminal readiness update failed', { sessionId: tmuxName,
+          eventType: pipelineEvent.type, error: error instanceof Error ? error.message : String(error) });
+      });
+    };
     const inputState = deps.terminalInputCoordinator?.getSnapshot(tmuxName);
     switch (pipelineEvent.type) {
       case 'user_prompt':
@@ -534,30 +542,30 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
           pipelineEvent.hookLineId ?? String(meta.sequence),
           meta.observedAt,
         );
-        void deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName));
         break;
       case 'session_end':
         deps.userInputDeliveries?.finalizeSession(tmuxName);
-        void deps.terminalInputCoordinator?.markSessionEnded(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markSessionEnded(tmuxName));
         break;
       case 'tool_use':
-        void deps.terminalInputCoordinator?.markToolStarted(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markToolStarted(tmuxName));
         break;
       case 'permission_request':
-        void deps.terminalInputCoordinator?.markPermissionBlocked(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markPermissionBlocked(tmuxName));
         break;
       case 'stop_failure':
-        void deps.terminalInputCoordinator?.markStopFailure(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markStopFailure(tmuxName));
         break;
       case 'stop':
-        void deps.terminalInputCoordinator?.markTurnStopped(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markTurnStopped(tmuxName));
         break;
       case 'notification':
         if (pipelineEvent.notificationType === 'idle_prompt' && inputState) {
-          void deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
+          observeInputUpdate(deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
             observedEpoch: inputState.inputStateEpoch,
             observedReadinessVersion: inputState.readinessVersion,
-          });
+          }));
         }
         break;
     }
