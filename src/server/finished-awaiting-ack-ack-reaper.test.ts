@@ -8,6 +8,7 @@ import {
   reapAwaitingPollFinishedAwaitingAckTasks,
   runFinishedAwaitingAckReapMaintenance,
   FinishedAwaitingAckAckReaperMetrics,
+  FAA_REAP_FAILURE_REWARN_SUPPRESS_MS,
 } from './finished-awaiting-ack-ack-reaper.js';
 import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
@@ -157,6 +158,9 @@ describe('reapAwaitingPollFinishedAwaitingAckTasks (issue #2170)', () => {
     // Warning consumed on reap.
     expect(coordinator.getWarning('task-1')).toBeUndefined();
     expect(metrics.getSnapshot().reapedTotal).toBe(1);
+    // A successful reap counts one attempt and zero failures (issue #3156).
+    expect(metrics.getSnapshot().attemptedTotal).toBe(1);
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(0);
 
     expect(lifecycleDeps.interactionLog!.append).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'task_completed', reason: 'finished_awaiting_ack_ack_reap' }),
@@ -309,6 +313,143 @@ describe('reapAwaitingPollFinishedAwaitingAckTasks (issue #2170)', () => {
     );
     expect(result.reapedTaskIds).toEqual([]);
     expect(coordinator.getWarning('task-1')?.keptAliveCount).toBe(1);
+  });
+
+  it('counts a rejecting completeTask as attempted + reapFailed and keeps the task FAA (issue #3156)', async () => {
+    const task = makeFaaTask();
+    const taskStore = makeMockTaskStore([task]);
+    // Force-complete persistently rejects (task wedged in a non-completable state).
+    taskStore.completeTask = vi.fn(() => {
+      throw new Error('task is no longer (only) finishedAwaitingAck');
+    });
+    const coordinator = new ReapWarningCoordinator();
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckAckReaperMetrics();
+
+    // Pass 1 warns.
+    await reapAwaitingPollFinishedAwaitingAckTasks(
+      { ...baseDeps(taskStore, coordinator, { metrics }), lifecycleDeps },
+      { now: NOW },
+    );
+
+    // Pass 2, after the grace window, attempts the force-complete — which throws.
+    const later = new Date(NOW.getTime() + GRACE_MS + 1_000);
+    const result = await reapAwaitingPollFinishedAwaitingAckTasks(
+      { ...baseDeps(taskStore, coordinator, { metrics }), lifecycleDeps },
+      { now: later },
+    );
+
+    // The failure is counted, not dropped: attempted +1, reapFailed +1, no reap.
+    expect(result.reapedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().attemptedTotal).toBe(1);
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+    expect(metrics.getSnapshot().reapedTotal).toBe(0);
+    // The slot is NOT freed — pendingSignal stays, so the task remains FAA.
+    expect(taskStore.clearPendingSignal).not.toHaveBeenCalled();
+  });
+
+  it('suppresses the per-cycle re-warn for a task whose force-complete keeps failing (issue #3156)', async () => {
+    const task = makeFaaTask();
+    const taskStore = makeMockTaskStore([task]);
+    taskStore.completeTask = vi.fn(() => {
+      throw new Error('force-complete keeps failing');
+    });
+    const coordinator = new ReapWarningCoordinator();
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckAckReaperMetrics();
+
+    const run = (now: Date) =>
+      reapAwaitingPollFinishedAwaitingAckTasks(
+        { ...baseDeps(taskStore, coordinator, { metrics }), lifecycleDeps },
+        { now },
+      );
+
+    // Pass 1: first warn (emitted normally — no prior failure).
+    const first = await run(NOW);
+    expect(first.warnedTaskIds).toEqual(['task-1']);
+
+    // Pass 2: grace elapsed → reap attempt → completeTask throws → warning
+    // consumed by advance(), failure window armed.
+    const reapPass = await run(new Date(NOW.getTime() + GRACE_MS + 1_000));
+    expect(reapPass.reapedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+
+    // Pass 3: the task is FAA again with no coordinator warning, so advance()
+    // would re-warn — but it is inside its post-failure window, so the re-warn
+    // is suppressed: no new warnedTaskId, no ReapWarned counter bump.
+    const rewarnPass = await run(new Date(NOW.getTime() + GRACE_MS + 2_000));
+    expect(rewarnPass.warnedTaskIds).toEqual([]);
+    expect(metrics.getSnapshot().warnedTotal).toBe(1);
+
+    // Exactly one ReapWarned audit row across all three passes — no warn-storm.
+    const rows = await readAuditRows(auditLogPath);
+    const warnRows = rows.filter((r) => r.type === 'task.finishedAwaitingAckReapWarned');
+    expect(warnRows).toHaveLength(1);
+
+    // The coordinator countdown is left in place, so the bounded reap retry
+    // still runs on a later tick (suppression dedupes the warn, not the reap).
+    expect(coordinator.getWarning('task-1')).toBeDefined();
+  });
+
+  it('re-warns once the suppression window lapses — never masks a task forever (issue #3156)', async () => {
+    const task = makeFaaTask();
+    const taskStore = makeMockTaskStore([task]);
+    taskStore.completeTask = vi.fn(() => {
+      throw new Error('force-complete still failing');
+    });
+    const coordinator = new ReapWarningCoordinator();
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckAckReaperMetrics();
+    const run = (now: Date) =>
+      reapAwaitingPollFinishedAwaitingAckTasks(
+        { ...baseDeps(taskStore, coordinator, { metrics }), lifecycleDeps },
+        { now },
+      );
+
+    await run(NOW); // warn #1
+    await run(new Date(NOW.getTime() + GRACE_MS + 1_000)); // reap fails → window armed
+    expect(metrics.getSnapshot().warnedTotal).toBe(1);
+
+    // A pass past the suppression window: the countdown was consumed on the
+    // failed reap, so advance() re-warns — and because the window has lapsed the
+    // re-warn is NOT suppressed. The task warns cleanly again (this exercises the
+    // prune-and-return-false branch of isRewarnSuppressed).
+    const afterWindow = new Date(
+      NOW.getTime() + GRACE_MS + 1_000 + FAA_REAP_FAILURE_REWARN_SUPPRESS_MS + 1_000,
+    );
+    const result = await run(afterWindow);
+    expect(result.warnedTaskIds).toEqual(['task-1']);
+    expect(metrics.getSnapshot().warnedTotal).toBe(2);
+  });
+
+  it('suppresses only the failing task, not a different newly-stuck task (per-task scope) (issue #3156)', async () => {
+    const stuck = makeFaaTask({ id: 'task-stuck' });
+    const tasks = [stuck];
+    const taskStore = makeMockTaskStore(tasks);
+    // Every force-complete throws (only 'task-stuck' ever reaches one below).
+    taskStore.completeTask = vi.fn(() => {
+      throw new Error('stuck');
+    });
+    const coordinator = new ReapWarningCoordinator();
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    const metrics = new FinishedAwaitingAckAckReaperMetrics();
+    const run = (now: Date) =>
+      reapAwaitingPollFinishedAwaitingAckTasks(
+        { ...baseDeps(taskStore, coordinator, { metrics }), lifecycleDeps },
+        { now },
+      );
+
+    await run(NOW); // warn task-stuck
+    await run(new Date(NOW.getTime() + GRACE_MS + 1_000)); // reap task-stuck fails → armed
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+
+    // A DIFFERENT task becomes stuck. On the next pass task-stuck's re-warn is
+    // suppressed (inside its window), but task-fresh — which never failed — must
+    // warn normally. Its suppression is keyed on task id, so a global flag would
+    // have masked the newly-stuck task here.
+    tasks.push(makeFaaTask({ id: 'task-fresh' }));
+    const result = await run(new Date(NOW.getTime() + GRACE_MS + 2_000));
+    expect(result.warnedTaskIds).toEqual(['task-fresh']);
   });
 });
 

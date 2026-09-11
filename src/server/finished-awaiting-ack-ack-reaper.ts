@@ -46,12 +46,48 @@ import { nowISO } from '../core/interaction-log.js';
  */
 export const FAA_REAP_WARNING_STUCK_CLEAR_MS = 60_000;
 
+/**
+ * Re-warn suppression window (issue #3156). When `completeTask` throws during a
+ * force-complete, the coordinator has already consumed the grace warning
+ * (`advance()` drops it on the `reap` verdict), so the still-FAA task re-enters
+ * the warn state on the very next selection pass. A task that persistently
+ * cannot be force-completed would therefore re-warn every grace cycle — a
+ * warn-storm of `ReapWarned` audit rows that buries the real signal while its
+ * slot is never freed.
+ *
+ * While a task's most recent force-complete failure is within this window its
+ * re-warn is suppressed: no `ReapWarned` row, no `warnedTotal` bump. The
+ * coordinator's countdown is left in place, so the bounded reap retry still
+ * runs on schedule and `reapFailedTotal` keeps climbing to surface the stuck
+ * slot to an operator. The window is scoped per task and refreshed on each
+ * failure, so a genuinely newly-stuck (different) task is never masked, and a
+ * task that later recovers can warn cleanly once the window lapses.
+ */
+export const FAA_REAP_FAILURE_REWARN_SUPPRESS_MS = 5 * 60_000;
+
 /** In-memory counters surfaced via `GET /api/diagnostics/reap-warnings` (issue #2170). */
 export interface FinishedAwaitingAckAckReaperMetricsSnapshot {
   /** Cumulative FAA tasks warned (grace countdown started) since process start. */
   warnedTotal: number;
   /** Cumulative FAA tasks force-completed by the ack-path reaper. */
   reapedTotal: number;
+  /**
+   * Cumulative force-complete attempts (the grace-warning coordinator returned
+   * `reap` and `completeTask` was invoked). `attemptedTotal - reapedTotal ===
+   * reapFailedTotal`, mirroring the strict-TTL sibling sweep's
+   * reclaimAttempted-vs-succeeded signal. Recorded together with `reapedTotal`
+   * and `reapFailedTotal` at the end of each pass, so the invariant never reads
+   * a partial pass (issue #3156).
+   */
+  attemptedTotal: number;
+  /**
+   * Cumulative force-complete attempts that threw (`completeTask` rejected).
+   * Some are a benign race — the task was acked / terminated concurrently, so
+   * its slot frees itself — but a *sustained* climb, with the task still
+   * finishedAwaitingAck and its re-warn suppressed, is the offline signal of a
+   * permanently-stuck slot the ack path previously dropped silently (issue #3156).
+   */
+  reapFailedTotal: number;
   /** Cumulative reap attempts deferred by TOCTOU (live turn / interactive pane / PR hold landed mid-sweep). */
   deferredTotal: number;
   /** FAA candidates considered on the last selection pass (denominator). */
@@ -64,9 +100,20 @@ export interface FinishedAwaitingAckAckReaperMetricsSnapshot {
 export class FinishedAwaitingAckAckReaperMetrics {
   private warnedTotal = 0;
   private reapedTotal = 0;
+  private attemptedTotal = 0;
+  private reapFailedTotal = 0;
   private deferredTotal = 0;
   private lastCandidatesConsidered = 0;
   private lastExpiredSelected = 0;
+  /**
+   * Per-task epoch-ms of the most recent force-complete failure, backing the
+   * re-warn suppression window (issue #3156). {@link armRewarnSuppression}
+   * sweeps entries older than the window every time it records a new failure,
+   * and {@link isRewarnSuppressed} prunes a lapsed entry on read, so the map
+   * stays bounded by the failures within one suppression window rather than
+   * growing for the process lifetime.
+   */
+  private readonly reapFailedAtMs = new Map<string, number>();
 
   recordWarned(count = 1): void {
     if (count > 0) this.warnedTotal += count;
@@ -76,8 +123,49 @@ export class FinishedAwaitingAckAckReaperMetrics {
     if (count > 0) this.reapedTotal += count;
   }
 
+  recordAttempted(count = 1): void {
+    if (count > 0) this.attemptedTotal += count;
+  }
+
+  recordReapFailure(count = 1): void {
+    if (count > 0) this.reapFailedTotal += count;
+  }
+
   recordDeferred(count = 1): void {
     if (count > 0) this.deferredTotal += count;
+  }
+
+  /**
+   * Arm `taskId`'s re-warn suppression window at `nowMs` (called when a
+   * force-complete throws). Opportunistically evicts entries already older than
+   * `windowMs` first, so a task that failed then left the FAA population — and
+   * is thus never re-read by {@link isRewarnSuppressed} — cannot linger for the
+   * process lifetime. This is pure suppression state, kept separate from the
+   * `reapFailedTotal` counter so the counter can be recorded per-pass with the
+   * other totals (issue #3156).
+   */
+  armRewarnSuppression(
+    taskId: string,
+    nowMs: number,
+    windowMs: number = FAA_REAP_FAILURE_REWARN_SUPPRESS_MS,
+  ): void {
+    for (const [id, failedAt] of this.reapFailedAtMs) {
+      if (nowMs - failedAt > windowMs) this.reapFailedAtMs.delete(id);
+    }
+    this.reapFailedAtMs.set(taskId, nowMs);
+  }
+
+  /**
+   * True when `taskId`'s most recent force-complete failure is still within
+   * `windowMs` of `nowMs` — its re-warn should be suppressed. Prunes the entry
+   * once the window lapses so a task that later recovers can warn cleanly again.
+   */
+  isRewarnSuppressed(taskId: string, nowMs: number, windowMs: number): boolean {
+    const failedAt = this.reapFailedAtMs.get(taskId);
+    if (failedAt === undefined) return false;
+    if (nowMs - failedAt <= windowMs) return true;
+    this.reapFailedAtMs.delete(taskId);
+    return false;
   }
 
   recordSelection(candidatesConsidered: number, expiredSelected: number): void {
@@ -89,6 +177,8 @@ export class FinishedAwaitingAckAckReaperMetrics {
     return {
       warnedTotal: this.warnedTotal,
       reapedTotal: this.reapedTotal,
+      attemptedTotal: this.attemptedTotal,
+      reapFailedTotal: this.reapFailedTotal,
       deferredTotal: this.deferredTotal,
       lastCandidatesConsidered: this.lastCandidatesConsidered,
       lastExpiredSelected: this.lastExpiredSelected,
@@ -191,6 +281,7 @@ export async function reapAwaitingPollFinishedAwaitingAckTasks(
   const reapedTaskIds: string[] = [];
   const warnedTaskIds: string[] = [];
   const deferredTaskIds: string[] = [];
+  const reapFailedTaskIds: string[] = [];
 
   for (const { task } of selection.expired) {
     // TOCTOU re-GET (Lucy #2238 pattern): refuse if the live record no longer
@@ -229,6 +320,17 @@ export async function reapAwaitingPollFinishedAwaitingAckTasks(
     });
 
     if (advance.action === 'warn') {
+      // Re-warn suppression (issue #3156): a task whose force-complete keeps
+      // failing has its warning consumed by advance() on every reap, so it
+      // re-enters the warn state each grace cycle. Suppress the re-warn (no
+      // audit row, no counter bump) while it is inside its post-failure window,
+      // but leave the coordinator's freshly-created countdown in place so the
+      // bounded reap retry still runs and reapFailedTotal keeps surfacing the
+      // stuck slot. Scoped per task + refreshed on each failure, so a genuinely
+      // newly-stuck task is never masked.
+      if (deps.metrics?.isRewarnSuppressed(task.id, nowMs, FAA_REAP_FAILURE_REWARN_SUPPRESS_MS)) {
+        continue;
+      }
       warnedTaskIds.push(task.id);
       console.warn(
         `[faa-ack-reaper] warned task ${task.id} — close in ${Math.round(graceMs / 1000)}s `
@@ -254,10 +356,17 @@ export async function reapAwaitingPollFinishedAwaitingAckTasks(
         interactionLogReason: 'finished_awaiting_ack_ack_reap',
       });
     } catch (err) {
-      // Raced a manual ack / another terminal transition — the task is no
-      // longer (only) finishedAwaitingAck, so it is somebody else's to finish.
+      // Force-complete failed — either a benign race with a manual ack / other
+      // terminal transition, or a task persistently wedged in a state that
+      // keeps rejecting completeTask (issue #3156). Track it (counted as a
+      // reapFailed with the other totals at the end of the pass) so a
+      // permanently-stuck slot is no longer dropped silently, and arm the
+      // per-task re-warn suppression window so the warning advance() just
+      // consumed does not re-storm the audit trail every grace cycle.
+      reapFailedTaskIds.push(task.id);
+      deps.metrics?.armRewarnSuppression(task.id, nowMs);
       console.warn(
-        `[faa-ack-reaper] could not reap task ${task.id}:`,
+        `[faa-ack-reaper] could not reap task ${task.id} (force-complete failed; slot still held, will retry):`,
         err instanceof Error ? err.message : err,
       );
       continue;
@@ -282,8 +391,14 @@ export async function reapAwaitingPollFinishedAwaitingAckTasks(
     });
   }
 
+  // Record all pass counters together so the snapshot invariant
+  // `attemptedTotal - reapedTotal === reapFailedTotal` never reflects a partial
+  // pass — every force-complete verdict landed in exactly one of the reaped /
+  // failed arrays above (issue #3156).
   deps.metrics?.recordWarned(warnedTaskIds.length);
   deps.metrics?.recordReaped(reapedTaskIds.length);
+  deps.metrics?.recordReapFailure(reapFailedTaskIds.length);
+  deps.metrics?.recordAttempted(reapedTaskIds.length + reapFailedTaskIds.length);
   deps.metrics?.recordDeferred(deferredTaskIds.length);
 
   if (reapedTaskIds.length > 0) {
