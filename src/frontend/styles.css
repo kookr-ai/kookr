@@ -4513,6 +4513,26 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--text-bright);
 }
 
+/* #3142 — informational (not warning) tone: an install nudge, not an error.
+   Uses the app's interactive accent (--accent, same #4a8eff fallback the
+   primary buttons use) so the blue matches rather than inventing a new one. */
+.cli-install-banner {
+  margin: 8px 0 12px;
+  padding: 8px 12px;
+  background: rgba(74, 142, 255, 0.12);
+  border: 1px solid var(--accent, #4a8eff);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-bright);
+}
+
+.cli-install-banner__learn-more {
+  color: var(--text-bright);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+
 .launch-duplicate-banner,
 .launch-busy-directory-banner {
   margin: 8px 0 12px;

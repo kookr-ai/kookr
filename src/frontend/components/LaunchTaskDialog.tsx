@@ -28,6 +28,7 @@ import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { LaunchEffortModelPickers } from './LaunchEffortModelPickers.js';
 import { optionalLaunchPins, restoreLastLaunchPins, sanitizeLaunchPins } from './launch-effort-model.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { CLI_INSTALL_BANNER_ID, CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
 import { LAUNCH_BUSY_DIRECTORY_BANNER_ID, LaunchBusyDirectoryBanner } from './LaunchBusyDirectoryBanner.js';
 import { LAUNCH_DUPLICATE_BANNER_ID, LaunchDuplicateBanner } from './LaunchDuplicateBanner.js';
 import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
@@ -224,6 +225,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const [effort, setEffort] = useState(initialPins.effort);
   const [model, setModel] = useState(initialPins.model);
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
+  // Issue #3142: the server advertises zero installed CLIs. Show an additive,
+  // non-blocking install nudge — the picker and Launch stay enabled since a
+  // provider may exist but be undetected.
+  const noAgentCliDetected = availableAgentTypes.length === 0;
   const grokAuthBlocksLaunch = shouldDisableLaunchForGrokAuth(
     agentType,
     grokAuth?.launchWouldRefuse === true,
@@ -617,6 +622,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
           </button>
         </div>
 
+        {/* Above the tab split so the install nudge shows on both Manual and
+            Playbooks — a playbook launch needs a CLI just as much (#3142). */}
+        {noAgentCliDetected && <CliInstallGuidanceBanner />}
+
         {tab === 'manual' ? (
           <form onSubmit={handleSubmit}>
             {draftRestored && (
@@ -849,6 +858,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 className="btn-primary"
                 disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch || Boolean(activeDuplicate)}
                 aria-describedby={[
+                  noAgentCliDetected ? CLI_INSTALL_BANNER_ID : null,
                   showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
                   quotaWarning ? LAUNCH_QUOTA_BANNER_ID : null,
                   activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,

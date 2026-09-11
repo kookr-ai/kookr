@@ -27,6 +27,7 @@ import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/laun
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
+import { CLI_INSTALL_BANNER_ID, CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -61,6 +62,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     [availableAgentTypes],
   );
   const availableAgentTypeIds = availableAgentTypes.map((entry) => entry.type);
+  // Issue #3142: the server advertises zero installed CLIs. Show an additive,
+  // non-blocking install nudge — the picker and Launch stay enabled since a
+  // provider may exist but be undetected.
+  const noAgentCliDetected = availableAgentTypes.length === 0;
   // Agent default chain (RFC F6, parity with LaunchTaskDialog): selected
   // agent type (effect) → last-used → server default → 'claude-code'.
   // Initializer covers the no-selected-agent path; the effect re-applies that
@@ -308,6 +313,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
           aria-describedby={[
+            noAgentCliDetected ? CLI_INSTALL_BANNER_ID : null,
             showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
             activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
           ].filter(Boolean).join(' ') || undefined}
@@ -325,6 +331,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       >
         {agentFallbackNotice ?? ''}
       </span>
+      {noAgentCliDetected && <CliInstallGuidanceBanner />}
       {showGrokAuthBanner && grokAuth?.message && (
         <GrokAuthPreflightBanner message={grokAuth.message} />
       )}
