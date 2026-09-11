@@ -185,6 +185,19 @@ export interface SessionReaperHealthSnapshot {
   totalStaleAttachersReaped: number;
   lastStaleAttacherSweepAt: string | null;
   /**
+   * Cumulative count of `killSession` failures (issue #3155) — incremented once
+   * per rejected kill attempt, so a sweep that fails to kill several candidates
+   * adds more than one. A session that resists killSession is re-selected and
+   * re-fails every sweep while `totalSessionsReaped` stays flat, so without this
+   * counter the leaked pty/process (incident #2167) is invisible to the offline
+   * operator. Mirrors the sibling host-stale-dtach-reaper's `failedPids` accounting.
+   */
+  killSessionFailedTotal: number;
+  /** ISO timestamp of the most recent killSession failure, or null if none yet. */
+  lastKillFailureAt: string | null;
+  /** Session id of the most recent killSession failure, or null if none yet. */
+  lastKillFailureSessionId: string | null;
+  /**
    * Effective unowned-orphan age (ms) used by the last sweep (issue #2081).
    * Null until the first sweep runs. Surfaces whether pressure adaptation
    * shortened the threshold without requiring a re-scan.
@@ -233,6 +246,9 @@ export class SessionReaperService {
   private lastOrphanCount = 0;
   private lastTerminalLeakCount = 0;
   private totalSessionsReaped = 0;
+  private killSessionFailedTotal = 0;
+  private lastKillFailureAt: string | null = null;
+  private lastKillFailureSessionId: string | null = null;
   private totalStaleAttachersReaped = 0;
   private lastStaleAttacherSweepAt: string | null = null;
   private lastEffectiveOrphanAgeMs: number | null = null;
@@ -327,6 +343,13 @@ export class SessionReaperService {
       try {
         await this.deps.backend.killSession(id);
       } catch (err) {
+        // Issue #3155: count the failure so an orphan that resists killSession
+        // (leaked pty/process — incident #2167) is a visible health signal
+        // instead of a silent re-fail every sweep. Keep the warning log so a
+        // single failure stays traceable; the loop still continues.
+        this.killSessionFailedTotal += 1;
+        this.lastKillFailureAt = nowISO();
+        this.lastKillFailureSessionId = id;
         console.warn(`[session-reaper] killSession failed for ${id}:`, err instanceof Error ? err.message : err);
         continue;
       }
@@ -424,6 +447,9 @@ export class SessionReaperService {
       lastOrphanCount: this.lastOrphanCount,
       lastTerminalLeakCount: this.lastTerminalLeakCount,
       totalSessionsReaped: this.totalSessionsReaped,
+      killSessionFailedTotal: this.killSessionFailedTotal,
+      lastKillFailureAt: this.lastKillFailureAt,
+      lastKillFailureSessionId: this.lastKillFailureSessionId,
       totalStaleAttachersReaped: this.totalStaleAttachersReaped,
       lastStaleAttacherSweepAt: this.lastStaleAttacherSweepAt,
       effectiveOrphanAgeMs: this.lastEffectiveOrphanAgeMs,

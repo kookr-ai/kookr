@@ -112,7 +112,7 @@ describe('SessionReaperService.runSweep', () => {
     });
   });
 
-  it('does not reap anything, records no audit row, and leaves counters at zero when killSession throws', async () => {
+  it('does not reap anything, records no audit row, and leaves the reap counter at zero while counting the kill failure when killSession throws', async () => {
     await withTempAuditLog(async (auditLogPath) => {
       const taskStore = new TaskStore();
       const backend = new FakeTerminalBackend();
@@ -134,8 +134,95 @@ describe('SessionReaperService.runSweep', () => {
       // The session was correctly classified/would-reap, but the kill attempt
       // itself failed — the sweep must not silently record success.
       expect(result.reaped).toHaveLength(0);
-      expect(reaper.getHealthSnapshot().totalSessionsReaped).toBe(0);
+      const snapshot = reaper.getHealthSnapshot();
+      expect(snapshot.totalSessionsReaped).toBe(0);
       expect(await readAuditRows(auditLogPath)).toHaveLength(0);
+
+      // Issue #3155: the failure must be surfaced as a process-lifetime health
+      // counter (not just a console.warn) so an orphan that resists killSession
+      // is visible instead of re-failing silently every sweep (incident #2167).
+      expect(snapshot.killSessionFailedTotal).toBe(1);
+      expect(snapshot.lastKillFailureSessionId).toBe('kookr-orphan');
+      expect(typeof snapshot.lastKillFailureAt).toBe('string');
+    });
+  });
+
+  it('accumulates killSessionFailedTotal across sweeps while the session keeps resisting killSession (issue #3155)', async () => {
+    await withTempAuditLog(async (auditLogPath) => {
+      const taskStore = new TaskStore();
+      const backend = new FakeTerminalBackend();
+      await backend.createSession(spec('kookr-orphan'));
+      backend.setSessionStartedAt('kookr-orphan', Date.now() - 25 * HOUR_MS);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (backend as any).killSession = async () => {
+        throw new Error('dtach kill failed (simulated)');
+      };
+
+      const reaper = new SessionReaperService({
+        taskStore,
+        backend,
+        auditLogPath,
+        getConfig: () => ENABLED_CONFIG,
+      });
+
+      // Before any sweep the counter is a clean zero with no last-failure fields.
+      const initial = reaper.getHealthSnapshot();
+      expect(initial.killSessionFailedTotal).toBe(0);
+      expect(initial.lastKillFailureAt).toBeNull();
+      expect(initial.lastKillFailureSessionId).toBeNull();
+
+      await reaper.runSweep();
+      await reaper.runSweep();
+
+      // The same orphan re-fails every sweep — the counter is cumulative so the
+      // leak is a growing signal, and totalSessionsReaped never moves.
+      const snapshot = reaper.getHealthSnapshot();
+      expect(snapshot.killSessionFailedTotal).toBe(2);
+      expect(snapshot.totalSessionsReaped).toBe(0);
+      expect(snapshot.lastKillFailureSessionId).toBe('kookr-orphan');
+    });
+  });
+
+  it('in one mixed sweep counts only the failing session and records its id, not the reaped one (issue #3155)', async () => {
+    await withTempAuditLog(async (auditLogPath) => {
+      const taskStore = new TaskStore();
+      const backend = new FakeTerminalBackend();
+      // Insertion order is iteration order (FakeTerminalBackend.listSessions),
+      // so the failing session is reaped-loop FIRST and the successful one LAST.
+      // This proves lastKillFailureSessionId is the session that actually failed
+      // — not merely whichever session was iterated last.
+      await backend.createSession(spec('kookr-fails'));
+      await backend.createSession(spec('kookr-reaps'));
+      backend.setSessionStartedAt('kookr-fails', Date.now() - 25 * HOUR_MS);
+      backend.setSessionStartedAt('kookr-reaps', Date.now() - 25 * HOUR_MS);
+      const realKill = backend.killSession.bind(backend);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (backend as any).killSession = async (id: string) => {
+        if (id === 'kookr-fails') throw new Error('dtach kill failed (simulated)');
+        return realKill(id);
+      };
+
+      const reaper = new SessionReaperService({
+        taskStore,
+        backend,
+        auditLogPath,
+        getConfig: () => ENABLED_CONFIG,
+      });
+      const result = await reaper.runSweep();
+
+      // The counters must not cross-contaminate: the successful reap increments
+      // totalSessionsReaped only, the failure increments killSessionFailedTotal
+      // only, and the loop still reaches the second (successful) candidate.
+      const snapshot = reaper.getHealthSnapshot();
+      expect(result.reaped).toHaveLength(1);
+      expect(snapshot.totalSessionsReaped).toBe(1);
+      expect(snapshot.killSessionFailedTotal).toBe(1);
+      expect(snapshot.lastKillFailureSessionId).toBe('kookr-fails');
+      expect(await backend.isAlive('kookr-reaps')).toBe(false);
+      // Exactly one audit row — for the reaped session, never the failed one.
+      const rows = await readAuditRows(auditLogPath);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.sessionId).toBe('kookr-reaps');
     });
   });
 
