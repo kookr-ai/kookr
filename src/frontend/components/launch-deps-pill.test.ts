@@ -72,3 +72,71 @@ describe('launch-deps-pill helpers (issue #2364)', () => {
     })).toBe('Deps: 0 · Parked: 3');
   });
 });
+
+describe('confirmed vs unknown launch-dependency split (issue #3153)', () => {
+  test('does NOT elevate for unknown-only findings (confirmed=0, unknown>0)', () => {
+    // Live gap: totalDegradedTasks=136 == totalUnknownTasks=136 from a kb probe
+    // that could not be bounded — the truthful state is "probe unavailable",
+    // not "degraded", so the degradation pill must stay hidden.
+    expect(shouldShowLaunchDepsPill({
+      totalDegradedTasks: 136,
+      totalUnknownTasks: 136,
+      dependencies: [{ dependency: 'kb', degradedTaskCount: 136, categories: ['unknown'] }],
+    })).toBe(false);
+  });
+
+  test('elevates when there is confirmed degradation, even alongside unknowns', () => {
+    expect(shouldShowLaunchDepsPill({
+      totalDegradedTasks: 10,
+      totalConfirmedDegradedTasks: 4,
+      totalUnknownTasks: 6,
+      dependencies: [{ dependency: 'kb', degradedTaskCount: 10, categories: ['provider_api', 'unknown'] }],
+    })).toBe(true);
+  });
+
+  test('still elevates for unknown-only when parked work is present', () => {
+    expect(shouldShowLaunchDepsPill({
+      totalDegradedTasks: 5,
+      totalUnknownTasks: 5,
+      dependencies: [],
+      parkedTaskCount: 2,
+    })).toBe(true);
+  });
+
+  test('falls back to the conflated total for an older server without the split', () => {
+    expect(shouldShowLaunchDepsPill({
+      totalDegradedTasks: 8,
+      dependencies: [{ dependency: 'kb', degradedTaskCount: 8, categories: ['provider_api'] }],
+    })).toBe(true);
+  });
+
+  test('tooltip distinguishes confirmed-degraded from unknown counts', () => {
+    const title = formatLaunchDepsTitle({
+      totalDegradedTasks: 136,
+      totalUnknownTasks: 136,
+      dependencies: [{ dependency: 'kb', degradedTaskCount: 136, categories: ['unknown'] }],
+    });
+    expect(title).toContain('0 confirmed degraded, 136 unknown (probe unavailable)');
+    expect(title).not.toContain('launched with degraded dependencies');
+    expect(title).toContain('kb=136 (unknown)');
+    expect(title).toContain('GET /api/health.launchDependencies');
+  });
+
+  test('tooltip reports both confirmed and unknown when both are present', () => {
+    const title = formatLaunchDepsTitle({
+      totalDegradedTasks: 10,
+      totalConfirmedDegradedTasks: 4,
+      totalUnknownTasks: 6,
+      dependencies: [],
+    });
+    expect(title).toContain('4 confirmed degraded, 6 unknown (probe unavailable)');
+  });
+
+  test('tooltip keeps the legacy phrasing for an older server without the split', () => {
+    const title = formatLaunchDepsTitle({
+      totalDegradedTasks: 8,
+      dependencies: [],
+    });
+    expect(title).toContain('8 tasks launched with degraded dependencies');
+  });
+});

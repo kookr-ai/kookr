@@ -1,6 +1,8 @@
 /**
  * Label + tooltip helpers for the launch-dependencies status-bar pill
- * (issue #2364 / #2841). Elevated when degraded launches or parked work exists.
+ * (issue #2364 / #2841 / #3153). Elevated when *confirmed* degraded launches or
+ * parked work exists — an unknown-only (probe-unavailable) condition does not
+ * fire the degradation alarm.
  */
 
 import type { LaunchDependenciesStatus } from '../store/store-types.js';
@@ -12,11 +14,22 @@ export function shouldShowLaunchDepsPill(
   status: LaunchDependenciesStatus | null | undefined,
 ): boolean {
   if (status == null) return false;
-  const total = status.totalDegradedTasks;
   const parked = status.parkedTaskCount ?? 0;
-  return (
-    typeof total === 'number' && Number.isFinite(total) && total > 0
-  ) || parked > 0;
+  if (parked > 0) return true;
+
+  // When the server exposes the confirmed/unknown split (issue #3153), gate the
+  // degradation alarm on *confirmed* degradation only. An unknown-only fleet
+  // (a probe that could not be bounded, e.g. a kb timeout) is not a confirmed
+  // degradation and must not fire a persistent red pill that trains operators
+  // to ignore it. The split is present when either field is defined; an older
+  // server omits both and falls back to the conflated total.
+  const { totalConfirmedDegradedTasks: confirmedCount, totalUnknownTasks: unknownCount } = status;
+  if (confirmedCount !== undefined || unknownCount !== undefined) {
+    return (confirmedCount ?? 0) > 0;
+  }
+
+  const total = status.totalDegradedTasks;
+  return typeof total === 'number' && Number.isFinite(total) && total > 0;
 }
 
 /**
@@ -60,9 +73,20 @@ function parkedCountLabel(status: LaunchDependenciesStatus, label: string): stri
  */
 export function formatLaunchDepsTitle(status: LaunchDependenciesStatus): string {
   const total = Math.max(0, Math.floor(status.totalDegradedTasks));
-  const parts: string[] = total > 0
-    ? [`${total} task${total === 1 ? '' : 's'} launched with degraded dependencies`]
-    : [];
+  const { totalConfirmedDegradedTasks: confirmedRaw, totalUnknownTasks: unknownRaw } = status;
+  const hasSplit = confirmedRaw !== undefined || unknownRaw !== undefined;
+  const parts: string[] = [];
+  if (hasSplit) {
+    // Distinguish confirmed degradation from unknown (probe-unavailable)
+    // findings so an unknown-only condition is not read as degradation (#3153).
+    const confirmedCount = Math.max(0, Math.floor(confirmedRaw ?? 0));
+    const unknownCount = Math.max(0, Math.floor(unknownRaw ?? 0));
+    if (confirmedCount > 0 || unknownCount > 0) {
+      parts.push(`${confirmedCount} confirmed degraded, ${unknownCount} unknown (probe unavailable)`);
+    }
+  } else if (total > 0) {
+    parts.push(`${total} task${total === 1 ? '' : 's'} launched with degraded dependencies`);
+  }
 
   if ((status.parkedTaskCount ?? 0) > 0) {
     const parkedParts = (status.parkedByDependency ?? [])

@@ -502,6 +502,55 @@ describe('parseLaunchDependencies (issue #2364)', () => {
     });
   });
 
+  test('carries the confirmed/unknown split when the server exposes it (issue #3153)', () => {
+    const parsed = parseLaunchDependencies({
+      schemaVersion: 'launch-dependency-diagnostics.v1',
+      totalDegradedTasks: 136,
+      totalUnknownTasks: 136,
+      totalFindings: 136,
+      dependencies: [
+        { dependency: 'kb', degradedTaskCount: 136, categories: ['unknown'] },
+      ],
+    });
+    expect(parsed).toEqual({
+      totalDegradedTasks: 136,
+      totalUnknownTasks: 136,
+      totalFindings: 136,
+      dependencies: [{ dependency: 'kb', degradedTaskCount: 136, categories: ['unknown'] }],
+    });
+    // Back-compat hinges on key *absence*, not an undefined value: an omitted
+    // confirmed split must leave the key out so an older server's payload stays
+    // legacy-shaped. `toEqual` ignores undefined-valued keys, so pin it here.
+    expect(parsed).not.toBeNull();
+    expect('totalConfirmedDegradedTasks' in (parsed as object)).toBe(false);
+  });
+
+  test('parses both split fields and floors them', () => {
+    expect(parseLaunchDependencies({
+      totalDegradedTasks: 10,
+      totalConfirmedDegradedTasks: 4.9,
+      totalUnknownTasks: 6.2,
+      dependencies: [],
+    })).toEqual({
+      totalDegradedTasks: 10,
+      totalConfirmedDegradedTasks: 4,
+      totalUnknownTasks: 6,
+      dependencies: [],
+    });
+  });
+
+  test('drops malformed split fields, leaving legacy back-compat behavior', () => {
+    expect(parseLaunchDependencies({
+      totalDegradedTasks: 8,
+      totalConfirmedDegradedTasks: '4',
+      totalUnknownTasks: -1,
+      dependencies: [],
+    })).toEqual({
+      totalDegradedTasks: 8,
+      dependencies: [],
+    });
+  });
+
   test('parses parked work and recovery reasons separately from degraded rows', () => {
     expect(parseLaunchDependencies({
       totalDegradedTasks: 0,
