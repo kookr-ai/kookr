@@ -3,7 +3,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { CollaborationAuditLog, type CollaborationAuditAppendInput } from './collaboration-audit-log.js';
+import {
+  CollaborationAuditLog,
+  statCollaborationAuditLogSize,
+  type CollaborationAuditAppendInput,
+} from './collaboration-audit-log.js';
 
 const BASE_INPUT: CollaborationAuditAppendInput = {
   actor: { kind: 'local-owner' },
@@ -85,6 +89,36 @@ describe('CollaborationAuditLog', () => {
         writable: true,
         appendFailureCount: 2,
       });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('statCollaborationAuditLogSize (issue #3158)', () => {
+  test('returns null when the collaboration-audit log is absent', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-audit-size-'));
+    try {
+      expect(await statCollaborationAuditLogSize(dir)).toBeNull();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports the active file byte size after an append', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-collaboration-audit-size-'));
+    try {
+      const log = new CollaborationAuditLog({
+        kookrDir: dir,
+        idGenerator: () => 'event-1',
+        ownerNodeId: 'owner-node',
+      });
+      expect(await log.append(BASE_INPUT)).toBe(true);
+
+      const bytes = await statCollaborationAuditLogSize(dir);
+      const raw = await readFile(join(dir, 'collaboration-audit.jsonl'), 'utf-8');
+      expect(bytes).toBe(Buffer.byteLength(raw));
+      expect(bytes).toBeGreaterThan(0);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

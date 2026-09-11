@@ -90,6 +90,7 @@ import {
   type DeadlineResult,
 } from '../control-plane-health.js';
 import { computeCiBlindDebt, type CiBlindDebt } from '../../core/ci-blind-debt.js';
+import { collectAuditLogSizes, type AuditLogSizes } from '../audit-log-sizes.js';
 import {
   formatProjectAutomationDigestLine,
   formatSafeModeDigestLine,
@@ -666,6 +667,25 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
     }
 
+    // Audit-log size gauge (issue #3158): the append-only command-audit
+    // (`audit.jsonl` + rotated `audit.*.jsonl` archives) and collaboration-audit
+    // (`collaboration-audit.jsonl`) logs grow unbounded and no prune sweep
+    // reaches them, so surface their byte size before they can fill the disk.
+    // stat-only plus one bounded single-level directory listing — never reads
+    // file contents and never publishes paths. Absent files degrade to null;
+    // soft-omit the whole block on error (bounded like the reads above).
+    let auditLogSizesBlock: AuditLogSizes | undefined;
+    if (deps.kookrDir) {
+      const kookrDir = deps.kookrDir;
+      const auditLogSizesOutcome = await collectBounded(
+        'auditLogSizes',
+        () => collectAuditLogSizes(kookrDir),
+        deps.healthComponentBudgetMs ?? HEALTH_COMPONENT_BUDGET_MS,
+      );
+      recordComponentOutcome(auditLogSizesOutcome.source, auditLogSizesOutcome.name);
+      auditLogSizesBlock = auditLogSizesOutcome.value;
+    }
+
     const staleProcesses = getStaleProcessSummary();
     // Resource watchdog (issue #1724 + #2039): last sample / trigger / throttle
     // / spawns-in-24h from the service's in-memory snapshot only — never a
@@ -964,6 +984,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // Issue #2791: full latest resource sample (RSS/heap/event-loop/memory/
       // data-directory) + freshness age, reused from the WS sampler.
       resourceStatus: resourceStatusBlock,
+      // Issue #3158: audit-log size gauge (command-audit active + archives,
+      // collaboration-audit active). stat-only; omitted when kookrDir is
+      // unwired (partial test harnesses) or the bounded read errored.
+      ...(auditLogSizesBlock ? { auditLogSizes: auditLogSizesBlock } : {}),
       ...(prodSmokeTickBlock ? { prodSmokeTick: prodSmokeTickBlock } : {}),
       ...(idempotencyLedgerBlock ? { idempotencyLedger: idempotencyLedgerBlock } : {}),
       // systemd notifier arming (issue #2853): process-local readiness/watchdog
