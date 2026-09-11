@@ -52,6 +52,7 @@ import { HungSuspectResidualAlerter } from './hung-suspect-residual-alert.js';
 import { FinishedAwaitingAckResidualAlerter } from './finished-awaiting-ack-residual-alert.js';
 import { SchedulesPausedResidualAlerter } from './schedules-paused-residual-alert.js';
 import { FinishedAwaitingAckAckReaperMetrics } from './finished-awaiting-ack-ack-reaper.js';
+import { HungTaskReaperMetrics } from './hung-task-reaper.js';
 import { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
 
 import {
@@ -616,6 +617,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // projection below stamps `kind` from whichever coordinator holds it.
   const faaAckReapWarningCoordinator = new ReapWarningCoordinator();
   const faaAckReaperMetrics = new FinishedAwaitingAckAckReaperMetrics();
+  // Hung-task reap-failure counters (issue #3154): a single process-lifetime
+  // instance shared by the reaper (writes on a terminate rejection) and
+  // `/api/health` (reads the snapshot).
+  const hungTaskReaperMetrics = new HungTaskReaperMetrics();
   setReapWarningProvider({
     view(taskId: string, nowMs: number) {
       const hung = reapWarningCoordinator.view(taskId, nowMs);
@@ -2651,6 +2656,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     reapWarningCoordinator,
     faaAckReapWarningCoordinator,
     faaAckReaperMetrics,
+    hungTaskReaperMetrics,
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,
@@ -3571,6 +3577,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       reapWarningCoordinator,
       getHungTaskReapWarningEnabled,
       getHungTaskReapGraceMs,
+      hungTaskReaperMetrics,
       // issue #2170: FAA ack-path reaper (bounded-deadline close + grace/veto)
       faaAckReapWarningCoordinator,
       getFinishedAwaitingAckAckReaperEnabled,

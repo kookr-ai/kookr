@@ -478,6 +478,15 @@ export interface RouteDeps {
     'getHealthSnapshot'
   >;
   /**
+   * Hung-task reaper failure counters (issue #3154). `/api/health` reads only
+   * `getSnapshot()` — cumulative reap terminate-failure counter + last-failure
+   * fields, a cheap in-memory read, never a fresh scan on the request path.
+   */
+  hungTaskReaperMetrics?: Pick<
+    import('../hung-task-reaper.js').HungTaskReaperMetrics,
+    'getSnapshot'
+  >;
+  /**
    * Payload-diet gauges (issue #2220 / #1526 Phase C). `/api/health` reads
    * only the slim `getPayloadDietStats()` snapshot — tracked/terminal task
    * counts plus last snapshot broadcast bytes. Must be a non-cloning store
