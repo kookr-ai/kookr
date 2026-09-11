@@ -5,6 +5,7 @@ import { nextRun } from '../core/cron.js';
 import {
   type ScheduleStore,
   type Schedule,
+  type ScheduleExecutionReceipt,
   ScheduleValidationError,
   hasScheduleLoopConfig,
   isTriggerLimitExhausted,
@@ -674,13 +675,22 @@ export class ScheduleRunner {
         const scheduledNextRun = computeNextRunFor(schedule);
         if (!scheduledNextRun || scheduledNextRun > now) continue;
         if (this.inFlightFires.has(schedule.id)) {
-          // A previous fire for this schedule is still in flight past its
-          // wall-clock cap (issue #1708). Skip rather than launch a duplicate:
-          // reserveExecution already advanced `lastScheduledFor`, so without
-          // this guard the now-released `firing` gate would let the next tick
-          // re-fire the same occurrence (disableDedup is set) and spawn a
-          // second task. It clears when the stuck fire finally settles.
-          console.warn(`[schedule] Skipping "${schedule.name}" — previous fire still in flight past its wall-clock cap (issue #1708)`);
+          // A fire for this schedule is still in flight — a cron fire past its
+          // wall-clock cap (issue #1708), or a manual `runNow` mid-launch (issue
+          // #3146). Skip synchronously rather than launch a duplicate: without
+          // this guard the now-released `firing` gate would let this tick re-fire
+          // the same occurrence (disableDedup is set) and spawn a second task.
+          //
+          // Kept a bare, synchronous `continue` on purpose: awaiting a ledger
+          // write here would queue behind a stalled winner and freeze the tick
+          // (breaking #1708 isolation and the dead-man self-check), and recording
+          // a fresh skip row every tick would flood the bounded ledger. The
+          // occurrence is not lost — it stays due, so once the winner settles a
+          // later tick records it as `skipped_active` through the normal
+          // blocking-guard path (or fires it if the winner's task has ended). The
+          // genuinely CONCURRENT case (both fires reach `fire()`) is still audited
+          // by the in-`fire()` admission gate.
+          console.warn(`[schedule] Skipping "${schedule.name}" — a fire is already in flight (issue #1708 / #3146)`);
           continue;
         }
         // Due and eligible. Past the per-tick budget, defer WITHOUT reserving
@@ -740,13 +750,14 @@ export class ScheduleRunner {
     scheduledNextRun: Date,
   ): Promise<void> {
     const cap = this.deps.fireTimeoutMs ?? FIRE_WALL_CLOCK_CAP_MS;
-    this.inFlightFires.add(schedule.id);
+    // The in-flight marker is owned by `fire()` itself now (issue #3146): it is
+    // added synchronously at the top of `fire()` — before any `await`, so no
+    // earlier than this wrapper used to — and released only when the fire truly
+    // settles, which keeps the issue #1708 semantics (a hung fire stays marked
+    // so the next tick will not re-fire it) while also gating the manual path.
     const settled = this.fire(schedule, trigger, scheduledNextRun).then(
-      () => {
-        this.inFlightFires.delete(schedule.id);
-      },
+      () => {},
       (err) => {
-        this.inFlightFires.delete(schedule.id);
         // A fire that rejects BEFORE its own launcher try/catch (e.g.
         // reserveExecution throwing). Surface it so a broken fire is never
         // silent; isolate it so it cannot abort the other fires.
@@ -928,6 +939,100 @@ export class ScheduleRunner {
       return { error: 'Schedule trigger limit reached' };
     }
 
+    // Concurrent-dispatch admission gate (issue #3146). Manual (`runNow`) and
+    // cron (`tick`/`fireBounded`) fires funnel through this ONE method, but the
+    // in-flight marker used to be added only by the cron `fireBounded` wrapper
+    // — the manual path neither set nor checked it. So a manual Run Now landing
+    // beside a cron tick could both reserve, both read the same stale
+    // `latestExecution.taskId` (a completed previous run, not blocking), and both
+    // launch a task for the same schedule. The loser's `markExecutionAccepted`
+    // then found its receipt rotated out of `currentExecution` and threw, leaving
+    // a LIVE task with no schedule receipt behind an HTTP error.
+    //
+    // The set-and-check is synchronous (no `await` between the `has` test and the
+    // `add`), so on a single-threaded runtime exactly one fire per schedule is
+    // ever admitted; a concurrent loser records a durable `skipped_active` row
+    // that references the winning execution and returns `Previous run still
+    // active` (→ 409). `fire()` owns the marker for the whole critical section
+    // and releases it in the `finally` only when the fire TRULY settles, which
+    // also preserves the issue #1708 wall-clock-cap semantics (a hung fire keeps
+    // the marker so the next tick will not re-fire it).
+    if (this.inFlightFires.has(schedule.id)) {
+      return this.recordConcurrentOverlapSkip(schedule, trigger, scheduledNextRun, decision);
+    }
+    this.inFlightFires.add(schedule.id);
+    try {
+      return await this.dispatchAdmittedFire(schedule, trigger, scheduledNextRun, decision);
+    } finally {
+      this.inFlightFires.delete(schedule.id);
+    }
+  }
+
+  /**
+   * Record a fire that lost the {@link fire} admission gate to a concurrent
+   * in-flight fire for the same schedule (issue #3146). The winner already holds
+   * `currentExecution`, so this must not reserve — it appends a ledger-only
+   * `skipped_active` row referencing the winner via {@link ScheduleService.recordOverlapSkipped}.
+   * The winning execution is read fresh from the store, since its `reserveExecution`
+   * has always committed `currentExecution` before this loser could run (no `await`
+   * separates the winner's marker add from its synchronous reserve).
+   */
+  private async recordConcurrentOverlapSkip(
+    schedule: Schedule,
+    trigger: 'cron' | 'manual',
+    scheduledNextRun: Date | undefined,
+    decision: 'cron_due' | 'manual_run' | 'catch_up',
+  ): Promise<ScheduleRunResult> {
+    const winner = this.deps.store.get(schedule.id)?.currentExecution;
+    // Reference the WINNER's task only when it already has one. When the winner
+    // is still `reserved` (mid-launch, no taskId yet) leave blockingTaskId off
+    // rather than borrow a prior run's id — the winning execution is still
+    // referenced via its receipt + token below, so the audit row never points at
+    // an unrelated earlier task (failure-mode review, issue #3146).
+    const blockingTaskId = winner?.taskId;
+    console.warn(
+      `[schedule] Skipping "${schedule.name}" — a fire is already in flight for this schedule (issue #3146)`,
+    );
+    try {
+      await this.deps.service.recordOverlapSkipped(schedule.id, {
+        trigger,
+        decision,
+        ...(scheduledNextRun ? { scheduledFor: scheduledNextRun.toISOString() } : {}),
+        ...(blockingTaskId ? { blockingTaskId } : {}),
+        ...(winner?.id ? { blockingReceiptId: winner.id } : {}),
+        ...(winner?.executionToken ? { blockingExecutionToken: winner.executionToken } : {}),
+        message: 'Previous run still active',
+      });
+    } catch (err) {
+      // Never let the skip-audit write turn an overlap into a thrown fire — the
+      // guarantee that matters (no duplicate launch) is already met.
+      console.error(`[schedule] overlap-skip ledger write failed for "${schedule.name}":`, err);
+    }
+    return { error: 'Previous run still active' };
+  }
+
+  private async dispatchAdmittedFire(
+    schedule: Schedule,
+    trigger: 'cron' | 'manual',
+    scheduledNextRun: Date | undefined,
+    decision: 'cron_due' | 'manual_run' | 'catch_up',
+  ): Promise<ScheduleRunResult> {
+    // Re-read the schedule fresh now that we hold the admission gate (issue
+    // #3146). The caller's `schedule` may be a STALE snapshot: the startup
+    // catch-up loop snapshots every schedule up front and fires them one at a
+    // time, and `runNow`/`forceRefire` resolve by id well before the gate is
+    // won. A concurrent (now-settled) fire, a definition PATCH, or a prior
+    // accept can have advanced the row since. `reserveExecution` merges onto the
+    // object it is handed, so reserving off a stale snapshot would silently
+    // ERASE the winner's accepted receipt / ledger row (and revert a cleared
+    // model tier), and the blocking-guard read below would miss a task the
+    // fresh row already records — re-admitting a duplicate. There is no `await`
+    // between this read and the synchronous head of `reserveExecution`, so the
+    // fresh row is authoritative at reserve time. A row deleted since the gate
+    // was won settles as a no-op fire (the `finally` still releases the marker).
+    const fresh = this.deps.store.get(schedule.id);
+    if (!fresh) return {};
+    schedule = fresh;
     const receipt = await this.deps.service.reserveExecution(
       schedule,
       trigger,
@@ -1222,9 +1327,9 @@ export class ScheduleRunner {
           `[schedule] Substituted unavailable agent for "${schedule.name}": ${chainMsg}`,
         );
       }
-      await this.deps.service.markExecutionAccepted(
-        schedule.id,
-        receipt.id,
+      await this.bindLaunchedTaskReceipt(
+        schedule,
+        receipt,
         result.task.id,
         result.queued,
         {
@@ -1266,7 +1371,7 @@ export class ScheduleRunner {
    */
   private async fireLooped(
     schedule: Schedule,
-    receipt: { id: string },
+    receipt: ScheduleExecutionReceipt,
     drift: PlaybookCheckoutDrift | null = null,
     actuation?: { automationProjectId: string; safeModeExempt: boolean },
   ): Promise<ScheduleRunResult> {
@@ -1365,9 +1470,9 @@ export class ScheduleRunner {
           + `${formatSubstitutionChain(scheduleChain ?? [])}`,
         );
       }
-      await this.deps.service.markExecutionAccepted(
-        schedule.id,
-        receipt.id,
+      await this.bindLaunchedTaskReceipt(
+        schedule,
+        receipt,
         result.task.id,
         result.queued,
         {
@@ -1410,6 +1515,77 @@ export class ScheduleRunner {
       };
     } catch (err) {
       return this.recordFireFailure(schedule, receipt, err);
+    }
+  }
+
+  /**
+   * Bind a just-launched task to its schedule receipt (issue #3146). A task the
+   * launcher already created is LIVE; it must never be orphaned from the schedule
+   * ledger, and a bookkeeping fault here must never surface to the caller as a
+   * fire failure that hides the running task (acceptance criterion 3: "an error
+   * response cannot hide a live task").
+   *
+   * Three guards: (1) the reserved receipt's trigger/decision/scheduledFor are
+   * passed as a fallback so {@link ScheduleService.markExecutionAccepted} can
+   * synthesize a durable receipt if the reserved one rotated out of
+   * `currentExecution` (a restart-driven refresh, or a legacy race); (2) on any
+   * OTHER write fault the durable accept is RE-ATTEMPTED once — the first call
+   * already applied the task-linked state in memory, so the retry is an
+   * idempotent re-persist that recovers a transient fault (e.g. a briefly full
+   * disk) and leaves a durable, task-linked receipt a restart can reconcile,
+   * rather than a bare `reserved` row the launched task is orphaned behind; (3)
+   * if the retry still fails the task is left live and the fault is logged — no
+   * code can force durability onto a persistently failing store, and an error is
+   * never surfaced to the caller regardless (a live task must not be hidden).
+   */
+  private async bindLaunchedTaskReceipt(
+    schedule: Schedule,
+    receipt: ScheduleExecutionReceipt,
+    taskId: string,
+    queued: boolean,
+    details: NonNullable<Parameters<ScheduleService['markExecutionAccepted']>[4]>,
+  ): Promise<void> {
+    const acceptFallback = {
+      trigger: receipt.trigger,
+      decision: receipt.decision,
+      ...(receipt.scheduledFor ? { scheduledFor: receipt.scheduledFor } : {}),
+    };
+    // Two attempts: the first records the accepted receipt; a second recovers a
+    // transient write fault so the live task is not orphaned behind a `reserved`
+    // row on disk (issue #3146). Both are idempotent (same task-linked state).
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await this.deps.service.markExecutionAccepted(
+          schedule.id,
+          receipt.id,
+          taskId,
+          queued,
+          details,
+          acceptFallback,
+        );
+        if (attempt > 1) {
+          console.warn(
+            `[schedule] recovered the accepted schedule receipt for "${schedule.name}" task ${taskId} on retry after a transient write fault (issue #3146)`,
+          );
+        }
+        return;
+      } catch (err) {
+        const durabilityLost = attempt === 2;
+        console.error(
+          durabilityLost
+            ? '[schedule] launched a task but could not durably record its accepted schedule receipt after a retry — '
+              + 'the task is LIVE and left running; not surfacing as a fire failure (issue #3146)'
+            : '[schedule] accepted-receipt write failed; retrying the durable binding so the live task is not orphaned (issue #3146)',
+          {
+            schedule: schedule.name,
+            scheduleId: schedule.id,
+            taskId,
+            receiptId: receipt.id,
+            attempt,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
     }
   }
 
