@@ -16,6 +16,7 @@ import type { TimeWindow } from '../../shared/contracts/cost-comparison.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/contracts/agent-types.js';
 import { getOutcomeLedger } from '../api/index.js';
 import { formatCost, formatTokens } from '../presentation.js';
+import { loadOutcomeScoreboardPrefs, saveOutcomeScoreboardPrefs } from '../store/outcome-scoreboard-prefs.js';
 
 /**
  * Below this many terminal tasks, a per-agent completion rate is drawn from too
@@ -63,6 +64,24 @@ function parseProjectChoice(choice: string): OutcomeLedgerProjectScope {
   return { kind: 'all' };
 }
 
+/**
+ * Resolve the *effective* project scope from the operator's persisted
+ * *preferred* choice (issue #3144) and the currently tracked projects. The two
+ * sentinels always stand; an `assigned:<id>` choice stands only while that
+ * project is tracked, otherwise it falls back to All projects. The preferred
+ * value itself is never mutated here, so a project that is merely still loading
+ * after a reload (or reappears later) is restored automatically rather than
+ * lost, and a fallback can never overwrite the saved preference.
+ */
+function resolveEffectiveProjectChoice(
+  preferred: string,
+  projects: OutcomeLedgerProjectOption[],
+): string {
+  if (preferred === ALL_PROJECTS_CHOICE || preferred === UNASSIGNED_CHOICE) return preferred;
+  const present = projects.some((option) => projectChoiceValue(option) === preferred);
+  return present ? preferred : ALL_PROJECTS_CHOICE;
+}
+
 interface OutcomeLedgerPanelProps {
   /**
    * Tracked projects offered in the scope selector (issue #2850). Defaults to
@@ -94,27 +113,51 @@ export function OutcomeLedgerPanel({
   liveTaskIds,
   onOpenTask,
 }: OutcomeLedgerPanelProps = {}): React.ReactElement {
-  const [windowChoice, setWindowChoice] = useState<TimeWindow>('7d');
-  const [projectChoice, setProjectChoice] = useState<string>(ALL_PROJECTS_CHOICE);
+  // Initialize from persisted prefs (issue #3144) so a chosen window/scope
+  // survives a reload; a missing or malformed stored value falls back to the
+  // defaults. Read once at mount via the state initializer.
+  const [windowChoice, setWindowChoice] = useState<TimeWindow>(
+    () => loadOutcomeScoreboardPrefs().window ?? '7d',
+  );
+  // The operator's *preferred* project scope, persisted across reloads (issue
+  // #3144). Kept deliberately distinct from the *effective* scope below: a
+  // preferred project that is not currently in `projects` — still loading right
+  // after a reload, or genuinely untracked — is not stored as the fallback, so
+  // the preference is never lost and is restored the moment the project (re)appears.
+  const [preferredProject, setPreferredProject] = useState<string>(
+    () => loadOutcomeScoreboardPrefs().project ?? ALL_PROJECTS_CHOICE,
+  );
   const [data, setData] = useState<OutcomeLedgerResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(true);
 
-  // If the selected project disappears from the tracked list (e.g. it stops
-  // being tracked), fall back to All projects rather than keep querying a scope
-  // the operator can no longer see in the selector.
-  useEffect(() => {
-    if (projectChoice === ALL_PROJECTS_CHOICE || projectChoice === UNASSIGNED_CHOICE) return;
-    const stillPresent = projects.some((option) => projectChoiceValue(option) === projectChoice);
-    if (!stillPresent) setProjectChoice(ALL_PROJECTS_CHOICE);
-  }, [projects, projectChoice]);
+  // The scope actually shown in the selector and sent to the API. Derived from
+  // the preferred choice and the live project list — never held in mutable
+  // state — so a transiently-absent project resolves back to itself once it
+  // loads, and a fallback to All never overwrites the saved preference.
+  const effectiveProject = useMemo(
+    () => resolveEffectiveProjectChoice(preferredProject, projects),
+    [preferredProject, projects],
+  );
+
+  // Persist only the operator's explicit selections (issue #3144), always keyed
+  // on the *preferred* project so a fallback-to-All can never erase it. A window
+  // change re-writes the same preferred project alongside the new window.
+  function chooseWindow(next: TimeWindow): void {
+    setWindowChoice(next);
+    saveOutcomeScoreboardPrefs({ window: next, project: preferredProject });
+  }
+  function chooseProject(next: string): void {
+    setPreferredProject(next);
+    saveOutcomeScoreboardPrefs({ window: windowChoice, project: next });
+  }
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     setError(null);
-    getOutcomeLedger(windowChoice, parseProjectChoice(projectChoice), controller.signal)
+    getOutcomeLedger(windowChoice, parseProjectChoice(effectiveProject), controller.signal)
       .then((body) => {
         if (!isOutcomeLedgerResponse(body)) throw new Error('invalid outcome ledger response');
         return body;
@@ -129,7 +172,7 @@ export function OutcomeLedgerPanel({
         setLoading(false);
       });
     return () => controller.abort();
-  }, [windowChoice, projectChoice]);
+  }, [windowChoice, effectiveProject]);
 
   const findings = Array.isArray(data?.findings) ? data.findings : [];
   const tasks = Array.isArray(data?.tasks) ? data.tasks : [];
@@ -165,8 +208,8 @@ export function OutcomeLedgerPanel({
         <div className="outcome-ledger-controls">
           <select
             className="outcome-project-select"
-            value={projectChoice}
-            onChange={(event) => setProjectChoice(event.target.value)}
+            value={effectiveProject}
+            onChange={(event) => chooseProject(event.target.value)}
             aria-label="Outcome scoreboard project"
           >
             <option value={ALL_PROJECTS_CHOICE}>All projects</option>
@@ -178,7 +221,7 @@ export function OutcomeLedgerPanel({
           <select
             className="outcome-window-select"
             value={windowChoice}
-            onChange={(event) => setWindowChoice(event.target.value as TimeWindow)}
+            onChange={(event) => chooseWindow(event.target.value as TimeWindow)}
             aria-label="Outcome scoreboard window"
           >
             {WINDOWS.map((option) => (
