@@ -53,6 +53,21 @@ describe('NFR-TERM-001: bounded terminal-host RPC', () => {
     h.rpc.close(); await settled;
     expect(h.rpc.pendingBytes).toBe(0);
   });
+  it('reserves readiness slots and bytes when writes fill ordinary admission', async () => {
+    const h = harness();
+    const work = Array.from({ length: 128 }, () => h.rpc.request('write', ['s', new Uint8Array(128 * 1024)]));
+    const workResults = Promise.allSettled(work);
+    const readiness = h.rpc.request('input.markTurnStopped', ['s']);
+    const readinessResult = Promise.allSettled([readiness]);
+    h.callbacks.shift()!();
+    const packet = h.sent.at(-1)!;
+    expect(packet.method).toBe('input.markTurnStopped');
+    h.rpc.receive({ kind: 'response', generation: 'g', id: packet.id });
+    expect((await readinessResult)[0]?.status).toBe('fulfilled');
+    h.rpc.close();
+    expect((await workResults).some((result) => result.status === 'rejected')).toBe(true);
+    expect(h.rpc.pendingBytes).toBe(0);
+  });
   it('bounds byte and request admission before accepting more work', async () => {
     const h = harness();
     await expect(h.rpc.request('write', ['s', new Uint8Array(9 * 1024 * 1024)])).rejects.toBeInstanceOf(TerminalHostUnavailableError);

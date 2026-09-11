@@ -1085,6 +1085,14 @@ are twenty-millisecond frame-interval p95 at 60 Hz and under one hundred millise
 emission-to-render-acknowledgement p95 within the qualified workload; they remain
 unverified until measured. Full qualification includes ten minutes of steady load
 and two minutes of overload/recovery, without agent input loss or unbounded queues.
+A replacement terminal host restores surviving session registrations with fresh
+readiness epochs and excludes sessions cleaned up during the outage. Readiness
+updates retain admission capacity when ordinary requests saturate either end of
+IPC; a failed update must not terminate hook ingestion. Rejected WebSocket
+handshakes release the parent's connection reservation when the socket closes.
+An older asynchronous persistence write must never overwrite a newer synchronous
+snapshot. Shutdown stops ring producers, drains old writes, and completes the
+final flush before any caller's drain promise resolves.
 
 **Dependencies:** FR-TERM-001.
 **Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).

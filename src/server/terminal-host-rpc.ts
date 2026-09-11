@@ -2,7 +2,10 @@ import { SessionGoneError, WriteTimeoutError } from '../adapters/terminal-backen
 import { TerminalHostUnavailableError, terminalHostPayloadSize, type TerminalHostOperations,
   type TerminalHostMethod, type TerminalHostRequest, type TerminalHostResponse } from './terminal-host-contract.js';
 
+import { isTerminalHostReadiness, TerminalHostAdmission } from './terminal-host-admission.js';
+
 interface PendingRpc {
+  releaseAdmission(): void;
   packet: TerminalHostRequest;
   bytes: number;
   charged: boolean;
@@ -20,6 +23,7 @@ const BULK = new Set<TerminalHostMethod>(['captureBytes', 'captureStreamSnapshot
  * A timed-out or failed write is never retried by this transport.
  */
 export class TerminalHostRpcClient {
+  private readonly admission = new TerminalHostAdmission();
   private readonly pending = new Map<number, PendingRpc>();
   private readonly queue: number[] = [];
   private nextId = 0;
@@ -37,8 +41,10 @@ export class TerminalHostRpcClient {
   get pendingBytes() { return this.retainedBytes; }
 
   request<K extends TerminalHostMethod>(method: K, args: Parameters<TerminalHostOperations[K]>, timeoutMs = 8000): Promise<Awaited<ReturnType<TerminalHostOperations[K]>>> {
-    const bytes = terminalHostPayloadSize(args) + 256;
-    if (this.closed || bytes > 8 * 1024 * 1024 || this.retainedBytes + bytes > 16 * 1024 * 1024 || this.pending.size >= 128) {
+    const bytes = terminalHostPayloadSize({ kind: 'request', generation: this.generation, id: this.nextId + 1,
+      method, args, deadline: Date.now() + 30_000 }) + 256;
+    const releaseAdmission = this.closed ? null : this.admission.acquire(method, bytes);
+    if (!releaseAdmission) {
       return Promise.reject(new TerminalHostUnavailableError('Terminal host request capacity unavailable'));
     }
     const id = ++this.nextId;
@@ -48,11 +54,11 @@ export class TerminalHostRpcClient {
     let packet: TerminalHostRequest;
     try { packet = { kind: 'request', generation: this.generation, id,
       method, args: structuredClone(args), deadline: Date.now() + duration } as TerminalHostRequest; }
-    catch { return Promise.reject(new TerminalHostUnavailableError('Terminal host request cannot be serialized')); }
+    catch { releaseAdmission(); return Promise.reject(new TerminalHostUnavailableError('Terminal host request cannot be serialized')); }
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => this.finish(id, undefined,
         new TerminalHostUnavailableError(`Terminal host ${method} deadline exceeded; delivery may be uncertain`)), duration);
-      const pending: PendingRpc = { packet, bytes, charged: true, settled: false, transmitting: false,
+      const pending: PendingRpc = { releaseAdmission, packet, bytes, charged: true, settled: false, transmitting: false,
         timer, resolve: (value) => resolve(value as Awaited<ReturnType<TerminalHostOperations[K]>>), reject };
       this.pending.set(id, pending);
       this.retainedBytes += bytes;
@@ -77,6 +83,7 @@ export class TerminalHostRpcClient {
   private release(pending: PendingRpc) {
     if (!pending.charged) return;
     pending.charged = false;
+    pending.releaseAdmission();
     this.retainedBytes -= pending.bytes;
   }
 
@@ -94,8 +101,9 @@ export class TerminalHostRpcClient {
     if (this.closed || this.transmitting) return;
     const valid = this.queue.filter((id) => this.pending.has(id));
     this.queue.splice(0, this.queue.length, ...valid);
+    const readiness = this.queue.findIndex((id) => isTerminalHostReadiness(this.pending.get(id)!.packet.method));
     const control = this.queue.findIndex((id) => !BULK.has(this.pending.get(id)!.packet.method));
-    const index = control >= 0 ? control : 0;
+    const index = readiness >= 0 ? readiness : control >= 0 ? control : 0;
     const [id] = this.queue.splice(index, 1);
     if (id === undefined) return;
     const pending = this.pending.get(id)!;

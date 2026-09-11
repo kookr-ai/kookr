@@ -68,7 +68,13 @@ become unavailable when stale; they must not invent a live prompt epoch.
 Before restarting a host, confirm the old child exited and its attach clients
 released the instance. Never kill an unverified process to force that proof.
 An unavailable host must not make reconciliation or Ralph startup declare live
-agents dead. Test both an interrupted input RPC and surviving dtach masters.
+agents dead. Restore parent-owned session membership into each new child before
+later readiness marks, using fresh epochs. Test registrations and cleanup during
+an outage as well as interrupted input and surviving dtach masters. Saturate
+ordinary RPCs while asserting readiness admission at both ends; a shared count
+cap alone does not reserve capacity. Catch fire-and-forget hook-update failures.
+A rejected WebSocket handshake may close its raw socket without throwing or
+calling the upgrade callback; release its reservation from that closure too.
 
 ## Persistence and reaping
 
@@ -79,8 +85,10 @@ write paths recreate them immediately before writing.
 
 Async ring persistence retains at most one active and one latest pending
 snapshot per session, with a fleet budget. Deletion retires pending writes before
-unlinking a ring; shutdown drains writes. Do not resurrect deleted history from
-a late disk completion.
+unlinking a ring. Never use synchronous fallback while an async write or removal
+owns the same file: an older rename can land last. Leave the source ring dirty
+for retry. Shutdown freezes producers, drains older writes, then performs and
+drains the final flush. All concurrent close callers share its completion.
 
 `reconciliation.ts` computes live/orphan state. `SessionReaperService` separately
 applies age and ownership policy via `killSession`; it must not race a pending

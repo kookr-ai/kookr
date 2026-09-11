@@ -525,6 +525,14 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     const pipelineEvent: AgentEvent = event.type === 'user_prompt' && !event.hookLineId
       ? { ...event, hookLineId: String(meta.sequence) }
       : event;
+    // Hook ingestion cannot await readiness I/O. A retiring host can reject
+    // these updates; contain that failure without stopping supervision/replay.
+    const observeInputUpdate = (update: Promise<unknown> | undefined) => {
+      void update?.catch((error: unknown) => {
+        console.warn('[event-pipeline] Terminal readiness update failed', { sessionId: tmuxName,
+          eventType: pipelineEvent.type, error: error instanceof Error ? error.message : String(error) });
+      });
+    };
     const inputState = deps.terminalInputCoordinator?.getSnapshot(tmuxName);
     switch (pipelineEvent.type) {
       case 'user_prompt':
@@ -534,30 +542,30 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
           pipelineEvent.hookLineId ?? String(meta.sequence),
           meta.observedAt,
         );
-        void deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markUserPromptSubmitted(tmuxName));
         break;
       case 'session_end':
         deps.userInputDeliveries?.finalizeSession(tmuxName);
-        void deps.terminalInputCoordinator?.markSessionEnded(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markSessionEnded(tmuxName));
         break;
       case 'tool_use':
-        void deps.terminalInputCoordinator?.markToolStarted(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markToolStarted(tmuxName));
         break;
       case 'permission_request':
-        void deps.terminalInputCoordinator?.markPermissionBlocked(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markPermissionBlocked(tmuxName));
         break;
       case 'stop_failure':
-        void deps.terminalInputCoordinator?.markStopFailure(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markStopFailure(tmuxName));
         break;
       case 'stop':
-        void deps.terminalInputCoordinator?.markTurnStopped(tmuxName);
+        observeInputUpdate(deps.terminalInputCoordinator?.markTurnStopped(tmuxName));
         break;
       case 'notification':
         if (pipelineEvent.notificationType === 'idle_prompt' && inputState) {
-          void deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
+          observeInputUpdate(deps.terminalInputCoordinator?.markPromptReady(tmuxName, {
             observedEpoch: inputState.inputStateEpoch,
             observedReadinessVersion: inputState.readinessVersion,
-          });
+          }));
         }
         break;
     }

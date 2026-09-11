@@ -1,7 +1,7 @@
 import { execFileSync, fork, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
-import { Socket } from 'node:net';
+import { connect as connectSocket, Socket } from 'node:net';
 import { join, resolve } from 'node:path';
 import { WebSocket } from 'ws';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -110,14 +110,82 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     expect(await backend.isAlive('shell')).toBe(true);
   });
 
-  it('fails uncertain calls on child death and restarts only after the old process exits', async () => {
+  it('releases transferred connection slots when a WebSocket handshake is rejected', async () => {
     const backend = await start();
+    const { registry, url } = await connect(backend);
+    expect(registry.size()).toBe(1);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const reply = await new Promise<string>((resolve, reject) => {
+        const socket = connectSocket(Number(new URL(url).port), '127.0.0.1');
+        cleanup.push(() => { socket.destroy(); });
+        let response = '';
+        socket.on('data', (data) => { response += data.toString(); });
+        socket.once('error', reject);
+        socket.once('close', () => resolve(response));
+        socket.once('connect', () => socket.write([
+          'GET /ws/terminal/shell HTTP/1.1', 'Host: localhost', 'Connection: Upgrade',
+          'Upgrade: websocket', 'Sec-WebSocket-Key: malformed', 'Sec-WebSocket-Version: 13', '', '',
+        ].join('\r\n')));
+      });
+      expect(reply).toContain('400 Bad Request');
+      await expect.poll(() => registry.size()).toBe(1);
+    }
+  });
+
+  it('restores surviving readiness with a fresh epoch after child replacement', async () => {
+    const backend = await start();
+    await expect.poll(() => backend.inputCoordinator.getSnapshot('shell')).not.toBeNull();
+    const previous = backend.inputCoordinator.getSnapshot('shell')!;
     const old = backend.getHostHealth();
     process.kill(old.pid!, 'SIGKILL');
     await expect.poll(() => backend.getHostHealth().generation, { timeout: 10_000 }).not.toBe(old.generation);
     await expect.poll(() => backend.getHostHealth().status, { timeout: 10_000 }).toBe('ready');
     expect(await backend.isAlive('shell')).toBe(true);
-    expect(backend.inputCoordinator.getSnapshot('shell')).toBeNull();
+    await expect.poll(() => backend.inputCoordinator.getSnapshot('shell')).not.toBeNull();
+    expect(backend.inputCoordinator.getSnapshot('shell')!.inputStateEpoch).not.toBe(previous.inputStateEpoch);
+    await backend.inputCoordinator.markToolStarted('shell');
+    await backend.inputCoordinator.markTurnStopped('shell');
+    const current = backend.inputCoordinator.getSnapshot('shell')!;
+    expect(current.readinessVersion).toBe(2);
+    expect(await backend.inputCoordinator.markPromptReady('shell', {
+      observedEpoch: previous.inputStateEpoch, observedReadinessVersion: previous.readinessVersion,
+    })).toBe(false);
+    expect(await backend.inputCoordinator.markPromptReady('shell', {
+      observedEpoch: current.inputStateEpoch, observedReadinessVersion: current.readinessVersion,
+    })).toBe(true);
+  });
+
+  it('restores registrations made during an outage and excludes sessions cleaned up during it', async () => {
+    const backend = await start();
+    const coordinator = backend.inputCoordinator;
+    const old = backend.getHostHealth();
+    process.kill(old.pid!, 'SIGKILL');
+    await expect.poll(() => backend.getHostHealth().status).toBe('unavailable');
+    coordinator.cleanupSession('shell');
+    coordinator.registerSession('recovered-during-outage');
+    await expect.poll(() => backend.getHostHealth().generation, { timeout: 10_000 }).not.toBe(old.generation);
+    await expect.poll(() => coordinator.getSnapshot('recovered-during-outage')).not.toBeNull();
+    await coordinator.markToolStarted('shell');
+    expect(coordinator.getSnapshot('shell')).toBeNull();
+    await coordinator.markToolStarted('recovered-during-outage');
+    expect(coordinator.getSnapshot('recovered-during-outage')?.prompt).toEqual({ kind: 'blocked', reason: 'running' });
+  });
+
+  it('keeps readiness admission available while ordinary RPCs saturate the host', async () => {
+    const backend = await start();
+    const old = backend.getHostHealth();
+    process.kill(old.pid!, 'SIGSTOP');
+    const traffic = Promise.allSettled(Array.from({ length: 128 }, () => backend.captureBytes('shell')));
+    const marks = Promise.allSettled([
+      backend.inputCoordinator.markToolStarted('shell'),
+      backend.inputCoordinator.markTurnStopped('shell'),
+    ]);
+    // Let the parent admit requests while the child cannot drain them.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    process.kill(old.pid!, 'SIGCONT');
+    expect((await traffic).some((result) => result.status === 'rejected')).toBe(true);
+    expect((await marks).every((result) => result.status === 'fulfilled')).toBe(true);
+    expect(backend.inputCoordinator.getSnapshot('shell')).toMatchObject({ readinessVersion: 2, prompt: { kind: 'unknown' } });
   });
 
   it('acknowledges actual viewer revocation once without closing an owner of the same session', async () => {

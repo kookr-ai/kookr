@@ -50,7 +50,9 @@ listener. A bounded worker reconstructs display-only screens.
 
 RPCs (requests between the main process and child) have generation IDs, deadlines,
 byte limits, and count limits. Unsent bulk captures yield to input and lifecycle
-control; socket-transfer and authorization traffic have reserved capacity.
+control. The parent and child reserve sixty-four of 128 requests and two MiB
+of the sixteen-MiB request budget for readiness. Socket transfers cannot consume
+the IPC queue's reserved control capacity.
 Input queues retain owned byte copies and reject excess work. Retiring a session
 or coordinator cancels queued and delayed input, without retrying uncertain writes.
 
@@ -64,7 +66,18 @@ Viewer leases expire in the child even if the main process stops responding.
 Revocation is considered complete only after closure acknowledgement or confirmed
 child exit. A replacement host cannot start until its predecessor and attach
 clients have exited. An unverifiable attach owner leaves the host unavailable;
-it does not authorize killing an unknown process. Dtached agent masters survive.
+it does not authorize killing an unknown process. Dtached agent masters survive. The parent retains session membership and restores
+it into each replacement child before later readiness marks for those sessions.
+Restoration creates new epochs; old prompt observations remain invalid. A session
+registered during an outage is restored, while a cleaned-up session is excluded.
+Readiness failures are contained at hook ingestion so an outage cannot produce
+an unhandled promise rejection there. Failed handshakes release the parent's
+reservation on raw socket closure, even when WebSocket setup never completes.
+
+Async persistence never performs a synchronous fallback while another write or
+removal owns the same file. It keeps that ring dirty for a later flush. Shutdown
+stops attach producers before draining older snapshots, then saves the final
+rings; concurrent drain callers share that completion.
 
 Synchronous diagnostics use age-bounded caches. An unreachable host must not be
 mistaken for a dead coding agent or a verified input prompt. Ralph startup now

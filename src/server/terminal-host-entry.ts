@@ -1,3 +1,4 @@
+import { TerminalHostAdmission } from './terminal-host-admission.js';
 import { IncomingMessage } from 'node:http';
 import { Socket } from 'node:net';
 import { WebSocket, WebSocketServer } from 'ws';
@@ -21,8 +22,7 @@ let generation = '';
 let backend: LocalDtachBackend | undefined;
 let input: TerminalInputCoordinator | undefined;
 let stopping = false;
-let activeRequests = 0;
-let requestBytes = 0;
+const admission = new TerminalHostAdmission();
 let inputVersion = 0;
 let lastRequestId = 0;
 const inputSessions = new Set<string>();
@@ -83,6 +83,12 @@ function upgrade(packet: TerminalHostUpgrade, socket: Socket) {
         || packet.grantExpiresAtMs <= now || packet.leaseUntilMs > packet.grantExpiresAtMs))))) {
     socket.destroy(); send({ kind: 'connection-closed', generation, id: packet.id }); return;
   }
+  // A rejected handshake closes the raw socket without invoking the upgrade
+  // callback. Release the parent's reservation for both failed and accepted
+  // upgrades, once actual transport closure confirms ownership has ended.
+  socket.once('close', () => {
+    if (!send({ kind: 'connection-closed', generation, id: packet.id })) void stop();
+  });
   socket.on('error', () => {});
   const request = new IncomingMessage(socket);
   request.method = packet.method; request.url = packet.url; request.headers = packet.headers;
@@ -102,12 +108,11 @@ function upgrade(packet: TerminalHostUpgrade, socket: Socket) {
       ws.on('pong', () => { connection.alive = true; });
       ws.on('close', () => {
         bridge.dispose(); connections.delete(packet.id);
-        send({ kind: 'connection-closed', generation, id: packet.id });
       });
       void bridge.start().catch(() => closeConnection(packet.id));
     });
     socket.resume();
-  } catch { socket.destroy(); send({ kind: 'connection-closed', generation, id: packet.id }); }
+  } catch { socket.destroy(); }
 }
 
 async function execute(request: TerminalHostRequest): Promise<unknown> {
@@ -186,12 +191,13 @@ async function handleRequest(request: TerminalHostRequest) {
   // input. A bounded active set, not a high-water ID check, detects duplicates.
   const size = terminalHostPayloadSize(request);
   const response: TerminalHostResponse = { kind: 'response', generation, id: request.id };
-  if (activeRequests >= 128 || requestBytes + size > 16 * 1024 * 1024
-    || seenRequests.has(request.id) || request.id < lastRequestId - 1024) {
+  const releaseAdmission = seenRequests.has(request.id) || request.id < lastRequestId - 1024
+    ? null : admission.acquire(request.method, size + 256);
+  if (!releaseAdmission) {
     response.error = { name: 'TerminalHostUnavailableError', message: 'Terminal host execution capacity unavailable' };
     send(response); return;
   }
-  activeRequests++; requestBytes += size; seenRequests.add(request.id);
+  seenRequests.add(request.id);
   lastRequestId = Math.max(lastRequestId, request.id);
   // Keep a small replay fence after completion, without unbounded lifetime IDs.
   for (const id of seenRequests) if (id < lastRequestId - 1024) seenRequests.delete(id);
@@ -201,7 +207,7 @@ async function handleRequest(request: TerminalHostRequest) {
       message: error instanceof Error ? error.message : String(error),
       ...(error instanceof SessionGoneError ? { sessionId: error.id } : {}),
       ...(error instanceof WriteTimeoutError ? { sessionId: error.id, durationMs: error.durationMs } : {}) };
-  } finally { activeRequests--; requestBytes -= size; }
+  } finally { releaseAdmission(); }
   const sessionId = request.method === 'input.handleEmptyEnterIntent' ? request.args[0].sessionId
     : typeof request.args[0] === 'string' ? request.args[0] : null;
   if (sessionId && !request.method.startsWith('stream.') && !request.method.startsWith('connection.')) {
