@@ -469,6 +469,10 @@ async function main() {
     terminal.sessions.clear();
     FakeTerminalBridge.clearContent();
     injectedSessionIds.clear();
+    // Prior replies otherwise keep the live-friction footer visible in later
+    // tests, changing the available terminal height on mobile.
+    const interactionPath = server.interactionLog.getFilePath();
+    if (interactionPath) rmSync(interactionPath, { force: true });
     rmSync(join(tempDir, 'coordinator-suppressions.json'), { force: true });
     rmSync(join(tempDir, 'coordinator-feedback.jsonl'), { force: true });
 
