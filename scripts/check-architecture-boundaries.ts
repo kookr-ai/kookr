@@ -7,7 +7,14 @@ const CORE_ROOT = join(ROOT, 'src/core');
 
 export interface Violation {
   file: string;
+  /** 1-based line of the offending marker/import (first occurrence). */
+  line: number;
   reason: string;
+}
+
+/** 1-based line number of string index `index` within `source`. */
+function lineOf(source: string, index: number): number {
+  return source.slice(0, index).split('\n').length;
 }
 
 export async function listTypeScriptFiles(dir: string): Promise<string[]> {
@@ -32,7 +39,8 @@ export function checkCoreLlmProviderBoundary(file: string): Violation[] {
   const violations: Violation[] = [];
 
   if (fileName.includes('openrouter')) {
-    violations.push({ file, reason: 'OpenRouter implementation file is under src/core' });
+    // Whole-file violation (triggered by the filename, not a source offset) → line 1.
+    violations.push({ file, line: 1, reason: 'OpenRouter implementation file is under src/core' });
   }
 
   const forbiddenProviderMarkers = [
@@ -56,8 +64,13 @@ export function checkCoreLlmProviderBoundary(file: string): Violation[] {
     'ANTHROPIC_API_KEY',
   ];
   for (const marker of forbiddenProviderMarkers) {
-    if (source.includes(marker)) {
-      violations.push({ file, reason: `LLM provider transport/config marker "${marker}" appears in src/core` });
+    const index = source.indexOf(marker);
+    if (index !== -1) {
+      violations.push({
+        file,
+        line: lineOf(source, index),
+        reason: `LLM provider transport/config marker "${marker}" appears in src/core`,
+      });
     }
   }
 
@@ -82,6 +95,7 @@ export function checkCoreLayerBoundary(file: string): Violation[] {
     const importPath = match[1] + match[2];
     violations.push({
       file,
+      line: lineOf(source, match.index),
       reason: `core imports outer layer "${importPath}" (${spec.trim()})`,
     });
   }
@@ -98,8 +112,10 @@ async function main(): Promise<void> {
   if (violations.length > 0) {
     console.error('Architecture boundary violations:');
     for (const violation of violations) {
-      console.error(`  ${relative(ROOT, violation.file)}: ${violation.reason}`);
+      console.error(`  ${relative(ROOT, violation.file)}:${violation.line}: ${violation.reason}`);
     }
+    console.error('\nsrc/core must stay provider-agnostic and must not import outer layers.');
+    console.error('Move the concrete transport/config (or the outward import) into the owning layer — src/adapters, src/server, etc. — and depend on it through a core interface instead.');
     process.exit(1);
   }
 

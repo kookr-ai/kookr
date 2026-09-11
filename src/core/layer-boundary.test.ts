@@ -29,7 +29,8 @@ describe('core layer boundary', () => {
         "const lazy = () => import('../frontend/App.js');",
       ].join('\n'));
 
-      const reasons = checkCoreLayerBoundary(file).map((violation) => violation.reason);
+      const violations = checkCoreLayerBoundary(file);
+      const reasons = violations.map((violation) => violation.reason);
 
       expect(reasons).toEqual(expect.arrayContaining([
         expect.stringContaining('server'),
@@ -37,6 +38,36 @@ describe('core layer boundary', () => {
         expect.stringContaining('frontend'),
       ]));
       expect(reasons.length).toBeGreaterThanOrEqual(3);
+
+      // Each violation carries a real 1-based line pointing at the exact
+      // offending import in the synthetic file (not just any positive number).
+      const lineFor = (needle: string) =>
+        violations.find((violation) => violation.reason.includes(needle))?.line;
+      expect(lineFor('server')).toBe(1); // first `../server/...` import, line 1
+      expect(lineFor('adapters')).toBe(3); // `../../adapters/...`, line 3
+      expect(lineFor('frontend')).toBe(4); // dynamic `import('../frontend/...')`, line 4
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('reports a distinct, correct line for each repeated outer import', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-layer-boundary-'));
+    try {
+      const file = join(dir, 'repeated-core.ts');
+      writeFileSync(file, [
+        "const noop = 1;",
+        "import { a } from '../server/first.js';",
+        "import { b } from '../server/second.js';",
+      ].join('\n'));
+
+      const lines = checkCoreLayerBoundary(file)
+        .filter((violation) => violation.reason.includes('server'))
+        .map((violation) => violation.line)
+        .sort((x, y) => x - y);
+
+      // Each of the two `../server/...` imports is flagged on its own line (2, 3).
+      expect(lines).toEqual([2, 3]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
