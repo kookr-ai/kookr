@@ -289,8 +289,9 @@ export class LocalDtachStream {
     id: SessionId,
     sock: string,
     initialSize: { cols: number; rows: number } | undefined,
+    originComplete = false,
   ): void {
-    const sess = this.createAttachedState(id, sock);
+    const sess = this.createAttachedState(id, sock, originComplete);
     // A newly created session has no historical screen to discount. Keep its
     // first response in the ring; replay suppression is only for recovered
     // attach generations that explicitly opt into it.
@@ -304,7 +305,7 @@ export class LocalDtachStream {
    * preserving the session's ring buffer, `onData` subscribers, and remembered
    * size across the swap.
    */
-  createAttachedState(id: SessionId, sock: string): AttachedSession {
+  createAttachedState(id: SessionId, sock: string, originComplete = false): AttachedSession {
     const existing = this.host.attached.get(id);
     if (existing) return existing;
     const sess: AttachedSession = {
@@ -314,6 +315,7 @@ export class LocalDtachStream {
       dataSubscribers: new Set(),
       sourceEpoch: randomUUID(),
       sourcePosition: 0,
+      sourceOriginComplete: originComplete,
       geometryRevision: 0,
       writeMutex: Promise.resolve(),
       pendingWriters: 0,
@@ -333,6 +335,9 @@ export class LocalDtachStream {
     // malformed — a fresh ring is strictly better than a crash here.
     this.host.ringStore.load(sess);
     sess.sourcePosition = Math.min(sess.ringHead, sess.ringBuffer.length);
+    // Persisted rings contain no provenance for the discarded stream prefix.
+    // Re-linearizing their bytes at zero does not make them a complete origin.
+    if (sess.sourcePosition > 0) sess.sourceOriginComplete = false;
     this.host.attached.set(id, sess);
     // New full-size ring may push the fleet over budget — reclaim idle capacity.
     this.host.onRingStateChanged();
@@ -387,6 +392,7 @@ export class LocalDtachStream {
         // dtach's redraw has no provable position in the previous live stream.
         // Preserve useful history but invalidate every old resume cursor.
         sess.sourceEpoch = randomUUID();
+        sess.sourceOriginComplete = false;
       }
       const range = this.sourceRange(sess, start);
       // Append before fanout: a subscriber capturing during this callback
@@ -591,7 +597,9 @@ export class LocalDtachStream {
     // Both reads and the bounded ring copy are synchronous in one event-loop
     // turn. Ring capacity changes cannot alter the separate source position.
     const bytes = this.captureBytes(id, maxBytes);
-    return { ...this.sourceRange(sess, sess.sourcePosition - bytes.byteLength), bytes };
+    const start = sess.sourcePosition - bytes.byteLength;
+    return { ...this.sourceRange(sess, start), bytes,
+      originComplete: sess.sourceOriginComplete && start === 0 };
   }
 
   captureBytes(id: SessionId, maxBytes: number = RING_BUFFER_BYTES): Uint8Array {

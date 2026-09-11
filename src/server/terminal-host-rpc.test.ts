@@ -57,6 +57,7 @@ describe('NFR-TERM-001: bounded terminal-host RPC', () => {
     const h = harness();
     const work = Array.from({ length: 128 }, () => h.rpc.request('write', ['s', new Uint8Array(kib * 1024)]));
     const workResults = Promise.allSettled(work);
+    expect(h.rpc.pendingBytes).toBeLessThanOrEqual(14 * 1024 * 1024);
     const readiness = h.rpc.request('input.markTurnStopped', ['s']);
     const readinessResult = Promise.allSettled([readiness]);
     h.callbacks.shift()!();

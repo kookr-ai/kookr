@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { DtachRingStore } from './dtach-ring-store.js';
+import { DtachRingStore, shrinkRing } from './dtach-ring-store.js';
 import { DtachManifestStore } from './dtach-manifest-store.js';
 import { LocalDtachStream, type LocalDtachStreamHost } from './local-dtach-stream.js';
 
@@ -27,7 +27,7 @@ function setup() {
     onRingStateChanged: vi.fn(), tryExpandRing: () => false,
   };
   const stream = new LocalDtachStream(host);
-  const session = stream.createAttachedState('test', join(dir, 'test.sock'));
+  const session = stream.createAttachedState('test', join(dir, 'test.sock'), true);
   stream.attachPtyInto(session, session.sock, { cols: 80, rows: 24 }, false, false);
   return { stream, session, host, emit: (data: string) => ptyMock.data?.(data) };
 }
@@ -47,7 +47,7 @@ describe('FR-TERM-004: terminal source positions', () => {
     h.emit('é');
     expect(observed).toEqual([{
       range: expect.objectContaining({ start: 0, end: 2, epoch: expect.any(String) }),
-      snapshot: expect.objectContaining({ start: 0, end: 2, bytes: new TextEncoder().encode('é'), cols: 80, rows: 24 }),
+      snapshot: expect.objectContaining({ start: 0, end: 2, originComplete: true, bytes: new TextEncoder().encode('é'), cols: 80, rows: 24 }),
     }]);
   });
 
@@ -59,7 +59,7 @@ describe('FR-TERM-004: terminal source positions', () => {
     h.session.ringHead = 8;
     h.emit('xyz');
     const after = h.stream.captureStreamSnapshot('test', 4);
-    expect(after).toMatchObject({ epoch: before.epoch, start: 99, end: 103 });
+    expect(after).toMatchObject({ epoch: before.epoch, start: 99, end: 103, originComplete: false });
     expect(new TextDecoder().decode(after.bytes)).toBe('axyz');
   });
 
@@ -73,6 +73,27 @@ describe('FR-TERM-004: terminal source positions', () => {
     expect(after.epoch).not.toBe(before.epoch);
     expect(new TextDecoder().decode(after.bytes)).toBe('live');
     expect(after.end).toBe(4);
+    expect(after.originComplete).toBe(false);
+  });
+
+  test('reloaded ring suffixes cannot become a complete origin when their offsets restart at zero', () => {
+    const h = setup();
+    shrinkRing(h.session, 64 * 1024);
+    // Dropping this OSC prefix changes how a fresh parser interprets the suffix.
+    h.emit('\x1b]0;' + 'a'.repeat(70_000));
+    h.host.ringStore.persist(h.session);
+    h.host.attached.delete('test');
+    h.stream.createAttachedState('test', h.session.sock);
+    expect(h.stream.captureStreamSnapshot('test')).toMatchObject({
+      start: 0, end: 64 * 1024, originComplete: false,
+    });
+  });
+
+  test('a recovered session without a ring cannot certify a fresh stream origin', () => {
+    const h = setup();
+    h.host.attached.delete('test');
+    h.stream.createAttachedState('test', h.session.sock);
+    expect(h.stream.captureStreamSnapshot('test')).toMatchObject({ start: 0, end: 0, originComplete: false });
   });
 
   test('geometry changes invalidate continuity but repeated dimensions do not', () => {

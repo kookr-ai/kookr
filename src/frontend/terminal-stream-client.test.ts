@@ -82,6 +82,27 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
+  test('keeps an approximate initial view interactive without certifying later resume', () => {
+    const h = harness(); h.hello(); h.begin(); h.data('suffix');
+    h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true });
+    h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+    h.control({ type: 'source', epoch: 'e', start: 106, end: 110, geometryRevision: 1, cols: 80, rows: 24 });
+    h.data('live'); h.settle();
+    expect(h.continuity.cursor).toBeNull();
+    h.socket.onclose?.({ code: TERMINAL_CLOSE.lagged });
+    h.client.retry();
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'continuity-unavailable' }));
+    expect(h.sockets).toHaveLength(1);
+    h.client.retry(true);
+    h.hello(h.sockets[1]);
+    const attach = h.sockets[1].send.mock.calls.map(([frame]) => JSON.parse(frame)).find((frame) => frame.type === 'attach');
+    expect(attach).toMatchObject({ acceptGap: true });
+    expect(attach.cursor).toBeUndefined();
+    h.client.stop(); h.writer.dispose();
+  });
+
   test('keeps input disabled when reconstruction could not produce a usable screen', () => {
     const h = harness(); h.hello(); h.begin();
     h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: false,

@@ -13,7 +13,7 @@ async function drain() { for (let i = 0; i < 60; i++) await setImmediate(); }
 
 async function setup(bytes = new TextEncoder().encode('seed'), readOnly = false, absolute = false) {
   let snapshot: TerminalStreamSnapshot = {
-    bytes, epoch: 'e', start: 0, end: bytes.byteLength, geometryRevision: 1, cols: 80, rows: 24,
+    bytes, originComplete: true, epoch: 'e', start: 0, end: bytes.byteLength, geometryRevision: 1, cols: 80, rows: 24,
   };
   const backend = Object.assign(new FakeTerminalBackend(), { captureStreamSnapshot: vi.fn(async () => snapshot) });
   await backend.createSession({ id: 'test', command: 'fake', args: [] });
@@ -66,21 +66,23 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(output().at(-1)?.toString()).toBe('live');
   });
 
-  test.each(['ring', 'viewport'] as const)('a truncated %s seed stays display-only without a resumable cursor', async (kind) => {
+  test.each(['ring', 'viewport', 'restored'] as const)('a truncated %s seed permits explicit best-effort input without a resume cursor', async (kind) => {
     const bytes = new Uint8Array(kind === 'viewport' ? 140 * 1024 : 15).fill(65);
     const h = await setup(bytes);
-    if (kind === 'ring') h.backend.captureStreamSnapshot.mockResolvedValue({
-      bytes, epoch: 'e', start: 100, end: 115, geometryRevision: 1, cols: 80, rows: 24,
+    if (kind !== 'viewport') h.backend.captureStreamSnapshot.mockResolvedValue({
+      bytes, originComplete: false, epoch: 'e', start: kind === 'ring' ? 100 : 0,
+      end: kind === 'ring' ? 115 : 15, geometryRevision: 1, cols: 80, rows: 24,
     });
     h.attach(); await drain();
     h.send({ type: 'ack', processed: kind === 'viewport' ? 64 * 1024 : 15 });
     await drain();
     const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
     expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
-      cursor: null, approximate: true, screenUnavailable: true,
+      cursor: null, approximate: true,
     });
-    h.send({ type: 'input', text: 'unsafe preview input' });
-    expect(h.write).not.toHaveBeenCalled();
+    h.send({ type: 'input', text: 'explicit initial view' });
+    await drain();
+    expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('explicit initial view'));
   });
 
   test('an unavailable reconstructed screen cannot claim a cursor or accept input', async () => {

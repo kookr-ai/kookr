@@ -53,9 +53,12 @@ byte limits, and count limits. Unsent bulk captures yield to input and lifecycle
 control. The parent and child reserve sixty-four of 128 requests and two MiB
 of the sixteen-MiB request budget for readiness. Socket transfers cannot consume
 the IPC queue's reserved control capacity.
-Truncated rings and viewport suffixes are display-only previews: they carry no
-resumable cursor and cannot accept input. Full replay from a known origin, or
-continuation in an already verified retained parser, is required for input.
+Truncated rings and viewport suffixes carry no resumable cursor. Explicit
+initial attachments and new views retain best-effort interaction with a history-gap
+warning, as specified in the RFC. This does not certify their parser state for
+exact recovery; unavailable reconstructions still cannot accept input.
+Restored rings carry explicit incomplete-origin metadata: resetting retained
+byte offsets to zero after restart cannot certify a discarded stream prefix.
 Parser replacement preserves keyboard focus only if the old terminal owned it.
 Input queues retain owned byte copies and reject excess work. Retiring a session
 or coordinator cancels queued and delayed input, without retrying uncertain writes.

@@ -90,6 +90,8 @@ export interface AttachedSession extends DtachRingState {
   /** Resume identity and position; independent of re-linearized ringHead. */
   sourceEpoch: string;
   sourcePosition: number;
+  /** Recovered rings and unpositioned redraws cannot prove the original prefix. */
+  sourceOriginComplete: boolean;
   geometryRevision: number;
   /** Writer-mutex tail — chained Promise that sequences write/writeSequence. */
   writeMutex: Promise<void>;

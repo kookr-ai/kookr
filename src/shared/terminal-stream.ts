@@ -11,4 +11,6 @@ export interface TerminalSourceRange {
 /** An atomic retained window. The exclusive end also names the live boundary. */
 export interface TerminalStreamSnapshot extends TerminalSourceRange {
   bytes: Uint8Array;
+  /** True only when the retained bytes include a known complete stream origin. */
+  originComplete: boolean;
 }

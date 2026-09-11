@@ -473,7 +473,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
 
     // Step 6: open the persistent internal attach. From this point all I/O
     // flows through `this.attached.get(id)`.
-    this.stream.openAttach(spec.id, sock, spec.size);
+    this.stream.openAttach(spec.id, sock, spec.size, true);
   }
 
   async listSessions(): Promise<SessionId[]> {

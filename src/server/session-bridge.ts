@@ -925,10 +925,11 @@ export class SessionBridge {
       const transaction = randomUUID();
       // A suffix can omit persistent modes or a partial control sequence.
       // Only a complete origin seed or an already retained parser can supply
-      // an exact cursor; approximate previews never become input authority.
+      // an exact cursor. Explicit initial/new views keep best-effort input
+      // separately, as the RFC requires; they cannot claim exact recovery.
       const resumable = !absolute && !replayFallback && (!!request.cursor
-        || (snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
-      const screenUnavailable = !resumable;
+        || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
+      const screenUnavailable = reconstruction?.kind === 'unavailable' && !replayFallback;
       const cursor = resumable ? {
         epoch: snapshot.epoch, position: snapshot.end, geometryRevision: snapshot.geometryRevision,
         cols: snapshot.cols, rows: snapshot.rows,

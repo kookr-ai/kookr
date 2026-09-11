@@ -47,9 +47,12 @@ functional tests, not native transport measurements.
   and shares a fair scheduler between panes. Old asynchronous parser callbacks
   must drain before a new session resets the same emulator.
 - Exact resume needs the same retained parser, source epoch, byte range, and
-  geometry. An approximate reconstructed screen is display-only, not a safe
-  emulator checkpoint. Show unavailable recovery explicitly; do not inject
-  Ctrl+L or secretly resize an agent to manufacture a redraw.
+  geometry. Initial and explicitly requested new views may remain interactive
+  with an approximation warning, but truncated or reconstructed bytes cannot
+  certify an exact-resume cursor. Persisted rings restart their offsets at zero
+  without proving that the original prefix survived; carry origin completeness
+  separately. Show unavailable recovery explicitly; do not inject Ctrl+L or
+  secretly resize an agent to manufacture a redraw.
 - Keep scrolling local to xterm. Preserve fractional wheel movement, selection,
   and the viewed history until eviction makes preservation impossible. Hidden
   panes must not schedule input, fit work, or stale scroll callbacks.
