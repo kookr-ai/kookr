@@ -73,6 +73,7 @@ export interface RealtimeServicesDeps {
    * connect and the registry default treats every grant as active.
    */
   resolveGrantLiveness?: (grantId: string) => GrantLiveness;
+  resolveGrantExpiryMs?: (grantId: string) => number | null | undefined;
   /** Audit hook fired once per sweep-evicted viewer socket (#808 / R10). */
   onViewerEvicted?: (eviction: SweepEviction) => void;
   /**
@@ -188,6 +189,7 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
   const achievementState = await loadAchievements(achievementsFile);
   const registry = new ViewerConnectionRegistry({
     resolveGrantLiveness: deps.resolveGrantLiveness,
+    resolveGrantExpiryMs: deps.resolveGrantExpiryMs,
     isActorAllowedTerminalSession: deps.isActorAllowedTerminalSession,
     onEvict: deps.onViewerEvicted,
     ...(deps.livenessSweepEnabled !== undefined ? { livenessSweepEnabled: deps.livenessSweepEnabled } : {}),

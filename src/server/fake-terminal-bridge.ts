@@ -1,5 +1,7 @@
 import type { WebSocket } from 'ws';
 import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
+import { TERMINAL_V2_PROTOCOL } from '../shared/terminal-protocol.js';
+import { TerminalProtocolConnection } from './terminal-protocol-connection.js';
 import {
   BRACKETED_PASTE_END,
   BRACKETED_PASTE_START,
@@ -59,6 +61,10 @@ export class FakeTerminalBridge {
   private onReplay?: () => void;
   private onLiveBytes?: () => void;
   private disposed = false;
+  private v2: TerminalProtocolConnection | null = null;
+  private v2Seeding = false;
+  private v2Position = 0;
+  private v2Size = { cols: 120, rows: 40 };
 
   constructor(
     private tmuxName: string,
@@ -80,6 +86,46 @@ export class FakeTerminalBridge {
 
   /** Start displaying content. */
   start(cols = 120, rows = 40): void {
+    if (this.disposed || this.v2) return;
+    if (this.ws.protocol !== TERMINAL_V2_PROTOCOL) {
+      this.startContentAndLegacyInput(cols, rows);
+      return;
+    }
+    this.v2 = new TerminalProtocolConnection({
+      ws: this.ws, readOnly: this.readOnly, onClosed: () => this.dispose(),
+      onAttach: (request) => {
+        const connection = this.v2!;
+        if (request.cursor) {
+          connection.output.control({ type: 'continuity-unavailable', generation: connection.generation, reason: 'epoch' });
+          connection.allowNewAttach();
+          return;
+        }
+        this.v2Size = { cols: request.cols, rows: request.rows };
+        this.v2Seeding = true;
+        connection.output.control({ type: 'seed-begin', generation: connection.generation,
+          transaction: request.attachId, mode: 'replace' });
+        this.startContentAndLegacyInput(request.cols, request.rows);
+        this.v2Seeding = false;
+        connection.output.control({ type: 'seed-end', generation: connection.generation,
+          transaction: request.attachId, historyAvailable: false, approximate: false,
+          cursor: { epoch: connection.generation, position: this.v2Position, geometryRevision: 0, ...this.v2Size } });
+        connection.markReady();
+      },
+      onControl: (control) => {
+        switch (control.type) {
+          case 'input': this.forwardInput(control.text); break;
+          case 'input-bytes': this.forwardInput(Buffer.from(control.base64, 'base64')); break;
+          case 'paste': this.forwardInput(BRACKETED_PASTE_START + control.text
+            .replaceAll(BRACKETED_PASTE_START, '').replaceAll(BRACKETED_PASTE_END, '') + BRACKETED_PASTE_END); break;
+          case 'resize': this.v2Size = { cols: control.cols, rows: control.rows }; break;
+          case 'request-history': this.v2?.output.control({ type: 'history-unavailable', generation: this.v2.generation }); break;
+        }
+      },
+    });
+    this.v2.start();
+  }
+
+  private startContentAndLegacyInput(_cols: number, _rows: number): void {
     if (this.disposed) return;
     // Clear screen, cursor home
     this.sendRaw('\x1b[2J\x1b[H', 'replay');
@@ -108,6 +154,8 @@ export class FakeTerminalBridge {
         this.sendRaw(line + '\r\n', 'live');
       }, this.lineDelayMs);
     }
+
+    if (this.v2) return;
 
     // Handle incoming messages. The fake bridge is display-oriented, but E2E
     // tests still need browser terminal input to reach FakeTerminalBackend so
@@ -160,7 +208,14 @@ export class FakeTerminalBridge {
   /** Send raw text to the xterm.js client. */
   private sendRaw(data: string, source: 'replay' | 'live'): void {
     if (!this.disposed && this.ws.readyState === this.ws.OPEN) {
-      this.ws.send(data);
+      if (this.v2) {
+        const bytes = encoder.encode(data);
+        const start = this.v2Position;
+        this.v2Position += bytes.byteLength;
+        this.v2.output.enqueue(bytes, this.v2Seeding ? undefined : {
+          epoch: this.v2.generation, start, end: this.v2Position, geometryRevision: 0, ...this.v2Size,
+        });
+      } else this.ws.send(data);
       if (source === 'replay') this.onReplay?.();
       else this.onLiveBytes?.();
     }
@@ -168,7 +223,9 @@ export class FakeTerminalBridge {
 
   /** Clean up timers. */
   dispose(): void {
+    if (this.disposed) return;
     this.disposed = true;
+    this.v2?.dispose();
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;

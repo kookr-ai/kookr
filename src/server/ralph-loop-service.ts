@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import { TerminalHostUnavailableError } from './terminal-host-contract.js';
 import { withTimeout } from '../core/with-timeout.js';
 import { buildTaskCompletionMetadata } from './completion-metadata.js';
 import type { RalphCycler, RalphCyclerEvent } from '../core/ralph-cycler.js';
@@ -194,10 +195,18 @@ export async function probeStartupLiveness(
   for (let i = candidates.length - 1; i >= 0; i--) {
     const session = candidates[i]!;
     const alive = await withTimeout(
-      backend.isAlive(session.tmuxSession).catch(() => false),
+      backend.isAlive(session.tmuxSession).catch((error: unknown) => {
+        // Losing contact with the terminal host says nothing about the agent
+        // process it manages. Preserve that uncertainty for startup recovery.
+        if (error instanceof TerminalHostUnavailableError) throw error;
+        return false;
+      }),
       STARTUP_PROBE_TIMEOUT_MS,
-      false,
+      null,
     );
+    if (alive === null && backend.getStats?.().terminalHost) {
+      throw new TerminalHostUnavailableError('Startup liveness probe timed out');
+    }
     if (alive) return session;
   }
   return null;
@@ -723,7 +732,16 @@ export class RalphLoopService {
 
       summary.examined++;
 
-      const liveSession = await probe(task, this.deps.terminalBackend);
+      let liveSession: SessionInfo | null;
+      try {
+        liveSession = await probe(task, this.deps.terminalBackend);
+      } catch (error) {
+        if (!(error instanceof TerminalHostUnavailableError)) throw error;
+        console.warn(`[ralph-recovery] preserved task ${task.id}: terminal-host liveness is unverified`);
+        summary.preserved++;
+        summary.perTask.push({ taskId: task.id, outcome: 'preserved', iterationNumber: loop.currentIteration });
+        continue;
+      }
       if (liveSession) {
         claimRalphLoopOwner(task, liveSession, { allowTransfer: !hasLiveRalphOwner(task) });
         summary.preserved++;

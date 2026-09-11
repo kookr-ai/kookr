@@ -19,6 +19,7 @@ import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import { buildProviderResumeLaunch } from './provider-reset-scheduler.js';
+import { TerminalHostUnavailableError } from './terminal-host-contract.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -2213,6 +2214,21 @@ describe('launchTask', () => {
     expect(result.task.id).toBe(existing.id);
     expect(terminalBackend.isAlive).toHaveBeenCalledWith('kookr-live');
     expect(store.getTask(existing.id)!.status).toBe('inProgress');
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('preserves an existing task when the isolated host cannot verify its session', async () => {
+    const existing = store.createTask({ prompt: 'hello', cwd: '/tmp' });
+    store.addSession(existing.id, {
+      tmuxSession: 'host-restarting', agentType: 'claude-code', cwd: '/tmp',
+      createdAt: new Date(), lastStatus: 'running',
+    });
+    const terminalBackend = { isAlive: vi.fn().mockRejectedValue(new TerminalHostUnavailableError()) };
+    const result = await launchTask({ ...deps, terminalBackend }, { prompt: 'hello', cwd: '/tmp' });
+    expect(result.duplicate).toBe(true);
+    expect(result.task.id).toBe(existing.id);
+    expect(store.getTask(existing.id)).toMatchObject({ status: 'inProgress',
+      sessions: [expect.objectContaining({ lastStatus: 'running' })] });
     expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
   });
 

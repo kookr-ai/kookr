@@ -7,6 +7,7 @@ import { Hono } from 'hono';
 import { WebSocket } from 'ws';
 
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
+import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import type { Actor } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { TerminalInputWriterPort } from '../../core/ports/terminal-input-writer-port.js';
@@ -142,6 +143,28 @@ describe('startHttpAndWebSockets', () => {
     expect(dashboardConnections).toHaveLength(1);
   });
 
+  test('NFR-TERM-001: hands off only canonical, authorized terminal upgrades', async () => {
+    const handoffTerminalUpgrade = vi.fn((_req, socket, _head, _sessionId, _actor) => {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+    });
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(), port: 0, host: '127.0.0.1', tasksFile: '/tmp/tasks.json', hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(), terminalDeps: {
+        monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo',
+      }, onDashboardConnection: () => {}, handoffTerminalUpgrade,
+      resolveTerminalActor: () => ({ kind: 'viewer', grantId: 'g', scope: { kind: 'all' } }),
+      isActorAllowedTerminalSession: (_actor, id) => id === 'allowed',
+    });
+    expect(await upgradeStatus(portFor(runtime), '/ws/terminal/..%2ffoo')).toBe(400);
+    expect(await upgradeStatus(portFor(runtime), '/ws/terminal/denied')).toBe(403);
+    expect(handoffTerminalUpgrade).not.toHaveBeenCalled();
+    expect(await upgradeStatus(portFor(runtime), '/ws/terminal/allow%65d?attachSeed=full')).toBe(503);
+    expect(handoffTerminalUpgrade).toHaveBeenCalledOnce();
+    expect(handoffTerminalUpgrade.mock.calls[0]?.slice(3)).toEqual(['allowed',
+      { kind: 'viewer', grantId: 'g', scope: { kind: 'all' } }]);
+    expect(runtime.activeBridges.size).toBe(0);
+  });
+
   test('configures dashboard and terminal WebSocket resource limits explicitly', async () => {
     runtime = await startHttpAndWebSockets({
       app: new Hono(),
@@ -163,6 +186,12 @@ describe('startHttpAndWebSockets', () => {
     expect(runtime.terminalWss.options.perMessageDeflate).toEqual(WEBSOCKET_PER_MESSAGE_DEFLATE);
     expect(runtime.wss.options.maxPayload).toBe(DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES);
     expect(runtime.terminalWss.options.maxPayload).toBe(TERMINAL_WEBSOCKET_MAX_PAYLOAD_BYTES);
+    expect(runtime.terminalWss.options.handleProtocols).toBeTypeOf('function');
+    const select = runtime.terminalWss.options.handleProtocols;
+    if (typeof select === 'function') {
+      expect(select(new Set([TERMINAL_V2_PROTOCOL]), {} as never)).toBe(TERMINAL_V2_PROTOCOL);
+      expect(select(new Set(['unsupported']), {} as never)).toBe(false);
+    }
     expect(runtime.wss.options.perMessageDeflate).toMatchObject({
       clientNoContextTakeover: true,
       serverNoContextTakeover: true,

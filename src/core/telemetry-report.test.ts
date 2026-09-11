@@ -209,6 +209,27 @@ describe('generateTelemetryReport', () => {
     });
   });
 
+  test('FR-TERM-002: keeps processed/render-opportunity samples out of legacy percentiles', () => {
+    const report = generateTelemetryReport([
+      makeEvent('terminal_switch_latency', { selectionToFirstPaintMs: 2 }),
+      makeEvent('terminal_switch_latency', {
+        measurementVersion: 2, selectionToFirstParseMs: 40,
+        selectionToRenderOpportunityMs: 56, outcome: 'render-opportunity',
+        // Even a malformed v2 sender must not contaminate legacy metrics.
+        selectionToFirstPaintMs: 1000,
+      }),
+      makeEvent('terminal_switch_latency', { measurementVersion: 2, outcome: 'superseded' }),
+    ]);
+    expect(report.terminalSwitchLatencyMetrics.sampleCount).toBe(1);
+    expect(report.terminalSwitchLatencyMetrics.p95FirstPaintMs).toBe(2);
+    expect(report.terminalAttachProgressMetrics).toEqual({
+      measurementVersion: 2, totalSamples: 2,
+      parsed: { sampleCount: 1, p50Ms: 40, p95Ms: 40 },
+      renderOpportunity: { sampleCount: 1, p50Ms: 56, p95Ms: 56 },
+      outcomes: { 'render-opportunity': 1, superseded: 1 },
+    });
+  });
+
   test('empty terminal switch samples yield null percentiles', () => {
     const report = generateTelemetryReport([makeEvent('agent_clicked')]);
     expect(report.terminalSwitchLatencyMetrics).toEqual({

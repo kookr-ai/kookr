@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getReconstructAbsoluteTuiScreenStats,
   reconstructAbsoluteTuiScreen,
+  reconstructAbsoluteTuiScreenResult,
   resetReconstructAbsoluteTuiScreenForTests,
 } from './absolute-position-tui-screen.js';
 
@@ -19,6 +20,27 @@ afterEach(() => {
 });
 
 describe('reconstructAbsoluteTuiScreen', () => {
+  it('FR-TERM-004: distinguishes a complete display-only walk from a budget-limited partial screen', async () => {
+    const bytes = encode('useful content '.repeat(500));
+    const complete = await reconstructAbsoluteTuiScreenResult(bytes, { minPrintableCells: 1 });
+    expect(complete).toMatchObject({ kind: 'display-only', completeness: 'complete', consumedBytes: bytes.length, totalBytes: bytes.length });
+    let now = 0;
+    const partial = await reconstructAbsoluteTuiScreenResult(bytes, {
+      minPrintableCells: 1, maxMs: 1, yieldEveryBytes: 64,
+      nowMs: () => now++, yieldFn: async () => {},
+    });
+    expect(partial).toMatchObject({ kind: 'display-only', completeness: 'partial', consumedBytes: 64, totalBytes: bytes.length });
+    expect(partial.bytes!.length).toBeGreaterThan(0);
+  });
+
+  it('FR-TERM-004: explicitly reports an unavailable screen without useful cells', async () => {
+    expect(await reconstructAbsoluteTuiScreenResult(new Uint8Array())).toEqual({
+      kind: 'unavailable', reason: 'empty', bytes: null, consumedBytes: 0, totalBytes: 0,
+    });
+    expect(await reconstructAbsoluteTuiScreenResult(encode('\x1b[2J'))).toMatchObject({
+      kind: 'unavailable', reason: 'insufficient-cells', bytes: null,
+    });
+  });
   it('returns null for empty input', async () => {
     expect(await reconstructAbsoluteTuiScreen(new Uint8Array(0))).toBeNull();
   });

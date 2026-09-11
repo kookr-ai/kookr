@@ -67,6 +67,14 @@ export interface TelemetryReport {
     /** Stratified slices for go/no-go (warm|cold × agentType × strategy). */
     byClass: TerminalAttachLatencyStratum[];
   };
+  /** Version two measures completed parsing, never legacy write enqueueing. */
+  terminalAttachProgressMetrics: {
+    measurementVersion: 2;
+    totalSamples: number;
+    parsed: { sampleCount: number; p50Ms: number | null; p95Ms: number | null };
+    renderOpportunity: { sampleCount: number; p50Ms: number | null; p95Ms: number | null };
+    outcomes: Record<string, number>;
+  };
 }
 
 const ALL_EVENT_TYPES = [...TELEMETRY_EVENT_TYPES];
@@ -112,6 +120,10 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
   const launchDwells: number[] = [];
   const cwdFieldMethodCounts: Record<string, number> = {};
   const terminalFirstPaintMs: number[] = [];
+  const terminalParsedMs: number[] = [];
+  const terminalRenderMs: number[] = [];
+  const terminalOutcomes: Record<string, number> = {};
+  let terminalProgressSamples = 0;
   let terminalRecoveryUsed = 0;
   /** Samples bucketed for stratified p50/p95. */
   const terminalByClass = new Map<string, number[]>();
@@ -189,6 +201,21 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
         break;
       }
       case 'terminal_switch_latency': {
+        if (event.measurementVersion === 2) {
+          terminalProgressSamples++;
+          const outcome = event.outcome === 'render-opportunity' || event.outcome === 'superseded'
+            || event.outcome === 'disconnected' ? event.outcome : 'unknown';
+          terminalOutcomes[outcome] = (terminalOutcomes[outcome] ?? 0) + 1;
+          for (const [value, samples] of [
+            [event.selectionToFirstParseMs, terminalParsedMs],
+            [event.selectionToRenderOpportunityMs, terminalRenderMs],
+          ] as const) {
+            if (typeof value === 'number' && Number.isFinite(value) && value >= 0) samples.push(value);
+          }
+          break;
+        }
+        // Future versions must not silently join the old enqueue-time series.
+        if (event.measurementVersion !== undefined && event.measurementVersion !== 1) break;
         if (
           typeof event.selectionToFirstPaintMs === 'number'
           && Number.isFinite(event.selectionToFirstPaintMs)
@@ -295,6 +322,22 @@ export function generateTelemetryReport(events: TelemetryEvent[]): TelemetryRepo
       recoveryRate,
       byClass,
     },
+    terminalAttachProgressMetrics: {
+      measurementVersion: 2,
+      totalSamples: terminalProgressSamples,
+      parsed: summarizeProgress(terminalParsedMs),
+      renderOpportunity: summarizeProgress(terminalRenderMs),
+      outcomes: terminalOutcomes,
+    },
+  };
+}
+
+function summarizeProgress(samples: number[]) {
+  const sorted = [...samples].sort((a, b) => a - b);
+  return {
+    sampleCount: sorted.length,
+    p50Ms: sorted.length ? percentileMs(sorted, 50) : null,
+    p95Ms: sorted.length ? percentileMs(sorted, 95) : null,
   };
 }
 

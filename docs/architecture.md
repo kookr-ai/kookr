@@ -64,7 +64,7 @@ On each hook event, the supervisor:
 
 A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven. The `SessionHealthService` composes that backend state with PTY/ring progress, hook freshness, transcript mtime, task turn state, browser bridge replay/live timing, and the server restart epoch. It publishes the same versioned projection to `AgentState.sessionHealth` and `GET /api/diagnostics/session-health`; `detectCoordinatedStall` adds one fleet-level root diagnostic when independent sessions stop advancing together.
 
-**Ralph-loop startup probe:** `RalphLoopService.reconcileStartupLoops` runs once at server boot for each task whose `ralphLoop.status === 'running'`. It calls `probeStartupLiveness`, a startup-only helper that asks `terminalBackend.isAlive` per session with a 500 ms per-probe timeout. Loops with a probe-confirmed-alive session are preserved; the rest are marked `failed` with `exitReason: 'kookr_crash'`. The probe catches the dtach-master-killed phantom shape (WSL/OS crashes) but not the agent-child-exited shape; the latter still goes through the user-facing Replace dialog (`POST /api/tasks/:taskId/ralph-loop/replace-with-new`). See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
+**Ralph-loop startup probe:** `RalphLoopService.reconcileStartupLoops` runs once at server boot for each task whose `ralphLoop.status === 'running'`. It asks `terminalBackend.isAlive` per session with a 500 ms timeout. A confirmed live session preserves the loop. An unavailable isolated terminal host, including a timed-out host probe, also preserves the loop without claiming that liveness or prompt ownership was verified. Otherwise, a loop without a live session is marked `failed` with `exitReason: 'kookr_crash'` (except an intentionally parked launch). The probe catches dtach-master death but not an exited agent child whose master remains; the latter still goes through Replace. See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
 
 **Startup replay:** On startup, after reconciliation identifies resumed sessions, hook files are replayed from offset 0 via `HookFileWatcher.watch(sessionId, { replayExisting: true })` to rebuild anomaly state from persisted hook history. This ensures anomalies (e.g., a permission block) are not lost across Kookr restarts. Each resumed session is also registered with the monitor via `monitor.registerAgent(sessionId)` before hook replay begins.
 
@@ -252,6 +252,27 @@ The `alert` message carries the supervisor's **explanation** of what's wrong wit
 These thresholds are compile-time constants today (not env-tunable). They are distinct from per-socket `bufferedAmount` backpressure and event-loop load-shed (`wsBackpressureNotice`, issue #1725), which protect fan-out saturation rather than a single oversized JSON payload. Operator symptoms and log search strings: [Troubleshooting — Dashboard looks blank or stale under a large fleet](troubleshooting.md#dashboard-looks-blank-or-stale-under-a-large-fleet).
 
 ### Backend ↔ Coding Agents: Managed Terminal Sessions + Structured Data
+
+Terminal output uses a separately negotiated v2 WebSocket protocol. Source
+epochs and absolute byte positions describe continuity independently of ring
+storage. A browser grants more output credit only after xterm parses the prior
+bytes. Bounded server queues and a shared, chunked browser writer prevent a slow
+viewer from accumulating unlimited work. The older protocol remains available
+for migration; the dashboard state protocol is unchanged.
+
+The default backend still runs in the main process. Opting into
+`KOOKR_TERMINAL_HOST=true` moves terminal I/O, input serialization, sockets, and
+ring persistence into one child process. A bounded worker reconstructs
+display-only previews. The main server authenticates upgrades before socket
+transfer and renews read-only viewer leases; the child has no listening port.
+RPCs and caches are generation-fenced, and uncertain input is never replayed.
+The host restarts only after its predecessor and attach clients have exited.
+Terminal-host unavailability is a transport fault, not proof of agent death.
+
+Isolation remains experimental and off by default pending platform and mixed-load
+qualification. See the [approved RFC](rfc/rfc-terminal-responsiveness.md) for
+ownership and queue budgets, and the [validation report](reports/terminal-responsiveness-validation.md)
+for measurements and remaining limits.
 
 Agents run in managed dtach sessions (see [ADR-014](adr/014-local-dtach-backend.md)). The adapter layer reads structured data through three channels: **hooks** (real-time event callbacks for anomaly detection), **transcript JSONL** (session history plus token/cost and freshness tracking), and **`backend.captureBytes`** (ring-buffer snapshot for the GUI). Input is delivered as byte-level writes to the session via `backend.write` / `backend.writeSequence`.
 

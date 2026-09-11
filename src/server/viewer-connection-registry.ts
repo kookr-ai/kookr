@@ -65,6 +65,8 @@ export interface ViewerConnectionInfo {
  * connected, so a dead sweep or a stuck viewer set is visible to the operator.
  */
 export interface ViewerBroadcasterHealth {
+  /** Remote-owned connections whose requested closure is not yet acknowledged. */
+  enforcementPending?: number;
   sweepIntervalMs: number;
   /** ISO-8601 of the last completed sweep tick, or null if none ran yet. */
   lastSweepAt: string | null;
@@ -118,6 +120,8 @@ export interface SweepEviction {
 }
 
 export interface ViewerConnectionRegistryOptions {
+  /** null means no grant expiry; undefined means the grant cannot be resolved. */
+  resolveGrantExpiryMs?: (grantId: string) => number | null | undefined;
   /**
    * Resolve a viewer grant's current liveness. Injected from the grant store
    * (#803) when viewers are wired (#806/#808). Phase 1 has no viewers — viewer
@@ -157,6 +161,22 @@ export interface ViewerConnectionRegistryOptions {
 }
 
 const DEFAULT_SWEEP_INTERVAL_MS = 10_000;
+
+export interface RemoteTerminalRegistration {
+  generation: string;
+  id: string;
+  actor: Actor;
+  sessionName: string;
+  remoteAddr?: string;
+  renew(leaseUntilMs: number): void;
+  /** Resolves true only after the child has destroyed the exact connection. */
+  close(reason: EvictionReason): Promise<boolean>;
+}
+interface RemoteTerminalEntry extends RemoteTerminalRegistration {
+  connectedAtMs: number;
+  closing: boolean;
+  pendingReason?: EvictionReason;
+}
 /** Close code for a socket dropped on a policy violation (revoked/expired/out-of-scope). */
 const REVOKED_CLOSE_CODE = 1008;
 const REVOKED_CLOSE_REASON = 'Access revoked';
@@ -177,6 +197,10 @@ export interface LivenessSweepHealth {
 
 export class ViewerConnectionRegistry implements SocketRegistrar {
   private readonly sockets = new Map<WebSocket, RegisteredSocket>();
+  private readonly remoteTerminals = new Map<string, RemoteTerminalEntry>();
+  private remoteLeaseTimer: ReturnType<typeof setInterval> | undefined;
+  private readonly resolveGrantExpiryMs?: ViewerConnectionRegistryOptions['resolveGrantExpiryMs'];
+  private readonly automaticSweep: boolean;
   private readonly resolveGrantLiveness: (grantId: string) => GrantLiveness;
   private readonly isActorAllowedTerminalSession?: IsActorAllowedTerminalSession;
   private readonly onEvict?: (eviction: SweepEviction) => void;
@@ -192,6 +216,8 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   private lastLivenessReapAtMs: number | null = null;
 
   constructor(options: ViewerConnectionRegistryOptions = {}) {
+    this.resolveGrantExpiryMs = options.resolveGrantExpiryMs;
+    this.automaticSweep = options.autoStartSweep !== false;
     this.resolveGrantLiveness = options.resolveGrantLiveness ?? (() => 'active');
     this.isActorAllowedTerminalSession = options.isActorAllowedTerminalSession;
     this.onEvict = options.onEvict;
@@ -230,10 +256,99 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
     this.sockets.delete(ws);
   }
 
+  terminalGrantExpiry(actor: Actor): number | null | undefined {
+    return actor.kind === 'owner' ? null : this.resolveGrantExpiryMs?.(actor.grantId);
+  }
+
+  /** Policy decisions stay in main; the child receives at most a ten-second lease. */
+  terminalLeaseUntil(actor: Actor, sessionName: string): number | null {
+    try {
+      const now = this.now();
+      if (actor.kind === 'owner') return now + 10_000;
+      if (this.resolveGrantLiveness(actor.grantId) !== 'active'
+        || (this.isActorAllowedTerminalSession && !this.isActorAllowedTerminalSession(actor, sessionName))) return null;
+      const expiry = this.terminalGrantExpiry(actor);
+      if (expiry === undefined || (expiry !== null && (!Number.isFinite(expiry) || expiry <= now))) return null;
+      return Math.min(now + 10_000, expiry ?? Infinity);
+    } catch { return null; }
+  }
+
+  registerRemote(registration: RemoteTerminalRegistration): void {
+    if (this.remoteTerminals.size >= 256) throw new Error('Remote terminal connection capacity exceeded');
+    const key = JSON.stringify([registration.generation, registration.id]);
+    if (this.remoteTerminals.has(key)) throw new Error('Duplicate remote terminal connection');
+    this.remoteTerminals.set(key, { ...registration, connectedAtMs: this.now(), closing: false });
+    if (this.automaticSweep && !this.remoteLeaseTimer) {
+      this.remoteLeaseTimer = setInterval(() => this.renewRemoteTerminals(), 2000);
+      this.remoteLeaseTimer.unref?.();
+    }
+  }
+
+  unregisterRemote(generation: string, id: string): void {
+    this.remoteTerminals.delete(JSON.stringify([generation, id]));
+    if (this.remoteTerminals.size === 0 && this.remoteLeaseTimer) {
+      clearInterval(this.remoteLeaseTimer); this.remoteLeaseTimer = undefined;
+    }
+  }
+
+  /** A child socket-close notification also settles a pending revocation audit. */
+  confirmRemoteClosed(generation: string, id: string): void {
+    const entry = this.remoteTerminals.get(JSON.stringify([generation, id]));
+    if (entry) this.finishRemoteClose(entry);
+  }
+
+  /** Actual child exit confirms closure even when its last acknowledgement was lost. */
+  unregisterRemoteGeneration(generation: string): void {
+    for (const entry of this.remoteTerminals.values()) {
+      if (entry.generation === generation) this.finishRemoteClose(entry);
+    }
+  }
+
+  renewRemoteTerminals(): void {
+    for (const entry of this.remoteTerminals.values()) {
+      if (entry.actor.kind !== 'viewer' || entry.closing) continue;
+      const lease = this.terminalLeaseUntil(entry.actor, entry.sessionName);
+      if (lease !== null && !entry.pendingReason) {
+        try { entry.renew(lease); } catch { this.requestRemoteClose(entry, 'liveness-timeout'); }
+      } else {
+        let reason: EvictionReason = entry.pendingReason ?? 'out-of-scope';
+        try {
+          const live = this.resolveGrantLiveness(entry.actor.grantId);
+          if (live !== 'active') reason = live;
+        } catch { /* unresolved policy closes fail-closed */ }
+        this.requestRemoteClose(entry, reason);
+      }
+    }
+  }
+
+  private requestRemoteClose(entry: RemoteTerminalEntry, reason: EvictionReason) {
+    if (entry.closing) return;
+    entry.pendingReason = reason;
+    entry.closing = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const deadline = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), 2000); timer.unref?.(); });
+    let acknowledgement: Promise<boolean>;
+    try { acknowledgement = entry.close(reason); }
+    catch { acknowledgement = Promise.resolve(false); }
+    Promise.race([acknowledgement, deadline]).then((confirmed) => {
+      if (confirmed) this.finishRemoteClose(entry);
+    }).catch(() => {}).finally(() => { clearTimeout(timer); entry.closing = false; });
+  }
+
+  private finishRemoteClose(entry: RemoteTerminalEntry) {
+    const key = JSON.stringify([entry.generation, entry.id]);
+    if (this.remoteTerminals.get(key) !== entry) return;
+    this.unregisterRemote(entry.generation, entry.id);
+    if (entry.actor.kind === 'viewer' && entry.pendingReason) {
+      try { this.onEvict?.({ grantId: entry.actor.grantId, kind: 'terminal', sessionName: entry.sessionName, reason: entry.pendingReason }); }
+      catch { /* audit failure does not reopen the socket */ }
+    }
+  }
+
   /**
-   * All sockets (either pool) held by a given grant. The owner revoke route
-   * (#808) uses this to drop a viewer's connections immediately, without
-   * waiting for the next sweep tick.
+   * Local sockets (either pool) held by a given grant. Remote-owned terminal
+   * sockets are represented by registrations, not WebSocket objects; revocation
+   * reaches both through the policy sweep and the child authorization lease.
    */
   findByGrant(grantId: string): RegisteredSocket[] {
     const out: RegisteredSocket[] = [];
@@ -279,7 +394,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
 
   /** Total registered sockets across both pools. */
   size(): number {
-    return this.sockets.size;
+    return this.sockets.size + this.remoteTerminals.size;
   }
 
   /**
@@ -302,6 +417,11 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
         scopeEffective: entry.actor.scope,
       });
     }
+    for (const entry of this.remoteTerminals.values()) {
+      if (entry.actor.kind !== 'viewer') continue;
+      out.push({ grantId: entry.actor.grantId, kind: 'terminal', sessionName: entry.sessionName,
+        connectedAt: new Date(entry.connectedAtMs).toISOString(), remoteAddr: entry.remoteAddr, scopeEffective: entry.actor.scope });
+    }
     return out;
   }
 
@@ -313,12 +433,15 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
         grants.add(entry.actor.grantId);
       }
     }
+    for (const entry of this.remoteTerminals.values()) if (entry.actor.kind === 'viewer') grants.add(entry.actor.grantId);
     return grants.size;
   }
 
   /** Observability snapshot for the `/api/health` `viewerBroadcaster` block (R10). */
   broadcasterHealth(): ViewerBroadcasterHealth {
+    const pending = [...this.remoteTerminals.values()].filter((entry) => entry.pendingReason).length;
     return {
+      ...(pending ? { enforcementPending: pending } : {}),
       sweepIntervalMs: this.sweepIntervalMs,
       lastSweepAt: this.lastSweepAtMs === null ? null : new Date(this.lastSweepAtMs).toISOString(),
       sweepTickCount: this.tickCount,
@@ -345,6 +468,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   }
 
   stopSweep(): void {
+    if (this.remoteLeaseTimer) { clearInterval(this.remoteLeaseTimer); this.remoteLeaseTimer = undefined; }
     if (!this.sweepTimer) return;
     clearInterval(this.sweepTimer);
     this.sweepTimer = undefined;
@@ -362,6 +486,7 @@ export class ViewerConnectionRegistry implements SocketRegistrar {
   sweep(): void {
     this.tickCount++;
     this.lastSweepAtMs = this.now();
+    this.renewRemoteTerminals();
     for (const entry of [...this.sockets.values()]) {
       try {
         if (this.livenessSweepEnabled && this.checkLivenessAndMaybeReap(entry)) continue;

@@ -958,6 +958,141 @@ The system SHALL display the selected agent's interactive terminal and response 
 
 **Evidence:** `src/frontend/components/DetailPanel.tsx` (terminal view, anomaly banner, input box, empty state), `src/frontend/components/TerminalPanel.tsx` (xterm.js terminal), `src/frontend/components/OverviewEmptyState.tsx` (no-selection overview, runtime-mix line, `CompletedRowEvidence` markers), `src/frontend/presentation.ts` (`buildRuntimeMix`, `prLinkLabel`).
 
+### FR-TERM-005: Bounded terminal UI bookkeeping [F5.2] — SHALL — `done`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** Background agent updates shall not rerender an unchanged terminal.
+Resize, reveal, and font-change requests shall share one frame-coalesced fit,
+without resizing a retained parser before its continuity decision. Scrollback
+indicators shall count line separators without decoding every output chunk.
+
+**Acceptance criteria:**
+- Unrelated agent-store updates do not render the detail pane's terminal; terminal
+  callbacks retain their identity across selected-agent metadata updates.
+- Fitting ignores hidden, zero-sized, and unchanged geometry. Multiple requests
+  in one frame cause at most one resize, and disposal cancels pending work.
+- A CR/LF pair split between messages counts once. Ordinary text does not count
+  as a new line, and returning to the bottom clears the indicator state.
+- Retained scrollback keeps its text anchor. Evicting viewed or selected lines
+  shows an explicit notice and clears any selection spanning discarded content;
+  resetting the screen does not produce a spurious eviction warning.
+
+**Linked tests:** `src/frontend/components/DetailPanel.density.test.ts`, `src/frontend/terminal-fit.test.ts`, `src/frontend/terminal-line-counter.test.ts`, `src/frontend/terminal-scrollback.test.ts`.
+**Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).
+
+### FR-TERM-001: Responsive terminal wheel scrolling [F5.2] — SHALL — `done`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** The terminal shall preserve fractional wheel movement, normalize
+pixel/line/page units, and apply accumulated whole lines at most once per animation
+frame without forwarding wheel input to an agent.
+
+**Acceptance criteria:**
+- Eight five-pixel events move one line using the existing forty-pixel scale;
+  negative movement is symmetric and preserves its fractional remainder.
+- Line-mode and page-mode events use lines and the current visible row count.
+- Reversing direction at either scroll boundary responds without retained
+  overscroll pressure. Horizontal-only and invalid deltas do not move vertically.
+- Switching sessions, hiding the pane, and disposal cancel queued movement and
+  clear fractional state. A stale frame callback cannot scroll the new session.
+
+**Linked tests:** `src/frontend/terminal-wheel.test.ts`, `src/frontend/components/TerminalPanel.test.ts`.
+**Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).
+
+### FR-TERM-002: Honest terminal attach measurements [F5.2] — SHALL — `done`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** Attach diagnostics shall distinguish socket open, first byte,
+first completed parse, and the next browser render opportunity. A render
+opportunity is not proof that pixels reached the display.
+
+**Acceptance criteria:**
+- Record monotonic client durations and renderer/fallback status, without
+  subtracting clocks from different processes.
+- Version new samples separately from legacy enqueue-based “first paint” samples;
+  legacy reports remain readable and cannot absorb the new measurements.
+- Switching or disconnecting before parsing/rendering records the incomplete
+  sample. Stale callbacks cannot update a later connection's measurements.
+- WebGL context loss updates the reported renderer to DOM and records its cause.
+
+**Linked tests:** `src/frontend/terminal-attach-metrics.test.ts`,
+`src/frontend/terminal-renderer.test.ts`, `src/core/telemetry-report.test.ts`.
+
+### FR-TERM-003: Ordered, bounded terminal parsing [F5.2] — SHALL — `done`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** One writer shall own every terminal write and reset. It shall
+submit at most eight KiB and one outstanding parse per terminal, sharing fair
+task scheduling across panes. Transport credit returns only after parsing.
+
+**Acceptance criteria:**
+- Preserve UTF-8 and control-sequence bytes across chunk boundaries. Initial
+  seed, history, live output, and their control boundaries stay in one order.
+- Retiring a connection drops unsubmitted work, waits for the in-flight parse,
+  then resets for its replacement. Late callbacks release the barrier but cannot
+  acknowledge old bytes or unlock input. A two-second parser stall retires the
+  instance and requests replacement; it never resets a still-running parser.
+- Bound queued payload bytes and control count. A blocked pane does not delay
+  another pane, and each scheduler turn submits at most one chunk.
+
+**Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
+
+### FR-TERM-004: Source-position terminal continuity [F5.2] — SHALL — `partial`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** The terminal backend shall identify live bytes by a session
+epoch and monotonically increasing byte positions, independently of ring-buffer
+indices and transport acknowledgements.
+
+**Acceptance criteria:**
+- Append live bytes before notifying subscribers. Atomic snapshots report the
+  same epoch, retained start, exclusive end, geometry revision, and dimensions.
+- Ring shrink/expansion cannot move source positions backwards. Unknown attach
+  replay invalidates the epoch; changed dimensions invalidate geometry continuity.
+- Exact resume requires the same epoch and geometry, with all missing bytes
+  retained. Missing continuity is disclosed, never repaired by content overlap.
+
+**Remaining gap:** A disconnect during an in-flight parse conservatively
+invalidates the cursor, even if that parse later completes. Carrying the retiring
+chunk's completion into exact resume, as specified by the RFC, remains deferred.
+
+**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/shared/terminal-protocol.test.ts`.
+
+### NFR-TERM-001: Bounded responsive terminal rendering [F5.2] — SHALL — `partial`
+
+**Status:** Approved
+**Priority:** High
+
+**Requirement:** The terminal shall bound browser and server output work, preserve
+ordered live bytes and session-safe parser transitions, and measure rendering
+separately from asynchronous write enqueueing for up to twenty active producers.
+
+**Acceptance criteria:** The approved RFC defines the negotiated consumption-credit
+protocol, safe source-cursor recovery, isolated input and socket ownership, Linux
+and macOS qualification, and mixed-load tests. Record active producers, stored
+tasks, delivered rows, payload sizes, and actual renderer separately. The targets
+are twenty-millisecond frame-interval p95 at 60 Hz and under one hundred milliseconds
+emission-to-render-acknowledgement p95 within the qualified workload; they remain
+unverified until measured. Full qualification includes ten minutes of steady load
+and two minutes of overload/recovery, without agent input loss or unbounded queues.
+
+**Dependencies:** FR-TERM-001.
+**Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).
+**Qualification:** Implementation and Linux fault tests exist, but the mixed-load
+frame and marker targets are not yet met. Isolation remains opt-in pending full
+qualification, including macOS and real agent terminal fixtures. See the
+[validation report](reports/terminal-responsiveness-validation.md).
+
 ### R5.3: Status Bar [F5.3] — SHOULD — `done`
 
 The system SHOULD display a status bar with agent counts and keyboard shortcut hints.

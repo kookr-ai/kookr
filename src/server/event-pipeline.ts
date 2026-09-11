@@ -24,7 +24,7 @@ import { createResponseAssistProcessor } from './event-processors/response-assis
 import { createSessionActivityProcessor } from './event-processors/session-activity-processor.js';
 import { createStopTokenScanProcessor } from './event-processors/stop-token-scan-processor.js';
 import { createTokenAccountingProcessor } from './event-processors/token-accounting-processor.js';
-import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import { buildSnapshotProjection } from './use-cases/snapshot-projection.js';
 
@@ -136,7 +136,7 @@ export interface EventPipelineDeps {
   hookIngestion?: HookIngestion;
   /** Optional publisher for refreshing remote task-share projections after local task state changes. */
   taskShareService?: { publishTaskProjectionForTask(taskId: string): void };
-  terminalInputCoordinator?: TerminalInputCoordinator;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   /**
    * Fixed coalescing window (ms) for centralized snapshot broadcasts (#704 / #1778).
    * A burst of events within this window collapses to a single full-snapshot

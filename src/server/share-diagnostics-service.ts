@@ -17,6 +17,7 @@ interface EnvSnapshot {
 }
 
 export function terminalAdapterAvailableFromStats(stats: BackendStats): boolean {
+  if (stats.terminalHost && stats.terminalHost.status !== 'ready') return false;
   return !(stats.lastError?.kind === 'dtach-unavailable' || stats.lastError?.kind === 'manifest-corrupt');
 }
 

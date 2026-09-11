@@ -37,7 +37,7 @@ import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
-import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
+import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import {
   serializeServerMessageWithSnapshotPayloadPolicy,
@@ -169,7 +169,7 @@ export interface WsConnectionDeps {
   reapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
   /** FAA ack-path reap coordinator for the `keepTaskAlive` veto (issue #2170). */
   faaAckReapWarningCoordinator?: import('../core/reap-warning-coordinator.js').ReapWarningCoordinator;
-  terminalInputCoordinator?: TerminalInputCoordinator;
+  terminalInputCoordinator?: TerminalInputCoordinatorPort;
   /** Where task feedback bundles are written. */
   feedbackDir?: string;
   /** Where anytime task snapshot reflection bundles are written. */

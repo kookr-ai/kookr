@@ -46,6 +46,7 @@ import {
 import { access as fsAccess } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
+import type { TerminalSourceRange, TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import {
   isBackendRecoverySignal,
   isRecoverableSessionFault,
@@ -212,7 +213,9 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     this.instanceDir = join(baseDir, this.instanceId);
     ensureDtachDir(this.instanceDir);
     this.manifestStore = new DtachManifestStore(join(this.instanceDir, 'manifest.json'), this.instanceId);
-    this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME));
+    this.ringStore = new DtachRingStore(join(this.instanceDir, RINGS_DIRNAME), {
+      asyncPersistence: options.asyncRingPersistence,
+    });
 
     this.stream = new LocalDtachStream({
       attached: this.attached,
@@ -331,6 +334,11 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.stopTimerAndFlush();
+  }
+
+  /** Stop the periodic flush, persist every dirty ring, and dispose attaches. */
+  private stopTimerAndFlush(): void {
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
@@ -344,6 +352,27 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
       this.stream.disposeAttach(id);
     }
   }
+
+  /** Close attach clients, then await the isolated host's final ring writes. */
+  async closeAndDrain(): Promise<void> {
+    if (this.closed) { await this.ringStore.drain(); return; }
+    this.closed = true;
+    // Stop the periodic flush, then DRAIN in-flight async snapshot writes BEFORE
+    // the final flush. Otherwise an older async rename still in flight can
+    // complete during the trailing drain() and rename over (clobber) the final
+    // synchronous-fallback snapshot for a session, losing its newest scrollback
+    // (#3145). After the drain no async write is outstanding for any ring, so
+    // the final flush's writes are the last to touch each file.
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    await this.ringStore.drain();
+    this.stopTimerAndFlush();
+    await this.ringStore.drain();
+  }
+
+  getPersistenceStats() { return this.ringStore.persistenceStats(); }
 
   // ─── TerminalBackend surface ────────────────────────────────────────────
 
@@ -478,7 +507,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // removed the session from `this.attached`, so `flushAllRings` won't see
     // it either.
     this.stream.disposeAttach(id);
-    this.ringStore.remove(id);
+    await this.ringStore.remove(id);
 
     if (!entry) return;
 
@@ -531,6 +560,10 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     return this.stream.captureBytes(id, maxBytes);
   }
 
+  async captureStreamSnapshot(id: SessionId, maxBytes: number = RING_BUFFER_BYTES): Promise<TerminalStreamSnapshot> {
+    return this.stream.captureStreamSnapshot(id, maxBytes);
+  }
+
   async captureCurrentFrame(
     id: SessionId,
     options: CaptureCurrentFrameOptions = {},
@@ -538,7 +571,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     return this.stream.captureCurrentFrame(id, options);
   }
 
-  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource) => void): () => void {
+  onData(id: SessionId, cb: (data: Uint8Array, source?: TerminalSessionDataSource, range?: TerminalSourceRange) => void): () => void {
     const sess = this.stream.ensureReadable(id);
     sess.dataSubscribers.add(cb);
     return () => {
@@ -558,7 +591,7 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // Remember the size even if the attach is currently detached — the size
     // will be reapplied to the next pty by `attachPtyInto` so re-attaches
     // keep the viewport stable.
-    sess.currentSize = { cols, rows };
+    this.stream.setGeometry(sess, { cols, rows });
     if (!sess.pty) return;
     try {
       sess.pty.resize(cols, rows);

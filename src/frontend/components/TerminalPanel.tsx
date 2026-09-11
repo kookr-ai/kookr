@@ -6,11 +6,17 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
-import { isMultilinePaste, buildPasteFrame } from '../terminal-paste.js';
-import { createReconnectingSocket, type ReconnectingSocket } from '../reconnecting-socket.js';
+import { isMultilinePaste } from '../terminal-paste.js';
+import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
+import { createTerminalStreamClient, type TerminalStreamClient, type TerminalContinuity,
+  type TerminalStreamState, type TerminalRetryBudget, type TerminalInputDeliveryState } from '../terminal-stream-client.js';
+import { createTerminalWriter } from '../terminal-writer.js';
+import { createTerminalFitScheduler } from '../terminal-fit.js';
+import { createTerminalLineCounter } from '../terminal-line-counter.js';
+import { createTerminalScrollbackGuard } from '../terminal-scrollback.js';
 import { track } from '../telemetry.js';
-import { measureSync } from '../debug-timeline.js';
-import { installTerminalRenderer } from '../terminal-renderer.js';
+import { installTerminalRenderer, type InstalledTerminalRenderer } from '../terminal-renderer.js';
+import { createTerminalWheelScroller, type TerminalWheelScroller } from '../terminal-wheel.js';
 import {
   looksLikeInteractiveMenu,
   looksLikeVisibleComposerDraft,
@@ -55,44 +61,6 @@ interface JumpLatestState {
   lines: number;
 }
 
-/** Server attach_timing control frame (SessionBridge → client join keys). */
-interface AttachTimingMeta {
-  attachId: string;
-  serverStrategy: string | null;
-  seedCacheHit: boolean | null;
-  recoveryUsed: boolean | null;
-  serverTotalMs: number | null;
-  serverResizeWaitMs: number | null;
-  serverCaptureMs: number | null;
-  serverReconstructMs: number | null;
-}
-
-function newAttachId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return `attach-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function parseAttachTimingControl(data: string): Partial<AttachTimingMeta> | null {
-  if (!data.startsWith('{') || !data.includes('"attach_timing"')) return null;
-  try {
-    const parsed = JSON.parse(data) as Record<string, unknown>;
-    if (parsed.type !== 'attach_timing') return null;
-    return {
-      attachId: typeof parsed.attachId === 'string' ? parsed.attachId : undefined,
-      serverStrategy: typeof parsed.strategy === 'string' ? parsed.strategy : null,
-      seedCacheHit: typeof parsed.seedCacheHit === 'boolean' ? parsed.seedCacheHit : null,
-      recoveryUsed: typeof parsed.recoveryUsed === 'boolean' ? parsed.recoveryUsed : null,
-      serverTotalMs: typeof parsed.totalMs === 'number' ? parsed.totalMs : null,
-      serverResizeWaitMs: typeof parsed.resizeWaitMs === 'number' ? parsed.resizeWaitMs : null,
-      serverCaptureMs: typeof parsed.captureMs === 'number' ? parsed.captureMs : null,
-      serverReconstructMs: typeof parsed.reconstructMs === 'number' ? parsed.reconstructMs : null,
-    };
-  } catch {
-    return null;
-  }
-}
 
 // Matches file paths ending in a viewable extension, for click-to-view in the
 // right pane. Requires a path prefix (/, ./, ../, ~/) to keep false positives
@@ -112,6 +80,7 @@ const SEARCH_OPTIONS: ISearchOptions = {
 };
 
 function getValidatedResize(cols: unknown, rows: unknown): { cols: number; rows: number } | null {
+  if (typeof cols !== 'number' || typeof rows !== 'number') return null;
   if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
   if (cols <= 0 || rows <= 0) return null;
   return { cols, rows };
@@ -124,13 +93,6 @@ function isTerminalAtBottom(terminal: Terminal): boolean {
   } catch {
     return true;
   }
-}
-
-function countTerminalNewLines(data: string | ArrayBuffer | Uint8Array): number {
-  const text = typeof data === 'string'
-    ? data
-    : new TextDecoder().decode(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
-  return Math.max(1, text.match(/\r\n|\r|\n/g)?.length ?? 0);
 }
 
 // Last visible rows of the rendered buffer — used only as a menu backstop, not
@@ -173,15 +135,28 @@ function shouldHandleEmptyTerminalEnter(
   return true;
 }
 
-export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onOpenFile }: Props) {
+export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onOpenFile }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
+  const writerRef = useRef<ReturnType<typeof createTerminalWriter> | null>(null);
+  const continuityRef = useRef<TerminalContinuity>({ cursor: null, hadView: false });
+  const retryBudgetRef = useRef<TerminalRetryBudget>({ attempts: [] });
+  // Keep only unresolved warnings. Pane visibility, task selection, and parser
+  // replacement are not delivery receipts; returning to a session must retain its warning.
+  const inputDeliveryBySessionRef = useRef(new Map<string, TerminalInputDeliveryState>());
+  const [terminalRevision, setTerminalRevision] = useState(0);
+  const [streamState, setStreamState] = useState<TerminalStreamState>({ kind: 'negotiating' });
+  const [historyDiscarded, setHistoryDiscarded] = useState(false);
+  const rendererRef = useRef<InstalledTerminalRenderer | null>(null);
+  const wheelScrollerRef = useRef<TerminalWheelScroller | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
+  const fitSchedulerRef = useRef<ReturnType<typeof createTerminalFitScheduler> | null>(null);
+  const lineCounterRef = useRef(createTerminalLineCounter());
   const absoluteTuiRef = useRef(usesAbsoluteTuiGeometry(agentType));
   absoluteTuiRef.current = usesAbsoluteTuiGeometry(agentType);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const controllerRef = useRef<ReconnectingSocket | null>(null);
+  const controllerRef = useRef<TerminalStreamClient | null>(null);
   const currentTmuxRef = useRef<string | null>(null);
   const terminalInputDraftRef = useRef('');
   const onEmptySubmitRef = useRef(onEmptySubmit);
@@ -201,11 +176,10 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   const [terminalFontSize, setTerminalFontSize] = usePersistedTerminalFontSize();
   /**
    * R3: block terminal send and show pending chrome until the new session's
-   * first PTY paint (wrong-agent mitigation during no-blank attach).
+   * complete parsed seed (wrong-agent mitigation during retained-screen attach).
    */
   const [attachPending, setAttachPending] = useState(false);
   const attachPendingRef = useRef(false);
-  const attachMetaRef = useRef<AttachTimingMeta | null>(null);
 
   function clearJumpLatestTimer() {
     if (jumpLatestTimerRef.current === null) return;
@@ -214,6 +188,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   }
 
   function resetJumpLatest() {
+    lineCounterRef.current.reset();
     clearJumpLatestTimer();
     pendingJumpLinesRef.current = 0;
     atBottomRef.current = true;
@@ -223,6 +198,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   }
 
   function hideJumpLatestAtBottom() {
+    lineCounterRef.current.reset();
     clearJumpLatestTimer();
     pendingJumpLinesRef.current = 0;
     setJumpLatest((prev) => (
@@ -282,7 +258,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     }
     registerTerminalSend((data) => {
       if (!visibleRef.current || attachPendingRef.current) return;
-      controllerRef.current?.send(data);
+      controllerRef.current?.sendInput(data);
     });
   }
 
@@ -304,23 +280,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   }
 
   function refitRefreshAndNotifyResize() {
-    const terminal = terminalRef.current;
-    const fitAddon = fitAddonRef.current;
-    if (!terminal || !fitAddon) return;
-
-    fitAddon.fit();
-    const dims = fitAddon.proposeDimensions();
-    const resize = resolveTerminalSize(dims);
-    if (resize && absoluteTuiRef.current) {
-      // Pin width after FitAddon may have shrunk it to the container.
-      terminal.resize(resize.cols, resize.rows);
-    }
-    if (terminal.rows > 0) {
-      terminal.refresh(0, terminal.rows - 1);
-    }
-    if (resize) {
-      controllerRef.current?.send(JSON.stringify({ type: 'resize', cols: resize.cols, rows: resize.rows }));
-    }
+    fitSchedulerRef.current?.request(true);
   }
 
   function handleTerminalFontSizeShortcut(e: KeyboardEvent): boolean {
@@ -492,10 +452,41 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     });
 
     terminal.open(containerRef.current);
-    const renderer = installTerminalRenderer(terminal);
-    fitAddon.fit();
+    const renderer = installTerminalRenderer(terminal, {
+      onChange: (status) => track({ type: 'terminal_renderer_changed', ...status }),
+    });
+    rendererRef.current = renderer;
+
+    const fitScheduler = createTerminalFitScheduler({
+      canFit: () => visibleRef.current
+        && (!continuityRef.current.hadView || !!controllerRef.current?.isEstablished()),
+      getDimensions: () => resolveTerminalSize(fitAddon.proposeDimensions()),
+      getCurrentDimensions: () => ({ cols: terminal.cols, rows: terminal.rows }),
+      resize: (cols, rows) => terminal.resize(cols, rows),
+      refresh: () => { if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1); },
+    });
+    fitSchedulerRef.current = fitScheduler;
+    fitScheduler.flush();
 
     terminalRef.current = terminal;
+    const scrollbackGuard = createTerminalScrollbackGuard(terminal, () => setHistoryDiscarded(true));
+    const writer = createTerminalWriter({
+      terminal: {
+        write: (bytes, done) => terminal.write(bytes, done),
+        reset: () => {
+          scrollbackGuard.reset();
+          setHistoryDiscarded(false);
+          terminal.reset();
+        },
+      },
+      onStall: () => {
+        controllerRef.current?.stop();
+        continuityRef.current.cursor = null;
+        continuityRef.current.hadView = true;
+        setTerminalRevision((revision) => revision + 1);
+      },
+    });
+    writerRef.current = writer;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
     const searchResultDisposable = searchAddon.onDidChangeResults((event) => {
@@ -506,7 +497,9 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     });
     const scrollDisposable = terminal.onScroll(() => {
       syncAtBottom(terminal);
+      scrollbackGuard.viewportChanged();
     });
+    const selectionDisposable = terminal.onSelectionChange(() => scrollbackGuard.selectionChanged());
 
     // Track focus zone via DOM events (xterm v6 removed onFocus/onBlur)
     const container = containerRef.current;
@@ -601,11 +594,17 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     // alt-screen. Those bytes reach Claude Code / Codex and cycle the agent's
     // prompt history instead of scrolling the terminal — the user-visible
     // "scrolling doesn't work" bug. Scroll xterm.js's own scrollback instead.
+    const wheelScroller = createTerminalWheelScroller({
+      getViewport: () => ({
+        rows: terminal.rows,
+        viewportY: terminal.buffer.active.viewportY,
+        baseY: terminal.buffer.active.baseY,
+      }),
+      scrollLines: (lines) => terminal.scrollLines(lines),
+    });
+    wheelScrollerRef.current = wheelScroller;
     function handleWheelOverride(e: WheelEvent) {
-      const lines = Math.round(e.deltaY / 40);
-      if (lines !== 0) {
-        terminal.scrollLines(lines);
-      }
+      if (visibleRef.current) wheelScroller.handleWheel(e);
       e.stopImmediatePropagation();
       e.preventDefault();
     }
@@ -616,7 +615,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
 
     // Handle container resize
     const resizeObserver = new ResizeObserver(() => {
-      fitAddon.fit();
+      fitScheduler.request();
     });
     resizeObserver.observe(container);
 
@@ -624,28 +623,42 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       container.removeEventListener('focusin', handleTermFocus);
       container.removeEventListener('focusout', handleTermBlur);
       container.removeEventListener('wheel', handleWheelOverride, { capture: true });
+      wheelScroller.dispose();
+      wheelScrollerRef.current = null;
       container.removeEventListener('contextmenu', handleContextMenu);
       container.removeEventListener('paste', handlePasteCapture, { capture: true });
       container.removeEventListener('keydown', handleKeyDownCapture, { capture: true });
       resizeObserver.disconnect();
+      fitScheduler.dispose();
+      fitSchedulerRef.current = null;
       searchResultDisposable.dispose();
       scrollDisposable.dispose();
+      selectionDisposable.dispose();
+      scrollbackGuard.dispose();
       renderer.dispose();
+      rendererRef.current = null;
       clearJumpLatestTimer();
       fileLinkDisposable.dispose();
+      writer.dispose();
+      writerRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, []);
+  }, [terminalRevision]);
+
+  useEffect(() => {
+    wheelScrollerRef.current?.reset();
+    return () => wheelScrollerRef.current?.reset();
+  }, [tmuxName, visible]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
     if (!terminal) return;
     terminal.options.fontSize = terminalFontSize;
     refitRefreshAndNotifyResize();
-  }, [terminalFontSize]);
+  }, [terminalFontSize, terminalRevision]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -669,20 +682,16 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     };
   }, [menu]);
 
-  /** Send a frame on the live terminal WebSocket, if one is open. */
-  function sendOverWs(payload: string | Uint8Array) {
-    controllerRef.current?.send(payload);
-  }
-
   /**
    * Route a paste through the server's bracketed-paste path (kookr #356):
    * one structured WS frame the SessionBridge turns into a single atomic
    * paste, instead of raw bytes whose newlines each submit a prompt.
    */
   function sendSafePaste(text: string) {
-    lastSafePasteAtRef.current = Date.now();
-    terminalInputDraftRef.current += text;
-    sendOverWs(buildPasteFrame(text));
+    if (controllerRef.current?.paste(text)) {
+      lastSafePasteAtRef.current = Date.now();
+      terminalInputDraftRef.current += text;
+    }
   }
 
   /**
@@ -692,8 +701,9 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
    * misread as a JSON control frame.
    */
   function sendRawPaste(text: string) {
-    terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, text);
-    sendOverWs(new TextEncoder().encode(text));
+    if (controllerRef.current?.sendInput(new TextEncoder().encode(text))) {
+      terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, text);
+    }
   }
 
   async function handleCopy() {
@@ -710,9 +720,14 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
    * menu dismissal cannot drift apart.
    */
   async function pasteFromClipboard(route: (text: string) => void) {
+    const controller = controllerRef.current;
+    if (!visibleRef.current || !controller?.isEstablished()) return;
     try {
       const text = await navigator.clipboard.readText();
-      if (text) route(text);
+      // Clipboard permission prompts can outlive a selection change. Never send
+      // their result to the newly selected agent, even if it is already ready.
+      if (text && visibleRef.current && controllerRef.current === controller
+        && controller.isEstablished()) route(text);
     } catch { /* clipboard denied */ }
     setMenu(null);
   }
@@ -730,341 +745,97 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
     void pasteFromClipboard(sendRawPaste);
   }
 
-  // Connect/reconnect the byte stream only while the terminal is visible.
-  // Keeping hidden panes unsubscribed avoids replay capture and live PTY byte
-  // fan-out for tasks the user is not currently inspecting.
+  // One protocol owner per selected, visible terminal. The writer itself lives
+  // with xterm, so a previous socket's parser must drain before replacement.
   useEffect(() => {
     const terminal = terminalRef.current;
-    if (!terminal) return;
-
-    const sessionChanged = tmuxName !== currentTmuxRef.current;
-
+    const writer = writerRef.current;
+    if (!terminal || !writer) return;
+    const previousSessionId = currentTmuxRef.current;
+    const sessionChanged = tmuxName !== previousSessionId;
     if (sessionChanged) {
-      searchOpenRef.current = false;
+      continuityRef.current = { cursor: null, hadView: false };
+      retryBudgetRef.current = { attempts: [] };
       terminalInputDraftRef.current = '';
       resetJumpLatest();
+      searchOpenRef.current = false;
       setSearchOpen(false);
       setSearchTerm('');
       setSearchFound(null);
       setSearchResult(null);
       searchAddonRef.current?.clearDecorations();
-    }
-
-    if (!visible) {
-      registerTerminalSend(null);
-      markAttachPending(false);
-      return;
-    }
-
-    if (!tmuxName) {
-      terminal.clear();
-      terminal.write('\r\n  Select an agent to view its terminal.\r\n');
-      currentTmuxRef.current = null;
-      markAttachPending(false);
-      return;
-    }
-
-    // Keep the previous session's painted cells until the first byte of the new
-    // session arrives (no blank flash). currentTmuxRef still updates so the next
-    // effect sees a stable session identity.
-    const previousSessionId = currentTmuxRef.current;
-    if (tmuxName !== currentTmuxRef.current) {
       currentTmuxRef.current = tmuxName;
     }
+    if (!visible || !tmuxName) {
+      registerTerminalSend(null);
+      markAttachPending(false);
+      if (!tmuxName) writer.begin().barrier(() => {});
+      return;
+    }
 
-    // R3: gate input + show chrome until first PTY paint of this attach.
-    const attachId = newAttachId();
-    attachMetaRef.current = {
-      attachId,
-      serverStrategy: null,
-      seedCacheHit: null,
-      recoveryUsed: null,
-      serverTotalMs: null,
-      serverResizeWaitMs: null,
-      serverCaptureMs: null,
-      serverReconstructMs: null,
-    };
-    markAttachPending(true);
-    registerTerminalSend(null);
-
+    const continuity = continuityRef.current;
+    // A retained parser must keep its dimensions until the resume decision.
+    if (!continuity.hadView) fitSchedulerRef.current?.flush();
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws/terminal/${encodeURIComponent(tmuxName)}`;
-
-    // The byte stream auto-reconnects (with backoff) when the server restarts
-    // or the host drops offline, instead of leaving a frozen terminal behind.
-    // Two close codes mean the session itself is finished and must NOT retry:
-    // 1000 (clean close) and 1011 — SessionBridge's closeBridgeForFailure uses
-    // 1011 when the backend session is gone/dead, and the upgrade handshake is
-    // accepted before that liveness check runs, so retrying 1011 would loop
-    // open→close forever on a pane showing an ended session. Server restarts
-    // close with 1001/1006, which do retry.
-    const SESSION_OVER_CLOSE_CODES = [1000, 1011];
-    let notifiedOutage = false;
-    // Attach-latency telemetry: selection/effect start → WS open → first paint.
-    const attachStartedAt = performance.now();
-    let wsOpenAt: number | null = null;
-    let firstByteAt: number | null = null;
-    let firstPaintAt: number | null = null;
-    let firstPaintByteLength: number | null = null;
-    let firstPaintTelemetryFlushed = false;
-    let firstPaintTelemetryTimer: number | null = null;
-    /** Reset xterm once, immediately before the first write of this attach. */
-    let pendingInitialReset = true;
-    /** clientWarm: same session re-attach (retained cells are this session). */
-    const clientWarm = previousSessionId === tmuxName;
-
-    function flushFirstPaintTelemetry() {
-      if (firstPaintTelemetryFlushed || firstPaintAt === null) return;
-      firstPaintTelemetryFlushed = true;
-      if (firstPaintTelemetryTimer !== null) {
-        window.clearTimeout(firstPaintTelemetryTimer);
-        firstPaintTelemetryTimer = null;
-      }
-      const meta = attachMetaRef.current;
-      const seedHit = meta?.seedCacheHit === true;
-      const warmLabel: 'warm' | 'cold' = (clientWarm || seedHit) ? 'warm' : 'cold';
-      track({
-        type: 'terminal_switch_latency',
-        attachId: meta?.attachId ?? attachId,
-        fromSessionId: previousSessionId,
-        toSessionId: tmuxName,
-        agentType: absoluteTuiRef.current ? 'grok-build' : (agentType ?? null),
-        clientWarm,
-        warmLabel,
-        serverStrategy: meta?.serverStrategy ?? null,
-        seedCacheHit: meta?.seedCacheHit ?? null,
-        recoveryUsed: meta?.recoveryUsed ?? null,
-        serverTotalMs: meta?.serverTotalMs ?? null,
-        serverResizeWaitMs: meta?.serverResizeWaitMs ?? null,
-        serverCaptureMs: meta?.serverCaptureMs ?? null,
-        serverReconstructMs: meta?.serverReconstructMs ?? null,
-        selectionToOpenMs: wsOpenAt === null
-          ? null
-          : Math.round((wsOpenAt - attachStartedAt) * 100) / 100,
-        selectionToFirstByteMs: firstByteAt === null
-          ? null
-          : Math.round((firstByteAt - attachStartedAt) * 100) / 100,
-        selectionToFirstPaintMs: Math.round((firstPaintAt - attachStartedAt) * 100) / 100,
-        openToFirstByteMs: wsOpenAt === null || firstByteAt === null
-          ? null
-          : Math.round((firstByteAt - wsOpenAt) * 100) / 100,
-        firstByteBytes: firstPaintByteLength,
-        reconnect: previousSessionId === tmuxName,
-      });
-    }
-
-    function scheduleFirstPaintTelemetry() {
-      if (firstPaintTelemetryFlushed) return;
-      // Brief wait so attach_timing that follows the seed/replay can join.
-      if (firstPaintTelemetryTimer !== null) return;
-      firstPaintTelemetryTimer = window.setTimeout(() => {
-        firstPaintTelemetryTimer = null;
-        flushFirstPaintTelemetry();
-      }, 80);
-    }
-
-    const controller = createReconnectingSocket<WebSocket>({
-      createSocket: () => {
-        const ws = new WebSocket(url);
-        // v7 SessionBridge sends binary frames. Legacy TerminalBridge (tmux) sends
-        // string frames. `arraybuffer` is accepted by xterm.js's `.write` for both
-        // Uint8Array and ArrayBuffer, and string frames still arrive as strings
-        // on `event.data` regardless — so this is forward-compatible with both.
-        ws.binaryType = 'arraybuffer';
-        return ws;
-      },
-      shouldReconnect: (event) => !SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1),
-      backoff: { initialDelayMs: 1_000, maxDelayMs: 10_000 },
-      onOpen: (ws) => {
-        // Do NOT reset/clear here — that blanks the pane until the server's
-        // seed/replay arrives. Reset is deferred to the first onMessage write
-        // so the previous task stays visible during the attach handshake.
-        pendingInitialReset = true;
-        notifiedOutage = false;
-        wsOpenAt = performance.now();
-        // Reconnect path: re-gate until first paint of the new socket.
-        markAttachPending(true);
-        registerTerminalSend(null);
-        if (!visibleRef.current) {
-          return;
-        }
-        // Send initial size immediately so SessionBridge can size-gate ring
-        // replay / live-redraw before dumping historical absolute-position frames.
-        // Include attachId so server terminal_bridge_timing shares the join key.
-        const fitAddon = fitAddonRef.current;
-        const terminalForSize = terminalRef.current;
-        if (fitAddon) {
-          fitAddon.fit();
-          const dims = fitAddon.proposeDimensions();
-          const resize = absoluteTuiRef.current
-            ? getValidatedResize(ABSOLUTE_TUI_COLS, dims?.rows ?? 0)
-            : getValidatedResize(dims?.cols, dims?.rows);
-          if (resize) {
-            if (absoluteTuiRef.current && terminalForSize) {
-              terminalForSize.resize(resize.cols, resize.rows);
-            }
-            ws.send(JSON.stringify({
-              type: 'resize',
-              cols: resize.cols,
-              rows: resize.rows,
-              attachId,
-            }));
-          } else {
-            // Still announce attachId when FitAddon has no dims yet.
-            ws.send(JSON.stringify({ type: 'resize', cols: 80, rows: 24, attachId }));
-          }
-        } else {
-          ws.send(JSON.stringify({ type: 'resize', cols: 80, rows: 24, attachId }));
-        }
-      },
-      // Do not unlock send on bare WS open — wait for first PTY paint (R3).
-      onEstablished: () => {
+    const renderer = rendererRef.current;
+    const inputDelivery = inputDeliveryBySessionRef.current.get(tmuxName) ?? { uncertain: false };
+    const controller = createTerminalStreamClient({
+      writer, continuity, retryBudget: retryBudgetRef.current, inputDelivery,
+      createSocket: () => new WebSocket(url, TERMINAL_V2_PROTOCOL),
+      getSize: () => getValidatedResize(terminal.cols, terminal.rows)
+        ?? resolveTerminalSize(fitAddonRef.current?.proposeDimensions())
+        ?? { cols: 80, rows: 24 },
+      onState: (next) => {
+        if (inputDelivery.uncertain) inputDeliveryBySessionRef.current.set(tmuxName, inputDelivery);
+        else inputDeliveryBySessionRef.current.delete(tmuxName);
+        setStreamState(next);
+        markAttachPending(next.kind !== 'live');
         registerVisibleTerminalSend();
+        if (next.kind === 'live') fitSchedulerRef.current?.request(true);
       },
-      onMessage: (event) => {
-        // Server attach_timing control frame (text JSON) — not PTY output.
-        if (typeof event.data === 'string') {
-          const timing = parseAttachTimingControl(event.data);
-          if (timing) {
-            const prev = attachMetaRef.current;
-            attachMetaRef.current = {
-              // Prefer client attachId for join; adopt server only if we never set one.
-              attachId: prev?.attachId ?? timing.attachId ?? attachId,
-              serverStrategy: timing.serverStrategy ?? prev?.serverStrategy ?? null,
-              seedCacheHit: timing.seedCacheHit ?? prev?.seedCacheHit ?? null,
-              recoveryUsed: timing.recoveryUsed ?? prev?.recoveryUsed ?? null,
-              serverTotalMs: timing.serverTotalMs ?? prev?.serverTotalMs ?? null,
-              serverResizeWaitMs: timing.serverResizeWaitMs ?? prev?.serverResizeWaitMs ?? null,
-              serverCaptureMs: timing.serverCaptureMs ?? prev?.serverCaptureMs ?? null,
-              serverReconstructMs: timing.serverReconstructMs ?? prev?.serverReconstructMs ?? null,
-            };
-            // If paint already happened, flush once strategy arrives.
-            if (firstPaintAt !== null) flushFirstPaintTelemetry();
-            return;
-          }
-        }
-
-        if (pendingInitialReset) {
-          // Drop the previous session's cells immediately before the new seed
-          // lands so we never composite two agents' frames.
-          terminal.reset();
-          pendingInitialReset = false;
-        }
-        const atBottomBeforeWrite = syncAtBottom(terminal);
-        const newLineCount = atBottomBeforeWrite ? 0 : countTerminalNewLines(event.data);
-        // Binary frames arrive as ArrayBuffer (because ws.binaryType = 'arraybuffer'
-        // above). Convert to Uint8Array for byte-exact handoff to xterm.js — its
-        // .write() accepts both Uint8Array and string. String frames (from the
-        // legacy TerminalBridge path) pass through unchanged.
-        // Sample main-thread cost of large xterm writes (threshold-gated).
-        const byteLength = event.data instanceof ArrayBuffer
-          ? event.data.byteLength
-          : typeof event.data === 'string'
-            ? event.data.length
-            : undefined;
-        if (firstByteAt === null) {
-          firstByteAt = performance.now();
-        }
-        measureSync('xterm-write', () => {
-          if (event.data instanceof ArrayBuffer) {
-            const bytes = new Uint8Array(event.data);
-            terminal.write(bytes);
-          } else if (typeof event.data === 'string') {
-            terminal.write(event.data);
-          }
-        }, { byteLength });
-        if (firstPaintAt === null) {
-          firstPaintAt = performance.now();
-          firstPaintByteLength = byteLength ?? null;
-          // Unlock input only after the new session's first paint (R3).
-          markAttachPending(false);
-          registerVisibleTerminalSend();
-          // Prefer attach_timing join when it arrives next; fall back after 80ms.
-          scheduleFirstPaintTelemetry();
-        }
-        scheduleJumpLatest(newLineCount);
+      onOutput: (bytes) => {
+        const atBottom = syncAtBottom(terminal);
+        scheduleJumpLatest(atBottom ? 0 : lineCounterRef.current.count(bytes));
       },
-      onClose: (event, { wasEstablished }) => {
-        registerTerminalSend(null);
-        if (SESSION_OVER_CLOSE_CODES.includes(event.code ?? -1)) {
-          // The PTY exited or the backend session is gone — show feedback.
-          markAttachPending(false);
-          terminal.write('\r\n\x1b[90m  Session ended.\x1b[0m\r\n');
-        } else if (!notifiedOutage) {
-          // Say it once per outage; retries continue silently in the background.
-          notifiedOutage = true;
-          markAttachPending(true);
-          terminal.write(wasEstablished
-            ? '\r\n\x1b[90m  Terminal connection lost — reconnecting…\x1b[0m\r\n'
-            : '\r\n\x1b[90m  Could not connect to terminal — retrying…\x1b[0m\r\n');
-        }
-      },
+      getMetadata: () => ({
+        fromSessionId: previousSessionId, toSessionId: tmuxName, agentType: agentType ?? null,
+        clientWarm: continuity.hadView, warmLabel: continuity.hadView ? 'warm' : 'cold',
+        renderer: renderer?.renderer ?? 'dom', rendererFallback: renderer?.fallbackReason ?? null,
+      }),
+      onTelemetry: track,
     });
     controllerRef.current = controller;
     controller.start();
 
-    // Terminal input → WebSocket. Empty-Enter task navigation stays available
-    // during pending attach; PTY keystrokes are blocked until first paint (R3).
     const inputDisposable = terminal.onData((data) => {
       if (!visibleRef.current) return;
-      if (
-        data === '\r'
-        && shouldHandleEmptyTerminalEnter(
-          terminalInputDraftRef.current,
-          terminal,
-          onEmptySubmitRef.current,
-        )
-      ) {
-        onEmptySubmitRef.current();
+      if (data === '\r' && shouldHandleEmptyTerminalEnter(
+        terminalInputDraftRef.current, terminal, onEmptySubmitRef.current,
+      )) {
+        onEmptySubmitRef.current?.();
         return;
       }
-      if (attachPendingRef.current) return;
-      terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
-      controller.send(data);
+      if (!controller.isEstablished()) return;
+      if (controller.sendInput(data)) {
+        terminalInputDraftRef.current = updateTerminalInputDraft(terminalInputDraftRef.current, data);
+      }
     });
 
-    // Terminal resize → WebSocket. Debounce FitAddon/layout thrash so rapid
-    // panel resizes (and multi-step font changes) do not WINCH-storm the agent
-    // TUI. The initial size is still sent immediately from onOpen.
-    let resizeDebounceTimer: number | null = null;
-    let pendingResize: { cols: number; rows: number } | null = null;
-    const RESIZE_DEBOUNCE_MS = 80;
     const resizeDisposable = terminal.onResize(({ cols, rows }) => {
       if (!visibleRef.current) return;
-      const resize = getValidatedResize(cols, rows);
-      if (!resize) return;
-      pendingResize = resize;
-      if (resizeDebounceTimer !== null) {
-        window.clearTimeout(resizeDebounceTimer);
-      }
-      resizeDebounceTimer = window.setTimeout(() => {
-        resizeDebounceTimer = null;
-        const next = pendingResize;
-        pendingResize = null;
-        if (!next || !visibleRef.current) return;
-        controller.send(JSON.stringify({ type: 'resize', cols: next.cols, rows: next.rows }));
-      }, RESIZE_DEBOUNCE_MS);
+      const size = getValidatedResize(cols, rows);
+      if (!size) return;
+      controller.resize(size.cols, size.rows);
     });
-
     return () => {
       registerTerminalSend(null);
-      if (firstPaintTelemetryTimer !== null) {
-        window.clearTimeout(firstPaintTelemetryTimer);
-        firstPaintTelemetryTimer = null;
-      }
-      // Flush pending sample on unmount so switches mid-wait are not lost.
-      flushFirstPaintTelemetry();
-      if (resizeDebounceTimer !== null) {
-        window.clearTimeout(resizeDebounceTimer);
-        resizeDebounceTimer = null;
-      }
       inputDisposable.dispose();
       resizeDisposable.dispose();
       controller.stop();
       controllerRef.current = null;
-      markAttachPending(false);
     };
-  }, [tmuxName, visible]);
+  }, [tmuxName, visible, terminalRevision]);
 
   // Refit + repaint when the parent explicitly reveals the terminal. Driving
   // this from the real pane/tab state is more reliable than observing
@@ -1074,14 +845,7 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
   // force a redraw of the retained buffer.
   useEffect(() => {
     if (!visible) return;
-
-    const rafId = requestAnimationFrame(() => {
-      const terminal = terminalRef.current;
-      if (!terminal) return;
-      refitRefreshAndNotifyResize();
-    });
-
-    return () => cancelAnimationFrame(rafId);
+    refitRefreshAndNotifyResize();
   }, [visible]);
 
   const focusZone = useKookrStore((s) => s.focusZone);
@@ -1095,6 +859,20 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
 
   return (
     <div className={`terminal-col kookr-tour-target-layout${focusZone === 'terminal' ? ' zone-active' : ''}`}>
+      {historyDiscarded && (
+        <div className="terminal-history-notice" role="status">
+          Older terminal lines were discarded.
+          <button type="button" onClick={() => { setHistoryDiscarded(false); terminalRef.current?.focus(); }} aria-label="Dismiss discarded history notice">×</button>
+        </div>
+      )}
+      {streamState.inputDeliveryUncertain && (
+        <div className="terminal-history-notice" role="status">
+          Input delivery is uncertain. Check the agent before resending; input is not replayed automatically.
+          <button type="button" aria-label="Dismiss input delivery warning" onClick={() => {
+            controllerRef.current?.dismissInputWarning(); terminalRef.current?.focus();
+          }}>×</button>
+        </div>
+      )}
       {searchOpen && (
         <form
           className="terminal-search"
@@ -1164,14 +942,33 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       />
       {attachPending && (
         <div
-          className="terminal-attach-pending"
+          className={`terminal-attach-pending${streamState.kind === 'negotiating' || streamState.kind === 'seeding' ? '' : ' terminal-attach-notice'}`}
           role="status"
           aria-live="polite"
           data-testid="terminal-attach-pending"
         >
-          Connecting to session…
+          {streamState.kind === 'negotiating' ? 'Connecting to session…'
+            : streamState.kind === 'seeding' ? 'Preparing terminal — input paused…'
+              : streamState.kind === 'lagged' ? 'Terminal view fell behind. Only this view was disconnected.'
+                : streamState.kind === 'continuity-unavailable' ? 'Some output could not be recovered. Start a new view to continue.'
+                  : streamState.kind === 'incompatible' ? 'Terminal protocol changed. Reload Kookr.'
+                    : streamState.kind === 'access-denied' ? 'Terminal access denied.'
+                      : streamState.kind === 'ended' ? 'Session ended.'
+                        : streamState.kind === 'suspended' ? 'Terminal view paused while this tab is hidden.'
+                          : 'Terminal connection unavailable.'}
+          {(streamState.kind === 'lagged' || streamState.kind === 'continuity-unavailable' || streamState.kind === 'unavailable') && (
+            <button type="button" onClick={() => {
+              controllerRef.current?.retry(streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor);
+              terminalRef.current?.focus();
+            }}>
+              {streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor ? 'Start a new view' : 'Reconnect terminal'}
+            </button>
+          )}
+          {streamState.kind === 'incompatible' && <button type="button" onClick={() => window.location.reload()}>Reload Kookr</button>}
         </div>
       )}
+      {!tmuxName && <div className="terminal-attach-pending terminal-attach-notice" role="status">Select an agent to view its terminal.</div>}
+      {!attachPending && streamState.approximate && <div className="terminal-attach-pending terminal-attach-notice" role="status">Some earlier terminal output is unavailable.</div>}
       {jumpLatest.visible && (
         <button
           type="button"
@@ -1232,4 +1029,4 @@ export function TerminalPanel({ tmuxName, visible, agentType, onEmptySubmit, onO
       )}
     </div>
   );
-}
+});

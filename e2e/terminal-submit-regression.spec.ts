@@ -20,7 +20,7 @@ async function launchViaUIWithAgent(page: Page, prompt: string, cwd: string, age
   const expectedTaskCount = await currentTaskCount(page) + 1;
   await page.locator('.btn-launch').click();
   await page.locator('.dialog textarea').fill(prompt);
-  await page.locator('.dialog .agent-type-select select').selectOption(agentType);
+  await page.locator('.dialog').getByLabel('Agent', { exact: true }).selectOption(agentType);
   const cwdInput = page.locator('.dialog input[type="text"]').first();
   await cwdInput.clear();
   await cwdInput.fill(cwd);

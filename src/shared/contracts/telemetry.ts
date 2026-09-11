@@ -34,10 +34,13 @@ export const TELEMETRY_EVENT_TYPES = [
   'selection_flicker_incident',
   'suggestion_lifecycle',
   /**
-   * End-to-end terminal attach latency after a task switch: selection → WS open
-   * → first server byte → xterm write. Used to track sub-second attach goals.
+   * Terminal attach milestones on the client clock. Version two separates
+   * completed parsing and the next render opportunity. Unversioned records
+   * called asynchronous write enqueueing "first paint"; never blend the series.
    */
   'terminal_switch_latency',
+  /** Renderer selection and subsequent GPU context-loss fallback. */
+  'terminal_renderer_changed',
 ] as const;
 
 export type TelemetryEventType = typeof TELEMETRY_EVENT_TYPES[number];

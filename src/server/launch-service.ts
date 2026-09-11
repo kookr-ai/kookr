@@ -21,6 +21,7 @@ import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
+import { TerminalHostUnavailableError } from './terminal-host-contract.js';
 import type { LaunchDependency } from '../core/playbook.js';
 import type {
   LaunchDependencyAdmission,
@@ -953,7 +954,7 @@ function isRalphLoopActive(task: Task): boolean {
   return task.ralphLoop?.status === 'running' || task.ralphLoop?.status === 'paused';
 }
 
-async function hasLiveBackingSession(
+async function hasLiveOrUnverifiedBackingSession(
   task: Task,
   terminalBackend: Pick<TerminalBackend, 'isAlive'>,
 ): Promise<boolean> {
@@ -963,7 +964,10 @@ async function hasLiveBackingSession(
   for (const session of sessions) {
     try {
       if (await terminalBackend.isAlive(session.tmuxSession)) return true;
-    } catch {
+    } catch (error) {
+      // A restarting host cannot prove that its dtach-owned agent exited.
+      // Preserve duplicate protection until a later probe can verify liveness.
+      if (error instanceof TerminalHostUnavailableError) return true;
       // Treat backend probe failures like a missing session for dedup. The
       // stale record will be reconciled below instead of blocking a retry.
     }
@@ -1005,7 +1009,7 @@ async function validateDuplicateCandidate(
   // stale duplicate would admit a second task for the same work.
   if (candidate.launchAdmission?.status === 'probing') return candidate;
   if (!deps.terminalBackend) return candidate;
-  if (await hasLiveBackingSession(candidate, deps.terminalBackend)) return candidate;
+  if (await hasLiveOrUnverifiedBackingSession(candidate, deps.terminalBackend)) return candidate;
 
   reconcileStaleDuplicate(deps.taskStore, candidate);
   return undefined;

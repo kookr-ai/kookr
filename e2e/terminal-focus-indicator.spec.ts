@@ -17,7 +17,7 @@ test.describe('Terminal focus indicator', () => {
       headers: { 'X-Kookr-Launch-Source': 'ui' },
       data: { prompt: 'Terminal focus indicator check', cwd: '/test/project' },
     });
-    expect(response.ok()).toBe(true);
+    expect(response.ok(), await response.text()).toBe(true);
     const task = await response.json() as {
       sessions?: Array<{ tmuxSession: string }>;
     };
