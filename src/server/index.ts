@@ -1905,6 +1905,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // the operator-signal outbox; until then evaluate is a no-op.
   const resourceWatchdogStatePath = join(kookrDir, 'resource-watchdog.state.json');
   const resourceWatchdogAuditPath = defaultResourceWatchdogAuditPath(kookrDir);
+  const resourceWatchdogAuditSink = new JsonlResourceWatchdogAuditSink(resourceWatchdogAuditPath);
   const buildResourceWatchdogConfig = (): ResourceWatchdogConfig => {
     const envCfg = readResourceWatchdogConfigFromEnv(process.env);
     // Under Vitest, refuse ambient auto-enable unless the test process
@@ -1940,7 +1941,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
     }),
     stateStore: new FileResourceWatchdogStateStore(resourceWatchdogStatePath),
-    auditSink: new JsonlResourceWatchdogAuditSink(resourceWatchdogAuditPath),
+    auditSink: resourceWatchdogAuditSink,
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
     // Byte-capped tail only — never readFileSync the whole server.log under
     // pressure (issue #1553 lesson; prod logs can be multi-GB).
@@ -2763,6 +2764,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
           sink: 'private_network_collaboration',
           writable: status.writable,
           appendFailureCount: status.appendFailureCount,
+        }, {
+          sink: 'resource_watchdog',
+          ...resourceWatchdogAuditSink.status(),
         }];
       },
     },

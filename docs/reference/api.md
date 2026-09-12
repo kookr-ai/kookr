@@ -153,16 +153,18 @@ Circuit breakers are exported as:
 - `kookr_circuit_breaker_trips_total{name}`: counter of transitions into the
   open state.
 
-The collaboration audit sink is exported as:
+Audit sinks are exported with `sink="private_network_collaboration"` or
+`sink="resource_watchdog"`:
 
-- `kookr_audit_sink_writable{sink="private_network_collaboration"}`: gauge, `1`
+- `kookr_audit_sink_writable{sink}`: gauge, `1`
   when the last append succeeded or no append has failed, `0` after the most
   recent append failed.
-- `kookr_audit_append_failures_total{sink="private_network_collaboration"}`:
-  monotonic counter of failed audit append attempts.
+- `kookr_audit_append_failures_total{sink}`: cumulative failed audit append
+  attempts during the current process. Recovery does not reset the count.
 
-Prometheus metrics intentionally do not include raw audit failure reasons. Use
-`GET /api/collaboration/diagnostics` for the current bounded failure detail.
+Scrapes use cached status without filesystem work and exclude raw audit failure
+reasons. For collaboration failures, use `GET /api/collaboration/diagnostics`
+for the current bounded failure detail.
 
 The auth throttle is exported as aggregate process-local metrics:
 
