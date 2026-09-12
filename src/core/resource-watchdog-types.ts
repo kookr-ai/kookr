@@ -195,6 +195,16 @@ export interface ResourceWatchdogAuditRecord {
 export interface ResourceWatchdogHealthSnapshot {
   enabled: boolean;
   lastSampleAt: string | null;
+  /** Server-clock freshness; null while disabled or before sampling starts. */
+  sampleFreshness: {
+    /** Time since the last sample, or since sampling started if none succeeded. */
+    ageMs: number;
+    /** Effective delay between completed evaluation cycles. */
+    intervalMs: number;
+    /** Three intervals plus allowance for a bounded investigation launch. */
+    staleAfterMs: number;
+    stale: boolean;
+  } | null;
   lastSample: {
     swapUsedPercent: number | null;
     memAvailableMb: number | null;
