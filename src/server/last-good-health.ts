@@ -219,6 +219,34 @@ export interface LastGoodHealthWriterOptions {
   sizeCapBytes?: number;
 }
 
+/** Process-local persistence outcomes; throttled calls do not count as attempts. */
+export interface LastGoodHealthWriterStatus {
+  /** ISO timestamps, null until an attempt or successful write respectively. */
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  /** Failures since this writer was created; retained after recovery. */
+  totalFailures: number;
+  consecutiveFailures: number;
+  /** Allowlisted code only, never an error message or path. Cleared on success. */
+  lastErrorCode: 'ENOSPC' | 'EACCES' | 'EPERM' | 'EROFS' | 'EIO' | 'unknown' | null;
+}
+
+function persistenceErrorCode(error: unknown): LastGoodHealthWriterStatus['lastErrorCode'] {
+  // Even inspecting an arbitrary thrown object's code must remain best-effort.
+  try {
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    switch (code) {
+      case 'ENOSPC':
+      case 'EACCES':
+      case 'EPERM':
+      case 'EROFS':
+      case 'EIO':
+        return code;
+    }
+  } catch { /* Unreadable error metadata is classified as unknown. */ }
+  return 'unknown';
+}
+
 export class LastGoodHealthWriter {
   private readonly filePath: string;
   private readonly now: () => number;
@@ -226,12 +254,24 @@ export class LastGoodHealthWriter {
   private readonly sizeCapBytes: number;
   private lastWriteMs = Number.NEGATIVE_INFINITY;
   private lastSignature: string | undefined;
+  private readonly status: LastGoodHealthWriterStatus = {
+    lastAttemptAt: null,
+    lastSuccessAt: null,
+    totalFailures: 0,
+    consecutiveFailures: 0,
+    lastErrorCode: null,
+  };
 
   constructor(opts: LastGoodHealthWriterOptions) {
     this.filePath = lastGoodHealthPath(opts.kookrDir);
     this.now = opts.now ?? Date.now;
     this.minWriteIntervalMs = opts.minWriteIntervalMs ?? LAST_GOOD_HEALTH_MIN_WRITE_INTERVAL_MS;
     this.sizeCapBytes = opts.sizeCapBytes ?? LAST_GOOD_HEALTH_SIZE_CAP_BYTES;
+  }
+
+  /** Read cached outcomes without filesystem access or sharing mutable state. */
+  getStatus(): LastGoodHealthWriterStatus {
+    return { ...this.status };
   }
 
   /**
@@ -247,6 +287,7 @@ export class LastGoodHealthWriter {
       if (!edge && nowMs - this.lastWriteMs < this.minWriteIntervalMs) return;
 
       const capturedAt = new Date(nowMs).toISOString();
+      this.status.lastAttemptAt = capturedAt;
       const redacted = redactSecretFields(health) as Record<string, unknown>;
       let snapshot: LastGoodHealthSnapshot = {
         schemaVersion: LAST_GOOD_HEALTH_SCHEMA_VERSION,
@@ -275,8 +316,14 @@ export class LastGoodHealthWriter {
       this.writeAtomic(text);
       this.lastWriteMs = nowMs;
       this.lastSignature = signature;
-    } catch {
+      this.status.lastSuccessAt = capturedAt;
+      this.status.consecutiveFailures = 0;
+      this.status.lastErrorCode = null;
+    } catch (error) {
       // Never let a persistence failure touch the /api/health hot path.
+      this.status.totalFailures++;
+      this.status.consecutiveFailures++;
+      this.status.lastErrorCode = persistenceErrorCode(error);
     }
   }
 

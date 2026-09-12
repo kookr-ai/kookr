@@ -1243,7 +1243,15 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     };
   }
 
-  app.get('/api/health', async (c) => c.json(await getCachedHealthBody()));
+  app.get('/api/health', async (c) => {
+    const body = await getCachedHealthBody();
+    return c.json({
+      ...body,
+      // Stamp current persistence outcomes after assembly so telemetry never
+      // enters the mirror or its gauge signature, including on cached responses.
+      ...(lastGoodHealthWriter ? { lastGoodHealthWriter: lastGoodHealthWriter.getStatus() } : {}),
+    });
+  });
 
   // Machine-readable readiness verdict for orchestrators / load balancers
   // (issue #660, extended by #1721 / #1707 / #1870 / #2427). Unlike /api/health —

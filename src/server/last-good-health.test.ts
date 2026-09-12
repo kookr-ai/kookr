@@ -1,4 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,20 @@ import {
   redactSecretFields,
   type LastGoodHealthSnapshot,
 } from './last-good-health.js';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+    renameSync: vi.fn(actual.renameSync),
+    readFileSync: vi.fn(actual.readFileSync),
+    statSync: vi.fn(actual.statSync),
+    mkdirSync: vi.fn(actual.mkdirSync),
+    chmodSync: vi.fn(actual.chmodSync),
+    unlinkSync: vi.fn(actual.unlinkSync),
+  };
+});
 
 function baseHealth(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -35,7 +50,112 @@ describe('LastGoodHealthWriter', () => {
     dir = mkdtempSync(join(tmpdir(), 'last-good-health-'));
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('status is a detached in-memory snapshot, including before the first write', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 0 });
+    const initial = writer.getStatus();
+    expect(initial).toEqual({
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      totalFailures: 0,
+      consecutiveFailures: 0,
+      lastErrorCode: null,
+    });
+    writer.record(baseHealth());
+    vi.clearAllMocks();
+    const status = writer.getStatus();
+    expect(status.lastSuccessAt).toBe(new Date(0).toISOString());
+    status.totalFailures = 99;
+    expect(writer.getStatus().totalFailures).toBe(0);
+    expect(initial.lastSuccessAt).toBeNull();
+    for (const operation of [fs.writeFileSync, fs.renameSync, fs.readFileSync, fs.statSync,
+      fs.mkdirSync, fs.chmodSync, fs.unlinkSync]) {
+      expect(operation).not.toHaveBeenCalled();
+    }
+  });
+
+  test.each(['ENOSPC', 'EACCES'])('reports %s failures and recovery without changing retries', (code) => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth());
+    const goodBytes = readFileSync(lastGoodHealthPath(dir), 'utf8');
+    const fault = Object.assign(new Error(`write failed at ${dir}: private payload`), { code });
+    for (const attempt of [5_000, 5_001]) {
+      t = attempt;
+      vi.mocked(fs.writeFileSync).mockImplementationOnce(() => { throw fault; });
+      expect(() => writer.record(baseHealth())).not.toThrow();
+      expect(readFileSync(lastGoodHealthPath(dir), 'utf8')).toBe(goodBytes);
+    }
+    expect(writer.getStatus()).toEqual({
+      lastAttemptAt: new Date(5_001).toISOString(),
+      lastSuccessAt: new Date(0).toISOString(),
+      totalFailures: 2,
+      consecutiveFailures: 2,
+      lastErrorCode: code,
+    });
+    expect(JSON.stringify(writer.getStatus())).not.toContain(dir);
+    expect(JSON.stringify(writer.getStatus())).not.toContain('private payload');
+    t = 5_002;
+    writer.record(baseHealth());
+    const recovered = writer.getStatus();
+    expect(recovered).toEqual({
+      lastAttemptAt: new Date(t).toISOString(),
+      lastSuccessAt: new Date(t).toISOString(),
+      totalFailures: 2,
+      consecutiveFailures: 0,
+      lastErrorCode: null,
+    });
+    expect(readFile(dir).capturedAt).toBe(recovered.lastSuccessAt);
+    t++;
+    writer.record(baseHealth());
+    expect(writer.getStatus()).toEqual(recovered); // A throttled call is not an attempt.
+    expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(LAST_GOOD_HEALTH_FILE_MODE);
+  });
+
+  test('failed gauge-edge writes still retry inside the throttle window', () => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    writer.record(baseHealth());
+    const goodBytes = readFileSync(lastGoodHealthPath(dir), 'utf8');
+    t = 1;
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('rename denied'), { code: 'EACCES' });
+    });
+    writer.record(baseHealth({ agents: 4 }));
+    expect(readFileSync(lastGoodHealthPath(dir), 'utf8')).toBe(goodBytes);
+    expect(writer.getStatus().consecutiveFailures).toBe(1);
+    t = 2;
+    writer.record(baseHealth({ agents: 4 }));
+    expect(readFile(dir).health.agents).toBe(4);
+    expect(writer.getStatus().lastSuccessAt).toBe(new Date(2).toISOString());
+    expect(writer.getStatus().consecutiveFailures).toBe(0);
+  });
+
+  test.each([
+    { code: 'EROFS', expected: 'EROFS' },
+    { code: 'EPERM', expected: 'EPERM' },
+    { code: 'EIO', expected: 'EIO' },
+    { code: 'private payload'.repeat(10_000), expected: 'unknown' },
+    { code: undefined, expected: 'unknown' },
+  ])('allowlists error codes ($expected)', ({ code, expected }) => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 0 });
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => { throw { code }; });
+    expect(() => writer.record(baseHealth())).not.toThrow();
+    expect(writer.getStatus().lastErrorCode).toBe(expected);
+    expect(writer.getStatus().lastSuccessAt).toBeNull();
+    expect(JSON.stringify(writer.getStatus()).length).toBeLessThan(250);
+  });
+
+  test('error inspection cannot break the never-throws contract', () => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 0 });
+    vi.mocked(fs.writeFileSync).mockImplementationOnce(() => {
+      throw { get code() { throw new Error('unreadable code'); } };
+    });
+    expect(() => writer.record(baseHealth())).not.toThrow();
+    expect(writer.getStatus().lastErrorCode).toBe('unknown');
   });
 
   test('writes a schema-tagged, redacted snapshot after a successful assembly', () => {
