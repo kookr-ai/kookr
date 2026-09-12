@@ -279,20 +279,20 @@ describe('renderPrometheusExposition', () => {
         writable: false,
         appendFailureCount: 7,
       }, {
-        sink: 'healthy_sink',
+        sink: 'resource_watchdog',
         writable: true,
-        appendFailureCount: 0,
+        appendFailureCount: 2,
       }],
     });
 
     expect(output).toContain('# HELP kookr_audit_sink_writable Current audit sink write health. 1 means writable, 0 means the last append failed.');
     expect(output).toContain('# TYPE kookr_audit_sink_writable gauge');
     expect(output).toContain('kookr_audit_sink_writable{sink="private_network_collaboration"} 0');
-    expect(output).toContain('kookr_audit_sink_writable{sink="healthy_sink"} 1');
+    expect(output).toContain('kookr_audit_sink_writable{sink="resource_watchdog"} 1');
     expect(output).toContain('# HELP kookr_audit_append_failures_total Total failed audit append attempts by sink.');
     expect(output).toContain('# TYPE kookr_audit_append_failures_total counter');
     expect(output).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 7');
-    expect(output).toContain('kookr_audit_append_failures_total{sink="healthy_sink"} 0');
+    expect(output).toContain('kookr_audit_append_failures_total{sink="resource_watchdog"} 2');
     expect(output).not.toContain('lastFailure');
   });
 

@@ -1,4 +1,7 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+import * as fs from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
 import { CircuitBreaker, CircuitBreakerRegistry } from '../../core/circuit-breaker.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
@@ -17,6 +20,11 @@ import { LessonYieldHealthCache } from '../lesson-yield-health-cache.js';
 import { LESSON_YIELD_SCHEMA_VERSION } from '../../core/lesson-decision.js';
 import { HealthBodyCacheStats } from '../health-body-cache-stats.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
+import { buildAuditRecord, JsonlResourceWatchdogAuditSink } from '../../core/resource-watchdog-audit.js';
+
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs/promises')>(),
+}));
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
@@ -142,6 +150,47 @@ describe('metrics routes', () => {
     const body = await res.text();
     expect(body).toContain('kookr_audit_sink_writable{sink="private_network_collaboration"} 0');
     expect(body).toContain('kookr_audit_append_failures_total{sink="private_network_collaboration"} 2');
+  });
+
+  test('scrapes watchdog append failure and recovery without filesystem work or private data', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'rw-metrics-'));
+    const path = join(dir, 'private-audit.jsonl');
+    const record = buildAuditRecord({
+      action: 'spawn_failed', timestamp: '2026-07-31T12:00:00.000Z',
+      taskId: 'private-task-id', error: 'private command and transcript',
+    });
+    const sink = new JsonlResourceWatchdogAuditSink(path);
+    const app = mkApp({ auditSinks: { getAllSnapshots: () => [{ sink: 'resource_watchdog', ...sink.status() }] } });
+    const io = [
+      vi.spyOn(fs, 'appendFile').mockRejectedValueOnce(new Error(`raw append error: ${path}`)),
+      vi.spyOn(fs, 'mkdir'), vi.spyOn(fs, 'stat'), vi.spyOn(fs, 'rename'),
+      vi.spyOn(fs, 'unlink'), vi.spyOn(fs, 'chmod'), vi.spyOn(fs, 'readFile'),
+    ];
+    try {
+      expect(sink.append(record)).toBeUndefined();
+      await vi.waitFor(() => expect(sink.status()).toEqual({ writable: false, appendFailureCount: 1 }));
+      for (const writable of [false, true]) {
+        if (writable) {
+          sink.append(record);
+          await vi.waitFor(() => expect(sink.status()).toEqual({ writable: true, appendFailureCount: 1 }));
+        }
+        for (const spy of io) spy.mockClear();
+        for (let scrape = 0; scrape < 2; scrape++) {
+          const res = await app.request('/metrics');
+          expect(res.status).toBe(200);
+          const body = await res.text();
+          expect(body).toContain(`kookr_audit_sink_writable{sink="resource_watchdog"} ${writable ? 1 : 0}`);
+          expect(body).toContain('kookr_audit_append_failures_total{sink="resource_watchdog"} 1');
+          for (const privateValue of [path, record.taskId!, record.error!, 'raw append error', record.timestamp]) {
+            expect(body).not.toContain(privateValue);
+          }
+        }
+        for (const spy of io) expect(spy).not.toHaveBeenCalled();
+      }
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 
   test('serves live webhook delivery outcome counters', async () => {

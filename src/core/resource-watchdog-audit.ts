@@ -34,6 +34,8 @@ export class JsonlResourceWatchdogAuditSink implements ResourceWatchdogAuditSink
   private readonly maxBytes: number;
   private readonly rotatedGenerations: number;
   private appendQueue: Promise<void> = Promise.resolve();
+  private writable = true;
+  private appendFailureCount = 0;
 
   constructor(
     private readonly logFilePath: string,
@@ -44,6 +46,11 @@ export class JsonlResourceWatchdogAuditSink implements ResourceWatchdogAuditSink
       options.rotatedGenerations ?? DEFAULT_RESOURCE_WATCHDOG_AUDIT_ROTATED_GENERATIONS;
   }
 
+  /** Cached health of the last completed append; writable until a failure is observed. */
+  status(): { writable: boolean; appendFailureCount: number } {
+    return { writable: this.writable, appendFailureCount: this.appendFailureCount };
+  }
+
   append(record: ResourceWatchdogAuditRecord): void {
     const line = `${JSON.stringify(record)}\n`;
     this.appendQueue = this.appendQueue
@@ -52,7 +59,12 @@ export class JsonlResourceWatchdogAuditSink implements ResourceWatchdogAuditSink
         maxBytes: this.maxBytes,
         rotatedGenerations: this.rotatedGenerations,
       }))
-      .catch(() => { /* audit path; never affect supervision */ });
+      .then(() => { this.writable = true; })
+      .catch(() => {
+        // Keep failures observable without rejecting into supervision or retaining private errors.
+        this.writable = false;
+        this.appendFailureCount = Math.min(Number.MAX_SAFE_INTEGER, this.appendFailureCount + 1);
+      });
   }
 }
 
