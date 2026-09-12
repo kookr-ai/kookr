@@ -9,7 +9,7 @@ keywords: >
   monitor, watch loop, watchdog, janitor, poll, hourly check, periodic check,
   heartbeat, background monitor, sweep tasks, close completed tasks, babysit,
   keep an eye on, status report, long-running task, Monitor tool
-related: self-continuation-task, token-efficiency
+related: self-continuation-task, token-efficiency, automation-design
 ---
 
 # Autonomous Watch Loop
@@ -18,6 +18,10 @@ Use this when a task is phrased as *"monitor X all day"*, *"check Y every
 hour"*, or *"keep watching Z and handle it"*. The runtime is cheap; the
 operator's attention is not. A watch loop that reports every cycle converts a
 12-hour autonomous run into 12 interruptions.
+
+When designing or repairing the watcher, use [[automation-design]]. After a
+problem or new recovery attempt, follow its learning step to record the outcome
+and refine the shared skill; keep pending experiments owned until verified.
 
 The discipline is three rules:
 
@@ -95,13 +99,20 @@ not a steady state — it is a backlog. Promote it to rung 2 and work it. Never
 report the same unresolved anomaly twice in identical words; either you learned
 something new about it or you should have.
 
-When you do reach rung 5, escalate with a **proposal and a default**, not a
-question:
+For an authorized action, report what you verified and did:
 
-> 9 tasks are parked at `completed_turn` with empty final messages. I read three
-> transcripts: all finished their unit and stopped without signalling — a bug in
-> the chain's exit path, not real work in flight. I filed #1441. **I plan to
-> close all 9 at the next check unless you say otherwise.**
+> Nine tasks appear finished but have not released their slots. I verified the
+> final output and idle state of three. Those three meet the authorized cleanup
+> rule, so I closed them and verified their terminal state. I will inspect the
+> remaining six before acting. No operator input is needed for that cleanup.
+
+At rung 5, state the missing input, your recommendation, and which action remains
+pending. Request required permission explicitly; silence never supplies it.
+Continue other eligible work. For example:
+
+> The compatibility check passed. Production activation remains pending because
+> deployment approval is missing. I recommend activating the tested revision;
+> please approve that deployment. I will continue the authorized packaging work.
 
 Not:
 
@@ -116,8 +127,8 @@ what's done?". Every report carries these four, and nothing decorative:
   evidence you acted on.
 - **Outstanding** — each item, *why* it is still open, and how long it has been
   that way. A count is not a ledger; `inProgress=12` tells the operator nothing.
-- **Blocked on you** — the specific decision needed, your recommendation, and
-  what you will do by default if they stay silent. Empty most of the time.
+- **Blocked on you** — the specific missing input and recommendation, with the
+  dependent action left pending. Empty most of the time.
 - **Next check** — when, and what would make you speak sooner.
 
 Ages and reasons are the load-bearing parts. "Parked 6h, waiting on a review
@@ -129,10 +140,11 @@ Autonomy is bounded by reversibility, not by confidence.
 
 - Prefer the **non-destructive** operation. Mark something terminal rather than
   deleting it; preserve history.
-- Read the target's own final output before acting on it. A predicate says
-  *maybe*; the transcript says *yes*.
-- Never act on an item that has not declared itself finished **and** whose
-  output you have not read.
+- Inspect the target's current transcript or artifacts before a live correction.
+  A matching predicate is a lead to investigate, not proof that an action is safe.
+- Before closing a task, verify its completion evidence, read its final output,
+  and confirm that no running writer will be interrupted. Correcting a live
+  owner follows that owner's existing authority and checkpoint contract.
 - State your close/act predicate explicitly in your first report, so the
   operator can correct the bar early instead of after a day of sweeps.
 

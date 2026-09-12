@@ -2,7 +2,7 @@
 name: self-reflect
 description: Reflect on a mistake or unnecessary user correction — root-cause why it happened, then propose and implement structural fixes (skills, hooks, CLAUDE.md, memory, scripts). Use after the user corrects behavior, repeats guidance, or points out an avoidable error.
 keywords: reflect, mistake, feedback, correction, self-improve, root-cause, meta, why, should have, remember, told you, wrong approach, improve
-related: placement-picker, token-efficiency, testing-patterns, pre-pr-review
+related: placement-picker, token-efficiency, testing-patterns, pre-pr-review, automation-design
 ---
 
 # Self-Reflection Workflow
@@ -13,6 +13,11 @@ related: placement-picker, token-efficiency, testing-patterns, pre-pr-review
 - The user provides guidance that they shouldn't need to provide (it was already documented, previously corrected, or obvious from context)
 - You realize mid-task that you took a wrong approach and wasted effort
 - You can also trigger this proactively when you catch yourself about to repeat a past mistake
+
+For automation failures, repeated supervision, or a new recovery approach, load
+[[automation-design]] and apply its learning step. Update the shared design
+guidance and evidence limits alongside the local correction; preserve private
+incident detail in the originating project and respect plugin contribution scope.
 
 ## Core Principle
 

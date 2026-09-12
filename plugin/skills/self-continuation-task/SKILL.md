@@ -10,13 +10,17 @@ keywords: >
   self continuation, continuation task, sequential task chain, spawn next task,
   issue batch, queue drain, Ralph-like, Kookr task chain, parent task, child task,
   baton pass, autonomous sequence, one issue at a time
-related: github-issue-workflow, pr-review-triage
+related: github-issue-workflow, pr-review-triage, automation-design
 ---
 
 # Self-Continuation Task
 
 Use this skill when a workflow should process many independent units
 sequentially by having task N spawn task N+1 at the end of its run.
+
+Use [[automation-design]] when designing or changing the chain's progress and
+recovery decisions. Include its learning step in correction closeout: record each
+problem/new attempt and feed verified outcomes back into the shared skill.
 
 The reliable pattern is:
 

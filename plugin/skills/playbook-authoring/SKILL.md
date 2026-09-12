@@ -2,12 +2,17 @@
 name: playbook-authoring
 description: Create or revise Kookr playbooks and scheduled orchestration, including parameters, project identity, idempotency, model policy, and launch integration
 keywords: playbook, playbooks, write playbook, author playbook, orchestration, schedule, scheduled task, recurring task, task template, kookr, launch, model tier, small model, tracked-projects, project, source
-related: self-continuation-task
+related: self-continuation-task, automation-design
 ---
 
 # Kookr Playbooks
 
 A **playbook** is a reusable task template stored as a Markdown file in `.kookr/playbooks/`. It defines a repeatable agent task that users can launch from the Kookr dashboard UI with one click (optionally filling in parameters).
+
+For recurring or autonomous workflows, use [[automation-design]] to define the
+outcome, evidence, recovery action, and follow-up before packaging the playbook.
+Include its learning step in incident/correction closeout so failed approaches
+and verified improvements refine the shared guidance across projects.
 
 ## What a playbook IS
 
