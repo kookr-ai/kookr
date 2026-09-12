@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { API, Snapshot } from 'typescript/unstable/sync';
 
-import { checkImportCycles, findCycles, runtimeSpecifiers } from './check-import-cycles';
+import { checkImportCycles, findCycles } from './check-import-cycles';
 
 const repoRoot = process.cwd();
 
@@ -165,35 +166,132 @@ describe('import cycle gate', () => {
     expect(findCycles(graph)).toEqual([['/x/self.ts']]);
   });
 
-  it('extracts static load-time specifiers only', () => {
-    const specs = runtimeSpecifiers(
-      [
-        "import type { A } from './type-only.js';",
-        "export type { B } from './type-reexport.js';",
-        "import { C } from './runtime.js';",
-        "import './side-effect.js';",
-        "export { D } from './runtime-reexport.js';",
-        "const lazy = () => import('./dynamic.js');",
-        "const dep = require('./required.js');",
-        "type Q = import('./type-position.js').Q;",
-        "// import { Z } from './commented.js';",
-      ].join('\n'),
+  it('detects a self-import through the public checker', async () => {
+    await withFixture({ 'src/self.ts': "import './self.js';" }, async (root) => {
+      const result = await checkImportCycles(root);
+      expect(result.edgeCount).toBe(1);
+      expect(result.cycles).toEqual([{ files: ['src/self.ts', 'src/self.ts'] }]);
+    });
+  });
+
+  it.each([
+    "// import './b.js';",
+    "/*\nimport './b.js';\nexport * from './b.js';\n*/",
+    "const example = `\nimport './b.js';\nexport * from './b.js';\n`;",
+    "const example = `prefix ${1}\nimport './b.js';\n${`nested`}\nexport * from './b.js';\n`;",
+    "const example = \"import './b.js';\";",
+  ])('ignores import-looking text: %s', async (source) => {
+    await withFixture({ 'src/a.ts': source, 'src/b.ts': '' }, async (root) => {
+      const result = await checkImportCycles(root);
+      expect(result.fileCount).toBe(2);
+      expect(result.edgeCount).toBe(0);
+      expect(result.cycles).toEqual([]);
+    });
+  });
+
+  it.each([
+    "import { B } from './b.js';",
+    "import B from './b.js';",
+    "import * as B from './b.js';",
+    "import './b.js';",
+    "export { B } from './b.js';",
+    "export * from './b.js';",
+    "export * as B from './b.js';",
+    "import { B, type BT } from './b.js';",
+    "import { type B } from './b.js';",
+    "export { type B } from './b.js';",
+    "import {} from './b.js';",
+    "export {} from './b.js';",
+    "const x = 1; import{B}from'./b.js'; export{B}from'./b.js';",
+    "import /* explanation */ { B } from './b.js';",
+    "import type from './b.js';",
+  ])('retains static declarations and deduplicates edges: %s', async (source) => {
+    await withFixture(
+      { 'src/a.ts': source, 'src/b.ts': "import './a.js';" },
+      async (root) => {
+        const result = await checkImportCycles(root);
+        expect(result.edgeCount).toBe(2);
+        expect(result.cycles).toHaveLength(1);
+      },
     );
-    // Static imports, side-effect imports, and static re-exports are edges.
-    expect(specs).toEqual(
-      expect.arrayContaining(['./runtime.js', './side-effect.js', './runtime-reexport.js']),
+  });
+
+  it.each([
+    "import type { B } from './b.js';",
+    "import\ntype { B } from './b.js';",
+    "import type {\n B,\n} from './b.js';",
+    "export type { B } from './b.js';",
+    "export\ntype { B } from './b.js';",
+    "export type * from './b.js';",
+    "export type * as B from './b.js';",
+    "const lazy = () => import('./b.js');",
+    "const dep = require('./b.js');",
+    "type Q = import('./b.js').Q;",
+    "import defer * as B from './b.js';",
+    "import { B } from 'bare-package';",
+  ])('excludes type-only, deferred and package imports: %s', async (source) => {
+    await withFixture({ 'src/a.ts': source, 'src/b.ts': '' }, async (root) => {
+      expect((await checkImportCycles(root)).edgeCount).toBe(0);
+    });
+  });
+
+  it('parses TSX under an isolated custom source root', async () => {
+    await withFixture(
+      {
+        'app/a.tsx': "import './b.jsx'; export const A = () => <pre>\nimport './a.jsx';\n</pre>;",
+        'app/b.tsx': "export { A } from './a.jsx';",
+      },
+      async (root) => {
+        const result = await checkImportCycles(root, ['app']);
+        expect(result.fileCount).toBe(2);
+        expect(result.edgeCount).toBe(2);
+        expect(new Set(result.cycles[0].files)).toEqual(new Set(['app/a.tsx', 'app/b.tsx']));
+      },
     );
-    // Type-only, deferred (dynamic/require), type-position, and commented forms
-    // are not load-time edges.
-    for (const excluded of [
-      './type-only.js',
-      './type-reexport.js',
-      './dynamic.js',
-      './required.js',
-      './type-position.js',
-      './commented.js',
-    ]) {
-      expect(specs).not.toContain(excluded);
-    }
+  });
+});
+
+// Exercise the real parser session while observing its resource boundary.
+// Failures must reject the gate and still release the child process.
+describe('parser lifecycle', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('opens one batch and disposes it after extracting all files', async () => {
+    const update = vi.spyOn(API.prototype, 'updateSnapshot');
+    const dispose = vi.spyOn(Snapshot.prototype, 'dispose');
+    const close = vi.spyOn(API.prototype, 'close');
+    await withFixture(
+      { 'src/a.ts': "import './b.js';", 'src/b.ts': '' },
+      async (root) => {
+        expect((await checkImportCycles(root)).edgeCount).toBe(1);
+        expect(update).toHaveBeenCalledExactlyOnceWith({
+          openFiles: [join(root, 'src/a.ts'), join(root, 'src/b.ts')],
+        });
+        expect(dispose).toHaveBeenCalledTimes(1);
+        expect(close).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
+  it('closes the parser when snapshot creation fails', async () => {
+    vi.spyOn(API.prototype, 'updateSnapshot').mockImplementation(() => {
+      throw new Error('snapshot failed');
+    });
+    const close = vi.spyOn(API.prototype, 'close');
+    await withFixture({ 'src/a.ts': '' }, async (root) => {
+      await expect(checkImportCycles(root)).rejects.toThrow('snapshot failed');
+      expect(close).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('rejects missing source ASTs and releases the snapshot and parser', async () => {
+    vi.spyOn(Snapshot.prototype, 'getDefaultProjectForFile').mockReturnValue(undefined);
+    const dispose = vi.spyOn(Snapshot.prototype, 'dispose');
+    const close = vi.spyOn(API.prototype, 'close');
+    await withFixture({ 'src/a.ts': '' }, async (root) => {
+      await expect(checkImportCycles(root)).rejects.toThrow(/AST.*a\.ts/);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+    });
   });
 });
