@@ -161,6 +161,8 @@ export interface LaunchServiceDeps {
    * the monitor: the rotation then applies no deprioritization.
    */
   getDeprioritizedAgentTypes?: (available: readonly AgentType[]) => readonly AgentType[];
+  /** Observe boot health once when a resolved launch is queued or starts an adapter (#3159). */
+  recordLaunchBootHealth?: (available: readonly AgentType[]) => void;
   /**
    * Grok session/OIDC usability for launch-time agent selection (issue #2194).
    * When `false`, round-robin and plan-quota rotation exclude `grok-build` so
@@ -1943,6 +1945,14 @@ async function launchTaskCore(
     }
   }
 
+  const recordResolvedLaunchBootHealth = (): void => {
+    try {
+      deps.recordLaunchBootHealth?.(launchableTypes);
+    } catch {
+      // Telemetry must not prevent a launch or change its provider choice.
+    }
+  };
+
   if (dependencyAdmissionDecision && !dependencyAdmissionDecision.admit) {
     const denialReservationToken = taskStore.beginLaunchPersistenceWithToken(task.id);
     if (!denialReservationToken) {
@@ -1983,6 +1993,7 @@ async function launchTaskCore(
       throw new Error(`Task ${task.id} changed state while its dependency denial was persisted`);
     }
     if (replacedByAnotherOwner) {
+      recordResolvedLaunchBootHealth();
       return {
         task: current,
         queued: current.status === 'pending',
@@ -1992,6 +2003,7 @@ async function launchTaskCore(
         ...(current.launchAdmission ? { dependencyAdmission: current.launchAdmission } : {}),
       };
     }
+    recordResolvedLaunchBootHealth();
     if (isRoundRobin) deps.roundRobinCursor?.advance();
     return {
       task: current,
@@ -2058,6 +2070,7 @@ async function launchTaskCore(
       }
       queuedTask = current;
       if (replacedByAnotherOwner) {
+        recordResolvedLaunchBootHealth();
         return {
           task: current,
           queued: current.status === 'pending',
@@ -2084,6 +2097,7 @@ async function launchTaskCore(
     }
     // The task record is committed (queued for promotion), so the round-robin
     // launch consumed its slot — advance the rotation.
+    recordResolvedLaunchBootHealth();
     if (isRoundRobin) deps.roundRobinCursor?.advance();
     return {
       task: queuedTask,
@@ -2295,6 +2309,7 @@ async function launchTaskCore(
         await deps.flushTasks();
         taskStore.endLaunch(task.id, launchReservationToken);
         const parked = taskStore.getTask(task.id)!;
+        recordResolvedLaunchBootHealth();
         return {
           task: parked,
           queued: true,
@@ -2312,6 +2327,7 @@ async function launchTaskCore(
     // for hours. Late settlement of the abandoned promise is defused inside
     // the race helper.
     adapterLaunchStarted = true;
+    recordResolvedLaunchBootHealth();
     await raceLaunchAgainstTimeout(
       adapter.launch(task.id, promptWithLaunchNote(task), opts.cwd, undefined, adapterOpts),
       resolveLaunchTimeoutMs(deps),

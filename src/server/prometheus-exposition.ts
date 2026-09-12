@@ -176,6 +176,8 @@ export interface PrometheusExpositionSnapshot {
    * the reaper is not wired.
    */
   firstHookMiss?: { firstHookMissTotal: number };
+  /** Resolved launches with no boot-healthy candidate since process start (#3159). */
+  agentBootLatency?: { allLaunchableDeprioritizedTotal: number };
   /**
    * Watchdog sweep fairness counters (issue #2770). Probe-timeout counters plus
    * last-sweep gauges (checked/skipped/duration, oldest-check age). Omitted when
@@ -221,6 +223,13 @@ export function renderPrometheusExposition(snapshot: PrometheusExpositionSnapsho
   appendHungSuspectReclaimMetrics(lines, snapshot.hungSuspectReclaim);
   appendProviderPausedOccupancyMetrics(lines, snapshot.providerPausedOccupancy);
   appendFirstHookMissMetrics(lines, snapshot.firstHookMiss);
+  if (snapshot.agentBootLatency) {
+    lines.push(
+      '# HELP kookr_agent_boot_latency_all_launchable_deprioritized_total Total resolved launches queued or started with every launchable agent boot-deprioritized since process start.',
+      '# TYPE kookr_agent_boot_latency_all_launchable_deprioritized_total counter',
+      metricLine('kookr_agent_boot_latency_all_launchable_deprioritized_total', {}, snapshot.agentBootLatency.allLaunchableDeprioritizedTotal),
+    );
+  }
   appendWatchdogSweepMetrics(lines, snapshot.watchdogSweep);
   appendGitHubStateFetchMetrics(lines, snapshot.githubStateFetchFailures);
 

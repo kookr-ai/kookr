@@ -1053,6 +1053,8 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(providerPausedOccupancyBlock
         ? { providerPausedOccupancy: providerPausedOccupancyBlock }
         : {}),
+      // Resolved launches with no boot-healthy choice; health polling is observational (#3159).
+      ...(deps.agentBootLatency ? { agentBootLatency: deps.agentBootLatency.getHealthSnapshot() } : {}),
       // Issue #2036: post-spawn first-hook miss counter (cheap in-memory read).
       ...(deps.firstHookMissMetrics
         ? { firstHookMissTotal: deps.firstHookMissMetrics.getSnapshot().firstHookMissTotal }

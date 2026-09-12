@@ -1779,6 +1779,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getDefaultAgentType,
     roundRobinCursor,
     getDeprioritizedAgentTypes: (available) => agentBootLatency.deprioritizedTypes(available),
+    recordLaunchBootHealth: (available) => agentBootLatency.recordLaunchResolution(available),
     // Issue #2194: decouple Grok session freshness from non-Grok launch selection.
     isGrokAuthUsable: () => grokAuthAvailability.isUsable(),
     refreshGrokAuthAvailability: async () => {

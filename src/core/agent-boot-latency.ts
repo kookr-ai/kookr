@@ -160,6 +160,7 @@ export class AgentBootLatencyMonitor {
   private readonly staleMs: number;
   private readonly now: () => number;
   private readonly samplesByAgent = new Map<AgentType, AgentBootLatencySample[]>();
+  private allLaunchableDeprioritizedTotal = 0;
 
   constructor(config: AgentBootLatencyConfig = {}) {
     this.slowBootMsOverride = config.slowBootMs;
@@ -209,6 +210,22 @@ export class AgentBootLatencyMonitor {
    */
   deprioritizedTypes(candidates: readonly AgentType[]): AgentType[] {
     return candidates.filter((type) => this.isUnhealthy(type));
+  }
+
+  /**
+   * Count resolved launches with no boot-healthy choice, once when accepted
+   * into the queue or handed to an adapter. Rejected and duplicate requests
+   * are excluded. Selection is unchanged; its fix is tracked in #3085.
+   */
+  recordLaunchResolution(launchableTypes: readonly AgentType[]): void {
+    if (launchableTypes.length > 0 && launchableTypes.every((type) => this.isUnhealthy(type))) {
+      this.allLaunchableDeprioritizedTotal += 1;
+    }
+  }
+
+  /** Process-lifetime counter for health polls and metrics; reads never record attempts. */
+  getHealthSnapshot(): { allLaunchableDeprioritizedTotal: number } {
+    return { allLaunchableDeprioritizedTotal: this.allLaunchableDeprioritizedTotal };
   }
 
   /** Diagnostic snapshot for every agent type with retained samples. */

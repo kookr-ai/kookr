@@ -28,6 +28,21 @@ function makeAnomaly(agentId: string): Anomaly {
 }
 
 describe('renderPrometheusExposition', () => {
+  test('renders the aggregate boot-health signal as an unlabeled process counter', () => {
+    const metric = 'kookr_agent_boot_latency_all_launchable_deprioritized_total';
+    for (const total of [0, 3]) {
+      const body = renderPrometheusExposition({
+        requestDurations: EMPTY_REQUEST_DURATIONS,
+        circuitBreakers: [],
+        agentBootLatency: { allLaunchableDeprioritizedTotal: total },
+      });
+      expect(body).toContain(`# HELP ${metric} Total resolved launches queued or started with every launchable agent boot-deprioritized since process start.\n`);
+      expect(body).toContain(`# TYPE ${metric} counter\n`);
+      expect(body.split('\n').filter((line) => line.startsWith(metric))).toEqual([`${metric} ${total}`]);
+    }
+    expect(renderPrometheusExposition({ requestDurations: EMPTY_REQUEST_DURATIONS, circuitBreakers: [] })).not.toContain(metric);
+  });
+
   test('renders request durations and circuit breakers in Prometheus text format', () => {
     const requestDurations: RequestDurationMetricsSnapshot = {
       schemaVersion: 'request-duration-metrics.v1',

@@ -191,3 +191,38 @@ describe('AgentBootLatencyMonitor', () => {
     ]);
   });
 });
+
+
+describe('AgentBootLatencyMonitor launch health', () => {
+  it('counts attempts only when the nonempty launchable set is entirely unhealthy', () => {
+    const m = monitor({ minSlowSamples: 1 });
+    expect(m.getHealthSnapshot()).toEqual({ allLaunchableDeprioritizedTotal: 0 });
+    m.recordLaunchResolution([]);
+    m.recordLaunchResolution(ALL_AGENTS);
+    m.record('grok-build', hungBoot());
+    m.recordLaunchResolution(ALL_AGENTS);
+    expect(m.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(0);
+
+    m.recordLaunchResolution(['grok-build']);
+    m.record('claude-code', hungBoot());
+    m.record('codex-cli', hungBoot());
+    m.recordLaunchResolution(ALL_AGENTS);
+    expect(m.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(2);
+  });
+
+  it('keeps reads observational and retains the counter after samples expire', () => {
+    let now = 1_000;
+    const m = monitor({ minSlowSamples: 1, staleMs: 100, now: () => now });
+    for (const type of ALL_AGENTS) m.record(type, hungBoot());
+    m.recordLaunchResolution(ALL_AGENTS);
+    const first = m.getHealthSnapshot();
+    for (let i = 0; i < 3; i += 1) {
+      m.deprioritizedTypes(ALL_AGENTS);
+      m.snapshot();
+      expect(m.getHealthSnapshot()).toEqual(first);
+    }
+    now += 101;
+    m.recordLaunchResolution(ALL_AGENTS);
+    expect(m.getHealthSnapshot()).toEqual({ allLaunchableDeprioritizedTotal: 1 });
+  });
+});

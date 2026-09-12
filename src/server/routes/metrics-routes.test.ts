@@ -35,6 +35,26 @@ function makeAnomaly(agentId: string): Anomaly {
 }
 
 describe('metrics routes', () => {
+  test('scrapes the boot-deprioritized launch counter without recording attempts', async () => {
+    const { AgentBootLatencyMonitor } = await import('../../core/agent-boot-latency.js');
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1 });
+    monitor.record('codex-cli', {
+      phases: [{ phase: 'agent-boot', durationMs: 90_000, completed: false }],
+      totalMs: 90_000,
+    });
+    const app = mkApp({ agentBootLatency: monitor });
+    const metric = 'kookr_agent_boot_latency_all_launchable_deprioritized_total';
+    const initial = await app.request('/metrics');
+    expect(await initial.text()).toContain(`${metric} 0\n`);
+    monitor.recordLaunchResolution(['codex-cli']);
+    for (let i = 0; i < 2; i += 1) {
+      const res = await app.request('/metrics');
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain(`${metric} 1\n`);
+    }
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(1);
+  });
+
   test('serves Prometheus text exposition with the expected content type', async () => {
     const requestDurationMetrics = new RequestDurationMetrics();
     requestDurationMetrics.record({ method: 'GET', route: '/api/tasks', durationMs: 42 });
