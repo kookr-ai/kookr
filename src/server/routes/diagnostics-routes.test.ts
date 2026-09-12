@@ -63,6 +63,11 @@ import type { LlmClient } from '../../core/llm-client.js';
 import type { HelperLlmDiagnosticsCounters, HelperLlmDiagnosticsSnapshot } from '../../shared/contracts/diagnostic.js';
 import type { ScheduleStatusSnapshot } from '../../shared/contracts/schedule.js';
 
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, writeFileSync: vi.fn(actual.writeFileSync) };
+});
+
 function mkApp(deps: Partial<RouteDeps>): Hono {
   const app = new Hono();
   registerDiagnosticsRoutes(app, deps as unknown as RouteDeps);
@@ -1774,6 +1779,87 @@ describe('diagnostics routes', () => {
   // GET /api/health — last-good snapshot mirror (issue #2495)
   // ---------------------------------------------------------------------------
   describe('GET /api/health last-good snapshot mirror (issue #2495)', () => {
+    test.each(['ENOSPC', 'EACCES'])('exposes %s and recovery while HTTP stays healthy', async (code) => {
+      const kookrDir = join(tempDir, 'writer-status');
+      let clock = 0;
+      const writer = new LastGoodHealthWriter({ kookrDir, now: () => clock });
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        lastGoodHealthWriter: writer,
+        nowMs: () => clock,
+        healthRefreshScheduler: (fn) => fn(),
+      });
+      const first = await app.request('/api/health');
+      expect(first.status).toBe(200);
+      expect((await first.json()).lastGoodHealthWriter.lastSuccessAt).toBe(new Date(0).toISOString());
+      const goodBytes = readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8');
+      const records = vi.spyOn(writer, 'record');
+      clock = 5_000;
+      vi.mocked(writeFileSync).mockImplementationOnce(() => {
+        throw Object.assign(new Error(`${kookrDir}: private payload`), { code });
+      });
+      expect((await app.request('/api/health')).status).toBe(200);
+      await vi.waitFor(() => expect(records).toHaveBeenCalledTimes(1));
+      const failed = await app.request('/api/health');
+      expect(failed.status).toBe(200);
+      const body = await failed.json();
+      expect(body.status).toBe('ok');
+      expect(body.lastGoodHealthWriter).toEqual({
+        lastAttemptAt: new Date(clock).toISOString(),
+        lastSuccessAt: new Date(0).toISOString(),
+        totalFailures: 1,
+        consecutiveFailures: 1,
+        lastErrorCode: code,
+      });
+      expect(JSON.stringify(body.lastGoodHealthWriter)).not.toContain(kookrDir);
+      expect(JSON.stringify(body.lastGoodHealthWriter)).not.toContain('private payload');
+      expect(readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8')).toBe(goodBytes);
+
+      clock += HEALTH_BODY_CACHE_MS;
+      expect((await app.request('/api/health')).status).toBe(200);
+      await vi.waitFor(() => expect(records).toHaveBeenCalledTimes(2));
+      const recovered = await (await app.request('/api/health')).json();
+      expect(recovered.lastGoodHealthWriter).toEqual({
+        lastAttemptAt: new Date(clock).toISOString(),
+        lastSuccessAt: new Date(clock).toISOString(),
+        totalFailures: 1,
+        consecutiveFailures: 0,
+        lastErrorCode: null,
+      });
+    });
+
+    test('repeated assemblies keep writer telemetry out of the mirror and its throttle', async () => {
+      const kookrDir = join(tempDir, 'writer-feedback');
+      let clock = 0;
+      const writer = new LastGoodHealthWriter({ kookrDir, now: () => clock });
+      const records = vi.spyOn(writer, 'record');
+      const app = mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        lastGoodHealthWriter: writer,
+        nowMs: () => clock,
+        healthRefreshScheduler: (fn) => fn(),
+      });
+      await app.request('/api/health');
+      let goodBytes = readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8');
+      for (let assembly = 1; assembly <= 12; assembly++) {
+        clock = assembly * HEALTH_BODY_CACHE_MS;
+        await app.request('/api/health');
+        await vi.waitFor(() => expect(records).toHaveBeenCalledTimes(assembly + 1));
+        const body = await (await app.request('/api/health')).json();
+        const raw = readFileSync(join(kookrDir, 'last-good-health.json'), 'utf8');
+        expect(body.lastGoodHealthWriter.lastSuccessAt).toBe(new Date(Math.floor(clock / 5_000) * 5_000).toISOString());
+        expect(raw).not.toContain('lastGoodHealthWriter');
+        expect(records.mock.lastCall?.[0]).not.toHaveProperty('lastGoodHealthWriter');
+        expect(Buffer.byteLength(raw)).toBeLessThanOrEqual(32 * 1024);
+        if (clock % 5_000 !== 0) expect(raw).toBe(goodBytes);
+        goodBytes = raw;
+      }
+    });
+
     test('mirrors a redacted snapshot to <kookrDir>/last-good-health.json after assembly', async () => {
       const { readLastGoodHealth } = await import('../last-good-health.js');
       const kookrDir = join(tempDir, 'state');
@@ -1804,7 +1890,8 @@ describe('diagnostics routes', () => {
         queue: new AttentionQueue(),
         buildInfo: {} as never,
       });
-      await app.request('/api/health');
+      const response = await app.request('/api/health');
+      expect(await response.json()).not.toHaveProperty('lastGoodHealthWriter');
       expect(readLastGoodHealth(kookrDir)).toBeNull();
     });
 
