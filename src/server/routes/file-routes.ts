@@ -1,5 +1,5 @@
 import type { Hono } from 'hono';
-import { realpath, readFile, stat } from 'node:fs/promises';
+import { realpath, open, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { FileRouteDeps } from './shared.js';
 import {
@@ -28,6 +28,25 @@ function rawMime(ext: string): string {
   if (ext in IMAGE_MIMES) return IMAGE_MIMES[ext];
   if (ext in TEXT_LANGS) return 'text/plain; charset=utf-8';
   return 'application/octet-stream';
+}
+
+/** Read one extra byte to detect growth beyond the cap without loading the whole file. */
+async function readPreviewBytes(filePath: string, limit: number): Promise<Buffer> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(limit + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      const { bytesRead } = await handle.read({
+        buffer, offset: total, length: buffer.length - total, position: total,
+      });
+      if (bytesRead === 0) break;
+      total += bytesRead;
+    }
+    return buffer.subarray(0, total);
+  } finally {
+    await handle.close();
+  }
 }
 
 export function registerFileRoutes(app: Hono, deps: FileRouteDeps): void {
@@ -95,10 +114,13 @@ export function registerFileRoutes(app: Hono, deps: FileRouteDeps): void {
       if (st.size > FILE_VIEW_MAX_INLINE_BYTES) {
         return c.json<FileViewMeta>({ kind: 'too_large', filePath, size: st.size, serverStartedAt });
       }
-      const content = await readFile(abs, 'utf8').catch(() => null);
-      if (content === null) return c.json<FileViewMiss>({ error: 'not_found' }, 404);
+      const buf = await readPreviewBytes(abs, FILE_VIEW_MAX_INLINE_BYTES).catch(() => null);
+      if (buf === null) return c.json<FileViewMiss>({ error: 'not_found' }, 404);
+      if (buf.length > FILE_VIEW_MAX_INLINE_BYTES) {
+        return c.json<FileViewMeta>({ kind: 'too_large', filePath, size: buf.length, serverStartedAt });
+      }
       return c.json<FileViewMeta>({
-        kind: 'text', filePath, language: TEXT_LANGS[ext], content, truncated: false, serverStartedAt,
+        kind: 'text', filePath, language: TEXT_LANGS[ext], content: buf.toString('utf8'), truncated: false, serverStartedAt,
       });
     }
     if (ext === '.html' || ext === '.htm') {
@@ -131,8 +153,11 @@ export function registerFileRoutes(app: Hono, deps: FileRouteDeps): void {
       return c.json<FileViewMiss>({ error: 'too_large', size: st.size }, 413);
     }
 
-    const buf = await readFile(abs).catch(() => null);
+    const buf = await readPreviewBytes(abs, FILE_VIEW_MAX_RAW_BYTES).catch(() => null);
     if (buf === null) return c.json<FileViewMiss>({ error: 'not_found' }, 404);
+    if (buf.length > FILE_VIEW_MAX_RAW_BYTES) {
+      return c.json<FileViewMiss>({ error: 'too_large', size: buf.length }, 413);
+    }
 
     const ext = path.extname(abs).toLowerCase();
     const inline = c.req.query('disposition') !== 'attachment';
