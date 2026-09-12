@@ -81,8 +81,8 @@ Usage:
   kookr ops --help
 
 digest: GET /api/ready and GET /api/health, then print ready status plus the
-top unattended failure signals (pressureWhileDisabled, phantomActive, hung
-residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
+top unattended failure signals (pressureWhileDisabled, blocked watchdog recovery,
+phantomActive, hung residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
 p95, fail-closed paused schedules, pipeline starvation, disk, safeMode) with
 field paths. ≤20 lines.
 
@@ -511,7 +511,7 @@ function parseReadyBody(body: unknown): {
 
 /**
  * Collect the unattended-ops warning set from a health body. Order is
- * severity-ish (safeMode → pressure → phantom → hung → helper-LLM pause →
+ * severity-ish (safeMode → pressure → blocked recovery → phantom → hung → helper-LLM pause →
  * overdue/never-fired hourly timers → hook-ingestion p95 → fail-closed
  * paused schedules → starvation → disk); callers slice to MAX_WARNINGS.
  *
@@ -621,6 +621,26 @@ export function collectOpsDigestWarnings(
         pressureWhileDisabled: true,
         pressureWhileDisabledReason: pressureWhileDisabledReason,
       },
+    });
+  }
+
+  const spawnPersistFailed = rw?.lastDecision === 'spawn_persist_failed';
+  const persistence = asRecord(rw?.persistence);
+  // A later tick can replace the failed-spawn decision with suppression.
+  // Require a reservation without a task so unrelated save errors stay quiet.
+  const unresolvedFailedReservation = persistence?.status === 'error'
+    && persistence.reservationDurable === false
+    && typeof rw?.lastSpawnAt === 'string'
+    && rw.lastSpawnTaskId === null;
+  if (spawnPersistFailed || unresolvedFailedReservation) {
+    const path = spawnPersistFailed
+      ? 'resourceWatchdog.lastDecision'
+      : 'resourceWatchdog.persistence.reservationDurable';
+    const value = spawnPersistFailed ? 'spawn_persist_failed' : false;
+    warnings.push({
+      path,
+      summary: `${path}=${value} — recovery task could not launch because throttle state could not be saved`,
+      value,
     });
   }
 
