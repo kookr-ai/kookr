@@ -62,13 +62,13 @@ describe('file routes', () => {
     { route: 'meta', url: metaUrl, limit: FILE_VIEW_MAX_INLINE_BYTES, overflowStatus: 200 },
     { route: 'raw', url: rawUrl, limit: FILE_VIEW_MAX_RAW_BYTES, overflowStatus: 413 },
   ])('$route byte cap', ({ route, url, limit, overflowStatus }) => {
-    test('rejects a file that grows after the size probe', async () => {
+    test.each([1, 64 * 1024])('rejects a file that grows %i bytes past the cap after the size probe', async (overflowBytes) => {
       const file = join(root, 'growing.txt');
       writeFileSync(file, 'small');
       const { read, readFile, close } = await trackReads(file, 64 * 1024);
       vi.mocked(stat).mockImplementationOnce(async () => {
         const beforeGrowth = statSync(file);
-        writeFileSync(file, Buffer.alloc(limit + 1, 'x'));
+        writeFileSync(file, Buffer.alloc(limit + overflowBytes, 'x'));
         return beforeGrowth;
       });
 
