@@ -20,6 +20,7 @@ separate from inputs when asking an independent evaluator to use the skill.
 | A worker finishes or a partial slice merges | Verify its acceptance and terminal ownership; hand off eligible work without advancing incomplete phase acceptance. |
 | A deadline passes, budget is exhausted, or the operator pauses | Preserve the deadline/history and enforce the actual authority boundary; do not silently extend, reset, or relaunch. |
 | The workflow source changes | Verify what the consumer actually loads and one real cycle's result, record, and cleanup. |
+| A cycle finishes in a scheduled task or a persistent observer | The scheduled task exits; the persistent observer releases cycle resources and resumes waiting, then cleans up on its configured stop. |
 | A new fix appears successful | Record the observed result and limits; compare a different scenario before generalizing. |
 
 For learning updates, also check these cross-project decisions:

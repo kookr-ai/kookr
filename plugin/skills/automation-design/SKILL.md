@@ -58,7 +58,9 @@ Each bounded cycle answers four questions:
    precise external input after checking for useful independent work.
 4. **Did the action work?** Read the real postcondition. Admission is evidence
    that work started, not that it finished. Save the next result and checkpoint,
-   then finish the cycle and release its slot.
+   then finish the cycle and release its temporary resources. A one-shot task
+   exits and releases its slot; a persistent observer resumes waiting until its
+   configured stop condition.
 
 A justified wait names the running operation or external dependency and its
 resume condition. Recheck blocker claims against current scope and authority.
@@ -116,9 +118,11 @@ fixture, replay, or dry run before live effects. Verify behavior and preserved
 invariants; matching a prompt's wording is not behavioral validation.
 
 For an authorized rollout, verify the loaded workflow/helper revision and one
-real cycle's postcondition, saved checkpoint, and termination. Keep a recovery
-path. Record what was observed and what remains untested. A merged change or a
-successful launch alone is insufficient evidence of effective automation.
+real cycle's postcondition and saved checkpoint. Verify task exit for one-shot
+runs; for persistent observers, verify return to waiting and cleanup on stop.
+Keep a recovery path. Record what was observed and what remains untested. A
+merged change or a successful launch alone is insufficient evidence of effective
+automation.
 
 ## Learn after every problem and new attempt
 

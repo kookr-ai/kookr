@@ -93,8 +93,11 @@ applied the skill to the four cross-project fixtures in
 without duplicating it, retained a healthy long-running job, selected authorized
 release preparation while preserving the deployment gate, and recorded a pending
 experiment without publishing private evidence. No additional decision rule was
-needed. Review did expose conflicting adjacent watcher wording about authorization
-and live-task inspection; those instructions were clarified.
+needed for those four decisions. Review did expose conflicting adjacent watcher
+wording about authorization and live-task inspection; those instructions were
+clarified. A further review found that unconditional task-slot release after a
+cycle could stop a persistent observer. The lifecycle guidance now distinguishes
+one-shot task exit from a persistent observer returning to its wait state.
 
 **Limits:** these were simulated decisions, not executed exports, deployments,
 or experiments. Missing owner identities and exact checkpoint times remained
