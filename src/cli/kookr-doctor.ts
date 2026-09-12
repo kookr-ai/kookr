@@ -33,6 +33,7 @@ import {
   type GithubStatusSnapshot,
 } from './kookr-github.js';
 import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eval.js';
+import type { ResourceWatchdogHealthSnapshot } from '../core/resource-watchdog-types.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -101,6 +102,8 @@ interface CommandRunner {
  */
 export interface ResourceWatchdogProbeSnapshot {
   enabled: boolean;
+  lastSampleAt?: string | null;
+  sampleFreshness?: ResourceWatchdogHealthSnapshot['sampleFreshness'];
   pressureWhileDisabled?: boolean;
   pressureWhileDisabledReason?: string | null;
   lastDecision?: string | null;
@@ -375,7 +378,7 @@ github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is act
 runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
 ops.http-latency (advisory warn when GET /api/ready exceeds 500ms or GET /api/health exceeds 2s, or either times out / 5xx),
 ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is not active),
-ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off),
+ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off or samples are stale),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
@@ -1058,6 +1061,27 @@ async function checkResourceWatchdog(
 
   const enabled = live?.enabled ?? envEnabled;
   if (enabled) {
+    const freshness = live?.sampleFreshness;
+    if (live && freshness?.stale) {
+      return {
+        id: 'ops.resource-watchdog',
+        label: 'Resource watchdog',
+        category: 'ops',
+        status: 'warn',
+        required: false,
+        summary: 'enabled but resource watchdog samples are stale',
+        detail:
+          (live.lastSampleAt
+            ? `Last sample at ${live.lastSampleAt}; observed age ${freshness.ageMs}ms.`
+            : `No first sample after ${freshness.ageMs}ms since sampling started.`) +
+          ` Sampling cadence ${freshness.intervalMs}ms; warning threshold ${freshness.staleAfterMs}ms ` +
+          '(three intervals plus launch allowance).',
+        recommendedAction:
+          'Inspect server logs for resource-watchdog sample or launch failures. ' +
+          'If sampling remains stalled, restart the server and confirm lastSampleAt advances ' +
+          'in GET /api/health. This advisory does not restart the sampler.',
+      };
+    }
     return okCheck(
       'ops.resource-watchdog',
       'Resource watchdog',
@@ -2008,6 +2032,13 @@ async function defaultProbeResourceWatchdogEnabled(
     const body = (await res.json()) as {
       resourceWatchdog?: {
         enabled?: unknown;
+        lastSampleAt?: unknown;
+        sampleFreshness?: {
+          ageMs?: unknown;
+          intervalMs?: unknown;
+          staleAfterMs?: unknown;
+          stale?: unknown;
+        } | null;
         pressureWhileDisabled?: unknown;
         pressureWhileDisabledReason?: unknown;
         lastDecision?: unknown;
@@ -2016,8 +2047,24 @@ async function defaultProbeResourceWatchdogEnabled(
     };
     const rw = body?.resourceWatchdog;
     if (typeof rw?.enabled !== 'boolean') return null;
+    const freshness = rw.sampleFreshness;
     return {
       enabled: rw.enabled,
+      ...(typeof rw.lastSampleAt === 'string' || rw.lastSampleAt === null
+        ? { lastSampleAt: rw.lastSampleAt }
+        : {}),
+      ...(freshness
+        && typeof freshness.ageMs === 'number' && Number.isFinite(freshness.ageMs) && freshness.ageMs >= 0
+        && typeof freshness.intervalMs === 'number' && Number.isFinite(freshness.intervalMs) && freshness.intervalMs > 0
+        && typeof freshness.staleAfterMs === 'number' && Number.isFinite(freshness.staleAfterMs) && freshness.staleAfterMs > 0
+        && typeof freshness.stale === 'boolean'
+        ? { sampleFreshness: {
+            ageMs: freshness.ageMs,
+            intervalMs: freshness.intervalMs,
+            staleAfterMs: freshness.staleAfterMs,
+            stale: freshness.stale,
+          } }
+        : {}),
       ...(typeof rw.pressureWhileDisabled === 'boolean'
         ? { pressureWhileDisabled: rw.pressureWhileDisabled }
         : {}),

@@ -38,6 +38,7 @@ import type {
 } from '../core/resource-watchdog-types.js';
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
+import { MAX_LAUNCH_TIMEOUT_SEC } from '../core/settings-store.js';
 
 const MAX_PERSISTENCE_ERROR_CHARS = 500;
 
@@ -98,6 +99,7 @@ export class ResourceWatchdogService {
   private state: ResourceWatchdogPersistedState;
   private oomKillBaselineSource: 'persisted_state' | 'runtime_sample' | null;
   private lastSample: ResourceWatchdogSample | null = null;
+  private samplingStartedAtMs: number | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
   private persistenceHealth: ResourceWatchdogHealthSnapshot['persistence'];
 
@@ -135,6 +137,7 @@ export class ResourceWatchdogService {
     if (this.running) return;
     this.running = true;
     const config = this.getConfig();
+    this.samplingStartedAtMs = config.enabled ? this.nowMs() : null;
     if (config.enabled) {
       this.logger.info(
         `[resource-watchdog] enabled (interval=${config.intervalMs}ms, ` +
@@ -209,9 +212,22 @@ export class ResourceWatchdogService {
     const oomKillBaselineSampledAtMs = oomKillBaseline === null
       ? NaN
       : Date.parse(oomKillBaseline.sampledAt);
+    const intervalMs = Math.max(1_000, config.intervalMs);
+    // A tick awaits its investigation launch before scheduling the next sample.
+    // Allow three missed intervals plus the maximum supported launch timeout
+    // (15 minutes), so changing launch settings cannot create a false warning.
+    const staleAfterMs = 3 * intervalMs + MAX_LAUNCH_TIMEOUT_SEC * 1_000;
+    const lastSampleMs = this.lastSample ? Date.parse(this.lastSample.sampledAt) : NaN;
+    const freshnessSinceMs = Number.isFinite(lastSampleMs)
+      ? Math.max(lastSampleMs, this.samplingStartedAtMs ?? lastSampleMs)
+      : this.samplingStartedAtMs;
+    const ageMs = freshnessSinceMs === null ? null : Math.max(0, nowMs - freshnessSinceMs);
     return {
       enabled: config.enabled,
       lastSampleAt: this.lastSample?.sampledAt ?? null,
+      sampleFreshness: config.enabled && ageMs !== null
+        ? { ageMs, intervalMs, staleAfterMs, stale: ageMs > staleAfterMs }
+        : null,
       lastSample: this.lastSample
         ? {
             swapUsedPercent: this.lastSample.swapUsedPercent,
@@ -277,6 +293,11 @@ export class ResourceWatchdogService {
     this.tickInFlight = true;
     try {
       const config = this.getConfig();
+      if (config.enabled) {
+        this.samplingStartedAtMs ??= this.nowMs();
+      } else {
+        this.samplingStartedAtMs = null;
+      }
       // Page when disabled-under-pressure stays true (issue #2078). Runs on
       // every tick — including the enabled path, which clears the episode.
       // Page-only alerter: never itself enables the actuator.
@@ -683,6 +704,7 @@ export function defaultResourceWatchdogHealthSnapshot(
   return {
     enabled,
     lastSampleAt: null,
+    sampleFreshness: null,
     lastSample: null,
     lastTriggerAt: null,
     lastTriggerReasons: [],

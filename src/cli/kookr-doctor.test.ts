@@ -573,6 +573,70 @@ describe('kookr doctor --json', () => {
     });
   });
 
+  it.each([
+    { name: 'recent sample', lastSampleAt: '2026-09-12T12:00:00Z', ageMs: 60_000, stale: false, status: 'ok' },
+    { name: 'old sample', lastSampleAt: '2026-09-12T12:00:00Z', ageMs: 1_080_001, stale: true, status: 'warn' },
+    { name: 'first sample within startup grace', lastSampleAt: null, ageMs: 60_000, stale: false, status: 'ok' },
+    { name: 'missing first sample after startup grace', lastSampleAt: null, ageMs: 1_080_001, stale: true, status: 'warn' },
+  ])('decodes live health freshness for $name and preserves advisory exit behavior', async ({ lastSampleAt, ageMs, stale, status }) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      resourceWatchdog: {
+        enabled: true,
+        lastSampleAt,
+        sampleFreshness: { ageMs, intervalMs: 60_000, staleAfterMs: 1_080_000, stale },
+      },
+    }));
+    const logs: string[] = [];
+    try {
+      const code = await runDoctorCli(['--json'], {
+        env: { ...opsOkEnv, KOOKR_API_BASE_URL: 'http://watchdog.test' },
+        commandRunner: commandRunner(happyFixtures()),
+        access: async () => {},
+        ...hermeticOps,
+        probeResourceWatchdogEnabled: undefined,
+        out: { log: (msg) => logs.push(msg), error: () => {} },
+      });
+      expect(code).toBe(0);
+      const report = JSON.parse(logs[0]!);
+      expect(report).toMatchObject({ ok: true, status });
+      const check = report.checks.find((c: { id: string }) => c.id === 'ops.resource-watchdog');
+      expect(check).toMatchObject({ status, required: false });
+      if (stale) {
+        expect(check.detail).toContain(`${ageMs}ms`);
+        expect(check.detail).toContain('60000ms');
+        expect(check.detail).toContain(lastSampleAt ?? 'No first sample');
+        expect(check.recommendedAction).toContain('server logs');
+      }
+      expect(fetchMock).toHaveBeenCalledWith('http://watchdog.test/api/health', expect.any(Object));
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it.each([
+    undefined,
+    null,
+    { stale: true },
+    { ageMs: 'old', intervalMs: 60_000, staleAfterMs: 1_080_000, stale: true },
+    { ageMs: 1_080_001, intervalMs: 0, staleAfterMs: 1_080_000, stale: true },
+  ])('does not infer staleness from absent or malformed freshness metadata: %j', async (sampleFreshness) => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({
+      resourceWatchdog: { enabled: true, lastSampleAt: null, sampleFreshness },
+    }));
+    try {
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv, KOOKR_API_BASE_URL: 'http://watchdog.test' },
+        commandRunner: commandRunner(happyFixtures()),
+        access: async () => {},
+        ...hermeticOps,
+        probeResourceWatchdogEnabled: undefined,
+      });
+      expect(report.checks.find((c) => c.id === 'ops.resource-watchdog')).toMatchObject({ status: 'ok' });
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
   it('keeps resource-watchdog advisory: warn does not fail exit / ok', async () => {
     const run = commandRunner(happyFixtures());
     const logs: string[] = [];

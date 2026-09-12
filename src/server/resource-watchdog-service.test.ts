@@ -76,6 +76,7 @@ describe('ResourceWatchdogService', () => {
     stateStore?: ResourceWatchdogStateStore;
     getStaleDtachCount?: () => number | null;
     pressureWhileDisabledAlerter?: { evaluate: ReturnType<typeof vi.fn> };
+    sampleImpl?: () => ResourceWatchdogSample;
   } = {}) {
     const statePath = join(dir, 'resource-watchdog.state.json');
     const config = baseConfig({
@@ -93,7 +94,7 @@ describe('ResourceWatchdogService', () => {
     });
     const service = new ResourceWatchdogService({
       getConfig: () => config,
-      sampler: { sample: () => sample },
+      sampler: { sample: opts.sampleImpl ?? (() => sample) },
       stateStore: opts.stateStore ?? new FileResourceWatchdogStateStore(statePath),
       auditSink: audit,
       launchTask,
@@ -107,6 +108,71 @@ describe('ResourceWatchdogService', () => {
     });
     return { service, audit, statePath, config };
   }
+
+  test('health ages the last sample without sampling again and recovers after a fresh sample', async () => {
+    const sampleImpl = vi.fn(() => healthySample({ sampledAt: new Date(nowMs).toISOString() }));
+    const { service } = makeService({ sampleImpl });
+    await service.runOnce();
+    nowMs += 60_000;
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSampleAt: '2026-07-31T12:00:00.000Z',
+      sampleFreshness: { ageMs: 60_000, intervalMs: 60_000, staleAfterMs: 1_080_000, stale: false },
+    });
+    nowMs += 1_020_001;
+    expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ stale: true });
+    expect(sampleImpl).toHaveBeenCalledTimes(1);
+    await service.runOnce();
+    expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ ageMs: 0, stale: false });
+  });
+
+  test('warns about missing first samples only after startup grace, without resetting on failure', async () => {
+    const sampleImpl = vi.fn(() => { throw new Error('host sample unavailable'); });
+    const { service } = makeService({ sampleImpl });
+    expect(service.getHealthSnapshot().sampleFreshness).toBeNull();
+    service.start();
+    try {
+      expect(service.getHealthSnapshot()).toMatchObject({
+        lastSampleAt: null,
+        sampleFreshness: { ageMs: 0, stale: false },
+      });
+      await Promise.resolve();
+      nowMs += 1_080_000;
+      await service.runOnce();
+      expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ ageMs: 1_080_000, stale: false });
+      nowMs += 1;
+      expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ stale: true });
+    } finally {
+      service.stop();
+    }
+  });
+
+  test('allows a bounded investigation launch before classifying its sample as stale', async () => {
+    let finishLaunch!: (result: LaunchResult) => void;
+    const { service } = makeService({
+      launchImpl: () => new Promise((resolve) => { finishLaunch = resolve; }),
+    });
+    const tick = service.runOnce();
+    try {
+      nowMs += 900_000;
+      expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ stale: false });
+      nowMs += 180_001;
+      expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ stale: true });
+    } finally {
+      finishLaunch({ task: { id: 'bounded-launch' }, queued: false });
+      await tick;
+    }
+  });
+
+  test('uses the effective timer cadence and omits freshness while disabled', async () => {
+    sample = healthySample();
+    const { service, config } = makeService({ config: { intervalMs: 10 } });
+    await service.runOnce();
+    expect(service.getHealthSnapshot().sampleFreshness).toMatchObject({ intervalMs: 1_000, staleAfterMs: 903_000 });
+    config.enabled = false;
+    await service.runOnce();
+    nowMs += 2_000_000;
+    expect(service.getHealthSnapshot().sampleFreshness).toBeNull();
+  });
 
   test('does not spawn when disabled without pressure', async () => {
     const { service, audit } = makeService({
