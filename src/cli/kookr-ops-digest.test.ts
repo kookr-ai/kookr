@@ -76,6 +76,22 @@ const HEALTH_WITH_WARNINGS = {
   },
 };
 
+// Matches the failed pre-launch write and subsequent throttle suppression
+// exercised by resource-watchdog-service.test.ts (TS-WATCHDOG-006/007).
+const WATCHDOG_BLOCKED_RECOVERY = {
+  enabled: true,
+  pressureWhileDisabled: false,
+  lastDecision: 'spawn_persist_failed',
+  lastSpawnAt: '2026-07-31T12:00:00.000Z',
+  lastSpawnTaskId: null,
+  persistence: {
+    status: 'error',
+    reservationDurable: false,
+    lastFailureAt: '2026-07-31T12:00:00.000Z',
+    lastError: `private-error-secret\n${'x'.repeat(1_000)}`,
+  },
+};
+
 const READY_OK = {
   ready: true,
   checks: {
@@ -200,6 +216,86 @@ describe('collectOpsDigestWarnings', () => {
     expect(warnings).toEqual([]);
     expect(signals.pressureWhileDisabled).toBe(false);
     expect(signals.phantomActive).toBe(0);
+  });
+
+  it('warns once when persistence blocks a watchdog recovery spawn without exposing errors', () => {
+    const { warnings } = collectOpsDigestWarnings({ resourceWatchdog: WATCHDOG_BLOCKED_RECOVERY });
+
+    expect(warnings).toEqual([{
+      path: 'resourceWatchdog.lastDecision',
+      summary: 'resourceWatchdog.lastDecision=spawn_persist_failed — recovery task could not launch because throttle state could not be saved',
+      value: 'spawn_persist_failed',
+    }]);
+    expect(JSON.stringify(warnings)).not.toContain('private-error-secret');
+    expect(warnings[0]!.summary.length).toBeLessThan(200);
+  });
+
+  it.each([undefined, null])('recognizes the failed spawn decision without persistence details (%s)', (persistence) => {
+    const { warnings } = collectOpsDigestWarnings({
+      resourceWatchdog: { lastDecision: 'spawn_persist_failed', persistence },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('resourceWatchdog.lastDecision');
+  });
+
+  it('keeps the warning while a failed reservation remains unresolved after the next tick', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      resourceWatchdog: { ...WATCHDOG_BLOCKED_RECOVERY, lastDecision: 'suppress_throttled' },
+    });
+
+    expect(warnings).toEqual([{
+      path: 'resourceWatchdog.persistence.reservationDurable',
+      summary: 'resourceWatchdog.persistence.reservationDurable=false — recovery task could not launch because throttle state could not be saved',
+      value: false,
+    }]);
+  });
+
+  it.each(['spawn', 'suppress_throttled'])('clears the warning after a successful durable save (%s)', (lastDecision) => {
+    expect(collectOpsDigestWarnings({
+      resourceWatchdog: {
+        ...WATCHDOG_BLOCKED_RECOVERY,
+        lastDecision,
+        persistence: {
+          ...WATCHDOG_BLOCKED_RECOVERY.persistence,
+          status: 'ok',
+          reservationDurable: true,
+          lastError: null,
+        },
+      },
+    }).warnings).toEqual([]);
+  });
+
+  it.each([
+    undefined,
+    null,
+    {},
+    { lastDecision: 'suppress_throttled' },
+    { lastDecision: 'idle', persistence: { status: 'error', reservationDurable: false } },
+    { lastDecision: 'idle', lastSpawnAt: null, lastSpawnTaskId: null, persistence: { status: 'error', reservationDurable: false } },
+    { ...WATCHDOG_BLOCKED_RECOVERY, lastDecision: 'spawn', lastSpawnTaskId: 'launched-task' },
+    { ...WATCHDOG_BLOCKED_RECOVERY, lastDecision: 'idle', persistence: { status: 'unknown', reservationDurable: false } },
+    { ...WATCHDOG_BLOCKED_RECOVERY, lastDecision: 'idle', persistence: { status: 'error', reservationDurable: true } },
+  ])('does not infer a blocked spawn from missing fields or unrelated persistence errors (%j)', (resourceWatchdog) => {
+    expect(collectOpsDigestWarnings({ resourceWatchdog }).warnings).toEqual([]);
+  });
+
+  it('includes the blocked recovery within the existing five-warning limit', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      ...HEALTH_WITH_WARNINGS,
+      safeMode: { engaged: true },
+      resourceWatchdog: {
+        ...WATCHDOG_BLOCKED_RECOVERY,
+        ...HEALTH_WITH_WARNINGS.resourceWatchdog,
+      },
+    });
+
+    expect(warnings.map((warning) => warning.path)).toEqual([
+      'safeMode.engaged',
+      'resourceWatchdog.pressureWhileDisabled',
+      'resourceWatchdog.lastDecision',
+      'capacity.phantomActive',
+      'capacity.byClass.hungSuspect',
+    ]);
   });
 
   it('stays quiet when cached data-directory capacity is explicitly unknown', () => {
@@ -660,6 +756,41 @@ describe('formatOpsDigestHuman', () => {
 });
 
 describe('runOpsDigestCli', () => {
+  it.each([
+    { ready: READY_OK, status: 200, exit: EXIT_OK },
+    { ready: READY_FAIL, status: 503, exit: EXIT_READY_FAIL },
+  ])('prints the same bounded recovery warning in human and JSON output without changing exit $exit', async ({ ready, status, exit }) => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/ready')) return jsonResponse(ready, status);
+      if (url.endsWith('/api/health')) return jsonResponse({ resourceWatchdog: WATCHDOG_BLOCKED_RECOVERY });
+      return jsonResponse({ error: 'not found' }, 404);
+    });
+    const human = captureConsole();
+    const json = captureConsole();
+    for (const [args, output] of [
+      [['digest'], human],
+      [['digest', '--json'], json],
+    ] as const) {
+      expect(await runOpsDigestCli([...args], {
+        env: { KOOKR_API_BASE_URL: 'http://127.0.0.1:4800' },
+        out: output.out,
+        err: output.err,
+        fetchImpl: fetchImpl as typeof fetch,
+      })).toBe(exit);
+      expect(output.errors).toEqual([]);
+      expect(output.logs.join('\n')).not.toContain('private-error-secret');
+    }
+
+    const payload = JSON.parse(json.logs.join('\n')) as { details: OpsDigestSnapshot };
+    const snapshot = payload.details;
+    expect(snapshot.ready).toBe(ready.ready);
+    expect(snapshot.warnings).toHaveLength(1);
+    expect(snapshot.warnings[0]?.path).toBe('resourceWatchdog.lastDecision');
+    expect(human.logs.join('\n')).toContain(snapshot.warnings[0]!.summary);
+    expect(human.logs.join('\n').split('\n').length).toBeLessThanOrEqual(20);
+  });
+
   it('prints help and returns 0', async () => {
     const c = captureConsole();
     const code = await runOpsDigestCli(['--help'], { env: {}, out: c.out, err: c.err });

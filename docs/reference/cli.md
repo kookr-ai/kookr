@@ -856,6 +856,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | --- | --- | --- |
 | SAFE MODE engaged | `safeMode.engaged` | `true` |
 | Host pressure while watchdog off | `resourceWatchdog.pressureWhileDisabled` | `true` |
+| Watchdog recovery blocked by persistence | `resourceWatchdog.lastDecision` or `resourceWatchdog.persistence.reservationDurable` | `lastDecision` is `spawn_persist_failed`, or a failed write leaves an unsaved throttle reservation with no launched task. The warning explains that recovery could not launch and omits raw errors |
 | Phantom active capacity | `capacity.phantomActive` | `> 0` |
 | Hung residual | `capacity.byClass.hungSuspect` | `> 0` |
 | Helper-LLM provider paused / storms suppressed | `helperLlm.paused` or `helperLlm.stormsSuppressed` | a helper-LLM provider is in the auth cool-down, or the process-wide attempt budget has refused attempts (issue #2641) |
