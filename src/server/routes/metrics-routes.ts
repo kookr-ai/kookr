@@ -45,6 +45,7 @@ export function registerMetricsRoutes(app: Hono, deps: RouteDeps): void {
     const watchdogSweep = deps.watchdogSweepMetrics?.getSnapshot();
     return c.body(renderPrometheusExposition({
       requestDurations,
+      ...(deps.agentBootLatency ? { agentBootLatency: deps.agentBootLatency.getHealthSnapshot() } : {}),
       // Control-plane probe latency + completion status (issue #2774). Omitted
       // when unwired so scrapers see no fabricated zero series.
       controlPlaneLatencies: deps.controlPlaneLatencyMetrics?.snapshot(),

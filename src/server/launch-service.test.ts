@@ -1837,8 +1837,10 @@ describe('launchTask', () => {
     let releaseFlush!: () => void;
     let markFlushStarted!: () => void;
     const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const recordLaunchBootHealth = vi.fn();
     const gatedDeps = {
       ...deps,
+      recordLaunchBootHealth,
       dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
       launchDependencyAdmission,
       flushTasks: vi.fn()
@@ -1869,6 +1871,7 @@ describe('launchTask', () => {
     });
     expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
     expect(launchDependencyAdmission.snapshot()[0]).toMatchObject({ state: 'degraded' });
+    expect(recordLaunchBootHealth).toHaveBeenCalledExactlyOnceWith(['claude-code', 'codex-cli']);
   });
 
   it('disposes a direct probe when its re-park persistence barrier fails', async () => {
@@ -1877,8 +1880,10 @@ describe('launchTask', () => {
     let releaseFlush!: () => void;
     let markFlushStarted!: () => void;
     const flushStarted = new Promise<void>((resolve) => { markFlushStarted = resolve; });
+    const recordLaunchBootHealth = vi.fn();
     const gatedDeps = {
       ...deps,
+      recordLaunchBootHealth,
       dependencyPreflightRunner: vi.fn().mockResolvedValue([]),
       launchDependencyAdmission,
       flushTasks: vi.fn()
@@ -1899,6 +1904,7 @@ describe('launchTask', () => {
     releaseFlush();
 
     await expect(launch).rejects.toThrow('direct re-park write failed');
+    expect(recordLaunchBootHealth).not.toHaveBeenCalled();
     expect(gatedDeps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
     expect(store.listTasks()).toEqual([
       expect.objectContaining({
@@ -3491,6 +3497,7 @@ describe('launchTask boot-reliability failover precondition (#1898)', () => {
       roundRobinCursor: { peek: () => 2, advance: () => {} },
       getDeprioritizedAgentTypes: (available) => monitor.deprioritizedTypes(available),
       recordLaunchBootLatency: (agentType, timings) => monitor.record(agentType, timings),
+      recordLaunchBootHealth: (available) => monitor.recordLaunchResolution(available),
     };
     return { deps, registry };
   }
@@ -3521,6 +3528,7 @@ describe('launchTask boot-reliability failover precondition (#1898)', () => {
     expect(result.task.agentType).toBe('claude-code');
     expect(registry.get('grok-build').launch).not.toHaveBeenCalled();
     expect(registry.get('claude-code').launch).toHaveBeenCalledOnce();
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(0);
   });
 
   it('still selects grok-build at the same cursor when its recent boots are healthy (control)', async () => {
@@ -3536,6 +3544,69 @@ describe('launchTask boot-reliability failover precondition (#1898)', () => {
     // No unhealthy signal → the deprioritization changes nothing: cursor 2 → grok.
     expect(result.task.agentType).toBe('grok-build');
     expect(registry.get('grok-build').launch).toHaveBeenCalledOnce();
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(0);
+  });
+
+  it('counts all-unhealthy attempts while preserving round-robin choices and cursor advances (#3159)', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1, now: () => 1_000 });
+    for (const type of ['claude-code', 'codex-cli', 'grok-build'] as const) {
+      monitor.record(type, hungBoot);
+    }
+    const { deps } = threeAgentDeps(monitor);
+    let cursor = 0;
+    deps.roundRobinCursor = { peek: () => cursor, advance: () => { cursor += 1; } };
+    const selected = [];
+    for (let i = 0; i < 3; i += 1) {
+      const result = await launchTask(deps, { prompt: `all unhealthy ${i}`, cwd: '/tmp', agentType: 'round-robin' });
+      selected.push(result.task.agentType);
+      expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(i + 1);
+    }
+    expect(selected).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+    expect(cursor).toBe(3);
+  });
+
+  it('excludes auth-unusable and blacklisted agents from the launch health signal', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1, now: () => 1_000 });
+    monitor.record('codex-cli', hungBoot);
+    const { deps } = threeAgentDeps(monitor);
+    deps.isGrokAuthUsable = () => false;
+    deps.getBlacklistedAgentTypes = () => ['claude-code'];
+    const result = await launchTask(deps, { prompt: 'only codex eligible', cwd: '/tmp', agentType: 'round-robin' });
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(1);
+  });
+
+  it('counts accepted queued resolutions once while excluding rejected and duplicate requests', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1, now: () => 1_000 });
+    for (const type of ['claude-code', 'codex-cli', 'grok-build'] as const) monitor.record(type, hungBoot);
+    const { deps } = threeAgentDeps(monitor);
+    await expect(launchTask(deps, { prompt: 'invalid', cwd: '/tmp', agentType: 'codex-cli', model: 'invalid-model' })).rejects.toThrow();
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(0);
+    const opts = { prompt: 'one attempt', cwd: '/tmp', agentType: 'codex-cli' as const };
+    const first = await launchTask(deps, opts);
+    deps.taskStore.startTask(first.task.id);
+    const duplicate = await launchTask(deps, opts);
+    expect(duplicate.duplicate).toBe(true);
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(1);
+    deps.getMaxActiveTasks = () => 0;
+    const queued = await launchTask(deps, { ...opts, prompt: 'wait for capacity' });
+    expect(queued.queued).toBe(true);
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(2);
+    const queuedDuplicate = await launchTask(deps, { ...opts, prompt: 'wait for capacity' });
+    expect(queuedDuplicate.duplicate).toBe(true);
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(2);
+  });
+
+  it('counts a failed adapter attempt once and instrumentation faults cannot fail a launch', async () => {
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1, now: () => 1_000 });
+    for (const type of ['claude-code', 'codex-cli', 'grok-build'] as const) monitor.record(type, hungBoot);
+    const { deps, registry } = threeAgentDeps(monitor);
+    vi.mocked(registry.get('grok-build').launch).mockRejectedValueOnce(new Error('boot failed'));
+    await expect(launchTask(deps, { prompt: 'fails boot', cwd: '/tmp', agentType: 'round-robin' })).rejects.toThrow('boot failed');
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(1);
+    deps.recordLaunchBootHealth = () => { throw new Error('broken telemetry'); };
+    const result = await launchTask(deps, { prompt: 'telemetry fault', cwd: '/tmp', agentType: 'round-robin' });
+    expect(result.task.agentType).toBe('grok-build');
   });
 
   it('feeds each finalized launch back into the boot-reliability monitor', async () => {

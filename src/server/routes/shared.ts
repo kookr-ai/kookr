@@ -917,9 +917,9 @@ export interface RouteDeps {
    * Per-agent-type boot-latency reliability signal (issue #1898) for
    * `GET /api/diagnostics/agent-boot-latency`, so an operator can see which
    * agents the round-robin failover is deprioritizing and why. Absent ⇒ empty
-   * snapshot.
+   * snapshot. Aggregate resolved-launch count is also exposed on health and metrics.
    */
-  agentBootLatency?: Pick<import('../../core/agent-boot-latency.js').AgentBootLatencyMonitor, 'snapshot'>;
+  agentBootLatency?: Pick<import('../../core/agent-boot-latency.js').AgentBootLatencyMonitor, 'snapshot' | 'getHealthSnapshot'>;
   /**
    * Hot-path timing sampler (issue #1781) backing GET
    * {@link HOT_PATHS_ROUTE}. Absent ⇒ the route falls back to the process-wide

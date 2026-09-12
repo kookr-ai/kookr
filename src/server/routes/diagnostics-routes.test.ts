@@ -1524,6 +1524,30 @@ describe('diagnostics routes', () => {
     });
   });
 
+  test('health exposes the boot-deprioritized launch counter without recording attempts', async () => {
+    const { AgentBootLatencyMonitor } = await import('../../core/agent-boot-latency.js');
+    const monitor = new AgentBootLatencyMonitor({ minSlowSamples: 1 });
+    monitor.record('codex-cli', {
+      phases: [{ phase: 'agent-boot', durationMs: 90_000, completed: false }],
+      totalMs: 90_000,
+    });
+    const healthDeps = { taskStore: new TaskStore(), queue: new AttentionQueue() };
+    const app = mkApp({ ...healthDeps, agentBootLatency: monitor });
+    const initial = await app.request('/api/health');
+    expect(initial.status).toBe(200);
+    expect((await initial.json()).agentBootLatency).toEqual({ allLaunchableDeprioritizedTotal: 0 });
+    monitor.recordLaunchResolution(['codex-cli']);
+    // A new app avoids the health-body cache: each request below assembles a fresh body.
+    for (let i = 0; i < 2; i += 1) {
+      const res = await mkApp({ ...healthDeps, agentBootLatency: monitor }).request('/api/health');
+      expect(res.status).toBe(200);
+      expect((await res.json()).agentBootLatency).toEqual({ allLaunchableDeprioritizedTotal: 1 });
+    }
+    const unwired = await mkApp(healthDeps).request('/api/health');
+    expect((await unwired.json()).agentBootLatency).toBeUndefined();
+    expect(monitor.getHealthSnapshot().allLaunchableDeprioritizedTotal).toBe(1);
+  });
+
   // GET /api/diagnostics/agent-boot-latency (issue #1898)
   // ---------------------------------------------------------------------------
   describe('GET /api/diagnostics/agent-boot-latency', () => {
