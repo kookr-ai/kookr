@@ -1,8 +1,11 @@
-import { readdir, readFile } from 'node:fs/promises';
+import { readdir } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+// TypeScript 7's package root is version-only; parsing uses these subpaths.
+import * as ts from 'typescript/unstable/ast';
+import { API } from 'typescript/unstable/sync';
 
-// Locks in the codebase's zero-import-cycle property (kookr#1829). A CI gate
+// Locks in the codebase's zero-import-cycle property (kookr#1829). A local gate
 // here is the cheapest way to stop AI-induced drift from silently
 // reintroducing a circular runtime dependency — the single healthiest
 // structural signal in the graph.
@@ -12,8 +15,8 @@ import { pathToFileURL } from 'node:url';
 // (check-remote-import-boundaries.ts, check-architecture-boundaries.ts) wired
 // through vitest, and deliberately keeps its dependency surface small (see the
 // dependency-review workflow). A ~120-line native Tarjan pass matches that
-// convention exactly, adds zero dependencies, and runs in <200ms over the
-// whole graph.
+// convention without adding dependencies. One TypeScript parser session serves
+// the whole graph, matching the remote import boundary checker.
 //
 // The gate models the STATIC MODULE-LOAD graph — the edges evaluated eagerly
 // when a module is loaded, which are the only ones that can cause load-order
@@ -80,34 +83,24 @@ async function listSourceFiles(dir: string): Promise<string[]> {
   return files;
 }
 
-// The two static load-time forms. Both anchor `import`/`export` at line start
-// (after leading whitespace) so a `//`-commented statement — whose `//` breaks
-// the anchor — is never mistaken for a real edge. `[^'";]*?` spans newlines, so
-// multi-line `import { … } from '…'` is captured. `import()` / `require()` are
-// intentionally NOT matched (see the header: deferred, and syntactically shared
-// with type-position dynamic imports).
-const STATIC_IMPORT_RE = /(?:^|\n)\s*import\s+(?:[^'";]*?\s+from\s+)?['"]([^'"]+)['"]/g;
-const REEXPORT_RE = /(?:^|\n)\s*export\s+(?:\*(?:\s+as\s+[A-Za-z0-9_$]+)?|\{[^}]*\}|[A-Za-z0-9_$]+(?:\s*,\s*\{[^}]*\})?)\s+from\s+['"]([^'"]+)['"]/g;
-
-// Type-only statements (`import type …`, `export type …`) are erased at runtime.
-// Dropping whole lines that START with them keeps the inline mixed form
-// (`import { X, type Y } from …`, a real runtime edge via X) intact. A multi-line
-// `import type { … } from '…'` leaves no residual line matching an `import … from`
-// shape, so the whole statement is removed.
-const TYPE_ONLY_STATEMENT_RE = /^\s*(?:import|export)\s+type\b/;
-
-/** Extract every static (load-time) relative module specifier in `source`. */
-export function runtimeSpecifiers(source: string): string[] {
-  const loadTime = source
-    .split('\n')
-    .filter((line) => !TYPE_ONLY_STATEMENT_RE.test(line))
-    .join('\n');
-
+/** Extract relative static declarations, ignoring examples in comments and strings. */
+function runtimeSpecifiers(source: ts.SourceFile): string[] {
   const specs: string[] = [];
-  for (const re of [STATIC_IMPORT_RE, REEXPORT_RE]) {
-    re.lastIndex = 0;
-    for (const match of loadTime.matchAll(re)) {
-      if (match[1].startsWith('.')) specs.push(match[1]);
+  for (const node of source.statements) {
+    if (ts.isImportDeclaration(node)) {
+      const phase = node.importClause?.phaseModifier;
+      if (phase === ts.SyntaxKind.TypeKeyword || phase === ts.SyntaxKind.DeferKeyword) continue;
+    } else if (ts.isExportDeclaration(node)) {
+      if (node.isTypeOnly) continue;
+    } else {
+      continue;
+    }
+
+    // Only declaration-level `type` removes an edge. Unmarked declarations
+    // with inline `type` specifiers remain conservative load-time edges.
+    const specifier = node.moduleSpecifier;
+    if (specifier && ts.isStringLiteral(specifier) && specifier.text.startsWith('.')) {
+      specs.push(specifier.text);
     }
   }
   return specs;
@@ -141,23 +134,37 @@ export interface ImportGraph {
 }
 
 /** Build the static load-time import graph over `files` (absolute paths). */
-export async function buildImportGraph(files: string[]): Promise<ImportGraph> {
+export async function buildImportGraph(files: string[], root = process.cwd()): Promise<ImportGraph> {
   const fileSet = new Set(files);
   const adjacency = new Map<string, Set<string>>();
   for (const file of files) adjacency.set(file, new Set());
+  if (files.length === 0) return { files, adjacency, edgeCount: 0 };
 
   let edgeCount = 0;
-  await Promise.all(files.map(async (file) => {
-    const source = await readFile(file, 'utf8');
-    const neighbours = adjacency.get(file)!;
-    for (const specifier of runtimeSpecifiers(source)) {
-      const target = resolveSpecifier(specifier, file, fileSet);
-      if (target && target !== file && !neighbours.has(target)) {
-        neighbours.add(target);
-        edgeCount++;
+  // Open the batch once, including files outside a tsconfig (isolated fixtures
+  // and TSX). Keep parser startup inside the cleanup boundary as well.
+  const api = new API({ cwd: resolve(root) });
+  try {
+    const snapshot = api.updateSnapshot({ openFiles: files });
+    try {
+      for (const file of files) {
+        const source = snapshot.getDefaultProjectForFile(file)?.program.getSourceFile(file);
+        if (!source) throw new Error(`TypeScript 7 API did not produce an AST for ${file}`);
+        const neighbours = adjacency.get(file)!;
+        for (const specifier of runtimeSpecifiers(source)) {
+          const target = resolveSpecifier(specifier, file, fileSet);
+          if (target && !neighbours.has(target)) {
+            neighbours.add(target);
+            edgeCount++;
+          }
+        }
       }
+    } finally {
+      snapshot.dispose();
     }
-  }));
+  } finally {
+    api.close();
+  }
 
   return { files, adjacency, edgeCount };
 }
@@ -238,7 +245,7 @@ export async function checkImportCycles(
     roots.map((sourceRoot) => listSourceFiles(join(resolvedRoot, sourceRoot))),
   )).flat().map((file) => resolve(file)).sort();
 
-  const graph = await buildImportGraph(files);
+  const graph = await buildImportGraph(files, resolvedRoot);
   const cycles = findCycles(graph).map((component) => ({
     files: [...component, component[0]].map((file) => relative(resolvedRoot, file)),
   }));
