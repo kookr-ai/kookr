@@ -1,8 +1,8 @@
-import { chmodSync, constants, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { chmodSync, constants, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import { GROK_DEFAULT_AUTH_SCOPE } from '../adapters/grok-auth-preflight.js';
 import {
   buildDoctorJsonReport,
@@ -63,6 +63,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'hooks.missing-write-timestamps',
   'ops.host-stale-dtach',
   'hooks.replay-checkpoints',
+  'ops.pipeline-starvation-state',
   'ops.prod-smoke-tick',
   'ops.maintenance-prune',
 ] as const;
@@ -74,7 +75,10 @@ const opsOkEnv = {
 } as const;
 
 /** Hermetic seams so unit tests never touch the host ~/.kookr or live HTTP. */
+const doctorStateRoot = mkdtempSync(join(tmpdir(), 'doctor-state-'));
+afterAll(() => rmSync(doctorStateRoot, { recursive: true, force: true }));
 const hermeticOps = {
+  pipelineStarvationStateDir: join(doctorStateRoot, 'absent'),
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
   probeSchedulesPausedByFailure: async () => null as SchedulesPausedByFailureProbeSnapshot | null,
@@ -218,6 +222,41 @@ function happyFixtures() {
 }
 
 describe('kookr doctor --json', () => {
+  it('reports a malformed recovery ledger in text and JSON without writes or work launches', async () => {
+    const dir = join(doctorStateRoot, 'malformed');
+    mkdirSync(dir);
+    const path = join(dir, 'owner-repo.json');
+    writeFileSync(path, '{"handledRunKeys":');
+    const before = readFileSync(path);
+    const run = commandRunner(happyFixtures());
+    const out = { log: vi.fn(), error: vi.fn() };
+    const deps = {
+      ...hermeticOps, pipelineStarvationStateDir: dir, env: opsOkEnv,
+      commandRunner: run, access: async () => {}, out,
+    };
+    const baselineRun = commandRunner(happyFixtures());
+    await buildDoctorJsonReport({
+      ...deps, pipelineStarvationStateDir: hermeticOps.pipelineStarvationStateDir,
+      commandRunner: baselineRun,
+    });
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    const report = JSON.parse(out.log.mock.calls.at(-1)![0]);
+    expect(report.checks).toContainEqual(expect.objectContaining({
+      id: 'ops.pipeline-starvation-state', status: 'warn', required: false,
+      detail: expect.stringContaining('malformed_json'),
+    }));
+    expect(await runDoctorCli([], deps)).toBe(0);
+    expect(out.log.mock.calls.at(-1)![0]).toContain('malformed_json');
+    expect(out.log.mock.calls.at(-1)![0]).toContain('cooldown and handled-run history');
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
+    expect(readFileSync(path)).toEqual(before);
+    expect(readdirSync(dir)).toEqual(['owner-repo.json']);
+    // Corrupt state adds no commands to the existing doctor probes.
+    expect(run.mock.calls).toEqual([
+      ...baselineRun.mock.calls, ...baselineRun.mock.calls, ...baselineRun.mock.calls,
+    ]);
+  });
+
   it('emits a passing JSON report for required launch prerequisites (ops advisory when off)', async () => {
     const run = commandRunner(happyFixtures());
 
