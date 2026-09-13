@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -90,16 +90,18 @@ describe('registerOssAttemptRoutes', () => {
     expect(broadcasts).toHaveLength(1);
   });
 
-  test('POST /api/oss-attempts/events silently skips own-namespace repos', async () => {
+  test.each(['pr_open', 'scouted'])('POST /api/oss-attempts/events silently skips own-namespace %s events', async (kind) => {
     await store.load();
-    const { app } = mkApp({ ossAttemptStore: store });
+    const save = vi.spyOn(store, 'save');
+    const { app, broadcasts } = mkApp({ ossAttemptStore: store });
     const res = await app.request('/api/oss-attempts/events', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
-        kind: 'pr_open',
+        kind,
         repo: 'kookr-ai/kookr',
         prNumber: 1,
+        issueNumber: 1,
         prUrl: 'https://github.com/kookr-ai/kookr/pull/1',
         prTitle: 'x',
       }),
@@ -109,6 +111,110 @@ describe('registerOssAttemptRoutes', () => {
     expect(body.accepted).toBe(false);
     expect(body.reason).toBe('own-namespace');
     expect(store.getAllAttempts()).toHaveLength(0);
+    expect(save).not.toHaveBeenCalled();
+    expect(broadcasts).toHaveLength(0);
+  });
+
+  async function expectIdentityRejected(event: Record<string, unknown>) {
+    const upsertPr = vi.spyOn(store, 'upsertPr');
+    const upsertScouted = vi.spyOn(store, 'upsertScouted');
+    const save = vi.spyOn(store, 'save');
+    const { app, broadcasts } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+    expect(res.status).toBe(400);
+    expect(upsertPr).not.toHaveBeenCalled();
+    expect(upsertScouted).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+    expect(broadcasts).toHaveLength(0);
+    expect(store.getAllAttempts()).toHaveLength(0);
+  }
+
+  describe.each(['pr_open', 'scouted'])('%s repository identities', (kind) => {
+    test.each([
+      undefined, null, 42, '', 'grafana', '/grafana', 'grafana/',
+      '.', '..', './grafana', '../grafana', 'grafana/.', 'grafana/..',
+      'grafana/grafana/extra', 'grafana//grafana', '/grafana/grafana', 'grafana/grafana/',
+      'bad owner/repo', 'owner/bad repo', 'owner/repo?query', 'owner\\repo',
+      ' owner/repo', 'owner/repo\n', 'owner/ repo',
+      `${'o'.repeat(40)}/repo`, `owner/${'r'.repeat(101)}`,
+      'owner/.bad repo', 'owner/.repo/extra', `owner/.${'r'.repeat(100)}`,
+      'owner/.git', 'owner/.GIT', 'owner/repo.git', 'owner/.config.git',
+    ])('rejects repository %j before any side effect', async (repo) => {
+      await expectIdentityRejected({ kind, repo, prNumber: 1, issueNumber: 1, prUrl: 'https://example.com/pr/1' });
+    });
+
+    test.each([
+      'Microsoft/TypeScript', `${'O'.repeat(39)}/${'R'.repeat(100)}`, 'Owner/Repo_name-v1.2',
+      'github/.github', 'Owner/.Config', 'Owner/..config', `Owner/.${'R'.repeat(99)}`,
+    ])('persists valid repository %s unchanged', async (repo) => {
+      const { app, broadcasts } = mkApp({ ossAttemptStore: store });
+      const res = await app.request('/api/oss-attempts/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind, repo, prNumber: 1, issueNumber: 1, prUrl: 'https://example.com/pr/1' }),
+      });
+      expect(res.status).toBe(200);
+      const id = kind === 'pr_open' ? `${repo}#1` : `${repo}#issue-1`;
+      expect(await res.json()).toEqual({ accepted: true, id });
+      const reloaded = new OssAttemptStore(tempDir);
+      await reloaded.load();
+      expect(reloaded.getAllAttempts()).toEqual([expect.objectContaining({ repo, id })]);
+      expect(broadcasts).toHaveLength(1);
+    });
+  });
+
+  describe.each([
+    { kind: 'pr_open', field: 'prNumber' },
+    { kind: 'scouted', field: 'issueNumber' },
+    { kind: 'pr_open', field: 'issueNumber' },
+  ])('$kind $field', ({ kind, field }) => {
+    test.each([
+      0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1,
+      '', ' ', '0', '-1', '1.5', '9007199254740993', 'NaN', 'Infinity',
+      true, false, [], {},
+    ])('rejects invalid number %j before any side effect', async (value) => {
+      await expectIdentityRejected({
+        kind, repo: 'grafana/grafana', prNumber: 1, prUrl: 'https://example.com/pr/1', [field]: value,
+      });
+    });
+
+    test.each([1, 42, Number.MAX_SAFE_INTEGER, '42', ' 42 ', '1e2', '9007199254740991'])('accepts positive safe integer %j', async (value) => {
+      const { app, broadcasts } = mkApp({ ossAttemptStore: store });
+      const res = await app.request('/api/oss-attempts/events', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind, repo: 'grafana/grafana', prNumber: 1, prUrl: 'https://example.com/pr/1', [field]: value,
+        }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ accepted: true });
+      const reloaded = new OssAttemptStore(tempDir);
+      await reloaded.load();
+      expect(reloaded.getAllAttempts()).toEqual([expect.objectContaining({ [field]: Number(value) })]);
+      expect(broadcasts).toHaveLength(1);
+    });
+  });
+
+  test.each([undefined, null])('preserves absent optional issue number %j', async (issueNumber) => {
+    const { app } = mkApp({ ossAttemptStore: store });
+    const res = await app.request('/api/oss-attempts/events', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'pr_open', repo: 'grafana/grafana', prNumber: 1, prUrl: 'https://example.com/pr/1', issueNumber }),
+    });
+    expect(res.status).toBe(200);
+    expect(store.getAllAttempts()).toEqual([expect.objectContaining({ issueNumber: null })]);
+  });
+
+  test.each(['pr_open', 'scouted'])('%s rejects an absent required number', async (kind) => {
+    for (const value of [undefined, null]) {
+      await expectIdentityRejected({ kind, repo: 'grafana/grafana', prUrl: 'https://example.com/pr/1', prNumber: value, issueNumber: value });
+    }
   });
 
   test('POST /api/oss-attempts/events rejects invalid kind', async () => {
