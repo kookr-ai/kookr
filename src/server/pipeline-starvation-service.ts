@@ -72,6 +72,7 @@ import {
 import {
   loadPipelineStarvationState,
   savePipelineStarvationState,
+  withPipelineStarvationStateMutation,
 } from '../core/pipeline-starvation-state.js';
 import { starvationInventExtraInstruction } from '../core/starvation-invent-policy.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
@@ -174,6 +175,16 @@ export class PipelineStarvationService {
   }
 
   async handleBatchOutcome(input: HandleBatchOutcomeInput): Promise<HandleBatchOutcomeResult> {
+    return withPipelineStarvationStateMutation(
+      input.outcome.repo,
+      () => this.handleBatchOutcomeWithOwnership(input),
+      { stateDir: this.deps.stateDir },
+    );
+  }
+
+  private async handleBatchOutcomeWithOwnership(
+    input: HandleBatchOutcomeInput,
+  ): Promise<HandleBatchOutcomeResult> {
     const nowMs = this.deps.now?.() ?? Date.now();
     const { outcome } = input;
     const source = input.source ?? STARVATION_TRIGGER_PROVENANCE;
@@ -509,6 +520,19 @@ export class PipelineStarvationService {
     const repo = resolveRepoFromTask(task);
     if (!repo) return null;
 
+    return withPipelineStarvationStateMutation(
+      repo,
+      () => this.kickBatchOnScoutTerminalWithOwnership(task, repo, terminalOutcome),
+      { stateDir: this.deps.stateDir },
+    );
+  }
+
+  private async kickBatchOnScoutTerminalWithOwnership(
+    task: Task,
+    repo: string,
+    terminalOutcome: TelegramTaskOutcome,
+  ): Promise<BatchKickAttemptResult | null> {
+    const taskId = task.id;
     const nowMs = this.deps.now?.() ?? Date.now();
     const prior = await loadPipelineStarvationState(repo, {
       stateDir: this.deps.stateDir,

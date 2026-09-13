@@ -1,8 +1,10 @@
 import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CapacityLedger } from '../core/capacity-ledger.js';
+import * as starvationState from '../core/pipeline-starvation-state.js';
+import { BATCH_OUTCOME_SCHEMA_VERSION, type PipelineStarvationRepoState } from '../core/pipeline-starvation.js';
 import { loadPipelineStarvationState } from '../core/pipeline-starvation-state.js';
 import type { Schedule } from '../core/schedule.js';
 import { TaskStore, type Task } from '../core/tasks.js';
@@ -39,6 +41,7 @@ describe('post-recovery scout to pipeline-starvation batch handoff integration (
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (previousBatchKick === undefined) delete process.env.KOOKR_PIPELINE_BATCH_KICK;
     else process.env.KOOKR_PIPELINE_BATCH_KICK = previousBatchKick;
 
@@ -171,4 +174,94 @@ describe('post-recovery scout to pipeline-starvation batch handoff integration (
     expect(launches.filter((launch) =>
       launch.playbookId?.includes('parallel-issue-batch'))).toHaveLength(1);
   });
+
+  it('serializes post-recovery arming with batch handling and duplicate scout completion (#3194)', async () => {
+    const checkout = join(tempDir, 'checkout');
+    const stateDir = join(tempDir, 'starvation-state');
+    await mkdir(checkout);
+    const taskStore = new TaskStore();
+    const launches: LaunchOpts[] = [];
+    const launcher = async (opts: LaunchOpts): Promise<LaunchResult<Task>> => {
+      launches.push(opts);
+      const task = taskStore.createTask({
+        prompt: opts.prompt,
+        cwd: opts.cwd,
+        playbookId: opts.playbookId,
+        playbookParameterValues: opts.playbookParameterValues,
+        projectId: opts.projectId,
+      });
+      return { task, queued: false, idempotentReplay: false };
+    };
+    const postRecovery = new PostRecoveryService({
+      listSchedules: () => [{
+        id: 'batch', name: 'Batch', enabled: true, cron: '0 * * * *', cwd: checkout,
+        playbook: {
+          path: 'parallel-issue-batch.md',
+          parameters: { repoFullName: REPO, localPath: checkout },
+        },
+        executionLedger: [],
+        createdAt: new Date(NOW).toISOString(),
+        updatedAt: new Date(NOW).toISOString(),
+      }],
+      setEnabled: () => undefined,
+      taskStore, launcher,
+      getCapacityLedger: capacityLedger,
+      isDispatchHealthy: () => true,
+      kookrDir: tempDir,
+      kickStateDir: join(tempDir, 'post-recovery-state'),
+      starvationStateDir: stateDir,
+      now: () => NOW,
+    });
+    const pipeline = new PipelineStarvationService({
+      taskStore, launcher,
+      broadcast: () => undefined,
+      kookrDir: tempDir, stateDir,
+      ideaScoutStateDirForRepo: () => join(tempDir, 'ideation'),
+      now: () => NOW,
+    });
+
+    // Pause the real arm transaction after loading, before its durable save.
+    // Both other entry points arrive while that transaction owns the ledger.
+    const armEntered = Promise.withResolvers<PipelineStarvationRepoState>();
+    const releaseArm = Promise.withResolvers<void>();
+    const save = starvationState.savePipelineStarvationState;
+    vi.spyOn(starvationState, 'savePipelineStarvationState').mockImplementationOnce(async (state, opts) => {
+      armEntered.resolve(state);
+      await releaseArm.promise;
+      return save(state, opts);
+    });
+    const recovery = postRecovery.runQueueFillKicks();
+    const arm = await armEntered.promise;
+    const scoutTaskId = arm.lastStarvationScoutTaskId!;
+    taskStore.startTask(scoutTaskId);
+    taskStore.completeTask(scoutTaskId);
+    const handled = pipeline.handleBatchOutcome({
+      outcome: {
+        schemaVersion: BATCH_OUTCOME_SCHEMA_VERSION,
+        outcome: 'blocked-empty', emptyClass: 'product', repo: REPO,
+        runKey: 'overlapping-batch', reason: 'No eligible issue remains',
+        generatedAt: new Date(NOW).toISOString(),
+      },
+      localPath: checkout,
+    });
+    const completed = pipeline.maybeKickBatchOnScoutTerminal(scoutTaskId, { kind: 'completed' });
+    const replay = pipeline.maybeKickBatchOnScoutTerminal(scoutTaskId, { kind: 'completed' });
+    releaseArm.resolve();
+    const [recoveryResult, batchResult, terminalResult, replayResult] = await Promise.all([
+      recovery, handled, completed, replay,
+    ]);
+    expect(recoveryResult[0]).toMatchObject({ kicked: true, batchArmStatus: 'armed', scoutTaskId });
+    expect(batchResult.decision.alreadyHandled).toBe(false);
+    expect(terminalResult?.result).toBe('batch_kicked');
+    expect(replayResult?.result).toBe('batch_skipped_concurrent');
+    expect(launches.filter((opts) => opts.playbookId?.includes('repository-idea-scout'))).toHaveLength(1);
+    expect(launches.filter((opts) => opts.playbookId?.includes('parallel-issue-batch'))).toHaveLength(1);
+    const durable = await loadPipelineStarvationState(REPO, { stateDir });
+    expect(durable.handledRunKeys).toEqual(['overlapping-batch']);
+    expect(durable.lastStarvationScoutTaskId).toBe(scoutTaskId);
+    expect(durable.lastBatchKickAt).toBe(new Date(NOW).toISOString());
+    expect(durable.kickBatchWhenScoutCompletes).toBeUndefined();
+    expect(durable.kickBatchWhenScoutCompletesAt).toBeUndefined();
+  });
+
 });

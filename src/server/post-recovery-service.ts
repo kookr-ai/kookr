@@ -52,6 +52,7 @@ import { isTerminatedAtLaunch } from '../shared/contracts/task.js';
 import {
   loadPipelineStarvationState,
   savePipelineStarvationState,
+  withPipelineStarvationStateMutation,
 } from '../core/pipeline-starvation-state.js';
 import { projectIdFromRepoSpecifier } from '../core/project-identity.js';
 import {
@@ -862,21 +863,23 @@ export class PostRecoveryService {
     nowMs: number,
   ): Promise<BatchArmOutcome> {
     try {
-      const prior = await loadPipelineStarvationState(repo, {
-        stateDir: this.deps.starvationStateDir,
-        nowMs,
-      });
-      const nowIso = new Date(nowMs).toISOString();
-      const next = {
-        ...prior,
-        lastStarvationScoutAt: nowIso,
-        lastStarvationScoutTaskId: scoutTaskId,
-        kickBatchWhenScoutCompletes: true,
-        kickBatchWhenScoutCompletesAt: nowIso,
-        updatedAt: nowIso,
-      };
-      await savePipelineStarvationState(next, { stateDir: this.deps.starvationStateDir });
-      return { status: 'armed' };
+      return await withPipelineStarvationStateMutation<BatchArmOutcome>(repo, async () => {
+        const prior = await loadPipelineStarvationState(repo, {
+          stateDir: this.deps.starvationStateDir,
+          nowMs,
+        });
+        const nowIso = new Date(nowMs).toISOString();
+        const next = {
+          ...prior,
+          lastStarvationScoutAt: nowIso,
+          lastStarvationScoutTaskId: scoutTaskId,
+          kickBatchWhenScoutCompletes: true,
+          kickBatchWhenScoutCompletesAt: nowIso,
+          updatedAt: nowIso,
+        };
+        await savePipelineStarvationState(next, { stateDir: this.deps.starvationStateDir });
+        return { status: 'armed' };
+      }, { stateDir: this.deps.starvationStateDir });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.deps.log?.(
