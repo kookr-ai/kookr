@@ -114,6 +114,233 @@ describe('ResourceWatchdogService', () => {
     return { service, audit, statePath, config, logger };
   }
 
+  test('keeps sampling while an investigation launch is pending', async () => {
+    vi.useFakeTimers();
+    let finishLaunch!: (result: LaunchResult) => void;
+    const launchTask = vi.fn(() => new Promise<LaunchResult>((resolve) => {
+      finishLaunch = resolve;
+    }));
+    const sampleImpl = vi.fn(() => ({ ...sample, sampledAt: new Date(nowMs).toISOString() }));
+    const { service, statePath, audit } = makeService({ launchImpl: launchTask, sampleImpl });
+    service.start();
+    try {
+      for (let interval = 1; interval <= 3; interval++) {
+        nowMs += 60_000;
+        sample = healthySample({ swapUsedPercent: 80 + interval });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(sampleImpl).toHaveBeenCalledTimes(interval + 1);
+        expect(service.getHealthSnapshot()).toMatchObject({
+          lastSampleAt: new Date(nowMs).toISOString(),
+          lastSample: { swapUsedPercent: 80 + interval },
+          sampleFreshness: { ageMs: 0, stale: false },
+          launchInFlight: {
+            startedAt: '2026-07-31T12:00:00.000Z',
+            ageMs: interval * 60_000,
+            kind: 'investigation',
+          },
+          spawnsIn24h: 1,
+          lastLaunch: null,
+          throttleOpen: false,
+          throttleRemainingMs: (30 - interval) * 60_000,
+        });
+        expect(launchTask).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      service.stop();
+      finishLaunch({ task: { id: 'slow-investigation' }, queued: false });
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+    expect(service.getHealthSnapshot()).toMatchObject({
+      launchInFlight: null,
+      lastLaunch: { status: 'spawned', taskId: 'slow-investigation' },
+      lastSample: { swapUsedPercent: 83 },
+      lastTriggerAt: new Date(nowMs).toISOString(),
+      throttleOpen: false,
+    });
+    const state: ResourceWatchdogPersistedState = JSON.parse(readFileSync(statePath, 'utf-8'));
+    expect(state.spawnTimestamps).toEqual(['2026-07-31T12:00:00.000Z']);
+    expect(state.lastSpawnTaskId).toBe('slow-investigation');
+    expect(state.lastTriggerAt).toBe(new Date(nowMs).toISOString());
+    expect(audit.records.filter((r) => r.action === 'spawn')).toMatchObject([
+      { taskId: 'slow-investigation', sample: { swapUsedPercent: 80 } },
+    ]);
+  });
+
+  test.each(['spawned', 'queued', 'rejected', 'terminated'] as const)(
+    'retains one launch owner across throttle expiry and stop/start until %s settlement',
+    async (outcome) => {
+      vi.useFakeTimers();
+      let finishLaunch!: (result: Awaited<ReturnType<ResourceWatchdogServiceDeps['launchTask']>>) => void;
+      let rejectLaunch!: (error: Error) => void;
+      const pending = new Promise<Awaited<ReturnType<ResourceWatchdogServiceDeps['launchTask']>>>((resolve, reject) => {
+        finishLaunch = resolve;
+        rejectLaunch = reject;
+      });
+      const launchTask = vi.fn<ResourceWatchdogServiceDeps['launchTask']>()
+        .mockImplementationOnce(() => pending)
+        .mockResolvedValue({ task: { id: 'next-investigation' }, queued: false });
+      const sampleImpl = vi.fn(() => ({ ...sample, sampledAt: new Date(nowMs).toISOString() }));
+      const { service, statePath, audit } = makeService({
+        launchImpl: launchTask,
+        sampleImpl,
+        config: { throttleMs: 120_000 },
+      });
+      const failed = outcome === 'rejected' || outcome === 'terminated';
+      try {
+        service.start();
+        service.stop();
+        nowMs += 180_000;
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(sampleImpl).toHaveBeenCalledTimes(1);
+        service.start();
+        for (let interval = 0; interval < 3; interval++) {
+          nowMs += 60_000;
+          await vi.advanceTimersByTimeAsync(60_000);
+        }
+        expect(sampleImpl).toHaveBeenCalledTimes(5);
+        expect(launchTask).toHaveBeenCalledTimes(1);
+        expect(service.getHealthSnapshot()).toMatchObject({
+          throttleOpen: true,
+          lastDecision: 'launch_in_flight',
+          launchInFlight: { ageMs: 360_000, kind: 'investigation' },
+          lastSampleAt: new Date(nowMs).toISOString(),
+          spawnsIn24h: 1,
+        });
+        // Healthy samples can advance the baseline while the original launch
+        // is pending; its eventual result must not roll that baseline back.
+        sample = healthySample({ oomKillTotal: 0 });
+        nowMs += 60_000;
+        await vi.advanceTimersByTimeAsync(60_000);
+        const latestSampleAt = new Date(nowMs).toISOString();
+        service.stop();
+        if (outcome === 'rejected') {
+          rejectLaunch(new Error('late adapter failure'));
+        } else {
+          finishLaunch({
+            task: {
+              id: 'original-investigation',
+              ...(outcome === 'terminated'
+                ? { disposition: { reason: 'launch_error', detail: 'late adapter failure' } }
+                : {}),
+            },
+            queued: outcome === 'queued',
+          });
+        }
+        await vi.advanceTimersByTimeAsync(0);
+        nowMs += 180_000;
+        await vi.advanceTimersByTimeAsync(180_000);
+        expect(sampleImpl).toHaveBeenCalledTimes(6);
+        expect(launchTask).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+        expect(service.getHealthSnapshot()).toMatchObject({
+          launchInFlight: null,
+          lastLaunch: {
+            status: failed ? 'failed' : outcome,
+            at: latestSampleAt,
+            taskId: outcome === 'rejected' ? null : 'original-investigation',
+            error: failed ? expect.stringContaining('late adapter failure') : null,
+          },
+          oomKillBaseline: { sampledAt: latestSampleAt },
+          spawnsIn24h: 1,
+        });
+        const state: ResourceWatchdogPersistedState = JSON.parse(readFileSync(statePath, 'utf-8'));
+        expect(state.spawnTimestamps).toEqual(['2026-07-31T12:00:00.000Z']);
+        expect(state.lastSpawnTaskId).toBe(failed ? null : 'original-investigation');
+        expect(state.oomKillBaseline?.sampledAt).toBe(latestSampleAt);
+        expect(audit.records.filter((r) => r.action === (failed ? 'spawn_failed' : 'spawn')))
+          .toMatchObject([{ sample: { swapUsedPercent: 80 } }]);
+        service.start();
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(launchTask).toHaveBeenCalledTimes(1);
+        expect(service.getHealthSnapshot().lastLaunch?.status).toBe(failed ? 'failed' : outcome);
+        sample = healthySample({ swapUsedPercent: 90 });
+        nowMs += 60_000;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(launchTask).toHaveBeenCalledTimes(2);
+        expect(service.getHealthSnapshot()).toMatchObject({
+          spawnsIn24h: 2,
+          lastSpawnTaskId: 'next-investigation',
+        });
+      } finally {
+        service.stop();
+        finishLaunch({ task: { id: 'cleanup' }, queued: false });
+        await vi.advanceTimersByTimeAsync(0);
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  test.each([60_000, 180_000])('preserves an OOM counter reset during a pending launch at %i ms', async (elapsedMs) => {
+    sample = healthySample({ swapUsedPercent: 80, oomKillTotal: 5 });
+    let finishLaunch!: (result: LaunchResult) => void;
+    const launchTask = vi.fn<ResourceWatchdogServiceDeps['launchTask']>()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishLaunch = resolve; }))
+      .mockResolvedValue({ task: { id: 'oom-investigation' }, queued: false });
+    const { service, statePath, audit } = makeService({
+      launchImpl: launchTask,
+      config: { throttleMs: 120_000 },
+    });
+    const first = service.runOnce();
+    nowMs += elapsedMs;
+    sample = healthySample({ swapUsedPercent: 80, oomKillTotal: 0, sampledAt: new Date(nowMs).toISOString() });
+    const reset = service.runOnce();
+    try {
+      expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline.total).toBe(0);
+      // A new OOM increase must remain unconsumed until a launch is available.
+      nowMs += 60_000;
+      sample = healthySample({ oomKillTotal: 1, sampledAt: new Date(nowMs).toISOString() });
+      void service.runOnce();
+      expect(launchTask).toHaveBeenCalledTimes(1);
+      expect(service.getHealthSnapshot().oomKillBaseline?.total).toBe(0);
+    } finally {
+      finishLaunch({ task: { id: 'original-investigation' }, queued: false });
+      await Promise.all([first, reset]);
+    }
+    await service.runOnce();
+    expect(launchTask).toHaveBeenCalledTimes(2);
+    expect(service.getHealthSnapshot().oomKillBaseline?.total).toBe(1);
+    expect(audit.records.filter((r) => r.action === 'spawn')[1]?.triggers)
+      .toMatchObject([{ reason: 'oom_kill_delta', observed: 1 }]);
+  });
+
+  test('refreshes disabled pressure with one outstanding auto-enabled launch', async () => {
+    vi.useFakeTimers();
+    let finishLaunch!: (result: LaunchResult) => void;
+    let dtachCount = 20; // Retained watchdog audit fixture: soft-bound pressure.
+    const launchTask = vi.fn(() => new Promise<LaunchResult>((resolve) => { finishLaunch = resolve; }));
+    const evaluate = vi.fn();
+    const { service, audit } = makeService({
+      config: { enabled: false, throttleMs: 60_000 },
+      getStaleDtachCount: () => dtachCount,
+      pressureWhileDisabledAlerter: { evaluate },
+      launchImpl: launchTask,
+    });
+    try {
+      service.start();
+      for (let interval = 1; interval <= 3; interval++) {
+        dtachCount++;
+        nowMs += 60_000;
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(service.getHealthSnapshot({ staleDtachCount: dtachCount })).toMatchObject({
+          lastSampleAt: new Date(nowMs).toISOString(),
+          lastSample: { processCounts: { dtach: dtachCount } },
+          pressureWhileDisabled: true,
+          lastDecision: 'launch_in_flight',
+          launchInFlight: { ageMs: interval * 60_000 },
+        });
+      }
+      expect(launchTask).toHaveBeenCalledTimes(1);
+      expect(evaluate).toHaveBeenCalledTimes(4);
+      expect(audit.records.filter((r) => r.action === 'auto_enable')).toHaveLength(1);
+    } finally {
+      service.stop();
+      finishLaunch({ task: { id: 'auto-enabled-investigation' }, queued: false });
+      await vi.advanceTimersByTimeAsync(0);
+      vi.useRealTimers();
+    }
+  });
+
   test('health ages the last sample without sampling again and recovers after a fresh sample', async () => {
     const sampleImpl = vi.fn(() => healthySample({ sampledAt: new Date(nowMs).toISOString() }));
     const { service } = makeService({ sampleImpl });
