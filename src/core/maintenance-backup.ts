@@ -2,8 +2,7 @@ import { createReadStream, createWriteStream } from 'node:fs';
 import { lstat, mkdir, readdir, readlink, stat, unlink } from 'node:fs/promises';
 import { createGzip } from 'node:zlib';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { once } from 'node:events';
-import { finished } from 'node:stream/promises';
+import { finished, pipeline } from 'node:stream/promises';
 
 /**
  * Crash-consistent whole-data-directory backup.
@@ -282,41 +281,40 @@ async function writeGzipTar({
 }): Promise<void> {
   const output = createWriteStream(backupPath, { flags: 'wx', mode: 0o600 });
   const gzip = createGzip({ level: 6 });
-  gzip.pipe(output);
-  const done = finished(output);
+  let ownsArchive = false;
+  output.once('open', () => { ownsArchive = true; });
+  let input: ReturnType<typeof createReadStream> | undefined;
 
-  async function write(chunk: Buffer): Promise<void> {
-    if (!gzip.write(chunk)) await once(gzip, 'drain');
-  }
-
-  async function writeEntryHeader(entryPath: string, type: 'directory' | 'file' | 'symlink', size: number, mode: number, mtimeMs: number, linkTarget?: string): Promise<void> {
+  function entryHeader(entryPath: string, type: 'directory' | 'file' | 'symlink', size: number, mode: number, mtimeMs: number, linkTarget?: string): Buffer {
     const normalizedPath = type === 'directory' && !entryPath.endsWith('/') ? `${entryPath}/` : entryPath;
-    await write(tarHeader({
+    return tarHeader({
       path: normalizedPath,
       mode,
       size,
       mtime: Math.floor(mtimeMs / 1000),
       type,
       linkTarget,
-    }));
+    });
   }
 
-  async function writeFileEntry(entryPath: string, sourcePath: string, size: number, mode: number, mtimeMs: number): Promise<void> {
+  async function* fileEntry(entryPath: string, sourcePath: string, size: number, mode: number, mtimeMs: number, signal?: AbortSignal): AsyncGenerator<Buffer> {
     const current = await lstat(sourcePath);
     if (!current.isFile() || current.size !== size) {
       throw new Error(
         `file changed while backing up ${sourcePath}: expected ${size} bytes, found ${current.isFile() ? current.size : 'non-file'}`,
       );
     }
-    await writeEntryHeader(entryPath, 'file', size, mode, mtimeMs);
+    yield entryHeader(entryPath, 'file', size, mode, mtimeMs);
     let bytesWritten = 0;
     if (size > 0) {
-      const input = createReadStream(sourcePath, { start: 0, end: size - 1 });
+      signal?.throwIfAborted();
+      input = createReadStream(sourcePath, { start: 0, end: size - 1, signal });
       for await (const chunk of input) {
         const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         bytesWritten += buffer.length;
-        await write(buffer);
+        yield buffer;
       }
+      input = undefined;
     }
     if (bytesWritten !== size) {
       throw new Error(
@@ -324,41 +322,51 @@ async function writeGzipTar({
       );
     }
     const padding = (TAR_BLOCK_BYTES - (size % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
-    if (padding > 0) await write(Buffer.alloc(padding));
+    if (padding > 0) yield Buffer.alloc(padding);
   }
 
-  async function writeBufferEntry(entryPath: string, contents: Buffer, mode: number, mtimeMs: number): Promise<void> {
-    await writeEntryHeader(entryPath, 'file', contents.length, mode, mtimeMs);
-    await write(contents);
+  function* bufferEntry(entryPath: string, contents: Buffer, mode: number, mtimeMs: number): Generator<Buffer> {
+    yield entryHeader(entryPath, 'file', contents.length, mode, mtimeMs);
+    yield contents;
     const padding = (TAR_BLOCK_BYTES - (contents.length % TAR_BLOCK_BYTES)) % TAR_BLOCK_BYTES;
-    if (padding > 0) await write(Buffer.alloc(padding));
+    if (padding > 0) yield Buffer.alloc(padding);
   }
 
-  try {
+  async function* archive({ signal }: { signal?: AbortSignal } = {}): AsyncGenerator<Buffer> {
     const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
-    await writeBufferEntry(MANIFEST_NAME, manifestBytes, 0o600, createdAt.getTime());
+    yield* bufferEntry(MANIFEST_NAME, manifestBytes, 0o600, createdAt.getTime());
 
-    await writeEntryHeader('data/', 'directory', 0, 0o700, createdAt.getTime());
+    yield entryHeader('data/', 'directory', 0, 0o700, createdAt.getTime());
     for (const entry of manifest.entries) {
+      signal?.throwIfAborted();
       const archivePath = `data/${entry.path}`;
       const sourcePath = join(dataDir, entry.path);
       const mtimeMs = Date.parse(entry.mtime);
       if (entry.type === 'directory') {
-        await writeEntryHeader(archivePath, 'directory', 0, entry.mode, mtimeMs);
+        yield entryHeader(archivePath, 'directory', 0, entry.mode, mtimeMs);
       } else if (entry.type === 'symlink') {
-        await writeEntryHeader(archivePath, 'symlink', 0, entry.mode, mtimeMs, entry.linkTarget);
+        yield entryHeader(archivePath, 'symlink', 0, entry.mode, mtimeMs, entry.linkTarget);
       } else {
         await beforeArchiveEntry?.(entry);
-        await writeFileEntry(archivePath, sourcePath, entry.bytes, entry.mode, mtimeMs);
+        signal?.throwIfAborted();
+        yield* fileEntry(archivePath, sourcePath, entry.bytes, entry.mode, mtimeMs, signal);
       }
     }
-    await write(Buffer.alloc(TAR_BLOCK_BYTES * 2));
-    gzip.end();
-    await done;
+    yield Buffer.alloc(TAR_BLOCK_BYTES * 2);
+  }
+
+  try {
+    // Pipeline propagates destination failures back through gzip, including
+    // when the archive producer is blocked by compression backpressure.
+    await pipeline(archive, gzip, output);
   } catch (err) {
-    gzip.destroy();
-    output.destroy();
-    await done.catch(() => undefined);
+    // The source file is nested inside the generator, so wait for its close
+    // as well as the streams owned directly by pipeline before returning.
+    if (input) {
+      input.destroy();
+      await finished(input).catch(() => undefined);
+    }
+    if (ownsArchive) await unlink(backupPath).catch(() => undefined);
     throw err;
   }
 }
@@ -388,18 +396,13 @@ export async function createMaintenanceBackup(options: MaintenanceBackupOptions)
     throw new Error(`backup archive already exists: ${backupPath}`);
   }
 
-  try {
-    await writeGzipTar({
-      backupPath,
-      dataDir,
-      manifest,
-      createdAt: createdAtDate,
-      beforeArchiveEntry: options.beforeArchiveEntry,
-    });
-  } catch (err) {
-    await unlink(backupPath).catch(() => undefined);
-    throw err;
-  }
+  await writeGzipTar({
+    backupPath,
+    dataDir,
+    manifest,
+    createdAt: createdAtDate,
+    beforeArchiveEntry: options.beforeArchiveEntry,
+  });
 
   const archiveBytes = (await stat(backupPath)).size;
   return {
