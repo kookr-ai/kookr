@@ -30,20 +30,28 @@ function rawMime(ext: string): string {
   return 'application/octet-stream';
 }
 
-/** Read one extra byte to detect growth beyond the cap without loading the whole file. */
+/** Allocate as bytes arrive, reading one extra byte to detect growth beyond the cap. */
 async function readPreviewBytes(filePath: string, limit: number): Promise<Buffer> {
   const handle = await open(filePath, 'r');
   try {
-    const buffer = Buffer.alloc(limit + 1);
+    const chunks: Buffer[] = [];
     let total = 0;
-    while (total < buffer.length) {
-      const { bytesRead } = await handle.read({
-        buffer, offset: total, length: buffer.length - total, position: total,
-      });
-      if (bytesRead === 0) break;
-      total += bytesRead;
+    while (total < limit + 1) {
+      const buffer = Buffer.alloc(Math.min(64 * 1024, limit + 1 - total));
+      let offset = 0;
+      while (offset < buffer.length) {
+        const { bytesRead } = await handle.read({
+          buffer, offset, length: buffer.length - offset, position: total,
+        });
+        if (bytesRead === 0) break;
+        offset += bytesRead;
+        total += bytesRead;
+      }
+      chunks.push(buffer.subarray(0, offset));
+      if (offset < buffer.length) break;
     }
-    return buffer.subarray(0, total);
+    // Combine once so copying stays linear in the number of bytes read.
+    return Buffer.concat(chunks, total);
   } finally {
     await handle.close();
   }

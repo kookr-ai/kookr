@@ -79,10 +79,36 @@ describe('file routes', () => {
         : { error: 'too_large', size: limit + 1 });
       const reads = await Promise.all(read.mock.results.map((result) => result.value));
       expect(reads.reduce((total, result) => total + result.bytesRead, 0)).toBe(limit + 1);
+      const buffers = new Set(read.mock.calls.map(([options]) => options?.buffer));
+      expect([...buffers].reduce((total, buffer) => total + (buffer?.byteLength ?? 0), 0)).toBeLessThanOrEqual(limit + 1);
       expect(read.mock.calls.every(([options]) =>
-        options?.buffer?.byteLength === limit + 1
-        && (options.offset ?? 0) + (options.length ?? 0) <= limit + 1)).toBe(true);
+        (options?.buffer?.byteLength ?? Infinity) <= 64 * 1024
+        && (options?.offset ?? 0) + (options?.length ?? 0) <= (options?.buffer?.byteLength ?? 0)
+        && Number(options?.position) + (options?.length ?? 0) <= limit + 1)).toBe(true);
       expect(readFile).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledOnce();
+    });
+
+    test.each([0, 9, 64 * 1024, 64 * 1024 + 1, 367_629])('bounds allocations for a %i-byte preview', async (size) => {
+      const file = join(root, 'allocation.txt');
+      const content = Buffer.alloc(size, 'x');
+      writeFileSync(file, content);
+      const { close } = await trackReads(file);
+      const alloc = vi.spyOn(Buffer, 'alloc');
+      const allocUnsafe = vi.spyOn(Buffer, 'allocUnsafe');
+      const concat = vi.spyOn(Buffer, 'concat');
+
+      const res = await mkApp({ serverCwd: root }).request(url(file));
+      // Include scratch storage and the final concatenation. Allow one unused
+      // chunk for the EOF probe, plus bounded request/response bookkeeping.
+      const sizes = [...alloc.mock.calls, ...allocUnsafe.mock.calls].map(([bytes]) => bytes);
+      expect(Math.max(...sizes)).toBeLessThanOrEqual(size + 64 * 1024);
+      expect(sizes.reduce((total, bytes) => total + bytes, 0)).toBeLessThanOrEqual(2 * size + 128 * 1024);
+      const copiedBytes = concat.mock.calls.reduce((total, [buffers]) =>
+        total + buffers.reduce((length, buffer) => length + buffer.length, 0), 0);
+      expect(copiedBytes).toBeLessThanOrEqual(size);
+      expect(res.status).toBe(200);
+      expect(route === 'meta' ? (await res.json()).content : await res.text()).toBe(content.toString());
       expect(close).toHaveBeenCalledOnce();
     });
 
@@ -111,6 +137,23 @@ describe('file routes', () => {
       expect(res.status).toBe(200);
       expect(route === 'meta' ? (await res.json()).content : await res.text()).toBe(content);
       expect(read.mock.calls.length).toBeGreaterThan(0);
+      expect(close).toHaveBeenCalledOnce();
+    });
+
+    test('accepts growth within the cap across chunk and UTF-8 boundaries', async () => {
+      const file = join(root, 'growing-within-cap.txt');
+      const content = 'a'.repeat(64 * 1024 - 1) + '€🙂z';
+      writeFileSync(file, 'small');
+      const { close } = await trackReads(file, 8191);
+      vi.mocked(stat).mockImplementationOnce(async () => {
+        const beforeGrowth = statSync(file);
+        writeFileSync(file, content);
+        return beforeGrowth;
+      });
+
+      const res = await mkApp({ serverCwd: root }).request(url(file));
+      expect(res.status).toBe(200);
+      expect(route === 'meta' ? (await res.json()).content : await res.text()).toBe(content);
       expect(close).toHaveBeenCalledOnce();
     });
 
