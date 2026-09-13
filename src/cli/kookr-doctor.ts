@@ -34,6 +34,7 @@ import {
 } from './kookr-github.js';
 import { DEFAULT_DTACH_PRESSURE_SOFT_BOUND } from '../core/resource-watchdog-eval.js';
 import type { ResourceWatchdogHealthSnapshot } from '../core/resource-watchdog-types.js';
+import { checkPipelineStarvationState } from './doctor-pipeline-starvation-state.js';
 
 type DoctorCheckStatus = 'ok' | 'warn' | 'fail';
 type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -344,6 +345,8 @@ interface RunDoctorDeps {
    * KOOKR_PORT is set. null = unreachable / skip.
    */
   probeHookReplayCheckpoints?: HookReplayCheckpointsProbe;
+  /** Fixture directory for the offline recovery-ledger check; defaults to the runtime's user-scoped path. */
+  pipelineStarvationStateDir?: string;
   /**
    * Optional override for the live HTTP latency probe (issue #2496).
    * Defaults to timed GETs of /api/ready (500ms) then /api/health (2s) when
@@ -385,6 +388,7 @@ hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0)
 hooks.missing-write-timestamps (advisory warn when the missing-write-timestamp ratio exceeds threshold with enough sample),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
 hooks.replay-checkpoints (advisory warn when hookReplayCheckpoints sessionCount/fileBytes exceed soft bounds),
+ops.pipeline-starvation-state (bounded read-only advisory for malformed, unreadable, unsupported or foreign recovery ledgers),
 ops.prod-smoke-tick (advisory warn when the hourly smoke artifact is in alert),
 ops.maintenance-prune (advisory warn when scheduled data-dir prune is off),
 and agent.grok-auth (advisory WARN when grok is on PATH; required FAIL when
@@ -548,6 +552,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkHookMissingWriteTimestamps(env, hookIngestionProbe));
   checks.push(await checkHostStaleDtach(env, deps.probeHostStaleDtach));
   checks.push(await checkHookReplayCheckpoints(env, deps.probeHookReplayCheckpoints));
+  checks.push(await checkPipelineStarvationState(deps.pipelineStarvationStateDir));
   checks.push(checkProdSmokeTick(env, deps.readProdSmokeTickAlert));
   checks.push(await checkMaintenancePruneSchedule(env, deps.probeMaintenancePruneTimer));
 

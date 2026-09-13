@@ -39,6 +39,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
 | Free capacity and an empty queue, but no visible recovery scout | `postRecoveryQueueFill` | Check lifecycle state, freshness, then the stable row reason — [post-recovery queue fill](#3c-post-recovery-queue-fill-issue-2895) |
+| Refill errors mention state parsing or reading; recovery history looks wrong | `kookr doctor` → `ops.pipeline-starvation-state` | Preserve the ledger and inspect the specific advisory — [pipeline recovery state](#3d-pipeline-recovery-state) |
 | Multi-hour / multi-day "prod smoke" paging or artifact stuck in alert | `prodSmokeTick` (+ on-disk alert JSON) | **Symptom only** — inspect fields; do not re-run smoke on the health path — [smoke tick](#4-prod-smoke-tick-symptom-only) |
 | Host pressure (dtach orphans, swap) with no auto-investigation | `resourceWatchdog.enabled == false` | Enable `KOOKR_RESOURCE_WATCHDOG=1` and restart — [resource watchdog](#5-enable-resource-watchdog) |
 | `staleProcesses.dtach.count` high while `sessionReaper` orphans stay ~0 | `staleProcesses.dtach` vs `sessionReaper` (+ `hostStaleDtachReaper`) | Host-stale class — **not** a broken session reaper; prefer host-stale reaper + optional resource watchdog — [host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper) |
@@ -457,6 +458,38 @@ and use `evaluatedAt` plus `controlPlane.lastGoodAgeMs`. Even a fresh timestamp 
 not proof that capacity, drain, SAFE MODE, or dispatch gates remain unchanged.
 
 ---
+
+## 3d. Pipeline recovery state
+
+Run `kookr doctor` or `kookr doctor --json` as the same OS user that runs the
+supervisor. The `ops.pipeline-starvation-state` check reads recovery ledgers
+under `~/.kookr/playbook-state/pipeline-starvation/`, even when the server is
+offline. This user-scoped path does **not** follow `KOOKR_DIR` or the server port.
+Doctor does not reset, delete, repair, or launch work from these ledgers.
+
+The check inspects at most 100 directory entries (including ignored files) and
+256 KiB per ledger, plus one byte to detect growth past that limit. It skips
+hidden files and non-JSON names, and refuses symlinks and non-regular files.
+`scan_limit` means coverage is incomplete; `file_too_large` means that ledger
+was not parsed. Neither warning establishes corruption. A successful scan
+distinguishes absent state from valid JSON, schema, and repository identity; it does
+not validate every optional history field.
+
+| Advisory in text and JSON `detail` | Meaning and next check |
+| --- | --- |
+| `malformed_json` | JSON parsing throws during runtime refill. Preserve the original bytes and inspect a copy for truncation or an interrupted external edit. |
+| `unreadable` | Doctor could not safely read the path. Check the reported filesystem error, file type, ownership, and permissions as the supervisor user. |
+| `unsupported_schema` | The envelope is not supported by this build. Runtime loads empty history for an unsupported object schema; non-object JSON can also throw. Check the producing version before considering recovery. |
+| `repository_identity_mismatch` | The repository is invalid or its normalized slug does not match the filename. Runtime currently accepts foreign repository strings. Confirm the intended repository from independent records; slug normalization can map different names to the same filename, so a match alone cannot prove ownership. |
+
+Before any operator-led recovery, keep an untouched backup and coordinate a
+window with no ledger writers. Preserve cooldown timestamps (including scout
+and batch-kick times) and handled-run history: deleting or resetting them can
+repeat work or bypass cooldowns. Compare a copy with a known-good backup and the
+intended repository. Do not replace history with an empty object to silence the
+warning. Re-run doctor after an independently reviewed recovery; this check
+does not change runtime loading or guarantee that every malformed state fails
+closed. Warnings are advisory by default; `--strict` makes them exit non-zero.
 
 ## 4. Prod smoke tick (symptom only)
 
