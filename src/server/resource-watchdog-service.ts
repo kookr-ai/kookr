@@ -7,6 +7,7 @@
  */
 
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
+import { isTerminatedAtLaunch, type TaskDisposition } from '../shared/contracts/task.js';
 import {
   evaluateResourceWatchdog,
   evaluatePressureWhileDisabled,
@@ -41,6 +42,7 @@ import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressu
 import { MAX_LAUNCH_TIMEOUT_SEC } from '../core/settings-store.js';
 
 const MAX_PERSISTENCE_ERROR_CHARS = 500;
+const MAX_LAUNCH_ERROR_CHARS = 500;
 
 export interface ResourceWatchdogServiceDeps {
   getConfig: () => ResourceWatchdogConfig;
@@ -51,7 +53,10 @@ export interface ResourceWatchdogServiceDeps {
    * Launch via the standard path (same as POST /api/tasks). Must honor
    * capacity/backpressure. Injected so tests never spawn real tasks.
    */
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
+  launchTask: (opts: LaunchOpts) => Promise<LaunchResult<{
+    id: string;
+    disposition?: Pick<TaskDisposition, 'reason' | 'detail'> | null;
+  }>>;
   /** Optional tail of server.log for the brief (already truncated). */
   readServerLogTail?: () => string | null;
   /** Optional recent audit lines for the brief. */
@@ -101,6 +106,7 @@ export class ResourceWatchdogService {
   private lastSample: ResourceWatchdogSample | null = null;
   private samplingStartedAtMs: number | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
+  private lastLaunch: ResourceWatchdogHealthSnapshot['lastLaunch'] = null;
   private persistenceHealth: ResourceWatchdogHealthSnapshot['persistence'];
 
   constructor(deps: ResourceWatchdogServiceDeps) {
@@ -247,6 +253,7 @@ export class ResourceWatchdogService {
       throttleOpen,
       throttleRemainingMs,
       lastDecision,
+      lastLaunch: this.lastLaunch ? { ...this.lastLaunch } : null,
       pressureWhileDisabled: pressure.pressureWhileDisabled,
       pressureWhileDisabledReason: pressure.pressureWhileDisabledReason,
       autoEnableOnPressure: config.autoEnableOnPressure,
@@ -569,6 +576,7 @@ export class ResourceWatchdogService {
       recentAuditTail: this.readAuditTail() ?? undefined,
     });
 
+    let failedTaskId: string | null = null;
     try {
       const result = await this.launchTask({
         prompt,
@@ -583,11 +591,23 @@ export class ResourceWatchdogService {
         autoCloseOnSignal: true,
       });
       const taskId = result.task.id;
+      if (isTerminatedAtLaunch(result.task)) {
+        failedTaskId = taskId;
+        const reason = result.task.disposition?.reason ?? 'launch_error';
+        const detail = result.task.disposition?.detail?.trim();
+        throw new Error(`task terminated during launch (${reason})${detail ? `: ${detail}` : ''}`);
+      }
       this.state = {
         ...this.state,
         lastSpawnTaskId: taskId,
       };
       this.persistState();
+      this.lastLaunch = {
+        status: result.queued ? 'queued' : 'spawned',
+        at: this.nowIso(),
+        taskId,
+        error: null,
+      };
       this.logger.warn(
         `[resource-watchdog] spawned ${decision.kind} task ${taskId}` +
           (result.queued ? ' (queued)' : '') +
@@ -604,17 +624,27 @@ export class ResourceWatchdogService {
         spawnsInWindow: decision.spawnsInWindow,
       }));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = (rawMessage || 'unknown launch failure').slice(0, MAX_LAUNCH_ERROR_CHARS);
+      this.lastDecision = 'spawn_failed';
+      this.lastLaunch = {
+        status: 'failed',
+        at: this.nowIso(),
+        taskId: failedTaskId,
+        error: message,
+      };
       this.logger.warn(`[resource-watchdog] spawn failed: ${message}`);
       // Throttle already armed above — do not clear it. A host under
       // pressure that rejects launches must quiet for throttleMs, not retry
-      // every sample interval.
+      // every sample interval. Keep failed task IDs in health diagnostics and
+      // the audit trail; never store them as the last accepted launch.
       this.auditSink.append(buildAuditRecord({
         action: 'spawn_failed',
         timestamp: this.nowIso(),
         sample,
         triggers: decision.triggers,
         kind: decision.kind,
+        ...(failedTaskId ? { taskId: failedTaskId } : {}),
         error: message,
         spawnsInWindow: decision.spawnsInWindow,
       }));
@@ -715,6 +745,7 @@ export function defaultResourceWatchdogHealthSnapshot(
     throttleOpen: true,
     throttleRemainingMs: 0,
     lastDecision: enabled ? null : 'disabled',
+    lastLaunch: null,
     pressureWhileDisabled: false,
     pressureWhileDisabledReason: null,
     autoEnableOnPressure,

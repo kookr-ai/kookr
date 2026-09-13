@@ -226,7 +226,17 @@ export interface ResourceWatchdogHealthSnapshot {
     | 'disabled'
     | 'auto_enable'
     | 'spawn_persist_failed'
+    | 'spawn_failed'
     | null;
+  /** Latest completed launch call in this process; retained across idle/throttled samples. */
+  lastLaunch: {
+    status: 'spawned' | 'queued' | 'failed';
+    at: string;
+    /** Includes failed-at-launch tasks; null when launch threw before returning a task. */
+    taskId: string | null;
+    /** Failure diagnostic capped at 500 characters; null for accepted launches. */
+    error: string | null;
+  } | null;
   /**
    * Issue #2039 / #2354: true when the watchdog master switch is off *and* a
    * host-pressure gauge (currently `staleProcesses.dtach`) exceeds its soft
