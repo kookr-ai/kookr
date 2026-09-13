@@ -4,12 +4,17 @@ import type { Task, TaskStore } from '../core/tasks.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
 import type { TaskDisposition, TaskReapOutcome } from '../shared/contracts/task.js';
-import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { buildReapDisposition } from '../core/hung-task-reaper.js';
 import { nowISO } from '../core/interaction-log.js';
 import { hungTaskReportBasename } from './hung-task-report-paths.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import {
+  reaperEvidence,
+  describeReaperEvidenceFailure,
+  writeReaperAuditRow,
+  type ReaperEvidenceStatus,
+} from './bounded-reaper-evidence.js';
 import {
   persistReapReport,
   type ReapReportPersistOutcome,
@@ -86,6 +91,9 @@ export interface HungTaskReapResult {
    * `outcome` (the lifecycle disposition) — the reap itself always succeeded.
    */
   reportPersistence: ReapReportPersistOutcome['status'];
+  /** Ancillary evidence status; a timeout never confirms durability. */
+  dispositionPersistence: ReaperEvidenceStatus;
+  auditPersistence: ReaperEvidenceStatus;
 }
 
 /**
@@ -219,12 +227,12 @@ async function writeHungTaskReport(
 }
 
 /**
- * Reap a single hung task (issue #1526 Phase A / FM6): write an evidence
- * report, terminate the task (kills the session via the terminal backend's
+ * Reap a single hung task (issue #1526 Phase A / FM6): terminate the task
+ * (kills the session via the terminal backend's
  * existing kill path, transitions to the existing `terminated` status, purges
  * attention-queue entries, releases leases/claims — all via the same
- * `terminateTask` reconcile() already uses for dead sessions), write an audit
- * row, and broadcast an alert. The caller is responsible for confirming
+ * `terminateTask` reconcile() already uses for dead sessions), then attempt
+ * bounded evidence writes and broadcast an alert. The caller is responsible for confirming
  * eligibility (see `evaluateHungTaskReap` in core/hung-task-reaper.ts) before
  * calling this, and for triggering pending-task promotion afterward.
  */
@@ -283,14 +291,17 @@ export async function reapHungTask(
   // already tells us which: a `delivered_then_hung` task shipped its work
   // before hanging (nothing to respawn — obsolete), while a plain
   // `terminated` reap has no confirmed delivery and the reaper never
-  // auto-respawns, so it needs a human to decide retry vs abandon. Best-
-  // effort: a ledger-write failure must not block the reap it is describing,
-  // but it IS loud (console.error), unlike the swallowed audit-row append
-  // above, because a lost disposition entry is exactly the silent-loss
-  // failure mode this issue closes.
-  await writeReapDispositionEntry(task.id, disposition, outcome, evidence, deps, now).catch((err) => {
-    console.error(`[hung-task-reaper] failed to record disposition-ledger entry for task ${task.id}:`, err);
-  });
+  // auto-respawns, so it needs a human to decide retry vs abandon. Bound only
+  // the ancillary wait: a timeout leaves durability unknown and the write
+  // occupies its shared slot until it settles. Lost evidence stays loud.
+  const logPrefix = `[hung-task-reaper] task ${task.id}:`;
+  const dispositionPersistence = deps.dispositionLedgerPath
+    ? await reaperEvidence.write(
+        'disposition',
+        () => writeReapDispositionEntry(task.id, disposition, outcome, evidence, deps, now),
+        logPrefix,
+      )
+    : 'skipped';
 
   // Persist the evidence report best-effort, now that capacity is already
   // released (issue #2852). Bounded so a wedged data directory cannot delay the
@@ -305,7 +316,7 @@ export async function reapHungTask(
     : { status: 'skipped' };
   const reportPath = report.status === 'ok' ? report.reportPath : undefined;
 
-  await appendAuditRow(deps.auditLogPath, {
+  const auditRow = {
     type: 'task.hungTaskReap',
     timestamp: nowISO(),
     actor: 'system:hung-task-reaper',
@@ -327,7 +338,13 @@ export async function reapHungTask(
     ...(report.status === 'error' || report.status === 'timeout'
       ? { reportPersistence: report.status }
       : {}),
-  });
+    ...(describeReaperEvidenceFailure('disposition', dispositionPersistence)
+      ? { dispositionPersistence }
+      : {}),
+  };
+  const auditPersistence = deps.auditLogPath
+    ? await reaperEvidence.write('audit', () => writeReaperAuditRow(deps.auditLogPath!, auditRow), logPrefix)
+    : 'skipped';
 
   const silentMinutes = Math.round(evidence.silentForMs / 60_000);
   deps.broadcastToAll?.({
@@ -336,13 +353,15 @@ export async function reapHungTask(
     summary: disposition.deliveredPr
       ? `Reaped delivered-then-hung task (PR #${disposition.deliveredPr.number}): ${task.name ?? task.id}`
       : `Reaped hung task: ${task.name ?? task.id}`,
-    details: disposition.deliveredPr
+    details: (disposition.deliveredPr
       ? `Delivered PR #${disposition.deliveredPr.number}, then no hook events, pane change, or token activity for ${silentMinutes}m — session terminated.`
-      : `No hook events, pane change, or token activity for ${silentMinutes}m — session terminated.`,
+      : `No hook events, pane change, or token activity for ${silentMinutes}m — session terminated.`)
+      + describeReaperEvidenceFailure('disposition', dispositionPersistence)
+      + describeReaperEvidenceFailure('audit', auditPersistence),
     severity: 'warning',
   });
 
-  return { reportPath, outcome, reportPersistence: report.status };
+  return { reportPath, outcome, reportPersistence: report.status, dispositionPersistence, auditPersistence };
 }
 
 /**

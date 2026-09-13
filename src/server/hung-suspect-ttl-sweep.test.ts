@@ -12,6 +12,9 @@ import {
 } from './hung-suspect-ttl-sweep.js';
 import type { LifecycleDeps } from './agent-lifecycle.js';
 import type { HungTaskLivenessEvidence } from '../core/hung-task-reaper.js';
+import * as dispositionLedger from '../core/disposition-ledger.js';
+import * as auditLog from '../core/audit-log.js';
+import { reapHungTask } from './hung-task-reaper.js';
 
 // Mock cleanupTaskWorktrees (fire-and-forget in terminateTask)
 const mockCleanupTaskWorktrees = vi.fn().mockResolvedValue(undefined);
@@ -86,6 +89,108 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
 
   afterEach(async () => {
     await rm(auditDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['disposition', 'reject'], ['audit', 'reject'],
+    ['disposition', 'resolve'], ['audit', 'resolve'],
+  ] as const)(
+    'finishes the sweep and alert when %s writes never settle (%s later)',
+    async (kind, settlement) => {
+      const tasks = Array.from({ length: 8 }, (_, i) => makeHungTask({ id: `hung-${i}` }));
+      const taskStore = makeMockTaskStore(tasks);
+      const lifecycleDeps = makeLifecycleDeps(taskStore);
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const broadcastToAll = vi.fn();
+      let resolveWrite!: () => void;
+      let rejectWrite!: (err: Error) => void;
+      const stalled = new Promise<void>((resolve, reject) => { resolveWrite = resolve; rejectWrite = reject; });
+      const disposition = vi.spyOn(dispositionLedger, 'appendDispositionEntry').mockResolvedValue();
+      const audit = vi.spyOn(auditLog, 'appendAuditRow').mockResolvedValue();
+      const writer = kind === 'disposition' ? disposition : audit;
+      writer.mockReturnValue(stalled);
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const work = reclaimAgedHungSuspectTasks({
+        taskStore, lifecycleDeps, auditLogPath, dispositionLedgerPath, broadcastToAll, metrics,
+        isHungSuspect: () => true,
+        getLiveness: () => silentFor(TTL_MS + 60_000),
+        isHoldingOpenPr: () => false,
+      }, { now: NOW, ttlMs: TTL_MS });
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          work,
+          new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error('TTL sweep stalled past 2500ms deadline')), 2500);
+          }),
+        ]);
+        expect(taskStore.terminateTask).toHaveBeenCalledTimes(tasks.length);
+        expect(lifecycleDeps.adapter.stop).toHaveBeenCalledTimes(tasks.length);
+        expect(metrics.getSnapshot().reclaimedTotal).toBe(tasks.length);
+        expect(broadcastToAll).toHaveBeenCalledTimes(1);
+        expect(writer).toHaveBeenCalledTimes(1);
+        expect(broadcastToAll.mock.calls[0][0].details).toContain('evidence');
+        expect(broadcastToAll.mock.calls[0][0].details).toContain('durability unknown');
+        if (settlement === 'resolve') resolveWrite();
+        else rejectWrite(new Error('late disk failure'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(taskStore.terminateTask).toHaveBeenCalledTimes(tasks.length);
+        expect(lifecycleDeps.adapter.stop).toHaveBeenCalledTimes(tasks.length);
+        expect(metrics.getSnapshot().reclaimedTotal).toBe(tasks.length);
+        expect(broadcastToAll).toHaveBeenCalledTimes(1);
+        if (settlement === 'reject') {
+          expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('late failure'));
+        }
+      } finally {
+        clearTimeout(deadline);
+        resolveWrite();
+        await work.catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        disposition.mockRestore();
+        audit.mockRestore();
+        errorLog.mockRestore();
+      }
+    },
+  );
+
+  it('shares the outstanding-write cap with the hard reaper across later sweeps', async () => {
+    const hardTask = makeHungTask({ id: 'hard-reap' });
+    const tasks = [hardTask, makeHungTask({ id: 'ttl-0' })];
+    const taskStore = makeMockTaskStore(tasks);
+    const lifecycleDeps = makeLifecycleDeps(taskStore);
+    let finish!: () => void;
+    const stalled = new Promise<void>((resolve) => { finish = resolve; });
+    const disposition = vi.spyOn(dispositionLedger, 'appendDispositionEntry').mockReturnValue(stalled);
+    const audit = vi.spyOn(auditLog, 'appendAuditRow').mockReturnValue(stalled);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const broadcastToAll = vi.fn();
+    try {
+      const hard = await reapHungTask(hardTask, {
+        ...silentFor(TTL_MS + 60_000), silentForMs: TTL_MS + 60_000,
+        thresholdMs: TTL_MS, paneContent: 'frozen pane',
+      }, { taskStore, lifecycleDeps, auditLogPath, dispositionLedgerPath });
+      expect(hard.dispositionPersistence).toBe('timeout');
+      expect(hard.auditPersistence).toBe('timeout');
+      for (let i = 0; i < 3; i += 1) {
+        // A new hung task and fresh deps each tick, as at the runtime boundaries.
+        tasks[1] = makeHungTask({ id: `ttl-${i}` });
+        await reclaimAgedHungSuspectTasks({
+          taskStore, lifecycleDeps, auditLogPath, dispositionLedgerPath, broadcastToAll,
+          isHungSuspect: (candidate) => candidate.id !== hardTask.id,
+          getLiveness: () => silentFor(TTL_MS + 60_000), isHoldingOpenPr: () => false,
+        }, { now: NOW, ttlMs: TTL_MS });
+      }
+      expect(disposition).toHaveBeenCalledTimes(1);
+      expect(audit).toHaveBeenCalledTimes(1);
+      expect(broadcastToAll).toHaveBeenCalledTimes(3);
+      expect(broadcastToAll.mock.calls[0][0].details).toContain('2 write(s) were not attempted');
+    } finally {
+      finish();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      disposition.mockRestore();
+      audit.mockRestore();
+      errorLog.mockRestore();
+    }
   });
 
   it('terminates an aged hungSuspect task with hung_suspect_ttl disposition + audit + ledger', async () => {
