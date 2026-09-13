@@ -36,6 +36,7 @@ import type {
   ResourceWatchdogHealthSnapshot,
   ResourceWatchdogPersistedState,
   ResourceWatchdogSample,
+  ResourceWatchdogSpawnKind,
 } from '../core/resource-watchdog-types.js';
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
@@ -107,6 +108,14 @@ export class ResourceWatchdogService {
   private samplingStartedAtMs: number | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
   private lastLaunch: ResourceWatchdogHealthSnapshot['lastLaunch'] = null;
+  // One owner outlives sampling ticks and stop/start. Only settlement releases
+  // it; an expired throttle never permits a second concurrent launch.
+  private launchInFlight: {
+    startedAt: string;
+    startedAtMs: number;
+    kind: ResourceWatchdogSpawnKind;
+    completion: Promise<void>;
+  } | null = null;
   private persistenceHealth: ResourceWatchdogHealthSnapshot['persistence'];
 
   constructor(deps: ResourceWatchdogServiceDeps) {
@@ -163,7 +172,7 @@ export class ResourceWatchdogService {
           '(set KOOKR_RESOURCE_WATCHDOG=1 to enable; auto-enable is off)',
       );
     }
-    void this.tick();
+    this.tick();
   }
 
   stop(): void {
@@ -219,9 +228,8 @@ export class ResourceWatchdogService {
       ? NaN
       : Date.parse(oomKillBaseline.sampledAt);
     const intervalMs = Math.max(1_000, config.intervalMs);
-    // A tick awaits its investigation launch before scheduling the next sample.
-    // Allow three missed intervals plus the maximum supported launch timeout
-    // (15 minutes), so changing launch settings cannot create a false warning.
+    // Retain the existing stale-warning grace independently of launch state.
+    // Sampling now continues during launch; pending ownership is exposed below.
     const staleAfterMs = 3 * intervalMs + MAX_LAUNCH_TIMEOUT_SEC * 1_000;
     const lastSampleMs = this.lastSample ? Date.parse(this.lastSample.sampledAt) : NaN;
     const freshnessSinceMs = Number.isFinite(lastSampleMs)
@@ -254,6 +262,13 @@ export class ResourceWatchdogService {
       throttleRemainingMs,
       lastDecision,
       lastLaunch: this.lastLaunch ? { ...this.lastLaunch } : null,
+      launchInFlight: this.launchInFlight
+        ? {
+            startedAt: this.launchInFlight.startedAt,
+            ageMs: Math.max(0, nowMs - this.launchInFlight.startedAtMs),
+            kind: this.launchInFlight.kind,
+          }
+        : null,
       pressureWhileDisabled: pressure.pressureWhileDisabled,
       pressureWhileDisabledReason: pressure.pressureWhileDisabledReason,
       autoEnableOnPressure: config.autoEnableOnPressure,
@@ -270,15 +285,16 @@ export class ResourceWatchdogService {
     };
   }
 
-  /** One evaluation cycle. Exposed for tests (does not require start()). */
+  /** Evaluate once and await any launch. Test helper; does not require start(). */
   async runOnce(): Promise<void> {
-    await this.evaluateAndAct();
+    this.evaluateAndAct();
+    await this.launchInFlight?.completion;
   }
 
-  private async tick(): Promise<void> {
+  private tick(): void {
     if (!this.running) return;
     try {
-      await this.evaluateAndAct();
+      this.evaluateAndAct();
     } catch (err) {
       this.logger.warn(
         '[resource-watchdog] tick failed:',
@@ -288,14 +304,14 @@ export class ResourceWatchdogService {
       if (this.running) {
         const intervalMs = Math.max(1_000, this.getConfig().intervalMs);
         this.timeout = this.setTimeoutFn(() => {
-          void this.tick();
+          this.tick();
         }, intervalMs);
         (this.timeout as { unref?: () => void }).unref?.();
       }
     }
   }
 
-  private async evaluateAndAct(): Promise<void> {
+  private evaluateAndAct(): void {
     if (this.tickInFlight) return;
     this.tickInFlight = true;
     try {
@@ -311,7 +327,7 @@ export class ResourceWatchdogService {
       this.evaluateDisabledPressureAlert(config);
 
       if (!config.enabled) {
-        await this.evaluateDisabledAutoEnable(config);
+        this.evaluateDisabledAutoEnable(config);
         return;
       }
 
@@ -335,6 +351,29 @@ export class ResourceWatchdogService {
         nowMs: this.nowMs(),
       });
       this.lastDecision = decision.action;
+
+      if (this.launchInFlight) {
+        // A readable reset/equal counter is safe to save while launch is busy.
+        // Keep positive deltas pending so a later investigation can handle them.
+        const baseline = this.state.oomKillBaseline;
+        const canAdvanceBaseline = sample.oomKillTotal !== null
+          && (baseline === null || sample.oomKillTotal <= baseline.total);
+        if (canAdvanceBaseline && sample.oomKillTotal !== null) {
+          this.state = recordOomKillBaseline({
+            state: this.state,
+            total: sample.oomKillTotal,
+            sampledAt: sample.sampledAt,
+          });
+          this.oomKillBaselineSource = 'runtime_sample';
+        }
+        if (decision.action === 'suppress_throttled') {
+          this.handleSuppressThrottled(config, sample, decision);
+        } else {
+          if (decision.action === 'spawn') this.lastDecision = 'launch_in_flight';
+          if (canAdvanceBaseline) this.persistState();
+        }
+        return;
+      }
 
       if (decision.action === 'idle') {
         // An idle sample can advance independently. Spawn decisions instead
@@ -366,12 +405,12 @@ export class ResourceWatchdogService {
           });
           this.oomKillBaselineSource = 'runtime_sample';
         }
-        await this.handleSuppressThrottled(config, sample, decision);
+        this.handleSuppressThrottled(config, sample, decision);
         return;
       }
 
       // action === 'spawn'
-      await this.handleSpawn(config, sample, decision, { autoEnabled: false });
+      this.startLaunch(config, sample, decision, { autoEnabled: false });
     } finally {
       this.tickInFlight = false;
     }
@@ -382,9 +421,9 @@ export class ResourceWatchdogService {
    * already tripping, auto-enable one rate-limited investigation cycle
    * instead of permanent silent `lastDecision: disabled`.
    */
-  private async evaluateDisabledAutoEnable(
+  private evaluateDisabledAutoEnable(
     config: ResourceWatchdogConfig,
-  ): Promise<void> {
+  ): void {
     const dtachCount = this.getStaleDtachCount?.() ?? null;
     const decision = evaluateDisabledPressureAutoEnable({
       enabled: false,
@@ -407,13 +446,18 @@ export class ResourceWatchdogService {
 
     if (decision.action === 'suppress_throttled') {
       this.lastDecision = 'suppress_throttled';
-      await this.handleSuppressThrottled(config, sample, {
+      this.handleSuppressThrottled(config, sample, {
         action: 'suppress_throttled',
         sample,
         triggers: decision.triggers,
         throttleRemainingMs: decision.throttleRemainingMs,
         lastSpawnAt: decision.lastSpawnAt,
       });
+      return;
+    }
+
+    if (this.launchInFlight) {
+      this.lastDecision = 'launch_in_flight';
       return;
     }
 
@@ -433,7 +477,7 @@ export class ResourceWatchdogService {
         `attempting ${decision.kind} spawn`,
     );
     this.lastDecision = 'spawn';
-    await this.handleSpawn(
+    this.startLaunch(
       config,
       sample,
       {
@@ -463,11 +507,11 @@ export class ResourceWatchdogService {
     return sample;
   }
 
-  private async handleSuppressThrottled(
+  private handleSuppressThrottled(
     config: ResourceWatchdogConfig,
     sample: ResourceWatchdogSample,
     decision: Extract<ResourceWatchdogDecision, { action: 'suppress_throttled' }>,
-  ): Promise<void> {
+  ): void {
     this.state = recordTriggerOnly({
       state: this.state,
       nowIso: this.nowIso(),
@@ -491,6 +535,38 @@ export class ResourceWatchdogService {
         `(${decision.throttleRemainingMs}ms remaining): ` +
         decision.triggers.map((t) => t.reason).join(','),
     );
+  }
+
+  private startLaunch(
+    config: ResourceWatchdogConfig,
+    sample: ResourceWatchdogSample,
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>,
+    opts: { autoEnabled: boolean },
+  ): void {
+    if (this.launchInFlight) {
+      this.lastDecision = 'launch_in_flight';
+      return;
+    }
+    const owner = {
+      startedAt: this.nowIso(),
+      startedAtMs: this.nowMs(),
+      kind: decision.kind,
+      completion: Promise.resolve(),
+    };
+    this.launchInFlight = owner;
+    // Reserve durably and begin launch in this tick. The timer only waits for
+    // sampling; completion patches the current state without replacing newer
+    // samples, OOM baselines, or trigger history.
+    owner.completion = this.handleSpawn(config, sample, decision, opts)
+      .catch((err: unknown) => {
+        this.logger.warn(
+          '[resource-watchdog] launch handling failed:',
+          err instanceof Error ? err.message : err,
+        );
+      })
+      .finally(() => {
+        this.launchInFlight = null;
+      });
   }
 
   private async handleSpawn(
@@ -746,6 +822,7 @@ export function defaultResourceWatchdogHealthSnapshot(
     throttleRemainingMs: 0,
     lastDecision: enabled ? null : 'disabled',
     lastLaunch: null,
+    launchInFlight: null,
     pressureWhileDisabled: false,
     pressureWhileDisabledReason: null,
     autoEnableOnPressure,

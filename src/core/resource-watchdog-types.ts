@@ -227,7 +227,14 @@ export interface ResourceWatchdogHealthSnapshot {
     | 'auto_enable'
     | 'spawn_persist_failed'
     | 'spawn_failed'
+    | 'launch_in_flight'
     | null;
+  /** Single outstanding launch in this process; retained across stop/start. */
+  launchInFlight: {
+    startedAt: string;
+    ageMs: number;
+    kind: ResourceWatchdogSpawnKind;
+  } | null;
   /** Latest completed launch call in this process; retained across idle/throttled samples. */
   lastLaunch: {
     status: 'spawned' | 'queued' | 'failed';
