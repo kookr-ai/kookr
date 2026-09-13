@@ -169,9 +169,14 @@ function asGithubRepo(v: unknown): string | null {
   const segments = v.split('/');
   if (segments.length !== 2) return null;
   const [owner, repo] = segments;
+  if (repo === '.' || repo === '..') return null;
+  // Dot-prefixed repository names such as .github are valid capture targets.
+  // Replace only the first dot for validation so the shared alphabet and length
+  // checks still apply, without its stricter project-ID leading-dot policy.
+  const repoToValidate = repo.startsWith('.') ? `_${repo.slice(1)}` : repo;
   // Validate case-insensitively without changing the identity used in stored IDs.
   return isSafeGithubSegment(owner.toLowerCase(), 'owner')
-    && isSafeGithubSegment(repo.toLowerCase(), 'repo') ? v : null;
+    && isSafeGithubSegment(repoToValidate.toLowerCase(), 'repo') ? v : null;
 }
 
 function asPositiveSafeInteger(v: unknown): number | null {

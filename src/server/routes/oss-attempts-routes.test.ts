@@ -141,11 +141,15 @@ describe('registerOssAttemptRoutes', () => {
       'bad owner/repo', 'owner/bad repo', 'owner/repo?query', 'owner\\repo',
       ' owner/repo', 'owner/repo\n', 'owner/ repo',
       `${'o'.repeat(40)}/repo`, `owner/${'r'.repeat(101)}`,
+      'owner/.bad repo', 'owner/.repo/extra', `owner/.${'r'.repeat(100)}`,
     ])('rejects repository %j before any side effect', async (repo) => {
       await expectIdentityRejected({ kind, repo, prNumber: 1, issueNumber: 1, prUrl: 'https://example.com/pr/1' });
     });
 
-    test.each(['Microsoft/TypeScript', `${'O'.repeat(39)}/${'R'.repeat(100)}`, 'Owner/Repo_name-v1.2'])('persists valid repository %s unchanged', async (repo) => {
+    test.each([
+      'Microsoft/TypeScript', `${'O'.repeat(39)}/${'R'.repeat(100)}`, 'Owner/Repo_name-v1.2',
+      'github/.github', 'Owner/.Config', 'Owner/..config', `Owner/.${'R'.repeat(99)}`,
+    ])('persists valid repository %s unchanged', async (repo) => {
       const { app, broadcasts } = mkApp({ ossAttemptStore: store });
       const res = await app.request('/api/oss-attempts/events', {
         method: 'POST',
