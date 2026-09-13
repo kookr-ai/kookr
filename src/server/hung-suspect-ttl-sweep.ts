@@ -11,10 +11,10 @@ import {
   type HungSuspectReclaimCandidateOutcome,
   type HungSuspectReclaimSkipCounts,
 } from '../core/hung-suspect-ttl.js';
-import { appendAuditRow } from '../core/audit-log.js';
 import { appendDispositionEntry, type DispositionEntry } from '../core/disposition-ledger.js';
 import { nowISO } from '../core/interaction-log.js';
 import { terminateTask, type LifecycleDeps } from './agent-lifecycle.js';
+import { reaperEvidence, describeReaperEvidenceFailure, writeReaperAuditRow } from './bounded-reaper-evidence.js';
 
 /** Cap last-pass outcome samples on health (issue #2072 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -285,11 +285,13 @@ export function buildHungSuspectTtlDisposition(
  * Reclaim hungSuspect tasks past the silence TTL (issue #1935). Runs on the
  * liveness tick, after the finishedAwaitingAck TTL sweep. Soft reclaim:
  * terminates the session (frees the concurrency slot) without force-completing
- * incomplete work. Each reclaimed task gets:
+ * incomplete work. Each reclaimed task gets a first-write-wins disposition.
+ * Ancillary evidence is attempted with a bounded wait; failures or saturation
+ * are reported in logs and the sweep alert:
  *
  * - `task.disposition` reason `hung_suspect_ttl` (first-write-wins);
- * - an audit.jsonl row, actor `system:hung-suspect-ttl`;
- * - a disposition-ledger entry (`obsolete` if delivered, else `needs-human`).
+ * - an audit.jsonl row, actor `system:hung-suspect-ttl`, when the write succeeds;
+ * - a disposition-ledger entry (`obsolete` if delivered, else `needs-human`), when durable.
  *
  * The stranded-PR exemption in `selectExpiredHungSuspectTasks` protects an
  * in-flight `merge_required` delivery; this function only executes what that
@@ -325,6 +327,9 @@ export async function reclaimAgedHungSuspectTasks(
   deps.metrics?.recordAttempted(selection.expired.length);
 
   const reclaimedTaskIds: string[] = [];
+  let incompleteEvidenceTasks = 0;
+  let timedOutWrites = 0;
+  let unattemptedWrites = 0;
   for (const { task, silentForMs } of selection.expired) {
     // Attribute delivery BEFORE terminating so a task that already merged its
     // PR is recorded as delivered_then_hung rather than masking delivery.
@@ -350,21 +355,21 @@ export async function reclaimAgedHungSuspectTasks(
 
     deps.taskStore.setDisposition(task.id, disposition);
 
-    await writeHungSuspectDispositionEntry(task.id, disposition, outcome, silentForMs, deps, now).catch(
-      (err) => {
-        console.error(
-          `[hung-suspect-ttl] failed to record disposition-ledger entry for task ${task.id}:`,
-          err,
-        );
-      },
-    );
+    const logPrefix = `[hung-suspect-ttl] task ${task.id}:`;
+    const dispositionPersistence = deps.dispositionLedgerPath
+      ? await reaperEvidence.write(
+          'disposition',
+          () => writeHungSuspectDispositionEntry(task.id, disposition, outcome, silentForMs, deps, now),
+          logPrefix,
+        )
+      : 'skipped';
 
     reclaimedTaskIds.push(task.id);
     console.warn(
       `[hung-suspect-ttl] reclaimed task ${task.id} — hungSuspect silent ${Math.round(silentForMs / 60_000)}m`,
     );
 
-    await appendAuditRow(deps.auditLogPath, {
+    const auditRow = {
       type: 'task.hungSuspectTtlReclaimed',
       timestamp: nowISO(),
       actor: 'system:hung-suspect-ttl',
@@ -374,7 +379,19 @@ export async function reclaimAgedHungSuspectTasks(
       outcome,
       ...(disposition.deliveredPr ? { deliveredPr: disposition.deliveredPr } : {}),
       ttlMs,
-    });
+      ...(describeReaperEvidenceFailure('disposition', dispositionPersistence)
+        ? { dispositionPersistence }
+        : {}),
+    };
+    const auditPersistence = deps.auditLogPath
+      ? await reaperEvidence.write('audit', () => writeReaperAuditRow(deps.auditLogPath!, auditRow), logPrefix)
+      : 'skipped';
+    const statuses = [dispositionPersistence, auditPersistence];
+    if (statuses.some((status) => status === 'error' || status === 'timeout' || status === 'busy')) {
+      incompleteEvidenceTasks += 1;
+    }
+    timedOutWrites += statuses.filter((status) => status === 'timeout').length;
+    unattemptedWrites += statuses.filter((status) => status === 'busy').length;
   }
 
   deps.metrics?.recordReclaimed(reclaimedTaskIds.length);
@@ -387,7 +404,12 @@ export async function reclaimAgedHungSuspectTasks(
       details:
         'These tasks were classified hungSuspect (all liveness channels silent) past ' +
         'hungSuspectTtlMinutes and were terminated to free active concurrency slots. ' +
-        'Tasks with no confirmed delivery are marked needs-human; review the disposition ledger.',
+        'Tasks with no confirmed delivery are marked needs-human; review the disposition ledger.' +
+        (incompleteEvidenceTasks > 0
+          ? ` Ancillary evidence is incomplete for ${incompleteEvidenceTasks} task(s); check server logs.` +
+            (timedOutWrites > 0 ? ` ${timedOutWrites} write(s) timed out; durability unknown.` : '') +
+            (unattemptedWrites > 0 ? ` ${unattemptedWrites} write(s) were not attempted while a previous write remained unresolved.` : '')
+          : ''),
       severity: 'warning',
     });
   }

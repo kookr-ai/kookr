@@ -7,6 +7,8 @@ import { AttentionQueue } from '../core/attention-queue.js';
 import { GitHubStateStore } from '../core/github-state-store.js';
 import { selectDeliveredMergedPr } from '../core/completion/index.js';
 import { readDispositionEntries } from '../core/disposition-ledger.js';
+import * as dispositionLedger from '../core/disposition-ledger.js';
+import * as auditLog from '../core/audit-log.js';
 import type { Task } from '../core/tasks.js';
 import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
@@ -111,6 +113,77 @@ async function readAuditRows(auditLogPath: string): Promise<Record<string, unkno
 }
 
 describe('reapHungTask', () => {
+  test.each([
+    ['disposition', 'reject'], ['audit', 'reject'],
+    ['disposition', 'resolve'], ['audit', 'resolve'],
+  ] as const)(
+    'continues later reaps and alerts when %s writes never settle (%s later)',
+    async (kind, settlement) => {
+      const taskStore = new TaskStore();
+      const tasks = Array.from({ length: 8 }, () => makeTask(taskStore));
+      const lifecycle = lifecycleDeps(taskStore);
+      const broadcastToAll = vi.fn();
+      let resolveWrite!: () => void;
+      let rejectWrite!: (err: Error) => void;
+      const stalled = new Promise<void>((resolve, reject) => { resolveWrite = resolve; rejectWrite = reject; });
+      const disposition = vi.spyOn(dispositionLedger, 'appendDispositionEntry').mockResolvedValue();
+      const audit = vi.spyOn(auditLog, 'appendAuditRow').mockResolvedValue();
+      const writer = kind === 'disposition' ? disposition : audit;
+      writer.mockReturnValue(stalled);
+      const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const results: Awaited<ReturnType<typeof reapHungTask>>[] = [];
+      const reapAll = async () => {
+        for (const task of tasks) {
+          const result = await reapHungTask(task, evidence(), {
+            taskStore, lifecycleDeps: lifecycle, broadcastToAll,
+            dispositionLedgerPath: '/mock/dispositions.jsonl', auditLogPath: '/mock/audit.jsonl',
+          });
+          results.push(result);
+        }
+      };
+      const work = reapAll();
+      let deadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          work,
+          new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error('reaper stalled past 2500ms deadline')), 2500);
+          }),
+        ]);
+        expect(lifecycle.adapter.stop).toHaveBeenCalledTimes(tasks.length);
+        expect(taskStore.getActiveCount()).toBe(0);
+        expect(broadcastToAll).toHaveBeenCalledTimes(tasks.length);
+        expect(writer).toHaveBeenCalledTimes(1);
+        const statusKey = kind === 'disposition' ? 'dispositionPersistence' : 'auditPersistence';
+        expect(results.map((result) => result[statusKey])).toEqual(['timeout', ...Array(7).fill('busy')]);
+        if (kind === 'disposition') {
+          expect(audit.mock.calls[0][1].dispositionPersistence).toBe('timeout');
+          expect(audit.mock.calls[1][1].dispositionPersistence).toBe('busy');
+        }
+        expect(broadcastToAll.mock.calls[0][0].details).toContain('durability unknown');
+        expect(broadcastToAll.mock.calls[1][0].details).toContain('not attempted');
+        if (settlement === 'resolve') resolveWrite();
+        else rejectWrite(new Error('late disk failure'));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(lifecycle.adapter.stop).toHaveBeenCalledTimes(tasks.length);
+        expect(taskStore.getActiveCount()).toBe(0);
+        expect(broadcastToAll).toHaveBeenCalledTimes(tasks.length);
+        expect(results[0][statusKey]).toBe('timeout');
+        if (settlement === 'reject') {
+          expect(errorLog).toHaveBeenCalledWith(expect.stringContaining('late failure'));
+        }
+      } finally {
+        clearTimeout(deadline);
+        resolveWrite();
+        await work.catch(() => {});
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        disposition.mockRestore();
+        audit.mockRestore();
+        errorLog.mockRestore();
+      }
+    },
+  );
+
   test('terminates the task, kills the session, and frees the slot', async () => {
     const taskStore = new TaskStore();
     const task = makeTask(taskStore);
