@@ -142,6 +142,7 @@ describe('registerOssAttemptRoutes', () => {
       ' owner/repo', 'owner/repo\n', 'owner/ repo',
       `${'o'.repeat(40)}/repo`, `owner/${'r'.repeat(101)}`,
       'owner/.bad repo', 'owner/.repo/extra', `owner/.${'r'.repeat(100)}`,
+      'owner/.git', 'owner/.GIT', 'owner/repo.git', 'owner/.config.git',
     ])('rejects repository %j before any side effect', async (repo) => {
       await expectIdentityRejected({ kind, repo, prNumber: 1, issueNumber: 1, prUrl: 'https://example.com/pr/1' });
     });
