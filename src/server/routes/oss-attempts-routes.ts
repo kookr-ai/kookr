@@ -1,5 +1,6 @@
 import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
+import { isSafeGithubSegment } from '../../core/project-identity.js';
 import { toOssAttemptsSnapshot } from '../oss-attempts-snapshot.js';
 
 /**
@@ -69,19 +70,23 @@ async function handleOssAttemptEvent(c: Context, deps: RouteDeps) {
 
   try {
     if (kind === 'pr_open') {
-      const repo = asString(event.repo);
-      const prNumber = asNumber(event.prNumber);
+      const repo = asGithubRepo(event.repo);
+      const prNumber = asPositiveSafeInteger(event.prNumber);
+      const issueNumber = asPositiveSafeInteger(event.issueNumber);
       const prUrl = asString(event.prUrl);
       const prTitle = asString(event.prTitle) ?? '';
       if (!repo || prNumber == null || !prUrl) {
         return c.json({ error: 'pr_open requires repo, prNumber, prUrl' }, 400);
+      }
+      if (event.issueNumber != null && issueNumber == null) {
+        return c.json({ error: 'issueNumber must be a positive safe integer' }, 400);
       }
       const result = deps.ossAttemptStore.upsertPr({
         repo,
         prNumber,
         prUrl,
         prTitle,
-        issueNumber: asNumber(event.issueNumber) ?? null,
+        issueNumber,
         state: 'pr_open',
         source: 'posttool_hook',
         note: asString(event.note) ?? null,
@@ -96,8 +101,8 @@ async function handleOssAttemptEvent(c: Context, deps: RouteDeps) {
     }
 
     if (kind === 'scouted') {
-      const repo = asString(event.repo);
-      const issueNumber = asNumber(event.issueNumber);
+      const repo = asGithubRepo(event.repo);
+      const issueNumber = asPositiveSafeInteger(event.issueNumber);
       if (!repo || issueNumber == null) {
         return c.json({ error: 'scouted requires repo, issueNumber' }, 400);
       }
@@ -159,11 +164,18 @@ function asString(v: unknown): string | null {
   return typeof v === 'string' && v.length > 0 ? v : null;
 }
 
-function asNumber(v: unknown): number | null {
-  if (typeof v === 'number' && Number.isFinite(v)) return v;
-  if (typeof v === 'string') {
-    const n = Number(v);
-    if (Number.isFinite(n)) return n;
-  }
-  return null;
+function asGithubRepo(v: unknown): string | null {
+  if (typeof v !== 'string') return null;
+  const segments = v.split('/');
+  if (segments.length !== 2) return null;
+  const [owner, repo] = segments;
+  // Validate case-insensitively without changing the identity used in stored IDs.
+  return isSafeGithubSegment(owner.toLowerCase(), 'owner')
+    && isSafeGithubSegment(repo.toLowerCase(), 'repo') ? v : null;
+}
+
+function asPositiveSafeInteger(v: unknown): number | null {
+  if (typeof v !== 'number' && typeof v !== 'string') return null;
+  const n = Number(v);
+  return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
