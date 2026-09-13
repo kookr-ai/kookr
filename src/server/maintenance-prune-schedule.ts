@@ -15,6 +15,56 @@ export interface RelayOrphanSweepScheduleConfig {
 /** Default min gap between emergency prune runs (issue #2344). */
 export const DEFAULT_EMERGENCY_PRUNE_THROTTLE_MS = 60 * 60 * 1000;
 
+type TaskRecordPruneOutcome = 'pruned' | 'snapshot_failed' | 'archive_failed' | 'failed';
+type ArchiveCompactionOutcome = 'completed' | 'failed';
+
+/** Latest completed attempt for one record-maintenance leg; counters are since boot. */
+export interface MaintenancePruneLegHealthSnapshot<Outcome extends string> {
+  lastRunAt: string | null;
+  lastOutcome: Outcome | null;
+  /** Fixed diagnostic text, never a raw exception that could contain secrets. */
+  lastError: string | null;
+  /** Cumulative failed attempts, retained when a later attempt succeeds. */
+  failuresTotal: number;
+}
+
+const TASK_RECORD_PRUNE_ERRORS: Record<TaskRecordPruneOutcome, string | null> = {
+  pruned: null,
+  snapshot_failed: 'Task-record prune skipped: predelete snapshot failed',
+  archive_failed: 'Task-record prune skipped: terminal-task archive failed',
+  failed: 'Task-record prune failed',
+};
+const ARCHIVE_COMPACTION_ERRORS: Record<ArchiveCompactionOutcome, string | null> = {
+  completed: null,
+  failed: 'Terminal-task archive compaction failed',
+};
+
+/** Retain only a bounded outcome, independent of disk-reclaim accounting. */
+class MaintenancePruneLegHealth<Outcome extends string> {
+  private snapshot: MaintenancePruneLegHealthSnapshot<Outcome> = {
+    lastRunAt: null,
+    lastOutcome: null,
+    lastError: null,
+    failuresTotal: 0,
+  };
+
+  constructor(private readonly errors: Record<Outcome, string | null>) {}
+
+  record(outcome: Outcome, at: string): void {
+    const lastError = this.errors[outcome];
+    this.snapshot = {
+      lastRunAt: at,
+      lastOutcome: outcome,
+      lastError,
+      failuresTotal: this.snapshot.failuresTotal + (lastError === null ? 0 : 1),
+    };
+  }
+
+  getSnapshot(): MaintenancePruneLegHealthSnapshot<Outcome> {
+    return { ...this.snapshot };
+  }
+}
+
 /**
  * Scheduled-prune last-run tracker state (issue #2345). Always constructed at
  * bootstrap — even when intervalHours=0 — so health can report `enabled: false`.
@@ -30,8 +80,15 @@ export interface MaintenancePruneScheduleHealthSnapshot {
   lastReclaimedBytes: number | null;
   /** Artifact count removed by the last *successful* scheduled sweep, or null. */
   lastRemovedCount: number | null;
-  /** Error message from the last failed scheduled attempt, or null after success. */
+  /** Error from the last failed scheduled disk sweep, or null after disk success. */
   lastError: string | null;
+  /** Scheduled task-record prune only; null outcome until its first completed attempt. */
+  taskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
+  /**
+   * Scheduled compaction callback outcome. `completed` means the callback resolved;
+   * per-segment errors handled internally by the archive core are not counted here.
+   */
+  archiveCompaction?: MaintenancePruneLegHealthSnapshot<ArchiveCompactionOutcome>;
 }
 
 /**
@@ -43,6 +100,8 @@ export class MaintenancePruneHealth {
   private lastReclaimedBytes: number | null = null;
   private lastRemovedCount: number | null = null;
   private lastError: string | null = null;
+  private readonly taskRecordPrune = new MaintenancePruneLegHealth(TASK_RECORD_PRUNE_ERRORS);
+  private readonly archiveCompaction = new MaintenancePruneLegHealth(ARCHIVE_COMPACTION_ERRORS);
 
   constructor(
     private readonly intervalHours: number,
@@ -61,6 +120,14 @@ export class MaintenancePruneHealth {
     this.lastError = err instanceof Error ? err.message : String(err);
   }
 
+  recordTaskRecordPrune(outcome: TaskRecordPruneOutcome): void {
+    this.taskRecordPrune.record(outcome, this.nowIso());
+  }
+
+  recordArchiveCompaction(outcome: ArchiveCompactionOutcome): void {
+    this.archiveCompaction.record(outcome, this.nowIso());
+  }
+
   getSnapshot(): MaintenancePruneScheduleHealthSnapshot {
     return {
       enabled: this.intervalHours > 0,
@@ -69,6 +136,8 @@ export class MaintenancePruneHealth {
       lastReclaimedBytes: this.lastReclaimedBytes,
       lastRemovedCount: this.lastRemovedCount,
       lastError: this.lastError,
+      taskRecordPrune: this.taskRecordPrune.getSnapshot(),
+      archiveCompaction: this.archiveCompaction.getSnapshot(),
     };
   }
 }
@@ -92,7 +161,8 @@ export interface MaintenancePruneScheduleConfig {
    * enabled/last-run state. Emergency path may share the same prune config but
    * does not write schedule last-run fields (those stay on the interval timer).
    */
-  health?: Pick<MaintenancePruneHealth, 'recordSuccess' | 'recordFailure'>;
+  health?: Pick<MaintenancePruneHealth, 'recordSuccess' | 'recordFailure'>
+    & Partial<Pick<MaintenancePruneHealth, 'recordTaskRecordPrune' | 'recordArchiveCompaction'>>;
   /**
    * Aged terminal task-record pruning (issue #1526 Phase C / C2). Wired at
    * bootstrap to `pruneAgedTaskRecords` over the live TaskStore/Monitor so
@@ -113,7 +183,8 @@ export interface MaintenancePruneScheduleConfig {
    * Compact the durable terminal-task archive (issue #2765): apply the
    * retention horizon (whole-segment age deletes) and collapse duplicate task
    * ids. Run every sweep regardless of the prune outcome so retention advances
-   * even on quiet ticks. Best-effort — failures are logged, never fatal.
+   * even on quiet ticks. Exceptions escaping the callback are logged and cached
+   * in health, never fatal.
    */
   compactTaskArchive?: () => Promise<void>;
   /**
@@ -133,6 +204,9 @@ export interface MaintenancePruneScheduleConfig {
  * the *scheduled* leg. Emergency reclaim is `lastEmergencyReclaimedBytes`.
  */
 export interface MaintenancePruneHealthSnapshot extends MaintenancePruneScheduleHealthSnapshot {
+  /** Emergency record-maintenance outcomes never overwrite scheduled outcomes. */
+  emergencyTaskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
+  emergencyArchiveCompaction?: MaintenancePruneLegHealthSnapshot<ArchiveCompactionOutcome>;
   emergencyPruneTriggeredTotal: number;
   lastEmergencyPruneAt: string | null;
   /** Bytes reclaimed by the last successful *emergency* sweep, or null. */
@@ -161,6 +235,8 @@ export interface MaintenancePruneHealthSnapshot extends MaintenancePruneSchedule
  * Composed with schedule state via {@link composeMaintenancePruneHealth}.
  */
 export interface EmergencyMaintenancePruneHealthSnapshot {
+  emergencyTaskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
+  emergencyArchiveCompaction?: MaintenancePruneLegHealthSnapshot<ArchiveCompactionOutcome>;
   emergencyPruneTriggeredTotal: number;
   lastEmergencyPruneAt: string | null;
   lastEmergencyReclaimedBytes: number | null;
@@ -185,6 +261,8 @@ export function composeMaintenancePruneHealth(
 ): MaintenancePruneHealthSnapshot {
   return {
     ...schedule,
+    emergencyTaskRecordPrune: emergency.emergencyTaskRecordPrune,
+    emergencyArchiveCompaction: emergency.emergencyArchiveCompaction,
     emergencyPruneTriggeredTotal: emergency.emergencyPruneTriggeredTotal,
     lastEmergencyPruneAt: emergency.lastEmergencyPruneAt,
     lastEmergencyReclaimedBytes: emergency.lastEmergencyReclaimedBytes,
@@ -251,6 +329,8 @@ export class EmergencyMaintenancePruneController {
   /** Epoch-ms of the last started run, or `null` before the first. */
   private lastRunStartedAtMs: number | null = null;
   private inFlight = false;
+  private readonly taskRecordPrune = new MaintenancePruneLegHealth(TASK_RECORD_PRUNE_ERRORS);
+  private readonly archiveCompaction = new MaintenancePruneLegHealth(ARCHIVE_COMPACTION_ERRORS);
 
   constructor(private readonly options: EmergencyMaintenancePruneControllerOptions) {
     this.throttleMs = Math.max(
@@ -262,6 +342,8 @@ export class EmergencyMaintenancePruneController {
 
   getHealthSnapshot(): EmergencyMaintenancePruneHealthSnapshot {
     return {
+      emergencyTaskRecordPrune: this.taskRecordPrune.getSnapshot(),
+      emergencyArchiveCompaction: this.archiveCompaction.getSnapshot(),
       emergencyPruneTriggeredTotal: this.emergencyPruneTriggeredTotal,
       lastEmergencyPruneAt: this.lastEmergencyPruneAt,
       lastEmergencyReclaimedBytes: this.lastReclaimedBytes,
@@ -315,6 +397,12 @@ export class EmergencyMaintenancePruneController {
           },
           recordFailure: (err) => {
             this.lastEmergencyPruneError = err instanceof Error ? err.message : String(err);
+          },
+          recordTaskRecordPrune: (outcome) => {
+            this.taskRecordPrune.record(outcome, new Date(this.now()).toISOString());
+          },
+          recordArchiveCompaction: (outcome) => {
+            this.archiveCompaction.record(outcome, new Date(this.now()).toISOString());
           },
         },
       };
@@ -504,15 +592,19 @@ async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfi
         );
         if (result.prunedTaskIds.length > 0) config.onTaskRecordsPruned?.(result);
       }
+      config.health?.recordTaskRecordPrune?.(result.outcome);
     } catch (err) {
       console.error('[maintenance-prune] task-record prune failed:', err);
+      config.health?.recordTaskRecordPrune?.('failed');
     }
   }
   if (config.compactTaskArchive) {
     try {
       await config.compactTaskArchive();
+      config.health?.recordArchiveCompaction?.('completed');
     } catch (err) {
       console.error('[maintenance-prune] terminal-task archive compaction failed:', err);
+      config.health?.recordArchiveCompaction?.('failed');
     }
   }
   if (config.getPayloadDietStats) {
