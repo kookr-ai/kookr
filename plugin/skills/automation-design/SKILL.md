@@ -68,6 +68,17 @@ An approval needed for later activation may leave local implementation eligible.
 Acknowledging a blocker suppresses duplicate notifications, not investigation.
 Never treat silence as approval.
 
+For a transient external failure, inspect recovery evidence from the dependency
+as well as the blocked operation. A relevant incident resolved after the failed
+attempt can justify an authorized recovery attempt; it does not prove the
+operation completed. Reconcile uncertain side effects first. Preserve the work
+identity and enforce one current owner and the existing gates. Record which
+recovery evidence each attempt used; a new tick or owner must retain the retry
+budget. If recovery fails or cannot be attempted safely, name the unresolved
+operation, responsible party and next checkpoint. Do not require the desired
+result to happen by itself before allowing recovery. See the
+[transient-failure lesson](references/lessons.md#an-external-outage-can-end-while-the-workflow-keeps-waiting).
+
 When the expected result is late or the last action failed, investigate even if
 the status says healthy, active, retrying, or blocked. Set an evidence-age limit
 as a backstop; act sooner on an actual failure. Preserve outstanding deadlines

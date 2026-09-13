@@ -51,6 +51,51 @@ neither long-term reliability nor the best timing for other projects.
 or unnecessary operator requests require inspecting the decision and testing a
 revised hypothesis, not just shortening the prompt again.
 
+## An external outage can end while the workflow keeps waiting
+
+**Context and evidence:** on September 13, 2026, a private sequential delivery
+workflow retained a failed merge request as a blocker. The originating project
+holds the request records, repeated observations, reviewed commits and recovery
+proof. GitHub's public [API and pull-request incident](https://www.githubstatus.com/incidents/0rn90wk115q9)
+was resolved after the failed attempt, several hours before the investigation.
+The public incident confirms service recovery, not the private operation's state.
+
+**Failure and assumption:** the observer kept reading the open PR and required
+evidence that the merge problem had cleared, but never checked the dependency's
+incident history. In practice it waited for the PR to merge itself. The earlier
+feedback-loop repair had enabled a successful handoff but did not prevent this
+different avoidable wait.
+
+**Attempt and outcome — demonstrated, narrow:** the investigation checked the
+resolved incident, unchanged reviewed revision, current ownership and existing
+delivery gates. One authorized retry through the existing merge wrapper succeeded.
+Fresh remote reads verified that the merged content matched the reviewed content.
+The next implementation owner was then admitted with an exclusive claim and a
+checkpoint. This recovered delivery; it did not complete that next stage. The
+updated generic skill did not cause this recovery, and its sustained effect
+remains unmeasured.
+
+**Decision validation — simulated:** an independent agent applied the revised
+skill to five snapshots. It selected guarded merge recovery, reconciled an
+already completed export, held an external write whose outcome was unknown,
+preserved an operator pause, and retained exhausted recovery history after an
+owner change. These decisions check interpretation across delivery and export
+workflows; no external action was executed or new recovery success established.
+
+**Guidance and limits:** inspect the failed operation and the external recovery
+signal separately. Check incident scope and timing; a healthy status page alone
+does not resolve an uncertain side effect. Use the workflow's existing retry
+budget and stable operation identity. Preserve recovery evidence across owners
+so reobserving the same resolved incident cannot renew the retry allowance. Preserve
+explicit pauses and permission, protection, review and test gates. A failed
+recovery that exhausts the allowed attempts needs a concrete escalation, not
+indefinite polling or a new writer.
+
+**Challenge condition:** a duplicate action, renewed retry allowance from
+previously used recovery evidence, or another unresolved wait after dependency
+recovery. Exercise the
+matching [validation scenarios](validation-scenarios.md) before broadening the rule.
+
 ## Narrative changes and stale artifacts can reset the wrong clock
 
 **Context and evidence:** the same private workflow included a progress detector,
