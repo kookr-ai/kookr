@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, onTestFinished, vi } from 'vitest';
 import { Hono } from 'hono';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,12 +50,13 @@ describe('GET /api/tasks/recent-prompts', () => {
 
   test('returns manual-launch prompts, newest first', async () => {
     const store = new TaskStore();
-    // Explicit createdAt so the two fixtures don't tie within the same ms
-    // (viewTasks returns the stored refs, so mutating createdAt is observed).
-    const first = store.createTask({ prompt: 'first', userPrompt: 'first', cwd: '/r', launchSource: 'ui' });
-    first.createdAt = new Date(1000);
-    const second = store.createTask({ prompt: 'second', userPrompt: 'second', cwd: '/r', launchSource: 'ui' });
-    second.createdAt = new Date(2000);
+    // Control creation time in the store; createTask returns a detached snapshot.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    onTestFinished(() => { vi.useRealTimers(); });
+    vi.setSystemTime(1000);
+    store.createTask({ prompt: 'first', userPrompt: 'first', cwd: '/r', launchSource: 'ui' });
+    vi.setSystemTime(2000);
+    store.createTask({ prompt: 'second', userPrompt: 'second', cwd: '/r', launchSource: 'ui' });
     const { body } = await getRecent(mkApp(mkDeps(store)));
     expect(body.map((e) => e.prompt)).toEqual(['second', 'first']);
   });
