@@ -7,7 +7,7 @@
  * refill when scouts finished without usable issues.
  */
 
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isTerminalStatus } from './task-status.js';
 import type { Task } from './tasks.js';
@@ -21,16 +21,10 @@ import {
 } from './pipeline-starvation.js';
 import { projectIdFromRepoSpecifier } from './project-identity.js';
 
-const DONE_MARKERS = [
-  /<promise>\s*DONE\s*<\/promise>/i,
-  /^DONE\b/m,
-  /STOP:\s*COMPLETE/i,
-];
-
 const UMBRELLA_TITLE_RE = /umbrella/i;
 
 export interface SuccessfulIdeationHit {
-  /** Completion clock for the run (state.md mtime when present, else dir mtime). */
+  /** Completion clock: recent readable state.md mtime, otherwise directory mtime. */
   atMs: number;
   /** Count of non-umbrella issue-created receipts under the run. */
   issueCreatedCount: number;
@@ -77,7 +71,8 @@ export async function countEligibleIssueCreatedInRunDir(runDir: string): Promise
 /**
  * Scan idea-scout playbook-state for a successful completion inside the
  * lookback window. Success requires ≥1 non-umbrella issue-created receipt.
- * Prefer runs that also have a DONE marker in state.md when present.
+ * State text does not affect eligibility; a recent readable state's mtime
+ * supplies the completion clock, otherwise the run's directory mtime does.
  */
 export async function findRecentSuccessfulIdeationDetails(
   repo: string,
@@ -119,18 +114,20 @@ export async function findRecentSuccessfulIdeationDetails(
     let atMs = runStat.mtimeMs;
     const statePath = join(runDir, 'state.md');
     try {
-      const body = await readFile(statePath, 'utf-8');
-      // Prefer DONE-marked runs, but do not require DONE if issue-created exists
-      // (some runs leave receipts before writing the marker).
+      // Probe readability without loading the document. A failed read must
+      // still skip state metadata and preserve the directory-clock fallback.
+      const stateFile = await open(statePath, 'r');
+      try {
+        await stateFile.read(Buffer.alloc(1), 0, 1, 0);
+      } finally {
+        await stateFile.close();
+      }
       const stateMtime = (await stat(statePath)).mtimeMs;
       if (stateMtime >= windowStart) {
         atMs = stateMtime;
       }
-      if (!DONE_MARKERS.some((re) => re.test(body)) && stateMtime < windowStart) {
-        // state.md is stale outside window — keep dir mtime
-      }
     } catch {
-      // No state.md — issue-created alone is enough.
+      // Missing/unreadable state.md — issue-created alone is enough.
     }
 
     if (atMs < windowStart) continue;
