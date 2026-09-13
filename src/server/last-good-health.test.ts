@@ -239,6 +239,59 @@ describe('LastGoodHealthWriter', () => {
     });
   });
 
+  test.each(['gauges', 'minimal'])('keeps bounded, redacted SAFE MODE details in the %s tier', (tier) => {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      ...(tier === 'minimal' ? { attentionQueue: { blob: 'x'.repeat(50 * 1024) } } : {}),
+      safeMode: {
+        engaged: true,
+        since: '2026-09-13T00:00:00.000Z',
+        digest: 'SAFE MODE: automation paused. '.repeat(2_000),
+        loadError: 'Authorization: Bearer test-credential\n'.repeat(2_000),
+        configuration: { blob: 'must not persist'.repeat(5_000) },
+      },
+    }));
+    const snap = readFile(dir);
+    const raw = readFileSync(lastGoodHealthPath(dir), 'utf8');
+    const safeMode = snap.health.safeMode as Record<string, unknown>;
+    expect(snap.truncated).toBe(true);
+    expect(safeMode).toMatchObject({ engaged: true, since: '2026-09-13T00:00:00.000Z' });
+    expect(safeMode.digest).toBeTypeOf('string');
+    expect(String(safeMode.digest).length).toBeLessThanOrEqual(512);
+    expect(safeMode.loadError).toBeTypeOf('string');
+    expect(String(safeMode.loadError).length).toBeLessThanOrEqual(512);
+    expect(raw).toContain('[REDACTED]');
+    expect(raw).not.toContain('test-credential');
+    expect(safeMode).not.toHaveProperty('configuration');
+    expect(snap.health).not.toHaveProperty('lastGoodHealthWriter');
+    expect(statSync(lastGoodHealthPath(dir)).size).toBeLessThanOrEqual(LAST_GOOD_HEALTH_SIZE_CAP_BYTES);
+    expect(statSync(lastGoodHealthPath(dir)).mode & 0o777).toBe(LAST_GOOD_HEALTH_FILE_MODE);
+    expect(snap.health.attentionQueue === undefined).toBe(tier === 'minimal');
+  });
+
+  test.each(['gauges', 'minimal'])('preserves SAFE MODE edges and unknown state in the %s tier', (tier) => {
+    let t = 0;
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => t });
+    const health = baseHealth({
+      blob: 'x'.repeat(50 * 1024),
+      ...(tier === 'minimal' ? { attentionQueue: { blob: 'x'.repeat(50 * 1024) } } : {}),
+    });
+    // All transitions happen inside a single five-second throttle interval.
+    for (const engaged of [undefined, false, true, false, undefined]) {
+      writer.record({ ...health, ...(engaged === undefined ? {} : { safeMode: { engaged } }) });
+      const snap = readFile(dir);
+      expect(snap.capturedAt).toBe(new Date(t).toISOString());
+      expect(snap.health.safeMode).toEqual(engaged === undefined ? undefined : { engaged });
+      t++;
+    }
+    writer.record({ ...health, safeMode: { engaged: true } });
+    const capturedAt = readFile(dir).capturedAt;
+    t++;
+    writer.record({ ...health, safeMode: { engaged: true, loadError: 'changed detail' } });
+    expect(readFile(dir).capturedAt).toBe(capturedAt);
+  });
+
   test('keeps systemdNotifier arming when the full body is truncated (issue #2853)', () => {
     const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
     writer.record(baseHealth({
