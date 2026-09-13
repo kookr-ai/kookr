@@ -14,6 +14,9 @@ separate from inputs when asking an independent evaluator to use the skill.
 | Final activation lacks approval | Preserve the gate and perform eligible local slices; never infer approval from silence. |
 | A read fails, is partial, or contradicts another source | Record uncertainty; obtain authoritative evidence before dependent action. An empty failed read does not prove no owner exists. |
 | A launch or write times out after the server accepted it | Inspect the existing operation using its stable identity; do not duplicate the side effect. |
+| An external incident resolves after a failed operation | Check incident scope/timing and the operation's current state; permit bounded recovery under existing authority without requiring the desired result to happen by itself. |
+| An external service is healthy but the operation's outcome is unknown | Reconcile the uncertain side effect; a status page does not prove completion or make an unsafe retry permissible. |
+| A recovery attempt fails and another owner takes over | Preserve the attempt, recovery evidence and remaining retry budget; when that budget is exhausted, escalate the specific unresolved operation instead of renewing the allowance from the same recovery signal. |
 | The observer crashes after an external action but before saving state | Reconcile the postcondition on restart; retain the original budget and operation identity. |
 | Two observers or workers overlap | The existing claim/fence prevents conflicting writes; a stale worker cannot continue merely because its lease was replaced. |
 | An old PASS exists after the implementation changes | The old verdict neither authorizes the new revision nor refreshes its progress clock. |
@@ -27,6 +30,9 @@ For learning updates, also check these cross-project decisions:
 
 - A batch export timed out after producing its output. Can the proposed retry
   establish whether the export already happened without creating a duplicate?
+- A merge request failed during an API outage that has since resolved. Can the
+  loop use that new evidence for guarded recovery while retaining review and
+  ownership checks? If the attempt fails, does a new owner retain its history?
 - A deployment lacks approval while an isolated compatibility check is eligible.
   Does the loop preserve the gate and keep the independent work moving?
 - A long experiment has no new commit but a verified running job and a future
