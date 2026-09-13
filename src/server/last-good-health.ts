@@ -118,6 +118,28 @@ function slimBuild(health: Record<string, unknown>): { version: unknown } | unde
   return undefined;
 }
 
+/** Keep the pause explanation after trimming without copying settings or unbounded errors. */
+function slimSafeMode(health: Record<string, unknown>): {
+  engaged: boolean;
+  since?: string;
+  digest?: string;
+  loadError?: string;
+} | undefined {
+  const safeMode = health.safeMode;
+  if (!safeMode || typeof safeMode !== 'object' || Array.isArray(safeMode)) return undefined;
+  const status = safeMode as Record<string, unknown>;
+  // Missing or malformed state is unknown, never an assertion that automation resumed.
+  if (typeof status.engaged !== 'boolean') return undefined;
+  const slim: { engaged: boolean; since?: string; digest?: string; loadError?: string } = {
+    engaged: status.engaged,
+  };
+  for (const key of ['since', 'digest', 'loadError'] as const) {
+    // The caller already redacted the full strings; clipping first could expose a partial secret.
+    if (typeof status[key] === 'string') slim[key] = status[key].slice(0, 512);
+  }
+  return slim;
+}
+
 /**
  * First truncation tier: drop free-form/large fields, keep the operator gauges.
  * `attentionQueue` and `capacity` are small today but not size-bounded, so a
@@ -147,11 +169,13 @@ function pickGauges(health: Record<string, unknown>): Record<string, unknown> {
   }
   const build = slimBuild(health);
   if (build) gauges.build = build;
+  const safeMode = slimSafeMode(health);
+  if (safeMode) gauges.safeMode = safeMode;
   return gauges;
 }
 
 /**
- * Second truncation tier: scalar-only, so the serialized snapshot is
+ * Second truncation tier: core scalars and a bounded pause explanation, so the serialized snapshot is
  * unconditionally tiny. Guarantees the on-disk file honors the size cap even if
  * the gauge blocks in {@link pickGauges} were themselves oversized.
  */
@@ -162,6 +186,8 @@ function pickMinimalGauges(health: Record<string, unknown>): Record<string, unkn
   }
   const build = slimBuild(health);
   if (build) gauges.build = build;
+  const safeMode = slimSafeMode(health);
+  if (safeMode) gauges.safeMode = safeMode;
   return gauges;
 }
 
@@ -173,6 +199,7 @@ function pickMinimalGauges(health: Record<string, unknown>): Record<string, unkn
 function gaugeSignature(health: Record<string, unknown>): string {
   const status = health.status;
   const agents = health.agents;
+  const safeMode = health.safeMode as { engaged?: unknown } | undefined;
   const queue = health.attentionQueue as { activeFindingDepth?: unknown } | undefined;
   const capacity = health.capacity as { active?: unknown } | undefined;
   const helperLlm = health.helperLlm as
@@ -192,6 +219,7 @@ function gaugeSignature(health: Record<string, unknown>): string {
   return JSON.stringify([
     status,
     agents,
+    typeof safeMode?.engaged === 'boolean' ? safeMode.engaged : null,
     queue?.activeFindingDepth,
     capacity?.active,
     pausedProviders,
@@ -298,7 +326,7 @@ export class LastGoodHealthWriter {
       let text = serialize(snapshot);
       // Two truncation tiers so the hard cap is honored unconditionally: first
       // drop free-form fields (keep gauges); if that still overflows, fall back
-      // to a scalar-only minimal set.
+      // to core scalars plus the bounded SAFE MODE explanation.
       if (Buffer.byteLength(text, 'utf8') > this.sizeCapBytes) {
         snapshot = {
           schemaVersion: LAST_GOOD_HEALTH_SCHEMA_VERSION,

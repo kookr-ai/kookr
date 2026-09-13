@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -24,7 +24,7 @@ import {
   runOpsDigestCli,
   type OpsDigestSnapshot,
 } from './kookr-ops-digest.js';
-import { LastGoodHealthWriter, type LastGoodHealthRead } from '../server/last-good-health.js';
+import { LastGoodHealthWriter, LAST_GOOD_HEALTH_SIZE_CAP_BYTES, type LastGoodHealthRead } from '../server/last-good-health.js';
 
 function captureConsole() {
   const logs: string[] = [];
@@ -1186,6 +1186,35 @@ describe('kookr ops digest offline last-good (issue #2495)', () => {
 
     it('returns null when no snapshot exists', () => {
       expect(loadOfflineSnapshot({ HOME: root }, 1000)).toBeNull();
+    });
+
+    it.each(['gauges', 'minimal'])('reports the saved SAFE MODE pause offline after %s trimming', async (tier) => {
+      const env = { KOOKR_DIR: root };
+      const writer = new LastGoodHealthWriter({ kookrDir: root, now: () => 1 });
+      writer.record({
+        ...HEALTH_WITH_WARNINGS,
+        blob: 'x'.repeat(50 * 1024),
+        ...(tier === 'minimal' ? { attentionQueue: { blob: 'x'.repeat(50 * 1024) } } : {}),
+        safeMode: { engaged: true, since: '2026-09-13T00:00:00.000Z' },
+      });
+      const read = loadOfflineSnapshot(env, 2);
+      expect(read?.snapshot.truncated).toBe(true);
+      expect(statSync(read!.path).size).toBeLessThanOrEqual(LAST_GOOD_HEALTH_SIZE_CAP_BYTES);
+      const fetchImpl = vi.fn<typeof fetch>();
+      const human = captureConsole();
+      expect(await runOpsDigestCli(['digest', '--offline'], {
+        ...human, env, fetchImpl,
+      })).toBe(EXIT_OK);
+      expect(human.logs.join('\n')).toContain('safeMode.engaged=true since=2026-09-13T00:00:00.000Z');
+      const json = captureConsole();
+      expect(await runOpsDigestCli(['digest', '--offline', '--json'], {
+        ...json, env, fetchImpl,
+      })).toBe(EXIT_OK);
+      expect(JSON.parse(json.logs[0])).toMatchObject({
+        code: 'OFFLINE_SNAPSHOT',
+        details: { offline: { truncated: true, signals: { safeModeEngaged: true } } },
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
     });
   });
 
