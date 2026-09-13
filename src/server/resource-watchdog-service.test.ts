@@ -2,7 +2,11 @@ import { describe, expect, test, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ResourceWatchdogService } from './resource-watchdog-service.js';
+import {
+  ResourceWatchdogService,
+  defaultResourceWatchdogHealthSnapshot,
+  type ResourceWatchdogServiceDeps,
+} from './resource-watchdog-service.js';
 import {
   FileResourceWatchdogStateStore,
   emptyResourceWatchdogState,
@@ -72,7 +76,7 @@ describe('ResourceWatchdogService', () => {
   function makeService(opts: {
     config?: Partial<ResourceWatchdogConfig>;
     audit?: MemoryResourceWatchdogAuditSink;
-    launchImpl?: (opts: LaunchOpts) => Promise<LaunchResult>;
+    launchImpl?: ResourceWatchdogServiceDeps['launchTask'];
     stateStore?: ResourceWatchdogStateStore;
     getStaleDtachCount?: () => number | null;
     pressureWhileDisabledAlerter?: { evaluate: ReturnType<typeof vi.fn> };
@@ -92,6 +96,7 @@ describe('ResourceWatchdogService', () => {
         queued: false,
       };
     });
+    const logger = { info: vi.fn(), warn: vi.fn() };
     const service = new ResourceWatchdogService({
       getConfig: () => config,
       sampler: { sample: opts.sampleImpl ?? (() => sample) },
@@ -104,9 +109,9 @@ describe('ResourceWatchdogService', () => {
         : {}),
       nowMs: () => nowMs,
       nowIso: () => new Date(nowMs).toISOString(),
-      logger: { info: vi.fn(), warn: vi.fn() },
+      logger,
     });
-    return { service, audit, statePath, config };
+    return { service, audit, statePath, config, logger };
   }
 
   test('health ages the last sample without sampling again and recovers after a fresh sample', async () => {
@@ -557,6 +562,14 @@ describe('ResourceWatchdogService', () => {
     // Throttle must arm on failure so a saturated host does not retry every interval.
     expect(service.getHealthSnapshot().throttleOpen).toBe(false);
     expect(service.getHealthSnapshot().spawnsIn24h).toBe(1);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'spawn_failed',
+      lastLaunch: {
+        status: 'failed',
+        taskId: null,
+        error: 'pending_queue_full',
+      },
+    });
 
     nowMs += 5 * 60 * 1000;
     sample = healthySample({
@@ -566,6 +579,131 @@ describe('ResourceWatchdogService', () => {
     await service.runOnce();
     expect(launches).toHaveLength(0);
     expect(audit.records.some((r) => r.action === 'suppress_throttled')).toBe(true);
+  });
+
+  test.each(['launch_error', 'launch_timeout', 'stale_open_launch'] as const)(
+    'reports %s as a failed launch with bounded evidence and no successful spawn',
+    async (reason) => {
+      const detail = `agent boot failed: ${'x'.repeat(600)}`;
+      const launchTask = vi.fn(async () => ({
+        task: { id: 'failed-investigator', disposition: { reason, detail } },
+        queued: false,
+      }));
+      const { service, audit, statePath, logger, config } = makeService({ launchImpl: launchTask });
+
+      await service.runOnce();
+
+      expect(audit.records.map((record) => record.action)).toEqual(['trigger', 'spawn_failed']);
+      const failure = service.getHealthSnapshot().lastLaunch;
+      expect(failure).toEqual({
+        status: 'failed',
+        at: '2026-07-31T12:00:00.000Z',
+        taskId: 'failed-investigator',
+        error: expect.stringContaining(reason),
+      });
+      expect(failure?.error).toHaveLength(500);
+      expect(audit.records.at(-1)).toMatchObject({ taskId: 'failed-investigator', error: failure?.error });
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('spawn failed:'));
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('spawned investigation'));
+      expect(service.getHealthSnapshot()).toMatchObject({
+        lastDecision: 'spawn_failed',
+        lastSpawnTaskId: null,
+        throttleOpen: false,
+        spawnsIn24h: 1,
+        persistence: { status: 'ok', reservationDurable: true },
+      });
+      expect(JSON.parse(readFileSync(statePath, 'utf-8'))).toMatchObject({
+        lastSpawnAt: '2026-07-31T12:00:00.000Z',
+        lastSpawnTaskId: null,
+        spawnTimestamps: ['2026-07-31T12:00:00.000Z'],
+      });
+
+      nowMs += 60_000;
+      await service.runOnce();
+      expect(service.getHealthSnapshot().lastLaunch).toEqual(failure);
+      const { service: restarted } = makeService({ launchImpl: launchTask });
+      await restarted.runOnce();
+      expect(launchTask).toHaveBeenCalledTimes(1);
+      expect(restarted.getHealthSnapshot()).toMatchObject({ throttleOpen: false, spawnsIn24h: 1 });
+
+      nowMs += config.throttleMs;
+      await restarted.runOnce();
+      await restarted.runOnce();
+      expect(launchTask).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  test.each([false, true])('preserves successful launch semantics with queued=%s', async (queued) => {
+    const { service, audit, logger } = makeService({
+      launchImpl: async () => ({ task: { id: 'accepted-investigator' }, queued }),
+    });
+    expect(service.getHealthSnapshot().lastLaunch).toBeNull();
+    expect(defaultResourceWatchdogHealthSnapshot().lastLaunch).toBeNull();
+    await service.runOnce();
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'spawn',
+      lastSpawnTaskId: 'accepted-investigator',
+      lastLaunch: {
+        status: queued ? 'queued' : 'spawned',
+        at: '2026-07-31T12:00:00.000Z',
+        taskId: 'accepted-investigator',
+        error: null,
+      },
+    });
+    expect(audit.records.map((record) => record.action)).toEqual(['trigger', 'spawn']);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining(
+      `spawned investigation task accepted-investigator${queued ? ' (queued)' : ' —'}`,
+    ));
+  });
+
+  test('failed auto-enabled meta launch still consumes its throttle and meta reservation', async () => {
+    const launchTask = vi.fn(async () => ({
+      task: { id: 'failed-meta', disposition: { reason: 'launch_timeout' as const } },
+      queued: false,
+    }));
+    const { service, audit, statePath } = makeService({
+      config: { enabled: false, spawnBudget24h: 0 },
+      getStaleDtachCount: () => 33,
+      launchImpl: launchTask,
+    });
+    await service.runOnce();
+    expect(audit.records.map((record) => record.action)).toEqual(['auto_enable', 'trigger', 'spawn_failed']);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'spawn_failed',
+      lastSpawnKind: 'meta_reflection',
+      lastSpawnTaskId: null,
+      lastLaunch: { status: 'failed', taskId: 'failed-meta', error: expect.stringContaining('launch_timeout') },
+    });
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).lastMetaReflectionAt).toBe('2026-07-31T12:00:00.000Z');
+    nowMs += 60_000;
+    await service.runOnce();
+    expect(launchTask).toHaveBeenCalledTimes(1);
+    expect(service.getHealthSnapshot().lastDecision).toBe('suppress_throttled');
+  });
+
+  test('a task terminated at launch keeps the atomically reserved OOM baseline after restart', async () => {
+    const launchTask = vi.fn(async () => ({
+      task: { id: 'failed-oom', disposition: { reason: 'launch_error' as const } },
+      queued: false,
+    }));
+    sample = healthySample({ oomKillTotal: 4 });
+    const { service, statePath } = makeService({ launchImpl: launchTask });
+    await service.runOnce();
+    nowMs += 60_000;
+    sample = healthySample({ oomKillTotal: 5, sampledAt: new Date(nowMs).toISOString() });
+    await service.runOnce();
+    expect(service.getHealthSnapshot().lastDecision).toBe('spawn_failed');
+    expect(JSON.parse(readFileSync(statePath, 'utf-8')).oomKillBaseline).toEqual({
+      total: 5, sampledAt: '2026-07-31T12:01:00.000Z',
+    });
+    const { service: restarted } = makeService({ launchImpl: launchTask });
+    await restarted.runOnce();
+    expect(restarted.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'idle',
+      oomKillBaseline: { total: 5 },
+      persistence: { reservationDurable: true },
+    });
+    expect(launchTask).toHaveBeenCalledTimes(1);
   });
 
   test('TS-WATCHDOG-006: failed pre-launch reservation prevents launch and exposes bounded health', async () => {
