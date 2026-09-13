@@ -1,6 +1,8 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFile } from 'node:child_process';
-import { gunzipSync } from 'node:zlib';
+import { createGzip, gunzipSync } from 'node:zlib';
+import { createReadStream, createWriteStream, write } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
@@ -12,6 +14,16 @@ import {
   createMaintenanceBackup,
   type MaintenanceBackupManifest,
 } from './maintenance-backup.js';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const fs = await importOriginal<typeof import('node:fs')>();
+  return { ...fs, createReadStream: vi.fn(fs.createReadStream), createWriteStream: vi.fn(fs.createWriteStream) };
+});
+
+vi.mock('node:zlib', async (importOriginal) => {
+  const zlib = await importOriginal<typeof import('node:zlib')>();
+  return { ...zlib, createGzip: vi.fn(zlib.createGzip) };
+});
 
 const NOW = new Date('2026-06-13T14:05:06.000Z');
 const execFileAsync = promisify(execFile);
@@ -75,6 +87,8 @@ describe('createMaintenanceBackup', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.clearAllMocks();
     await rm(tempRoot, { recursive: true, force: true });
   });
 
@@ -86,6 +100,7 @@ describe('createMaintenanceBackup', () => {
 
     expect(basename(result.backupPath)).toBe('kookr-backup-20260613T140506Z.tar.gz');
     expect(result.archiveBytes).toBeGreaterThan(0);
+    expect((await stat(result.backupPath)).mode & 0o777).toBe(0o600);
     await expect(stat(result.backupPath)).resolves.toMatchObject({ size: result.archiveBytes });
     expect(result.manifest).toMatchObject({
       schemaVersion: 'maintenance-backup.v1',
@@ -184,6 +199,120 @@ describe('createMaintenanceBackup', () => {
     ).rejects.toThrow(/file changed while backing up/);
     await expect(exists(backupPath)).resolves.toBe(false);
   });
+
+  test('rejects a destination write failure during backpressure and closes every stream', async () => {
+    const contents = randomBytes(2 * 1024 * 1024);
+    await writeFile(join(dataDir, 'large.bin'), contents);
+    const previous = await createMaintenanceBackup({ dataDir, outDir, now: () => new Date(NOW.getTime() - 1000) });
+    const previousBytes = await readFile(previous.backupPath);
+    const extracted = await readTarGz(previous.backupPath);
+    expect(extracted.find((entry) => entry.name === 'data/large.bin')?.contents.equals(contents)).toBe(true);
+    vi.clearAllMocks();
+
+    const failure = Object.assign(new Error('ENOSPC: injected archive write failure'), { code: 'ENOSPC' });
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    let pendingWrite: (() => void) | undefined;
+    let failedDuringBackpressure = false;
+    let successfulWrites = 0;
+    function failWhenBlocked(): void {
+      const gzip = vi.mocked(createGzip).mock.results[0]?.value as ReturnType<typeof createGzip> | undefined;
+      if (pendingWrite && gzip?.writableNeedDrain) {
+        failedDuringBackpressure = true;
+        const fail = pendingWrite;
+        pendingWrite = undefined;
+        fail();
+      }
+    }
+    vi.mocked(createWriteStream).mockImplementationOnce((path, options) => fs.createWriteStream(path, {
+      ...(typeof options === 'object' ? options : {}),
+      fs: {
+        ...fs,
+        write(fd, buffer, offset, length, position, callback) {
+          if (successfulWrites === 0) {
+            write(fd, buffer, offset, length, position, (error, bytesWritten, data) => {
+              if (!error) successfulWrites++;
+              callback(error, bytesWritten, data);
+            });
+          } else {
+            pendingWrite = () => callback(failure, 0, buffer);
+            failWhenBlocked();
+          }
+        },
+      },
+    }));
+    const zlib = await vi.importActual<typeof import('node:zlib')>('node:zlib');
+    vi.mocked(createGzip).mockImplementationOnce((options) => {
+      const gzip = zlib.createGzip(options);
+      const originalWrite = gzip.write.bind(gzip);
+      vi.spyOn(gzip, 'write').mockImplementation((...args: Parameters<typeof gzip.write>) => {
+        const accepted = originalWrite(...args);
+        // Defer the error until the producer has installed its drain listener.
+        if (!accepted) queueMicrotask(failWhenBlocked);
+        return accepted;
+      });
+      return gzip;
+    });
+
+    await expect(createMaintenanceBackup({ dataDir, outDir, now: () => NOW })).rejects.toBe(failure);
+    expect(successfulWrites).toBe(1);
+    expect(failedDuringBackpressure).toBe(true);
+    const inputs = vi.mocked(createReadStream).mock.results.map((result) => result.value as ReturnType<typeof createReadStream>);
+    expect(inputs.length).toBeGreaterThan(0);
+    for (const stream of [...inputs, vi.mocked(createGzip).mock.results[0].value, vi.mocked(createWriteStream).mock.results[0].value]) {
+      expect(stream.destroyed).toBe(true);
+      expect(stream.closed).toBe(true);
+    }
+    await expect(exists(join(outDir, 'kookr-backup-20260613T140506Z.tar.gz'))).resolves.toBe(false);
+    expect((await readFile(previous.backupPath)).equals(previousBytes)).toBe(true);
+  }, 2000);
+
+  test('rejects a gzip failure while reading a source and closes the archive', async () => {
+    await writeFile(join(dataDir, 'large.bin'), randomBytes(256 * 1024));
+    const failure = new Error('injected gzip failure');
+    const zlib = await vi.importActual<typeof import('node:zlib')>('node:zlib');
+    vi.mocked(createGzip).mockImplementationOnce((options) => {
+      const gzip = zlib.createGzip(options);
+      const originalWrite = gzip.write.bind(gzip);
+      vi.spyOn(gzip, 'write').mockImplementation((...args: Parameters<typeof gzip.write>) => {
+        const accepted = originalWrite(...args);
+        if (!accepted) queueMicrotask(() => gzip.destroy(failure));
+        return accepted;
+      });
+      return gzip;
+    });
+
+    await expect(createMaintenanceBackup({ dataDir, outDir, now: () => NOW })).rejects.toBe(failure);
+    const inputs = vi.mocked(createReadStream).mock.results.map((result) => result.value as ReturnType<typeof createReadStream>);
+    expect(inputs.length).toBeGreaterThan(0);
+    for (const stream of [...inputs, vi.mocked(createGzip).mock.results[0].value, vi.mocked(createWriteStream).mock.results[0].value]) {
+      expect(stream.closed).toBe(true);
+    }
+    await expect(exists(join(outDir, 'kookr-backup-20260613T140506Z.tar.gz'))).resolves.toBe(false);
+  }, 2000);
+
+  test('rejects an early destination-open failure without removing a competing archive', async () => {
+    const failure = Object.assign(new Error('EEXIST: injected exclusive-open race'), { code: 'EEXIST' });
+    const fs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const backupPath = join(outDir, 'kookr-backup-20260613T140506Z.tar.gz');
+    vi.mocked(createWriteStream).mockImplementationOnce((path, options) => fs.createWriteStream(path, {
+      ...(typeof options === 'object' ? options : {}),
+      fs: {
+        ...fs,
+        open(_path, _flags, _mode, callback) {
+          // Another attempt wins the exclusive create after the initial stat.
+          writeFile(backupPath, 'competing archive').then(
+            () => callback(failure, -1),
+            (error: Error) => callback(error, -1),
+          );
+        },
+      },
+    }));
+
+    await expect(createMaintenanceBackup({ dataDir, outDir, now: () => NOW })).rejects.toBe(failure);
+    expect(vi.mocked(createWriteStream).mock.results[0].value.closed).toBe(true);
+    expect(vi.mocked(createGzip).mock.results[0].value.closed).toBe(true);
+    await expect(readFile(backupPath, 'utf8')).resolves.toBe('competing archive');
+  }, 2000);
 
   test('preserves symlink entries in the manifest and archive', async () => {
     await symlink('tasks.json', join(dataDir, 'tasks-link.json'));
