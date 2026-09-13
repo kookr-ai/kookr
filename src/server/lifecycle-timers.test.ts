@@ -40,6 +40,8 @@ import {
   createAutoCloseSweepThrottle,
 } from './completion-ready-sweep.js';
 import {
+  EmergencyMaintenancePruneController,
+  MaintenancePruneHealth,
   resolveMaintenancePruneIntervalHours,
   runScheduledMaintenancePrune,
 } from './maintenance-prune-schedule.js';
@@ -2272,6 +2274,48 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     const callsAfterClear = run.mock.calls.length;
     await vi.advanceTimersByTimeAsync(4_000);
     expect(run.mock.calls.length).toBe(callsAfterClear); // cleared — no more sweeps
+  });
+
+  test('overlapping interval ticks and an emergency edge share one failing sweep, then retry', async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const first = Promise.withResolvers<MaintenancePruneResult>();
+    const failed = Promise.withResolvers<void>();
+    const health = new MaintenancePruneHealth(0.0005);
+    vi.spyOn(health, 'recordFailure').mockImplementation((err) => {
+      MaintenancePruneHealth.prototype.recordFailure.call(health, err);
+      failed.resolve();
+    });
+    const result: MaintenancePruneResult = {
+      dataDir: '/tmp/data', dryRun: false, maxAgeDays: 30,
+      planned: [], removed: [], reclaimedBytes: 42, preserved: [], warnings: [],
+    };
+    const run = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValue(result);
+    const sweep = { dataDir: '/tmp/data', intervalHours: 0.0005, run, health };
+    const emergency = new EmergencyMaintenancePruneController({ pruneConfig: sweep });
+    const handles = startLifecycleTimers(baseTimerDeps({ maintenancePrune: sweep }) as TimerDeps);
+    try {
+      await vi.advanceTimersByTimeAsync(5_400);
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(health.getSnapshot()).toMatchObject({ scheduledPruneOverlapsTotal: 2, lastRunAt: null });
+      expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('in_flight');
+      first.reject(new Error('scheduled disk failure'));
+      await failed.promise;
+      expect(health.getSnapshot().lastError).toBe('scheduled disk failure');
+      await vi.advanceTimersByTimeAsync(1_800);
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(health.getSnapshot()).toMatchObject({ lastError: null, lastReclaimedBytes: 42, scheduledPruneOverlapsTotal: 2 });
+      expect(emergency.getHealthSnapshot()).toMatchObject({
+        emergencyPruneTriggeredTotal: 0, lastEmergencyPruneAt: null,
+        lastEmergencyPruneError: null, lastEmergencyReclaimedBytes: null,
+        emergencyPruneOverlapsTotal: 1,
+      });
+    } finally {
+      first.resolve(result);
+      await vi.advanceTimersByTimeAsync(0);
+      clearAllTimers(handles);
+    }
   });
 
   test('does not schedule a prune when the interval is 0 (off)', () => {

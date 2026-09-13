@@ -1,6 +1,8 @@
 import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import type { MaintenancePruneResult } from '../core/maintenance-prune.js';
+import { planAndPruneMaintenance, type MaintenancePruneResult } from '../core/maintenance-prune.js';
 import { TaskStore } from '../core/tasks.js';
 import {
   composeMaintenancePruneHealth,
@@ -33,6 +35,151 @@ function config(health: MaintenancePruneHealth): MaintenancePruneScheduleConfig 
 function pruneResult(outcome: 'pruned' | 'snapshot_failed' | 'archive_failed') {
   return { outcome, prunedTaskIds: [], remainingTasks: 1, maxAgeDays: 7 };
 }
+
+describe('shared maintenance sweep ownership', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  test('a scheduled sweep coalesces an emergency edge while preserving real active-task fixtures', async () => {
+    const dataDir = await fs.mkdtemp(join(tmpdir(), 'maintenance-owner-'));
+    const release = Promise.withResolvers<void>();
+    let concurrent = 0;
+    let maximumConcurrent = 0;
+    const health = new MaintenancePruneHealth(24, () => NOW);
+    const run = vi.fn(async (options: Parameters<typeof planAndPruneMaintenance>[0]) => {
+      concurrent += 1;
+      maximumConcurrent = Math.max(maximumConcurrent, concurrent);
+      try {
+        await release.promise;
+        return await planAndPruneMaintenance(options);
+      } finally {
+        concurrent -= 1;
+      }
+    });
+    const sweep = { dataDir, intervalHours: 24, health, run, now: () => Date.parse(NOW) };
+    const emergency = new EmergencyMaintenancePruneController({ pruneConfig: sweep, now: () => Date.parse(NOW) });
+    let scheduled: ReturnType<typeof runScheduledMaintenancePrune> | undefined;
+    let overlap: ReturnType<typeof emergency.maybeRunOnDiskCriticalEdge> | undefined;
+    try {
+      await fs.mkdir(join(dataDir, 'hooks'));
+      await fs.writeFile(join(dataDir, 'tasks.json'), JSON.stringify({ version: 2, tasks: [
+        { id: 'active', status: 'inProgress', updatedAt: '2026-01-01', sessions: [{ tmuxSession: 'active-session' }] },
+      ] }));
+      for (const session of ['active-session', 'orphan-session']) {
+        const path = join(dataDir, 'hooks', `${session}.jsonl`);
+        await fs.writeFile(path, '{}\n');
+        await fs.utimes(path, new Date('2026-01-01'), new Date('2026-01-01'));
+      }
+      scheduled = runScheduledMaintenancePrune(sweep);
+      overlap = emergency.maybeRunOnDiskCriticalEdge();
+      expect(maximumConcurrent).toBe(1);
+      expect(await overlap).toBe('in_flight');
+      expect(composeMaintenancePruneHealth(health.getSnapshot(), emergency.getHealthSnapshot())).toMatchObject({
+        lastRunAt: null, lastReclaimedBytes: null,
+        emergencyPruneOverlapsTotal: 1, emergencyPruneTriggeredTotal: 0,
+        lastEmergencyPruneAt: null, lastEmergencyReclaimedBytes: null,
+      });
+      release.resolve();
+      const result = await scheduled;
+      expect(result?.removed).toHaveLength(1);
+      expect(await fs.readFile(join(dataDir, 'hooks', 'active-session.jsonl'), 'utf8')).toBe('{}\n');
+      await expect(fs.stat(join(dataDir, 'hooks', 'orphan-session.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' });
+      const scheduleHealth = health.getSnapshot();
+      // Coalescing does not consume the emergency throttle window or the scheduled result.
+      expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('ran');
+      expect(health.getSnapshot()).toEqual(scheduleHealth);
+      expect(emergency.getHealthSnapshot().emergencyPruneTriggeredTotal).toBe(1);
+      expect(maximumConcurrent).toBe(1);
+    } finally {
+      release.resolve();
+      await scheduled;
+      await overlap;
+      await fs.rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  test.each(['pruneTaskRecords', 'compactTaskArchive'] as const)(
+    'ownership covers %s and preserves scheduled outcomes when emergency owns the sweep',
+    async (leg) => {
+      const release = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const health = new MaintenancePruneHealth(24, () => NOW);
+      health.recordSuccess(diskResult);
+      health.recordFailure(new Error('previous scheduled failure'));
+      const previous = health.getSnapshot();
+      const sweep = {
+        ...config(health),
+        [leg]: async () => {
+          entered.resolve();
+          await release.promise;
+          throw new Error('record maintenance failed');
+        },
+      };
+      const emergency = new EmergencyMaintenancePruneController({ pruneConfig: sweep });
+      const running = emergency.maybeRunOnDiskCriticalEdge();
+      try {
+        await entered.promise;
+        expect(await runScheduledMaintenancePrune({ ...sweep, dataDir: '/tmp/data/../data/' })).toBeNull();
+        expect(health.getSnapshot()).toEqual({ ...previous, scheduledPruneOverlapsTotal: 1 });
+        expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('in_flight');
+      } finally {
+        release.resolve();
+        await running;
+      }
+      expect(emergency.getHealthSnapshot()).toMatchObject({
+        emergencyPruneTriggeredTotal: 1, emergencyPruneOverlapsTotal: 1,
+        [leg === 'pruneTaskRecords' ? 'emergencyTaskRecordPrune' : 'emergencyArchiveCompaction']:
+          { lastOutcome: 'failed', failuresTotal: 1 },
+      });
+      expect(await runScheduledMaintenancePrune(config(health))).toBe(diskResult);
+    },
+  );
+
+  test('different directories run independently and disk failures release ownership for retry', async () => {
+    const release = Promise.withResolvers<MaintenancePruneResult>();
+    const health = new MaintenancePruneHealth(24, () => NOW);
+    const run = vi.fn().mockImplementationOnce(() => release.promise).mockResolvedValue(diskResult);
+    const sweep = { ...config(health), run };
+    const running = runScheduledMaintenancePrune(sweep);
+    try {
+      expect(await runScheduledMaintenancePrune({ ...config(health), dataDir: '/tmp/other-data' })).toBe(diskResult);
+      expect(await runScheduledMaintenancePrune(sweep)).toBeNull();
+    } finally {
+      release.reject(new Error('disk failed'));
+      await running;
+    }
+    expect(health.getSnapshot()).toMatchObject({ lastError: 'disk failed', scheduledPruneOverlapsTotal: 1 });
+    expect(await runScheduledMaintenancePrune(sweep)).toBe(diskResult);
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(health.getSnapshot()).toMatchObject({ lastError: null, lastReclaimedBytes: 4096, scheduledPruneOverlapsTotal: 1 });
+  });
+
+  test('a coalesced emergency attempt preserves its previous failure and reclaim-effectiveness counters', async () => {
+    const health = new MaintenancePruneHealth(24, () => NOW);
+    const run = vi.fn().mockResolvedValueOnce({ ...diskResult, reclaimedBytes: 0 })
+      .mockRejectedValueOnce(new Error('previous emergency failure'));
+    const emergency = new EmergencyMaintenancePruneController({
+      pruneConfig: { ...config(health), run }, throttleMs: 0, isDiskStillCritical: () => true,
+    });
+    expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('ran');
+    expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('failed');
+    const previous = emergency.getHealthSnapshot();
+    const release = Promise.withResolvers<MaintenancePruneResult>();
+    const scheduled = runScheduledMaintenancePrune({ ...config(health), run: () => release.promise });
+    try {
+      expect(await emergency.maybeRunOnDiskCriticalEdge()).toBe('in_flight');
+      expect(emergency.getHealthSnapshot()).toEqual({ ...previous, emergencyPruneOverlapsTotal: 1 });
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      release.resolve(diskResult);
+      await scheduled;
+    }
+    expect(emergency.getHealthSnapshot()).toEqual({ ...previous, emergencyPruneOverlapsTotal: 1 });
+  });
+});
 
 describe('record-maintenance health', () => {
   beforeEach(() => {
