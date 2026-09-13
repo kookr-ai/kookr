@@ -93,6 +93,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(edges).toBe(1);
     expect(run).toHaveBeenCalledTimes(1);
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
+      emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(1_000_000).toISOString(),
       lastEmergencyReclaimedBytes: 8192,
@@ -225,6 +227,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
 
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
+      emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(42_000).toISOString(),
       lastEmergencyReclaimedBytes: null,
@@ -265,6 +269,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       throttleMs: 3_600_000,
     });
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
+      emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 0,
       lastEmergencyPruneAt: null,
       lastEmergencyReclaimedBytes: null,
@@ -292,6 +298,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     // A failing sweep populates lastEmergencyPruneError with the real message.
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
+      emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
       lastEmergencyPruneAt: new Date(0).toISOString(),
       lastEmergencyReclaimedBytes: null,
@@ -305,6 +313,8 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     nowMs = 10;
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
+      emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 2,
       lastEmergencyPruneAt: new Date(10).toISOString(),
       lastEmergencyReclaimedBytes: 512,
