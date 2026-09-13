@@ -7,7 +7,7 @@
 
 import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { setImmediate as waitForImmediate } from 'node:timers/promises';
 import {
@@ -246,6 +246,37 @@ export async function listPipelineStarvationHealth(
   return out;
 }
 
+const mutationTails = new Map<string, Promise<void>>();
+
+/**
+ * Serialize a repository's complete read/decide/launch/save operation across
+ * service instances in this process. The resolved ledger path gives callers
+ * using the same state directory and repository slug one shared owner.
+ * Different ledger files advance independently; idle owners are discarded.
+ *
+ * This is not reentrant: acquire once at the service entry point, then use
+ * load/save and launch helpers directly inside the callback. A rejected
+ * operation still reaches its caller without preventing the next mutation.
+ */
+export function withPipelineStarvationStateMutation<T>(
+  repo: string,
+  mutate: () => Promise<T>,
+  opts: { stateDir?: string } = {},
+): Promise<T> {
+  const path = resolve(pipelineStarvationStatePath(
+    opts.stateDir ?? defaultPipelineStarvationStateDir(),
+    repo,
+  ));
+  const prior = mutationTails.get(path) ?? Promise.resolve();
+  const run = prior.then(mutate);
+  const tail = run.then(() => {}, () => {});
+  mutationTails.set(path, tail);
+  void tail.then(() => {
+    if (mutationTails.get(path) === tail) mutationTails.delete(path);
+  });
+  return run;
+}
+
 export async function loadPipelineStarvationState(
   repo: string,
   opts: { stateDir?: string; nowMs?: number } = {},
@@ -308,6 +339,7 @@ export async function loadPipelineStarvationState(
   }
 }
 
+/** Atomic file replacement; production read-modify-save callers must hold mutation ownership. */
 export async function savePipelineStarvationState(
   state: PipelineStarvationRepoState,
   opts: { stateDir?: string } = {},

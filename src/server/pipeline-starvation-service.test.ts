@@ -2,6 +2,7 @@ import { describe, expect, test, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { loadPipelineStarvationState } from '../core/pipeline-starvation-state.js';
 import { TaskStore, type Task } from '../core/tasks.js';
 import {
   BATCH_OUTCOME_SCHEMA_VERSION,
@@ -179,6 +180,48 @@ describe('PipelineStarvationService (#1715)', () => {
     expect(result.decision.spawnScout).toBe(false);
     expect(result.spawnedScoutTaskId).toBeUndefined();
     expect(launches).toHaveLength(0);
+  });
+
+  test('concurrent blocked-empty handles retain both run keys with an existing scout (#3194)', async () => {
+    store.createTask({
+      prompt: 'Repository Idea Scout for jeanibarz/lucy',
+      cwd: checkout,
+      playbookId: 'repository-idea-scout.md',
+      projectId: 'github.com/jeanibarz/lucy',
+    });
+    // A second service instance must share ownership of the same ledger.
+    const otherService = new PipelineStarvationService({
+      taskStore: store,
+      launcher: async () => { throw new Error('existing scout must prevent launch'); },
+      broadcast: (msg) => { alerts.push(msg); },
+      kookrDir,
+      stateDir,
+      ideaScoutStateDirForRepo: () => ideaScoutBase,
+      now: () => clock,
+    });
+    const results = await Promise.all([
+      service.handleBatchOutcome({ outcome: outcome({ runKey: 'one' }) }),
+      otherService.handleBatchOutcome({ outcome: outcome({ runKey: 'two' }) }),
+    ]);
+    expect(results.map((r) => r.decision.alreadyHandled)).toEqual([false, false]);
+    const durable = await loadPipelineStarvationState('jeanibarz/lucy', { stateDir });
+    expect(durable.handledRunKeys).toEqual(['one', 'two']);
+    expect(durable.blockedEmptyAt).toHaveLength(2);
+    expect(launches).toHaveLength(0);
+    expect(alerts).toHaveLength(1);
+  });
+
+  test('concurrent replay launches a scout once and records the run once (#3194)', async () => {
+    const results = await Promise.all([
+      service.handleBatchOutcome({ outcome: outcome(), localPath: checkout }),
+      service.handleBatchOutcome({ outcome: outcome(), localPath: checkout }),
+    ]);
+    expect(results.map((r) => r.decision.alreadyHandled)).toEqual([false, true]);
+    expect(launches).toHaveLength(1);
+    const durable = await loadPipelineStarvationState('jeanibarz/lucy', { stateDir });
+    expect(durable.handledRunKeys).toEqual(['run-1']);
+    expect(durable.lastStarvationScoutTaskId).toBe(results[0]!.spawnedScoutTaskId);
+    expect(durable.kickBatchWhenScoutCompletes).toBe(true);
   });
 
   test('skips spawn when a successful ideation run finished recently', async () => {

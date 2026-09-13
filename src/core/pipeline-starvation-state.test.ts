@@ -1,12 +1,13 @@
 import { describe, expect, test, beforeEach, afterEach } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   listPipelineStarvationHealth,
   loadInventPriorityClassHealth,
   loadPipelineStarvationState,
   savePipelineStarvationState,
+  withPipelineStarvationStateMutation,
 } from './pipeline-starvation-state.js';
 import {
   effectiveStarvationScoutCooldownMs,
@@ -75,6 +76,66 @@ describe('listPipelineStarvationHealth (#2171 effectiveScoutCooldownMs)', () => 
     const loaded = await loadPipelineStarvationState('jeanibarz/lucy', { stateDir, nowMs: NOW });
     expect(loaded.blockedEmptyAt).toHaveLength(3);
     expect(loaded.handledRunKeys).toEqual(state.handledRunKeys);
+  });
+});
+
+describe('pipeline starvation mutation ownership (#3194)', () => {
+  let stateDir: string;
+
+  beforeEach(async () => {
+    stateDir = await mkdtemp(join(tmpdir(), 'kookr-starv-mutations-'));
+  });
+
+  afterEach(async () => {
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  test('queues matching ledger paths while other repositories and directories advance', async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const order: string[] = [];
+    const first = withPipelineStarvationStateMutation('Owner/Repo', async () => {
+      entered.resolve();
+      await release.promise;
+      order.push('first');
+    }, { stateDir });
+    await entered.promise;
+    const second = withPipelineStarvationStateMutation('owner/repo', async () => {
+      order.push('second');
+    }, { stateDir: relative(process.cwd(), stateDir) });
+    const third = withPipelineStarvationStateMutation('owner/repo', async () => {
+      order.push('third');
+    }, { stateDir });
+
+    try {
+      await withPipelineStarvationStateMutation('owner/other', async () => {
+        order.push('other repo');
+      }, { stateDir });
+      await withPipelineStarvationStateMutation('owner/repo', async () => {
+        order.push('other directory');
+      }, { stateDir: join(stateDir, 'isolated') });
+      expect(order).toEqual(['other repo', 'other directory']);
+    } finally {
+      release.resolve();
+      await Promise.all([first, second, third]);
+    }
+    expect(order).toEqual(['other repo', 'other directory', 'first', 'second', 'third']);
+  });
+
+  test('a rejected mutation releases queued and subsequent operations', async () => {
+    const failure = new Error('storage unavailable');
+    const first = withPipelineStarvationStateMutation('owner/repo', async () => {
+      throw failure;
+    }, { stateDir });
+    const second = withPipelineStarvationStateMutation('owner/repo', async () => {
+      await savePipelineStarvationState(stateWithEmpties('owner/repo', 2), { stateDir });
+      return 'saved';
+    }, { stateDir });
+    await expect(first).rejects.toBe(failure);
+    await expect(second).resolves.toBe('saved');
+    await expect(withPipelineStarvationStateMutation('owner/repo', async () => {
+      return (await loadPipelineStarvationState('owner/repo', { stateDir })).handledRunKeys;
+    }, { stateDir })).resolves.toEqual(['e1', 'e2']);
   });
 });
 
