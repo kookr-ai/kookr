@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import {
   planAndPruneMaintenance,
   type MaintenancePruneResult,
@@ -82,6 +83,8 @@ export interface MaintenancePruneScheduleHealthSnapshot {
   lastRemovedCount: number | null;
   /** Error from the last failed scheduled disk sweep, or null after disk success. */
   lastError: string | null;
+  /** Scheduled triggers coalesced into an already-running sweep, since boot. */
+  scheduledPruneOverlapsTotal?: number;
   /** Scheduled task-record prune only; null outcome until its first completed attempt. */
   taskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
   /**
@@ -100,6 +103,7 @@ export class MaintenancePruneHealth {
   private lastReclaimedBytes: number | null = null;
   private lastRemovedCount: number | null = null;
   private lastError: string | null = null;
+  private scheduledPruneOverlapsTotal = 0;
   private readonly taskRecordPrune = new MaintenancePruneLegHealth(TASK_RECORD_PRUNE_ERRORS);
   private readonly archiveCompaction = new MaintenancePruneLegHealth(ARCHIVE_COMPACTION_ERRORS);
 
@@ -120,6 +124,10 @@ export class MaintenancePruneHealth {
     this.lastError = err instanceof Error ? err.message : String(err);
   }
 
+  recordOverlap(): void {
+    this.scheduledPruneOverlapsTotal += 1;
+  }
+
   recordTaskRecordPrune(outcome: TaskRecordPruneOutcome): void {
     this.taskRecordPrune.record(outcome, this.nowIso());
   }
@@ -136,6 +144,7 @@ export class MaintenancePruneHealth {
       lastReclaimedBytes: this.lastReclaimedBytes,
       lastRemovedCount: this.lastRemovedCount,
       lastError: this.lastError,
+      scheduledPruneOverlapsTotal: this.scheduledPruneOverlapsTotal,
       taskRecordPrune: this.taskRecordPrune.getSnapshot(),
       archiveCompaction: this.archiveCompaction.getSnapshot(),
     };
@@ -162,7 +171,7 @@ export interface MaintenancePruneScheduleConfig {
    * does not write schedule last-run fields (those stay on the interval timer).
    */
   health?: Pick<MaintenancePruneHealth, 'recordSuccess' | 'recordFailure'>
-    & Partial<Pick<MaintenancePruneHealth, 'recordTaskRecordPrune' | 'recordArchiveCompaction'>>;
+    & Partial<Pick<MaintenancePruneHealth, 'recordTaskRecordPrune' | 'recordArchiveCompaction' | 'recordOverlap'>>;
   /**
    * Aged terminal task-record pruning (issue #1526 Phase C / C2). Wired at
    * bootstrap to `pruneAgedTaskRecords` over the live TaskStore/Monitor so
@@ -204,6 +213,8 @@ export interface MaintenancePruneScheduleConfig {
  * the *scheduled* leg. Emergency reclaim is `lastEmergencyReclaimedBytes`.
  */
 export interface MaintenancePruneHealthSnapshot extends MaintenancePruneScheduleHealthSnapshot {
+  /** Emergency triggers coalesced into an already-running sweep, since boot. */
+  emergencyPruneOverlapsTotal?: number;
   /** Emergency record-maintenance outcomes never overwrite scheduled outcomes. */
   emergencyTaskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
   emergencyArchiveCompaction?: MaintenancePruneLegHealthSnapshot<ArchiveCompactionOutcome>;
@@ -235,6 +246,8 @@ export interface MaintenancePruneHealthSnapshot extends MaintenancePruneSchedule
  * Composed with schedule state via {@link composeMaintenancePruneHealth}.
  */
 export interface EmergencyMaintenancePruneHealthSnapshot {
+  /** Coalesced triggers do not count as attempts or consume the throttle window. */
+  emergencyPruneOverlapsTotal?: number;
   emergencyTaskRecordPrune?: MaintenancePruneLegHealthSnapshot<TaskRecordPruneOutcome>;
   emergencyArchiveCompaction?: MaintenancePruneLegHealthSnapshot<ArchiveCompactionOutcome>;
   emergencyPruneTriggeredTotal: number;
@@ -261,6 +274,7 @@ export function composeMaintenancePruneHealth(
 ): MaintenancePruneHealthSnapshot {
   return {
     ...schedule,
+    emergencyPruneOverlapsTotal: emergency.emergencyPruneOverlapsTotal,
     emergencyTaskRecordPrune: emergency.emergencyTaskRecordPrune,
     emergencyArchiveCompaction: emergency.emergencyArchiveCompaction,
     emergencyPruneTriggeredTotal: emergency.emergencyPruneTriggeredTotal,
@@ -307,8 +321,8 @@ export interface EmergencyMaintenancePruneControllerOptions {
  * When disk-critical launch admission first engages, call
  * {@link EmergencyMaintenancePruneController.maybeRunOnDiskCriticalEdge} once.
  * At most one sweep runs per throttle window so a sustained critical state
- * cannot thrash the disk. Reuses {@link runScheduledMaintenancePrune} so the
- * disk + optional task-record legs stay identical to the opt-in schedule.
+ * cannot thrash the disk. Shares sweep ownership and the disk + optional
+ * task-record legs with the opt-in schedule.
  *
  * Never blocks the launch path: production wiring fire-and-forgets the
  * promise. Failures are logged inside the shared prune runner.
@@ -317,6 +331,7 @@ export class EmergencyMaintenancePruneController {
   private readonly throttleMs: number;
   private readonly now: () => number;
   private emergencyPruneTriggeredTotal = 0;
+  private emergencyPruneOverlapsTotal = 0;
   private lastEmergencyPruneAt: string | null = null;
   private lastReclaimedBytes: number | null = null;
   /** Message from the last failed emergency sweep, or null after success (issue #3078). */
@@ -345,6 +360,7 @@ export class EmergencyMaintenancePruneController {
       emergencyTaskRecordPrune: this.taskRecordPrune.getSnapshot(),
       emergencyArchiveCompaction: this.archiveCompaction.getSnapshot(),
       emergencyPruneTriggeredTotal: this.emergencyPruneTriggeredTotal,
+      emergencyPruneOverlapsTotal: this.emergencyPruneOverlapsTotal,
       lastEmergencyPruneAt: this.lastEmergencyPruneAt,
       lastEmergencyReclaimedBytes: this.lastReclaimedBytes,
       lastEmergencyPruneError: this.lastEmergencyPruneError,
@@ -363,7 +379,10 @@ export class EmergencyMaintenancePruneController {
    * `void` the promise so admission never waits on reclaim.
    */
   async maybeRunOnDiskCriticalEdge(): Promise<EmergencyPruneOutcome> {
-    if (this.inFlight) return 'in_flight';
+    if (this.inFlight) {
+      this.emergencyPruneOverlapsTotal += 1;
+      return 'in_flight';
+    }
     const nowMs = this.now();
     if (
       this.lastRunStartedAtMs != null
@@ -374,15 +393,8 @@ export class EmergencyMaintenancePruneController {
     }
 
     this.inFlight = true;
-    this.lastRunStartedAtMs = nowMs;
-    this.emergencyPruneTriggeredTotal += 1;
-    this.lastEmergencyPruneAt = new Date(nowMs).toISOString();
 
     try {
-      console.log(
-        `[maintenance-prune] emergency sweep triggered by data-directory disk-critical ` +
-          `(total=${this.emergencyPruneTriggeredTotal}, throttleMs=${this.throttleMs})`,
-      );
       // Strip the schedule health tracker so emergency reclaims do not overwrite
       // the interval timer's lastRunAt / lastReclaimedBytes (issue #2345). Wire a
       // capture-only shim in its place so the shared runner surfaces the failure
@@ -406,7 +418,19 @@ export class EmergencyMaintenancePruneController {
           },
         },
       };
-      const result = await runScheduledMaintenancePrune(emergencyConfig);
+      const sweep = tryStartMaintenancePrune(emergencyConfig);
+      if (!sweep) {
+        this.emergencyPruneOverlapsTotal += 1;
+        return 'in_flight';
+      }
+      this.lastRunStartedAtMs = nowMs;
+      this.emergencyPruneTriggeredTotal += 1;
+      this.lastEmergencyPruneAt = new Date(nowMs).toISOString();
+      console.log(
+        `[maintenance-prune] emergency sweep triggered by data-directory disk-critical ` +
+          `(total=${this.emergencyPruneTriggeredTotal}, throttleMs=${this.throttleMs})`,
+      );
+      const result = await sweep;
       if (result) {
         this.lastReclaimedBytes = result.reclaimedBytes;
         this.recordReclaimEffectiveness(result.reclaimedBytes);
@@ -418,7 +442,7 @@ export class EmergencyMaintenancePruneController {
       this.lastReclaimedBytes = null;
       return 'failed';
     } catch (err) {
-      // runScheduledMaintenancePrune already catches; this is belt-and-braces.
+      // The shared runner already catches; this is belt-and-braces.
       console.error('[maintenance-prune] emergency sweep failed:', err);
       this.lastReclaimedBytes = null;
       this.lastEmergencyPruneError = err instanceof Error ? err.message : String(err);
@@ -523,9 +547,37 @@ export function resolveMaintenancePruneIntervalHours(
 /**
  * Run one scheduled maintenance prune. Errors are caught and logged — a failed
  * sweep must never bubble into the interval callback and crash the process.
- * Returns the result, or `null` when the sweep threw.
+ * Returns the result, or `null` on failure or overlap. A coalesced trigger only
+ * increments the overlap counter; it never records another sweep's outcome.
  */
 export async function runScheduledMaintenancePrune(
+  config: MaintenancePruneScheduleConfig,
+): Promise<MaintenancePruneResult | null> {
+  const sweep = tryStartMaintenancePrune(config);
+  if (!sweep) {
+    config.health?.recordOverlap?.();
+    return null;
+  }
+  return sweep;
+}
+
+// Configs are copied for emergency health attribution, so ownership must follow
+// the directory, not config identity. Entries live only until the entire sweep
+// settles, including task-record pruning and archive compaction after disk failure.
+const maintenancePruneOwners = new Set<string>();
+
+function tryStartMaintenancePrune(
+  config: MaintenancePruneScheduleConfig,
+): Promise<MaintenancePruneResult | null> | null {
+  const key = resolve(config.dataDir);
+  if (maintenancePruneOwners.has(key)) return null;
+  maintenancePruneOwners.add(key);
+  return runMaintenancePrune(config).finally(() => {
+    maintenancePruneOwners.delete(key);
+  });
+}
+
+async function runMaintenancePrune(
   config: MaintenancePruneScheduleConfig,
 ): Promise<MaintenancePruneResult | null> {
   try {

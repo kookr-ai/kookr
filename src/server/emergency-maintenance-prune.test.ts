@@ -93,6 +93,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     expect(edges).toBe(1);
     expect(run).toHaveBeenCalledTimes(1);
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneOverlapsTotal: 0,
       emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
@@ -227,6 +228,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
 
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneOverlapsTotal: 0,
       emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
@@ -269,6 +271,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
       throttleMs: 3_600_000,
     });
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneOverlapsTotal: 0,
       emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 0,
@@ -298,6 +301,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     // A failing sweep populates lastEmergencyPruneError with the real message.
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('failed');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneOverlapsTotal: 0,
       emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 1,
@@ -313,6 +317,7 @@ describe('EmergencyMaintenancePruneController (issue #2344)', () => {
     nowMs = 10;
     expect(await controller.maybeRunOnDiskCriticalEdge()).toBe('ran');
     expect(controller.getHealthSnapshot()).toEqual({
+      emergencyPruneOverlapsTotal: 0,
       emergencyTaskRecordPrune: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyArchiveCompaction: { lastRunAt: null, lastOutcome: null, lastError: null, failuresTotal: 0 },
       emergencyPruneTriggeredTotal: 2,
