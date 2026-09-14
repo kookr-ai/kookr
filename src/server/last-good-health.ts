@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, constants, fstatSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { isSecretFieldName, redactSecrets as redactSecretString } from '../core/redact-secrets.js';
 
@@ -389,9 +389,13 @@ export class LastGoodHealthWriter {
 }
 
 /**
- * Read the last-good health snapshot from `kookrDir`, or null if the file is
- * absent, unreadable, malformed, or written by an unknown schema version.
- * Used by the offline digest (`kookr ops digest --offline`) when HTTP is dark.
+ * Load the most recent successful health snapshot for the offline digest
+ * (`kookr ops digest --offline`) when the server is unreachable.
+ * Return null if the snapshot file in `kookrDir` is absent, unreadable,
+ * larger than 32 KiB, not a regular file, malformed, or uses an unknown schema.
+ * Read at most 32 KiB plus one byte to detect overflow.
+ * Nonblocking open avoids waiting for a named-pipe writer. Reads remain
+ * synchronous and have no deadline if the filesystem stalls.
  */
 export function readLastGoodHealth(
   kookrDir: string,
@@ -400,11 +404,29 @@ export function readLastGoodHealth(
   const filePath = lastGoodHealthPath(kookrDir);
   let raw: string;
   let mtimeMs: number;
+  let fd: number | undefined;
   try {
-    raw = readFileSync(filePath, 'utf8');
-    mtimeMs = statSync(filePath).mtimeMs;
+    fd = openSync(filePath, constants.O_RDONLY | constants.O_NONBLOCK);
+    const metadata = fstatSync(fd);
+    if (!metadata.isFile() || metadata.size > LAST_GOOD_HEALTH_SIZE_CAP_BYTES) return null;
+    mtimeMs = metadata.mtimeMs;
+    // The extra byte detects growth beyond the cap after fstat, without
+    // trusting the earlier size or ever reading the whole growing file.
+    const buffer = Buffer.alloc(LAST_GOOD_HEALTH_SIZE_CAP_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const count = readSync(fd, buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+      if (count === 0) break;
+      bytesRead += count;
+    }
+    if (bytesRead > LAST_GOOD_HEALTH_SIZE_CAP_BYTES) return null;
+    raw = buffer.toString('utf8', 0, bytesRead);
   } catch {
     return null;
+  } finally {
+    if (fd !== undefined) {
+      try { closeSync(fd); } catch { /* Ignore cleanup errors so they do not replace the read result. */ }
+    }
   }
   let parsed: unknown;
   try {
