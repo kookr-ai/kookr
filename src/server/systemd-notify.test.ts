@@ -1,10 +1,115 @@
-import { describe, expect, it, vi } from 'vitest';
+import { execFile } from 'node:child_process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildSystemdNotifierHealthBlock,
   createSystemdNotifier,
   SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION,
 } from './systemd-notify.js';
+
+// No test may invoke the host's notification helper or service manager.
+vi.mock('node:child_process', () => ({ execFile: vi.fn() }));
+afterEach(() => vi.resetAllMocks());
+
+describe('notification helper completion health', () => {
+  function setup() {
+    let wallTime = 1_000;
+    const completions: Array<(error: unknown) => void> = [];
+    vi.mocked(execFile).mockImplementation((_file, _args, callback) => {
+      completions.push(callback as (error: unknown) => void);
+      return {} as ReturnType<typeof execFile>;
+    });
+    const logger = vi.fn();
+    const notifier = createSystemdNotifier({
+      env: { NOTIFY_SOCKET: '/test/notify', WATCHDOG_USEC: '30000000' },
+      now: () => 0,
+      wallNow: () => wallTime,
+      logger,
+    });
+    return { notifier, completions, logger, setWallTime: (time: number) => { wallTime = time; } };
+  }
+
+  it('distinguishes no attempt from a helper still running, without doing I/O on health reads', () => {
+    const { notifier } = setup();
+    expect(buildSystemdNotifierHealthBlock(notifier).sendHealth).toEqual({
+      status: 'not-attempted', attempts: 0, failures: 0,
+      lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null,
+    });
+    expect(execFile).not.toHaveBeenCalled();
+    notifier.watchdog();
+    const pending = buildSystemdNotifierHealthBlock(notifier);
+    expect(pending.sendHealth).toMatchObject({ status: 'pending', attempts: 1, lastAttemptAt: 1_000, lastSuccessAt: null });
+    notifier.watchdog(); // Throttled calls and health reads do not send again.
+    expect(buildSystemdNotifierHealthBlock(notifier)).toEqual(pending);
+    expect(execFile).toHaveBeenCalledExactlyOnceWith('systemd-notify', ['WATCHDOG=1'], expect.any(Function));
+  });
+
+  it.each([
+    ['ENOENT', 'helper-missing'],
+    [1, 'helper-exit'],
+    ['EACCES', 'send-error'],
+  ])('records %s failures without exposing raw helper errors', (code, category) => {
+    const { notifier, completions, logger, setWallTime } = setup();
+    notifier.watchdog();
+    setWallTime(2_000);
+    completions[0](Object.assign(new Error('private helper stderr and environment'), { code }));
+    const health = buildSystemdNotifierHealthBlock(notifier);
+    expect(health.sendHealth).toEqual({
+      status: 'failed', attempts: 1, failures: 1,
+      lastAttemptAt: 1_000, lastSuccessAt: null, lastFailureAt: 2_000, lastError: category,
+    });
+    expect(health.arming).toBe('watchdog-armed');
+    expect(health.externalUnitStatus).toBe('unknown');
+    expect(JSON.stringify(health)).not.toContain('private');
+    expect(logger).toHaveBeenCalledExactlyOnceWith(expect.stringContaining(category));
+    expect(JSON.stringify(logger.mock.calls)).not.toContain('private');
+  });
+
+  it('clears the current error on recovery while retaining failure history and old snapshots', () => {
+    const { notifier, completions, setWallTime } = setup();
+    notifier.ready();
+    completions[0]({ code: 1 });
+    const failed = buildSystemdNotifierHealthBlock(notifier);
+    setWallTime(2_000);
+    notifier.watchdog();
+    expect(buildSystemdNotifierHealthBlock(notifier).sendHealth?.status).toBe('failed');
+    setWallTime(3_000);
+    completions[1](null);
+    expect(buildSystemdNotifierHealthBlock(notifier).sendHealth).toEqual({
+      status: 'succeeded', attempts: 2, failures: 1,
+      lastAttemptAt: 2_000, lastSuccessAt: 3_000, lastFailureAt: 1_000, lastError: null,
+    });
+    expect(failed.sendHealth?.status).toBe('failed');
+    expect(buildSystemdNotifierHealthBlock(notifier).externalUnitStatus).toBe('unknown');
+  });
+
+  it('uses completion order for overlapping sends and counts each attempt only once', () => {
+    const { notifier, completions } = setup();
+    notifier.ready();
+    notifier.watchdog();
+    completions[1](null);
+    completions[0]({ signal: 'SIGTERM' });
+    completions[0](null);
+    expect(buildSystemdNotifierHealthBlock(notifier).sendHealth).toMatchObject({
+      status: 'failed', attempts: 2, failures: 1, lastSuccessAt: 1_000, lastError: 'helper-signal',
+    });
+  });
+
+  it('records synchronous sender throws and does not mistake a void return for success', () => {
+    const notifier = createSystemdNotifier({
+      env: { NOTIFY_SOCKET: '/test/notify' },
+      send: () => { throw new Error('private'); },
+      logger: vi.fn(),
+    });
+    expect(() => notifier.ready()).not.toThrow();
+    expect(buildSystemdNotifierHealthBlock(notifier).sendHealth).toMatchObject({
+      status: 'failed', attempts: 1, failures: 1, lastError: 'send-error',
+    });
+    const pending = createSystemdNotifier({ env: { NOTIFY_SOCKET: '/test/notify' }, send: () => {} });
+    pending.ready();
+    expect(buildSystemdNotifierHealthBlock(pending).sendHealth?.status).toBe('pending');
+  });
+});
 
 /**
  * Unit coverage for the sd_notify(3) helper (issue #2491). Every case injects a
@@ -199,7 +304,7 @@ describe('createSystemdNotifier', () => {
       expect(() => notifier.ready()).not.toThrow();
       expect(() => notifier.watchdog()).not.toThrow();
       expect(logs.length).toBe(2);
-      expect(logs.every((l) => l.includes('boom'))).toBe(true);
+      expect(logs.every((l) => l.includes('send-error'))).toBe(true);
     });
   });
 
@@ -239,6 +344,10 @@ describe('buildSystemdNotifierHealthBlock', () => {
       watchdogArmed: false,
       watchdogIntervalMs: 0,
       externalUnitStatus: 'unknown',
+      sendHealth: {
+        status: 'not-attempted', attempts: 0, failures: 0,
+        lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null,
+      },
     });
   });
 
@@ -281,6 +390,7 @@ describe('buildSystemdNotifierHealthBlock', () => {
       enabled: true,
       watchdogEnabled: false,
       watchdogIntervalMs: 15_000,
+      sendHealth: createSystemdNotifier({ env: {} }).sendHealth,
     });
 
     expect(block.arming).toBe('notifier-only');

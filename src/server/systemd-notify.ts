@@ -44,6 +44,8 @@ export interface SystemdNotifier {
    * when the watchdog is not armed.
    */
   readonly watchdogIntervalMs: number;
+  /** Snapshot of helper attempts and completions; never proof of external supervision. */
+  readonly sendHealth: SystemdNotifySendHealth;
   /** Send `READY=1` once the listener is up. No-op when {@link enabled} is false. */
   ready(): void;
   /**
@@ -55,8 +57,28 @@ export interface SystemdNotifier {
   watchdog(): void;
 }
 
-/** Sends one sd_notify variable assignment (e.g. `"READY=1"`). */
-export type NotifySender = (payload: string) => void;
+/** Sends one assignment and reports helper completion. Returning alone is not success. */
+export type NotifySender = (payload: string, complete: (error?: unknown) => void) => void;
+
+/** Fixed categories exclude helper output, paths, and environment values. */
+export type SystemdNotifyError = 'helper-missing' | 'helper-exit' | 'helper-signal' | 'send-error';
+
+/**
+ * Process-local evidence shared by readiness and watchdog sends. After the first
+ * completion, status reflects the latest completion even while another send runs.
+ * Counters saturate at MAX_SAFE_INTEGER; timestamps are Unix milliseconds.
+ */
+export interface SystemdNotifySendHealth {
+  readonly status: 'not-attempted' | 'pending' | 'succeeded' | 'failed';
+  readonly attempts: number;
+  readonly failures: number;
+  readonly lastAttemptAt: number | null;
+  readonly lastSuccessAt: number | null;
+  /** Retained across recovery, along with the cumulative failure count. */
+  readonly lastFailureAt: number | null;
+  /** Current failure category; cleared by a successful helper completion. */
+  readonly lastError: SystemdNotifyError | null;
+}
 
 export interface SystemdNotifierOptions {
   /** Environment to read `NOTIFY_SOCKET` / `WATCHDOG_USEC` / `WATCHDOG_PID` from. Defaults to `process.env`. */
@@ -72,22 +94,28 @@ export interface SystemdNotifierOptions {
    * which could starve the watchdog on an otherwise-healthy loop.
    */
   now?: () => number;
+  /** Wall clock for health timestamps. Defaults to Date.now; never used for throttling. */
+  wallNow?: () => number;
   /** Sink for send failures. Defaults to `console.warn`. */
   logger?: (msg: string) => void;
 }
 
 /**
- * Default sender: fire-and-forget `systemd-notify <payload>`. `systemd-notify`
+ * Default sender: asynchronous `systemd-notify <payload>`. `systemd-notify`
  * inherits `NOTIFY_SOCKET` from our environment and writes the datagram itself.
- * Failures (e.g. the binary is missing) are logged once per call and never
- * propagate — a notify failure must not take the server down.
+ * Completion only describes the helper's exit, not the external unit's status.
  */
-function spawnSystemdNotify(payload: string, logger: (msg: string) => void): void {
-  execFile('systemd-notify', [payload], (err) => {
-    if (err) {
-      logger(`[systemd-notify] failed to send ${payload}: ${err.message}`);
-    }
-  });
+function spawnSystemdNotify(payload: string, complete: (error?: unknown) => void): void {
+  execFile('systemd-notify', [payload], (err) => complete(err));
+}
+
+function classifySendError(error: unknown): SystemdNotifyError {
+  if (typeof error === 'object' && error !== null) {
+    if ('code' in error && error.code === 'ENOENT') return 'helper-missing';
+    if ('signal' in error && error.signal) return 'helper-signal';
+    if ('code' in error && typeof error.code === 'number') return 'helper-exit';
+  }
+  return 'send-error';
 }
 
 function parsePositiveInt(value: string | undefined): number | null {
@@ -108,8 +136,9 @@ export function createSystemdNotifier(options: SystemdNotifierOptions = {}): Sys
   const env = options.env ?? process.env;
   const pid = options.pid ?? process.pid;
   const now = options.now ?? (() => performance.now());
+  const wallNow = options.wallNow ?? Date.now;
   const logger = options.logger ?? ((msg: string) => console.warn(msg));
-  const send = options.send ?? ((payload: string) => spawnSystemdNotify(payload, logger));
+  const send = options.send ?? spawnSystemdNotify;
 
   const enabled = typeof env.NOTIFY_SOCKET === 'string' && env.NOTIFY_SOCKET.length > 0;
 
@@ -127,13 +156,39 @@ export function createSystemdNotifier(options: SystemdNotifierOptions = {}): Sys
   const watchdogIntervalMs = watchdogEnabled ? Math.floor(watchdogUsec / 1000 / 2) : 0;
 
   let lastWatchdogAt = Number.NEGATIVE_INFINITY;
+  let sendHealth: SystemdNotifySendHealth = {
+    status: 'not-attempted', attempts: 0, failures: 0,
+    lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null,
+  };
 
   const safeSend = (payload: string): void => {
+    sendHealth = {
+      ...sendHealth,
+      status: sendHealth.status === 'not-attempted' ? 'pending' : sendHealth.status,
+      attempts: Math.min(Number.MAX_SAFE_INTEGER, sendHealth.attempts + 1),
+      lastAttemptAt: wallNow(),
+    };
+    let completed = false;
+    const complete = (error?: unknown): void => {
+      if (completed) return;
+      completed = true;
+      if (error != null) {
+        const category = classifySendError(error);
+        sendHealth = {
+          ...sendHealth, status: 'failed',
+          failures: Math.min(Number.MAX_SAFE_INTEGER, sendHealth.failures + 1),
+          lastFailureAt: wallNow(), lastError: category,
+        };
+        logger(`[systemd-notify] failed to send ${payload}: ${category}`);
+      } else {
+        sendHealth = { ...sendHealth, status: 'succeeded', lastSuccessAt: wallNow(), lastError: null };
+      }
+    };
     // A throwing sender must never break the caller (the liveness tick).
     try {
-      send(payload);
+      send(payload, complete);
     } catch (err) {
-      logger(`[systemd-notify] send threw for ${payload}: ${err instanceof Error ? err.message : String(err)}`);
+      complete(err ?? new Error('sender threw without an error'));
     }
   };
 
@@ -141,6 +196,9 @@ export function createSystemdNotifier(options: SystemdNotifierOptions = {}): Sys
     enabled,
     watchdogEnabled,
     watchdogIntervalMs,
+    get sendHealth(): SystemdNotifySendHealth {
+      return { ...sendHealth };
+    },
     ready(): void {
       if (!enabled) return;
       safeSend('READY=1');
@@ -169,31 +227,32 @@ export const SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION = 'systemd-notifier.v1';
 export type SystemdNotifierArming = 'absent' | 'notifier-only' | 'watchdog-armed';
 
 /**
- * Operator-facing projection of the notifier's in-memory arming state (issue
+ * Operator-facing projection of the notifier's in-memory state (issue
  * #2853). Health and `kookr ops digest` surface this so a remote operator can
  * tell whether process-level watchdog integration is disabled, instead of
  * mistaking a dead-but-unsupervised service for an externally supervised one.
  *
- * Deliberately narrow: it reports only what the process learned from the
- * sd_notify environment at construction. It never queries `systemctl` or the
- * unit — see {@link SystemdNotifierHealthBlock.externalUnitStatus}.
+ * Configuration and helper completions are separate evidence. It never queries
+ * `systemctl` or the unit — see {@link SystemdNotifierHealthBlock.externalUnitStatus}.
  */
 export interface SystemdNotifierHealthBlock {
   readonly schemaVersion: typeof SYSTEMD_NOTIFIER_HEALTH_SCHEMA_VERSION;
   /** Three-way arming state; see {@link SystemdNotifierArming}. */
   readonly arming: SystemdNotifierArming;
-  /** True when `NOTIFY_SOCKET` was present — `READY=1` / `WATCHDOG=1` can reach systemd. */
+  /** True when `NOTIFY_SOCKET` was present; does not prove notifications arrive. */
   readonly notificationEnabled: boolean;
-  /** True when the watchdog heartbeat is armed and `WATCHDOG=1` pings flow. */
+  /** True when the watchdog heartbeat is configured, regardless of send failures. */
   readonly watchdogArmed: boolean;
   /**
    * Heartbeat cadence in ms (`WATCHDOG_USEC / 2`); `0` when the watchdog is not
    * armed.
    */
   readonly watchdogIntervalMs: number;
+  /** Helper completion evidence, separate from configuration and external supervision. */
+  readonly sendHealth: SystemdNotifySendHealth;
   /**
-   * Always `'unknown'`. This block reports only PROCESS-LOCAL arming read from
-   * the sd_notify environment — it performs no `systemctl` call and no
+   * Always `'unknown'`. This block reports only process-local configuration
+   * and helper completions — it performs no `systemctl` call and no
    * filesystem work — so it cannot, and must not, claim the external service
    * manager is active or that a restart is guaranteed.
    */
@@ -201,13 +260,13 @@ export interface SystemdNotifierHealthBlock {
 }
 
 /**
- * Project a {@link SystemdNotifier}'s cheap in-memory arming state into the
+ * Project a {@link SystemdNotifier}'s cheap in-memory state into the
  * operator-facing health block (issue #2853). Pure and allocation-cheap: no
  * `systemctl`, no filesystem, no env re-read — safe on the `/api/health` hot
  * path.
  */
 export function buildSystemdNotifierHealthBlock(
-  notifier: Pick<SystemdNotifier, 'enabled' | 'watchdogEnabled' | 'watchdogIntervalMs'>,
+  notifier: Pick<SystemdNotifier, 'enabled' | 'watchdogEnabled' | 'watchdogIntervalMs' | 'sendHealth'>,
 ): SystemdNotifierHealthBlock {
   const notificationEnabled = notifier.enabled;
   const watchdogArmed = notifier.watchdogEnabled;
@@ -224,6 +283,7 @@ export function buildSystemdNotifierHealthBlock(
     // A non-armed watchdog reports a 0 interval regardless of the notifier's
     // raw field, so the block never advertises a cadence that isn't pinging.
     watchdogIntervalMs: watchdogArmed ? notifier.watchdogIntervalMs : 0,
+    sendHealth: notifier.sendHealth,
     externalUnitStatus: 'unknown',
   };
 }

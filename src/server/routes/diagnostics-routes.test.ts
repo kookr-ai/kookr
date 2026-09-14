@@ -45,6 +45,7 @@ import {
   InventPriorityHealthRefresher,
   type InventPriorityClassHealthSnapshot,
 } from '../invent-priority-health-refresher.js';
+import { createSystemdNotifier, type SystemdNotifierHealthBlock } from '../systemd-notify.js';
 import { LastGoodHealthWriter } from '../last-good-health.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
@@ -4124,6 +4125,41 @@ describe('diagnostics routes', () => {
   // GET /api/health — systemdNotifier block (issue #2853)
   // ---------------------------------------------------------------------------
   describe('GET /api/health systemdNotifier block (issue #2853)', () => {
+    test('exposes helper failure and recovery separately from watchdog arming', async () => {
+      const completions: Array<(error?: unknown) => void> = [];
+      const send = vi.fn((_payload: string, complete: (error?: unknown) => void) => { completions.push(complete); });
+      const notifier = createSystemdNotifier({
+        env: { NOTIFY_SOCKET: '/test/notify', WATCHDOG_USEC: '30000000' },
+        send, logger: vi.fn(), wallNow: () => 1_000,
+      });
+      const readHealth = async () => {
+        // Use a cold route cache for each projection of the same notifier.
+        const res = await mkApp({
+          taskStore: new TaskStore(), queue: new AttentionQueue(), buildInfo: {} as never,
+          systemdNotifier: notifier,
+        }).request('/api/health');
+        expect(res.status).toBe(200);
+        return (await res.json() as { systemdNotifier: SystemdNotifierHealthBlock }).systemdNotifier;
+      };
+      expect((await readHealth()).sendHealth.status).toBe('not-attempted');
+      expect(send).not.toHaveBeenCalled();
+      notifier.watchdog();
+      completions[0]({ code: 'ENOENT', message: 'private helper output' });
+      const failed = await readHealth();
+      expect(failed).toMatchObject({
+        arming: 'watchdog-armed', watchdogArmed: true, externalUnitStatus: 'unknown',
+        sendHealth: { status: 'failed', attempts: 1, failures: 1, lastError: 'helper-missing', lastFailureAt: 1_000 },
+      });
+      expect(JSON.stringify(failed)).not.toContain('private');
+      notifier.ready();
+      completions[1]();
+      expect(await readHealth()).toMatchObject({
+        arming: 'watchdog-armed', externalUnitStatus: 'unknown',
+        sendHealth: { status: 'succeeded', attempts: 2, failures: 1, lastError: null, lastSuccessAt: 1_000 },
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+    });
+
     test('omits the block when the notifier is not wired', async () => {
       const res = await mkApp({
         taskStore: new TaskStore(),
@@ -4140,11 +4176,11 @@ describe('diagnostics routes', () => {
         taskStore: new TaskStore(),
         queue: new AttentionQueue(),
         buildInfo: {} as never,
-        systemdNotifier: { enabled: false, watchdogEnabled: false, watchdogIntervalMs: 0 },
+        systemdNotifier: createSystemdNotifier({ env: {} }),
       }).request('/api/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
-      expect(body.systemdNotifier).toEqual({
+      expect(body.systemdNotifier).toMatchObject({
         schemaVersion: 'systemd-notifier.v1',
         arming: 'absent',
         notificationEnabled: false,
@@ -4159,11 +4195,11 @@ describe('diagnostics routes', () => {
         taskStore: new TaskStore(),
         queue: new AttentionQueue(),
         buildInfo: {} as never,
-        systemdNotifier: { enabled: true, watchdogEnabled: false, watchdogIntervalMs: 0 },
+        systemdNotifier: createSystemdNotifier({ env: { NOTIFY_SOCKET: '/test/notify' }, send: () => {} }),
       }).request('/api/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
-      expect(body.systemdNotifier).toEqual({
+      expect(body.systemdNotifier).toMatchObject({
         schemaVersion: 'systemd-notifier.v1',
         arming: 'notifier-only',
         notificationEnabled: true,
@@ -4178,11 +4214,13 @@ describe('diagnostics routes', () => {
         taskStore: new TaskStore(),
         queue: new AttentionQueue(),
         buildInfo: {} as never,
-        systemdNotifier: { enabled: true, watchdogEnabled: true, watchdogIntervalMs: 15_000 },
+        systemdNotifier: createSystemdNotifier({
+          env: { NOTIFY_SOCKET: '/test/notify', WATCHDOG_USEC: '30000000' }, send: () => {},
+        }),
       }).request('/api/health');
       expect(res.status).toBe(200);
       const body = (await res.json()) as { systemdNotifier?: Record<string, unknown> };
-      expect(body.systemdNotifier).toEqual({
+      expect(body.systemdNotifier).toMatchObject({
         schemaVersion: 'systemd-notifier.v1',
         arming: 'watchdog-armed',
         notificationEnabled: true,
