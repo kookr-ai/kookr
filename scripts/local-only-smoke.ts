@@ -1,8 +1,9 @@
-import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 import WebSocket from 'ws';
+import Database from 'better-sqlite3';
 
 import { LocalDtachBackend } from '../src/adapters/local-dtach-backend.js';
 import { createKookrServerInternal } from '../src/server/index.js';
@@ -415,9 +416,14 @@ async function main(): Promise<void> {
     const after = snapshotDir(kookrDir);
     assertKookrDiff(before, after);
 
-    const tasksFile = readFileSync(join(kookrDir, 'tasks.json'), 'utf8');
-    if (!tasksFile.includes(launched.id)) {
-      throw new Error('tasks.json did not persist launched smoke task');
+    // SQLite owns task persistence; the compatibility JSON export can lag.
+    const tasksDb = new Database(join(kookrDir, 'tasks.sqlite'), { readonly: true, fileMustExist: true });
+    try {
+      if (!tasksDb.prepare('SELECT id FROM tasks WHERE id = ?').get(launched.id)) {
+        throw new Error('tasks.sqlite did not persist launched smoke task');
+      }
+    } finally {
+      tasksDb.close();
     }
   } finally {
     terminal?.close();
