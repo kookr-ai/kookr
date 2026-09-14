@@ -245,6 +245,43 @@ Project playbooks can define parameters and completion criteria. See [Playbook S
 
 Scheduled tasks use cron-style triggers for recurring work such as nightly scans, periodic supervision, and housekeeping. The schedules UI can preview next-run timestamps before you save.
 
+## Outcome Scoreboard
+
+Use the Outcome Scoreboard to review task results and check whether enough data exists to interpret them. Open **Diagnostics** in the top bar and find **Outcome Scoreboard**. You can also open Diagnostics from the command palette (`Ctrl+K` / `Cmd+K`).
+
+Choose **All projects**, **Unassigned** (tasks with no project), or a tracked project from the project menu. Choose **24h**, **7d**, **30d**, or **all** (All time) from the window menu. Bounded windows cover the most recent period and select tasks by **creation time**, using their current status and recorded evidence. A task created earlier is excluded even if it finished during that period. Both menus scope the entire scoreboard, including comparisons and export.
+
+The initial scope is All projects over 7d. Your browser remembers subsequent choices across reopening and refresh; if a saved project is no longer tracked, the panel shows All projects.
+
+### Reading The Metrics
+
+Each rate has its own denominator: the tasks that count toward it. **Terminal tasks** are completed, cancelled, or terminated; all other task states count as active here.
+
+| Metric | What counts |
+|---|---|
+| **completed** | Completed tasks divided by terminal tasks. Active tasks are excluded. |
+| **feedback** | Thumbs-up ratings divided by all thumbs-up and thumbs-down ratings. Its **coverage** is rated tasks divided by all tasks in scope. Unrated tasks are not negative votes. |
+| **known cost** | Sum of recorded costs in USD. Its **coverage** is tasks with a known cost divided by all tasks in scope, including active tasks and recorded zero costs. |
+| **verified** | Completed tasks with verification evidence divided by completed tasks. Evidence means a test summary or at least one verification command in the completion digest (the task's completion summary); this measures recorded evidence, not whether tests passed. |
+| **digests** | Completed tasks with a completion digest divided by completed tasks. A digest can exist without verification evidence. |
+| **PRs** | Number of tasks with at least one PR URL recorded in their completion digest, not the number of PRs or merged PRs. The fraction beneath it uses all tasks in scope. |
+
+For example, suppose a window contains four tasks: two completed, one cancelled, and one active. Only one task has a rating: a completed task with a thumbs-up. That task also has a digest and verification evidence; the other completed task has neither. Completion is **2/3 (67%)**, feedback is **100% with 25% coverage**, and verification and digest coverage are each **1/2 (50%)**. If only two tasks have recorded costs, $2 and $0, known cost is **$2 with 50% coverage**. The other two costs are missing, not free.
+
+A rate with no eligible tasks is **unknown**: no terminal tasks means unknown completion, no ratings means unknown feedback, and no completed tasks means unknown verification and digest coverage. By contrast, completed tasks with no verification evidence give **0% verified**. Known cost can show $0 even when no costs are known, so read its coverage before drawing spending conclusions. Check the missing-cost, zero-cost, and review flags; a session reporting exactly $0 may need an accounting check.
+
+### Comparing Windows And Agents
+
+Completion, feedback approval, verification coverage, and cost coverage show changes against the immediately preceding period of the same length and project scope. Changes are in **percentage points (pp)**: 50% to 75% is +25pp. The change beside known cost compares coverage, not dollars. All time has no bounded preceding period, and a previous window with no tasks has no baseline; both make comparisons unavailable. If an individual rate is unknown in either period, its change is a dash, not zero. Digest coverage has no comparison badge.
+
+In **By agent**, fewer than five terminal tasks produces a **low sample** label and a completed/terminal count instead of a completion percentage; the thumbs-up percentage is also withheld. Treat small samples and sparse feedback cautiously when comparing agents. A rate change alone does not establish its cause.
+
+### Exporting CSV
+
+Once data has loaded, **Export CSV** downloads the loaded window and project scope. The file identifies the window, scope, generation time, and data readiness, followed by **Summary**, **By agent**, and **Task audit** sections. Task audit includes every task with a flag in that scope, beyond the five rows previewed on screen; unflagged tasks are omitted. It is not a complete task-history export.
+
+Unknown rates, durations, and task costs are empty CSV cells; recorded zeros stay numeric. Rates are fractions from 0 to 1 (0.5000 means 50%), and durations use milliseconds. Per-agent rates are exported even for low samples, so apply the same caution outside the dashboard. Comparison changes are not exported.
+
 ## GitHub Awareness
 
 When an agent references GitHub PRs or issues, Kookr associates those references with the task. It can then poll PR state, CI status, review decisions, and unresolved review threads, routing actionable changes back into the findings queue.
