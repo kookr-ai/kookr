@@ -132,8 +132,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "--json --fail-on --require-ready -h --help"');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.
-    expect(script).toContain('compgen -W "digest timers --json --offline -h --help"');
-    expect(script).toContain('compgen -W "--json --offline -h --help"');
+    expect(script).toContain('compgen -W "digest timers --json --offline --all-warnings -h --help"');
+    expect(script).toContain('compgen -W "--json --offline --all-warnings -h --help"');
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
@@ -162,8 +162,8 @@ describe('renderCompletion', () => {
     expect(script).toContain('compadd -- --json --fail-on --require-ready -h --help');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.
-    expect(script).toContain('compadd -- digest timers --json --offline -h --help');
-    expect(script).toContain('compadd -- --json --offline -h --help');
+    expect(script).toContain('compadd -- digest timers --json --offline --all-warnings -h --help');
+    expect(script).toContain('compadd -- --json --offline --all-warnings -h --help');
     expect(script).toContain('compadd -- $root_commands -h --help -v --version');
     expect(script).toContain('compadd outcome');
     expect(script).toContain('compadd -- status pause resume cancel');
@@ -380,12 +380,14 @@ describe('bash completion behavior', () => {
       'timers',
       '--json',
       '--offline',
+      '--all-warnings',
       '-h',
       '--help',
     ]);
     await expect(completeBash(['kookr', 'ops', 'digest', ''])).resolves.toEqual([
       '--json',
       '--offline',
+      '--all-warnings',
       '-h',
       '--help',
     ]);
@@ -395,6 +397,13 @@ describe('bash completion behavior', () => {
       '-h',
       '--help',
     ]);
+  });
+
+  it('offers --all-warnings only before selecting timers, including flags before the verb', async () => {
+    await expect(completeBash(['kookr', 'ops', '--json', 'digest', '--all']))
+      .resolves.toEqual(['--all-warnings']);
+    await expect(completeBash(['kookr', 'ops', '--json', 'timers', '--all']))
+      .resolves.toEqual([]);
   });
 
   it('completes status flags and fail-on values', async () => {
@@ -539,12 +548,14 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       'timers',
       '--json',
       '--offline',
+      '--all-warnings',
       '-h',
       '--help',
     ]);
     await expect(completeZsh(['kookr', 'ops', 'digest', ''], 4)).resolves.toEqual([
       '--json',
       '--offline',
+      '--all-warnings',
       '-h',
       '--help',
     ]);
@@ -554,6 +565,13 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       '-h',
       '--help',
     ]);
+  });
+
+  it('offers --all-warnings only before selecting timers, including flags before the verb', async () => {
+    await expect(completeZsh(['kookr', 'ops', '--json', 'digest', ''], 5))
+      .resolves.toContain('--all-warnings');
+    await expect(completeZsh(['kookr', 'ops', '--json', 'timers', ''], 5))
+      .resolves.not.toContain('--all-warnings');
   });
 
   it('completes status flags and fail-on values', async () => {

@@ -1377,7 +1377,7 @@ The system SHALL include overdue lifecycle timers, hook-ingestion p95 lag, and f
 - A health fixture with hook-ingestion p95 of 43 seconds produces a digest warning that names `hookIngestion.p95LagMs`
 - A fixture with one paused schedule produces a warning at `schedules.schedulesPausedByFailure`
 - A fixture with `timerHealth.overdue >= 1` produces a warning at `timerHealth.overdue`
-- Existing digest warnings still appear and the human output stays under the 20-line cap
+- Existing digest warnings still appear and default human output stays under the 20-line cap; `--all-warnings` removes both the five-warning and twenty-line caps for live and offline output
 - When `/api/health` has no `timerHealth` object, digest may fetch `GET /api/diagnostics/timer-health` with a 2-second timeout and must not hang if that path is wedged
 
 **Evidence:** `src/cli/kookr-ops-digest.ts` (`collectOpsDigestWarnings`), `src/cli/kookr-ops-digest.test.ts`, `docs/reference/cli.md`.

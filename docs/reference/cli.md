@@ -848,9 +848,11 @@ Pasteable one-pager of top unattended failure signals for remote diagnosis (Disc
 kookr ops digest
 kookr ops digest --json
 kookr ops digest --offline
+kookr ops digest --all-warnings
+kookr ops digest --offline --json --all-warnings
 ```
 
-The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then prints ready status plus up to five elevated warnings with field paths operators can re-query:
+The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then prints ready status plus, by default, up to five elevated warnings with field paths operators can re-query:
 
 | Signal | Field path | When shown |
 | --- | --- | --- |
@@ -867,7 +869,7 @@ The command GETs [`/api/ready`](./api.md) and [`/api/health`](./api.md), then pr
 | systemd watchdog not armed | `systemdNotifier.watchdogArmed` | `systemdNotifier.arming` is `absent` (no `NOTIFY_SOCKET`) or `notifier-only` (readiness armed, watchdog heartbeat not) — process-level watchdog integration is disabled, so a wedged service will not be externally restarted (issue #2853). The warning states that external unit status is unknown; when armed, a quiet `systemdNotifier.arming=watchdog-armed` line is printed instead |
 | Low data-dir disk | `dataDirectory.diskFreePercent` (or legacy host/sampler aliases) | cached free percent is known and ≤15%; an explicit `dataDirectory.status: "unknown"` stays quiet |
 
-Human output is ≤20 lines. With `--json`, stdout is one envelope (`code: "OK"` when ready, `code: "READY_FAIL"` when not) whose `details` holds the full snapshot (warnings, signals, failing critical checks).
+Human output defaults to ≤20 lines. Add `--all-warnings` to include every supported warning in the same order and remove the human line cap. The option works with live output, `--offline`, and automatic offline fallback. It cannot reconstruct evidence omitted from a saved snapshot. With `--json`, stdout is one envelope. Live JSON output contains the digest’s warnings, signals, and failing critical checks in `details`. Its `code` is `"OK"` when ready and `"READY_FAIL"` otherwise. JSON output also limits warnings to five unless `--all-warnings` is set.
 
 ### Offline degrade (`--offline`, issue #2495)
 
@@ -883,6 +885,7 @@ Options:
 | --- | --- | --- | --- |
 | `--json` | none | false | Print one machine-readable JSON envelope to stdout. |
 | `--offline` | none | false | Skip HTTP and read the last-good `/api/health` snapshot from disk (issue #2495), reporting how stale it is. |
+| `--all-warnings` | none | false | Include every supported warning and remove the human line cap; works with live and offline output. |
 | `-h`, `--help` | none | false | Print command help and exit. |
 
 Environment (server discovery — same precedence as [Server Discovery](#server-discovery)):

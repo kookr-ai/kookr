@@ -125,9 +125,9 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   {
     name: 'ops',
     subcommands: ['digest', 'timers'],
-    // Flags live on `ops`, not the verb, so `--json` and `--offline` complete
-    // the same way (`kookr ops digest <TAB>` and `kookr ops timers <TAB>`).
-    flags: ['--json', '--offline', '-h', '--help'],
+    // Keep the shared flag list for completion before a verb is selected.
+    // Renderers omit --all-warnings once the timers verb has been selected.
+    flags: ['--json', '--offline', '--all-warnings', '-h', '--help'],
   },
   {
     name: 'github',
@@ -442,6 +442,7 @@ function renderBashCompletion(): string {
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
   const opsSubcommands = subcommandsFor('ops');
   const opsFlags = flagsFor('ops');
+  const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
@@ -592,6 +593,8 @@ _kookr()
     ops)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
         COMPREPLY=( $(compgen -W "${opsSubcommands} ${opsFlags}" -- "\${cur}") )
+      elif [[ " \${COMP_WORDS[*]} " == *" timers "* ]]; then
+        COMPREPLY=( $(compgen -W "${opsTimersFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${opsFlags}" -- "\${cur}") )
       fi
@@ -789,6 +792,7 @@ function renderZshCompletion(): string {
   const statusFailOnEqualsValues = equalsFlagValues('--fail-on', statusFailOnValues);
   const opsSubcommands = subcommandsFor('ops');
   const opsFlags = flagsFor('ops');
+  const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
   const issueSubcommands = subcommandsFor('issue');
@@ -901,6 +905,8 @@ _kookr()
     ops)
       if (( CURRENT == 3 )); then
         compadd -- ${opsSubcommands} ${opsFlags}
+      elif (( \${words[(Ie)timers]} > 0 )); then
+        compadd -- ${opsTimersFlags}
       else
         compadd -- ${opsFlags}
       fi

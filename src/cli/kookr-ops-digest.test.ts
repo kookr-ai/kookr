@@ -126,6 +126,43 @@ const TIMER_HEALTH_BODY = {
   ],
 };
 
+// Exercise every warning category together so compact ordering and expansion
+// remain comparable across live responses and retained offline evidence.
+const HEALTH_ALL_WARNINGS = {
+  ...HEALTH_WITH_WARNINGS,
+  safeMode: { engaged: true },
+  projectAutomation: { pausedProjectIds: ['paused-project'] },
+  resourceWatchdog: { ...HEALTH_WITH_WARNINGS.resourceWatchdog, lastDecision: 'spawn_persist_failed' },
+  helperLlm: {
+    paused: [{ provider: 'claude', model: 'helper', category: 'auth', pausedUntil: '2026-09-14T12:00:00.000Z' }],
+    stormsSuppressed: 2,
+  },
+  timerHealth: { overdue: 1, oldestOverdueName: 'maintenancePrune' },
+  hookIngestion: { p95LagMs: 12_000 },
+  schedules: {
+    schedulesPausedByFailure: [
+      { id: 's1', name: 'nightly audit', consecutiveFailures: 3 },
+      { id: 's2', name: 'hourly cleanup', consecutiveFailures: 4 },
+    ],
+  },
+  systemdNotifier: { arming: 'absent' },
+};
+const ALL_WARNING_PATHS = [
+  'safeMode.engaged',
+  'projectAutomation.pausedProjectIds',
+  'resourceWatchdog.pressureWhileDisabled',
+  'resourceWatchdog.lastDecision',
+  'capacity.phantomActive',
+  'capacity.byClass.hungSuspect',
+  'helperLlm.paused',
+  'timerHealth.overdue',
+  'hookIngestion.p95LagMs',
+  'schedules.schedulesPausedByFailure',
+  'pipelineStarvation.repos.kookr-ai/kookr.consecutiveBlockedEmpty',
+  'systemdNotifier.watchdogArmed',
+  'dataDirectory.diskFreePercent',
+];
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -136,18 +173,21 @@ describe('parseOpsDigestArgs', () => {
       verb: 'digest',
       json: false,
       offline: false,
+      allWarnings: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['digest', '--json'])).toEqual({
       verb: 'digest',
       json: true,
       offline: false,
+      allWarnings: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['--json', 'digest'])).toEqual({
       verb: 'digest',
       json: true,
       offline: false,
+      allWarnings: false,
       help: false,
     });
   });
@@ -157,18 +197,21 @@ describe('parseOpsDigestArgs', () => {
       verb: 'timers',
       json: false,
       offline: false,
+      allWarnings: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['timers', '--json'])).toEqual({
       verb: 'timers',
       json: true,
       offline: false,
+      allWarnings: false,
       help: false,
     });
     expect(parseOpsDigestArgs(['--json', 'timers'])).toEqual({
       verb: 'timers',
       json: true,
       offline: false,
+      allWarnings: false,
       help: false,
     });
   });
@@ -1312,6 +1355,179 @@ describe('kookr ops digest offline last-good (issue #2495)', () => {
     });
     expect(code).toBe(EXIT_OK);
     expect(loader).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('ops digest --all-warnings', () => {
+  const read: LastGoodHealthRead = {
+    path: '/tmp/ops-all-warnings/last-good-health.json',
+    mtimeMs: 1_000_000,
+    ageMs: 42_000,
+    snapshot: {
+      schemaVersion: 'last-good-health.v1',
+      capturedAt: '2026-09-14T00:00:00.000Z',
+      truncated: false,
+      health: HEALTH_ALL_WARNINGS,
+    },
+  };
+
+  it('parses expansion with JSON and offline flags in either order', () => {
+    for (const args of [
+      ['digest', '--all-warnings', '--offline', '--json'],
+      ['--all-warnings', '--json', '--offline', 'digest'],
+    ]) {
+      expect(parseOpsDigestArgs(args)).toEqual({
+        verb: 'digest', json: true, offline: true, allWarnings: true, help: false,
+      });
+    }
+  });
+
+  it('preserves the default first five and exposes every supported category on request', () => {
+    const compact = collectOpsDigestWarnings(HEALTH_ALL_WARNINGS);
+    const expanded = collectOpsDigestWarnings(HEALTH_ALL_WARNINGS, { allWarnings: true });
+    expect(compact.warnings.map(w => w.path)).toEqual(ALL_WARNING_PATHS.slice(0, 5));
+    expect(expanded.warnings.map(w => w.path)).toEqual(ALL_WARNING_PATHS);
+    expect(expanded.warnings.slice(0, 5)).toEqual(compact.warnings);
+    expect(expanded.signals).toEqual(compact.signals);
+  });
+
+  it.each(['live', 'offline', 'unreachable', 'rejected', 'autodetect'] as const)(
+    'preserves JSON expansion, labeling, and exit status through %s', async (mode) => {
+      for (const allWarnings of [false, true]) {
+        const c = captureConsole();
+        const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+          if (mode === 'unreachable' || mode === 'autodetect') throw new Error('ECONNREFUSED');
+          return String(input).endsWith('/api/ready')
+            ? jsonResponse(READY_OK)
+            : jsonResponse(HEALTH_ALL_WARNINGS, mode === 'rejected' ? 503 : 200);
+        });
+        const exit = await runOpsDigestCli([
+          'digest', '--json', ...(mode === 'offline' ? ['--offline'] : []),
+          ...(allWarnings ? ['--all-warnings'] : []),
+        ], {
+          ...c, env: mode === 'autodetect' ? {} : { KOOKR_PORT: '4800' }, fetchImpl,
+          offlineLoader: () => read,
+        });
+        expect(exit).toBe(mode === 'rejected' ? EXIT_SERVER_ERROR
+          : mode === 'unreachable' || mode === 'autodetect' ? EXIT_NO_SERVER : EXIT_OK);
+        const envelope = JSON.parse(c.logs[0]!);
+        const details = mode === 'live' ? envelope.details : envelope.details.offline;
+        expect(details.warnings.map((w: { path: string }) => w.path))
+          .toEqual(allWarnings ? ALL_WARNING_PATHS : ALL_WARNING_PATHS.slice(0, 5));
+        if (allWarnings) {
+          expect(details.warnings.find((w: { path: string }) => w.path === 'helperLlm.paused').value.paused[0].provider).toBe('claude');
+          expect(details.warnings.find((w: { path: string }) => w.path === 'schedules.schedulesPausedByFailure').value.names)
+            .toEqual(['nightly audit', 'hourly cleanup']);
+        }
+        if (mode !== 'live') {
+          expect(details).toMatchObject({ ageMs: 42_000, capturedAt: read.snapshot.capturedAt, truncated: false });
+          expect(envelope.code).toBe(mode === 'offline' ? 'OFFLINE_SNAPSHOT' : mode === 'rejected' ? 'SERVER_ERROR' : 'NO_SERVER');
+        }
+        if (mode === 'offline') expect(fetchImpl).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(['live', 'offline', 'fallback'] as const)(
+    'keeps expanded %s human warnings beyond physical line twenty', async (mode) => {
+      // A retained multi-line pressure explanation places the final categories
+      // past physical line twenty without inventing extra warning categories.
+      const health = {
+        ...HEALTH_ALL_WARNINGS,
+        resourceWatchdog: {
+          ...HEALTH_ALL_WARNINGS.resourceWatchdog,
+          pressureWhileDisabledReason: Array.from({ length: 12 }, (_, i) => `pressure detail ${i}`).join('\n'),
+        },
+      };
+      const c = captureConsole();
+      await runOpsDigestCli(['digest', '--all-warnings', ...(mode === 'offline' ? ['--offline'] : [])], {
+        ...c, env: { KOOKR_PORT: '4800' },
+        offlineLoader: () => ({ ...read, snapshot: { ...read.snapshot, health } }),
+        fetchImpl: vi.fn(async (input: RequestInfo | URL) => {
+          if (mode === 'fallback') throw new Error('ECONNREFUSED');
+          return jsonResponse(String(input).endsWith('/api/ready') ? READY_OK : health);
+        }),
+      });
+      const output = c.logs.join('\n');
+      expect(output).toContain('warnings (13):');
+      expect(output).not.toContain('(truncated)');
+      for (const path of ALL_WARNING_PATHS) expect(output).toContain(path);
+      expect(output.split('\n').findIndex(line => line.includes('dataDirectory.diskFreePercent'))).toBeGreaterThanOrEqual(20);
+      if (mode !== 'live') expect(output).toContain('42s stale');
+    },
+  );
+
+  it.each([false, true])('keeps compact human output capped and ordered with offline=%s', async (offline) => {
+    const c = captureConsole();
+    await runOpsDigestCli(['digest', ...(offline ? ['--offline'] : [])], {
+      ...c, env: { KOOKR_PORT: '4800' }, offlineLoader: () => read,
+      fetchImpl: vi.fn(async (input: RequestInfo | URL) =>
+        jsonResponse(String(input).endsWith('/api/ready') ? READY_OK : HEALTH_ALL_WARNINGS)),
+    });
+    const lines = c.logs.join('\n').split('\n');
+    expect(lines.length).toBeLessThanOrEqual(20);
+    expect(lines.filter(line => line.startsWith('  - ')).map(line => line.slice(4).split(':')[0]))
+      .toEqual(ALL_WARNING_PATHS.slice(0, 5));
+    expect(c.logs[0]).toContain('warnings (5/5):');
+  });
+
+  it('labels trimmed offline evidence and does not reconstruct missing warnings', async () => {
+    const c = captureConsole();
+    const health = { ...HEALTH_ALL_WARNINGS, helperLlm: undefined, schedules: undefined };
+    await runOpsDigestCli(['digest', '--offline', '--json', '--all-warnings'], {
+      ...c, env: {},
+      offlineLoader: () => ({ ...read, snapshot: { ...read.snapshot, truncated: true, health } }),
+    });
+    const offline = JSON.parse(c.logs[0]!).details.offline;
+    expect(offline.truncated).toBe(true);
+    expect(offline.ageMs).toBe(42_000);
+    expect(offline.warnings.map((w: { path: string }) => w.path)).toEqual(
+      ALL_WARNING_PATHS.filter(path => path !== 'helperLlm.paused' && path !== 'schedules.schedulesPausedByFailure'),
+    );
+    expect(formatOpsDigestOffline({ ...read, snapshot: { ...read.snapshot, truncated: true, health } }, { allWarnings: true }))
+      .toContain('snapshot trimmed to gauges');
+  });
+
+  it('bypasses the presentation cap for a larger future warning set only when requested', () => {
+    const snap: OpsDigestSnapshot = {
+      baseUrl: 'http://127.0.0.1:4800', ready: true, readyHttpStatus: 200, failingCritical: [],
+      ...collectOpsDigestWarnings(HEALTH_ALL_WARNINGS, { allWarnings: true }),
+    };
+    snap.warnings = Array.from({ length: 25 }, (_, i) => ({ path: `warning.${i}`, summary: `warning ${i}` }));
+    expect(formatOpsDigestHuman(snap).split('\n')).toHaveLength(20);
+    expect(formatOpsDigestHuman(snap)).not.toContain('warning.24');
+    const expanded = formatOpsDigestHuman(snap, { allWarnings: true });
+    expect(expanded.split('\n').length).toBeGreaterThan(20);
+    expect(expanded).toContain('warning.24');
+    expect(expanded).not.toContain('(truncated)');
+  });
+
+  it.each([false, true])('preserves ready-failed status with expansion=%s', async (allWarnings) => {
+    const c = captureConsole();
+    const exit = await runOpsDigestCli(['digest', '--json', ...(allWarnings ? ['--all-warnings'] : [])], {
+      ...c, env: { KOOKR_PORT: '4800' },
+      fetchImpl: vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/api/ready')
+        ? jsonResponse(READY_FAIL, 503) : jsonResponse(HEALTH_ALL_WARNINGS)),
+    });
+    expect(exit).toBe(EXIT_READY_FAIL);
+    expect(JSON.parse(c.logs[0]!)).toMatchObject({ ok: false, code: 'READY_FAIL' });
+  });
+
+  it('rejects timers expansion and unknown flags without making requests', async () => {
+    for (const args of [['timers', '--all-warnings'], ['digest', '--all-warnings', '--nope']]) {
+      const c = captureConsole();
+      const fetchImpl = vi.fn();
+      expect(await runOpsDigestCli(args, { ...c, env: {}, fetchImpl })).toBe(EXIT_USER_ERROR);
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+
+  it('advertises expansion and the retained-evidence limit in help', async () => {
+    const c = captureConsole();
+    expect(await runOpsDigestCli(['--help'], c)).toBe(EXIT_OK);
+    expect(c.logs[0]).toContain('--all-warnings');
+    expect(c.logs[0]).toContain('evidence retained in the snapshot');
   });
 });
 
