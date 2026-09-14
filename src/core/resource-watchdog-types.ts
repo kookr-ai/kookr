@@ -39,6 +39,17 @@ export interface TopConsumerSnapshot {
   command: string;
 }
 
+/** Coverage of the bounded RSS (resident physical memory) sample, before display limiting. */
+export interface ResourceWatchdogRssCoverage {
+  /** Agent-family/dtach candidates in the enumerated table; null when enumeration failed. */
+  eligibleProcesses: number | null;
+  attemptedReads: number;
+  /** Valid, nonnegative RSS measurements, including zero values omitted from the consumer list. */
+  successfulReads: number;
+  /** Eligible processes were skipped because the RSS read cap was reached. */
+  truncated: boolean;
+}
+
 /** One host sample. All fields are already-resolved numbers — no I/O here. */
 export interface ResourceWatchdogSample {
   sampledAt: string;
@@ -58,6 +69,8 @@ export interface ResourceWatchdogSample {
   terminalLeakCount: number;
   /** Optional top RSS consumers for the brief (not thresholded). */
   topConsumers: TopConsumerSnapshot[];
+  /** Diagnostic only. Missing on legacy/synthetic samples means unknown coverage. */
+  rssCoverage?: ResourceWatchdogRssCoverage;
 }
 
 export type ResourceWatchdogTriggerReason =
@@ -188,6 +201,7 @@ export interface ResourceWatchdogAuditRecord {
     processCounts: AgentFamilyProcessCounts;
     orphanSessionCount: number;
     terminalLeakCount: number;
+    rssCoverage?: ResourceWatchdogRssCoverage;
   };
 }
 
@@ -212,6 +226,7 @@ export interface ResourceWatchdogHealthSnapshot {
     processCounts: AgentFamilyProcessCounts;
     orphanSessionCount: number;
     terminalLeakCount: number;
+    rssCoverage?: ResourceWatchdogRssCoverage;
   } | null;
   lastTriggerAt: string | null;
   lastTriggerReasons: ResourceWatchdogTriggerReason[];

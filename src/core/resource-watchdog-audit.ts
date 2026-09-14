@@ -109,6 +109,7 @@ export function buildAuditRecord(input: {
             processCounts: input.sample.processCounts,
             orphanSessionCount: input.sample.orphanSessionCount,
             terminalLeakCount: input.sample.terminalLeakCount,
+            ...(input.sample.rssCoverage ? { rssCoverage: { ...input.sample.rssCoverage } } : {}),
           },
         }
       : {}),

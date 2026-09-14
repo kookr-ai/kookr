@@ -22,6 +22,7 @@ import type {
   ResourceWatchdogSample,
 } from '../core/resource-watchdog-types.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
+import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 
 function baseConfig(overrides: Partial<ResourceWatchdogConfig> = {}): ResourceWatchdogConfig {
   return {
@@ -113,6 +114,38 @@ describe('ResourceWatchdogService', () => {
     });
     return { service, audit, statePath, config, logger };
   }
+
+  test('preserves bounded RSS coverage in the launch brief, health and audit without new reads', async () => {
+    const listProcesses = vi.fn(() => Array.from({ length: 41 }, (_, i) => ({ pid: i + 1, command: 'claude' })));
+    const readProcessRssKb = vi.fn((pid: number) => pid * 100);
+    const sampler = createResourceWatchdogHostSampler({
+      readMeminfo: () => ({ memTotalKb: 1000, memAvailableKb: 100, swapTotalKb: 1000, swapFreeKb: 100 }),
+      readOomKillTotal: () => 0,
+      listProcesses, readProcessRssKb, nowIso: () => new Date(nowMs).toISOString(),
+    });
+    const { service, audit } = makeService({ sampleImpl: () => sampler.sample() });
+    await service.runOnce();
+    const coverage = { eligibleProcesses: 41, attemptedReads: 40, successfulReads: 40, truncated: true };
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.prompt).toContain(`rssCoverage: ${JSON.stringify(coverage)}`);
+    expect(launches[0]?.prompt).toContain('RSS sample coverage: partial');
+    expect(launches[0]?.prompt).not.toContain('pid=41 ');
+    expect(service.getHealthSnapshot().lastSample?.rssCoverage).toEqual(coverage);
+    expect(audit.records.map((record) => record.sample?.rssCoverage)).toEqual([coverage, coverage]);
+    const exposed = service.getHealthSnapshot().lastSample?.rssCoverage;
+    if (exposed) exposed.successfulReads = 999;
+    expect(service.getHealthSnapshot().lastSample?.rssCoverage).toEqual(coverage);
+    expect(readProcessRssKb).toHaveBeenCalledTimes(40);
+    expect(listProcesses).toHaveBeenCalledTimes(1);
+  });
+
+  test('preserves unknown coverage for synthetic samples in health and audit', async () => {
+    const { service, audit } = makeService();
+    await service.runOnce();
+    expect(service.getHealthSnapshot().lastSample).not.toHaveProperty('rssCoverage');
+    expect(audit.records.every((record) => !Object.hasOwn(record.sample ?? {}, 'rssCoverage'))).toBe(true);
+    expect(launches[0]?.prompt).toContain('RSS sample coverage: unknown');
+  });
 
   test('keeps sampling while an investigation launch is pending', async () => {
     vi.useFakeTimers();

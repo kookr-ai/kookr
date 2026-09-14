@@ -39,6 +39,20 @@ function formatSample(sample: ResourceWatchdogSample): string {
     `orphanSessionCount: ${sample.orphanSessionCount}`,
     `terminalLeakCount: ${sample.terminalLeakCount}`,
   ];
+  const coverage = sample.rssCoverage;
+  if (!coverage) {
+    lines.push('RSS sample coverage: unknown (metadata unavailable).');
+  } else {
+    lines.push(`rssCoverage: ${JSON.stringify(coverage)}`);
+    if (coverage.eligibleProcesses === null) {
+      lines.push('RSS sample coverage: unavailable (process enumeration failed).');
+    } else if (coverage.truncated || coverage.successfulReads < coverage.eligibleProcesses) {
+      lines.push('RSS sample coverage: partial; unread or skipped eligible processes may include larger consumers.');
+    } else {
+      lines.push('RSS sample coverage: complete for eligible processes in the enumerated table.');
+    }
+  }
+  lines.push('RSS scope: supported agent processes and dtach terminal-session processes only; the list shows the largest positive measurements among the first eligible processes read before the cap.');
   if (sample.topConsumers.length > 0) {
     lines.push('topConsumers (rss):');
     for (const c of sample.topConsumers.slice(0, 15)) {
