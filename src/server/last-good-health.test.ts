@@ -1,5 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,10 @@ vi.mock('node:fs', async (importOriginal) => {
     mkdirSync: vi.fn(actual.mkdirSync),
     chmodSync: vi.fn(actual.chmodSync),
     unlinkSync: vi.fn(actual.unlinkSync),
+    openSync: vi.fn(actual.openSync),
+    fstatSync: vi.fn(actual.fstatSync),
+    readSync: vi.fn(actual.readSync),
+    closeSync: vi.fn(actual.closeSync),
   };
 });
 
@@ -553,21 +558,143 @@ describe('redactSecretFields', () => {
 describe('readLastGoodHealth', () => {
   let dir: string;
   beforeEach(() => {
+    vi.clearAllMocks();
     dir = mkdtempSync(join(tmpdir(), 'last-good-health-read-'));
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  function writeSizedSnapshot(size: number): LastGoodHealthSnapshot {
+    const writer = new LastGoodHealthWriter({ kookrDir: dir, now: () => 1 });
+    writer.record(baseHealth({ detail: 'état sain' }));
+    const raw = readFileSync(lastGoodHealthPath(dir), 'utf8');
+    writeFileSync(lastGoodHealthPath(dir), raw + ' '.repeat(size - Buffer.byteLength(raw)));
+    return JSON.parse(raw) as LastGoodHealthSnapshot;
+  }
+
+  function expectDescriptorClosed(): void {
+    const opened = vi.mocked(fs.openSync).mock.results[0];
+    expect(opened?.type).toBe('return');
+    expect(fs.closeSync).toHaveBeenCalledExactlyOnceWith(opened.value);
+    expect(() => fs.fstatSync(opened.value)).toThrow(expect.objectContaining({ code: 'EBADF' }));
+  }
+
+  test.each([LAST_GOOD_HEALTH_SIZE_CAP_BYTES - 1, LAST_GOOD_HEALTH_SIZE_CAP_BYTES])(
+    'preserves snapshot content and age at %i bytes', (size) => {
+      const snapshot = writeSizedSnapshot(size);
+      utimesSync(lastGoodHealthPath(dir), 1_000, 1_000);
+      expect(readLastGoodHealth(dir, { now: 1_005_000 })).toEqual({
+        snapshot,
+        path: lastGoodHealthPath(dir),
+        mtimeMs: 1_000_000,
+        ageMs: 5_000,
+      });
+      expectDescriptorClosed();
+    },
+  );
+
+  test('rejects an oversized snapshot before reading content', () => {
+    writeSizedSnapshot(LAST_GOOD_HEALTH_SIZE_CAP_BYTES + 1);
+    vi.clearAllMocks();
+    expect(readLastGoodHealth(dir)).toBeNull();
+    expect(fs.readSync).not.toHaveBeenCalled();
+    expect(fs.readFileSync).not.toHaveBeenCalled();
+    expectDescriptorClosed();
+  });
+
+  test('bounds actual bytes read when the file grows after metadata validation', async () => {
+    writeSizedSnapshot(LAST_GOOD_HEALTH_SIZE_CAP_BYTES);
+    const actual = await vi.importActual<typeof fs>('node:fs');
+    vi.mocked(fs.fstatSync).mockImplementationOnce((fd) => {
+      const metadata = actual.fstatSync(fd);
+      actual.appendFileSync(lastGoodHealthPath(dir), ' '.repeat(LAST_GOOD_HEALTH_SIZE_CAP_BYTES));
+      return metadata;
+    });
+    expect(readLastGoodHealth(dir)).toBeNull();
+    const totalRead = vi.mocked(fs.readSync).mock.results.reduce(
+      (sum, result) => sum + (result.type === 'return' ? result.value : 0), 0,
+    );
+    expect(totalRead).toBe(LAST_GOOD_HEALTH_SIZE_CAP_BYTES + 1);
+    expectDescriptorClosed();
+  });
+
+  test('continues after a short read', async () => {
+    const snapshot = writeSizedSnapshot(LAST_GOOD_HEALTH_SIZE_CAP_BYTES);
+    const actual = await vi.importActual<typeof fs>('node:fs');
+    vi.mocked(fs.readSync).mockImplementationOnce((fd, buffer) => actual.readSync(fd, buffer, 0, 1, 0));
+    expect(readLastGoodHealth(dir)?.snapshot).toEqual(snapshot);
+    expectDescriptorClosed();
+  });
+
+  test('reads content and age from the opened file when the path is replaced', async () => {
+    const snapshot = writeSizedSnapshot(1_024);
+    utimesSync(lastGoodHealthPath(dir), 1_000, 1_000);
+    const actual = await vi.importActual<typeof fs>('node:fs');
+    vi.mocked(fs.fstatSync).mockImplementationOnce((fd) => {
+      const metadata = actual.fstatSync(fd);
+      actual.renameSync(lastGoodHealthPath(dir), join(dir, 'previous.json'));
+      actual.writeFileSync(lastGoodHealthPath(dir), 'not a snapshot');
+      return metadata;
+    });
+    const read = readLastGoodHealth(dir, { now: 1_005_000 });
+    expect(read?.snapshot).toEqual(snapshot);
+    expect(read?.ageMs).toBe(5_000);
+    expectDescriptorClosed();
+  });
+
+  test.each(['fstatSync', 'readSync'] as const)('closes the descriptor after a %s failure', (operation) => {
+    writeSizedSnapshot(1_024);
+    vi.mocked(fs[operation]).mockImplementationOnce(() => { throw new Error('I/O failure'); });
+    expect(readLastGoodHealth(dir)).toBeNull();
+    expectDescriptorClosed();
+  });
+
+  test('rejects a directory without reading and closes its descriptor', () => {
+    fs.mkdirSync(lastGoodHealthPath(dir));
+    expect(readLastGoodHealth(dir)).toBeNull();
+    expect(fs.readSync).not.toHaveBeenCalled();
+    expectDescriptorClosed();
+  });
+
+  test.skipIf(process.platform === 'win32')('rejects a FIFO with no writer within a subprocess deadline', () => {
+    const fifo = spawnSync('mkfifo', [lastGoodHealthPath(dir)], { encoding: 'utf8' });
+    expect(fifo.error).toBeUndefined();
+    expect(fifo.status, fifo.stderr).toBe(0);
+    // A subprocess keeps a blocking open from hanging the test runner itself.
+    const child = spawnSync(process.execPath, [
+      '--import', 'tsx', '--input-type=module', '-e',
+      `import assert from 'node:assert/strict';
+       import fs from 'node:fs';
+       import { syncBuiltinESMExports } from 'node:module';
+       import { readLastGoodHealth } from ${JSON.stringify(new URL('./last-good-health.ts', import.meta.url).href)};
+       const open = fs.openSync;
+       let fd;
+       fs.openSync = (...args) => { fd = open(...args); return fd; };
+       syncBuiltinESMExports();
+       assert.equal(readLastGoodHealth(process.argv[1]), null);
+       assert.equal(typeof fd, 'number');
+       assert.throws(() => fs.fstatSync(fd), { code: 'EBADF' });`,
+      dir,
+    ], { encoding: 'utf8', timeout: 3_000, killSignal: 'SIGKILL' });
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
   });
 
   test('returns null when the file is absent', () => {
     expect(readLastGoodHealth(dir)).toBeNull();
+    expect(fs.closeSync).not.toHaveBeenCalled();
   });
 
   test('returns null for malformed JSON or an unknown schema', () => {
     writeFileSync(lastGoodHealthPath(dir), '{not json');
     expect(readLastGoodHealth(dir)).toBeNull();
+    expectDescriptorClosed();
+    vi.clearAllMocks();
     writeFileSync(lastGoodHealthPath(dir), JSON.stringify({ schemaVersion: 'nope' }));
     expect(readLastGoodHealth(dir)).toBeNull();
+    expectDescriptorClosed();
   });
 
   test('returns the snapshot with a non-negative age relative to now', () => {
