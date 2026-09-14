@@ -217,6 +217,8 @@ async function readDashboardSnapshot(port: number): Promise<SnapshotMessage> {
 async function main(): Promise<void> {
   const previousRelay = process.env.KOOKR_RELAY_URL;
   delete process.env.KOOKR_RELAY_URL;
+  // Verify the default persistence model even when the operator opts into legacy JSON storage.
+  process.env.KOOKR_TASK_STORE = 'sqlite';
   process.env.KOOKR_FAKE_TERMINAL = 'false';
   process.env.KOOKR_USE_FAKE_AGENT = 'false';
   process.env.KOOKR_STT = 'false';
