@@ -576,9 +576,11 @@ describe('CostComparisonPanel', () => {
     const { lines } = await clickExportAndRead(el);
     // Section labels + column headers present; no data rows, no crash.
     expect(lines).toContain('Per playbook');
-    expect(lines).toContain('Per task');
-    expect(lines).toContain('Task,Task ID,Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality');
-    expect(lines.filter((l) => l.startsWith('2026-'))).toHaveLength(0);
+    expect(lines.slice(lines.indexOf('Per task'))).toEqual([
+      'Per task',
+      'Task,Task ID,Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality',
+      '',
+    ]);
   });
 
   test('exports empty cells for null cost / model / playbook', async () => {
