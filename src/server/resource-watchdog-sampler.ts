@@ -154,7 +154,7 @@ export function collectTopConsumers(
     try {
       rssKb = readRssKb(entry.pid);
     } catch {
-      continue; // A raced-away process must not discard earlier measurements.
+      continue; // A process that exits before its RSS read must not discard earlier measurements.
     }
     if (rssKb === null || !Number.isFinite(rssKb) || rssKb < 0) continue;
     rssCoverage.successfulReads += 1;

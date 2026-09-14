@@ -29,7 +29,7 @@ describe.each(['investigation', 'meta_reflection'] as const)('%s RSS coverage', 
       triggers: [], spawnsInWindow: 0, spawnBudget24h: 4,
     });
     expect(prompt).toContain(`RSS sample coverage: ${statement}.`);
-    expect(prompt).toContain('RSS scope: agent-family and dtach processes only');
+    expect(prompt).toContain('RSS scope: supported agent processes and dtach terminal-session processes only');
     if (coverage) expect(prompt).toContain(`rssCoverage: ${JSON.stringify(coverage)}`);
     if (!statement.startsWith('complete')) expect(prompt).not.toContain('RSS sample coverage: complete');
   });
