@@ -9,6 +9,7 @@
 import { readFileSync } from 'node:fs';
 import type {
   AgentFamilyProcessCounts,
+  ResourceWatchdogRssCoverage,
   ResourceWatchdogSample,
   TopConsumerSnapshot,
 } from '../core/resource-watchdog-types.js';
@@ -129,7 +130,7 @@ export function collectTopConsumers(
   entries: readonly ProcessTableEntry[],
   readRssKb: (pid: number) => number | null,
   limit: number,
-): TopConsumerSnapshot[] {
+): { topConsumers: TopConsumerSnapshot[]; rssCoverage: ResourceWatchdogRssCoverage } {
   // Classify first — only open `/proc/<pid>/status` for agent/dtach candidates
   // (plus a hard cap) so a crowded process table under pressure does not
   // multiply into thousands of status reads.
@@ -140,10 +141,24 @@ export function collectTopConsumers(
   }
   const scored: TopConsumerSnapshot[] = [];
   const rssBudget = Math.min(candidates.length, Math.max(limit * 4, 40));
+  const rssCoverage: ResourceWatchdogRssCoverage = {
+    eligibleProcesses: candidates.length,
+    attemptedReads: 0,
+    successfulReads: 0,
+    truncated: candidates.length > rssBudget,
+  };
   for (let i = 0; i < rssBudget; i++) {
     const entry = candidates[i]!;
-    const rssKb = readRssKb(entry.pid);
-    if (rssKb === null || rssKb <= 0) continue;
+    rssCoverage.attemptedReads += 1;
+    let rssKb: number | null;
+    try {
+      rssKb = readRssKb(entry.pid);
+    } catch {
+      continue; // A raced-away process must not discard earlier measurements.
+    }
+    if (rssKb === null || !Number.isFinite(rssKb) || rssKb < 0) continue;
+    rssCoverage.successfulReads += 1;
+    if (rssKb === 0) continue;
     scored.push({
       pid: entry.pid,
       rssKb,
@@ -151,7 +166,7 @@ export function collectTopConsumers(
     });
   }
   scored.sort((a, b) => b.rssKb - a.rssKb);
-  return scored.slice(0, Math.max(0, limit));
+  return { topConsumers: scored.slice(0, Math.max(0, limit)), rssCoverage };
 }
 
 export class ResourceWatchdogHostSamplerImpl implements ResourceWatchdogHostSampler {
@@ -169,7 +184,7 @@ export class ResourceWatchdogHostSamplerImpl implements ResourceWatchdogHostSamp
   constructor(deps: ResourceWatchdogSamplerDeps = {}) {
     this.readMeminfo = deps.readMeminfo ?? readMeminfoFromProc;
     this.readOomKillTotal = deps.readOomKillTotal ?? readOomKillFromProc;
-    this.listProcesses = deps.listProcesses ?? listRealProcesses;
+    this.listProcesses = deps.listProcesses ?? (() => listRealProcesses({ throwOnError: true }));
     this.readProcessRssKb = deps.readProcessRssKb ?? readRssKbFromProc;
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
     this.topConsumerLimit = deps.topConsumerLimit ?? DEFAULT_TOP_LIMIT;
@@ -195,23 +210,21 @@ export class ResourceWatchdogHostSamplerImpl implements ResourceWatchdogHostSamp
       mem.memAvailableKb !== null ? mem.memAvailableKb / 1024 : null;
 
     let entries: ProcessTableEntry[] = [];
+    let enumerationAvailable = false;
     try {
       entries = this.listProcesses();
+      enumerationAvailable = true;
     } catch {
       entries = [];
     }
 
     const processCounts = countAgentFamilies(entries);
-    let topConsumers: TopConsumerSnapshot[] = [];
-    try {
-      topConsumers = collectTopConsumers(
-        entries,
-        this.readProcessRssKb,
-        this.topConsumerLimit,
-      );
-    } catch {
-      topConsumers = [];
-    }
+    const { topConsumers, rssCoverage } = collectTopConsumers(
+      entries,
+      this.readProcessRssKb,
+      this.topConsumerLimit,
+    );
+    if (!enumerationAvailable) rssCoverage.eligibleProcesses = null;
 
     const pressure = this.getSessionPressure();
 
@@ -224,6 +237,7 @@ export class ResourceWatchdogHostSamplerImpl implements ResourceWatchdogHostSamp
       orphanSessionCount: pressure.orphanSessionCount,
       terminalLeakCount: pressure.terminalLeakCount,
       topConsumers,
+      rssCoverage,
     };
   }
 }

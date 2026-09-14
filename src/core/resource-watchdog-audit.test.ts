@@ -120,6 +120,22 @@ describe('resource-watchdog audit emission', () => {
     expect(record.triggers?.[0]?.reason).toBe('swap_percent');
   });
 
+  test.each([
+    { eligibleProcesses: 41, attemptedReads: 40, successfulReads: 39, truncated: true },
+    { eligibleProcesses: null, attemptedReads: 0, successfulReads: 0, truncated: false },
+    { eligibleProcesses: 0, attemptedReads: 0, successfulReads: 0, truncated: false },
+  ])('preserves RSS coverage through JSON serialization (%j)', (rssCoverage) => {
+    const record = buildAuditRecord({ action: 'spawn', timestamp: sample.sampledAt, sample: { ...sample, rssCoverage } });
+    expect(JSON.parse(JSON.stringify(record)).sample.rssCoverage).toEqual(rssCoverage);
+    rssCoverage.successfulReads = 999;
+    expect(record.sample?.rssCoverage?.successfulReads).not.toBe(999);
+  });
+
+  test('keeps legacy coverage unknown', () => {
+    const record = buildAuditRecord({ action: 'spawn', timestamp: sample.sampledAt, sample });
+    expect(record.sample).not.toHaveProperty('rssCoverage');
+  });
+
   test('MemoryResourceWatchdogAuditSink captures appends', () => {
     const sink = new MemoryResourceWatchdogAuditSink();
     sink.append(buildAuditRecord({

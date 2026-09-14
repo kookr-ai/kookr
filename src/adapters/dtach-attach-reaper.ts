@@ -116,11 +116,12 @@ function readProcCmdline(pid: number): string | null {
   }
 }
 
-function listLinuxProcesses(): ProcessTableEntry[] {
+function listLinuxProcesses(throwOnError: boolean): ProcessTableEntry[] {
   let names: string[];
   try {
     names = readdirSync('/proc');
-  } catch {
+  } catch (error) {
+    if (throwOnError) throw error;
     return []; // no /proc — non-Linux or sandboxed.
   }
   const out: ProcessTableEntry[] = [];
@@ -132,7 +133,7 @@ function listLinuxProcesses(): ProcessTableEntry[] {
   return out;
 }
 
-function listDarwinProcesses(): ProcessTableEntry[] {
+function listDarwinProcesses(throwOnError: boolean): ProcessTableEntry[] {
   try {
     const raw = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8', timeout: 5_000 });
     const out: ProcessTableEntry[] = [];
@@ -147,12 +148,18 @@ function listDarwinProcesses(): ProcessTableEntry[] {
       out.push({ pid, command });
     }
     return out;
-  } catch {
+  } catch (error) {
+    if (throwOnError) throw error;
     return [];
   }
 }
 
-/** Real (non-test) process table listing: `/proc` on Linux, `ps` on macOS. */
-export function listRealProcesses(): ProcessTableEntry[] {
-  return process.platform === 'darwin' ? listDarwinProcesses() : listLinuxProcesses();
+/**
+ * List processes using `/proc` on Linux or `ps` on macOS. Diagnostics can opt
+ * into enumeration errors to distinguish an unavailable table from an empty
+ * one. Unreadable individual command lines are still skipped.
+ */
+export function listRealProcesses(options: { throwOnError?: boolean } = {}): ProcessTableEntry[] {
+  const throwOnError = options.throwOnError ?? false;
+  return process.platform === 'darwin' ? listDarwinProcesses(throwOnError) : listLinuxProcesses(throwOnError);
 }

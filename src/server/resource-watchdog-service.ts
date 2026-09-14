@@ -250,6 +250,7 @@ export class ResourceWatchdogService {
             processCounts: this.lastSample.processCounts,
             orphanSessionCount: this.lastSample.orphanSessionCount,
             terminalLeakCount: this.lastSample.terminalLeakCount,
+            ...(this.lastSample.rssCoverage ? { rssCoverage: { ...this.lastSample.rssCoverage } } : {}),
           }
         : null,
       lastTriggerAt: this.state.lastTriggerAt,
