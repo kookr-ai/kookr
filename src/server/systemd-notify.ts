@@ -66,7 +66,8 @@ export type SystemdNotifyError = 'helper-missing' | 'helper-exit' | 'helper-sign
 /**
  * Process-local evidence shared by readiness and watchdog sends. After the first
  * completion, status reflects the latest completion even while another send runs.
- * Counters saturate at MAX_SAFE_INTEGER; timestamps are Unix milliseconds.
+ * Counters stop at JavaScript's largest safe integer (Number.MAX_SAFE_INTEGER)
+ * to preserve precise increments. Timestamps are milliseconds since the Unix epoch.
  */
 export interface SystemdNotifySendHealth {
   readonly status: 'not-attempted' | 'pending' | 'succeeded' | 'failed';

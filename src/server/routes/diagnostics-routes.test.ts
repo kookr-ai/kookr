@@ -4133,7 +4133,7 @@ describe('diagnostics routes', () => {
         send, logger: vi.fn(), wallNow: () => 1_000,
       });
       const readHealth = async () => {
-        // Use a cold route cache for each projection of the same notifier.
+        // Build a fresh app so cached health responses cannot hide changes to this notifier.
         const res = await mkApp({
           taskStore: new TaskStore(), queue: new AttentionQueue(), buildInfo: {} as never,
           systemdNotifier: notifier,
