@@ -1,6 +1,6 @@
-import { chmodSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { createServer } from 'node:net';
 import WebSocket from 'ws';
 
@@ -8,10 +8,7 @@ import { LocalDtachBackend } from '../src/adapters/local-dtach-backend.js';
 import { createKookrServerInternal } from '../src/server/index.js';
 import type { SnapshotMessage } from '../src/shared/contracts/messages.js';
 import { firstReadyKookrSTTEndpoint } from '../src/shared/contracts/speech.js';
-
-interface FileSnapshot {
-  entries: Map<string, { type: 'file' | 'dir' | 'other'; size: number; mtimeMs: number }>;
-}
+import { assertKookrDiff, snapshotDir } from './local-only-smoke-files.js';
 
 const textDecoder = new TextDecoder();
 
@@ -36,86 +33,6 @@ async function getFreePort(): Promise<number> {
       server.close(() => resolve(port));
     });
   });
-}
-
-function snapshotDir(root: string): FileSnapshot {
-  const entries = new Map<string, { type: 'file' | 'dir' | 'other'; size: number; mtimeMs: number }>();
-
-  function walk(dir: string): void {
-    for (const name of readdirSync(dir, { withFileTypes: true })) {
-      const path = join(dir, name.name);
-      const rel = relative(root, path);
-      const stat = statSync(path);
-      entries.set(rel, {
-        type: name.isDirectory() ? 'dir' : name.isFile() ? 'file' : 'other',
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-      });
-      if (name.isDirectory()) walk(path);
-    }
-  }
-
-  try {
-    walk(root);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') throw err;
-  }
-
-  return { entries };
-}
-
-function assertKookrDiff(before: FileSnapshot, after: FileSnapshot): void {
-  const forbiddenBasenames = new Set([
-    'audit.db',
-    'audit.jsonl',
-    'command-journal.jsonl',
-    'node-epoch',
-    'policy-cache.json',
-  ]);
-  const isAllowedLocalOnlyChange = (entry: string): boolean => {
-    return entry === 'tasks.json'
-      || /^tasks\.json\.daily\.\d{8}$/.test(entry)
-      || entry === 'disposition.jsonl'
-      || entry === 'oss-attempts.json'
-      || entry === 'project-configs.json'
-      || entry === 'detection-stats.json'
-      || entry === 'schedules.json'
-      || entry === 'schedule-rollups.json'
-      || entry === 'hook-replay-checkpoints.json'
-      || entry === 'activity'
-      || entry.startsWith('activity/')
-      || entry === 'hooks'
-      || entry.startsWith('hooks/')
-      || entry === 'sessions'
-      || entry.startsWith('sessions/')
-      || entry === 'settings'
-      || entry.startsWith('settings/');
-  };
-  const errors: string[] = [];
-  for (const [entry, meta] of after.entries) {
-    const base = entry.split('/').at(-1) ?? entry;
-    if (forbiddenBasenames.has(base) || entry.startsWith('remote/') || entry.startsWith('relay/')) {
-      errors.push(`forbidden ${meta.type}: ${entry}`);
-      continue;
-    }
-    const previous = before.entries.get(entry);
-    if (!previous && !isAllowedLocalOnlyChange(entry)) {
-      errors.push(`new ${meta.type}: ${entry}`);
-      continue;
-    }
-    if (previous && !isAllowedLocalOnlyChange(entry) && (previous.size !== meta.size || previous.mtimeMs !== meta.mtimeMs)) {
-      errors.push(`changed ${meta.type}: ${entry}`);
-    }
-  }
-  for (const entry of before.entries.keys()) {
-    if (!after.entries.has(entry) && !isAllowedLocalOnlyChange(entry)) {
-      errors.push(`removed: ${entry}`);
-    }
-  }
-  if (errors.length > 0) {
-    throw new Error(`~/.kookr changed outside tasks.json:\n${errors.join('\n')}`);
-  }
 }
 
 function writeScriptedAgent(path: string): void {
