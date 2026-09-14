@@ -8,6 +8,7 @@
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 export const TASK_TAIL_SCHEMA_VERSION = 'task-tail.v1' as const;
 export const DEFAULT_TASK_TAIL_RETENTION_DAYS = 7;
@@ -179,6 +180,7 @@ export class TaskTailStore {
   private readonly maxBytes: number;
   private readonly now: () => number;
   private dirEnsured = false;
+  private readonly mutationTails = new Map<string, Promise<void>>();
 
   constructor(options: TaskTailStoreOptions) {
     this.dir = options.dir;
@@ -218,6 +220,18 @@ export class TaskTailStore {
     return nowMs - captured > this.retentionMs;
   }
 
+  /** Serialize saves and cleanup for each task in this store; other tasks do not wait. */
+  private withTaskMutation<T>(taskId: string, mutate: () => Promise<T>): Promise<T> {
+    const prior = this.mutationTails.get(taskId) ?? Promise.resolve();
+    const run = prior.then(mutate);
+    const tail = run.then(() => {}, () => {});
+    this.mutationTails.set(taskId, tail);
+    void tail.then(() => {
+      if (this.mutationTails.get(taskId) === tail) this.mutationTails.delete(taskId);
+    });
+    return run;
+  }
+
   /**
    * Persist (or overwrite) the terminal tail for a task. Best-effort callers
    * should catch; this throws on path/id safety failures.
@@ -225,7 +239,6 @@ export class TaskTailStore {
   async save(input: SaveTaskTailInput): Promise<TaskTailRecord> {
     assertSafeId(input.taskId, 'taskId');
     assertSafeId(input.sessionId, 'sessionId');
-    await this.ensureDir();
 
     const { text, truncated } = truncateTextToMaxBytes(input.text, this.maxBytes);
     const record: TaskTailRecord = {
@@ -238,8 +251,11 @@ export class TaskTailStore {
       truncated,
     };
 
-    await atomicWriteJson(this.taskPath(input.taskId), record);
-    await atomicWriteJson(this.sessionPath(input.sessionId), record);
+    await this.withTaskMutation(input.taskId, async () => {
+      await this.ensureDir();
+      await atomicWriteJson(this.taskPath(input.taskId), record);
+      await atomicWriteJson(this.sessionPath(input.sessionId), record);
+    });
     return record;
   }
 
@@ -273,7 +289,7 @@ export class TaskTailStore {
       return null;
     }
     if (this.isExpired(parsed)) {
-      await this.removeRecord(parsed);
+      await this.withTaskMutation(parsed.taskId, () => this.removeRecord(parsed));
       return null;
     }
     return parsed;
@@ -281,12 +297,14 @@ export class TaskTailStore {
 
   async removeByTaskId(taskId: string): Promise<void> {
     if (!SAFE_ID_RE.test(taskId)) return;
-    const record = await this.readRaw(this.taskPath(taskId));
-    if (record) {
-      await this.removeRecord(record);
-      return;
-    }
-    await this.safeUnlink(this.taskPath(taskId));
+    await this.withTaskMutation(taskId, async () => {
+      const record = await this.readRaw(this.taskPath(taskId));
+      if (record) {
+        await this.removeRecord(record);
+        return;
+      }
+      await this.safeUnlink(this.taskPath(taskId));
+    });
   }
 
   private async readRaw(path: string): Promise<TaskTailRecord | null> {
@@ -299,9 +317,19 @@ export class TaskTailStore {
     }
   }
 
-  private async removeRecord(record: TaskTailRecord): Promise<void> {
-    await this.safeUnlink(this.taskPath(record.taskId));
-    await this.safeUnlink(this.sessionPath(record.sessionId));
+  /** Call through withTaskMutation so saves cannot replace files between comparison and deletion. */
+  private async removeRecord(record: TaskTailRecord): Promise<boolean> {
+    const taskRemoved = await this.removeMatchingFile(this.taskPath(record.taskId), record);
+    await this.removeMatchingFile(this.sessionPath(record.sessionId), record);
+    return taskRemoved;
+  }
+
+  private async removeMatchingFile(path: string, record: TaskTailRecord): Promise<boolean> {
+    // An old session index can outlive the task's latest capture. IDs or the
+    // capture timestamp alone cannot distinguish every same-session overwrite.
+    if (!isDeepStrictEqual(await this.readRaw(path), record)) return false;
+    await this.safeUnlink(path);
+    return true;
   }
 
   private async safeUnlink(path: string): Promise<void> {
@@ -335,8 +363,8 @@ export class TaskTailStore {
       const record = await this.readRaw(path);
       if (!record) continue;
       if (this.isExpired(record)) {
-        await this.removeRecord(record);
-        removed += 1;
+        const taskRemoved = await this.withTaskMutation(record.taskId, () => this.removeRecord(record));
+        if (taskRemoved) removed += 1;
       }
     }
     return removed;
