@@ -2,6 +2,64 @@
 
 Short checklist for host-class failures when you return to a machine running unattended Kookr (or only have brief SSH / Discord). Commands assume the production-style instance on port `4800` (`../kookr-prod`, via `pnpm prod:update` / `pnpm prod:restart`). Adjust `KOOKR_PORT` / base URL if yours differs.
 
+## Before probing: load this helper once per shell
+
+Paste this function into Bash before running any HTTP checks below, including
+when jumping straight to a later section. Every request has a **five-second total
+deadline** (`--max-time 5`), including connection setup and response transfer.
+Each call uses fresh temporary files and removes them on exit, so a failed probe
+cannot display an earlier successful response.
+
+```bash
+probe_json() (
+  probe_dir=$(mktemp -d) || exit 1
+  trap 'rm -rf "$probe_dir"' EXIT
+  probe_url=$1
+  shift
+  if http_code=$(curl -q -sS --max-time 5 -o "$probe_dir/body" \
+    -w '%{http_code}' "$probe_url"); then
+    curl_status=0
+  else
+    curl_status=$?
+  fi
+  if [ "$curl_status" -ne 0 ]; then
+    if [ "$curl_status" -eq 28 ]; then
+      printf 'TIMEOUT after 5s (curl 28): %s\n' "$probe_url" >&2
+    else
+      printf 'Transport failure (curl %s): %s\n' "$curl_status" "$probe_url" >&2
+    fi
+    printf 'Try kookr doctor --json or kookr ops digest --offline.\n' >&2
+    exit "$curl_status"
+  fi
+  printf 'HTTP %s: %s\n' "$http_code" "$probe_url" >&2
+  if [ "$http_code" != 200 ]; then
+    # Keep failure bodies, especially readiness 503 subsystem diagnostics.
+    cat "$probe_dir/body" >&2
+    printf '\nHTTP failure; response is not a healthy result.\n' >&2
+    exit 22
+  fi
+  if ! python3 -m json.tool "$probe_dir/body" > "$probe_dir/json"; then
+    printf 'Invalid or empty JSON; probe failed.\n' >&2
+    exit 65
+  fi
+  if [ "$#" -eq 0 ]; then
+    cat "$probe_dir/json"
+  elif "$@" < "$probe_dir/json" > "$probe_dir/view"; then
+    cat "$probe_dir/view"
+  else
+    printf 'Response could not be interpreted; probe failed.\n' >&2
+    exit 65
+  fi
+)
+```
+
+The helper checks curl's exit status before parsing and reports HTTP failures
+separately. It returns nonzero for transport, HTTP, or JSON/formatting failures.
+Pass a display command after the URL instead of piping the helper: that keeps
+its failure status visible and prevents a parser or `head` from hiding it.
+`curl -q` ignores personal curl configuration so retries cannot extend the deadline.
+HTTP 200 with valid JSON still needs interpretation: health can be degraded.
+
 ## 1. Process supervisors: ready, not just health
 
 `/api/health` is dashboard-friendly (often 200 even when degraded). Engine supervisors should use **`/api/ready`**.
@@ -10,16 +68,21 @@ Check `controlPlane.collectionStatus` / `controlPlane.source` (issue #2798): a `
 
 ```bash
 # Expect HTTP 200 when the engine is safe to supervise launches
-curl -sS -o /tmp/kookr-ready.json -w '%{http_code}\n' http://127.0.0.1:4800/api/ready
-python3 -m json.tool /tmp/kookr-ready.json | head -80
+probe_json http://127.0.0.1:4800/api/ready sed -n '1,80p'
 
 # Full health snapshot (capacity, resourceWatchdog, hungSuspect, …)
-curl -sS http://127.0.0.1:4800/api/health | python3 -m json.tool | head -120
+probe_json http://127.0.0.1:4800/api/health sed -n '1,120p'
 ```
 
 If `/api/ready` fails: fix the failing subsystem named in the body (scheduler tick, persistence writability, terminal backend, etc.), then re-probe. Do not assume “dashboard loads” means ready.
 
-If curl hangs or takes hundreds of milliseconds: `kookr doctor --json` `ops.http-latency` WARNs when ready exceeds 500ms or health exceeds 2s (or either times out / 5xx). Sibling doctor probes that skip on timeout are not a clean bill of health.
+If a probe times out or seems slow, run `kookr doctor --json`. Its HTTP latency
+check (`ops.http-latency`) has its own timeout. It reports WARN if `/api/ready`
+takes more than 500 milliseconds, `/api/health` takes more than two seconds, or
+either request times out or returns an HTTP 5xx error. Other doctor checks that
+skip on timeout do not establish that the server is healthy. For evidence without HTTP, use
+`kookr ops digest --offline`: it reads the last-good snapshot from disk and
+reports its age. An offline snapshot cannot confirm current readiness.
 
 ## 2. Disk and inode capacity (data directory)
 
@@ -32,8 +95,8 @@ df -i ~/.kookr
 du -sh ~/.kookr/* 2>/dev/null | sort -h | tail -20
 
 # Health may surface disk / data-directory alerts when the resource sampler is on
-curl -sS http://127.0.0.1:4800/api/health \
-  | python3 -c 'import json,sys; h=json.load(sys.stdin); print("dataDirectory", h.get("dataDirectory")); print("resourceWatchdog", h.get("resourceWatchdog"))'
+probe_json http://127.0.0.1:4800/api/health \
+  python3 -c 'import json,sys; h=json.load(sys.stdin); print("dataDirectory", h.get("dataDirectory")); print("resourceWatchdog", h.get("resourceWatchdog"))'
 ```
 
 If byte capacity is critical or free inodes are exhausted, inspect the launch
@@ -48,7 +111,7 @@ resource sample to confirm recovery before resuming.
 Slots held by hung-suspect tasks block the active-task cap.
 
 ```bash
-curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+probe_json http://127.0.0.1:4800/api/health python3 -c '
 import json,sys
 h=json.load(sys.stdin)
 cap=h.get("capacity") or {}
@@ -59,7 +122,7 @@ print("finishedAwaitingAckTtlReclaim", h.get("finishedAwaitingAckTtlReclaim"))
 '
 
 # Per-task view (dashboard or API)
-curl -sS http://127.0.0.1:4800/api/tasks | python3 -c '
+probe_json http://127.0.0.1:4800/api/tasks python3 -c '
 import json,sys
 tasks=json.load(sys.stdin)
 print("inProgress", sum(1 for t in tasks if t.get("status")=="inProgress"))
@@ -130,7 +193,7 @@ If residual stays high after TTL reclaim windows: ack/complete/cancel clearly de
 `#2353` parks a schedule after consecutive failures (the bootstrap-critical merge watchdog is exempt and never parks — see the unattended-recovery runbook §3b, `#2530`). Health lists those parks; Discord now pages when **three or more** stay parked so an offline operator does not wait on the 14KB health blob.
 
 ```bash
-curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+probe_json http://127.0.0.1:4800/api/health python3 -c '
 import json,sys
 h=json.load(sys.stdin)
 print("schedulesPausedByFailure", (h.get("schedules") or {}).get("schedulesPausedByFailure"))
@@ -158,7 +221,7 @@ kookr doctor --json 2>/dev/null | python3 -m json.tool | head -80
 # or from a checkout:
 # pnpm run doctor
 
-curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+probe_json http://127.0.0.1:4800/api/health python3 -c '
 import json,sys
 h=json.load(sys.stdin)
 print("resourceWatchdog", h.get("resourceWatchdog"))
@@ -172,7 +235,7 @@ Re-enable per current env docs (`docs/reference/environment-variables.md` — re
 **Symptom.** Host dtach process count is high while the session reaper reports almost no orphans — often misread as “reaper is broken.”
 
 ```bash
-curl -sS http://127.0.0.1:4800/api/health | python3 -c '
+probe_json http://127.0.0.1:4800/api/health python3 -c '
 import json,sys
 h=json.load(sys.stdin)
 dtach=(h.get("staleProcesses") or {}).get("dtach") or {}
@@ -242,7 +305,7 @@ Prefer: drain → stop server cleanly → free disk → restart prod worktree �
 # Low-downtime-ish restart path (prod worktree)
 cd ~/git/kookr && pnpm prod:restart
 # then
-curl -sS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:4800/api/ready
+probe_json http://127.0.0.1:4800/api/ready
 ```
 
 ## Related
