@@ -134,10 +134,13 @@ behaves exactly as before — only the `Type=notify` unit arms the watchdog.
 `systemdNotifier` block whose `arming` field is `absent` (no `NOTIFY_SOCKET`),
 `notifier-only` (readiness armed, watchdog not), or `watchdog-armed`, and
 [`kookr ops digest`](./cli.md#kookr-ops-digest) warns whenever it is not
-`watchdog-armed`. The block reads only process-local arming — it makes no
-`systemctl` call — so `externalUnitStatus` is always `unknown`: it confirms the
-process would ping the watchdog, not that the unit is running or that a restart
-is guaranteed. Use `systemctl status kookr` for the unit's own state.
+`watchdog-armed`. The block also reports notification-helper outcomes in
+`sendHealth` (issue #3227). Inspect `status` and `lastError` for send failures
+even when the watchdog is armed. A successful helper completion clears the
+current error while retaining the cumulative failures and last-failure timestamp.
+Reads perform no `systemctl` call or filesystem work, so `externalUnitStatus`
+remains `unknown`: neither configuration nor a successful helper exit proves
+that the unit is running or a restart is guaranteed. Use `systemctl status kookr` for the unit's own state.
 
 To tune the deadline per host, override it with a drop-in rather than editing the
 template:
