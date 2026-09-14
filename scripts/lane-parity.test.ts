@@ -28,7 +28,9 @@ const CI_ONLY = new Set(['coverage:summary']);
 // vitest suite via `pnpm exec vitest run --coverage` (to also collect
 // coverage), and the STT sidecar suite is a separate npm project not wired
 // into the root CI `test` job.
-const LOCAL_ONLY = new Set(['test', 'test:stt']);
+// The FAA mitigation evidence gate is required by local pre-push and verify.
+// Hosted Actions is disabled; its retained workflow is only a reference.
+const LOCAL_ONLY = new Set(['check:faa-gate', 'test', 'test:stt']);
 
 // Strip comments so a `pnpm <script>` mentioned in prose (both ci.yml and
 // verify.sh reference other lanes in explanatory comments) is not mistaken for
@@ -98,7 +100,7 @@ describe('CI ↔ verify.sh lane parity (#1369)', () => {
     // Pin the literal allowlist. Growing it to hide a genuinely-drifted lane
     // is only possible by editing this assertion — a visible, reviewable diff.
     expect([...CI_ONLY].sort()).toEqual(['coverage:summary']);
-    expect([...LOCAL_ONLY].sort()).toEqual(['test', 'test:stt']);
+    expect([...LOCAL_ONLY].sort()).toEqual(['check:faa-gate', 'test', 'test:stt']);
 
     const ciTestJob = extractJob(ciYml, 'test');
     const ciLanes = pnpmScriptLanes(ciTestJob);

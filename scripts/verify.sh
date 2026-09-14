@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Local mirror of the CI + pre-push verification lanes, so `pnpm verify` green
-# implies both `.hooks/pre-push` green and CI green.
+# Required local verification combines the pre-push lanes and the retained CI
+# reference lanes. Hosted Actions is disabled; passing local checks is the gate.
 #
 # Two guards keep this list honest — edit them together, never let them drift:
 #   - scripts/lane-parity.test.ts asserts the `pnpm <script>` set here matches
@@ -35,8 +35,9 @@ run_lane "Validating documented environment variables" pnpm validate:docs-env-va
 run_lane "Validating documented API routes" pnpm validate:docs-api-routes
 run_lane "Validating requirements status matrix" pnpm validate:requirements
 run_lane "Running tests" pnpm test
+run_lane "Checking FAA mitigation evidence" pnpm check:faa-gate
 
-# --- CI lanes not on the pre-push hot path (kept local so verify == CI) -----
+# --- Retained CI reference lanes not on the pre-push hot path --------------
 run_lane "Running local-only smoke gates" pnpm test:smoke
 run_lane "Running hook regression tests" pnpm test:hooks
 run_lane "Running stt sidecar tests" pnpm test:stt

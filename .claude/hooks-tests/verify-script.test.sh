@@ -33,6 +33,7 @@ mkdir -p "$TMPDIR/bin"
 cat > "$TMPDIR/bin/pnpm" <<'PNPM'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PNPM_LOG"
+if [ "$*" = "${PNPM_FAIL_LANE:-}" ]; then exit 42; fi
 exit 0
 PNPM
 chmod +x "$TMPDIR/bin/pnpm"
@@ -86,3 +87,17 @@ if [ "${#missing[@]}" -gt 0 ]; then
 fi
 
 printf 'PASS: verify.sh runs every pre-push lane, in order\n'
+
+# A required gate failure must stop verification and preserve its exit status.
+status=0
+PNPM_LOG="$TMPDIR/failure.log" PNPM_FAIL_LANE=check:faa-gate PATH="$TMPDIR/bin:$PATH" \
+  bash "$VERIFY_SCRIPT" >/dev/null || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: verify.sh did not propagate the FAA gate failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if [ "$(tail -n 1 "$TMPDIR/failure.log")" != check:faa-gate ]; then
+  printf 'FAIL: verify.sh continued running lanes after the FAA gate failed\n' >&2
+  exit 1
+fi
+printf 'PASS: verify.sh stops on the FAA gate failure\n'
