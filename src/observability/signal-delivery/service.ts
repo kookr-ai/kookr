@@ -79,8 +79,16 @@ export interface SignalDeliveryStatus {
   configured: boolean;
   /** Consecutive all-channel failures since the last success (0 when healthy). */
   consecutiveFailures: number;
-  /** Signals pending as of the most recent tick (in-memory; no dir re-scan). */
+  /** Readable signals pending as of the most recent tick; excludes unreadable files. */
   pending: number;
+  /** File-read failures since this service started, including repeated failed reads. */
+  scanFailures: number;
+  /** Unreadable signal files in the latest completed scan, independent of channel health. */
+  scanFailedFiles: number;
+  /** ISO time of the latest per-file read failure; retained after recovery, or null. */
+  lastScanFailureAt: string | null;
+  /** Fixed summary, without paths or signal content; absent after a fault-free scan. */
+  lastScanError?: string;
   /** ISO time of the last successful delivery, or null. */
   lastSendAt: string | null;
   /** ISO time of the last all-channel failure, or null. */
@@ -110,6 +118,9 @@ export class SignalDeliveryService {
   private lastError: string | null = null;
   private nextAttemptAt: number | null = null;
   private lastPending = 0;
+  private scanFailures = 0;
+  private scanFailedFiles = 0;
+  private lastScanFailureAt: string | null = null;
   private readonly dir: string;
   private readonly config: SignalDeliveryConfig;
   private readonly fetchImpl: typeof fetch;
@@ -181,6 +192,10 @@ export class SignalDeliveryService {
       configured: Boolean(this.config.discord || this.config.telegram),
       consecutiveFailures: this.consecutiveFailures,
       pending: this.lastPending,
+      scanFailures: this.scanFailures,
+      scanFailedFiles: this.scanFailedFiles,
+      lastScanFailureAt: this.lastScanFailureAt,
+      ...(this.scanFailedFiles > 0 ? { lastScanError: 'Unable to read one or more signal files' } : {}),
       lastSendAt: this.lastSendAt !== null ? new Date(this.lastSendAt).toISOString() : null,
       lastFailureAt: this.lastFailureAt !== null ? new Date(this.lastFailureAt).toISOString() : null,
       ...(this.lastError ? { lastError: this.lastError } : {}),
@@ -200,13 +215,25 @@ export class SignalDeliveryService {
     // re-deliver, while a restart with an unchanged file stays deduped. Invalid
     // / partially-written files read as null and are simply skipped this tick.
     const pending: Array<{ fileName: string; signal: OperatorSignal }> = [];
+    let scanFailedFiles = 0;
     for (const fileName of files) {
-      const signal = await readSignal(this.dir, fileName);
+      let signal: OperatorSignal | null;
+      try {
+        signal = await readSignal(this.dir, fileName);
+      } catch {
+        // Leave this entry unacknowledged for retry while healthy alerts proceed.
+        // Directory listing and deduplication marker errors still reject the tick.
+        scanFailedFiles += 1;
+        continue;
+      }
       if (!signal) continue;
       if (delivered[fileName] === signal.createdAt) continue;
       pending.push({ fileName, signal });
     }
 
+    this.scanFailedFiles = scanFailedFiles;
+    this.scanFailures += scanFailedFiles;
+    if (scanFailedFiles > 0) this.lastScanFailureAt = this.now().toISOString();
     this.lastPending = pending.length;
 
     if (pending.length === 0) {
