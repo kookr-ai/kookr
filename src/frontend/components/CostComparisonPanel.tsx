@@ -396,6 +396,7 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
           <table className="cost-table cost-per-task-table">
             <thead>
               <tr>
+                <th>Task</th>
                 <th>Started</th>
                 <th>Agent</th>
                 <th>Model</th>
@@ -409,6 +410,7 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
             <tbody>
               {rows.map(r => (
                 <tr key={r.taskId} className={`cost-row dq-${r.dataQuality}`}>
+                  <td>{r.taskName ?? r.taskId}</td>
                   <td>{new Date(r.startedAt).toLocaleString()}</td>
                   <td>{r.agent === 'claude-code' ? 'Claude' : 'Codex'}</td>
                   <td>{r.model ?? '—'}</td>
@@ -561,14 +563,15 @@ interface CsvExportContext {
 
 /**
  * Serialise the currently displayed per-playbook and per-task rows to a single
- * CSV document (#2422). Only fields already visible in the panel are emitted —
- * we deliberately do NOT dump raw token counts or the unbound/internal scanner
- * aggregates, to avoid implying a completeness the panel itself caveats.
+ * CSV document (#2422), with task IDs for reference. Raw token counts and
+ * unbound/internal scanner aggregates are omitted to avoid implying a
+ * completeness the panel itself caveats.
  *
  * Two labelled sections separated by a blank line: "Per playbook" mirrors the
  * headline table (per-agent average + n, cost ratio, thumbs-up ratio); "Per
- * task" mirrors the task table. A short preamble records the active window /
- * agent filter / search so an exported file is self-describing.
+ * task" mirrors the task table and adds its stable task IDs for reference.
+ * A short preamble records the window, agent filter, and search that produced
+ * the exported rows, so the file is self-describing even during a refetch.
  *
  * Cost figures are emitted as bare numbers (not the "$0.31 avg" display string)
  * so spreadsheets can sum them; timestamps use ISO 8601 for the same reason.
@@ -606,9 +609,11 @@ export function buildCostComparisonCsv(
 
   rows.push([]);
   rows.push(['Per task']);
-  rows.push(['Started', 'Agent', 'Model', 'Playbook', 'Duration', 'Cost (USD)', 'Feedback', 'Quality']);
+  rows.push(['Task', 'Task ID', 'Started', 'Agent', 'Model', 'Playbook', 'Duration', 'Cost (USD)', 'Feedback', 'Quality']);
   for (const r of data.perTask) {
     rows.push([
+      r.taskName ?? r.taskId,
+      r.taskId,
       csvIsoDate(r.startedAt),
       r.agent === 'claude-code' ? 'Claude' : 'Codex',
       r.model ?? '',

@@ -38,9 +38,9 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  * making the cap redundant.
  *
  * Privacy posture: predelete snapshots may contain prompts the user swept
- * for privacy reasons. The cost-comparison wire shape (`PerTaskRow`) does
- * not include `prompt` or `name`, so the panel cannot exhibit a swept
- * prompt directly. The `q` search parameter on the route still matches
+ * for privacy reasons. The cost-comparison wire shape (`PerTaskRow`)
+ * includes the existing task name but not `prompt`, so the panel does not
+ * expose full swept prompts. The `q` search parameter on the route still matches
  * against prompt+name server-side, exposing a presence-only side channel
  * that pre-existed this change. A user running Kookr behind a port-forward
  * inherits that side channel for swept tasks too.
