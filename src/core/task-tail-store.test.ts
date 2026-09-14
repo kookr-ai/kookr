@@ -1,4 +1,5 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'node:fs/promises';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,6 +12,10 @@ import {
   DEFAULT_TASK_TAIL_RETENTION_DAYS,
   DEFAULT_TASK_TAIL_MAX_BYTES,
 } from './task-tail-store.js';
+
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...await importOriginal<typeof import('node:fs/promises')>(),
+}));
 
 describe('task-tail-store helpers', () => {
   test('boundTailText keeps the last N lines', () => {
@@ -79,6 +84,7 @@ describe('TaskTailStore', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -115,6 +121,101 @@ describe('TaskTailStore', () => {
     expect(saved.truncated).toBe(true);
     expect(saved.byteLength).toBeLessThanOrEqual(1024);
   });
+
+  test('reading an expired old session preserves the newer task and session tails', async () => {
+    await store.save({ taskId: 'task-1', sessionId: 'old-session', text: 'old output' });
+    nowMs += 8 * 24 * 60 * 60 * 1000;
+    const newer = await store.save({ taskId: 'task-1', sessionId: 'new-session', text: 'new output' });
+
+    expect(await store.getBySessionId('old-session')).toBeNull();
+    expect(existsSync(join(dir, 'by-session', 'old-session.json'))).toBe(false);
+    expect(await store.getByTaskId('task-1')).toEqual(newer);
+    expect(await store.getBySessionId('new-session')).toEqual(newer);
+  });
+
+  test('expiry preserves a same-session save made after reading the expired record', async () => {
+    await store.save({ taskId: 'task-1', sessionId: 'session-1', text: 'old output' });
+    nowMs += 8 * 24 * 60 * 60 * 1000;
+    const sessionPath = join(dir, 'by-session', 'session-1.json');
+    const readFile = fs.readFile;
+    const read = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    vi.spyOn(fs, 'readFile').mockImplementationOnce(async (...args) => {
+      const raw = await readFile(...args);
+      read.resolve();
+      await resume.promise;
+      return raw;
+    });
+
+    const expiry = store.getBySessionId('session-1');
+    await read.promise;
+    let newer;
+    try {
+      newer = await store.save({ taskId: 'task-1', sessionId: 'session-1', text: 'new output' });
+    } finally {
+      resume.resolve();
+      await expiry;
+    }
+    expect(JSON.parse(readFileSync(sessionPath, 'utf8'))).toEqual(newer);
+    expect(await store.getByTaskId('task-1')).toEqual(newer);
+    expect(await store.getBySessionId('session-1')).toEqual(newer);
+  });
+
+  test.each(['task lookup', 'session lookup', 'purge'] as const)(
+    '%s holds off a same-task save until checked files have been deleted',
+    async (operation) => {
+      await store.save({ taskId: 'task-1', sessionId: 'session-1', text: 'old output' });
+      nowMs += 8 * 24 * 60 * 60 * 1000;
+      const sessionPath = join(dir, 'by-session', 'session-1.json');
+      const unlink = fs.unlink;
+      const checked = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      vi.spyOn(fs, 'unlink').mockImplementation(async (path) => {
+        if (path === sessionPath) {
+          // Pause after cleanup has decided to unlink, before the filesystem does it.
+          checked.resolve();
+          await resume.promise;
+        }
+        await unlink(path);
+      });
+      const expiry = operation === 'purge'
+        ? store.purgeExpired()
+        : operation === 'task lookup'
+          ? store.getByTaskId('task-1')
+          : store.getBySessionId('session-1');
+      await checked.promise;
+      // These directories already exist. Resolve mkdir immediately so any
+      // unqueued save reaches writeFile without waiting on filesystem scheduling.
+      vi.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+      const writeFile = fs.writeFile;
+      let sameTaskWriteStarted = false;
+      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+        if (typeof args[1] === 'string' && args[1].includes('"taskId":"task-1"')) {
+          sameTaskWriteStarted = true;
+        }
+        await writeFile(...args);
+      });
+      let saveFinished = false;
+      const save = store.save({ taskId: 'task-1', sessionId: 'session-1', text: 'new output' })
+        .then((record) => { saveFinished = true; return record; });
+      try {
+        // An independent task must finish even while this task's cleanup is paused.
+        await store.save({ taskId: 'task-2', sessionId: 'session-2', text: 'independent output' });
+        expect(sameTaskWriteStarted).toBe(false);
+        expect(saveFinished).toBe(false);
+        expect(JSON.parse(readFileSync(sessionPath, 'utf8')).text).toBe('old output');
+      } finally {
+        resume.resolve();
+        await Promise.all([expiry, save]);
+      }
+
+      const newer = await save;
+      expect(await store.getByTaskId('task-1')).toEqual(newer);
+      expect(await store.getBySessionId('session-1')).toEqual(newer);
+      expect((await store.getByTaskId('task-2'))?.text).toBe('independent output');
+      expect(await expiry).toBe(operation === 'purge' ? 1 : null);
+    },
+  );
 
   test('expired records are deleted on read and by purgeExpired', async () => {
     await store.save({
