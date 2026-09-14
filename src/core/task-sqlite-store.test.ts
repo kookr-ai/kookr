@@ -302,7 +302,7 @@ describe('task-sqlite-store', () => {
     }
   });
 
-  test('crash-recovery: reopened DB retains last committed flush', async () => {
+  test('graceful reopen retains last committed flush', async () => {
     const dbPath = join(tempDir, 'crash.sqlite');
     const mem = new TaskStore();
     const t = mem.createTask('durable', '/repo');
