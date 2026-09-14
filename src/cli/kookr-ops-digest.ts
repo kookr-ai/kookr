@@ -1,10 +1,10 @@
 /**
  * `kookr ops` — thin remote-ops verbs over a running Kookr HTTP surface.
  *
- *   kookr ops digest [--json] [--offline]   issue #2347
+ *   kookr ops digest [--json] [--offline] [--all-warnings]   issue #2347
  *   kookr ops timers [--json]               issue #2639
  *
- * `digest` fetches GET /api/ready + GET /api/health and prints ≤20 lines:
+ * `digest` fetches GET /api/ready + GET /api/health and prints ≤20 lines by default:
  * ready status plus the top unattended failure signals (with field paths).
  * Issue #2637 also warns on overdue/never-fired hourly timers, hook-ingestion
  * p95 > 10s, and any fail-closed paused schedule. If health has no
@@ -76,7 +76,7 @@ export const EXIT_NO_SNAPSHOT = 6;
 export const OPS_DIGEST_HELP_TEXT = `kookr ops — remote diagnosis verbs (digest, timers).
 
 Usage:
-  kookr ops digest [--json] [--offline]
+  kookr ops digest [--json] [--offline] [--all-warnings]
   kookr ops timers [--json]
   kookr ops --help
 
@@ -84,7 +84,7 @@ digest: GET /api/ready and GET /api/health, then print ready status plus the
 top unattended failure signals (pressureWhileDisabled, blocked watchdog recovery,
 phantomActive, hung residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
 p95, fail-closed paused schedules, pipeline starvation, disk, safeMode) with
-field paths. ≤20 lines.
+field paths. Defaults to up to five warnings and at most twenty lines.
 
 When the server is unreachable, digest auto-degrades to the last-good
 /api/health snapshot on disk (if one exists) and reports how stale it is.
@@ -97,6 +97,8 @@ is digest-only.
 Options:
   --json       Print one machine-readable JSON envelope to stdout.
   --offline    digest only: skip HTTP and read the last-good snapshot (issue #2495).
+  --all-warnings  digest only: show every supported warning without the twenty-line cap.
+                  Offline output can only use evidence retained in the snapshot.
   -h, --help   Show this help.
 
 Environment:
@@ -147,6 +149,7 @@ export interface ParsedOpsDigestArgs {
   verb: OpsVerb | null;
   json: boolean;
   offline: boolean;
+  allWarnings: boolean;
   help: boolean;
   error?: string;
 }
@@ -204,7 +207,7 @@ export interface OpsDigestSnapshot {
 }
 
 export function parseOpsDigestArgs(argv: string[]): ParsedOpsDigestArgs {
-  const out: ParsedOpsDigestArgs = { verb: null, json: false, offline: false, help: false };
+  const out: ParsedOpsDigestArgs = { verb: null, json: false, offline: false, allWarnings: false, help: false };
   for (const tok of argv) {
     if (tok === '-h' || tok === '--help') {
       out.help = true;
@@ -212,6 +215,8 @@ export function parseOpsDigestArgs(argv: string[]): ParsedOpsDigestArgs {
       out.json = true;
     } else if (tok === '--offline') {
       out.offline = true;
+    } else if (tok === '--all-warnings') {
+      out.allWarnings = true;
     } else if (tok.startsWith('-')) {
       return { ...out, error: `unknown option: ${tok}` };
     } else if (out.verb === null) {
@@ -302,9 +307,13 @@ function offlineSnapshotNowMs(read: LastGoodHealthRead, nowMs?: number): number 
   return parseIsoMs(read.snapshot.capturedAt) ?? nowMs;
 }
 
-function offlineDetails(read: LastGoodHealthRead, nowMs?: number): Record<string, unknown> {
+function offlineDetails(
+  read: LastGoodHealthRead,
+  opts: { nowMs: number; allWarnings: boolean },
+): Record<string, unknown> {
   const collected = collectOpsDigestWarnings(read.snapshot.health ?? {}, {
-    nowMs: offlineSnapshotNowMs(read, nowMs),
+    nowMs: offlineSnapshotNowMs(read, opts.nowMs),
+    allWarnings: opts.allWarnings,
   });
   return {
     path: read.path,
@@ -320,17 +329,18 @@ function offlineDetails(read: LastGoodHealthRead, nowMs?: number): Record<string
 }
 
 /**
- * Human render of an offline last-good snapshot, hard-capped at
- * MAX_HUMAN_LINES. Reuses {@link collectOpsDigestWarnings} so the offline
- * digest surfaces the same signal set as the live one — just from a stale body.
+ * Human render of an offline last-good snapshot, capped at
+ * MAX_HUMAN_LINES unless all warnings are requested. Reuses the live warning
+ * collector so offline output describes the same signals from a stale body.
  */
 export function formatOpsDigestOffline(
   read: LastGoodHealthRead,
-  opts?: { nowMs?: number },
+  opts?: { nowMs?: number; allWarnings?: boolean },
 ): string {
   const { snapshot, ageMs, path } = read;
   const collected = collectOpsDigestWarnings(snapshot.health ?? {}, {
     nowMs: parseIsoMs(snapshot.capturedAt) ?? opts?.nowMs,
+    allWarnings: opts?.allWarnings,
   });
   const lines: string[] = [];
   lines.push('ready: UNKNOWN (offline — HTTP dark, showing last-good /api/health)');
@@ -346,12 +356,12 @@ export function formatOpsDigestOffline(
   if (collected.warnings.length === 0) {
     lines.push('warnings: none');
   } else {
-    lines.push(`warnings (${collected.warnings.length}/${MAX_WARNINGS}):`);
+    lines.push(`warnings (${collected.warnings.length}${opts?.allWarnings ? '' : `/${MAX_WARNINGS}`}):`);
     for (const w of collected.warnings) {
       lines.push(`  - ${w.path}: ${w.summary}`);
     }
   }
-  if (lines.length > MAX_HUMAN_LINES) {
+  if (!opts?.allWarnings && lines.length > MAX_HUMAN_LINES) {
     return lines.slice(0, MAX_HUMAN_LINES - 1).concat('  … (truncated)').join('\n');
   }
   return lines.join('\n');
@@ -513,14 +523,15 @@ function parseReadyBody(body: unknown): {
  * Collect the unattended-ops warning set from a health body. Order is
  * severity-ish (safeMode → pressure → blocked recovery → phantom → hung → helper-LLM pause →
  * overdue/never-fired hourly timers → hook-ingestion p95 → fail-closed
- * paused schedules → starvation → disk); callers slice to MAX_WARNINGS.
+ * paused schedules → starvation → disk). Returns at most MAX_WARNINGS unless
+ * `opts.allWarnings` is true.
  *
  * `opts.nowMs` is only used when `timerHealth.generatedAt` is missing, to
  * decide whether a never-fired hourly loop is older than its interval.
  */
 export function collectOpsDigestWarnings(
   health: unknown,
-  opts?: { nowMs?: number },
+  opts?: { nowMs?: number; allWarnings?: boolean },
 ): {
   warnings: OpsDigestWarning[];
   signals: OpsDigestSnapshot['signals'];
@@ -905,7 +916,7 @@ export function collectOpsDigestWarnings(
   }
 
   return {
-    warnings: warnings.slice(0, MAX_WARNINGS),
+    warnings: opts?.allWarnings ? warnings : warnings.slice(0, MAX_WARNINGS),
     signals: {
       pressureWhileDisabled,
       pressureWhileDisabledReason,
@@ -927,8 +938,11 @@ export function collectOpsDigestWarnings(
   };
 }
 
-/** Human render, hard-capped at MAX_HUMAN_LINES. */
-export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
+/** Human render, capped at MAX_HUMAN_LINES unless all warnings are requested. */
+export function formatOpsDigestHuman(
+  snap: OpsDigestSnapshot,
+  opts?: { allWarnings?: boolean },
+): string {
   const lines: string[] = [];
   const readyLabel = snap.ready ? 'yes' : 'NO';
   lines.push(
@@ -963,14 +977,14 @@ export function formatOpsDigestHuman(snap: OpsDigestSnapshot): string {
   if (snap.warnings.length === 0) {
     lines.push('warnings: none');
   } else {
-    lines.push(`warnings (${snap.warnings.length}/${MAX_WARNINGS}):`);
+    lines.push(`warnings (${snap.warnings.length}${opts?.allWarnings ? '' : `/${MAX_WARNINGS}`}):`);
     for (const w of snap.warnings) {
       lines.push(`  - ${w.path}: ${w.summary}`);
     }
   }
 
   // Cap total human output.
-  if (lines.length > MAX_HUMAN_LINES) {
+  if (!opts?.allWarnings && lines.length > MAX_HUMAN_LINES) {
     return lines.slice(0, MAX_HUMAN_LINES - 1).concat('  … (truncated)').join('\n');
   }
   return lines.join('\n');
@@ -1032,7 +1046,10 @@ export function formatOpsTimersHuman(snap: OpsTimersSnapshot): string {
 }
 
 /** Explicit `--offline`: read the last-good snapshot from disk and print it. */
-function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
+function runOfflineDigest(
+  resolved: ResolvedIo,
+  { json, allWarnings }: Pick<ParsedOpsDigestArgs, 'json' | 'allWarnings'>,
+): number {
   const read = resolved.offlineLoader(resolved.env, resolved.nowMs());
   if (!read) {
     const dirs = resolveOpsKookrDirs(resolved.env);
@@ -1054,10 +1071,10 @@ function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
       ok: true,
       code: 'OFFLINE_SNAPSHOT',
       message: 'ops digest (offline last-good snapshot)',
-      details: { offline: offlineDetails(read, resolved.nowMs()), subcommand: 'ops' },
+      details: { offline: offlineDetails(read, { nowMs: resolved.nowMs(), allWarnings }), subcommand: 'ops' },
     });
   } else {
-    resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs() }));
+    resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs(), allWarnings }));
   }
   return EXIT_OK;
 }
@@ -1069,7 +1086,7 @@ function runOfflineDigest(resolved: ResolvedIo, json: boolean): number {
  */
 function degradeToOffline(
   resolved: ResolvedIo,
-  json: boolean,
+  { json, allWarnings }: Pick<ParsedOpsDigestArgs, 'json' | 'allWarnings'>,
   failExit: number,
   envelope: { code: string; message: string; details: Record<string, unknown> },
 ): number {
@@ -1081,12 +1098,12 @@ function degradeToOffline(
       message: envelope.message,
       details: {
         ...envelope.details,
-        ...(read ? { offline: offlineDetails(read, resolved.nowMs()) } : {}),
+        ...(read ? { offline: offlineDetails(read, { nowMs: resolved.nowMs(), allWarnings }) } : {}),
       },
     });
   } else {
     resolved.err.error(`kookr ops: ${envelope.message}`);
-    if (read) resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs() }));
+    if (read) resolved.out.log(formatOpsDigestOffline(read, { nowMs: resolved.nowMs(), allWarnings }));
   }
   return failExit;
 }
@@ -1203,10 +1220,13 @@ export async function runOpsDigestCli(
   if (args.error === undefined && args.offline && args.verb === 'digest') {
     // Offline digest (issue #2495): skip HTTP entirely and read the last-good
     // snapshot from disk. Explicitly requested; degrades gracefully to NO_SNAPSHOT.
-    return runOfflineDigest(resolved, args.json);
+    return runOfflineDigest(resolved, args);
   }
   if (args.error === undefined && args.offline && args.verb === 'timers') {
     args = { ...args, error: '--offline is not supported for timers' };
+  }
+  if (args.error === undefined && args.allWarnings && args.verb === 'timers') {
+    args = { ...args, error: '--all-warnings is not supported for timers' };
   }
   if (args.error) {
     if (args.json) {
@@ -1262,7 +1282,7 @@ export async function runOpsDigestCli(
     if (args.verb === 'timers') {
       return emitTimersNoServer(resolved, args.json, message);
     }
-    return degradeToOffline(resolved, args.json, EXIT_NO_SERVER, {
+    return degradeToOffline(resolved, args, EXIT_NO_SERVER, {
       code: 'NO_SERVER',
       message,
       details: { subcommand: 'ops' },
@@ -1286,7 +1306,7 @@ export async function runOpsDigestCli(
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     const message = `no Kookr server reachable: ${detail}`;
-    return degradeToOffline(resolved, args.json, EXIT_NO_SERVER, {
+    return degradeToOffline(resolved, args, EXIT_NO_SERVER, {
       code: 'NO_SERVER',
       message,
       details: { subcommand: 'ops' },
@@ -1302,7 +1322,7 @@ export async function runOpsDigestCli(
         ? String((healthResponse.body as { error: unknown }).error)
         : healthResponse.text || 'unknown error';
     const message = `server rejected /api/health (HTTP ${healthResponse.status}): ${detail}`;
-    return degradeToOffline(resolved, args.json, EXIT_SERVER_ERROR, {
+    return degradeToOffline(resolved, args, EXIT_SERVER_ERROR, {
       code: 'SERVER_ERROR',
       message,
       details: { status: healthResponse.status, subcommand: 'ops' },
@@ -1335,7 +1355,10 @@ export async function runOpsDigestCli(
     }
   }
 
-  const collected = collectOpsDigestWarnings(healthBody, { nowMs: resolved.nowMs() });
+  const collected = collectOpsDigestWarnings(healthBody, {
+    nowMs: resolved.nowMs(),
+    allWarnings: args.allWarnings,
+  });
   const snap: OpsDigestSnapshot = {
     baseUrl,
     ready,
@@ -1357,7 +1380,7 @@ export async function runOpsDigestCli(
       details: snap,
     });
   } else {
-    resolved.out.log(formatOpsDigestHuman(snap));
+    resolved.out.log(formatOpsDigestHuman(snap, { allWarnings: args.allWarnings }));
   }
 
   return ready ? EXIT_OK : EXIT_READY_FAIL;
