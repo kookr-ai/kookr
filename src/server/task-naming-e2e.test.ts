@@ -1,8 +1,7 @@
-import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { WebSocket } from 'ws';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import { createKookrServerInternal } from './index.js';
 import type { KookrServerInternal } from './server-test-helpers.js';
@@ -15,11 +14,27 @@ const hasApiKey = !!(
   process.env.OPENROUTER_API_KEY
 );
 
-function getActualPort(server: KookrServerInternal): number {
-  const addr = server.httpServer.address();
-  if (addr && typeof addr === 'object') return addr.port;
-  throw new Error('Server not listening');
+// RFC F12: launchTask rejects a missing working directory with HTTP 400
+// before naming runs. Keep these directories real so the live lane can reach
+// the LLM when credentials are present.
+const projectDirs: string[] = [];
+
+function makeProjectDir(label: string): string {
+  const dir = mkdtempSync(join(tmpdir(), `kookr-naming-e2e-${label}-`));
+  projectDirs.push(dir);
+  return dir;
 }
+
+const WEBAPP_DIR = makeProjectDir('webapp');
+const BACKEND_DIR = makeProjectDir('backend');
+const GATEWAY_DIR = makeProjectDir('gateway');
+const MISSING_DIR = join(tmpdir(), `kookr-naming-e2e-absent-${process.pid}`);
+
+afterAll(() => {
+  for (const dir of projectDirs) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 /**
  * Wait for the LLM to upgrade the name away from the deterministic
@@ -49,30 +64,87 @@ function waitForTaskNameChange(
   });
 }
 
-describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
+async function createNamingServer(): Promise<{
+  tempDir: string;
+  server: KookrServerInternal;
+  baseUrl: string;
+}> {
+  const tempDir = mkdtempSync(join(tmpdir(), 'kookr-naming-e2e-'));
+  const server = await createKookrServerInternal({
+    port: 0,
+    host: '127.0.0.1',
+    kookrDir: tempDir,
+    tasksFile: join(tempDir, 'tasks.json'),
+    hooksDir: join(tempDir, 'hooks'),
+    settingsDir: join(tempDir, 'settings'),
+    serverCwd: '/test/cwd',
+    frontendDir: join(tempDir, 'frontend'),
+    saveIntervalMs: 600_000,
+    livenessIntervalMs: 600_000,
+    terminalBackend: new FakeTerminalBackend(),
+  });
+  const addr = server.httpServer.address();
+  if (!addr || typeof addr !== 'object') {
+    await server.close();
+    rmSync(tempDir, { recursive: true, force: true });
+    throw new Error('Server not listening');
+  }
+  return { tempDir, server, baseUrl: `http://127.0.0.1:${addr.port}` };
+}
+
+describe('task naming E2E cwd fixtures', () => {
   let tempDir: string;
   let server: KookrServerInternal;
-  let port: number;
   let baseUrl: string;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), 'kookr-naming-e2e-'));
+    ({ tempDir, server, baseUrl } = await createNamingServer());
+  });
 
-    server = await createKookrServerInternal({
-      port: 0,
-      host: '127.0.0.1',
-      kookrDir: tempDir,
-      tasksFile: join(tempDir, 'tasks.json'),
-      hooksDir: join(tempDir, 'hooks'),
-      settingsDir: join(tempDir, 'settings'),
-      serverCwd: '/test/cwd',
-      frontendDir: join(tempDir, 'frontend'),
-      saveIntervalMs: 600_000,
-      livenessIntervalMs: 600_000,
-      terminalBackend: new FakeTerminalBackend(),
+  afterEach(async () => {
+    await server.close();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test('POST /api/tasks accepts a real temporary working directory', async () => {
+    const res = await fetch(`${baseUrl}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Add rate limiting to the API gateway',
+        cwd: GATEWAY_DIR,
+      }),
     });
-    port = getActualPort(server);
-    baseUrl = `http://127.0.0.1:${port}`;
+
+    expect(res.status).toBe(201);
+    const task = (await res.json()) as { id: string; prompt: string };
+    expect(task.id).toBeDefined();
+    expect(task.prompt).toBe('Add rate limiting to the API gateway');
+  });
+
+  test('POST /api/tasks rejects a missing working directory before naming', async () => {
+    const res = await fetch(`${baseUrl}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        prompt: 'Fix the authentication bug in the login flow',
+        cwd: MISSING_DIR,
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/working directory does not exist/i);
+  });
+});
+
+describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
+  let tempDir: string;
+  let server: KookrServerInternal;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    ({ tempDir, server, baseUrl } = await createNamingServer());
   });
 
   afterEach(async () => {
@@ -81,13 +153,12 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
   });
 
   test('POST /api/tasks auto-generates a short name via LLM', async () => {
-    // Create the task
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: 'Fix the authentication bug in the login flow where expired JWT tokens are not being properly invalidated, causing users to remain logged in after their session should have expired',
-        cwd: '/home/user/webapp',
+        cwd: WEBAPP_DIR,
       }),
     });
 
@@ -98,12 +169,10 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
     expect(task.name).toBeTruthy();
     const placeholder: string = task.name;
 
-    // Wait for the async AI name to replace the placeholder
     const name = await waitForTaskNameChange(server, task.id, placeholder);
     expect(name.length).toBeGreaterThan(0);
     expect(name.length).toBeLessThan(80);
 
-    // Should be a short name, not the full prompt
     expect(name.length).toBeLessThan(task.prompt?.length ?? 100);
 
     const wordCount = name.split(/\s+/).length;
@@ -111,33 +180,28 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
     expect(wordCount).toBeLessThanOrEqual(12);
     console.log(`E2E auto-generated name: "${name}"`);
 
-    // Verify via API
     const tasksRes = await fetch(`${baseUrl}/api/tasks`);
     const tasks = await tasksRes.json();
-    const updatedTask = tasks.find((t: any) => t.id === task.id);
+    const updatedTask = tasks.find((t: { id: string }) => t.id === task.id);
     expect(updatedTask.name).toBe(name);
   }, 15_000);
 
   test('manual rename is not overwritten by auto-naming', async () => {
-    // Create a task
     const res = await fetch(`${baseUrl}/api/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: 'Refactor the database connection pool to support read replicas with automatic failover and health checking',
-        cwd: '/home/user/backend',
+        cwd: BACKEND_DIR,
       }),
     });
 
     const task = await res.json();
 
-    // Immediately rename it before the AI name arrives
     server.taskStore.renameTask(task.id, 'My Custom Name');
 
-    // Wait long enough for the AI naming to complete
     await new Promise((r) => setTimeout(r, 3000));
 
-    // The manual name should be preserved
     const updated = server.taskStore.getTask(task.id);
     expect(updated?.name).toBe('My Custom Name');
   }, 10_000);
@@ -152,7 +216,7 @@ describe.skipIf(!hasApiKey)('task naming E2E (real API)', () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         prompt: 'Add rate limiting to the API gateway',
-        cwd: '/home/user/gateway',
+        cwd: GATEWAY_DIR,
       }),
     });
 
