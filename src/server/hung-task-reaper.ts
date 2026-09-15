@@ -109,6 +109,26 @@ export type HungTaskReapFailureCategory =
   | 'permission'
   | 'unknown';
 
+/**
+ * Re-warn suppression window (issue #3256). When `terminateTask` throws during
+ * a hung-task reap, the grace-warning coordinator has already consumed the
+ * warning (`advance()` drops it on the `reap` verdict), so the still-hung task
+ * re-enters the warn state on the next watchdog tick. A task that persistently
+ * cannot be terminated would therefore re-warn every grace cycle — a
+ * warn-storm of `ReapWarned` audit rows that buries the real signal (the
+ * failure counter) while its slot is never freed.
+ *
+ * While a task's most recent terminate failure is within this window its
+ * re-warn is suppressed: no `hungTaskReapWarned` row. The coordinator's
+ * countdown is left in place, so the bounded reap retry still runs on schedule
+ * and `reapFailedTotal` keeps climbing to surface the stuck slot. The window is
+ * scoped per task and refreshed on each failure, so a genuinely newly-stuck
+ * (different) task is never masked, and a task that later recovers can warn
+ * cleanly once the window lapses. Same order as the FAA sibling
+ * (`FAA_REAP_FAILURE_REWARN_SUPPRESS_MS`, issue #3156).
+ */
+export const HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS = 5 * 60_000;
+
 /** Classify a terminate rejection into a {@link HungTaskReapFailureCategory}. */
 export function categorizeReapFailure(err: unknown): HungTaskReapFailureCategory {
   const msg = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
@@ -159,12 +179,54 @@ export class HungTaskReaperMetrics {
   private reapFailedTotal = 0;
   private lastReapFailureAt: number | null = null;
   private lastReapFailureCategory: HungTaskReapFailureCategory | null = null;
+  /**
+   * Per-task epoch-ms of the most recent terminate failure, backing the
+   * re-warn suppression window (issue #3256). {@link armRewarnSuppression}
+   * sweeps entries older than the window every time it records a new failure,
+   * and {@link isRewarnSuppressed} prunes a lapsed entry on read, so the map
+   * stays bounded by the failures within one suppression window rather than
+   * growing for the process lifetime.
+   */
+  private readonly reapFailedAtMs = new Map<string, number>();
 
   /** Record one terminate rejection at `atMs`, bucketing `err` for the operator. */
   recordReapFailure(err: unknown, atMs: number): void {
     this.reapFailedTotal += 1;
     this.lastReapFailureAt = atMs;
     this.lastReapFailureCategory = categorizeReapFailure(err);
+  }
+
+  /**
+   * Arm `taskId`'s re-warn suppression window at `nowMs` (called when a
+   * terminate throws). Opportunistically evicts entries already older than
+   * `windowMs` first, so a task that failed then left the hung population —
+   * and is thus never re-read by {@link isRewarnSuppressed} — cannot linger
+   * for the process lifetime. Kept separate from {@link recordReapFailure} so
+   * the counter stays a pure increment (issue #3154) and this map is only
+   * the warn-storm gate (issue #3256).
+   */
+  armRewarnSuppression(
+    taskId: string,
+    nowMs: number,
+    windowMs: number = HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
+  ): void {
+    for (const [id, failedAt] of this.reapFailedAtMs) {
+      if (nowMs - failedAt > windowMs) this.reapFailedAtMs.delete(id);
+    }
+    this.reapFailedAtMs.set(taskId, nowMs);
+  }
+
+  /**
+   * True when `taskId`'s most recent terminate failure is still within
+   * `windowMs` of `nowMs` — its re-warn should be suppressed. Prunes the entry
+   * once the window lapses so a task that later recovers can warn cleanly again.
+   */
+  isRewarnSuppressed(taskId: string, nowMs: number, windowMs: number): boolean {
+    const failedAt = this.reapFailedAtMs.get(taskId);
+    if (failedAt === undefined) return false;
+    if (nowMs - failedAt <= windowMs) return true;
+    this.reapFailedAtMs.delete(taskId);
+    return false;
   }
 
   getSnapshot(): HungTaskReaperMetricsSnapshot {
@@ -265,15 +327,18 @@ export async function reapHungTask(
   } catch (err) {
     // The terminate that frees the slot rejected (issue #3154). Previously this
     // throw was unguarded: it skipped the audit row + disposition below and
-    // surfaced only as a generic "Watchdog error" in the one caller — a hung
-    // task that cannot be terminated re-warned and re-failed every watchdog tick
-    // with nothing reap-specific to see. Record a reap-specific failure
-    // (counter + last-failure fields, read back on /api/health) and keep a loud,
-    // retained log line so a genuinely broken terminate is never silent, then
-    // re-throw so the disposition/audit/alert for a *successful* reap below stay
-    // correctly skipped and the caller's generic watchdog catch stays the
-    // fallback that keeps the rest of the sweep going.
+    // surfaced only as a generic "Watchdog error" in the one caller. Record a
+    // reap-specific failure (counter + last-failure fields, read back on
+    // /api/health) and arm the per-task re-warn suppression window (issue
+    // #3256) so the grace warning `advance()` just consumed does not re-storm
+    // `hungTaskReapWarned` rows every grace cycle. Keep a loud, retained log
+    // line so a genuinely broken terminate is never silent, then re-throw so
+    // the disposition/audit/alert for a *successful* reap below stay correctly
+    // skipped and the caller's generic watchdog catch stays the fallback that
+    // keeps the rest of the sweep going. The bounded reap retry is not skipped
+    // — only the warn/audit storm.
     deps.metrics?.recordReapFailure(err, now.getTime());
+    deps.metrics?.armRewarnSuppression(task.id, now.getTime());
     console.error(
       `[hung-task-reaper] terminate failed for task ${task.id} — slot still held, reap will retry next tick:`,
       err,
