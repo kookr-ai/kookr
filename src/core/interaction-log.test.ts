@@ -1,11 +1,12 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
   InteractionLogWriter,
   DeferredInteractionLogWriter,
   DEFAULT_MAX_DEFERRED_INTERACTION_EVENTS,
+  INTERACTION_LOG_READ_MAX_BYTES,
   readInteractionLog,
   nowISO,
   isSubstantiveEvent,
@@ -93,7 +94,6 @@ describe('readInteractionLog', () => {
   });
 
   test('skips malformed lines', async () => {
-    const { writeFileSync } = await import('node:fs');
     const logPath = join(tempDir, 'bad.jsonl');
     writeFileSync(
       logPath,
@@ -109,7 +109,6 @@ describe('readInteractionLog', () => {
   });
 
   test('handles empty lines', async () => {
-    const { writeFileSync } = await import('node:fs');
     const logPath = join(tempDir, 'empty-lines.jsonl');
     writeFileSync(
       logPath,
@@ -118,6 +117,67 @@ describe('readInteractionLog', () => {
 
     const events = await readInteractionLog(logPath);
     expect(events).toHaveLength(1);
+  });
+
+  test('tails a file larger than the cap and drops the parseable partial first line', async () => {
+    const logPath = join(tempDir, 'tailed.jsonl');
+    const droppedPartial = JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 'dropped-partial',
+      anomalyType: 'stuck',
+      timestamp: '2026-03-25T09:00:00Z',
+    });
+    const tailEvent: InteractionEvent = {
+      type: 'user_input',
+      agentId: 'tail-agent',
+      content: 'continue',
+      timestamp: '2026-03-25T10:00:00Z',
+    };
+    const tailLine = `${JSON.stringify(tailEvent)}\n`;
+    const maxBytes = droppedPartial.length + 1 + tailLine.length;
+    const aged = `${JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 'aged-out',
+      anomalyType: 'stuck',
+      timestamp: '2026-03-25T08:00:00Z',
+    })}\n`;
+    // Prefix larger than the cap, no newline before the partial: the last
+    // maxBytes start exactly at droppedPartial, which is valid JSON on its
+    // own and must not be returned.
+    const prefix = `${aged}${'x'.repeat(maxBytes)}GARBAGE`;
+    writeFileSync(logPath, `${prefix}${droppedPartial}\n${tailLine}`);
+    expect(statSync(logPath).size).toBeGreaterThan(maxBytes);
+
+    const sizeBefore = statSync(logPath).size;
+    const events = await readInteractionLog(logPath, { maxBytes });
+    expect(statSync(logPath).size).toBe(sizeBefore);
+    expect(events).toEqual([tailEvent]);
+  });
+
+  test('default cap tails a lifetime-sized prefix and keeps the last event', async () => {
+    const logPath = join(tempDir, 'default-cap.jsonl');
+    const aged = `${JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 'aged-out',
+      anomalyType: 'stuck',
+      timestamp: '2026-03-25T08:00:00Z',
+    })}\n`;
+    const tailEvent: InteractionEvent = {
+      type: 'user_input',
+      agentId: 'tail-agent',
+      content: 'continue',
+      timestamp: '2026-03-25T10:00:00Z',
+    };
+    // Pad with no newlines so the tailed window starts mid-prefix; parse
+    // drops that fragment. Prefix is larger than the production cap.
+    const pad = 'x'.repeat(INTERACTION_LOG_READ_MAX_BYTES);
+    writeFileSync(logPath, `${aged}${pad}\n${JSON.stringify(tailEvent)}\n`);
+    expect(statSync(logPath).size).toBeGreaterThan(INTERACTION_LOG_READ_MAX_BYTES);
+
+    const events = await readInteractionLog(logPath);
+    expect(events.some((event) => event.agentId === 'aged-out')).toBe(false);
+    expect(events.some((event) => event.agentId === 'tail-agent')).toBe(true);
+    expect(events[events.length - 1]).toEqual(tailEvent);
   });
 });
 

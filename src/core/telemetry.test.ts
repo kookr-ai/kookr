@@ -1,8 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { TelemetryLogWriter, DeferredTelemetryLogWriter, readTelemetryLog, type TelemetryEvent } from './telemetry.js';
+import {
+  TelemetryLogWriter,
+  DeferredTelemetryLogWriter,
+  TELEMETRY_LOG_READ_MAX_BYTES,
+  readTelemetryLog,
+  type TelemetryEvent,
+} from './telemetry.js';
 
 function makeEvent(overrides: Partial<TelemetryEvent> = {}): TelemetryEvent {
   return {
@@ -103,6 +109,57 @@ describe('readTelemetryLog', () => {
 
     const events = await readTelemetryLog(logPath);
     expect(events).toHaveLength(1);
+  });
+
+  test('tails a file larger than the cap and drops the parseable partial first line', async () => {
+    const logPath = join(tempDir, 'tailed.jsonl');
+    const droppedPartial = JSON.stringify(makeEvent({
+      type: 'agent_clicked',
+      agentId: 'dropped-partial',
+      timestamp: '2026-03-27T09:00:00Z',
+    }));
+    const tailEvent = makeEvent({
+      type: 'shortcut_used',
+      key: 'Ctrl+N',
+      timestamp: '2026-03-27T10:00:00Z',
+    });
+    const tailLine = `${JSON.stringify(tailEvent)}\n`;
+    const maxBytes = droppedPartial.length + 1 + tailLine.length;
+    const aged = `${JSON.stringify(makeEvent({
+      type: 'session_started',
+      timestamp: '2026-03-27T08:00:00Z',
+    }))}\n`;
+    const prefix = `${aged}${'x'.repeat(maxBytes)}GARBAGE`;
+    writeFileSync(logPath, `${prefix}${droppedPartial}\n${tailLine}`);
+    expect(statSync(logPath).size).toBeGreaterThan(maxBytes);
+
+    const sizeBefore = statSync(logPath).size;
+    const events = await readTelemetryLog(logPath, { maxBytes });
+    expect(statSync(logPath).size).toBe(sizeBefore);
+    expect(events.map((event) => event.type)).toEqual(['shortcut_used']);
+    expect(events[0]).toEqual(tailEvent);
+    expect(events.some((event) => event.agentId === 'dropped-partial')).toBe(false);
+  });
+
+  test('default cap tails a lifetime-sized prefix and keeps the last event', async () => {
+    const logPath = join(tempDir, 'default-cap.jsonl');
+    const aged = `${JSON.stringify(makeEvent({
+      type: 'session_started',
+      timestamp: '2026-03-27T08:00:00Z',
+    }))}\n`;
+    const tailEvent = makeEvent({
+      type: 'shortcut_used',
+      key: 'Ctrl+N',
+      timestamp: '2026-03-27T10:00:00Z',
+    });
+    const pad = 'x'.repeat(TELEMETRY_LOG_READ_MAX_BYTES);
+    writeFileSync(logPath, `${aged}${pad}\n${JSON.stringify(tailEvent)}\n`);
+    expect(statSync(logPath).size).toBeGreaterThan(TELEMETRY_LOG_READ_MAX_BYTES);
+
+    const events = await readTelemetryLog(logPath);
+    expect(events.some((event) => event.type === 'session_started')).toBe(false);
+    expect(events.some((event) => event.type === 'shortcut_used')).toBe(true);
+    expect(events[events.length - 1]).toEqual(tailEvent);
   });
 });
 

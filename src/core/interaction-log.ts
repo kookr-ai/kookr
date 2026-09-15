@@ -1,7 +1,8 @@
-import { appendFile, readFile, mkdir } from 'node:fs/promises';
+import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AnomalyType } from './types.js';
 import type { UserInputDeliverySource } from '../shared/contracts/user-input-delivery.js';
+import { JSONL_LOG_READ_MAX_BYTES, readJsonlLogTail } from './jsonl-file-tail.js';
 
 // --- Interaction event types ---
 
@@ -370,24 +371,29 @@ export class DeferredInteractionLogWriter {
 
 // --- Reader ---
 
-export async function readInteractionLog(filePath: string): Promise<InteractionEvent[]> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, 'utf-8');
-  } catch {
-    return [];
-  }
+/**
+ * Byte cap for interaction-log reads (issue #3243). Same value as the shared
+ * JSONL tail helper — kept as a named export so tests and callers can size
+ * fixtures against the production cap.
+ */
+export const INTERACTION_LOG_READ_MAX_BYTES = JSONL_LOG_READ_MAX_BYTES;
 
-  const events: InteractionEvent[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      events.push(JSON.parse(line) as InteractionEvent);
-    } catch {
-      // Skip malformed lines
-    }
-  }
-  return events;
+/**
+ * Read an interaction JSONL log, bounded to the last
+ * {@link INTERACTION_LOG_READ_MAX_BYTES} unless `options.maxBytes` overrides.
+ *
+ * Callers (time-to-unblock, live-friction, reflection) must use this helper
+ * rather than reimplementing a tail. The file is never deleted or rotated.
+ */
+export async function readInteractionLog(
+  filePath: string,
+  options?: { maxBytes?: number },
+): Promise<InteractionEvent[]> {
+  const rows = await readJsonlLogTail(
+    filePath,
+    options?.maxBytes ?? INTERACTION_LOG_READ_MAX_BYTES,
+  );
+  return rows as InteractionEvent[];
 }
 
 // --- Timestamp helper ---
