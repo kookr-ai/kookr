@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -20,6 +20,7 @@ import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import { LaunchDependencyAdmission } from '../core/launch-dependency-admission.js';
 import { buildProviderResumeLaunch } from './provider-reset-scheduler.js';
 import { TerminalHostUnavailableError } from './terminal-host-contract.js';
+import { GROK_LOGIN_COMMAND } from '../shared/contracts/grok-auth-status.js';
 
 // Minimal stubs for adapter and lifecycle deps
 function makeDeps(taskStore: TaskStore): LaunchServiceDeps {
@@ -696,6 +697,115 @@ describe('launchTask', () => {
       const result = await launchTask(gated, { prompt: 'unblocked', cwd: '/tmp', agentType: 'claude-code' });
       expect(result.task.agentType).toBe('claude-code');
       expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('expired Grok auth vs operator blacklist (issue #3178)', () => {
+    function mockAdapter(agentType: string, tmux: string) {
+      return {
+        agentType,
+        launch: vi.fn().mockResolvedValue(tmux),
+        sendInput: vi.fn(),
+        sendKeystroke: vi.fn(),
+        stop: vi.fn(),
+        captureDisplay: vi.fn(),
+        onEvent: vi.fn(),
+        onRefreshNeeded: vi.fn(),
+        injectHookEvent: vi.fn(),
+      } as any;
+    }
+
+    function grokOnlyDeps(): { gated: LaunchServiceDeps; grok: ReturnType<typeof mockAdapter> } {
+      const grok = mockAdapter('grok-build', 'tmux-grok');
+      const adapterRegistry = new AdapterRegistry();
+      adapterRegistry.register(grok);
+      const gated: LaunchServiceDeps = {
+        ...deps,
+        adapterRegistry,
+        getDefaultAgentType: () => 'grok-build',
+        isGrokAuthUsable: () => false,
+        getBlacklistedAgentTypes: () => [],
+      };
+      return { gated, grok };
+    }
+
+    it('refuses a Grok-only implicit launch when auth is unusable, without calling it a blacklist', async () => {
+      const { gated, grok } = grokOnlyDeps();
+      try {
+        await launchTask(gated, { prompt: 'grok only expired', cwd: '/tmp' });
+        expect.unreachable('expected GrokAuthUnavailableError');
+      } catch (err) {
+        expect(isGrokAuthUnavailableError(err)).toBe(true);
+        expect(isAgentBlacklistedError(err)).toBe(false);
+        expect((err as GrokAuthUnavailableError).code).toBe('grok_auth_preflight');
+        expect((err as GrokAuthUnavailableError).loginCommand).toBe(GROK_LOGIN_COMMAND);
+        expect((err as GrokAuthUnavailableError).message).toContain(GROK_LOGIN_COMMAND);
+      }
+      expect(store.listTasks()).toHaveLength(0);
+      expect(grok.launch).not.toHaveBeenCalled();
+    });
+
+    it('refuses a Grok-only round-robin launch the same way', async () => {
+      const { gated, grok } = grokOnlyDeps();
+      gated.getDefaultAgentType = () => 'round-robin';
+      try {
+        await launchTask(gated, { prompt: 'rr grok expired', cwd: '/tmp', agentType: 'round-robin' });
+        expect.unreachable('expected GrokAuthUnavailableError');
+      } catch (err) {
+        expect(isGrokAuthUnavailableError(err)).toBe(true);
+        expect(isAgentBlacklistedError(err)).toBe(false);
+        expect((err as GrokAuthUnavailableError).code).toBe('grok_auth_preflight');
+        expect((err as GrokAuthUnavailableError).loginCommand).toBe(GROK_LOGIN_COMMAND);
+      }
+      expect(store.listTasks()).toHaveLength(0);
+      expect(grok.launch).not.toHaveBeenCalled();
+    });
+
+    it('still returns agent_blacklisted when an auth-launchable pool is emptied only by the blacklist', async () => {
+      const grok = mockAdapter('grok-build', 'tmux-grok');
+      deps.adapterRegistry.register(grok);
+      const banned = {
+        ...deps,
+        isGrokAuthUsable: () => false,
+        getBlacklistedAgentTypes: () => ['claude-code' as const, 'codex-cli' as const],
+      };
+      try {
+        await launchTask(banned, { prompt: 'ban emptied pool', cwd: '/tmp' });
+        expect.unreachable('expected AgentBlacklistedError');
+      } catch (err) {
+        expect(isAgentBlacklistedError(err)).toBe(true);
+        expect(isGrokAuthUnavailableError(err)).toBe(false);
+        expect((err as AgentBlacklistedError).code).toBe('agent_blacklisted');
+      }
+      expect(store.listTasks()).toHaveLength(0);
+      expect(grok.launch).not.toHaveBeenCalled();
+    });
+
+    it('lets an explicit non-blacklisted grok-build pin reach the adapter when auth is unusable', async () => {
+      const { gated, grok } = grokOnlyDeps();
+      const result = await launchTask(gated, {
+        prompt: 'explicit grok pin with expired auth',
+        cwd: '/tmp',
+        agentType: 'grok-build',
+      });
+      expect(result.task.agentType).toBe('grok-build');
+      expect(grok.launch).toHaveBeenCalledOnce();
+    });
+
+    it('substitutes a mixed pool onto a healthy non-Grok agent when Grok auth is unusable', async () => {
+      const grok = mockAdapter('grok-build', 'tmux-grok');
+      deps.adapterRegistry.register(grok);
+      const gated: LaunchServiceDeps = {
+        ...deps,
+        getDefaultAgentType: () => 'round-robin',
+        isGrokAuthUsable: () => false,
+        getBlacklistedAgentTypes: () => [],
+        roundRobinCursor: { peek: () => 0, advance: () => {} },
+      };
+      const result = await launchTask(gated, { prompt: 'mixed pool', cwd: '/tmp', agentType: 'round-robin' });
+      expect(result.task.agentType).not.toBe('grok-build');
+      expect(['claude-code', 'codex-cli']).toContain(result.task.agentType);
+      expect(grok.launch).not.toHaveBeenCalled();
     });
   });
 

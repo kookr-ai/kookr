@@ -1131,6 +1131,12 @@ removed. The launch API refuses an explicit request with HTTP 403 and
 shows them struck through so they can be un-blacklisted. In-flight sessions
 are not auto-killed.
 
+An implicit or round-robin launch whose registered pool is emptied only by
+unusable Grok session authentication is not a blacklist refusal. That path
+returns HTTP 503 with `code: grok_auth_preflight` and `loginCommand`, and
+creates no task (issue #3178). An explicit non-blacklisted `grok-build` pin
+still reaches adapter preflight.
+
 #### Idempotency ledger retention
 
 The `GET`/`PUT /api/settings` surface accepts these retention settings. They

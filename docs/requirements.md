@@ -520,6 +520,7 @@ The system SHALL let an operator blacklist a coding agent so Kookr never creates
 
 **Acceptance criteria:**
 - Given Claude Code is blacklisted, when a dashboard, CLI, or child-task launch explicitly requests `claude-code`, then no task is created, the API returns HTTP 403 `code: agent_blacklisted`, and Claude is not spawned
+- Given only Grok is registered, Grok session auth is unusable, and the operator blacklist is empty, when an implicit or round-robin launch is requested, then no task is created and the API returns HTTP 503 `code: grok_auth_preflight` rather than 403 `agent_blacklisted`
 - Given Claude Code is blacklisted, when a scheduled fire is pinned to `claude-code`, then Kookr substitutes a remaining launchable agent (or parks with `provider_paused` if none remain) and does not spawn Claude
 - Given Claude Code is blacklisted, when round-robin or the server default would have picked it, then Kookr picks a remaining launchable agent instead
 - Given an agent is blacklisted, when the Launch dialog or Quick Launch bar is open, then that agent is not a selectable option
@@ -527,7 +528,7 @@ The system SHALL let an operator blacklist a coding agent so Kookr never creates
 - Given the blacklist is cleared, when a launch requests that agent, then spawn proceeds as before
 - Existing in-flight sessions of a just-blacklisted agent are not auto-killed; new spawns are blocked without a server restart
 
-**Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/SettingsDialog.tsx`, `src/core/settings-store.test.ts`, `src/server/launch-service.test.ts`, `src/server/schedule-runner.test.ts`, `src/frontend/components/SettingsDialog.test.ts`.
+**Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/routes/task-routes.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/SettingsDialog.tsx`, `src/core/settings-store.test.ts`, `src/server/launch-service.test.ts`, `src/server/routes/task-routes.test.ts`, `src/server/schedule-runner.test.ts`, `src/frontend/components/SettingsDialog.test.ts`.
 
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 

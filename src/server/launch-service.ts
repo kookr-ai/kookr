@@ -19,6 +19,7 @@ import {
 } from '../core/agent-types.js';
 import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
+import { GROK_LOGIN_COMMAND } from '../shared/contracts/grok-auth-status.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import { TerminalHostUnavailableError } from './terminal-host-contract.js';
@@ -495,6 +496,33 @@ export class AgentBlacklistedError extends Error {
 /** Type guard for {@link AgentBlacklistedError}, for callers mapping to 403. */
 export function isAgentBlacklistedError(err: unknown): err is AgentBlacklistedError {
   return err instanceof AgentBlacklistedError;
+}
+
+/**
+ * Thrown by {@link launchTask} when an implicit or round-robin launch has
+ * registered agents, but Grok session auth alone removes the entire pool
+ * (issue #3178). This is a recoverable provider condition, not an operator
+ * ban — no task record is created. The API maps this to HTTP 503 with the
+ * same `grok_auth_preflight` code the adapter uses, plus login guidance.
+ *
+ * Distinct from {@link AgentBlacklistedError}: that fires only when an
+ * auth-launchable pool existed and the operator blacklist emptied it.
+ */
+export class GrokAuthUnavailableError extends Error {
+  readonly code = 'grok_auth_preflight';
+  readonly loginCommand = GROK_LOGIN_COMMAND;
+  constructor(message?: string) {
+    super(
+      message
+        ?? `Grok authentication expired or unusable and no non-Grok substitute is launchable. Run \`${GROK_LOGIN_COMMAND}\` (or \`grok login --oauth\`) and retry.`,
+    );
+    this.name = 'GrokAuthUnavailableError';
+  }
+}
+
+/** Type guard for {@link GrokAuthUnavailableError}, for callers mapping to 503. */
+export function isGrokAuthUnavailableError(err: unknown): err is GrokAuthUnavailableError {
+  return err instanceof GrokAuthUnavailableError;
 }
 
 /**
@@ -1293,14 +1321,17 @@ async function launchTaskCore(
     DEFAULT_AGENT_TYPE;
   const isRoundRobin = requestedAgent === ROUND_ROBIN_AGENT_TYPE;
   const blacklistedTypes = deps.getBlacklistedAgentTypes?.() ?? [];
-  // Registered ∩ Grok-auth-launchable (issue #2194): an expired session must
-  // not consume a round-robin slot when a healthy non-Grok backend remains.
+  // Auth-launchable first (issues #2194 / #3178): an expired Grok session
+  // must not consume a round-robin slot, and an empty pool caused by auth
+  // alone is a recoverable provider condition — not an operator ban.
   // Issue #3025: the operator blacklist is applied after that, so a banned
   // agent is never a rotation candidate either.
+  const registeredTypes = adapterRegistry.getTypes();
+  const authLaunchableTypes = filterLaunchableAgentTypes(registeredTypes, {
+    grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
+  });
   const launchableTypes = excludeBlacklistedAgents(
-    filterLaunchableAgentTypes(adapterRegistry.getTypes(), {
-      grokAuthUsable: deps.isGrokAuthUsable?.() ?? true,
-    }),
+    authLaunchableTypes,
     blacklistedTypes,
   );
   if (
@@ -1318,6 +1349,9 @@ async function launchTaskCore(
   const explicitConcretePin = opts.agentType !== undefined
     && opts.agentType !== ROUND_ROBIN_AGENT_TYPE;
   if (launchableTypes.length === 0 && !explicitConcretePin) {
+    if (registeredTypes.length > 0 && authLaunchableTypes.length === 0) {
+      throw new GrokAuthUnavailableError();
+    }
     const refused = isAgentType(requestedAgent) ? requestedAgent : DEFAULT_AGENT_TYPE;
     throw new AgentBlacklistedError(refused, {
       noneRemain: true,

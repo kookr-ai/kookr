@@ -32,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, AgentBlacklistedError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, AgentBlacklistedError, GrokAuthUnavailableError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1693,6 +1693,23 @@ parameters:
     expect(await res.json()).toMatchObject({
       code: 'agent_blacklisted',
       agentType: 'claude-code',
+    });
+  });
+
+  test('maps GrokAuthUnavailableError to 503 with grok_auth_preflight and login guidance (issue #3178)', async () => {
+    const unavailable = new GrokAuthUnavailableError();
+    vi.mocked(launchTask).mockRejectedValueOnce(unavailable);
+    const taskStore = new TaskStore();
+    const res = await mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd' }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({
+      code: 'grok_auth_preflight',
+      loginCommand: unavailable.loginCommand,
+      error: unavailable.message,
     });
   });
 
