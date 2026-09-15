@@ -53,6 +53,7 @@ vi.mock('@xterm/xterm', () => {
     clear = vi.fn();
     reset = vi.fn();
     write = vi.fn((_data: string | Uint8Array, callback?: () => void) => callback?.());
+    modes = { synchronizedOutputMode: false };
     textarea = document.createElement('textarea');
     open = vi.fn((container: HTMLElement) => container.appendChild(this.textarea));
     loadAddon = vi.fn();

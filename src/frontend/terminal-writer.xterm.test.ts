@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Terminal } from '@xterm/xterm';
-import { createTerminalWriter } from './terminal-writer.js';
+import { bindTerminalWriterTarget, createTerminalWriter } from './terminal-writer.js';
 
 function screen(terminal: Terminal) {
   const buffer = terminal.buffer.active;
@@ -61,6 +61,55 @@ describe('FR-TERM-003: real xterm parsing', () => {
       await new Promise<void>((resolve) => { next.write(new TextEncoder().encode('NEW')); next.barrier(resolve); });
       expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe('NEW');
     } finally { writer.dispose(); terminal.dispose(); }
+  });
+
+  it('reads synchronized-output mode live through bindTerminalWriterTarget', async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const bound = bindTerminalWriterTarget(terminal);
+    try {
+      expect(bound.modes?.synchronizedOutputMode).toBe(false);
+      await write(terminal, new TextEncoder().encode('\x1b[?2026h'));
+      expect(bound.modes?.synchronizedOutputMode).toBe(true);
+    } finally { terminal.dispose(); }
+  });
+
+  it('strips Grok-style trailing DECSET 2026h so synchronized output stays off', async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({
+      terminal: bindTerminalWriterTarget(terminal),
+      onStall: () => { throw new Error('parser stalled'); },
+    });
+    try {
+      const bytes = new TextEncoder().encode(
+        '\x1b[?2026h\x1b[10;1Hhello\x1b[?2026l\x1b[?2026h\x1b[10;1Hworld\x1b[?2026l\x1b[?2026h',
+      );
+      const session = writer.begin(false);
+      await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
+      expect(terminal.modes.synchronizedOutputMode).toBe(false);
+      expect(terminal.buffer.active.getLine(9)?.translateToString(true)).toContain('world');
+    } finally { writer.dispose(); terminal.dispose(); }
+  });
+
+  it('preserves a CUP split at the 8 KiB chunk boundary after a 2026h prefix', async () => {
+    const reference = new Terminal({ cols: 80, rows: 24 });
+    const streamed = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({ terminal: streamed, onStall: () => { throw new Error('parser stalled'); } });
+    try {
+      const prefix = '\x1b[?2026h';
+      const cup = '\x1b[12;4HX';
+      const pad = 'a'.repeat(8192 - prefix.length - 4); // split cup after ESC[12
+      const bytes = new TextEncoder().encode(prefix + pad + cup);
+      expect(bytes[8192]).toBe(';'.charCodeAt(0));
+      await write(reference, bytes);
+      const session = writer.begin(false);
+      await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
+      const seen = screen(streamed);
+      const expected = screen(reference);
+      expect({ lines: seen.lines, x: seen.x, y: seen.y }).toEqual(
+        { lines: expected.lines, x: expected.x, y: expected.y },
+      );
+      expect(streamed.modes.synchronizedOutputMode).toBe(false);
+    } finally { writer.dispose(); reference.dispose(); streamed.dispose(); }
   });
 
   it('xterm preserves viewed text while trimming and clamps at the oldest retained line', async () => {

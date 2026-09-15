@@ -10,7 +10,7 @@ import { isMultilinePaste } from '../terminal-paste.js';
 import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import { createTerminalStreamClient, type TerminalStreamClient, type TerminalContinuity,
   type TerminalStreamState, type TerminalRetryBudget, type TerminalInputDeliveryState } from '../terminal-stream-client.js';
-import { createTerminalWriter } from '../terminal-writer.js';
+import { bindTerminalWriterTarget, createTerminalWriter } from '../terminal-writer.js';
 import { createTerminalFitScheduler } from '../terminal-fit.js';
 import { createTerminalLineCounter } from '../terminal-line-counter.js';
 import { createTerminalScrollbackGuard } from '../terminal-scrollback.js';
@@ -472,14 +472,10 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     terminalRef.current = terminal;
     const scrollbackGuard = createTerminalScrollbackGuard(terminal, () => setHistoryDiscarded(true));
     const writer = createTerminalWriter({
-      terminal: {
-        write: (bytes, done) => terminal.write(bytes, done),
-        reset: () => {
-          scrollbackGuard.reset();
-          setHistoryDiscarded(false);
-          terminal.reset();
-        },
-      },
+      terminal: bindTerminalWriterTarget(terminal, () => {
+        scrollbackGuard.reset();
+        setHistoryDiscarded(false);
+      }),
       onStall: () => {
         controllerRef.current?.stop();
         continuityRef.current.cursor = null;

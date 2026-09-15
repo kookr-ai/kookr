@@ -1,20 +1,37 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { createTerminalWriteScheduler, createTerminalWriter } from './terminal-writer.js';
+import { createTerminalWriteScheduler, createTerminalWriter, stripSynchronizedOutput } from './terminal-writer.js';
+
+const SYNC_OUTPUT_ON = '\x1b[?2026h';
+const SYNC_OUTPUT_OFF = '\x1b[?2026l';
+
+function lastSyncMode(text: string, previous: boolean): boolean {
+  const lastOn = text.lastIndexOf(SYNC_OUTPUT_ON);
+  const lastOff = text.lastIndexOf(SYNC_OUTPUT_OFF);
+  if (lastOn < 0 && lastOff < 0) return previous;
+  return lastOn > lastOff;
+}
 
 function harness() {
   const tasks: Array<() => void> = [];
   const scheduler = createTerminalWriteScheduler((task) => tasks.push(task));
   const callbacks: Array<() => void> = [];
   const screen: string[] = [];
+  const modes = { synchronizedOutputMode: false };
   const terminal = {
+    modes,
     write: vi.fn((data: Uint8Array, done: () => void) => {
-      callbacks.push(() => { screen.push(new TextDecoder().decode(data)); done(); });
+      callbacks.push(() => {
+        const text = new TextDecoder().decode(data);
+        modes.synchronizedOutputMode = lastSyncMode(text, modes.synchronizedOutputMode);
+        screen.push(text);
+        done();
+      });
     }),
-    reset: vi.fn(() => { screen.length = 0; }),
+    reset: vi.fn(() => { screen.length = 0; modes.synchronizedOutputMode = false; }),
   };
   const onStall = vi.fn();
   const writer = createTerminalWriter({ terminal, scheduler, onStall });
-  return { writer, terminal, callbacks, tasks, scheduler, screen, onStall,
+  return { writer, terminal, callbacks, tasks, scheduler, screen, onStall, modes,
     turn: () => tasks.shift()?.(), parse: () => callbacks.shift()?.() };
 }
 
@@ -104,6 +121,43 @@ describe('FR-TERM-003: terminal writer', () => {
     expect(other.write).toHaveBeenCalledTimes(2);
     expect(h.terminal.write).toHaveBeenCalledOnce();
     h.writer.dispose(); second.dispose();
+  });
+
+  test('strips DECSET 2026 so a Grok-style trailing hold never reaches xterm', () => {
+    const h = harness();
+    const parsed = vi.fn();
+    const payload = new TextEncoder().encode(
+      `${SYNC_OUTPUT_ON}\x1b[10;1Hhello${SYNC_OUTPUT_OFF}${SYNC_OUTPUT_ON}`,
+    );
+    const session = h.writer.begin(false);
+    expect(session.write(payload, parsed)).toBe(true);
+    h.turn();
+    expect(h.terminal.write).toHaveBeenCalledOnce();
+    expect(new TextDecoder().decode(h.terminal.write.mock.calls[0][0])).toBe('\x1b[10;1Hhello');
+    h.parse();
+    expect(h.modes.synchronizedOutputMode).toBe(false);
+    expect(parsed).toHaveBeenCalledExactlyOnceWith(payload.byteLength);
+    h.writer.dispose();
+  });
+
+  test('credits the original payload when a chunk is only synchronized-output sequences', () => {
+    const h = harness();
+    const parsed = vi.fn();
+    const payload = new TextEncoder().encode(`${SYNC_OUTPUT_ON}${SYNC_OUTPUT_OFF}`);
+    h.writer.begin(false).write(payload, parsed);
+    h.turn();
+    expect(h.terminal.write).not.toHaveBeenCalled();
+    expect(parsed).toHaveBeenCalledExactlyOnceWith(payload.byteLength);
+    h.writer.dispose();
+  });
+
+  test('holds an incomplete DECSET 2026 prefix across chunks', () => {
+    const first = stripSynchronizedOutput(new TextEncoder().encode('hi\x1b[?20'));
+    expect(new TextDecoder().decode(first.out)).toBe('hi');
+    expect([...first.carry]).toEqual([...new TextEncoder().encode('\x1b[?20')]);
+    const second = stripSynchronizedOutput(new TextEncoder().encode('26hthere'), first.carry);
+    expect(new TextDecoder().decode(second.out)).toBe('there');
+    expect(second.carry.length).toBe(0);
   });
 
   test('retires a stalled instance instead of resetting a running parser', () => {

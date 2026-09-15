@@ -3,6 +3,58 @@ const MAX_PENDING_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_ENTRIES = 512;
 const MAX_PENDING_CONTROLS = 64;
 const PARSER_STALL_MS = 2000;
+/** DECSET 2026 on/off. Same 7-byte prefix; only the final h/l differs. */
+const SYNC_OUTPUT_ON = new TextEncoder().encode('\x1b[?2026h');
+const SYNC_OUTPUT_OFF = new TextEncoder().encode('\x1b[?2026l');
+const EMPTY = new Uint8Array(0);
+
+function matchesAt(src: Uint8Array, index: number, seq: Uint8Array): boolean {
+  if (index + seq.length > src.length) return false;
+  for (let i = 0; i < seq.length; i++) {
+    if (src[index + i] !== seq[i]) return false;
+  }
+  return true;
+}
+
+function isSyncOutputPrefix(src: Uint8Array, index: number, remaining: number): boolean {
+  if (remaining <= 0 || src[index] !== 0x1b) return false;
+  for (let i = 0; i < remaining; i++) {
+    const b = src[index + i];
+    if (b !== SYNC_OUTPUT_ON[i] && b !== SYNC_OUTPUT_OFF[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Drop complete DECSET 2026 sequences and hold a trailing prefix across
+ * chunks. Injecting ESC while xterm is mid-CSI aborts that CSI; stripping
+ * before write never does that.
+ */
+export function stripSynchronizedOutput(
+  bytes: Uint8Array,
+  carry: Uint8Array = EMPTY,
+): { out: Uint8Array; carry: Uint8Array } {
+  const n = carry.length + bytes.length;
+  if (n === 0) return { out: EMPTY, carry: EMPTY };
+  const src = new Uint8Array(n);
+  if (carry.length) src.set(carry, 0);
+  src.set(bytes, carry.length);
+  const out = new Uint8Array(n);
+  let w = 0;
+  let i = 0;
+  while (i < n) {
+    if (matchesAt(src, i, SYNC_OUTPUT_ON) || matchesAt(src, i, SYNC_OUTPUT_OFF)) {
+      i += SYNC_OUTPUT_ON.length;
+      continue;
+    }
+    const remaining = n - i;
+    if (remaining < SYNC_OUTPUT_ON.length && isSyncOutputPrefix(src, i, remaining)) {
+      return { out: out.subarray(0, w), carry: src.subarray(i) };
+    }
+    out[w++] = src[i++];
+  }
+  return { out: w === n ? src : out.subarray(0, w), carry: EMPTY };
+}
 
 type ScheduledTask = () => void;
 
@@ -53,8 +105,42 @@ type QueueEntry =
   | { kind: 'bytes'; data: Uint8Array; onParsed?: () => void }
   | { kind: 'control'; callback: () => void };
 
+export interface TerminalWriterTerminal {
+  write(data: Uint8Array, callback: () => void): void;
+  reset(): void;
+  /**
+   * xterm.js 6 holds canvas paints while DECSET 2026 (synchronized output) is
+   * on. Grok emits `ESC[?2026l ESC[?2026h` with no gap, so a parse that ends
+   * on 2026h would otherwise freeze the pane until xterm's 1s timeout.
+   * Must be a live getter — xterm snapshots `modes` on each access.
+   */
+  modes?: { readonly synchronizedOutputMode: boolean };
+}
+
+/**
+ * Bind an xterm instance for the writer, including a live `modes` getter.
+ * xterm snapshots `modes` on each access — copy-at-construction would stay false.
+ */
+export function bindTerminalWriterTarget(
+  terminal: {
+    write(data: string | Uint8Array, callback?: () => void): void;
+    reset(): void;
+    modes: { readonly synchronizedOutputMode: boolean };
+  },
+  onReset?: () => void,
+): TerminalWriterTerminal {
+  return {
+    write: (bytes, done) => terminal.write(bytes, done),
+    reset: () => {
+      onReset?.();
+      terminal.reset();
+    },
+    get modes() { return terminal.modes; },
+  };
+}
+
 interface TerminalWriterOptions {
-  terminal: { write(data: Uint8Array, callback: () => void): void; reset(): void };
+  terminal: TerminalWriterTerminal;
   scheduler?: ReturnType<typeof createTerminalWriteScheduler>;
   /** The caller must dispose/recreate xterm and its addons, never reset in place. */
   onStall(): void;
@@ -71,6 +157,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
   let pendingControls = 0;
   let inFlight: { generation: number; bytes: number } | null = null;
   let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  let syncCarry: Uint8Array = EMPTY;
 
   function request() {
     if (!disposed && !inFlight && (pendingReset || queue.length)) scheduler.request(run);
@@ -81,6 +168,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
     pendingBytes = inFlight?.bytes ?? 0;
     pendingControls = 0;
     pendingReset = false;
+    syncCarry = EMPTY;
     scheduler.cancel(run);
   }
 
@@ -91,6 +179,27 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
     dropQueued();
     if (stallTimer !== null) clearTimeout(stallTimer);
     stallTimer = null;
+  }
+
+  function finishParse(
+    active: { generation: number; bytes: number },
+    entry: Extract<QueueEntry, { kind: 'bytes' }>,
+  ): void {
+    if (disposed || inFlight !== active) return;
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = null;
+    inFlight = null;
+    pendingBytes -= active.bytes;
+    if (active.generation === generation) {
+      queue.shift();
+      try { entry.onParsed?.(); }
+      catch { dispose(); options.onStall(); }
+      finally { request(); }
+      return;
+    }
+    // Stale parses still release the transition barrier. They cannot run
+    // acknowledgements or readiness callbacks from the retired connection.
+    request();
   }
 
   function run() {
@@ -105,6 +214,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
   function runTask() {
     if (disposed || inFlight) return;
     if (pendingReset) {
+      syncCarry = EMPTY;
       options.terminal.reset();
       pendingReset = false;
     }
@@ -117,29 +227,19 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
       return;
     }
     const data = entry.data;
+    const stripped = stripSynchronizedOutput(data, syncCarry);
+    syncCarry = stripped.carry;
     const active = { generation, bytes: data.byteLength };
     inFlight = active;
+    if (stripped.out.byteLength === 0) {
+      finishParse(active, entry);
+      return;
+    }
     stallTimer = setTimeout(() => {
       dispose();
       options.onStall();
     }, PARSER_STALL_MS);
-    options.terminal.write(data, () => {
-      if (disposed || inFlight !== active) return;
-      if (stallTimer !== null) clearTimeout(stallTimer);
-      stallTimer = null;
-      inFlight = null;
-      pendingBytes -= active.bytes;
-      if (active.generation === generation) {
-        queue.shift();
-        try { entry.onParsed?.(); }
-        catch { dispose(); options.onStall(); }
-        finally { request(); }
-        return;
-      }
-      // Stale parses still release the transition barrier. They cannot run
-      // acknowledgements or readiness callbacks from the retired connection.
-      request();
-    });
+    options.terminal.write(stripped.out, () => finishParse(active, entry));
   }
 
   return {
