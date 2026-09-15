@@ -18,6 +18,7 @@ import {
   launchTask,
   DrainModeError,
   isAgentBlacklistedError,
+  isGrokAuthUnavailableError,
   isCwdValidationError,
   isEffortValidationError,
   isModelValidationError,
@@ -875,6 +876,17 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           code: err.code,
           agentType: err.agentType,
         }, 403);
+      }
+      if (isGrokAuthUnavailableError(err)) {
+        // Recoverable provider readiness (issue #3178): expired/missing Grok
+        // session auth emptied the implicit/RR pool. Distinct from the 403
+        // operator-ban path above — callers should re-login, not treat this
+        // as a permanent policy refusal.
+        return c.json({
+          error: err.message,
+          code: err.code,
+          loginCommand: err.loginCommand,
+        }, 503);
       }
       if (isEffortValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
