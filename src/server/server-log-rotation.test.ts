@@ -9,16 +9,21 @@ import {
   openSync,
   closeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   DEFAULT_SERVER_LOG_GENERATIONS,
   DEFAULT_SERVER_LOG_MAX_BYTES,
   DEFAULT_SERVER_LOG_ROTATE_INTERVAL_MS,
+  MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK,
   MAX_ROTATION_ERROR_LENGTH,
   ServerLogRotationHealth,
+  ServerLogRotationRecovery,
+  clearPendingServerLogRecovery,
   maybeRotateServerLog,
   reopenProcessStdio,
   resolveServerLogRotationEnv,
@@ -26,6 +31,18 @@ import {
   runScheduledServerLogRotation,
   type ServerLogRotationResult,
 } from './server-log-rotation.js';
+
+function throwEnospc(): never {
+  const err = new Error('ENOSPC: no space left on device') as NodeJS.ErrnoException;
+  err.code = 'ENOSPC';
+  throw err;
+}
+
+/** Resolve tsx from this checkout so the redirected child can import TypeScript. */
+function resolveTsxLoader(): string {
+  const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
+  return pathToFileURL(createRequire(pkg).resolve('tsx')).href;
+}
 
 describe('resolveServerLogRotationEnv', () => {
   test('applies documented defaults', () => {
@@ -75,6 +92,7 @@ describe('rotateServerLogGenerations / maybeRotateServerLog', () => {
   });
 
   afterEach(() => {
+    clearPendingServerLogRecovery();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -130,6 +148,7 @@ describe('rotateServerLogGenerations / maybeRotateServerLog', () => {
     });
     expect(result.rotated).toBe(true);
     expect(result.error).toMatch(/freopen/i);
+    expect(result.pendingReopen).toBeFalsy();
     expect(attempts).toBe(2); // initial + one retry
     expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('before-rotation-long\n');
     expect(existsSync(logPath)).toBe(true);
@@ -283,6 +302,477 @@ writeFileSync(logPath + '.ok', JSON.stringify({
     expect(payload.gen).toMatch(/BEFORE/);
     expect(payload.live).toMatch(/AFTER/);
     expect(payload.live).not.toMatch(/BEFORE_SEED/);
+  });
+});
+
+describe('pending live-log recovery (issue #3176)', () => {
+  let dir: string;
+  let logPath: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'kookr-server-log-recover-'));
+    logPath = join(dir, 'server.log');
+  });
+
+  afterEach(() => {
+    clearPendingServerLogRecovery();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('later tick recreates the live file after ENOSPC without shifting generations again', () => {
+    writeFileSync(logPath, 'live-content-long-enough\n');
+    writeFileSync(`${logPath}.1`, 'prev-gen\n');
+
+    let failOpen = true;
+    const reopen = vi.fn((path: string) => {
+      if (failOpen) throwEnospc();
+      writeFileSync(path, '');
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (failOpen && path === logPath) throwEnospc();
+      return openSync(path, flags);
+    };
+    const recovery = new ServerLogRotationRecovery();
+    const config = {
+      logPath,
+      maxBytes: 5,
+      generations: 3,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    };
+
+    const first = maybeRotateServerLog(config);
+    expect(first.rotated).toBe(true);
+    expect(first.pendingReopen).toBe(true);
+    expect(existsSync(logPath)).toBe(false);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
+    expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
+
+    failOpen = false;
+    const second = maybeRotateServerLog({
+      ...config,
+      stdioOwnsLog: () => false,
+    });
+
+    expect(second.rotated).toBe(false);
+    expect(second.recovered).toBe(true);
+    expect(second.pendingReopen).toBeFalsy();
+    expect(recovery.peek(logPath)).toBeNull();
+    expect(existsSync(logPath)).toBe(true);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
+    expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
+    expect(existsSync(`${logPath}.3`)).toBe(false);
+    appendFileSync(logPath, 'after-recovery\n');
+    expect(readFileSync(logPath, 'utf8')).toContain('after-recovery\n');
+
+    writeFileSync(logPath, 'live-again-long-enough-to-rotate\n');
+    const third = maybeRotateServerLog({
+      ...config,
+      stdioOwnsLog: () => true,
+    });
+    expect(third.rotated).toBe(true);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-again-long-enough-to-rotate\n');
+  });
+
+  test('pending state authorizes reopen when the live file was recreated but stdio is unattached', () => {
+    writeFileSync(logPath, 'owned-live-long-enough\n');
+    const recovery = new ServerLogRotationRecovery();
+    let allowReopen = false;
+    const reopen = vi.fn((path: string) => {
+      if (!allowReopen) throwEnospc();
+      if (!existsSync(path)) writeFileSync(path, '');
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (path === logPath && !existsSync(path)) throwEnospc();
+      return openSync(path, flags);
+    };
+
+    const first = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    });
+    expect(first.pendingReopen).toBe(true);
+    expect(existsSync(logPath)).toBe(false);
+
+    writeFileSync(logPath, 'external-recreate\n');
+    allowReopen = true;
+    reopen.mockClear();
+
+    const second = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+      openSyncFn: (path, flags) => openSync(path, flags),
+      recovery,
+    });
+
+    expect(second.recovered).toBe(true);
+    expect(second.rotated).toBe(false);
+    expect(reopen).toHaveBeenCalledWith(logPath);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('owned-live-long-enough\n');
+    expect(readFileSync(logPath, 'utf8')).toContain('external-recreate');
+  });
+
+  test('never-owned missing file is still skipped with no descriptor hijacking', () => {
+    const reopen = vi.fn();
+    const recovery = new ServerLogRotationRecovery();
+    const result = maybeRotateServerLog({
+      logPath,
+      maxBytes: 10,
+      generations: 3,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      recovery,
+    });
+    expect(result).toMatchObject({ rotated: false, skippedReason: 'missing' });
+    expect(result.pendingReopen).toBeFalsy();
+    expect(reopen).not.toHaveBeenCalled();
+  });
+
+  test('journald/TTY stdout is still skipped and does not enter pending recovery', () => {
+    writeFileSync(logPath, 'old-content-that-is-long-enough\n');
+    const reopen = vi.fn();
+    const recovery = new ServerLogRotationRecovery();
+    const first = maybeRotateServerLog({
+      logPath,
+      maxBytes: 10,
+      generations: 3,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+      recovery,
+    });
+    expect(first).toMatchObject({ rotated: false, skippedReason: 'stdio-not-attached' });
+    expect(first.pendingReopen).toBeFalsy();
+
+    const second = maybeRotateServerLog({
+      logPath,
+      maxBytes: 10,
+      generations: 3,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+      recovery,
+    });
+    expect(second).toMatchObject({ rotated: false, skippedReason: 'stdio-not-attached' });
+    expect(reopen).not.toHaveBeenCalled();
+    expect(existsSync(`${logPath}.1`)).toBe(false);
+  });
+
+  test('runScheduledServerLogRotation retries pending reopen on a later tick', () => {
+    writeFileSync(logPath, 'live-content-long-enough\n');
+    writeFileSync(`${logPath}.1`, 'prev-gen\n');
+    const recovery = new ServerLogRotationRecovery();
+    let failOpen = true;
+    const reopen = vi.fn((path: string) => {
+      if (failOpen) throwEnospc();
+      writeFileSync(path, '');
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (failOpen && path === logPath) throwEnospc();
+      return openSync(path, flags);
+    };
+    const config = {
+      logPath,
+      maxBytes: 5,
+      generations: 3,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    };
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const first = runScheduledServerLogRotation(config);
+    expect(first.pendingReopen).toBe(true);
+    failOpen = false;
+    const second = runScheduledServerLogRotation({ ...config, stdioOwnsLog: () => false });
+    expect(second.recovered).toBe(true);
+    expect(second.rotated).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    expect(recovery.peek(logPath)).toBeNull();
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
+    expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
+    expect(logSpy.mock.calls.some((args) => String(args[0]).includes('restored live log'))).toBe(
+      true,
+    );
+
+    errSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  test('recovery attempts on a later tick stay bounded', () => {
+    writeFileSync(logPath, 'live-content-long-enough\n');
+    const recovery = new ServerLogRotationRecovery();
+    const reopen = vi.fn(() => {
+      throwEnospc();
+    });
+    // Per attach: ensure open succeeds (odd call) so the second reopen runs;
+    // fallback open fails (even call) so pending remains and the cap is hit.
+    let liveOpens = 0;
+    const openSyncFn = (path: string, flags: string) => {
+      if (path !== logPath) return openSync(path, flags);
+      liveOpens += 1;
+      if (liveOpens % 2 === 1) return openSync(path, flags);
+      throwEnospc();
+    };
+    const config = {
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    };
+
+    const first = maybeRotateServerLog(config);
+    expect(first.pendingReopen).toBe(true);
+    expect(first.recoveryAttempts).toBe(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    expect(reopen).toHaveBeenCalledTimes(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    reopen.mockClear();
+
+    const second = maybeRotateServerLog({ ...config, stdioOwnsLog: () => false });
+    expect(second.pendingReopen).toBe(true);
+    expect(second.recovered).toBeFalsy();
+    expect(second.recoveryAttempts).toBe(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    expect(reopen).toHaveBeenCalledTimes(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+  });
+
+  test('recovery does not steal an fd reused after the failed freopen', () => {
+    writeFileSync(logPath, 'live-content-long-enough\n');
+    const recovery = new ServerLogRotationRecovery();
+    let failOpen = true;
+    const reopen = vi.fn((path: string) => {
+      if (failOpen) throwEnospc();
+      throw new Error('refusing to steal occupied stdout fd 1 during live-log recovery');
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (failOpen && path === logPath) throwEnospc();
+      return openSync(path, flags);
+    };
+    const first = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    });
+    expect(first.pendingReopen).toBe(true);
+
+    failOpen = false;
+    const second = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    });
+    expect(second.recovered).toBe(true);
+    expect(second.rotated).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    expect(recovery.peek(logPath)).toBeNull();
+  });
+
+  test('pending recovery for one path does not authorize reopen of a different missing log', () => {
+    writeFileSync(logPath, 'owned-live-long-enough\n');
+    const recovery = new ServerLogRotationRecovery();
+    const reopen = vi.fn(() => {
+      throwEnospc();
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (path === logPath) throwEnospc();
+      return openSync(path, flags);
+    };
+
+    expect(
+      maybeRotateServerLog({
+        logPath,
+        maxBytes: 5,
+        generations: 2,
+        stdioOwnsLog: () => true,
+        reopenStdioFn: reopen,
+        openSyncFn,
+        recovery,
+      }).pendingReopen,
+    ).toBe(true);
+
+    const other = join(dir, 'other.log');
+    const otherReopen = vi.fn();
+    const otherResult = maybeRotateServerLog({
+      logPath: other,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: otherReopen,
+      recovery,
+    });
+    expect(otherResult).toMatchObject({ rotated: false, skippedReason: 'missing' });
+    expect(otherReopen).not.toHaveBeenCalled();
+    expect(recovery.peek(logPath)).not.toBeNull();
+  });
+
+  test('redirected child restores logging on a later tick after ENOSPC on live open', () => {
+    const harness = join(dir, 'recover-harness.mjs');
+    const live = join(dir, 'server.log');
+    const rotationSrc = fileURLToPath(new URL('./server-log-rotation.ts', import.meta.url));
+    writeFileSync(live, 'BEFORE_SEED_LONG_ENOUGH\n');
+    writeFileSync(`${live}.1`, 'PREV_GEN\n');
+    writeFileSync(
+      harness,
+      `
+import { readFileSync, writeFileSync, existsSync, openSync as realOpenSync } from 'node:fs';
+import { maybeRotateServerLog } from ${JSON.stringify(rotationSrc)};
+
+const logPath = process.argv[2];
+let denyLiveOpen = true;
+const openSyncFn = (path, flags) => {
+  if (denyLiveOpen && path === logPath) {
+    const err = new Error('ENOSPC: no space left on device');
+    err.code = 'ENOSPC';
+    throw err;
+  }
+  return realOpenSync(path, flags);
+};
+
+const config = { logPath, maxBytes: 5, generations: 3, openSyncFn };
+try {
+  const first = maybeRotateServerLog(config);
+  denyLiveOpen = false;
+  const second = maybeRotateServerLog(config);
+  process.stdout.write('AFTER_RECOVERY\\n');
+  writeFileSync(logPath + '.ok', JSON.stringify({
+    firstPending: first.pendingReopen === true,
+    firstRotated: first.rotated === true,
+    secondRecovered: second.recovered === true,
+    secondRotated: second.rotated === true,
+    live: existsSync(logPath) ? readFileSync(logPath, 'utf8') : null,
+    gen1: readFileSync(logPath + '.1', 'utf8'),
+    gen2: readFileSync(logPath + '.2', 'utf8'),
+    gen3: existsSync(logPath + '.3'),
+  }));
+} catch (err) {
+  writeFileSync(logPath + '.err', String(err && err.stack ? err.stack : err));
+  throw err;
+}
+`,
+    );
+
+    const outFd = openSync(live, 'a');
+    const errFd = openSync(live, 'a');
+    try {
+      const result = spawnSync(process.execPath, ['--import', resolveTsxLoader(), harness, live], {
+        encoding: 'utf8',
+        stdio: ['ignore', outFd, errFd],
+      });
+      const childErr = existsSync(`${live}.err`) ? readFileSync(`${live}.err`, 'utf8') : '';
+      expect(result.status, childErr || result.stderr || result.stdout || 'child failed').toBe(0);
+    } finally {
+      closeSync(outFd);
+      closeSync(errFd);
+    }
+
+    const payload = JSON.parse(readFileSync(`${live}.ok`, 'utf8')) as {
+      firstPending: boolean;
+      firstRotated: boolean;
+      secondRecovered: boolean;
+      secondRotated: boolean;
+      live: string | null;
+      gen1: string;
+      gen2: string;
+      gen3: boolean;
+    };
+    expect(payload.firstRotated).toBe(true);
+    expect(payload.firstPending).toBe(true);
+    expect(payload.secondRecovered).toBe(true);
+    expect(payload.secondRotated).toBe(false);
+    expect(payload.gen1).toMatch(/BEFORE_SEED/);
+    expect(payload.gen2).toBe('PREV_GEN\n');
+    expect(payload.gen3).toBe(false);
+    expect(payload.live).toMatch(/AFTER_RECOVERY/);
+    expect(payload.live).not.toMatch(/BEFORE_SEED/);
+  });
+
+  test('redirected child does not close an fd that reused stdout after ENOSPC', () => {
+    const harness = join(dir, 'occupied-fd-harness.mjs');
+    const live = join(dir, 'server.log');
+    const rotationSrc = fileURLToPath(new URL('./server-log-rotation.ts', import.meta.url));
+    writeFileSync(live, 'BEFORE_SEED_LONG_ENOUGH\n');
+    writeFileSync(
+      harness,
+      `
+import { readFileSync, writeFileSync, existsSync, openSync as realOpenSync, writeSync, closeSync } from 'node:fs';
+import { maybeRotateServerLog } from ${JSON.stringify(rotationSrc)};
+
+const logPath = process.argv[2];
+let denyLiveOpen = true;
+const openSyncFn = (path, flags) => {
+  if (denyLiveOpen && path === logPath) {
+    const err = new Error('ENOSPC: no space left on device');
+    err.code = 'ENOSPC';
+    throw err;
+  }
+  return realOpenSync(path, flags);
+};
+
+const config = { logPath, maxBytes: 5, generations: 2, openSyncFn };
+try {
+  const first = maybeRotateServerLog(config);
+  denyLiveOpen = false;
+  const stolenFd = realOpenSync(logPath + '.stolen', 'w');
+  const second = maybeRotateServerLog(config);
+  writeSync(stolenFd, 'STOLEN_STILL_OPEN\\n');
+  closeSync(stolenFd);
+  process.stdout.write('AFTER_RECOVERY\\n');
+  writeFileSync(logPath + '.ok', JSON.stringify({
+    firstPending: first.pendingReopen === true,
+    secondRecovered: second.recovered === true,
+    stolen: readFileSync(logPath + '.stolen', 'utf8'),
+    live: existsSync(logPath) ? readFileSync(logPath, 'utf8') : null,
+  }));
+} catch (err) {
+  writeFileSync(logPath + '.err', String(err && err.stack ? err.stack : err));
+  throw err;
+}
+`,
+    );
+
+    const outFd = openSync(live, 'a');
+    const errFd = openSync(live, 'a');
+    try {
+      const result = spawnSync(process.execPath, ['--import', resolveTsxLoader(), harness, live], {
+        encoding: 'utf8',
+        stdio: ['ignore', outFd, errFd],
+      });
+      const childErr = existsSync(`${live}.err`) ? readFileSync(`${live}.err`, 'utf8') : '';
+      expect(result.status, childErr || result.stderr || result.stdout || 'child failed').toBe(0);
+    } finally {
+      closeSync(outFd);
+      closeSync(errFd);
+    }
+
+    const payload = JSON.parse(readFileSync(`${live}.ok`, 'utf8')) as {
+      firstPending: boolean;
+      secondRecovered: boolean;
+      stolen: string;
+      live: string | null;
+    };
+    expect(payload.firstPending).toBe(true);
+    expect(payload.secondRecovered).toBe(true);
+    expect(payload.stolen).toBe('STOLEN_STILL_OPEN\n');
+    expect(payload.live).toMatch(/AFTER_RECOVERY/);
   });
 });
 
