@@ -903,7 +903,11 @@ export class SessionBridge {
           return;
         }
       }
-      const absolute = !request.cursor && this.shouldSkipRingReplay(snapshot.bytes);
+      const looksAbsolute = !request.cursor && this.shouldSkipRingReplay(snapshot.bytes);
+      // Grok's dashboard pin sends 200 cols. A FitAddon-narrow Claude/Codex
+      // request must still shrink from the 200×50 spawn size even if that
+      // spawn-width ring trips the absolute-TUI heuristic.
+      const absolute = looksAbsolute && request.cols >= ABSOLUTE_TUI_COLS;
       const seedCols = absolute ? Math.max(request.cols, ABSOLUTE_TUI_COLS) : request.cols;
       const seedRows = request.rows;
       const didResize = !request.cursor && !this.readOnly

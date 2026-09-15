@@ -114,7 +114,7 @@ describe('NFR-TERM-001: version-two session bridge', () => {
 
   test('an unavailable reconstructed screen cannot claim a cursor or accept input', async () => {
     const h = await setup(new Uint8Array(0), false, true);
-    h.attach(); await drain();
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 }); await drain();
     const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
     expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
       cursor: null, screenUnavailable: true, approximate: true,
@@ -124,21 +124,26 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(h.ws.close).toHaveBeenCalledWith(TERMINAL_CLOSE.incompatible, 'terminal input before ready');
   });
 
-  test('does not shrink an absolute-TUI PTY to a FitAddon-narrow attach', async () => {
+  test('keeps a client-pinned absolute-TUI PTY at 200 columns', async () => {
     const h = await setup(grokRingBytes);
-    h.attach({ cols: 80, rows: 24 });
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 });
     await drain();
     expect(h.backend.captureStreamSnapshot).toHaveBeenCalled();
-    expect(h.resize).toHaveBeenCalledTimes(1);
     expect(h.resize).toHaveBeenCalledWith('test', ABSOLUTE_TUI_COLS, 24);
-    expect(h.resize.mock.invocationCallOrder[0]).toBeGreaterThan(
-      h.backend.captureStreamSnapshot.mock.invocationCallOrder[0],
-    );
     const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
     expect(controls.find((frame) => frame?.type === 'attach_timing')).toMatchObject({
       strategy: 'absolute-display-only',
       attachSeed: 'absolute',
     });
+  });
+
+  test('FitAddon-narrow attaches still shrink even when the spawn-width ring looks absolute', async () => {
+    const h = await setup(grokRingBytes);
+    h.attach({ cols: 80, rows: 24 });
+    await drain();
+    expect(h.resize).toHaveBeenCalledWith('test', 80, 24);
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'attach_timing')?.strategy).not.toBe('absolute-display-only');
   });
 
   test('streaming attaches still resize to the requested FitAddon size', async () => {
