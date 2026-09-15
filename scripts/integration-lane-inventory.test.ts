@@ -94,7 +94,7 @@ describe('root Vitest integration lane inventory (#2823)', () => {
     const [liveConfig] = readConfigInclude('vitest.integration.live.config.ts');
     expect(integrationConfig).toContain('SELF_CONTAINED_INTEGRATION_FILES');
     expect(liveConfig).toContain('CREDENTIAL_GATED_INTEGRATION_FILES');
-    expect(integrationConfig).toMatch(/maxWorkers:\s*4/);
-    expect(liveConfig).toMatch(/maxWorkers:\s*4/);
+    expect(integrationConfig).toMatch(/maxWorkers:\s*4(?!\d)/);
+    expect(liveConfig).toMatch(/maxWorkers:\s*4(?!\d)/);
   });
 });

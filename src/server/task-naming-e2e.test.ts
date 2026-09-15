@@ -92,6 +92,9 @@ async function createNamingServer(): Promise<{
   return { tempDir, server, baseUrl: `http://127.0.0.1:${addr.port}` };
 }
 
+// These two tests need no API keys. They stay in this credential-gated file
+// because they prove the live-lane temp-dir fixtures themselves; the
+// self-contained naming integration file already POSTs with real temp dirs.
 describe('task naming E2E cwd fixtures', () => {
   let tempDir: string;
   let server: KookrServerInternal;
@@ -117,9 +120,10 @@ describe('task naming E2E cwd fixtures', () => {
     });
 
     expect(res.status).toBe(201);
-    const task = (await res.json()) as { id: string; prompt: string };
+    const task = (await res.json()) as { id: string; prompt: string; cwd: string };
     expect(task.id).toBeDefined();
     expect(task.prompt).toBe('Add rate limiting to the API gateway');
+    expect(task.cwd).toBe(GATEWAY_DIR);
   });
 
   test('POST /api/tasks rejects a missing working directory before naming', async () => {
@@ -133,8 +137,12 @@ describe('task naming E2E cwd fixtures', () => {
     });
 
     expect(res.status).toBe(400);
-    const body = (await res.json()) as { error: string };
-    expect(body.error).toMatch(/working directory does not exist/i);
+    const body = (await res.json()) as { error: string; code: string };
+    expect(body).toMatchObject({
+      code: 'invalid_cwd',
+      error: `Working directory does not exist: ${MISSING_DIR}`,
+    });
+    expect(server.taskStore.listTasks()).toHaveLength(0);
   });
 });
 

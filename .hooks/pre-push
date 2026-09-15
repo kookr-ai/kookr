@@ -386,7 +386,7 @@ if ! pnpm validate:requirements; then
 fi
 
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
-  echo "Docs-only prose diff detected; skipping Vitest lane."
+  echo "Docs-only prose diff detected; skipping Vitest lanes."
 else
   echo "Running tests..."
   if ! pnpm test; then
