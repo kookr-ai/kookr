@@ -74,4 +74,20 @@ describe('isAbsolutePositionTuiRing', () => {
     const ring = denseAbsoluteTuiRing({ cups: 400, maxCol: 100, syncFrames: 80, ed2: 0 });
     expect(isAbsolutePositionTuiRing(ring)).toBe(false);
   });
+
+  it('still treats Grok as absolute when the newest 256KB is spinner-only but earlier frames painted wide chrome', () => {
+    const wide = denseAbsoluteTuiRing({ cups: 250, maxCol: 180, syncFrames: 30, ed2: 0 });
+    // Idle Grok only updates a low-column spinner; that tail used to drop
+    // maxCol below the wide-layout bar and smash the pane as viewport-ring.
+    const spinner = denseAbsoluteTuiRing({ cups: 40_000, maxCol: 5, syncFrames: 10, ed2: 0 });
+    expect(spinner.byteLength).toBeGreaterThan(256 * 1024);
+    expect(isAbsolutePositionTuiRing(spinner)).toBe(false);
+
+    const combined = new Uint8Array(wide.length + spinner.length);
+    combined.set(wide, 0);
+    combined.set(spinner, wide.length);
+    const stats = inspectAbsolutePositionTuiRing(combined);
+    expect(stats.maxCol).toBeGreaterThanOrEqual(120);
+    expect(isAbsolutePositionTuiRing(combined)).toBe(true);
+  });
 });

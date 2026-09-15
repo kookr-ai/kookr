@@ -13,6 +13,7 @@ import {
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
 import type { TerminalSourceRange } from '../shared/terminal-stream.js';
+import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import { TERMINAL_CLOSE, TERMINAL_V2_PROTOCOL } from '../shared/terminal-protocol.js';
 import { TerminalProtocolConnection, type TerminalAttachRequest } from './terminal-protocol-connection.js';
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
@@ -877,13 +878,9 @@ export class SessionBridge {
           this.onBridgeLiveBytes?.(this.sessionId);
         });
       }
-      // A continuity probe must not resize the shared PTY before its answer.
-      if (!request.cursor && !this.readOnly) {
-        const resizeStarted = performance.now();
-        await this.backend.resize(this.sessionId, request.cols, request.rows);
-        resizeWaitMs = performance.now() - resizeStarted;
-        this.lastAppliedResize = { cols: request.cols, rows: request.rows };
-      }
+      // Capture before resize so a narrow FitAddon attach cannot shrink the
+      // PTY (and the ring tail) before we classify Grok as absolute-TUI.
+      // Continuity probes still never resize.
       const captureStarted = performance.now();
       const snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
       const captureMs = performance.now() - captureStarted;
@@ -907,9 +904,17 @@ export class SessionBridge {
         }
       }
       const absolute = !request.cursor && this.shouldSkipRingReplay(snapshot.bytes);
+      const seedCols = absolute ? Math.max(request.cols, ABSOLUTE_TUI_COLS) : request.cols;
+      const seedRows = request.rows;
+      if (!request.cursor && !this.readOnly) {
+        const resizeStarted = performance.now();
+        await this.backend.resize(this.sessionId, seedCols, seedRows);
+        resizeWaitMs = performance.now() - resizeStarted;
+        this.lastAppliedResize = { cols: seedCols, rows: seedRows };
+      }
       const seedStarted = performance.now();
       const reconstruction = absolute ? await reconstructAbsoluteTuiScreenResult(snapshot.bytes, {
-        cols: request.cols, rows: request.rows, sessionKey: this.sessionId,
+        cols: seedCols, rows: seedRows, sessionKey: this.sessionId,
         source: { epoch: snapshot.epoch, start: snapshot.start, end: snapshot.end,
           geometryRevision: snapshot.geometryRevision, cols: snapshot.cols, rows: snapshot.rows },
       }) : null;

@@ -5,8 +5,21 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import { FakeTerminalBackend } from '../adapters/fake-terminal-backend.js';
 import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { TerminalStreamSnapshot } from '../shared/terminal-stream.js';
+import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import { TERMINAL_V2_PROTOCOL, TERMINAL_CLOSE } from '../shared/terminal-protocol.js';
 import { SessionBridge } from './session-bridge.js';
+
+function grokLikeRing(): Uint8Array {
+  const parts: string[] = [];
+  for (let i = 0; i < 40; i++) parts.push('\x1b[?2026h');
+  for (let i = 0; i < 220; i++) {
+    const row = (i % 48) + 1;
+    const col = 150 + (i % 40);
+    parts.push(`\x1b[${row};${col}Hx`);
+  }
+  for (let i = 0; i < 40; i++) parts.push('\x1b[?2026l');
+  return new TextEncoder().encode(parts.join(''));
+}
 
 const bridges: SessionBridge[] = [];
 async function drain() { for (let i = 0; i < 60; i++) await setImmediate(); }
@@ -95,6 +108,18 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     h.send({ type: 'input', text: 'not ready' });
     expect(h.write).not.toHaveBeenCalled();
     expect(h.ws.close).toHaveBeenCalledWith(TERMINAL_CLOSE.incompatible, 'terminal input before ready');
+  });
+
+  test('does not shrink an absolute-TUI PTY to a FitAddon-narrow attach', async () => {
+    const h = await setup(grokLikeRing());
+    h.attach({ cols: 80, rows: 24 });
+    await drain();
+    expect(h.resize).toHaveBeenCalledWith('test', ABSOLUTE_TUI_COLS, 24);
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'attach_timing')).toMatchObject({
+      strategy: 'absolute-display-only',
+      attachSeed: 'absolute',
+    });
   });
 
   test('exact resume sends only missing bytes without resizing or resetting the retained screen', async () => {

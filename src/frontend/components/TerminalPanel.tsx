@@ -26,6 +26,7 @@ import {
   DEFAULT_TERMINAL_FONT_SIZE,
   usePersistedTerminalFontSize,
 } from '../hooks/usePersistedTerminalFontSize.js';
+import { ABSOLUTE_TUI_COLS } from '../../shared/absolute-tui-geometry.js';
 
 interface Props {
   tmuxName: string | null;
@@ -42,9 +43,6 @@ interface Props {
   /** Click handler for a viewable file path detected in terminal output. */
   onOpenFile?: (path: string) => void;
 }
-
-/** Grok Build (and similar absolute-position TUIs) paint near this width. */
-const ABSOLUTE_TUI_COLS = 200;
 
 function usesAbsoluteTuiGeometry(agentType: string | null | undefined): boolean {
   return agentType === 'grok-build';
@@ -785,9 +783,13 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     const controller = createTerminalStreamClient({
       writer, continuity, retryBudget: retryBudgetRef.current, inputDelivery,
       createSocket: () => new WebSocket(url, TERMINAL_V2_PROTOCOL),
-      getSize: () => getValidatedResize(terminal.cols, terminal.rows)
-        ?? resolveTerminalSize(fitAddonRef.current?.proposeDimensions())
-        ?? { cols: 80, rows: 24 },
+      getSize: () => {
+        const fitted = getValidatedResize(terminal.cols, terminal.rows)
+          ?? fitAddonRef.current?.proposeDimensions()
+          ?? null;
+        return resolveTerminalSize(fitted)
+          ?? { cols: absoluteTuiRef.current ? ABSOLUTE_TUI_COLS : 80, rows: 24 };
+      },
       onState: (next) => {
         if (inputDelivery.uncertain) inputDeliveryBySessionRef.current.set(tmuxName, inputDelivery);
         else inputDeliveryBySessionRef.current.delete(tmuxName);

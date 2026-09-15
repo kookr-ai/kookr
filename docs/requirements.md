@@ -1065,8 +1065,15 @@ task scheduling across panes. Transport credit returns only after parsing.
   strips those sequences before they reach xterm and carries an incomplete
   escape across the eight-KiB chunk boundary so it never injects ESC mid-CSI.
   Stripped bytes are still credited as stream payload.
+- Absolute-position TUIs (Grok Build) attach and reconstruct at 200 columns
+  even when the browser FitAddon reports ~80. A narrower resize paints CUP
+  cells off-screen and can flip the ring heuristic onto the streaming
+  viewport-ring smash path. Idle Grok spinner tails (low-column CUP only)
+  still classify as absolute when earlier frames painted wide chrome.
+  Display-only seeds (no resume cursor) reconnect as a new view instead of
+  blocking on missing parser continuity.
 
-**Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
+**Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `src/server/absolute-position-tui-ring.test.ts`, `src/server/session-bridge-v2.test.ts`.
 
 ### FR-TERM-004: Source-position terminal continuity [F5.2] — SHALL — `partial`
 

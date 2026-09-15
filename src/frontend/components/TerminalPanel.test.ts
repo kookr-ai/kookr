@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   searchAddonInstances: [] as any[],
   webSocketInstances: [] as any[],
   searchFound: true,
+  fitProposeDimensions: (): { cols: number; rows: number } | null => ({ cols: 80, rows: 24 }),
 }));
 
 class MockResizeObserver {
@@ -109,7 +110,7 @@ vi.mock('@xterm/xterm', () => {
 vi.mock('@xterm/addon-fit', () => {
   class MockFitAddon {
     fit = vi.fn();
-    proposeDimensions = vi.fn(() => ({ cols: 80, rows: 24 }));
+    proposeDimensions = vi.fn(() => mocks.fitProposeDimensions());
 
     constructor() {
       mocks.fitAddonInstances.push(this);
@@ -309,6 +310,7 @@ describe('TerminalPanel', () => {
     mocks.searchAddonInstances.length = 0;
     mocks.webSocketInstances.length = 0;
     mocks.searchFound = true;
+    mocks.fitProposeDimensions = () => ({ cols: 80, rows: 24 });
     localStorage.clear();
     vi.clearAllMocks();
     syncGlobalStore();
@@ -332,6 +334,19 @@ describe('TerminalPanel', () => {
     container?.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  test('pins Grok attach geometry to 200 cols even when xterm is still 80', () => {
+    mocks.fitProposeDimensions = () => null;
+    act(() => root.render(React.createElement(TerminalPanel, {
+      tmuxName: 'kookr-grok', visible: true, agentType: 'grok-build',
+    })));
+    const terminal = mocks.terminalInstances[0];
+    expect(terminal.cols).toBe(80);
+    const ws = mocks.webSocketInstances[0];
+    act(() => { ws.onopen?.(); negotiateTerminal(ws); });
+    const attach = ws.send.mock.calls.map(([frame]) => JSON.parse(String(frame))).find((frame) => frame.type === 'attach');
+    expect(attach).toMatchObject({ cols: 200, rows: 24, acceptGap: true });
   });
 
   test('memoized terminal skips parent metadata rerenders but accepts a changed session', async () => {
