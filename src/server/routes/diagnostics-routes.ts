@@ -673,10 +673,11 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       }
     }
 
-    // Audit-log size gauge (issue #3158): the append-only command-audit
-    // (`audit.jsonl` + rotated `audit.*.jsonl` archives) and collaboration-audit
-    // (`collaboration-audit.jsonl`) logs grow unbounded and no prune sweep
-    // reaches them, so surface their byte size before they can fill the disk.
+    // Audit-log size gauge (issue #3158): the command-audit family
+    // (`audit.jsonl` + rotated `audit.*.jsonl` archives) is not prune-swept,
+    // and collaboration-audit (`collaboration-audit.jsonl`) is size-rotated
+    // (issue #3252) but also not prune-swept. Surface their byte size so
+    // remaining growth is visible before it can fill the disk.
     // stat-only plus one bounded single-level directory listing — never reads
     // file contents and never publishes paths. Absent files degrade to null;
     // soft-omit the whole block on error (bounded like the reads above).
