@@ -23,9 +23,11 @@ import {
   parseHookReplayCheckpointsHealthBody,
   parseHostStaleDtachHealthBody,
   parseHungSuspectReclaimHealthBody,
+  parseDeadManSelfHealHealthBody,
   parseSchedulesPausedByFailureHealthBody,
   probeLiveHttpLatency,
   runDoctorCli,
+  type DeadManSelfHealProbeSnapshot,
   type HookIngestionLagProbeSnapshot,
   type HookReplayCheckpointsProbeSnapshot,
   type HostStaleDtachProbeSnapshot,
@@ -59,6 +61,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'ops.resource-watchdog',
   'ops.hung-reclaim',
   'ops.schedules-paused-by-failure',
+  'ops.dead-man-self-heal',
   'hooks.ingestion-lag',
   'hooks.missing-write-timestamps',
   'ops.host-stale-dtach',
@@ -82,6 +85,7 @@ const hermeticOps = {
   probeResourceWatchdogEnabled: async () => null as boolean | null,
   probeHungSuspectReclaim: async () => null as HungSuspectReclaimProbeSnapshot | null,
   probeSchedulesPausedByFailure: async () => null as SchedulesPausedByFailureProbeSnapshot | null,
+  probeDeadManSelfHeal: async () => null as DeadManSelfHealProbeSnapshot | null,
   probeHookIngestionLag: async () => null as HookIngestionLagProbeSnapshot | null,
   probeHostStaleDtach: async () => null as HostStaleDtachProbeSnapshot | null,
   probeHookReplayCheckpoints: async () => null as HookReplayCheckpointsProbeSnapshot | null,
@@ -291,6 +295,7 @@ describe('kookr doctor --json', () => {
       'ops.resource-watchdog',
       'ops.hung-reclaim',
       'ops.schedules-paused-by-failure',
+      'ops.dead-man-self-heal',
       'hooks.ingestion-lag',
       'hooks.missing-write-timestamps',
       'ops.host-stale-dtach',
@@ -319,6 +324,11 @@ describe('kookr doctor --json', () => {
       summary: expect.stringContaining('probe skipped'),
     });
     expect(report.checks.find((c) => c.id === 'ops.schedules-paused-by-failure')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+    expect(report.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
       status: 'ok',
       required: false,
       summary: expect.stringContaining('probe skipped'),
@@ -1586,6 +1596,205 @@ describe('kookr doctor --json', () => {
     })).toBeNull();
   });
 
+  it('WARNs on ops.dead-man-self-heal when escalated with zero successes (issue #3248)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 3, successes: 0, escalated: true, class: 'auth_expired' },
+      }),
+    });
+
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+    const check = report.checks.find((c) => c.id === 'ops.dead-man-self-heal');
+    expect(check).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('escalated with zero successes'),
+    });
+    expect(check?.summary).toContain('attempts=3');
+    expect(check?.summary).toContain('successes=0');
+    expect(check?.summary).toContain('class=auth_expired');
+    expect(check?.detail).toContain('schedules.deadManSelfHeal');
+    expect(check?.recommendedAction).toContain('kookr schedule enable');
+    expect(check?.recommendedAction).toContain('grok login --device-code');
+    expect(check?.recommendedAction).toMatch(/do not auto-resume/i);
+
+    // Cap=0 escalate publishes attempts=0, successes=0, escalated=true.
+    const capZero = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 0, successes: 0, escalated: true },
+      }),
+    });
+    expect(capZero.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'warn',
+      required: false,
+    });
+
+    // Lifetime successes>0 with a later escalated episode still WARNs — successes
+    // is cumulative, escalated is the in-flight episode (schedule-dead-man stats).
+    const laterEpisode = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 4, successes: 1, escalated: true },
+      }),
+    });
+    expect(laterEpisode.ok).toBe(true);
+    expect(laterEpisode.status).toBe('warn');
+    expect(laterEpisode.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'warn',
+      required: false,
+      summary: expect.stringContaining('escalated'),
+    });
+    expect(laterEpisode.checks.find((c) => c.id === 'ops.dead-man-self-heal')?.summary)
+      .toContain('successes=1');
+  });
+
+  it('keeps ops.dead-man-self-heal green when the field is absent, recovered, or probe offline (issue #3248)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const absent = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () =>
+        parseDeadManSelfHealHealthBody({ schedules: { schedulerHealthy: true } }),
+    });
+    expect(absent.status).toBe('ok');
+    expect(absent.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('field absent'),
+    });
+
+    const recovered = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 4, successes: 1, escalated: false },
+      }),
+    });
+    expect(recovered.status).toBe('ok');
+    expect(recovered.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('successes=1'),
+    });
+
+    const notEscalated = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 1, successes: 0, escalated: false },
+      }),
+    });
+    expect(notEscalated.status).toBe('ok');
+    expect(notEscalated.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('not escalated'),
+    });
+    expect(notEscalated.checks.find((c) => c.id === 'ops.dead-man-self-heal')?.summary)
+      .toContain('attempts=1');
+
+    const offline = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => null,
+    });
+    expect(offline.status).toBe('ok');
+    expect(offline.checks.find((c) => c.id === 'ops.dead-man-self-heal')).toMatchObject({
+      status: 'ok',
+      required: false,
+      summary: expect.stringContaining('probe skipped'),
+    });
+  });
+
+  it('exits non-zero under --strict when dead-man self-heal escalated with zero successes (issue #3248)', async () => {
+    const run = commandRunner(happyFixtures());
+    const deps = {
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      probeDeadManSelfHeal: async () => ({
+        deadManSelfHeal: { attempts: 3, successes: 0, escalated: true },
+      }),
+      out: { log: () => {}, error: () => {} },
+    };
+
+    expect(await runDoctorCli(['--json'], deps)).toBe(0);
+    expect(await runDoctorCli(['--json', '--strict'], deps)).toBe(1);
+  });
+
+  it('parseDeadManSelfHealHealthBody reads schedules.deadManSelfHeal (issue #3248)', () => {
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: {
+        schedulerHealthy: true,
+        deadManSelfHeal: {
+          attempts: 3,
+          successes: 0,
+          escalated: true,
+          class: 'auth_expired',
+        },
+      },
+    })).toEqual({
+      deadManSelfHeal: {
+        attempts: 3,
+        successes: 0,
+        escalated: true,
+        class: 'auth_expired',
+      },
+    });
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: {
+        deadManSelfHeal: { attempts: 4.9, successes: 1, escalated: false, class: 'other' },
+      },
+    })).toEqual({
+      deadManSelfHeal: { attempts: 4, successes: 1, escalated: false },
+    });
+    // Health omits the field until self-heal has acted — silent OK, not skip.
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: { schedulerHealthy: true },
+    })).toEqual({ deadManSelfHeal: null });
+    expect(parseDeadManSelfHealHealthBody({})).toEqual({ deadManSelfHeal: null });
+    expect(parseDeadManSelfHealHealthBody(null)).toBeNull();
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: { deadManSelfHeal: 'not-an-object' },
+    })).toBeNull();
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: 'not-an-object',
+    })).toBeNull();
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: { deadManSelfHeal: { attempts: 3, successes: 0 } },
+    })).toBeNull();
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: { deadManSelfHeal: { successes: 0, escalated: true } },
+    })).toBeNull();
+    expect(parseDeadManSelfHealHealthBody({
+      schedules: { deadManSelfHeal: { attempts: 3, escalated: true } },
+    })).toBeNull();
+  });
+
   it('WARNs on ops.maintenance-prune when interval is 0/unset (issue #2080)', async () => {
     const run = commandRunner(happyFixtures());
 
@@ -1762,6 +1971,7 @@ describe('kookr doctor --json', () => {
       access: async () => {},
       probeResourceWatchdogEnabled: async () => null,
       probeHungSuspectReclaim: async () => null,
+      probeDeadManSelfHeal: async () => null,
       probeMaintenancePruneTimer: async () => null,
       probeGithubScannerStatus: async () => null,
       // Stub node-pty so this disk-path test stays hermetic and never loads the
