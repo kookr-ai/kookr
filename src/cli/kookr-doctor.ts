@@ -156,6 +156,26 @@ type SchedulesPausedByFailureProbe = (
 ) => Promise<SchedulesPausedByFailureProbeSnapshot | null>;
 
 /**
+ * Live probe of schedules.deadManSelfHeal from GET /api/health (issue #3248).
+ * null = unreachable / unknown — doctor stays green.
+ * `deadManSelfHeal: null` = field omitted (self-heal never acted).
+ */
+export interface DeadManSelfHealCounters {
+  attempts: number;
+  successes: number;
+  escalated: boolean;
+  class?: 'auth_expired';
+}
+
+export interface DeadManSelfHealProbeSnapshot {
+  deadManSelfHeal: DeadManSelfHealCounters | null;
+}
+
+type DeadManSelfHealProbe = (
+  env: NodeJS.ProcessEnv,
+) => Promise<DeadManSelfHealProbeSnapshot | null>;
+
+/**
  * Live probe of maintenancePrune.lastFiredAt from /api/diagnostics/timer-health
  * (issue #2080). Outer null = unreachable / unknown; inner lastFiredAt null =
  * loop registered but never fired yet.
@@ -311,6 +331,12 @@ interface RunDoctorDeps {
    */
   probeSchedulesPausedByFailure?: SchedulesPausedByFailureProbe;
   /**
+   * Optional override for the live /api/health deadManSelfHeal probe
+   * (issue #3248). Defaults to a short-timeout fetch when KOOKR_API_BASE_URL or
+   * KOOKR_PORT is set. null = unreachable / skip.
+   */
+  probeDeadManSelfHeal?: DeadManSelfHealProbe;
+  /**
    * Optional override for the live timer-health maintenancePrune probe.
    * Defaults to a short-timeout fetch of GET /api/diagnostics/timer-health when
    * KOOKR_API_BASE_URL or KOOKR_PORT points at a server.
@@ -384,6 +410,7 @@ ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is 
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off or samples are stale),
 ops.hung-reclaim (advisory warn when residual hungSuspect is open_pr_failsafe-dominated),
 ops.schedules-paused-by-failure (advisory warn when any schedule is consecutive-failure paused),
+ops.dead-man-self-heal (advisory warn when dead-man self-heal escalated),
 hooks.ingestion-lag (advisory warn when live hook-ingestion notableLagCount > 0),
 hooks.missing-write-timestamps (advisory warn when the missing-write-timestamp ratio exceeds threshold with enough sample),
 ops.host-stale-dtach (advisory warn when host staleProcesses.dtach far exceeds sessionReaper orphans),
@@ -540,6 +567,7 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
   checks.push(await checkSchedulesPausedByFailure(env, deps.probeSchedulesPausedByFailure));
+  checks.push(await checkDeadManSelfHeal(env, deps.probeDeadManSelfHeal));
   // Share one hook-ingestion snapshot across both advisories (issue #3079): the
   // lag and missing-write-timestamp checks read the same
   // GET /api/diagnostics/hook-ingestion body, so fetch it once and hand both the
@@ -1664,6 +1692,97 @@ function formatPausedScheduleSample(
 }
 
 /**
+ * Advisory ops check (issue #3248): surface schedule dead-man self-heal that
+ * escalated after bounded retries with zero successes. Operator offline
+ * recovery runs doctor first; without this, health already knows the residual
+ * while doctor looks clean.
+ *
+ * WARN when the current episode has escalated (bounded retries gave up).
+ * `successes` on health is a lifetime counter, so a later give-up after an
+ * earlier recovered episode still WARNs. Silent (OK) when the field is
+ * absent or the episode has not escalated. Probe null / unreachable → OK
+ * (hermetic offline). Never a required fail; `--strict` exits non-zero on the
+ * WARN. Doctor never auto-resumes fail-closed pauses.
+ */
+async function checkDeadManSelfHeal(
+  env: NodeJS.ProcessEnv,
+  probe: DeadManSelfHealProbe | undefined,
+): Promise<DoctorCheck> {
+  const probeFn = probe ?? defaultProbeDeadManSelfHeal;
+  let snap: DeadManSelfHealProbeSnapshot | null = null;
+  try {
+    snap = await probeFn(env);
+  } catch {
+    snap = null;
+  }
+
+  if (!snap) {
+    return okCheck(
+      'ops.dead-man-self-heal',
+      'Dead-man self-heal',
+      'ops',
+      'probe skipped (no KOOKR_API_BASE_URL / KOOKR_PORT, or health unreachable)',
+      false,
+    );
+  }
+
+  const stats = snap.deadManSelfHeal;
+  if (!stats) {
+    return okCheck(
+      'ops.dead-man-self-heal',
+      'Dead-man self-heal',
+      'ops',
+      'dead-man self-heal field absent',
+      false,
+    );
+  }
+
+  if (stats.escalated) {
+    const classHint = stats.class ? ` class=${stats.class}` : '';
+    const zeroSuccess = stats.successes === 0;
+    return {
+      id: 'ops.dead-man-self-heal',
+      label: 'Dead-man self-heal',
+      category: 'ops',
+      status: 'warn',
+      required: false,
+      summary:
+        (zeroSuccess
+          ? 'dead-man self-heal escalated with zero successes: '
+          : 'dead-man self-heal escalated: ') +
+        `attempts=${stats.attempts} successes=${stats.successes}${classHint}`,
+      detail:
+        `GET /api/health schedules.deadManSelfHeal attempts=${stats.attempts} ` +
+        `successes=${stats.successes} escalated=true${classHint}. Bounded self-heal ` +
+        `gave up; schedules have stopped recovering.`,
+      recommendedAction:
+        'Inspect GET /api/health schedules.deadManSelfHeal. ' +
+        'Recover Grok session auth with `grok login --device-code` when class is auth_expired, ' +
+        'then re-enable paused schedules with `kookr schedule enable --held-by cascade` ' +
+        '(or `kookr schedule enable <id>`). Do not auto-resume fail-closed pauses.',
+    };
+  }
+
+  if (stats.successes > 0) {
+    return okCheck(
+      'ops.dead-man-self-heal',
+      'Dead-man self-heal',
+      'ops',
+      `dead-man self-heal recovered (attempts=${stats.attempts} successes=${stats.successes} escalated=${stats.escalated})`,
+      false,
+    );
+  }
+
+  return okCheck(
+    'ops.dead-man-self-heal',
+    'Dead-man self-heal',
+    'ops',
+    `dead-man self-heal not escalated (attempts=${stats.attempts} successes=0)`,
+    false,
+  );
+}
+
+/**
  * Last-pass open_pr fail-safe dominates when it is the plurality among
  * `lastOutcomes` (ties for first still count — residual is still held by the
  * fail-safe). Empty last pass → not dominated (cannot attribute residual yet).
@@ -2248,6 +2367,76 @@ export function parseSchedulesPausedByFailureHealthBody(
     });
   }
   return { schedules };
+}
+
+/**
+ * Best-effort live probe of schedules.deadManSelfHeal from GET /api/health
+ * (issue #3248). Same base-URL gate as other health probes — hermetic offline
+ * doctor stays green without scanning default ports.
+ */
+async function defaultProbeDeadManSelfHeal(
+  env: NodeJS.ProcessEnv,
+): Promise<DeadManSelfHealProbeSnapshot | null> {
+  const base = resolveOptionalHealthBase(env);
+  if (!base) return null;
+
+  const headers: Record<string, string> = {};
+  const token = env.KOOKR_API_TOKEN?.trim();
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  try {
+    const res = await fetch(`${base}/api/health`, {
+      headers,
+      signal: AbortSignal.timeout(500),
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    return parseDeadManSelfHealHealthBody(body);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `schedules.deadManSelfHeal` from /api/health JSON.
+ *
+ * Health omits the field until self-heal has acted, and omits the `schedules`
+ * block when scheduling is not wired. Both are absent (silent OK), not a skip.
+ * Malformed payloads return null so doctor does not invent a clean fleet.
+ */
+export function parseDeadManSelfHealHealthBody(
+  body: unknown,
+): DeadManSelfHealProbeSnapshot | null {
+  if (!body || typeof body !== 'object') return null;
+  const root = body as { schedules?: unknown };
+  const schedulesBlock = root.schedules;
+  if (schedulesBlock == null) return { deadManSelfHeal: null };
+  if (typeof schedulesBlock !== 'object') return null;
+
+  const raw = (schedulesBlock as { deadManSelfHeal?: unknown }).deadManSelfHeal;
+  if (raw == null) return { deadManSelfHeal: null };
+  if (typeof raw !== 'object') return null;
+
+  const rec = raw as {
+    attempts?: unknown;
+    successes?: unknown;
+    escalated?: unknown;
+    class?: unknown;
+  };
+  const attempts = nonNegInt(rec.attempts);
+  const successes = nonNegInt(rec.successes);
+  if (attempts === null || successes === null || typeof rec.escalated !== 'boolean') {
+    return null;
+  }
+
+  return {
+    deadManSelfHeal: {
+      attempts,
+      successes,
+      escalated: rec.escalated,
+      ...(rec.class === 'auth_expired' ? { class: 'auth_expired' as const } : {}),
+    },
+  };
 }
 
 function nonNegInt(value: unknown): number | null {
