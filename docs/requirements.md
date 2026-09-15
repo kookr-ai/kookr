@@ -1448,6 +1448,21 @@ The system SHALL publish since-boot process-fatal counters on `GET /api/health` 
 
 **Evidence:** `src/server/fatal-error-counters.ts`, `src/server/start.ts` (fatal handlers), `src/server/index.ts` (`getProcessFatalHealth` wiring), `src/server/routes/diagnostics-routes.ts`, `src/server/fatal-error-counters.test.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
 
+### R6.16: Reclaim Known Orphans Before a Resource-Watchdog Spawn [#3247] — SHALL — `done`
+
+The system SHALL run one bounded pass of the existing host-stale dtach reaper and session reaper before spawning a resource-watchdog investigation when the spawn trigger is dtach soft-bound, orphan ceiling, or process ceiling, and SHALL skip that spawn when the pass drops the host back under threshold.
+
+**Acceptance criteria:**
+- Given a dtach-soft-bound spawn decision with reaper hooks wired, when the watchdog would launch an investigation, then it calls the existing reaper `runSweep` hooks before `launchTask`.
+- Given that reclaim pass drops the host below the dtach soft bound, then `launchTask` is not called and no throttle reservation is armed.
+- `GET /api/health` `resourceWatchdog.lastSyncReclaim` records whether that pass ran and whether spawn was skipped because pressure cleared, as a cached in-memory projection (no `/proc` or disk read on the request path).
+
+**Linked tests:** `src/server/resource-watchdog-service.test.ts` (issue #3247 cases).
+
+**Dependencies:** R6.8, R6.14.
+
+**Evidence:** `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/index.ts` (reaper wiring), `src/server/resource-watchdog-service.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -2000,6 +2015,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R6.13 | #2911 | SHALL | done | resource-watchdog state, service, and cached health projection |
 | R6.14 | #2902 | SHALL | done | resource-watchdog fail-closed spawn reservation and persistence health |
 | R6.15 | #3112 | SHALL | done | fatal-error-counters, processFatal health projection |
+| R6.16 | #3247 | SHALL | done | resource-watchdog reclaim-before-spawn and lastSyncReclaim health |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

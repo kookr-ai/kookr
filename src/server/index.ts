@@ -1949,6 +1949,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Same shared cache as /api/health staleProcesses + reaper pressure
     // (issues #2039 / #2350). Only consulted while the actuator is off.
     getStaleDtachCount,
+    // Issue #3247: reclaim stale dtach / session orphans on this tick before
+    // spawning another investigation agent under those leak-class triggers.
+    hostStaleDtachReaper,
+    sessionReaper,
     pressureWhileDisabledAlerter: {
       evaluate: (input) => {
         watchdogDisabledPressureAlerterHolder.current?.evaluate(input);

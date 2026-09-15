@@ -82,6 +82,17 @@ export type ResourceWatchdogTriggerReason =
   /** Soft-bound dtach pressure while the actuator is opt-in disabled (issue #2354). */
   | 'dtach_soft_bound';
 
+/**
+ * Spawn triggers that existing reapers can shrink before launching another
+ * investigation agent (issue #3247). Swap / memory / OOM triggers skip this
+ * pass — killing orphans will not free that class of pressure.
+ */
+export const RESOURCE_WATCHDOG_SYNC_RECLAIM_REASONS: readonly ResourceWatchdogTriggerReason[] = [
+  'dtach_soft_bound',
+  'orphan_ceiling',
+  'process_ceiling',
+];
+
 export interface ResourceWatchdogTrigger {
   reason: ResourceWatchdogTriggerReason;
   /** Human-readable detail for the audit line + brief. */
@@ -258,6 +269,17 @@ export interface ResourceWatchdogHealthSnapshot {
     taskId: string | null;
     /** Failure diagnostic capped at 500 characters; null for accepted launches. */
     error: string | null;
+  } | null;
+  /**
+   * Issue #3247: last attempt to reclaim stale dtach masters / session
+   * orphans before a watchdog spawn. Null until a reclaim-eligible trigger
+   * (dtach soft-bound, orphan ceiling, or process ceiling) reached the spawn
+   * path. `ran` is true only when at least one reaper hook was invoked.
+   */
+  lastSyncReclaim: {
+    at: string;
+    ran: boolean;
+    spawnSkippedBecausePressureCleared: boolean;
   } | null;
   /**
    * Issue #2039 / #2354: true when the watchdog master switch is off *and* a
