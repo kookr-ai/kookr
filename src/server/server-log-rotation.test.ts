@@ -38,22 +38,10 @@ function throwEnospc(): never {
   throw err;
 }
 
-/**
- * Worktrees often lack node_modules. Resolve tsx from a PATH entry that
- * already points at a checkout's `node_modules/.bin` (where `pnpm exec` found
- * vitest).
- */
+/** Resolve tsx from this checkout so the redirected child can import TypeScript. */
 function resolveTsxLoader(): string {
-  for (const binDir of (process.env.PATH ?? '').split(':')) {
-    if (!binDir.endsWith(`${join('node_modules', '.bin')}`)) continue;
-    try {
-      const loader = createRequire(join(dirname(dirname(binDir)), 'package.json')).resolve('tsx');
-      return pathToFileURL(loader).href;
-    } catch {
-      // try the next PATH entry
-    }
-  }
-  throw new Error('unable to resolve tsx loader for redirected-child import');
+  const pkg = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
+  return pathToFileURL(createRequire(pkg).resolve('tsx')).href;
 }
 
 describe('resolveServerLogRotationEnv', () => {
