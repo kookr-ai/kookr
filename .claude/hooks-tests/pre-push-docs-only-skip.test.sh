@@ -73,6 +73,7 @@ assert_all_heavy_lanes_run() {
   assert_log_contains "$repo" "build:server"
   assert_log_contains "$repo" "check:e2e"
   assert_log_contains "$repo" "test"
+  assert_log_contains "$repo" "test:integration"
 }
 
 assert_validators_run() {
@@ -103,6 +104,7 @@ assert_validators_run "$docs_repo"
 assert_log_absent "$docs_repo" "build:server"
 assert_log_absent "$docs_repo" "check:e2e"
 assert_log_absent "$docs_repo" "test"
+assert_log_absent "$docs_repo" "test:integration"
 
 mixed_repo="$TMPDIR/mixed"
 mkdir -p "$mixed_repo"
@@ -165,5 +167,33 @@ setup_repo "$empty_repo"
 run_hook "$empty_repo"
 assert_validators_run "$empty_repo"
 assert_all_heavy_lanes_run "$empty_repo"
+
+failing_repo="$TMPDIR/integration-fail"
+mkdir -p "$failing_repo"
+setup_repo "$failing_repo"
+cat > "$failing_repo/bin/pnpm" <<'PNPM'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PNPM_LOG"
+if [ "$*" = "test:integration" ]; then exit 42; fi
+exit 0
+PNPM
+chmod +x "$failing_repo/bin/pnpm"
+git -C "$failing_repo" checkout -q -b integration-fail
+mkdir -p "$failing_repo/src"
+printf 'code\n' > "$failing_repo/src/index.ts"
+git -C "$failing_repo" add src/index.ts
+git -C "$failing_repo" commit -q -m "code"
+write_review_marker "$failing_repo" "integration-fail"
+failing_status=0
+: > "$failing_repo/pnpm.log"
+(cd "$failing_repo" && PNPM_LOG="$failing_repo/pnpm.log" PATH="$failing_repo/bin:$PATH" bash "$HOOK") \
+  || failing_status=$?
+if [ "$failing_status" -eq 0 ]; then
+  printf 'FAIL: pre-push accepted a failing integration lane\n' >&2
+  exit 1
+fi
+assert_log_contains "$failing_repo" "test:integration"
+assert_log_absent "$failing_repo" "check:faa-gate"
+printf 'PASS: pre-push fails closed when the integration lane fails\n'
 
 printf 'PASS: docs-only lane skipping stays conservative\n'

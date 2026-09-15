@@ -24,13 +24,17 @@ const scriptKeys = new Set(Object.keys(pkg.scripts));
 // Lanes CI runs that have no local `pnpm verify` equivalent — coverage
 // reporting only makes sense in CI, which uploads the artifact.
 const CI_ONLY = new Set(['coverage:summary']);
-// Lanes verify runs that CI covers by a different invocation: CI runs the
-// vitest suite via `pnpm exec vitest run --coverage` (to also collect
-// coverage), and the STT sidecar suite is a separate npm project not wired
-// into the root CI `test` job.
-// The FAA mitigation evidence gate is required by local pre-push and verify.
+// Lanes verify runs that CI covers by a different invocation, or that exist
+// only on the local gate:
+//   - `test`: CI runs the vitest suite via `pnpm exec vitest run --coverage`
+//   - `test:stt`: the STT sidecar is a separate npm project not in the root
+//     CI `test` job
+//   - `test:integration`: self-contained root integration files left the unit
+//     suite in #2823/#3086; local verify/pre-push restored them (#3170). The
+//     live-provider sibling (`test:integration:live`) stays opt-in.
+//   - `check:faa-gate`: required by local pre-push and verify
 // Hosted Actions is disabled; its retained workflow is only a reference.
-const LOCAL_ONLY = new Set(['check:faa-gate', 'test', 'test:stt']);
+const LOCAL_ONLY = new Set(['check:faa-gate', 'test', 'test:integration', 'test:stt']);
 
 // Strip comments so a `pnpm <script>` mentioned in prose (both ci.yml and
 // verify.sh reference other lanes in explanatory comments) is not mistaken for
@@ -100,7 +104,12 @@ describe('CI ↔ verify.sh lane parity (#1369)', () => {
     // Pin the literal allowlist. Growing it to hide a genuinely-drifted lane
     // is only possible by editing this assertion — a visible, reviewable diff.
     expect([...CI_ONLY].sort()).toEqual(['coverage:summary']);
-    expect([...LOCAL_ONLY].sort()).toEqual(['check:faa-gate', 'test', 'test:stt']);
+    expect([...LOCAL_ONLY].sort()).toEqual([
+      'check:faa-gate',
+      'test',
+      'test:integration',
+      'test:stt',
+    ]);
 
     const ciTestJob = extractJob(ciYml, 'test');
     const ciLanes = pnpmScriptLanes(ciTestJob);
@@ -123,5 +132,15 @@ describe('CI ↔ verify.sh lane parity (#1369)', () => {
     expect(verifyLanes).not.toEqual(ciLanes);
     expect(verifyLanes).not.toContain('validate:playbooks');
     expect(ciLanes).toContain('validate:playbooks');
+  });
+
+  it('keeps the self-contained integration lane on local verify, not the live one (#3170)', () => {
+    const verifyLanes = pnpmScriptLanes(verifySh);
+    expect(verifyLanes).toContain('test:integration');
+    expect(verifyLanes).not.toContain('test:integration:live');
+
+    const dropped = verifySh.replace(/^.*pnpm test:integration.*$/m, '# integration lane removed by mutation');
+    expect(dropped, 'mutation should have removed test:integration').not.toEqual(verifySh);
+    expect(pnpmScriptLanes(dropped)).not.toContain('test:integration');
   });
 });

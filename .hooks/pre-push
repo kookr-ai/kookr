@@ -386,12 +386,19 @@ if ! pnpm validate:requirements; then
 fi
 
 if [ "$DOCS_ONLY_SKIP" -eq 1 ]; then
-  echo "Docs-only prose diff detected; skipping Vitest lane."
+  echo "Docs-only prose diff detected; skipping Vitest lanes."
 else
   echo "Running tests..."
   if ! pnpm test; then
     echo ""
     echo "Push rejected: tests failed. Fix failing tests before pushing."
+    exit 1
+  fi
+
+  echo "Running self-contained integration tests..."
+  if ! pnpm test:integration; then
+    echo ""
+    echo "Push rejected: integration tests failed. Fix failing tests before pushing."
     exit 1
   fi
 fi

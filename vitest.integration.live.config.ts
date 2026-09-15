@@ -14,6 +14,9 @@ import { CREDENTIAL_GATED_INTEGRATION_FILES } from './scripts/integration-lane-i
  */
 export default defineConfig({
   test: {
+    // Same cap as the unit and self-contained integration suites so an opt-in
+    // live run cannot allocate workers for the whole CPU on a shared host.
+    maxWorkers: 4,
     include: [...CREDENTIAL_GATED_INTEGRATION_FILES],
     passWithNoTests: true,
     testTimeout: 30_000,

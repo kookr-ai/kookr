@@ -9,8 +9,8 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 | Command | What it runs | Where it runs |
 | --- | --- | --- |
 | `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes integration-style files (`*-integration.test.ts`, `*.integration.test.ts`, `*-e2e.test.ts`) under `src/` and `relay/`. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
-| `pnpm test:integration` | Deterministic root Vitest lane (`vitest.integration.config.ts`) for the **self-contained** subset of the shared inventory (`scripts/integration-lane-inventory.ts`). No provider API keys required. Not part of `pnpm verify`. | Local / manual. |
-| `pnpm test:integration:live` | Opt-in live-LLM lane (`vitest.integration.live.config.ts`) for the **credential-gated** inventory subset. Files `skipIf` without provider keys so the command stays exit-0 when keys are absent. | Local / manual (needs API keys to execute). |
+| `pnpm test:integration` | Deterministic root Vitest lane (`vitest.integration.config.ts`) for the **self-contained** subset of the shared inventory (`scripts/integration-lane-inventory.ts`). No provider API keys required. Part of `pnpm verify` and the pre-push test path (docs-only pushes still skip it). | Local (authoritative). |
+| `pnpm test:integration:live` | Opt-in live-LLM lane (`vitest.integration.live.config.ts`) for the **credential-gated** inventory subset. Files `skipIf` without provider keys so the command stays exit-0 when keys are absent. Not part of `pnpm verify` or pre-push. | Local / manual (needs API keys to execute). |
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local. |

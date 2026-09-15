@@ -101,3 +101,32 @@ if [ "$(tail -n 1 "$TMPDIR/failure.log")" != check:faa-gate ]; then
   exit 1
 fi
 printf 'PASS: verify.sh stops on the FAA gate failure\n'
+
+# --- Self-contained integration lane (#3170) --------------------------------
+# The unit suite no longer includes the seven self-contained integration
+# files. Local verify must run `pnpm test:integration` (and must not run the
+# opt-in live-provider sibling). A failure there must stop the script.
+if ! grep -Fxq 'test:integration' "$TMPDIR/verify-lanes"; then
+  printf 'FAIL: verify.sh does not run pnpm test:integration\n' >&2
+  printf '%s\n' '--- verify.sh lanes ---' >&2
+  cat "$TMPDIR/verify-lanes" >&2
+  exit 1
+fi
+if grep -Fxq 'test:integration:live' "$TMPDIR/verify-lanes"; then
+  printf 'FAIL: verify.sh must not run the opt-in live integration lane\n' >&2
+  exit 1
+fi
+printf 'PASS: verify.sh runs the self-contained integration lane (not live)\n'
+
+status=0
+PNPM_LOG="$TMPDIR/integration-failure.log" PNPM_FAIL_LANE=test:integration PATH="$TMPDIR/bin:$PATH" \
+  bash "$VERIFY_SCRIPT" >/dev/null || status=$?
+if [ "$status" -ne 42 ]; then
+  printf 'FAIL: verify.sh did not propagate the integration lane failure (status=%s)\n' "$status" >&2
+  exit 1
+fi
+if [ "$(tail -n 1 "$TMPDIR/integration-failure.log")" != test:integration ]; then
+  printf 'FAIL: verify.sh continued running lanes after test:integration failed\n' >&2
+  exit 1
+fi
+printf 'PASS: verify.sh stops on the integration lane failure\n'

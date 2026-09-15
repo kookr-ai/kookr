@@ -7,13 +7,13 @@ related: pre-pr-review, kookr-post-push, kookr-pr-lifecycle, pr-review-triage, g
 
 # Pre-Push
 
-> **Requires:** the OSS extension's `[[pre-pr-review]]` skill for the review-layer step (not bundled — see `docs/hooks-setup.md`). If absent, skip the review-layer step rather than fabricating output. The repo-level `pnpm test`, `pnpm build:server`, and `pnpm check:e2e` checks always run.
+> **Requires:** the OSS extension's `[[pre-pr-review]]` skill for the review-layer step (not bundled — see `docs/hooks-setup.md`). If absent, skip the review-layer step rather than fabricating output. The repo-level `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration` checks always run.
 
 Use this before every non-trivial `git push` in Kookr. This skill does not replace existing checks. It sequences the checks that already exist so the branch is ready for push and for `gh pr create`.
 
 ## What Is Already Enforced
 
-- **Repo git hook (`.hooks/pre-push`)**: `git push` automatically runs `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`. `package.json` installs the hook via `prepare -> git config core.hooksPath .hooks`. Bundled — runs for every contributor.
+- **Repo git hook (`.hooks/pre-push`)**: `git push` automatically runs `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration`. `package.json` installs the hook via `prepare -> git config core.hooksPath .hooks`. Bundled — runs for every contributor.
 - **Global PR gate (`~/.claude/hooks/pr-workflow-gate.sh` → `hooks/pr-workflow-gate.sh`)** — lives in this repo (not under `plugin/` because it integrates with Kookr config) and is installed by `scripts/install-hooks.sh`. `gh pr create` is blocked until `[[pre-pr-review]]` creates `/dev/shm/.pr-gate-<repo>-<branch>-pre-done`.
 - **Reviewer specialists (`plugin/reviewer-specialists/`)** — bundled with the `kookr-toolkit` plugin. `[[pre-pr-review]]` defines the reviewer-specialist review layer for non-trivial work (conventions, correctness, deadcode, test, docs-drift, plus a11y for UI diffs). The **docs-drift-specialist** checks whether the code change left documentation stale — requirements, MBSE/system-models, ADRs, user-facing docs — and suggests the concrete edit.
 
@@ -41,7 +41,7 @@ Confirm:
 For any branch that you expect to push for review or turn into a PR, run [[pre-pr-review]] before `git push`.
 
 In this repo, that means:
-- Run the repo's TypeScript checks: `pnpm build:server`, `pnpm check:e2e`, `pnpm test`
+- Run the repo's type-check and test lanes: `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, `pnpm test:integration`
 - Run the reviewer specialists for non-trivial changes
 - Fix blocking findings before proceeding
 - Create the PR gate state file only after the mandatory checks pass
@@ -87,6 +87,7 @@ Expect `.hooks/pre-push` to re-run:
 - `pnpm build:server`
 - `pnpm check:e2e`
 - `pnpm test`
+- `pnpm test:integration`
 - Plugin classification + version-bump checks (when `plugin/**` changed)
 - Pre-PR review-gate marker check (this skill's output, step 3)
 

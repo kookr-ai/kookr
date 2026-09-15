@@ -20,8 +20,9 @@ pnpm dev:demo            # synthetic agents on 4801 plus Vite frontend on 5173
 pnpm dev:server          # backend only
 pnpm dev:frontend        # frontend only
 pnpm test                # Vitest unit tests (see docs/testing.md)
-pnpm test:integration    # Self-contained integration-style Vitest lane
-pnpm test:integration:live # Opt-in live-LLM integration files (skip without keys)
+pnpm test:integration    # Self-contained integration-style Vitest lane (also run by pnpm verify / pre-push)
+pnpm test:integration:live # Opt-in live-LLM integration files (skip without keys; not in verify)
+pnpm verify              # Full local verification, including unit + self-contained integration
 pnpm test:watch          # Vitest watch mode
 pnpm exec playwright test # Playwright E2E tests
 pnpm build               # generate build info, build dtach, typecheck, build frontend

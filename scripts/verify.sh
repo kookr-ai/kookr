@@ -35,6 +35,7 @@ run_lane "Validating documented environment variables" pnpm validate:docs-env-va
 run_lane "Validating documented API routes" pnpm validate:docs-api-routes
 run_lane "Validating requirements status matrix" pnpm validate:requirements
 run_lane "Running tests" pnpm test
+run_lane "Running self-contained integration tests" pnpm test:integration
 run_lane "Checking FAA mitigation evidence" pnpm check:faa-gate
 
 # --- Retained CI reference lanes not on the pre-push hot path --------------
