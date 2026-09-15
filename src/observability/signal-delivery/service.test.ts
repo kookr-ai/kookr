@@ -1,9 +1,9 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, test, vi } from 'vitest';
 import type { SignalDeliveryConfig } from './config.js';
-import { writeOperatorSignal } from './operator-signal.js';
+import { DELIVERED_MARKER_FILE, loadDeliveredMarker, writeOperatorSignal } from './operator-signal.js';
 import { SignalDeliveryService, formatBatch } from './service.js';
 
 async function tempDir(): Promise<string> {
@@ -202,6 +202,133 @@ describe('SignalDeliveryService — failure handling', () => {
     const r2 = await svc.tick();
     expect(r2.delivered).toEqual([]);
     expect(fetchImpl.mock.calls.length).toBe(calls); // no re-post
+  });
+});
+
+describe('SignalDeliveryService — signal read isolation', () => {
+  test('delivers healthy signals once and retries an unreadable entry after repair', async () => {
+    const dir = await tempDir();
+    const fetchImpl = okFetch();
+    const clock = new Clock(0);
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+    const retained = await writeOperatorSignal(dir, { key: 'a', kind: 'alert', source: 's', title: 'retained alert' });
+    const healthy = await writeOperatorSignal(dir, { key: 'z', kind: 'alert', source: 's', title: 'healthy alert' });
+    await rename(retained.path, join(dir, 'retained'));
+    await mkdir(retained.path); // A real EISDIR read fault before z.json in scan order.
+
+    expect((await svc.tick()).delivered).toEqual(['z.json']);
+    expect(await loadDeliveredMarker(dir)).toEqual({ 'z.json': healthy.signal.createdAt });
+    expect(svc.status()).toMatchObject({
+      pending: 0, scanFailures: 1, scanFailedFiles: 1,
+      lastScanFailureAt: clock.now().toISOString(), consecutiveFailures: 0, lastFailureAt: null,
+    });
+    expect(svc.status().lastScanError).toBe('Unable to read one or more signal files');
+    expect(svc.status().lastError).toBeUndefined();
+    expect(svc.status().nextAttemptAt).toBeUndefined();
+
+    clock.advance(60_000);
+    expect((await svc.tick()).delivered).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(svc.status().scanFailures).toBe(2);
+    const lastScanFailureAt = svc.status().lastScanFailureAt;
+
+    await rm(retained.path, { recursive: true });
+    await rename(join(dir, 'retained'), retained.path);
+    clock.advance(60_000);
+    expect((await svc.tick()).delivered).toEqual(['a.json']);
+    expect(svc.status()).toMatchObject({ scanFailures: 2, scanFailedFiles: 0, lastScanFailureAt });
+    expect(svc.status().lastScanError).toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const messages = fetchImpl.mock.calls.map((call) => JSON.parse(call[1]!.body as string) as { content: string });
+    expect(messages[0]!.content).toContain('healthy alert');
+    expect(messages[0]!.content).not.toContain('retained alert');
+    expect(messages[1]!.content).toContain('retained alert');
+    expect(messages[1]!.content).not.toContain('healthy alert');
+
+    const restarted = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+    expect((await restarted.tick()).delivered).toEqual([]);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  test('bounds scan diagnostics and clears the current error on an empty successful scan', async () => {
+    const dir = await tempDir();
+    const log = vi.fn();
+    const fetchImpl = okFetch();
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: () => new Date(0), log });
+    for (let i = 0; i < 20; i++) {
+      await mkdir(join(dir, `private-token-${i}.json`));
+    }
+    expect((await svc.tick()).delivered).toEqual([]);
+    expect(svc.status()).toMatchObject({ scanFailedFiles: 20, scanFailures: 20, consecutiveFailures: 0 });
+    expect(JSON.stringify(svc.status())).not.toContain('private-token');
+    expect(JSON.stringify(svc.status()).length).toBeLessThan(500);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(log).not.toHaveBeenCalled();
+
+    await rm(dir, { recursive: true });
+    await mkdir(dir);
+    await svc.tick();
+    expect(svc.status()).toMatchObject({ scanFailedFiles: 0, scanFailures: 20 });
+    expect(svc.status().lastScanError).toBeUndefined();
+  });
+
+  test('missing and malformed signals keep their existing skip behavior', async () => {
+    const dir = await tempDir();
+    await symlink(join(dir, 'absent'), join(dir, 'a.json'));
+    await writeFile(join(dir, 'b.json'), '{broken');
+    await writeFile(join(dir, 'c.json'), JSON.stringify({ schemaVersion: 'unknown', key: 'c' }));
+    await writeOperatorSignal(dir, { key: 'z', kind: 'alert', source: 's', title: 'healthy' });
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl: okFetch(), log: () => {} });
+
+    expect((await svc.tick()).delivered).toEqual(['z.json']);
+    expect(svc.status()).toMatchObject({ scanFailures: 0, scanFailedFiles: 0, lastScanFailureAt: null });
+    expect(svc.status().lastScanError).toBeUndefined();
+  });
+
+  test.each(['directory', 'marker read', 'marker write'])('%s errors still reject the tick', async (fault) => {
+    const root = await tempDir();
+    const dir = join(root, 'signals');
+    await writeOperatorSignal(dir, { key: 'z', kind: 'alert', source: 's', title: 'healthy' });
+    const fetchImpl = okFetch();
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, log: () => {} });
+    if (fault === 'directory') {
+      await rm(dir, { recursive: true });
+      await writeFile(dir, 'not a directory');
+    } else {
+      await mkdir(join(dir, fault === 'marker read' ? DELIVERED_MARKER_FILE : `${DELIVERED_MARKER_FILE}.tmp-write`));
+    }
+
+    await expect(svc.tick()).rejects.toMatchObject({ code: fault === 'directory' ? 'ENOTDIR' : 'EISDIR' });
+    expect(fetchImpl).toHaveBeenCalledTimes(fault === 'marker write' ? 1 : 0);
+    expect(svc.status()).toMatchObject({ scanFailures: 0, scanFailedFiles: 0, consecutiveFailures: 0 });
+    if (fault === 'marker write') {
+      await expect(readFile(join(dir, DELIVERED_MARKER_FILE))).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+  });
+
+  test('scan recovery does not reset channel backoff', async () => {
+    const dir = await tempDir();
+    await mkdir(join(dir, 'a.json'));
+    await writeOperatorSignal(dir, { key: 'z', kind: 'alert', source: 's', title: 'healthy' });
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 500 }));
+    const clock = new Clock(0);
+    const svc = new SignalDeliveryService({ dir, config: baseConfig(), fetchImpl, now: clock.now, log: () => {} });
+
+    await svc.tick();
+    expect(svc.status()).toMatchObject({ pending: 1, scanFailures: 1, consecutiveFailures: 1 });
+    const nextAttemptAt = svc.status().nextAttemptAt;
+    await rm(join(dir, 'a.json'), { recursive: true });
+    clock.advance(15_000);
+    expect((await svc.tick()).backoff).toBe(true);
+    expect(svc.status()).toMatchObject({ scanFailedFiles: 0, scanFailures: 1, consecutiveFailures: 1, nextAttemptAt });
+    expect(svc.status().lastScanError).toBeUndefined();
+    expect(svc.status().lastError).toBeDefined();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    fetchImpl.mockImplementation(async () => new Response(null, { status: 204 }));
+    clock.advance(15_000);
+    expect((await svc.tick()).delivered).toEqual(['z.json']);
+    expect(svc.status()).toMatchObject({ scanFailures: 1, consecutiveFailures: 0 });
   });
 });
 
