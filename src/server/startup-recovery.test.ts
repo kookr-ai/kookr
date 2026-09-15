@@ -221,6 +221,146 @@ describe('runStartupRecoveryPhase — skip-only retention (issue #2351)', () => 
   });
 });
 
+describe('runStartupRecoveryPhase — ancillary interaction-log isolation (issue #3177)', () => {
+  function seedLiveTask(
+    deps: ReturnType<typeof fakeDeps>,
+    prompt: string,
+    sessionId: string,
+  ) {
+    const task = deps.taskStore.createTask({ prompt, cwd: '/repo' });
+    deps.taskStore.startTask(task.id);
+    deps.taskStore.addSession(task.id, {
+      tmuxSession: sessionId,
+      agentType: 'claude-code',
+      cwd: '/repo',
+      createdAt: new Date(),
+      lastTurnState: 'running',
+    });
+    return task;
+  }
+
+  function wireSharedInteractionLog(
+    deps: ReturnType<typeof fakeDeps>,
+    append: ReturnType<typeof vi.fn>,
+  ) {
+    const interactionLog = { append } as unknown as DeferredInteractionLogWriter;
+    deps.interactionLog = interactionLog;
+    deps.lifecycleDeps = { ...deps.lifecycleDeps, interactionLog };
+    deps.spies.interactionLog = { append };
+  }
+
+  test('a failed first registration append still registers the sibling, replays resumed hooks, and reconciles Ralph', async () => {
+    const deps = fakeDeps();
+    const first = seedLiveTask(deps, 'first replacement', 'kookr-first-replacement');
+    const second = seedLiveTask(deps, 'second replacement', 'kookr-second-replacement');
+    seedLiveTask(deps, 'independently resumed', 'kookr-independent-resume');
+    const append = vi.fn()
+      .mockRejectedValueOnce(new Error('ENOSPC: no space left on device'))
+      .mockResolvedValue(undefined);
+    wireSharedInteractionLog(deps, append);
+
+    mockRecoverCrashedSessions.mockResolvedValue(crashRecoveryResult({
+      relaunched: [
+        { taskId: first.id, oldSessionId: 'old-1', newSessionId: 'kookr-first-replacement', mode: 'fresh' },
+        { taskId: second.id, oldSessionId: 'old-2', newSessionId: 'kookr-second-replacement', mode: 'resumed' },
+      ],
+    }));
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const returned = await runStartupRecoveryPhase({
+        ...deps,
+        reconcileResult: reconciliationResult({
+          markedCompleted: ['old-1', 'old-2'],
+          resumed: ['kookr-independent-resume'],
+        }),
+      });
+
+      expect(returned).toMatchObject({
+        relaunched: [
+          expect.objectContaining({ taskId: first.id }),
+          expect.objectContaining({ taskId: second.id }),
+        ],
+      });
+      expect(deps.spies.monitor.registerAgent).toHaveBeenCalledWith('kookr-second-replacement');
+      expect(deps.spies.hookWatcher.watch).toHaveBeenCalledWith(
+        'kookr-second-replacement',
+        expect.objectContaining({ replayExisting: true }),
+      );
+      expect(deps.spies.hookWatcher.watch).toHaveBeenCalledWith(
+        'kookr-independent-resume',
+        expect.objectContaining({ replayExisting: true }),
+      );
+      expect(deps.spies.ralphLoopService.reconcileStartupLoops).toHaveBeenCalledTimes(1);
+      expect(deps.taskStore.getTask(first.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: [expect.objectContaining({ tmuxSession: 'kookr-first-replacement' })],
+      });
+      expect(deps.taskStore.getTask(second.id)).toMatchObject({
+        status: 'inProgress',
+        sessions: [expect.objectContaining({ tmuxSession: 'kookr-second-replacement' })],
+      });
+      expect(mockRecoverCrashedSessions).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`Post-launch registration failed for live task ${first.id}`),
+        expect.stringContaining('ENOSPC'),
+      );
+      expect(append).toHaveBeenCalledWith(expect.objectContaining({ type: 'crash_recovery' }));
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  test('a failed crash_recovery summary append still returns the recovery result and continues replay', async () => {
+    const deps = fakeDeps();
+    const first = seedLiveTask(deps, 'first replacement', 'kookr-summary-first');
+    const second = seedLiveTask(deps, 'second replacement', 'kookr-summary-second');
+    seedLiveTask(deps, 'independently resumed', 'kookr-summary-independent');
+    const append = vi.fn(async (event: { type: string }) => {
+      if (event.type === 'crash_recovery') {
+        throw new Error('EACCES: permission denied');
+      }
+    });
+    wireSharedInteractionLog(deps, append);
+
+    const recovery = crashRecoveryResult({
+      relaunched: [
+        { taskId: first.id, oldSessionId: 'old-1', newSessionId: 'kookr-summary-first', mode: 'fresh' },
+        { taskId: second.id, oldSessionId: 'old-2', newSessionId: 'kookr-summary-second', mode: 'resumed' },
+      ],
+    });
+    mockRecoverCrashedSessions.mockResolvedValue(recovery);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const returned = await runStartupRecoveryPhase({
+        ...deps,
+        reconcileResult: reconciliationResult({
+          markedCompleted: ['old-1', 'old-2'],
+          resumed: ['kookr-summary-independent'],
+        }),
+      });
+
+      expect(returned).toMatchObject(recovery);
+      expect(deps.spies.monitor.registerAgent).toHaveBeenCalledWith('kookr-summary-first');
+      expect(deps.spies.monitor.registerAgent).toHaveBeenCalledWith('kookr-summary-second');
+      expect(deps.spies.hookWatcher.watch).toHaveBeenCalledWith(
+        'kookr-summary-independent',
+        expect.objectContaining({ replayExisting: true }),
+      );
+      expect(deps.spies.ralphLoopService.reconcileStartupLoops).toHaveBeenCalledTimes(1);
+      expect(deps.taskStore.getTask(first.id)).toMatchObject({ status: 'inProgress' });
+      expect(deps.taskStore.getTask(second.id)).toMatchObject({ status: 'inProgress' });
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to append crash_recovery summary'),
+        expect.stringContaining('EACCES'),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
 describe('runStartupRecoveryPhase — post-restart verification summary (issue #2839)', () => {
   test('attaches the post-restart verification result to the startup summary', async () => {
     const deps = fakeDeps();

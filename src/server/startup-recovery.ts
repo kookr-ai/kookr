@@ -361,7 +361,17 @@ export async function runStartupRecoveryPhase({
     for (const entry of recoveryResult.relaunched) {
       const task = taskStore.getTask(entry.taskId);
       if (task) {
-        await registerNewAgent(task, lifecycleDeps);
+        try {
+          await registerNewAgent(task, lifecycleDeps);
+        } catch (registrationErr) {
+          // Replacement sessions are already live. Isolate per task so one
+          // ancillary log failure cannot skip sibling registration, hook
+          // replay, or Ralph reconcile.
+          console.error(
+            `[crash-recovery] Post-launch registration failed for live task ${task.id}:`,
+            registrationErr instanceof Error ? registrationErr.message : registrationErr,
+          );
+        }
       }
       if (entry.mode === 'resumed') {
         console.log(
@@ -394,14 +404,21 @@ export async function runStartupRecoveryPhase({
     // (issue #2351). Interaction-log noise stays gated to material outcomes.
     startupRecoverySummary = recoveryResult;
     if (recoveryResult.relaunched.length > 0 || recoveryResult.failed.length > 0) {
-      await interactionLog.append({
-        type: 'crash_recovery',
-        relaunched: recoveryResult.relaunched.length,
-        skipped: recoveryResult.skipped.length,
-        failed: recoveryResult.failed.length,
-        details: recoveryResult,
-        timestamp: new Date().toISOString(),
-      });
+      try {
+        await interactionLog.append({
+          type: 'crash_recovery',
+          relaunched: recoveryResult.relaunched.length,
+          skipped: recoveryResult.skipped.length,
+          failed: recoveryResult.failed.length,
+          details: recoveryResult,
+          timestamp: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(
+          '[crash-recovery] Failed to append crash_recovery summary:',
+          err instanceof Error ? err.message : err,
+        );
+      }
       const resumedCount = recoveryResult.relaunched.filter((e) => e.mode === 'resumed').length;
       const freshCount = recoveryResult.relaunched.length - resumedCount;
       console.log(
