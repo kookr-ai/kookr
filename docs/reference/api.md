@@ -30,6 +30,15 @@ after the latest failure. `lastError` is capped at 500 characters. A
 throttle reservation but refused to launch because that reservation was not
 durable (issue #2902). The health request performs no state-store I/O.
 
+`resourceWatchdog.lastSyncReclaim` is a cached projection of the last
+reclaim-before-spawn attempt (issue #3247): `{ at, ran,
+spawnSkippedBecausePressureCleared }` or `null` until a dtach-soft-bound,
+orphan-ceiling, or process-ceiling spawn decision reached the spawn path.
+`ran` is true only when at least one existing reaper hook was invoked.
+When `spawnSkippedBecausePressureCleared` is true, the investigation was
+not launched because that bounded reclaim pass dropped the host back under
+threshold. The health request performs no reaper I/O.
+
 The path-free `dataDirectory` block reports cached byte capacity as
 `{ status, diskFreeBytes, diskTotalBytes, diskFreePercent, sampledAt }`.
 `status` is `known` only when all three byte-capacity values are available;

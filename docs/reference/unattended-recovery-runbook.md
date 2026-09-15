@@ -550,7 +550,9 @@ Env: `KOOKR_PROD_SMOKE_TICK` in [environment-variables.md](./environment-variabl
 auto-investigation task. Doctor warns on `ops.resource-watchdog`. Health may
 show `resourceWatchdog.pressureWhileDisabled: true` (issue #2039). By default
 (`KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE` on) soft-bound pressure also triggers a
-rate-limited investigation spawn without continuous sampling (issue #2354);
+rate-limited investigation spawn without continuous sampling (issue #2354),
+after one bounded host-stale dtach + session reaper pass; the spawn is skipped
+if that pass clears the pressure (`resourceWatchdog.lastSyncReclaim`, issue #3247);
 set `KOOKR_RESOURCE_WATCHDOG_AUTO_ENABLE=0` for page-only, or
 `KOOKR_RESOURCE_WATCHDOG=1` for continuous monitoring.
 

@@ -30,13 +30,14 @@ import {
   recordTriggerOnly,
   type ResourceWatchdogStateStore,
 } from '../core/resource-watchdog-state.js';
-import type {
-  ResourceWatchdogConfig,
-  ResourceWatchdogDecision,
-  ResourceWatchdogHealthSnapshot,
-  ResourceWatchdogPersistedState,
-  ResourceWatchdogSample,
-  ResourceWatchdogSpawnKind,
+import {
+  RESOURCE_WATCHDOG_SYNC_RECLAIM_REASONS,
+  type ResourceWatchdogConfig,
+  type ResourceWatchdogDecision,
+  type ResourceWatchdogHealthSnapshot,
+  type ResourceWatchdogPersistedState,
+  type ResourceWatchdogSample,
+  type ResourceWatchdogSpawnKind,
 } from '../core/resource-watchdog-types.js';
 import type { ResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import type { WatchdogDisabledPressureAlerter } from './watchdog-disabled-pressure-alert.js';
@@ -73,6 +74,22 @@ export interface ResourceWatchdogServiceDeps {
    * Never enables the actuator and never spawns.
    */
   pressureWhileDisabledAlerter?: Pick<WatchdogDisabledPressureAlerter, 'evaluate'>;
+  /**
+   * Optional host-stale dtach reaper (issue #3247). When a spawn trigger is
+   * dtach soft-bound, orphan ceiling, or process ceiling, one bounded
+   * `runSweep` runs before `launchTask`. Tests omit this to keep the spawn
+   * path unchanged.
+   */
+  hostStaleDtachReaper?: {
+    runSweep: () => Promise<unknown> | unknown;
+  };
+  /**
+   * Optional session reaper (issue #3247). Same reclaim-before-spawn pass as
+   * `hostStaleDtachReaper`. Existing per-sweep caps still apply.
+   */
+  sessionReaper?: {
+    runSweep: () => Promise<unknown> | unknown;
+  };
   nowMs?: () => number;
   nowIso?: () => string;
   logger?: Pick<typeof console, 'info' | 'warn'>;
@@ -93,6 +110,8 @@ export class ResourceWatchdogService {
     WatchdogDisabledPressureAlerter,
     'evaluate'
   > | null;
+  private readonly hostStaleDtachReaper: ResourceWatchdogServiceDeps['hostStaleDtachReaper'];
+  private readonly sessionReaper: ResourceWatchdogServiceDeps['sessionReaper'];
   private readonly nowMs: () => number;
   private readonly nowIso: () => string;
   private readonly logger: Pick<typeof console, 'info' | 'warn'>;
@@ -108,6 +127,7 @@ export class ResourceWatchdogService {
   private samplingStartedAtMs: number | null = null;
   private lastDecision: ResourceWatchdogHealthSnapshot['lastDecision'] = null;
   private lastLaunch: ResourceWatchdogHealthSnapshot['lastLaunch'] = null;
+  private lastSyncReclaim: ResourceWatchdogHealthSnapshot['lastSyncReclaim'] = null;
   // One owner outlives sampling ticks and stop/start. Only settlement releases
   // it; an expired throttle never permits a second concurrent launch.
   private launchInFlight: {
@@ -128,6 +148,8 @@ export class ResourceWatchdogService {
     this.readAuditTail = deps.readAuditTail ?? (() => null);
     this.getStaleDtachCount = deps.getStaleDtachCount ?? null;
     this.pressureWhileDisabledAlerter = deps.pressureWhileDisabledAlerter ?? null;
+    this.hostStaleDtachReaper = deps.hostStaleDtachReaper;
+    this.sessionReaper = deps.sessionReaper;
     this.nowMs = deps.nowMs ?? (() => Date.now());
     this.nowIso = deps.nowIso ?? (() => new Date().toISOString());
     this.logger = deps.logger ?? console;
@@ -263,6 +285,7 @@ export class ResourceWatchdogService {
       throttleRemainingMs,
       lastDecision,
       lastLaunch: this.lastLaunch ? { ...this.lastLaunch } : null,
+      lastSyncReclaim: this.lastSyncReclaim ? { ...this.lastSyncReclaim } : null,
       launchInFlight: this.launchInFlight
         ? {
             startedAt: this.launchInFlight.startedAt,
@@ -462,22 +485,9 @@ export class ResourceWatchdogService {
       return;
     }
 
-    // action === 'spawn' — record auto_enable then shared spawn path
+    // action === 'spawn' — reclaim-before-spawn (issue #3247) lives in
+    // handleSpawn; auto_enable audit is recorded only if spawn still proceeds.
     this.lastDecision = 'auto_enable';
-    this.auditSink.append(buildAuditRecord({
-      action: 'auto_enable',
-      timestamp: this.nowIso(),
-      sample,
-      triggers: decision.triggers,
-      kind: decision.kind,
-      spawnsInWindow: decision.spawnsInWindow,
-    }));
-    this.logger.warn(
-      `[resource-watchdog] auto-enable under pressure ` +
-        `(dtach=${dtachCount ?? 'n/a'} ≥ soft bound ${DEFAULT_DTACH_PRESSURE_SOFT_BOUND}); ` +
-        `attempting ${decision.kind} spawn`,
-    );
-    this.lastDecision = 'spawn';
     this.startLaunch(
       config,
       sample,
@@ -576,6 +586,39 @@ export class ResourceWatchdogService {
     decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>,
     opts: { autoEnabled: boolean },
   ): Promise<void> {
+    // Only await when reaper hooks will actually run. A bare `await` of a
+    // sync no-op still yields a microtask and would delay the throttle
+    // reservation past the first fake-timer tick.
+    if (this.shouldRunSyncReclaim(decision.triggers)) {
+      const afterReclaim = await this.runSyncReclaim(config, sample, decision, opts);
+      if (afterReclaim.skipSpawn) return;
+      sample = afterReclaim.sample;
+      decision = afterReclaim.decision;
+    } else if (this.isReclaimableTrigger(decision.triggers)) {
+      this.lastSyncReclaim = {
+        at: this.nowIso(),
+        ran: false,
+        spawnSkippedBecausePressureCleared: false,
+      };
+    }
+
+    if (opts.autoEnabled) {
+      this.lastDecision = 'spawn';
+      this.auditSink.append(buildAuditRecord({
+        action: 'auto_enable',
+        timestamp: this.nowIso(),
+        sample,
+        triggers: decision.triggers,
+        kind: decision.kind,
+        spawnsInWindow: decision.spawnsInWindow,
+      }));
+      this.logger.warn(
+        `[resource-watchdog] auto-enable under pressure ` +
+          `(dtach=${sample.processCounts.dtach} ≥ soft bound ${DEFAULT_DTACH_PRESSURE_SOFT_BOUND}); ` +
+          `attempting ${decision.kind} spawn`,
+      );
+    }
+
     this.auditSink.append(buildAuditRecord({
       action: 'trigger',
       timestamp: this.nowIso(),
@@ -728,6 +771,189 @@ export class ResourceWatchdogService {
     }
   }
 
+  /**
+   * Issue #3247: when spawn triggers are leaks the existing reapers already
+   * know how to shrink, run one bounded sweep of each before launching another
+   * agent. Skip the spawn when that pass drops the host back under threshold.
+   */
+  private isReclaimableTrigger(
+    triggers: readonly { reason: string }[],
+  ): boolean {
+    return triggers.some((trigger) =>
+      (RESOURCE_WATCHDOG_SYNC_RECLAIM_REASONS as readonly string[]).includes(trigger.reason),
+    );
+  }
+
+  private shouldRunSyncReclaim(
+    triggers: readonly { reason: string }[],
+  ): boolean {
+    return this.isReclaimableTrigger(triggers)
+      && (this.hostStaleDtachReaper != null || this.sessionReaper != null);
+  }
+
+  private async runSyncReclaim(
+    config: ResourceWatchdogConfig,
+    sample: ResourceWatchdogSample,
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>,
+    opts: { autoEnabled: boolean },
+  ): Promise<{
+    skipSpawn: boolean;
+    sample: ResourceWatchdogSample;
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>;
+  }> {
+    const dtachResult = await this.runReaperSweep(this.hostStaleDtachReaper);
+    const sessionResult = await this.runReaperSweep(this.sessionReaper);
+    const after = this.recheckPressureAfterReclaim(
+      config,
+      sample,
+      decision,
+      opts,
+      dtachResult,
+      sessionResult,
+    );
+    this.lastSyncReclaim = {
+      at: this.nowIso(),
+      ran: true,
+      spawnSkippedBecausePressureCleared: after.skipBecausePressureCleared,
+    };
+    if (after.skipSpawn) {
+      this.lastDecision = after.skipBecausePressureCleared ? 'idle' : 'suppress_throttled';
+      this.logger.warn(
+        after.skipBecausePressureCleared
+          ? `[resource-watchdog] sync reclaim cleared pressure; skipping ${decision.kind} spawn`
+          : `[resource-watchdog] sync reclaim ran; spawn still suppressed`,
+      );
+      return { skipSpawn: true, sample: after.sample, decision };
+    }
+    return { skipSpawn: false, sample: after.sample, decision: after.decision };
+  }
+
+  private recheckPressureAfterReclaim(
+    config: ResourceWatchdogConfig,
+    sample: ResourceWatchdogSample,
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>,
+    opts: { autoEnabled: boolean },
+    dtachResult: unknown,
+    sessionResult: unknown,
+  ): {
+    skipSpawn: boolean;
+    skipBecausePressureCleared: boolean;
+    sample: ResourceWatchdogSample;
+    decision: Extract<ResourceWatchdogDecision, { action: 'spawn' }>;
+  } {
+    if (opts.autoEnabled || !config.enabled) {
+      const remainingDtach =
+        remainingDtachAfterSweep(dtachResult) ?? this.getStaleDtachCount?.() ?? null;
+      const next = evaluateDisabledPressureAutoEnable({
+        enabled: false,
+        autoEnableOnPressure: config.autoEnableOnPressure,
+        dtachCount: remainingDtach,
+        softBound: DEFAULT_DTACH_PRESSURE_SOFT_BOUND,
+        state: this.state,
+        throttleMs: config.throttleMs,
+        spawnBudget24h: config.spawnBudget24h,
+        spawnBudgetWindowMs: config.spawnBudgetWindowMs,
+        nowMs: this.nowMs(),
+      });
+      const updatedSample = remainingDtach !== null
+        ? this.syntheticPressureSample(remainingDtach)
+        : sample;
+      if (next.action === 'stay_disabled') {
+        return {
+          skipSpawn: true,
+          skipBecausePressureCleared: true,
+          sample: updatedSample,
+          decision,
+        };
+      }
+      if (next.action === 'suppress_throttled') {
+        return {
+          skipSpawn: true,
+          skipBecausePressureCleared: false,
+          sample: updatedSample,
+          decision,
+        };
+      }
+      return {
+        skipSpawn: false,
+        skipBecausePressureCleared: false,
+        sample: updatedSample,
+        decision: {
+          action: 'spawn',
+          sample: updatedSample,
+          triggers: next.triggers,
+          kind: next.kind,
+          spawnsInWindow: next.spawnsInWindow,
+        },
+      };
+    }
+
+    let fresh: ResourceWatchdogSample;
+    try {
+      fresh = this.sampler.sample();
+    } catch (err) {
+      this.logger.warn(
+        '[resource-watchdog] post-reclaim sample failed:',
+        err instanceof Error ? err.message : err,
+      );
+      return {
+        skipSpawn: false,
+        skipBecausePressureCleared: false,
+        sample,
+        decision,
+      };
+    }
+    const remainingOrphans = remainingOrphansAfterSweep(sessionResult);
+    if (remainingOrphans !== null) {
+      fresh = { ...fresh, orphanSessionCount: remainingOrphans };
+    }
+    this.lastSample = fresh;
+    const next = evaluateResourceWatchdog({
+      sample: fresh,
+      previousOomKillTotal: this.state.oomKillBaseline?.total ?? null,
+      state: this.state,
+      config,
+      nowMs: this.nowMs(),
+    });
+    if (next.action === 'idle') {
+      return {
+        skipSpawn: true,
+        skipBecausePressureCleared: true,
+        sample: fresh,
+        decision,
+      };
+    }
+    if (next.action === 'suppress_throttled') {
+      return {
+        skipSpawn: true,
+        skipBecausePressureCleared: false,
+        sample: fresh,
+        decision,
+      };
+    }
+    return {
+      skipSpawn: false,
+      skipBecausePressureCleared: false,
+      sample: fresh,
+      decision: next,
+    };
+  }
+
+  private async runReaperSweep(
+    reaper: { runSweep: () => Promise<unknown> | unknown } | undefined,
+  ): Promise<unknown> {
+    if (!reaper) return undefined;
+    try {
+      return await reaper.runSweep();
+    } catch (err) {
+      this.logger.warn(
+        '[resource-watchdog] sync reclaim sweep failed:',
+        err instanceof Error ? err.message : err,
+      );
+      return undefined;
+    }
+  }
+
   private persistState(): boolean {
     const attemptedAt = this.nowIso();
     try {
@@ -804,6 +1030,37 @@ export function createResourceWatchdogService(
   return new ResourceWatchdogService(deps);
 }
 
+/** Pre-kill dtach master count minus successful reaps from one host-stale sweep. */
+function remainingDtachAfterSweep(result: unknown): number | null {
+  if (!result || typeof result !== 'object') return null;
+  const rec = result as {
+    plan?: { dtachCount?: unknown };
+    reaped?: unknown;
+    dryRun?: unknown;
+  };
+  // Dry-run pushes would-reap pids into `reaped` without killing. Disabled
+  // sweeps return dtachCount 0 with an empty reaped list. Both would
+  // false-clear pressure if subtracted; fall back to the live gauge.
+  if (rec.dryRun === true) return null;
+  if (typeof rec.plan?.dtachCount !== 'number' || !Array.isArray(rec.reaped)) return null;
+  if (rec.plan.dtachCount === 0 && rec.reaped.length === 0) return null;
+  return Math.max(0, rec.plan.dtachCount - rec.reaped.length);
+}
+
+/** Unowned sessions still live after one session-reaper sweep. */
+function remainingOrphansAfterSweep(result: unknown): number | null {
+  if (!result || typeof result !== 'object') return null;
+  const rec = result as { orphanCount?: unknown; reaped?: unknown };
+  if (typeof rec.orphanCount !== 'number' || !Array.isArray(rec.reaped)) return null;
+  let reapedOrphans = 0;
+  for (const entry of rec.reaped) {
+    if (entry && typeof entry === 'object' && (entry as { kind?: unknown }).kind === 'unowned') {
+      reapedOrphans += 1;
+    }
+  }
+  return Math.max(0, rec.orphanCount - reapedOrphans);
+}
+
 export function defaultResourceWatchdogHealthSnapshot(
   enabled = false,
   autoEnableOnPressure = true,
@@ -823,6 +1080,7 @@ export function defaultResourceWatchdogHealthSnapshot(
     throttleRemainingMs: 0,
     lastDecision: enabled ? null : 'disabled',
     lastLaunch: null,
+    lastSyncReclaim: null,
     launchInFlight: null,
     pressureWhileDisabled: false,
     pressureWhileDisabledReason: null,

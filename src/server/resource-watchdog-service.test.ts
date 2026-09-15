@@ -82,6 +82,8 @@ describe('ResourceWatchdogService', () => {
     getStaleDtachCount?: () => number | null;
     pressureWhileDisabledAlerter?: { evaluate: ReturnType<typeof vi.fn> };
     sampleImpl?: () => ResourceWatchdogSample;
+    hostStaleDtachReaper?: ResourceWatchdogServiceDeps['hostStaleDtachReaper'];
+    sessionReaper?: ResourceWatchdogServiceDeps['sessionReaper'];
   } = {}) {
     const statePath = join(dir, 'resource-watchdog.state.json');
     const config = baseConfig({
@@ -108,6 +110,8 @@ describe('ResourceWatchdogService', () => {
       ...(opts.pressureWhileDisabledAlerter
         ? { pressureWhileDisabledAlerter: opts.pressureWhileDisabledAlerter }
         : {}),
+      ...(opts.hostStaleDtachReaper ? { hostStaleDtachReaper: opts.hostStaleDtachReaper } : {}),
+      ...(opts.sessionReaper ? { sessionReaper: opts.sessionReaper } : {}),
       nowMs: () => nowMs,
       nowIso: () => new Date(nowMs).toISOString(),
       logger,
@@ -566,6 +570,11 @@ describe('ResourceWatchdogService', () => {
     expect(snap.pressureWhileDisabled).toBe(true);
     expect(snap.lastDecision).toBe('spawn');
     expect(snap.spawnsIn24h).toBe(1);
+    expect(snap.lastSyncReclaim).toEqual({
+      at: '2026-07-31T12:00:00.000Z',
+      ran: false,
+      spawnSkippedBecausePressureCleared: false,
+    });
     expect(snap.autoEnableOnPressure).toBe(true);
 
     // Second tick within throttle does not storm.
@@ -1288,5 +1297,247 @@ describe('ResourceWatchdogService', () => {
     }
     expect(text).toContain('"action":"spawn"');
     expect(text).toContain('resource-watchdog-audit.v1');
+  });
+
+  test('dtach_soft_bound reclaim hooks run before launchTask (issue #3247)', async () => {
+    const order: string[] = [];
+    let dtachCount = 33;
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => {
+        order.push('dtach');
+      }),
+    };
+    const sessionReaper = {
+      runSweep: vi.fn(async () => {
+        order.push('session');
+      }),
+    };
+    const launchTask = vi.fn(async (opts: LaunchOpts) => {
+      order.push('launch');
+      launches.push(opts);
+      return { task: { id: 'after-reclaim' }, queued: false };
+    });
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => dtachCount,
+      hostStaleDtachReaper,
+      sessionReaper,
+      launchImpl: launchTask,
+    });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(sessionReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(launchTask).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['dtach', 'session', 'launch']);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSyncReclaim: {
+        ran: true,
+        spawnSkippedBecausePressureCleared: false,
+      },
+    });
+  });
+
+  test('dtach_soft_bound reclaim that drops below the soft bound skips launchTask (issue #3247)', async () => {
+    let dtachCount = 33;
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => {
+        dtachCount = 5;
+      }),
+    };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const { service, audit } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => dtachCount,
+      hostStaleDtachReaper,
+      sessionReaper,
+      launchImpl: launchTask,
+    });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(sessionReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(launches).toHaveLength(0);
+    expect(audit.records.map((record) => record.action)).not.toContain('spawn');
+    expect(audit.records.map((record) => record.action)).not.toContain('auto_enable');
+    const snap = service.getHealthSnapshot({ staleDtachCount: dtachCount });
+    expect(snap.lastSyncReclaim).toEqual({
+      at: '2026-07-31T12:00:00.000Z',
+      ran: true,
+      spawnSkippedBecausePressureCleared: true,
+    });
+    expect(snap.lastDecision).toBe('idle');
+    expect(snap.lastLaunch).toBeNull();
+    expect(snap.spawnsIn24h).toBe(0);
+    expect(snap.pressureWhileDisabled).toBe(false);
+    expect(defaultResourceWatchdogHealthSnapshot().lastSyncReclaim).toBeNull();
+  });
+
+  test('orphan_ceiling reclaim that drops below the ceiling skips launchTask (issue #3247)', async () => {
+    sample = healthySample({
+      swapUsedPercent: 0,
+      orphanSessionCount: 6,
+    });
+    const hostStaleDtachReaper = { runSweep: vi.fn(async () => undefined) };
+    const sessionReaper = {
+      runSweep: vi.fn(async () => ({
+        orphanCount: 6,
+        reaped: Array.from({ length: 6 }, () => ({ kind: 'unowned' })),
+      })),
+    };
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const { service } = makeService({
+      hostStaleDtachReaper,
+      sessionReaper,
+      launchImpl: launchTask,
+    });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(sessionReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'idle',
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: true },
+      lastSample: { orphanSessionCount: 0 },
+    });
+  });
+
+  test('swap-only pressure does not call reclaim hooks (issue #3247)', async () => {
+    const hostStaleDtachReaper = { runSweep: vi.fn(async () => undefined) };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const { service } = makeService({ hostStaleDtachReaper, sessionReaper });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).not.toHaveBeenCalled();
+    expect(sessionReaper.runSweep).not.toHaveBeenCalled();
+    expect(launches).toHaveLength(1);
+    expect(service.getHealthSnapshot().lastSyncReclaim).toBeNull();
+  });
+
+  test('reclaim that leaves mixed swap pressure still launches (issue #3247)', async () => {
+    sample = healthySample({
+      swapUsedPercent: 80,
+      orphanSessionCount: 6,
+    });
+    const hostStaleDtachReaper = { runSweep: vi.fn(async () => undefined) };
+    const sessionReaper = {
+      runSweep: vi.fn(async () => ({
+        orphanCount: 6,
+        reaped: Array.from({ length: 6 }, () => ({ kind: 'unowned' })),
+      })),
+    };
+    const { service } = makeService({ hostStaleDtachReaper, sessionReaper });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(sessionReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(launches).toHaveLength(1);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: false },
+      lastSpawnTaskId: 'task-1',
+    });
+  });
+
+  test('process_ceiling reclaim that drops below the ceiling skips launchTask (issue #3247)', async () => {
+    let claude = 40;
+    sample = healthySample({
+      swapUsedPercent: 0,
+      processCounts: { claude, grok: 0, codex: 0, dtach: 1 },
+    });
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => {
+        claude = 1;
+      }),
+    };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const { service } = makeService({
+      hostStaleDtachReaper,
+      sessionReaper,
+      launchImpl: launchTask,
+      sampleImpl: () => healthySample({
+        sampledAt: new Date(nowMs).toISOString(),
+        swapUsedPercent: 0,
+        processCounts: { claude, grok: 0, codex: 0, dtach: 1 },
+      }),
+    });
+    await service.runOnce();
+    expect(hostStaleDtachReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(sessionReaper.runSweep).toHaveBeenCalledTimes(1);
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'idle',
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: true },
+      lastSample: { processCounts: { claude: 1 } },
+    });
+  });
+
+  test('disabled host-stale reaper result does not false-clear dtach pressure (issue #3247)', async () => {
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => ({
+        plan: { dtachCount: 0 },
+        reaped: [],
+        dryRun: false,
+      })),
+    };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => 33,
+      hostStaleDtachReaper,
+      sessionReaper,
+    });
+    await service.runOnce();
+    expect(launches).toHaveLength(1);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: false },
+      lastSpawnTaskId: 'task-1',
+    });
+  });
+
+  test('dry-run host-stale reaper result does not false-clear dtach pressure (issue #3247)', async () => {
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => ({
+        plan: { dtachCount: 33 },
+        reaped: Array.from({ length: 20 }, () => ({ pid: 1 })),
+        dryRun: true,
+      })),
+    };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => 33,
+      hostStaleDtachReaper,
+      sessionReaper,
+    });
+    await service.runOnce();
+    expect(launches).toHaveLength(1);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: false },
+      lastSpawnTaskId: 'task-1',
+    });
+  });
+
+  test('dtach_soft_bound skip uses structured reaper remaining count (issue #3247)', async () => {
+    const hostStaleDtachReaper = {
+      runSweep: vi.fn(async () => ({
+        plan: { dtachCount: 33 },
+        reaped: Array.from({ length: 20 }, () => ({ pid: 1 })),
+      })),
+    };
+    const sessionReaper = { runSweep: vi.fn(async () => undefined) };
+    const launchTask = vi.fn(async () => ({ task: { id: 'must-not-launch' }, queued: false }));
+    const { service } = makeService({
+      config: { enabled: false, autoEnableOnPressure: true },
+      getStaleDtachCount: () => 33,
+      hostStaleDtachReaper,
+      sessionReaper,
+      launchImpl: launchTask,
+    });
+    await service.runOnce();
+    expect(launchTask).not.toHaveBeenCalled();
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastDecision: 'idle',
+      lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: true },
+      lastSample: { processCounts: { dtach: 13 } },
+    });
   });
 });
