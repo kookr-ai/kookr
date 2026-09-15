@@ -468,6 +468,173 @@ describe('OutcomeLedgerPanel', () => {
     expect(tokenMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('1.2M in / 350k out');
   });
 
+  test('renders a cost-per-completed tile from known cost and completed count (issue #3284)', async () => {
+    // Distinct operands pin the ratio: $8.40 / 4 completed → $2.10. A wrong-field
+    // render (taskCount, terminalTaskCount, or the lump-sum known-cost tile)
+    // cannot produce both the headline and the "$8.40 / 4" detail.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              completedTaskCount: 4,
+              terminalTaskCount: 6,
+              completionRate: 4 / 6,
+              totalKnownCostUsd: 8.4,
+            },
+            quality: {
+              ...response().quality,
+              costKnownTasks: 3,
+              costCoverage: 0.5,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const yieldMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === '$ / completed',
+    );
+    expect(yieldMetric).toBeTruthy();
+    expect(yieldMetric?.querySelector('strong')?.textContent).toBe('$2.10');
+    expect(yieldMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('$8.40 / 4');
+
+    // Existing known-cost and completed tiles stay; this tile is additive.
+    const knownCost = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'known cost',
+    );
+    expect(knownCost?.querySelector('strong')?.textContent).toBe('$8.40');
+    const completed = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'completed',
+    );
+    expect(completed?.querySelector('.outcome-metric-detail')?.textContent).toBe('4/6');
+  });
+
+  test('renders a $0 yield when known cost is a real zero, not a missing total (issue #3284)', async () => {
+    // costKnownTasks > 0 with a $0 sum is accounted zero-cost work (e.g. a
+    // subscription agent). That is present, so the tile shows $0.00 — the
+    // missing-total hide path is the sibling test with costKnownTasks === 0.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              completedTaskCount: 5,
+              terminalTaskCount: 5,
+              completionRate: 1,
+              totalKnownCostUsd: 0,
+            },
+            quality: {
+              ...response().quality,
+              costKnownTasks: 5,
+              zeroCostTasks: 5,
+              missingCostTasks: 0,
+              costCoverage: 1,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const yieldMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === '$ / completed',
+    );
+    expect(yieldMetric?.querySelector('strong')?.textContent).toBe('$0.00');
+    expect(yieldMetric?.querySelector('.outcome-metric-detail')?.textContent).toBe('$0.00 / 5');
+  });
+
+  test('omits the cost-per-completed tile when nothing finished (issue #3284)', async () => {
+    // Known cost is present so a buggy "always divide" path would still render
+    // $8.40 / 0 as $Infinity or $0 — both forbidden. The tile must disappear.
+    vi.mocked(fetch).mockImplementation(() =>
+      Promise.resolve(
+        fetchResponse(
+          response({
+            summary: {
+              ...response().summary,
+              completedTaskCount: 0,
+              terminalTaskCount: 3,
+              completionRate: 0,
+              totalKnownCostUsd: 8.4,
+            },
+            quality: {
+              ...response().quality,
+              costKnownTasks: 3,
+              costCoverage: 0.5,
+            },
+          }),
+        ),
+      ),
+    );
+    const el = mount();
+
+    await flush();
+
+    const yieldMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === '$ / completed',
+    );
+    expect(yieldMetric).toBeUndefined();
+    expect(el.textContent).not.toContain('$ / completed');
+    // The source tiles remain: lump-sum cost and the zero completed count.
+    const knownCost = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'known cost',
+    );
+    expect(knownCost?.querySelector('strong')?.textContent).toBe('$8.40');
+    const completed = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'completed',
+    );
+    expect(completed?.querySelector('.outcome-metric-detail')?.textContent).toBe('0/3');
+  });
+
+  test('omits the cost-per-completed tile when known cost is missing or non-finite (issue #3284)', async () => {
+    // Missing (no known-cost tasks, total stays 0) must not render $0.00 as if
+    // spend were known. NaN / Infinity must not leak "$NaN" / "$Infinity".
+    const cases: { totalKnownCostUsd: number; costKnownTasks: number }[] = [
+      { totalKnownCostUsd: 0, costKnownTasks: 0 },
+      { totalKnownCostUsd: Number.NaN, costKnownTasks: 3 },
+      { totalKnownCostUsd: Number.POSITIVE_INFINITY, costKnownTasks: 3 },
+    ];
+    for (const { totalKnownCostUsd, costKnownTasks } of cases) {
+      vi.mocked(fetch).mockImplementation(() =>
+        Promise.resolve(
+          fetchResponse(
+            response({
+              summary: {
+                ...response().summary,
+                completedTaskCount: 4,
+                terminalTaskCount: 4,
+                completionRate: 1,
+                totalKnownCostUsd,
+              },
+              quality: {
+                ...response().quality,
+                costKnownTasks,
+                costCoverage: costKnownTasks > 0 ? 0.5 : 0,
+              },
+            }),
+          ),
+        ),
+      );
+      const el = mount();
+      await flush();
+      const yieldMetric = Array.from(el.querySelectorAll('.outcome-metric')).find(
+        (metric) => metric.querySelector('.outcome-metric-label')?.textContent === '$ / completed',
+      );
+      expect(yieldMetric, `tile shown for cost=${String(totalKnownCostUsd)} knownTasks=${costKnownTasks}`).toBeUndefined();
+      act(() => root?.unmount());
+      root = null;
+      container?.remove();
+    }
+  });
+
   test('renders the cancelled/terminated/active disposition split from the summary', async () => {
     // Distinct counts uniquely pin each field so a wrong-field render can't pass.
     vi.mocked(fetch).mockImplementation(() =>

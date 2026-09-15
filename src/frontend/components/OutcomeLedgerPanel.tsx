@@ -179,6 +179,13 @@ export function OutcomeLedgerPanel({
   const byAgent = Array.isArray(data?.byAgent) ? data.byAgent : [];
   const visibleFindings = useMemo(() => findings.slice(0, 5), [findings]);
   const visibleTasks = useMemo(() => tasks.filter((task) => task.flags.length > 0).slice(0, 5), [tasks]);
+  const costPerCompleted = data == null
+    ? null
+    : costPerCompletedUsd(
+        data.summary.completedTaskCount,
+        data.summary.totalKnownCostUsd,
+        data.quality.costKnownTasks,
+      );
 
   // Client-side CSV export of the scoreboard's headline summary, per-agent
   // rows, and flagged task-audit rows (#3000) — no new server route, mirroring
@@ -254,6 +261,13 @@ export function OutcomeLedgerPanel({
                 <Metric label="completed" value={formatRate(data.summary.completionRate)} detail={`${data.summary.completedTaskCount}/${data.summary.terminalTaskCount}`} delta={comparisonDelta(data.comparison, 'completionRate')} timeWindow={data.window.value} />
                 <Metric label="PRs" value={String(data.summary.prTaskCount)} detail={`${data.summary.prTaskCount}/${data.summary.taskCount}`} />
                 <Metric label="known cost" value={formatMoney(data.summary.totalKnownCostUsd)} detail={`${pct(data.quality.costCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'costCoverage')} timeWindow={data.window.value} />
+                {costPerCompleted != null && (
+                  <Metric
+                    label="$ / completed"
+                    value={formatMoney(costPerCompleted)}
+                    detail={`${formatMoney(data.summary.totalKnownCostUsd)} / ${data.summary.completedTaskCount}`}
+                  />
+                )}
                 <Metric label="tokens" value={formatTokens(data.summary.totalInputTokens + data.summary.totalOutputTokens)} detail={`${formatTokens(data.summary.totalInputTokens)} in / ${formatTokens(data.summary.totalOutputTokens)} out`} />
                 <Metric label="feedback" value={formatRate(data.summary.thumbsUpRate)} detail={`${pct(data.summary.feedbackCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'thumbsUpRate')} timeWindow={data.window.value} />
                 <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} delta={comparisonDelta(data.comparison, 'verificationCoverage')} timeWindow={data.window.value} />
@@ -633,6 +647,27 @@ function pct(value: number | null): string {
 
 function formatMoney(value: number): string {
   return `$${value.toFixed(2)}`;
+}
+
+/**
+ * Known spend divided by completed-task count for the Scoreboard yield tile.
+ *
+ * Returns null when the tile must be omitted: nothing finished, no task has a
+ * known cost (a missing total is 0 in the summary — do not treat that as $0
+ * spend), or the inputs are non-finite. Callers must not render a $0
+ * placeholder for those cases.
+ */
+function costPerCompletedUsd(
+  completedTaskCount: number,
+  totalKnownCostUsd: number,
+  costKnownTasks: number,
+): number | null {
+  if (!(completedTaskCount > 0)) return null;
+  if (!(costKnownTasks > 0)) return null;
+  if (typeof totalKnownCostUsd !== 'number' || !Number.isFinite(totalKnownCostUsd)) return null;
+  const per = totalKnownCostUsd / completedTaskCount;
+  if (!Number.isFinite(per)) return null;
+  return per;
 }
 
 // Lowercase chip labels for each finding metric slug emitted by the backend
