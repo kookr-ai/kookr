@@ -330,19 +330,35 @@ describe('SchedulesDialog search', () => {
     return found!;
   }
 
+  function row(name: string): HTMLElement {
+    const found = Array.from(container.querySelectorAll('.schedule-manager-row'))
+      .find((item) => item.querySelector('.schedule-manager-title')?.textContent === name);
+    expect(found).toBeDefined();
+    return found!;
+  }
+
   test.each([
     ['  NIGHTLY  ', 'Nightly triage', null],
     ['  dependency-AUDIT  ', 'Weekly review', 'Playbook: maintenance/Dependency-Audit.md'],
     ['  FRONTEND  ', 'Weekly review', 'Working directory: /projects/Frontend'],
   ])('matches a trimmed case-insensitive substring: %s', async (query, expectedName, context) => {
     await render();
-    const originalRow = Array.from(container.querySelectorAll('.schedule-manager-row'))
-      .find((row) => row.querySelector('.schedule-manager-title')?.textContent === expectedName);
+    const originalRow = row(expectedName);
     search(query);
 
     expect(names()).toEqual([expectedName]);
     expect(container.querySelector('.schedule-manager-row')).toBe(originalRow);
-    if (context) expect(originalRow?.textContent).toContain(context);
+    if (context) {
+      expect(originalRow.textContent).toContain(context);
+      if (context.startsWith('Playbook:')) {
+        expect(originalRow.textContent).not.toContain('Working directory:');
+      } else {
+        expect(originalRow.textContent).not.toContain('Playbook:');
+      }
+    } else {
+      expect(originalRow.textContent).not.toContain('Playbook:');
+      expect(originalRow.textContent).not.toContain('Working directory:');
+    }
     expect(fetchMock).not.toHaveBeenCalled();
     expect(useKookrStore.getState().schedules).toEqual(schedules);
   });
@@ -350,9 +366,11 @@ describe('SchedulesDialog search', () => {
   test('shows both matching context values when playbook and directory match', async () => {
     await render();
     search('/');
-    const row = container.querySelectorAll('.schedule-manager-row')[1];
-    expect(row.textContent).toContain('Playbook: maintenance/Dependency-Audit.md');
-    expect(row.textContent).toContain('Working directory: /projects/Frontend');
+    expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(row('Nightly triage').textContent).toContain('Working directory: /repo');
+    expect(row('Nightly triage').textContent).not.toContain('Playbook:');
+    expect(row('Weekly review').textContent).toContain('Playbook: maintenance/Dependency-Audit.md');
+    expect(row('Weekly review').textContent).toContain('Working directory: /projects/Frontend');
   });
 
   test.each(['parameter-only', 'history-only', 'no-such-schedule'])(
@@ -368,6 +386,8 @@ describe('SchedulesDialog search', () => {
       expect(document.activeElement).toBe(searchInput());
       expect(names()).toEqual(['Nightly triage', 'Weekly review']);
       expect(container.textContent).not.toContain('No schedules match your search.');
+      expect(container.textContent).not.toContain('Playbook:');
+      expect(container.textContent).not.toContain('Working directory:');
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
@@ -376,9 +396,13 @@ describe('SchedulesDialog search', () => {
     await render();
     search('   ');
     expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(container.textContent).not.toContain('Playbook:');
+    expect(container.textContent).not.toContain('Working directory:');
     search('weekly');
     await act(async () => button('Clear search').click());
     expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(container.textContent).not.toContain('Playbook:');
+    expect(container.textContent).not.toContain('Working directory:');
   });
 
   test('keeps the empty collection state distinct from no matches', async () => {

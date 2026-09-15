@@ -667,42 +667,47 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
           </form>
         )}
 
+        {schedules.length > 0 && (
+          <div className="schedules-dialog-header">
+            <label className="schedule-form-field" style={{ flex: 1, minWidth: 0 }}>
+              <span>Search schedules</span>
+              <input
+                ref={searchInputRef}
+                type="search"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Name, playbook, or working directory"
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+            {searchQuery.length > 0 && (
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  setSearchQuery('');
+                  searchInputRef.current?.focus();
+                }}
+              >
+                Clear search
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="schedule-list">
-          {schedules.length > 0 && (
-            <div className="schedules-dialog-header">
-              <label className="schedule-form-field" style={{ flex: 1, minWidth: 0 }}>
-                <span>Search schedules</span>
-                <input
-                  ref={searchInputRef}
-                  type="search"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Name, playbook, or working directory"
-                  autoComplete="off"
-                  spellCheck={false}
-                />
-              </label>
-              {searchQuery.length > 0 && (
-                <button
-                  type="button"
-                  className="btn-secondary"
-                  onClick={() => {
-                    setSearchQuery('');
-                    searchInputRef.current?.focus();
-                  }}
-                >
-                  Clear search
-                </button>
-              )}
-            </div>
-          )}
           {schedules.length === 0 && !showCreate && (
             <div className="schedule-empty">
               No schedules yet. Create one from an existing playbook.
             </div>
           )}
-          {schedules.length > 0 && visibleSchedules.length === 0 && (
-            <div className="schedule-empty" role="status">No schedules match your search.</div>
+          {schedules.length > 0 && (
+            <div role="status" aria-live="polite">
+              {visibleSchedules.length === 0 ? (
+                <div className="schedule-empty">No schedules match your search.</div>
+              ) : null}
+            </div>
           )}
           {visibleSchedules.map((schedule) => {
             const rollup = rollupsById.get(schedule.id);
