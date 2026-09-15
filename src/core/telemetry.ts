@@ -1,6 +1,7 @@
 import { appendFile, mkdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { TelemetryEvent, TelemetryEventType } from '../shared/contracts/telemetry.js';
+import { JSONL_LOG_READ_MAX_BYTES, readJsonlLogTail } from './jsonl-file-tail.js';
 
 export { TELEMETRY_EVENT_TYPES } from '../shared/contracts/telemetry.js';
 export type { TelemetryEvent, TelemetryEventType };
@@ -84,23 +85,27 @@ export class DeferredTelemetryLogWriter {
 
 // --- Reader ---
 
-export async function readTelemetryLog(filePath: string): Promise<TelemetryEvent[]> {
-  const { readFile } = await import('node:fs/promises');
-  let raw: string;
-  try {
-    raw = await readFile(filePath, 'utf-8');
-  } catch {
-    return [];
-  }
+/**
+ * Byte cap for telemetry-log reads (issue #3243). Same value as the shared
+ * JSONL tail helper — kept as a named export so tests and callers can size
+ * fixtures against the production cap.
+ */
+export const TELEMETRY_LOG_READ_MAX_BYTES = JSONL_LOG_READ_MAX_BYTES;
 
-  const events: TelemetryEvent[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      events.push(JSON.parse(line) as TelemetryEvent);
-    } catch {
-      // Skip malformed lines
-    }
-  }
-  return events;
+/**
+ * Read a telemetry JSONL log, bounded to the last
+ * {@link TELEMETRY_LOG_READ_MAX_BYTES} unless `options.maxBytes` overrides.
+ *
+ * Callers (telemetry report, health/diagnostics) must use this helper rather
+ * than reimplementing a tail. The file is never deleted or rotated.
+ */
+export async function readTelemetryLog(
+  filePath: string,
+  options?: { maxBytes?: number },
+): Promise<TelemetryEvent[]> {
+  const rows = await readJsonlLogTail(
+    filePath,
+    options?.maxBytes ?? TELEMETRY_LOG_READ_MAX_BYTES,
+  );
+  return rows as TelemetryEvent[];
 }
