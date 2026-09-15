@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kookr-merge — wait for a PR's checks then squash-merge with branch deletion.
+# kookr-merge — wait for a PR's checks then squash-merge, deleting the branch by default.
 #
 # Drop-in substitute for `gh pr merge <PR> --auto --squash --delete-branch` on
 # repos where GitHub auto-merge is unavailable (private repos on the Free plan
@@ -13,7 +13,14 @@
 # sync with src/core/independent-review.ts by a contract test. Set
 # KOOKR_MERGE_REQUIRE_REVIEW=0 to disable the gate (manual merges, OSS repos).
 #
-# Usage: kookr-merge <pr-number> [--repo OWNER/NAME]
+# Paired delivery (a change reviewed in two repositories) can still need both
+# source branches after the first merge, for audit, replay, or the second
+# repository's merge. Pass --preserve-branch to skip source-branch deletion.
+# Preservation does not skip review, exact-head pinning, required checks,
+# mergeability, or the post-merge `.merged == true` confirmation. The caller
+# remains responsible for deleting the preserved branch later.
+#
+# Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
 set -euo pipefail
 
 # --- independent-review gate literals (keep in sync with src/core/independent-review.ts) ---
@@ -23,20 +30,30 @@ KOOKR_REVIEW_TIMEOUT_LABEL='review-skipped-timeout'
 PR=""
 REPO_ARG=()
 REPO_SLUG=""
+BRANCH_MODE=""
 
 print_usage() {
   cat <<'EOF'
-Usage: kookr-merge <pr-number> [--repo OWNER/NAME]
+Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
 
-Watches the PR's checks via `gh pr checks --watch` and squash-merges with
-branch deletion once they pass. Aborts before merging if the PR is closed,
-a draft, has changes requested, or any check fails.
+Watches the PR's checks via `gh pr checks --watch` and squash-merges once they
+pass. By default the source branch is deleted after a successful merge. Aborts
+before merging if the PR is closed, a draft, has changes requested, or any
+check fails.
+
+Use --preserve-branch for paired delivery: a change reviewed in two
+repositories, where both source branches are still needed for audit, replay,
+or the coordinated merge in the second repository. Preservation skips only
+wrapper-owned branch deletion. The caller must delete the preserved branch
+once that later work is done.
 
 A drop-in substitute for:
   gh pr merge <pr-number> --auto --squash --delete-branch
 
 Options:
   --repo OWNER/NAME   Target repo (defaults to the current git remote).
+  --preserve-branch   Keep the source branch after merge; caller cleans up later.
+  --delete-branch     Delete the source branch after merge (the default).
   -h, --help          Show this help.
 
 Exit codes:
@@ -125,13 +142,26 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
       [[ $# -ge 2 ]] || { echo "kookr-merge: --repo requires a value" >&2; exit 2; }
+      if [[ -z "$2" || "$2" == -* ]]; then
+        echo "kookr-merge: --repo requires a value, got '$2'" >&2
+        exit 2
+      fi
       REPO_ARG=(--repo "$2")
       REPO_SLUG="$2"
       shift 2
       ;;
     --repo=*)
+      [[ -n "${1#--repo=}" ]] || { echo "kookr-merge: --repo requires a value" >&2; exit 2; }
       REPO_ARG=(--repo "${1#--repo=}")
       REPO_SLUG="${1#--repo=}"
+      shift
+      ;;
+    --preserve-branch|--delete-branch)
+      if [[ -n "$BRANCH_MODE" && "$BRANCH_MODE" != "$1" ]]; then
+        echo "kookr-merge: conflicting options: $BRANCH_MODE and $1" >&2
+        exit 2
+      fi
+      BRANCH_MODE="$1"
       shift
       ;;
     -h|--help)
@@ -140,6 +170,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --)
       shift
+      if [[ -z "$PR" && $# -gt 0 && "$1" != -* ]]; then
+        PR="$1"
+        shift
+      fi
+      if [[ $# -gt 0 ]]; then
+        echo "kookr-merge: unexpected argument after --: $1" >&2
+        exit 2
+      fi
       break
       ;;
     -*)
@@ -157,6 +195,11 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+DELETE_BRANCH_ARG=(--delete-branch)
+if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
+  DELETE_BRANCH_ARG=()
+fi
 
 if [[ -z "$PR" ]]; then
   print_usage >&2
@@ -291,12 +334,17 @@ watch_checks() {
 # API, for a gh too old to have `gh pr merge --match-head-commit` (issue #1853).
 # `sha` is the same head pin that flag sends: GitHub refuses the merge with 409
 # if the PR head has moved on, so an unreviewed commit can never slip in.
-# Deleting the head branch is a separate call here (the flag-based path gets it
-# from --delete-branch) and is best-effort: the merge is what must be atomic.
+# Unless preservation was requested, head deletion is a separate best-effort
+# call (the flag-based path gets it from --delete-branch). The merge itself
+# is what must be atomic.
 # Returns 0 on a merged PR, 1 otherwise.
 merge_pinned_via_api() {
   local head_sha="$1"
-  local slug head_json head_ref head_slug resp
+  local slug="" head_json="" head_ref="" head_slug="" resp=""
+  local preserve=0
+  if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
+    preserve=1
+  fi
 
   slug="$REPO_SLUG"
   if [[ -z "$slug" ]]; then
@@ -327,9 +375,12 @@ merge_pinned_via_api() {
   # Read the head branch before merging; afterwards it may already be gone. A
   # failed read leaves head_json empty (set -e would otherwise abort the script),
   # and the branch delete below is skipped rather than aimed at a guessed ref.
-  head_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json headRefName,headRepository,headRepositoryOwner)" || head_json=""
-  head_ref="$(printf '%s' "$head_json" | jq -r '.headRefName // ""')"
-  head_slug="$(printf '%s' "$head_json" | jq -r 'if .headRepositoryOwner.login and .headRepository.name then .headRepositoryOwner.login + "/" + .headRepository.name else "" end')"
+  # Preservation skips this lookup: no delete request will be issued.
+  if [[ "$preserve" -eq 0 ]]; then
+    head_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json headRefName,headRepository,headRepositoryOwner)" || head_json=""
+    head_ref="$(printf '%s' "$head_json" | jq -r '.headRefName // ""')"
+    head_slug="$(printf '%s' "$head_json" | jq -r 'if .headRepositoryOwner.login and .headRepository.name then .headRepositoryOwner.login + "/" + .headRepository.name else "" end')"
+  fi
 
   # --raw-field, not --field: a SHA must stay a JSON string. --field infers types,
   # and an all-digit SHA would go out as a number the API rejects.
@@ -347,6 +398,11 @@ merge_pinned_via_api() {
     return 1
   fi
   echo "kookr-merge: merged PR #$PR (squash), pinned to $head_sha"
+
+  if [[ "$preserve" -eq 1 ]]; then
+    echo "kookr-merge: source-branch deletion skipped (--preserve-branch); caller is responsible for later cleanup"
+    return 0
+  fi
 
   # The head repo is the fork on a cross-repo PR, so delete the ref there — not
   # in the base repo the merge just landed in.
@@ -408,11 +464,27 @@ echo "kookr-merge: checks passed, squash-merging PR #$PR"
 # Both leave the squash commit message to GitHub's server-side default, so the
 # resulting history is identical whichever path runs.
 if [[ -z "${REVIEW_HEAD_SHA:-}" ]]; then
-  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash ${DELETE_BRANCH_ARG[@]+"${DELETE_BRANCH_ARG[@]}"}
 elif gh pr merge --help 2>&1 | grep -q -- '--match-head-commit'; then
-  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash --delete-branch \
+  gh pr merge "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --squash ${DELETE_BRANCH_ARG[@]+"${DELETE_BRANCH_ARG[@]}"} \
     --match-head-commit "$REVIEW_HEAD_SHA"
 else
   echo "kookr-merge: installed gh lacks --match-head-commit; pinning the head via the REST API instead"
   merge_pinned_via_api "$REVIEW_HEAD_SHA" || exit 1
+  exit 0
+fi
+
+# `gh pr merge` can exit 0 after queueing rather than completing. Confirm the
+# same `.merged == true` postcondition the REST path already requires before
+# treating the PR as landed.
+if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json merged)"; then
+  echo "kookr-merge: could not verify whether PR #$PR merged" >&2
+  exit 1
+fi
+if ! printf '%s' "$merged_json" | jq -e '.merged == true' >/dev/null 2>&1; then
+  echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
+  exit 1
+fi
+if [[ "$BRANCH_MODE" == "--preserve-branch" ]]; then
+  echo "kookr-merge: source-branch deletion skipped (--preserve-branch); caller is responsible for later cleanup"
 fi
