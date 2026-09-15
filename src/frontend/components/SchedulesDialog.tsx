@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useMemo, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { AgentSelection, AgentState, Playbook, PlaybookSourceIdentity, ScheduleResponse, ScheduleRollup } from '../../shared/protocol.js';
 import { buildAgentSelectionOptions } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
@@ -72,6 +72,14 @@ function latestExecutionLabel(schedule: ScheduleResponse): string {
   if (!latest) return 'never';
   const message = latest.message ? ` · ${latest.message}` : '';
   return `${outcomeLabel(latest.outcome)} ${formatScheduleRelativeTime(latest.triggeredAt ?? latest.evaluatedAt)}${message}`;
+}
+
+/** Local view filter: name, playbook identifier, and working directory only. */
+function scheduleMatchesSearch(schedule: ScheduleResponse, rawQuery: string): boolean {
+  const query = rawQuery.trim().toLowerCase();
+  if (!query) return true;
+  return [schedule.name, schedule.playbook.path, schedule.cwd]
+    .some((value) => value.toLowerCase().includes(query));
 }
 
 function scheduleAgentLabel(schedule: ScheduleResponse): string {
@@ -270,6 +278,10 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
   } = useKookrStore();
   const agentOptions = buildAgentSelectionOptions(availableAgentTypes);
   const [showCreate, setShowCreate] = useState(schedules.length === 0 || Boolean(prefill));
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const visibleSchedules = schedules.filter((schedule) => scheduleMatchesSearch(schedule, searchQuery));
   const initialCwd = prefill?.cwd?.trim() || serverCwd;
   const [cwd, setCwd] = useState(initialCwd);
   // A project playbook may have been launched into a different target cwd.
@@ -656,18 +668,59 @@ export function SchedulesDialog({ onClose, prefill, onCreated }: Props) {
         )}
 
         <div className="schedule-list">
+          {schedules.length > 0 && (
+            <div className="schedules-dialog-header">
+              <label className="schedule-form-field" style={{ flex: 1, minWidth: 0 }}>
+                <span>Search schedules</span>
+                <input
+                  ref={searchInputRef}
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="Name, playbook, or working directory"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+              </label>
+              {searchQuery.length > 0 && (
+                <button
+                  type="button"
+                  className="btn-secondary"
+                  onClick={() => {
+                    setSearchQuery('');
+                    searchInputRef.current?.focus();
+                  }}
+                >
+                  Clear search
+                </button>
+              )}
+            </div>
+          )}
           {schedules.length === 0 && !showCreate && (
             <div className="schedule-empty">
               No schedules yet. Create one from an existing playbook.
             </div>
           )}
-          {schedules.map((schedule) => {
+          {schedules.length > 0 && visibleSchedules.length === 0 && (
+            <div className="schedule-empty" role="status">No schedules match your search.</div>
+          )}
+          {visibleSchedules.map((schedule) => {
             const rollup = rollupsById.get(schedule.id);
             const rollupLine = rollup ? formatScheduleRollupLine(rollup) : null;
+            const matchesPlaybook = Boolean(normalizedQuery)
+              && schedule.playbook.path.toLowerCase().includes(normalizedQuery);
+            const matchesCwd = Boolean(normalizedQuery)
+              && schedule.cwd.toLowerCase().includes(normalizedQuery);
             return (
               <div key={schedule.id} className={`schedule-manager-row${schedule.enabled ? '' : ' paused'}`}>
                 <div className="schedule-manager-main">
                   <div className="schedule-manager-title">{schedule.name}</div>
+                  {(matchesPlaybook || matchesCwd) && (
+                    <div className="schedule-manager-meta">
+                      {matchesPlaybook && <span>Playbook: {schedule.playbook.path}</span>}
+                      {matchesCwd && <span>Working directory: {schedule.cwd}</span>}
+                    </div>
+                  )}
                   <div className="schedule-manager-meta">
                     <span className="schedule-manager-agent">{scheduleAgentLabel(schedule)}</span>
                     <span>{schedule.cronDescription}</span>
