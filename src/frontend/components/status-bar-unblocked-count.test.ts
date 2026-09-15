@@ -156,4 +156,43 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
     expect(unblock?.textContent).not.toContain('oldest');
     expect(oldest?.textContent).not.toContain('unblocked');
   });
+
+  test('clicking the chip opens Diagnostics (issue #3280)', async () => {
+    const onOpenDiagnostics = vi.fn();
+    const onOpenLiveFriction = vi.fn();
+    stubTimeToUnblock({
+      schemaVersion: 'time-to-unblock.v1',
+      medianMs: 8 * 60_000,
+      sampleCount: 12,
+      windowMs: 24 * 60 * 60 * 1000,
+      generatedAt: new Date().toISOString(),
+    });
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 1,
+          total: 2,
+          onShowShortcuts: vi.fn(),
+          onOpenDiagnostics,
+          onOpenLiveFriction,
+        }),
+      );
+    });
+    await flushEffects();
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="time-to-unblock-chip"]');
+    expect(chip?.tagName).toBe('BUTTON');
+    expect(chip?.getAttribute('role')).not.toBe('status');
+    expect(chip?.getAttribute('aria-label')).toBe(
+      '12 unblocked (24h) · median 8m. Open Diagnostics',
+    );
+
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onOpenDiagnostics).toHaveBeenCalledOnce();
+    expect(onOpenLiveFriction).not.toHaveBeenCalled();
+  });
 });

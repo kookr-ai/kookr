@@ -8997,6 +8997,7 @@ label.task-share-row {
   margin-left: 6px;
 }
 
+button.time-to-unblock-pill,
 button.live-friction-pill {
   cursor: pointer;
   font-family: inherit;
@@ -9004,10 +9005,12 @@ button.live-friction-pill {
   border: none;
 }
 
+button.time-to-unblock-pill:hover,
 button.live-friction-pill:hover {
   background: rgba(148, 163, 184, 0.26);
 }
 
+button.time-to-unblock-pill:focus-visible,
 button.live-friction-pill:focus-visible {
   outline: 1px solid var(--text-secondary);
   outline-offset: 1px;
