@@ -146,6 +146,10 @@ const HEALTH_ALL_WARNINGS = {
     ],
   },
   systemdNotifier: { arming: 'absent' },
+  maintenancePrune: {
+    emergencyPruneReclaimedZeroWhileCritical: true,
+    consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
+  },
 };
 const ALL_WARNING_PATHS = [
   'safeMode.engaged',
@@ -160,6 +164,7 @@ const ALL_WARNING_PATHS = [
   'schedules.schedulesPausedByFailure',
   'pipelineStarvation.repos.kookr-ai/kookr.consecutiveBlockedEmpty',
   'systemdNotifier.watchdogArmed',
+  'maintenancePrune.emergencyPruneReclaimedZeroWhileCritical',
   'dataDirectory.diskFreePercent',
 ];
 
@@ -368,6 +373,55 @@ describe('collectOpsDigestWarnings', () => {
       value: 4.2,
     });
     expect(signals.diskFreePercent).toBe(4.2);
+  });
+
+  it('warns when emergencyPruneReclaimedZeroWhileCritical is true (issue #3250)', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      maintenancePrune: { emergencyPruneReclaimedZeroWhileCritical: true },
+    });
+    expect(warnings).toEqual([{
+      path: 'maintenancePrune.emergencyPruneReclaimedZeroWhileCritical',
+      summary:
+        'maintenancePrune.emergencyPruneReclaimedZeroWhileCritical=true — ' +
+        'prune of the data directory did not free space ' +
+        '(worktrees or caches may be the real pressure)',
+      value: {
+        emergencyPruneReclaimedZeroWhileCritical: true,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: null,
+      },
+    }]);
+  });
+
+  it('warns from the consecutive-zero counter even when the boolean is omitted (issue #3250)', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      maintenancePrune: { consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1 },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('maintenancePrune.emergencyPruneReclaimedZeroWhileCritical');
+    expect(warnings[0]?.summary).toMatch(/prune of the data directory did not free space/i);
+    expect(warnings[0]?.summary).toMatch(/worktrees or caches/i);
+    expect(warnings[0]?.value).toEqual({
+      emergencyPruneReclaimedZeroWhileCritical: true,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
+    });
+  });
+
+  it.each([
+    ['false flag', { emergencyPruneReclaimedZeroWhileCritical: false }],
+    ['zero counter', { consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0 }],
+    ['false and zero', {
+      emergencyPruneReclaimedZeroWhileCritical: false,
+      consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 0,
+    }],
+    ['empty block', {}],
+  ])('adds no prune-zero warning when %s (issue #3250)', (_name, maintenancePrune) => {
+    const { warnings } = collectOpsDigestWarnings({ maintenancePrune });
+    expect(warnings.some((w) => w.path.includes('maintenancePrune'))).toBe(false);
+  });
+
+  it('adds no prune-zero warning when the maintenancePrune block is absent (issue #3250)', () => {
+    const { warnings } = collectOpsDigestWarnings({ status: 'ok' });
+    expect(warnings.some((w) => w.path.includes('maintenancePrune'))).toBe(false);
   });
 
   // systemd notifier arming (issue #2853).
@@ -1450,7 +1504,7 @@ describe('ops digest --all-warnings', () => {
         }),
       });
       const output = c.logs.join('\n');
-      expect(output).toContain('warnings (13):');
+      expect(output).toContain('warnings (14):');
       expect(output).not.toContain('(truncated)');
       for (const path of ALL_WARNING_PATHS) expect(output).toContain(path);
       expect(output.split('\n').findIndex(line => line.includes('dataDirectory.diskFreePercent'))).toBeGreaterThanOrEqual(20);

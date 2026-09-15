@@ -83,7 +83,7 @@ Usage:
 digest: GET /api/ready and GET /api/health, then print ready status plus the
 top unattended failure signals (pressureWhileDisabled, blocked watchdog recovery,
 phantomActive, hung residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
-p95, fail-closed paused schedules, pipeline starvation, disk, safeMode) with
+p95, fail-closed paused schedules, pipeline starvation, ineffective emergency prune, disk, safeMode) with
 field paths. Defaults to up to five warnings and at most twenty lines.
 
 When the server is unreachable, digest auto-degrades to the last-good
@@ -523,8 +523,8 @@ function parseReadyBody(body: unknown): {
  * Collect the unattended-ops warning set from a health body. Order is
  * severity-ish (safeMode → pressure → blocked recovery → phantom → hung → helper-LLM pause →
  * overdue/never-fired hourly timers → hook-ingestion p95 → fail-closed
- * paused schedules → starvation → disk). Returns at most MAX_WARNINGS unless
- * `opts.allWarnings` is true.
+ * paused schedules → starvation → systemd → ineffective emergency prune → disk).
+ * Returns at most MAX_WARNINGS unless `opts.allWarnings` is true.
  *
  * `opts.nowMs` is only used when `timerHealth.generatedAt` is missing, to
  * decide whether a never-fired hourly loop is older than its interval.
@@ -903,6 +903,36 @@ export function collectOpsDigestWarnings(
         value: { arming: systemdNotifierArming },
       });
     }
+  }
+
+  // Ineffective emergency prune (issue #3250): the throttled sweep that fires
+  // when disk-critical admission engages reported success but freed no bytes
+  // while the volume was still critical. Distinct from the generic low-disk
+  // line so a remote operator can tell "disk is tight" from "prune cannot help."
+  // Health already classifies this (issue #3110); digest only surfaces it.
+  const maintenancePrune = asRecord(h.maintenancePrune);
+  const emergencyPruneReclaimedZeroWhileCritical =
+    maintenancePrune?.emergencyPruneReclaimedZeroWhileCritical === true;
+  const consecutiveZeroWhileCritical = finiteNumber(
+    maintenancePrune?.consecutiveEmergencyPrunesReclaimedZeroWhileCritical,
+  );
+  if (
+    emergencyPruneReclaimedZeroWhileCritical ||
+    (consecutiveZeroWhileCritical !== null && consecutiveZeroWhileCritical >= 1)
+  ) {
+    const consecutive =
+      consecutiveZeroWhileCritical !== null ? Math.floor(consecutiveZeroWhileCritical) : null;
+    warnings.push({
+      path: 'maintenancePrune.emergencyPruneReclaimedZeroWhileCritical',
+      summary:
+        'maintenancePrune.emergencyPruneReclaimedZeroWhileCritical=true — ' +
+        'prune of the data directory did not free space ' +
+        '(worktrees or caches may be the real pressure)',
+      value: {
+        emergencyPruneReclaimedZeroWhileCritical: true,
+        consecutiveEmergencyPrunesReclaimedZeroWhileCritical: consecutive,
+      },
+    });
   }
 
   // Disk: warn when free percent is known and low (≤15%, matching "critical
