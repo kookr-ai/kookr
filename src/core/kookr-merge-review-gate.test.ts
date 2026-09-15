@@ -84,6 +84,9 @@ describe('kookr-merge.sh review gate (integration, stubbed gh)', () => {
   const fakeGh = (viewJsonPath: string, mergeArgsPath: string) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$args" == *"--json merged"* ]]; then
+    echo '{"merged":true}'; exit 0
+  fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
   fi
@@ -173,6 +176,7 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).toContain('FAKE-GH-MERGED');
     const mergeArgs = readFileSync(mergeArgsFile, 'utf-8');
     expect(mergeArgs).toMatch(/--match-head-commit\s+abc123/);
+    expect(mergeArgs).toMatch(/--delete-branch/);
   });
 
   test('head SHA is the last commit oid (not the first) on multi-commit PRs', () => {
@@ -267,6 +271,9 @@ describe('kookr-merge.sh review gate on older gh without --match-head-commit (#1
     headViewStatus: string;
   }) => `#!/usr/bin/env bash
 args="$*"
+if [[ "$1" == "pr" && "$2" == "view" && "$args" == *"--json merged"* ]]; then
+  echo '{"merged":true}'; exit 0
+fi
 if [[ "$1" == "repo" && "$2" == "view" ]]; then
   # Real gh applies -q to the JSON; the script relies on that to get a bare slug.
   if [[ "$args" == *"-q .nameWithOwner"* ]]; then echo 'owner/repo'; else echo '{"nameWithOwner":"owner/repo"}'; fi
@@ -534,6 +541,9 @@ describe('kookr-merge.sh watch_checks with no reported checks (integration, stub
   const fakeGhNoWatch = (viewJsonPath: string, rollupJsonPath: string) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$args" == *"--json merged"* ]]; then
+    echo '{"merged":true}'; exit 0
+  fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
   fi
@@ -635,6 +645,9 @@ describe('kookr-merge.sh watch_checks skips --watch when no checks are reported 
   ) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
+  if [[ "$args" == *"--json merged"* ]]; then
+    echo '{"merged":true}'; exit 0
+  fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
   fi

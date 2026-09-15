@@ -70,3 +70,31 @@ See `KOOKR_MERGE_REQUIRED_GATE` in [environment-variables](./environment-variabl
    `gh pr view <n> --json mergedAt` is non-null, **or**
 2. Record a blocker: `printf 'PR-BLOCKER: %s\n' '<reason>'`
 3. Re-run `kookr signal completion-ready`
+
+## Preserving branches for paired delivery
+
+Paired delivery coordinates a change reviewed in two repositories. When either
+source branch is still needed for audit, replay, or the second repository's
+merge, request preservation on each affected PR:
+
+```bash
+bash scripts/kookr-merge.sh <PR_NUMBER> --repo OWNER/REPO --preserve-branch
+```
+
+The wrapper omits `--delete-branch` from `gh pr merge` and skips the source-ref
+DELETE request in its REST fallback, including when the source is in a fork.
+This controls deletion by the wrapper; it does not override GitHub repository
+settings or other automation that may delete branches after merge.
+
+Without a branch option, the wrapper requests deletion after merging. The
+explicit `--delete-branch` option selects the same default. Passing both branch
+options is an error, in either order. Unknown options and conflicting branch
+options are rejected before any GitHub request.
+
+Preservation changes only branch cleanup. It grants no exemption from independent
+review, merging the exact reviewed commit, required checks, or mergeability.
+Both merge paths require GitHub to confirm the PR has merged (`.merged == true`),
+so a queued merge is not reported as complete. The caller remains responsible
+for deleting each preserved branch once paired delivery and its audit or replay
+needs are complete. Preservation does not waive the completion gate: verify the
+PR's non-null `mergedAt` as usual.
