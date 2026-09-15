@@ -18,6 +18,7 @@
  * - prod smoke tick fire / clear (issue #2032)
  */
 
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { atomicWriteFile } from './persistence-utils.js';
@@ -277,6 +278,8 @@ export interface OpsStatusWriterDeps {
   now?: () => Date;
   /** Injected for tests; defaults to {@link atomicWriteFile}. */
   writeFileAtomically?: (filePath: string, data: string) => Promise<void>;
+  /** Injected for tests; defaults to utf-8 {@link readFile}. */
+  readExistingFile?: (filePath: string) => Promise<string>;
   logger?: Pick<typeof console, 'warn'>;
   maxEdges?: number;
 }
@@ -292,6 +295,7 @@ export class OpsStatusWriter {
   private readonly getLiveFields: () => OpsStatusLiveFields;
   private readonly now: () => Date;
   private readonly writeFileAtomically: (filePath: string, data: string) => Promise<void>;
+  private readonly readExistingFile: (filePath: string) => Promise<string>;
   private readonly logger: Pick<typeof console, 'warn'>;
   private readonly maxEdges: number;
   private lastEdges: OpsStatusEdge[] = [];
@@ -308,6 +312,8 @@ export class OpsStatusWriter {
   private lastSelfHealZeroSuccessEscalate: boolean | null = null;
   /** Writer-owned leftover copied onto every snapshot while the condition holds. */
   private deadManSelfHealExhausted: OpsStatusDeadManSelfHealExhausted | undefined;
+  /** One-shot hydrate of leftover + edge ring from the existing card (restart). */
+  private hydrateChain: Promise<void> | null = null;
   /** Serialize concurrent edge notes so the ring stays ordered. */
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -316,6 +322,7 @@ export class OpsStatusWriter {
     this.getLiveFields = deps.getLiveFields;
     this.now = deps.now ?? (() => new Date());
     this.writeFileAtomically = deps.writeFileAtomically ?? atomicWriteFile;
+    this.readExistingFile = deps.readExistingFile ?? ((filePath) => readFile(filePath, 'utf-8'));
     this.logger = deps.logger ?? console;
     this.maxEdges = deps.maxEdges ?? OPS_STATUS_MAX_EDGES;
   }
@@ -384,6 +391,7 @@ export class OpsStatusWriter {
    * {@link noteReadyVerdict}). Never records schedule ids.
    */
   async noteDeadManSelfHeal(stats: DeadManSelfHealOpsStats): Promise<OpsStatusSnapshot | null> {
+    await this.hydrateFromDisk();
     const leftover = isZeroSuccessEscalate(stats);
     if (leftover) {
       if (this.lastSelfHealZeroSuccessEscalate === true) return null;
@@ -448,7 +456,43 @@ export class OpsStatusWriter {
     return run;
   }
 
+  private hydrateFromDisk(): Promise<void> {
+    if (!this.hydrateChain) {
+      this.hydrateChain = this.readAndHydrate();
+    }
+    return this.hydrateChain;
+  }
+
+  /**
+   * Reload leftover + edge ring from the on-disk card so a process restart
+   * can still clear `deadManSelfHealExhausted` instead of leaving a stale
+   * leftover after recovery (issue #3249). Missing/invalid cards start empty.
+   */
+  private async readAndHydrate(): Promise<void> {
+    try {
+      const raw = await this.readExistingFile(this.filePath);
+      const parsed: unknown = JSON.parse(raw);
+      if (!isOpsStatusSnapshot(parsed)) return;
+      this.lastEdges = parsed.lastEdges.map((edge) => ({
+        kind: edge.kind,
+        at: edge.at,
+        ...(edge.detail ? { detail: edge.detail } : {}),
+      }));
+      this.lastWritten = parsed;
+      if (parsed.deadManSelfHealExhausted) {
+        this.deadManSelfHealExhausted = {
+          attempts: parsed.deadManSelfHealExhausted.attempts,
+          at: parsed.deadManSelfHealExhausted.at,
+        };
+        this.lastSelfHealZeroSuccessEscalate = true;
+      }
+    } catch {
+      // Missing or unreadable card — first boot / empty writer.
+    }
+  }
+
   private async writeEdge(edge: OpsStatusEdge): Promise<OpsStatusSnapshot | null> {
+    await this.hydrateFromDisk();
     let fields: OpsStatusLiveFields;
     try {
       fields = this.getLiveFields();

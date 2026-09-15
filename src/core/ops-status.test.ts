@@ -93,6 +93,15 @@ describe('ops-status schema', () => {
       ...snap,
       lastEdges: [{ kind: 'dead_man_self_heal_escalate', at: '2026-08-03T12:00:00.000Z' }],
     })).toBe(true);
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      deadManSelfHealExhausted: { attempts: -1, at: '2026-08-03T12:00:00.000Z' },
+    })).toBe(false);
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      deadManSelfHealExhausted: { attempts: 3, at: '' },
+    })).toBe(false);
+    expect(isOpsStatusSnapshot({ ...snap, deadManSelfHealExhausted: null })).toBe(false);
   });
 
   it('isOpsStatusSnapshot rejects wrong version, missing fields, and bad edges', () => {
@@ -538,5 +547,74 @@ describe('OpsStatusWriter', () => {
       'dead_man_self_heal_escalate',
       'ready_degrade',
     ]);
+  });
+
+  it('hydrates leftover from disk so a restarted writer can clear it (issue #3249)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    const first = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      logger: { warn: vi.fn() },
+    });
+    await first.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+
+    const restarted = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T16:00:00.000Z'),
+      logger: { warn: vi.fn() },
+    });
+    const cleared = await restarted.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: false,
+    });
+    expect(cleared?.lastEdges.map((e) => e.kind)).toEqual([
+      'dead_man_self_heal_escalate',
+      'dead_man_self_heal_clear',
+    ]);
+    expect(cleared?.deadManSelfHealExhausted).toBeUndefined();
+    expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
+    expect(JSON.parse(await readFile(filePath, 'utf-8')).deadManSelfHealExhausted).toBeUndefined();
+  });
+
+  it('retries self-heal clear after ENOSPC so leftover is not dropped in memory only', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    let failClear = false;
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      writeFileAtomically: async (path, data) => {
+        if (failClear) {
+          failClear = false;
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        await atomicWriteFile(path, data);
+      },
+      logger: { warn: vi.fn() },
+    });
+
+    await writer.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+    failClear = true;
+    await expect(writer.noteDeadManSelfHeal({
+      attempts: 4,
+      successes: 1,
+      escalated: false,
+    })).resolves.toBeNull();
+    expect(JSON.parse(await readFile(filePath, 'utf-8')).deadManSelfHealExhausted).toEqual({
+      attempts: 3,
+      at: '2026-08-03T15:00:00.000Z',
+    });
+    const snap = await writer.noteDeadManSelfHeal({
+      attempts: 4,
+      successes: 1,
+      escalated: false,
+    });
+    expect(snap?.lastEdges[1]?.kind).toBe('dead_man_self_heal_clear');
+    expect(snap?.deadManSelfHealExhausted).toBeUndefined();
   });
 });
