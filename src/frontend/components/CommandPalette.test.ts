@@ -17,10 +17,12 @@ let root: Root;
 
 const runDiagnostics = vi.fn();
 const runSchedules = vi.fn();
+const runScoreboard = vi.fn();
 
 const runTour = vi.fn();
 const actions: CommandAction[] = [
   { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['health'], run: runDiagnostics },
+  { id: 'outcome-scoreboard', label: 'Outcome Scoreboard', section: 'view', keywords: ['scoreboard', 'outcome'], run: runScoreboard },
   { id: 'schedules', label: 'Schedules', section: 'tools', keywords: ['cron'], run: runSchedules },
   { id: 'settings', label: 'Settings', section: 'session', run: vi.fn() },
   { id: 'tour', label: 'Take the tour', section: 'session', keywords: ['onboarding', 'walkthrough'], run: runTour },
@@ -100,6 +102,7 @@ describe('CommandPalette', () => {
     root = createRoot(container);
     runDiagnostics.mockClear();
     runSchedules.mockClear();
+    runScoreboard.mockClear();
     runTour.mockClear();
   });
 
@@ -111,7 +114,7 @@ describe('CommandPalette', () => {
   test('browse mode shows all actions grouped by section, no tasks', () => {
     render();
     const rows = container.querySelectorAll('[data-testid="command-palette-action"]');
-    expect(rows.length).toBe(4);
+    expect(rows.length).toBe(5);
     expect(container.querySelectorAll('[data-testid="command-palette-task"]').length).toBe(0);
     expect(container.querySelectorAll('[data-testid="command-palette-finding"]').length).toBe(0);
     expect(container.querySelectorAll('[data-testid="command-palette-project"]').length).toBe(0);
@@ -157,6 +160,21 @@ describe('CommandPalette', () => {
     act(() => schedules.click());
     expect(runSchedules).toHaveBeenCalledTimes(1);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('typing scoreboard or outcome lists Outcome Scoreboard', () => {
+    render();
+    const input = container.querySelector<HTMLInputElement>('[data-testid="command-palette-input"]')!;
+    act(() => setInputValue(input, 'scoreboard'));
+    let rows = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'));
+    expect(rows.map((row) => row.dataset.actionId)).toEqual(['outcome-scoreboard']);
+    expect(rows[0].textContent).toContain('Outcome Scoreboard');
+
+    act(() => setInputValue(input, 'outcome'));
+    rows = Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'));
+    expect(rows.map((row) => row.dataset.actionId)).toEqual(['outcome-scoreboard']);
+    act(() => rows[0].click());
+    expect(runScoreboard).toHaveBeenCalledTimes(1);
   });
 
   test('typing tour lists Take the tour', () => {
@@ -209,7 +227,7 @@ describe('CommandPalette', () => {
     expect(nextActiveId).not.toBe(initialActiveId);
     expect(nextActiveRow).toBe(container.querySelector('.cmd-row.sel'));
     expect(nextActiveRow?.getAttribute('aria-selected')).toBe('true');
-    expect(nextActiveRow?.getAttribute('aria-label')).toBe('Action: Schedules');
+    expect(nextActiveRow?.getAttribute('aria-label')).toBe('Action: Outcome Scoreboard');
     expect(initialActiveRow?.getAttribute('aria-selected')).toBe('false');
 
     act(() => setInputValue(input, 'telegram'));
