@@ -878,12 +878,12 @@ export class SessionBridge {
           this.onBridgeLiveBytes?.(this.sessionId);
         });
       }
-      // Capture before resize so a narrow FitAddon attach cannot shrink the
-      // PTY (and the ring tail) before we classify Grok as absolute-TUI.
-      // Continuity probes still never resize.
+      // Classify from the live ring *before* any FitAddon shrink. Grok's
+      // spawn size is 200×50; shrinking first used to hide the wide chrome
+      // and smash the pane. Continuity probes still never resize.
       const captureStarted = performance.now();
-      const snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
-      const captureMs = performance.now() - captureStarted;
+      let snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+      let captureMs = performance.now() - captureStarted;
       if (this.closed) return;
       if (request.cursor) {
         const cursor = request.cursor;
@@ -906,11 +906,22 @@ export class SessionBridge {
       const absolute = !request.cursor && this.shouldSkipRingReplay(snapshot.bytes);
       const seedCols = absolute ? Math.max(request.cols, ABSOLUTE_TUI_COLS) : request.cols;
       const seedRows = request.rows;
+      const didResize = !request.cursor && !this.readOnly
+        && (snapshot.cols !== seedCols || snapshot.rows !== seedRows);
       if (!request.cursor && !this.readOnly) {
         const resizeStarted = performance.now();
         await this.backend.resize(this.sessionId, seedCols, seedRows);
         resizeWaitMs = performance.now() - resizeStarted;
         this.lastAppliedResize = { cols: seedCols, rows: seedRows };
+      }
+      // Streaming agents still need a seed that matches the post-resize PTY.
+      // Recapture after a real size change; Grok keeps the pre-shrink ring
+      // for reconstruct so a narrow attach cannot smash the frame.
+      if (!absolute && didResize) {
+        const recaptureStarted = performance.now();
+        snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+        captureMs += performance.now() - recaptureStarted;
+        if (this.closed) return;
       }
       const seedStarted = performance.now();
       const reconstruction = absolute ? await reconstructAbsoluteTuiScreenResult(snapshot.bytes, {
@@ -932,8 +943,13 @@ export class SessionBridge {
       // Only a complete origin seed or an already retained parser can supply
       // an exact cursor. Explicit initial/new views keep best-effort input
       // separately, as the RFC requires; they cannot claim exact recovery.
-      const resumable = !absolute && !replayFallback && (!!request.cursor
-        || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
+      // Resume cursors must describe the PTY after any post-classify resize.
+      // A recaptured streaming snapshot can match; a pre-shrink Grok snapshot
+      // will not, and must not claim exact recovery.
+      const resumable = !absolute && !replayFallback
+        && snapshot.cols === seedCols && snapshot.rows === seedRows
+        && (!!request.cursor
+          || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
       const screenUnavailable = reconstruction?.kind === 'unavailable' && !replayFallback;
       const cursor = resumable ? {
         epoch: snapshot.epoch, position: snapshot.end, geometryRevision: snapshot.geometryRevision,

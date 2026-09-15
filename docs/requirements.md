@@ -1070,8 +1070,6 @@ task scheduling across panes. Transport credit returns only after parsing.
   cells off-screen and can flip the ring heuristic onto the streaming
   viewport-ring smash path. Idle Grok spinner tails (low-column CUP only)
   still classify as absolute when earlier frames painted wide chrome.
-  Display-only seeds (no resume cursor) reconnect as a new view instead of
-  blocking on missing parser continuity.
 
 **Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `src/server/absolute-position-tui-ring.test.ts`, `src/server/session-bridge-v2.test.ts`.
 
@@ -1091,6 +1089,9 @@ indices and transport acknowledgements.
   replay invalidates the epoch; changed dimensions invalidate geometry continuity.
 - Exact resume requires the same epoch and geometry, with all missing bytes
   retained. Missing continuity is disclosed, never repaired by content overlap.
+- Display-only seeds (no resume cursor and no retained history, including
+  absolute-TUI reconstruct) reconnect as an explicit new view (`acceptGap`)
+  instead of stalling on "parser continuity unavailable".
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively
 invalidates the cursor, even if that parse later completes. Carrying the retiring

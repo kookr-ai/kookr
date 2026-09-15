@@ -165,6 +165,7 @@ vi.mock('../terminal-writer.js', async (importOriginal) => {
     actual.createTerminalWriter({ ...options, scheduler: actual.createTerminalWriteScheduler((task) => task()) }) };
 });
 
+import { ABSOLUTE_TUI_COLS } from '../../shared/absolute-tui-geometry.js';
 import { TerminalPanel } from './TerminalPanel.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
@@ -342,11 +343,22 @@ describe('TerminalPanel', () => {
       tmuxName: 'kookr-grok', visible: true, agentType: 'grok-build',
     })));
     const terminal = mocks.terminalInstances[0];
-    expect(terminal.cols).toBe(80);
+    expect(terminal.cols).toBe(ABSOLUTE_TUI_COLS);
     const ws = mocks.webSocketInstances[0];
     act(() => { ws.onopen?.(); negotiateTerminal(ws); });
     const attach = ws.send.mock.calls.map(([frame]) => JSON.parse(String(frame))).find((frame) => frame.type === 'attach');
-    expect(attach).toMatchObject({ cols: 200, rows: 24, acceptGap: true });
+    expect(attach).toMatchObject({ cols: ABSOLUTE_TUI_COLS, rows: 24, acceptGap: true });
+  });
+
+  test('non-Grok attaches keep the fitted column count', () => {
+    mocks.fitProposeDimensions = () => null;
+    act(() => root.render(React.createElement(TerminalPanel, {
+      tmuxName: 'kookr-claude', visible: true, agentType: 'claude-code',
+    })));
+    const ws = mocks.webSocketInstances[0];
+    act(() => { ws.onopen?.(); negotiateTerminal(ws); });
+    const attach = ws.send.mock.calls.map(([frame]) => JSON.parse(String(frame))).find((frame) => frame.type === 'attach');
+    expect(attach).toMatchObject({ cols: 80, rows: 24 });
   });
 
   test('memoized terminal skips parent metadata rerenders but accepts a changed session', async () => {

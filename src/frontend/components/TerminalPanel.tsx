@@ -8,6 +8,7 @@ import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste } from '../terminal-paste.js';
 import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
+import { ABSOLUTE_TUI_COLS } from '../../shared/absolute-tui-geometry.js';
 import { createTerminalStreamClient, type TerminalStreamClient, type TerminalContinuity,
   type TerminalStreamState, type TerminalRetryBudget, type TerminalInputDeliveryState } from '../terminal-stream-client.js';
 import { bindTerminalWriterTarget, createTerminalWriter } from '../terminal-writer.js';
@@ -26,7 +27,6 @@ import {
   DEFAULT_TERMINAL_FONT_SIZE,
   usePersistedTerminalFontSize,
 } from '../hooks/usePersistedTerminalFontSize.js';
-import { ABSOLUTE_TUI_COLS } from '../../shared/absolute-tui-geometry.js';
 
 interface Props {
   tmuxName: string | null;
@@ -466,6 +466,13 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     });
     fitSchedulerRef.current = fitScheduler;
     fitScheduler.flush();
+    // FitAddon can return nothing before layout. Grok still needs a 200-col
+    // parser *before* the reconstructed seed is written, or CUP cells land
+    // off-screen in the default 80-col xterm.
+    if (absoluteTuiRef.current) {
+      const rows = terminal.rows > 0 ? terminal.rows : 24;
+      if (terminal.cols !== ABSOLUTE_TUI_COLS) terminal.resize(ABSOLUTE_TUI_COLS, rows);
+    }
 
     terminalRef.current = terminal;
     const scrollbackGuard = createTerminalScrollbackGuard(terminal, () => setHistoryDiscarded(true));

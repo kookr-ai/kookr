@@ -9,6 +9,8 @@ import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import { TERMINAL_V2_PROTOCOL, TERMINAL_CLOSE } from '../shared/terminal-protocol.js';
 import { SessionBridge } from './session-bridge.js';
 
+const grokRingBytes = grokLikeRing();
+
 function grokLikeRing(): Uint8Array {
   const parts: string[] = [];
   for (let i = 0; i < 40; i++) parts.push('\x1b[?2026h');
@@ -28,11 +30,23 @@ async function setup(bytes = new TextEncoder().encode('seed'), readOnly = false,
   let snapshot: TerminalStreamSnapshot = {
     bytes, originComplete: true, epoch: 'e', start: 0, end: bytes.byteLength, geometryRevision: 1, cols: 80, rows: 24,
   };
-  const backend = Object.assign(new FakeTerminalBackend(), { captureStreamSnapshot: vi.fn(async () => snapshot) });
+  const backend = Object.assign(new FakeTerminalBackend(), {
+    captureStreamSnapshot: vi.fn(async () => snapshot),
+  });
   await backend.createSession({ id: 'test', command: 'fake', args: [] });
   let listener: Parameters<TerminalBackend['onData']>[1] | undefined;
   vi.spyOn(backend, 'onData').mockImplementation((_id, callback) => { listener = callback; return () => { listener = undefined; }; });
-  const resize = vi.spyOn(backend, 'resize');
+  const resize = vi.spyOn(backend, 'resize').mockImplementation(async (_id, cols, rows) => {
+    // A shrink-before-capture would smash a Grok ring to a narrow tail and
+    // flip the heuristic onto viewport-ring. Mirror that so the test fails.
+    if (cols < ABSOLUTE_TUI_COLS && snapshot.bytes === grokRingBytes) {
+      snapshot = {
+        ...snapshot,
+        bytes: new TextEncoder().encode('narrow-after-shrink\n'),
+        end: 20, cols, rows,
+      };
+    }
+  });
   const write = vi.spyOn(backend, 'write');
   const ws = Object.assign(new EventEmitter(), {
     protocol: TERMINAL_V2_PROTOCOL, readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn(),
@@ -111,14 +125,36 @@ describe('NFR-TERM-001: version-two session bridge', () => {
   });
 
   test('does not shrink an absolute-TUI PTY to a FitAddon-narrow attach', async () => {
-    const h = await setup(grokLikeRing());
+    const h = await setup(grokRingBytes);
     h.attach({ cols: 80, rows: 24 });
     await drain();
+    expect(h.backend.captureStreamSnapshot).toHaveBeenCalled();
+    expect(h.resize).toHaveBeenCalledTimes(1);
     expect(h.resize).toHaveBeenCalledWith('test', ABSOLUTE_TUI_COLS, 24);
+    expect(h.resize.mock.invocationCallOrder[0]).toBeGreaterThan(
+      h.backend.captureStreamSnapshot.mock.invocationCallOrder[0],
+    );
     const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
     expect(controls.find((frame) => frame?.type === 'attach_timing')).toMatchObject({
       strategy: 'absolute-display-only',
       attachSeed: 'absolute',
+    });
+  });
+
+  test('streaming attaches still resize to the requested FitAddon size', async () => {
+    const h = await setup();
+    h.attach({ cols: 80, rows: 24 });
+    await drain();
+    expect(h.resize).toHaveBeenCalledWith('test', 80, 24);
+  });
+
+  test('does not certify a resume cursor after a post-capture geometry change', async () => {
+    const h = await setup();
+    h.attach({ cols: 100, rows: 30 });
+    await drain();
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true,
     });
   });
 
