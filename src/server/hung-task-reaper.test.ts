@@ -14,6 +14,7 @@ import type { GitHubPRState, GitHubReference } from '../core/github-types.js';
 import type { MergedPrAttribution } from '../core/completion/index.js';
 import {
   HungTaskReaperMetrics,
+  HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
   categorizeReapFailure,
   reapHungTask,
   type HungTaskReapEvidence,
@@ -501,6 +502,61 @@ describe('reapHungTask — terminate-failure counter (issue #3154)', () => {
     expect(categorizeReapFailure(new Error('kill: EPERM'))).toBe('permission');
     expect(categorizeReapFailure(new Error('something odd happened'))).toBe('unknown');
     expect(categorizeReapFailure(undefined)).toBe('unknown');
+  });
+
+  test('a terminate rejection arms the per-task re-warn suppression window (issue #3256)', async () => {
+    const taskStore = new TaskStore();
+    const task = makeTask(taskStore);
+    const metrics = new HungTaskReaperMetrics();
+    const boom = new Error('no server running');
+
+    await expect(
+      reapHungTask(task, evidence(), {
+        taskStore,
+        lifecycleDeps: rejectingLifecycleDeps(taskStore, boom),
+        metrics,
+        now: () => REAP_NOW,
+      }),
+    ).rejects.toThrow(boom);
+
+    const nowMs = REAP_NOW.getTime();
+    const windowMs = HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS;
+    expect(metrics.isRewarnSuppressed(task.id, nowMs, windowMs)).toBe(true);
+    // A different task id is never masked by this task's failure.
+    expect(metrics.isRewarnSuppressed('other-task', nowMs, windowMs)).toBe(false);
+    // A failure older than the window may warn again (prunes on read).
+    expect(metrics.isRewarnSuppressed(task.id, nowMs + windowMs + 1, windowMs)).toBe(false);
+  });
+});
+
+describe('HungTaskReaperMetrics re-warn suppression (issue #3256)', () => {
+  const WINDOW = HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS;
+  const T0 = Date.parse('2026-06-21T00:00:00.000Z');
+
+  test('isRewarnSuppressed is per-task: a different id is never masked', () => {
+    const metrics = new HungTaskReaperMetrics();
+    metrics.armRewarnSuppression('stuck', T0);
+    expect(metrics.isRewarnSuppressed('stuck', T0 + 1_000, WINDOW)).toBe(true);
+    expect(metrics.isRewarnSuppressed('fresh', T0 + 1_000, WINDOW)).toBe(false);
+  });
+
+  test('isRewarnSuppressed lapses after the window and prunes the entry', () => {
+    const metrics = new HungTaskReaperMetrics();
+    metrics.armRewarnSuppression('stuck', T0);
+    // Inclusive: a read exactly at the window edge is still suppressed.
+    expect(metrics.isRewarnSuppressed('stuck', T0 + WINDOW, WINDOW)).toBe(true);
+    expect(metrics.isRewarnSuppressed('stuck', T0 + WINDOW + 1, WINDOW)).toBe(false);
+    // Second read after prune stays false — the entry is gone, not sticky.
+    expect(metrics.isRewarnSuppressed('stuck', T0 + WINDOW + 1, WINDOW)).toBe(false);
+  });
+
+  test('armRewarnSuppression refreshes the failing task and evicts lapsed peers', () => {
+    const metrics = new HungTaskReaperMetrics();
+    metrics.armRewarnSuppression('old', T0);
+    metrics.armRewarnSuppression('stuck', T0 + WINDOW + 1_000);
+    // `old` is past the window relative to the later arm; opportunistic sweep dropped it.
+    expect(metrics.isRewarnSuppressed('old', T0 + WINDOW + 1_000, WINDOW)).toBe(false);
+    expect(metrics.isRewarnSuppressed('stuck', T0 + WINDOW + 1_000, WINDOW)).toBe(true);
   });
 });
 

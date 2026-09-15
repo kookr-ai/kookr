@@ -50,7 +50,11 @@ import { DEFAULT_HUNG_TASK_REAP_MS, evaluateHungTaskReap } from '../core/hung-ta
 import { DEFAULT_REAP_GRACE_SECONDS } from '../core/reap-warning-coordinator.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
-import { reapHungTask, type HungTaskReaperMetrics } from './hung-task-reaper.js';
+import {
+  reapHungTask,
+  HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
+  type HungTaskReaperMetrics,
+} from './hung-task-reaper.js';
 import type { ProdSmokeTick } from './prod-smoke-tick.js';
 import type { DeployLagDetector } from './deploy-lag-detector.js';
 import type { DeployConvergenceController } from './deploy-convergence-controller.js';
@@ -849,6 +853,21 @@ export async function maybeReapHungTask(
       present,
     });
     if (advance.action === 'warn') {
+      // Re-warn suppression (issue #3256): a task whose terminate keeps
+      // failing has its warning consumed by advance() on every reap, so it
+      // re-enters the warn state each grace cycle. Suppress the re-warn (no
+      // audit row) while it is inside its post-failure window, but leave the
+      // coordinator's freshly-created countdown in place so the bounded reap
+      // retry still runs and reapFailedTotal keeps surfacing the stuck slot.
+      // Scoped per task + refreshed on each failure, so a genuinely newly-stuck
+      // task is never masked.
+      if (deps.hungTaskReaperMetrics?.isRewarnSuppressed(
+        task.id,
+        nowDate.getTime(),
+        HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
+      )) {
+        return false;
+      }
       console.warn(
         `[reap-warning] warned task ${task.id} — reap in ${Math.round(graceMs / 1000)}s `
         + `unless kept alive (silent ${Math.round(verdict.silentForMs / 60_000)}m, present=${present})`,

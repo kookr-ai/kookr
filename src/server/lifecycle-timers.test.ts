@@ -32,7 +32,10 @@ import {
   type TimerDeps,
 } from './lifecycle-timers.js';
 import { ServerLogRotationHealth } from './server-log-rotation.js';
-import { HungTaskReaperMetrics } from './hung-task-reaper.js';
+import {
+  HungTaskReaperMetrics,
+  HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS,
+} from './hung-task-reaper.js';
 import { ReapWarningCoordinator } from '../core/reap-warning-coordinator.js';
 import {
   AUTO_CLOSE_SWEEP_MIN_INTERVAL_MS,
@@ -3199,6 +3202,114 @@ describe('reap-warning grace phase (RFC rfc-reap-grace-warning.md)', () => {
     );
     expect(changed).toBe(true);
     expect(coordinator.activeWarningCount()).toBe(0);
+  });
+
+  async function readHungWarnAuditRows(auditLogPath: string): Promise<Record<string, unknown>[]> {
+    try {
+      const content = await readFile(auditLogPath, 'utf-8');
+      return content.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+        .filter((row) => row.type === 'task.hungTaskReapWarned');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw err;
+    }
+  }
+
+  function rejectingLifecycle(taskStore: TaskStore) {
+    return {
+      ...lifecycleDeps(taskStore),
+      adapter: { stop: vi.fn(async () => { throw new Error('no server running'); }) },
+    };
+  }
+
+  test('issue #3256: terminate rejects twice within the window emits one ReapWarned row and failure counter 2', async () => {
+    const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-rewarn-1';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const metrics = new HungTaskReaperMetrics();
+    const deps = timerDeps(coordinator, { watchdog, hungTaskReaperMetrics: metrics, auditLogPath });
+    const life = rejectingLifecycle(taskStore);
+    const tick = (t: number) =>
+      maybeReapHungTask(agentId, 'pane', deps, taskStore, life, () => new Date(t));
+
+    // Pass 1: first warn (no prior failure — emitted normally).
+    expect(await tick(NOW)).toBe(true);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+
+    // Pass 2: grace elapsed → terminate throws → window armed. Failure #1.
+    await expect(tick(NOW + GRACE_MS + 1_000)).rejects.toThrow('no server running');
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+
+    // Pass 3: advance() would re-warn, but the task is inside its post-failure
+    // window so the audit row is suppressed. Countdown stays so the retry runs.
+    expect(await tick(NOW + GRACE_MS + 2_000)).toBe(false);
+    expect(coordinator.getWarning(task.id)).toBeDefined();
+
+    // Pass 4: grace elapsed again → second terminate failure, still in window.
+    await expect(tick(NOW + GRACE_MS + 2_000 + GRACE_MS + 1_000)).rejects.toThrow('no server running');
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(2);
+    expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+
+    const warnRows = await readHungWarnAuditRows(auditLogPath);
+    expect(warnRows).toHaveLength(1);
+    expect(warnRows[0]).toMatchObject({ type: 'task.hungTaskReapWarned', taskId: task.id });
+  });
+
+  test('issue #3256: a different task id is not suppressed by a peer terminate failure', async () => {
+    const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+    const taskStore = new TaskStore();
+    const stuckAgent = 'kookr-rewarn-stuck';
+    const freshAgent = 'kookr-rewarn-fresh';
+    const stuck = makeHungTask(taskStore, stuckAgent);
+    const fresh = makeHungTask(taskStore, freshAgent);
+    const watchdog = makeSilentWatchdog(stuckAgent, REAP_THRESHOLD_MS + 1);
+    watchdog.registerAgent(freshAgent, NOW - REAP_THRESHOLD_MS - 1, NOW - REAP_THRESHOLD_MS - 1);
+    const coordinator = new ReapWarningCoordinator();
+    const metrics = new HungTaskReaperMetrics();
+    const deps = timerDeps(coordinator, { watchdog, hungTaskReaperMetrics: metrics, auditLogPath });
+    const life = rejectingLifecycle(taskStore);
+
+    await maybeReapHungTask(stuckAgent, 'pane', deps, taskStore, life, () => new Date(NOW));
+    await expect(
+      maybeReapHungTask(stuckAgent, 'pane', deps, taskStore, life, () => new Date(NOW + GRACE_MS + 1_000)),
+    ).rejects.toThrow('no server running');
+    expect(metrics.getSnapshot().reapFailedTotal).toBe(1);
+
+    const later = NOW + GRACE_MS + 2_000;
+    // Stuck task's re-warn is suppressed; the newly-eligible sibling must warn.
+    expect(await maybeReapHungTask(stuckAgent, 'pane', deps, taskStore, life, () => new Date(later))).toBe(false);
+    expect(await maybeReapHungTask(freshAgent, 'pane', deps, taskStore, life, () => new Date(later))).toBe(true);
+
+    const warnRows = await readHungWarnAuditRows(auditLogPath);
+    expect(warnRows.map((row) => row.taskId).sort()).toEqual([fresh.id, stuck.id].sort());
+    expect(coordinator.getWarning(fresh.id)).toBeDefined();
+  });
+
+  test('issue #3256: a failure older than the window may warn again', async () => {
+    const auditLogPath = join(await mkdtemp(join(tmpdir(), 'kookr-audit-')), 'audit.jsonl');
+    const taskStore = new TaskStore();
+    const agentId = 'kookr-rewarn-lapse';
+    const task = makeHungTask(taskStore, agentId);
+    const watchdog = makeSilentWatchdog(agentId, REAP_THRESHOLD_MS + 1);
+    const coordinator = new ReapWarningCoordinator();
+    const metrics = new HungTaskReaperMetrics();
+    const deps = timerDeps(coordinator, { watchdog, hungTaskReaperMetrics: metrics, auditLogPath });
+    const life = rejectingLifecycle(taskStore);
+    const tick = (t: number) =>
+      maybeReapHungTask(agentId, 'pane', deps, taskStore, life, () => new Date(t));
+
+    await tick(NOW); // warn #1
+    await expect(tick(NOW + GRACE_MS + 1_000)).rejects.toThrow('no server running');
+    expect(await readHungWarnAuditRows(auditLogPath)).toHaveLength(1);
+
+    const afterWindow = NOW + GRACE_MS + 1_000 + HUNG_TASK_REAP_FAILURE_REWARN_SUPPRESS_MS + 1_000;
+    expect(await tick(afterWindow)).toBe(true);
+    const warnRows = await readHungWarnAuditRows(auditLogPath);
+    expect(warnRows).toHaveLength(2);
+    expect(warnRows.every((row) => row.taskId === task.id)).toBe(true);
   });
 });
 
