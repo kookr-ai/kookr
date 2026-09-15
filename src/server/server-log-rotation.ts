@@ -7,7 +7,10 @@
  * exceeds a byte threshold **and** process stdout is that file, renames it
  * through the same `.1`/`.2`/… scheme the restart script uses, then reopens
  * process stdout/stderr onto a fresh file so subsequent writes are not lost to
- * the renamed inode.
+ * the renamed inode. If that attach fails (for example ENOSPC after the
+ * rename), the same process keeps a pending reopen and later timer ticks retry
+ * creating/attaching the live file without shifting generations again
+ * (issue #3176).
  *
  * Production script launches redirect with `node … > server.log 2>&1`, so the
  * process holds FDs 1 and 2 on the live log. A bare rename leaves those FDs
@@ -610,7 +613,7 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
       return {
         rotated: true,
         previousSize,
-        error: err instanceof Error ? err.message : String(err),
+        error: errorMessage(err),
         pendingReopen: attach.attached ? undefined : true,
         recoveryAttempts: attach.attempts,
       };
@@ -619,7 +622,7 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
       rotated: false,
       previousSize,
       skippedReason: 'error',
-      error: err instanceof Error ? err.message : String(err),
+      error: errorMessage(err),
     };
   }
 }

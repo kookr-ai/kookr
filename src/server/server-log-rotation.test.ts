@@ -371,11 +371,21 @@ describe('pending live-log recovery (issue #3176)', () => {
     expect(second.rotated).toBe(false);
     expect(second.recovered).toBe(true);
     expect(second.pendingReopen).toBeFalsy();
+    expect(recovery.peek(logPath)).toBeNull();
+    expect(existsSync(logPath)).toBe(true);
     expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
     expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
     expect(existsSync(`${logPath}.3`)).toBe(false);
     appendFileSync(logPath, 'after-recovery\n');
     expect(readFileSync(logPath, 'utf8')).toContain('after-recovery\n');
+
+    writeFileSync(logPath, 'live-again-long-enough-to-rotate\n');
+    const third = maybeRotateServerLog({
+      ...config,
+      stdioOwnsLog: () => true,
+    });
+    expect(third.rotated).toBe(true);
+    expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-again-long-enough-to-rotate\n');
   });
 
   test('pending state authorizes reopen when the live file was recreated but stdio is unattached', () => {
@@ -499,6 +509,8 @@ describe('pending live-log recovery (issue #3176)', () => {
     const second = runScheduledServerLogRotation({ ...config, stdioOwnsLog: () => false });
     expect(second.recovered).toBe(true);
     expect(second.rotated).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    expect(recovery.peek(logPath)).toBeNull();
     expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
     expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
 
@@ -512,9 +524,14 @@ describe('pending live-log recovery (issue #3176)', () => {
     const reopen = vi.fn(() => {
       throwEnospc();
     });
+    // Per attach: ensure open succeeds (odd call) so the second reopen runs;
+    // fallback open fails (even call) so pending remains and the cap is hit.
+    let liveOpens = 0;
     const openSyncFn = (path: string, flags: string) => {
-      if (path === logPath) throwEnospc();
-      return openSync(path, flags);
+      if (path !== logPath) return openSync(path, flags);
+      liveOpens += 1;
+      if (liveOpens % 2 === 1) return openSync(path, flags);
+      throwEnospc();
     };
     const config = {
       logPath,
@@ -526,14 +543,17 @@ describe('pending live-log recovery (issue #3176)', () => {
       recovery,
     };
 
-    expect(maybeRotateServerLog(config).pendingReopen).toBe(true);
+    const first = maybeRotateServerLog(config);
+    expect(first.pendingReopen).toBe(true);
+    expect(first.recoveryAttempts).toBe(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    expect(reopen).toHaveBeenCalledTimes(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
     reopen.mockClear();
 
     const second = maybeRotateServerLog({ ...config, stdioOwnsLog: () => false });
     expect(second.pendingReopen).toBe(true);
     expect(second.recovered).toBeFalsy();
-    expect(second.recoveryAttempts).toBeLessThanOrEqual(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
-    expect(reopen.mock.calls.length).toBeLessThanOrEqual(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    expect(second.recoveryAttempts).toBe(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
+    expect(reopen).toHaveBeenCalledTimes(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
   });
 
   test('pending recovery for one path does not authorize reopen of a different missing log', () => {
@@ -598,32 +618,40 @@ const openSyncFn = (path, flags) => {
 };
 
 const config = { logPath, maxBytes: 5, generations: 3, openSyncFn };
-const first = maybeRotateServerLog(config);
-denyLiveOpen = false;
-const second = maybeRotateServerLog(config);
-process.stdout.write('AFTER_RECOVERY\\n');
-writeFileSync(logPath + '.ok', JSON.stringify({
-  firstPending: first.pendingReopen === true,
-  firstRotated: first.rotated === true,
-  secondRecovered: second.recovered === true,
-  secondRotated: second.rotated === true,
-  live: existsSync(logPath) ? readFileSync(logPath, 'utf8') : null,
-  gen1: readFileSync(logPath + '.1', 'utf8'),
-  gen2: readFileSync(logPath + '.2', 'utf8'),
-  gen3: existsSync(logPath + '.3'),
-}));
+try {
+  const first = maybeRotateServerLog(config);
+  denyLiveOpen = false;
+  const second = maybeRotateServerLog(config);
+  process.stdout.write('AFTER_RECOVERY\\n');
+  writeFileSync(logPath + '.ok', JSON.stringify({
+    firstPending: first.pendingReopen === true,
+    firstRotated: first.rotated === true,
+    secondRecovered: second.recovered === true,
+    secondRotated: second.rotated === true,
+    live: existsSync(logPath) ? readFileSync(logPath, 'utf8') : null,
+    gen1: readFileSync(logPath + '.1', 'utf8'),
+    gen2: readFileSync(logPath + '.2', 'utf8'),
+    gen3: existsSync(logPath + '.3'),
+  }));
+} catch (err) {
+  writeFileSync(logPath + '.err', String(err && err.stack ? err.stack : err));
+  throw err;
+}
 `,
     );
 
     const outFd = openSync(live, 'a');
+    const errFd = openSync(live, 'a');
     try {
       const result = spawnSync(process.execPath, ['--import', resolveTsxLoader(), harness, live], {
         encoding: 'utf8',
-        stdio: ['ignore', outFd, 'pipe'],
+        stdio: ['ignore', outFd, errFd],
       });
-      expect(result.status, result.stderr || result.stdout || 'child failed').toBe(0);
+      const childErr = existsSync(`${live}.err`) ? readFileSync(`${live}.err`, 'utf8') : '';
+      expect(result.status, childErr || result.stderr || result.stdout || 'child failed').toBe(0);
     } finally {
       closeSync(outFd);
+      closeSync(errFd);
     }
 
     const payload = JSON.parse(readFileSync(`${live}.ok`, 'utf8')) as {
