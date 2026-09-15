@@ -12,6 +12,11 @@ import type {
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { getCostComparison } from '../api/index.js';
+import {
+  loadCostComparisonPrefs,
+  saveCostComparisonPrefs,
+  type CostComparisonAgentFilter,
+} from '../store/cost-comparison-prefs.js';
 
 /**
  * Cost Comparison panel (rfc-cost-comparison-panel.md). Renders three sections:
@@ -39,8 +44,16 @@ const WINDOW_OPTIONS: { value: TimeWindow; label: string }[] = [
 ];
 
 export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
-  const [windowChoice, setWindowChoice] = useState<TimeWindow>('7d');
-  const [agentFilter, setAgentFilter] = useState<CostAgent | 'all'>('all');
+  // Initialize from persisted prefs (issue #3283) so a chosen window/agent
+  // survives close-and-reopen; a missing or malformed stored value falls back
+  // to the defaults. Read once at mount via the state initializer. Search is
+  // intentionally not restored — it is a one-off query, not a standing filter.
+  const [windowChoice, setWindowChoice] = useState<TimeWindow>(
+    () => loadCostComparisonPrefs().window ?? '7d',
+  );
+  const [agentFilter, setAgentFilter] = useState<CostComparisonAgentFilter>(
+    () => loadCostComparisonPrefs().agent ?? 'all',
+  );
   const [search, setSearch] = useState('');
   // Debounced query string actually sent to the server. Keystrokes update `search` instantly
   // (no input lag); the fetch effect waits 300 ms of quiet before re-firing.
@@ -60,6 +73,18 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
   useEscapeToClose(onClose);
   // Focus the close button on open and trap Tab inside the aria-modal dialog.
   useDialogFocus({ dialogRef, initialFocusRef: closeBtnRef });
+
+  // Persist only the operator's explicit window/agent selections (issue #3283).
+  // Search is never written. Each handler re-writes the other field so a
+  // window change cannot wipe a stored agent filter and vice versa.
+  function chooseWindow(next: TimeWindow): void {
+    setWindowChoice(next);
+    saveCostComparisonPrefs({ window: next, agent: agentFilter });
+  }
+  function chooseAgent(next: CostComparisonAgentFilter): void {
+    setAgentFilter(next);
+    saveCostComparisonPrefs({ window: windowChoice, agent: next });
+  }
 
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedSearch(search.trim()), 300);
@@ -125,7 +150,7 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
             <select
               className="cost-window-select"
               value={windowChoice}
-              onChange={(e) => setWindowChoice(e.target.value as TimeWindow)}
+              onChange={(e) => chooseWindow(e.target.value as TimeWindow)}
               aria-label="Time window"
             >
               {WINDOW_OPTIONS.map(o => (
@@ -133,9 +158,9 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
               ))}
             </select>
             <div className="cost-agent-chips" role="group" aria-label="Filter by agent">
-              <AgentChip label="All"    value="all"          current={agentFilter} onClick={setAgentFilter} />
-              <AgentChip label="Claude" value="claude-code"  current={agentFilter} onClick={setAgentFilter} />
-              <AgentChip label="Codex"  value="codex-cli"    current={agentFilter} onClick={setAgentFilter} />
+              <AgentChip label="All"    value="all"          current={agentFilter} onClick={chooseAgent} />
+              <AgentChip label="Claude" value="claude-code"  current={agentFilter} onClick={chooseAgent} />
+              <AgentChip label="Codex"  value="codex-cli"    current={agentFilter} onClick={chooseAgent} />
             </div>
             <input
               className="cost-search"
@@ -227,7 +252,7 @@ function CoverageSummary({ coverage }: { coverage: NonNullable<CostComparisonRes
 }
 
 function AgentChip({ label, value, current, onClick }: {
-  label: string; value: CostAgent | 'all'; current: CostAgent | 'all'; onClick: (v: CostAgent | 'all') => void;
+  label: string; value: CostComparisonAgentFilter; current: CostComparisonAgentFilter; onClick: (v: CostComparisonAgentFilter) => void;
 }): React.ReactElement {
   const selected = current === value;
   // Toggle-button semantics (`aria-pressed`) match the actual UX better than a tablist

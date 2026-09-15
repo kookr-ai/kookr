@@ -6,6 +6,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { CostComparisonPanel, buildCostComparisonCsv } from './CostComparisonPanel.js';
 import type { CostComparisonResponse, AggregateMetrics, PerPlaybookRow, PerTaskRow } from '../../shared/contracts/cost-comparison.js';
+import { COST_COMPARISON_PREFS_KEY } from '../store/cost-comparison-prefs.js';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -70,6 +71,10 @@ function mockFetchSequential(responses: Array<{ body: unknown; status?: number }
 
 beforeEach(() => {
   onClose.mockClear();
+  // The panel now persists its window/agent filter in localStorage (issue #3283),
+  // and jsdom's localStorage is shared across tests in this file — clear it so
+  // each test starts from the panel defaults rather than a prior test's selection.
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -382,6 +387,155 @@ describe('CostComparisonPanel', () => {
     expect(signals[0]?.aborted).toBe(true);
     expect(signals).toHaveLength(2);
     expect(signals[1]?.aborted).toBe(false);
+  });
+
+  test('restores a persisted window and agent filter on mount (issue #3283)', async () => {
+    localStorage.setItem(
+      COST_COMPARISON_PREFS_KEY,
+      JSON.stringify({ window: '24h', agent: 'claude-code' }),
+    );
+    const fetchSpy = vi.fn(() => Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve(makeResponse()),
+    } as unknown as Response));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('24h');
+    const pressed = Array.from(el.querySelectorAll<HTMLButtonElement>('.cost-agent-chip'))
+      .find((chip) => chip.getAttribute('aria-pressed') === 'true');
+    expect(pressed?.textContent).toBe('Claude');
+    expect(fetchSpy.mock.calls[0][0] as string).toContain('window=24h');
+    expect(fetchSpy.mock.calls[0][0] as string).toContain('agent=claude-code');
+  });
+
+  test('persists the selected window and agent filter across a fresh mount (issue #3283)', async () => {
+    const fetchSpy = vi.fn(() => Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve(makeResponse()),
+    } as unknown as Response));
+    vi.stubGlobal('fetch', fetchSpy);
+    const first = mount();
+    await flush();
+
+    const select = first.querySelector<HTMLSelectElement>('.cost-window-select')!;
+    act(() => {
+      select.value = '24h';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+    const claudeChip = Array.from(first.querySelectorAll('.cost-agent-chip'))
+      .find((chip) => chip.textContent === 'Claude') as HTMLButtonElement;
+    act(() => claudeChip.click());
+    await flush();
+
+    act(() => root!.unmount());
+    const second = mount();
+    await flush();
+
+    expect(second.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('24h');
+    const pressed = Array.from(second.querySelectorAll<HTMLButtonElement>('.cost-agent-chip'))
+      .find((chip) => chip.getAttribute('aria-pressed') === 'true');
+    expect(pressed?.textContent).toBe('Claude');
+    expect(JSON.parse(localStorage.getItem(COST_COMPARISON_PREFS_KEY)!)).toEqual({
+      window: '24h',
+      agent: 'claude-code',
+    });
+  });
+
+  test('changing the window keeps a previously selected agent filter (issue #3283)', async () => {
+    mockFetchSequential([{ body: makeResponse() }]);
+    const el = mount();
+    await flush();
+
+    const claudeChip = Array.from(el.querySelectorAll('.cost-agent-chip'))
+      .find((chip) => chip.textContent === 'Claude') as HTMLButtonElement;
+    act(() => claudeChip.click());
+    await flush();
+
+    const select = el.querySelector<HTMLSelectElement>('.cost-window-select')!;
+    act(() => {
+      select.value = '30d';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(JSON.parse(localStorage.getItem(COST_COMPARISON_PREFS_KEY)!)).toEqual({
+      window: '30d',
+      agent: 'claude-code',
+    });
+
+    act(() => root!.unmount());
+    const second = mount();
+    await flush();
+    expect(second.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('30d');
+    const pressed = Array.from(second.querySelectorAll<HTMLButtonElement>('.cost-agent-chip'))
+      .find((chip) => chip.getAttribute('aria-pressed') === 'true');
+    expect(pressed?.textContent).toBe('Claude');
+  });
+
+  test('does not persist the free-text search box (issue #3283)', async () => {
+    mockFetchSequential([{ body: makeResponse() }]);
+    const first = mount();
+    await flush();
+
+    const search = first.querySelector<HTMLInputElement>('.cost-search')!;
+    act(() => {
+      search.value = 'login';
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const select = first.querySelector<HTMLSelectElement>('.cost-window-select')!;
+    act(() => {
+      select.value = '30d';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await flush();
+
+    expect(JSON.parse(localStorage.getItem(COST_COMPARISON_PREFS_KEY)!)).toEqual({
+      window: '30d',
+      agent: 'all',
+    });
+    expect(localStorage.getItem(COST_COMPARISON_PREFS_KEY)).not.toContain('login');
+
+    act(() => root!.unmount());
+    const second = mount();
+    await flush();
+    expect(second.querySelector<HTMLInputElement>('.cost-search')!.value).toBe('');
+    expect(second.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('30d');
+  });
+
+  test('falls back to defaults for malformed stored JSON without crashing (issue #3283)', async () => {
+    localStorage.setItem(COST_COMPARISON_PREFS_KEY, 'not-json{');
+    const fetchSpy = vi.fn(() => Promise.resolve({
+      ok: true, status: 200, json: () => Promise.resolve(makeResponse()),
+    } as unknown as Response));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('7d');
+    const pressed = Array.from(el.querySelectorAll<HTMLButtonElement>('.cost-agent-chip'))
+      .find((chip) => chip.getAttribute('aria-pressed') === 'true');
+    expect(pressed?.textContent).toBe('All');
+    expect(fetchSpy.mock.calls[0][0] as string).toContain('window=7d');
+    expect(fetchSpy.mock.calls[0][0] as string).not.toContain('agent=');
+  });
+
+  test('falls back to defaults for a future-format stored window without crashing (issue #3283)', async () => {
+    localStorage.setItem(
+      COST_COMPARISON_PREFS_KEY,
+      JSON.stringify({ v: 2, window: '90d', agent: 'grok-build', sort: 'cost' }),
+    );
+    mockFetchSequential([{ body: makeResponse() }]);
+
+    const el = mount();
+    await flush();
+
+    expect(el.querySelector<HTMLSelectElement>('.cost-window-select')!.value).toBe('7d');
+    const pressed = Array.from(el.querySelectorAll<HTMLButtonElement>('.cost-agent-chip'))
+      .find((chip) => chip.getAttribute('aria-pressed') === 'true');
+    expect(pressed?.textContent).toBe('All');
   });
 
   test('selecting an agent chip narrows the fetch', async () => {
