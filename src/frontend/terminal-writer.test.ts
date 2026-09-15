@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from 'vitest';
-import { createTerminalWriteScheduler, createTerminalWriter } from './terminal-writer.js';
+import { createTerminalWriteScheduler, createTerminalWriter, stripSynchronizedOutput } from './terminal-writer.js';
 
 const SYNC_OUTPUT_ON = '\x1b[?2026h';
 const SYNC_OUTPUT_OFF = '\x1b[?2026l';
@@ -123,7 +123,7 @@ describe('FR-TERM-003: terminal writer', () => {
     h.writer.dispose(); second.dispose();
   });
 
-  test('closes DECSET 2026 after a parse that leaves synchronized output enabled', () => {
+  test('strips DECSET 2026 so a Grok-style trailing hold never reaches xterm', () => {
     const h = harness();
     const parsed = vi.fn();
     const payload = new TextEncoder().encode(
@@ -133,37 +133,31 @@ describe('FR-TERM-003: terminal writer', () => {
     expect(session.write(payload, parsed)).toBe(true);
     h.turn();
     expect(h.terminal.write).toHaveBeenCalledOnce();
-    h.parse();
-    expect(h.modes.synchronizedOutputMode).toBe(true);
-    expect(parsed).not.toHaveBeenCalled();
-    expect(h.terminal.write).toHaveBeenCalledTimes(2);
-    expect(new TextDecoder().decode(h.terminal.write.mock.calls[1][0])).toBe(SYNC_OUTPUT_OFF);
+    expect(new TextDecoder().decode(h.terminal.write.mock.calls[0][0])).toBe('\x1b[10;1Hhello');
     h.parse();
     expect(h.modes.synchronizedOutputMode).toBe(false);
     expect(parsed).toHaveBeenCalledExactlyOnceWith(payload.byteLength);
     h.writer.dispose();
   });
 
-  test('does not inject a synchronized-output closer when the parse already ended in 2026l', () => {
+  test('credits the original payload when a chunk is only synchronized-output sequences', () => {
     const h = harness();
-    const payload = new TextEncoder().encode(`${SYNC_OUTPUT_ON}hi${SYNC_OUTPUT_OFF}`);
-    h.writer.begin(false).write(payload);
+    const parsed = vi.fn();
+    const payload = new TextEncoder().encode(`${SYNC_OUTPUT_ON}${SYNC_OUTPUT_OFF}`);
+    h.writer.begin(false).write(payload, parsed);
     h.turn();
-    h.parse();
-    expect(h.terminal.write).toHaveBeenCalledOnce();
-    expect(h.modes.synchronizedOutputMode).toBe(false);
+    expect(h.terminal.write).not.toHaveBeenCalled();
+    expect(parsed).toHaveBeenCalledExactlyOnceWith(payload.byteLength);
     h.writer.dispose();
   });
 
-  test('retires when the synchronized-output closer write throws', () => {
-    const h = harness();
-    const session = h.writer.begin(false);
-    session.write(new TextEncoder().encode(`${SYNC_OUTPUT_ON}hi`));
-    h.turn();
-    h.terminal.write.mockImplementationOnce(() => { throw new Error('closer write failed'); });
-    expect(h.parse).not.toThrow();
-    expect(h.onStall).toHaveBeenCalledOnce();
-    expect(session.write(new Uint8Array(1))).toBe(false);
+  test('holds an incomplete DECSET 2026 prefix across chunks', () => {
+    const first = stripSynchronizedOutput(new TextEncoder().encode('hi\x1b[?20'));
+    expect(new TextDecoder().decode(first.out)).toBe('hi');
+    expect([...first.carry]).toEqual([...new TextEncoder().encode('\x1b[?20')]);
+    const second = stripSynchronizedOutput(new TextEncoder().encode('26hthere'), first.carry);
+    expect(new TextDecoder().decode(second.out)).toBe('there');
+    expect(second.carry.length).toBe(0);
   });
 
   test('retires a stalled instance instead of resetting a running parser', () => {

@@ -1061,8 +1061,10 @@ task scheduling across panes. Transport credit returns only after parsing.
 - After each parse, synchronized output (DECSET 2026) must be off so xterm can
   paint. Agents such as Grok Build leave 2026 enabled between frames
   (`ESC[?2026l` immediately followed by `ESC[?2026h`); a parse that ends on
-  2026h would otherwise freeze the canvas until xterm's 1s timeout. The closer
-  is a local renderer release, not stream bytes, and is not credited.
+  2026h would otherwise freeze the canvas until xterm's 1s timeout. The writer
+  strips those sequences before they reach xterm and carries an incomplete
+  escape across the eight-KiB chunk boundary so it never injects ESC mid-CSI.
+  Stripped bytes are still credited as stream payload.
 
 **Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
 

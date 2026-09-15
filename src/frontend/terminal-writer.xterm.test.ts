@@ -73,7 +73,7 @@ describe('FR-TERM-003: real xterm parsing', () => {
     } finally { terminal.dispose(); }
   });
 
-  it('releases synchronized output after Grok-style trailing DECSET 2026h', async () => {
+  it('strips Grok-style trailing DECSET 2026h so synchronized output stays off', async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
     const writer = createTerminalWriter({
       terminal: bindTerminalWriterTarget(terminal),
@@ -90,21 +90,26 @@ describe('FR-TERM-003: real xterm parsing', () => {
     } finally { writer.dispose(); terminal.dispose(); }
   });
 
-  it('does not release synchronized output when the pane wrapper omits modes', async () => {
-    const terminal = new Terminal({ cols: 80, rows: 24 });
-    const writer = createTerminalWriter({
-      terminal: {
-        write: (bytes, done) => terminal.write(bytes, done),
-        reset: () => terminal.reset(),
-      },
-      onStall: () => { throw new Error('parser stalled'); },
-    });
+  it('preserves a CUP split at the 8 KiB chunk boundary after a 2026h prefix', async () => {
+    const reference = new Terminal({ cols: 80, rows: 24 });
+    const streamed = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({ terminal: streamed, onStall: () => { throw new Error('parser stalled'); } });
     try {
-      const bytes = new TextEncoder().encode('\x1b[?2026h\x1b[10;1Hworld\x1b[?2026l\x1b[?2026h');
+      const prefix = '\x1b[?2026h';
+      const cup = '\x1b[12;4HX';
+      const pad = 'a'.repeat(8192 - prefix.length - 4); // split cup after ESC[12
+      const bytes = new TextEncoder().encode(prefix + pad + cup);
+      expect(bytes[8192]).toBe(';'.charCodeAt(0));
+      await write(reference, bytes);
       const session = writer.begin(false);
       await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
-      expect(terminal.modes.synchronizedOutputMode).toBe(true);
-    } finally { writer.dispose(); terminal.dispose(); }
+      const seen = screen(streamed);
+      const expected = screen(reference);
+      expect({ lines: seen.lines, x: seen.x, y: seen.y }).toEqual(
+        { lines: expected.lines, x: expected.x, y: expected.y },
+      );
+      expect(streamed.modes.synchronizedOutputMode).toBe(false);
+    } finally { writer.dispose(); reference.dispose(); streamed.dispose(); }
   });
 
   it('xterm preserves viewed text while trimming and clamps at the oldest retained line', async () => {

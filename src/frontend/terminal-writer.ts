@@ -3,8 +3,58 @@ const MAX_PENDING_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_ENTRIES = 512;
 const MAX_PENDING_CONTROLS = 64;
 const PARSER_STALL_MS = 2000;
-/** CSI DECSET 2026 off. Grok (and Codex) leave this mode on between frames. */
+/** DECSET 2026 on/off. Same 7-byte prefix; only the final h/l differs. */
+const SYNC_OUTPUT_ON = new TextEncoder().encode('\x1b[?2026h');
 const SYNC_OUTPUT_OFF = new TextEncoder().encode('\x1b[?2026l');
+const EMPTY = new Uint8Array(0);
+
+function matchesAt(src: Uint8Array, index: number, seq: Uint8Array): boolean {
+  if (index + seq.length > src.length) return false;
+  for (let i = 0; i < seq.length; i++) {
+    if (src[index + i] !== seq[i]) return false;
+  }
+  return true;
+}
+
+function isSyncOutputPrefix(src: Uint8Array, index: number, remaining: number): boolean {
+  if (remaining <= 0 || src[index] !== 0x1b) return false;
+  for (let i = 0; i < remaining; i++) {
+    const b = src[index + i];
+    if (b !== SYNC_OUTPUT_ON[i] && b !== SYNC_OUTPUT_OFF[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Drop complete DECSET 2026 sequences and hold a trailing prefix across
+ * chunks. Injecting ESC while xterm is mid-CSI aborts that CSI; stripping
+ * before write never does that.
+ */
+export function stripSynchronizedOutput(
+  bytes: Uint8Array,
+  carry: Uint8Array = EMPTY,
+): { out: Uint8Array; carry: Uint8Array } {
+  const n = carry.length + bytes.length;
+  if (n === 0) return { out: EMPTY, carry: EMPTY };
+  const src = new Uint8Array(n);
+  if (carry.length) src.set(carry, 0);
+  src.set(bytes, carry.length);
+  const out = new Uint8Array(n);
+  let w = 0;
+  let i = 0;
+  while (i < n) {
+    if (matchesAt(src, i, SYNC_OUTPUT_ON) || matchesAt(src, i, SYNC_OUTPUT_OFF)) {
+      i += SYNC_OUTPUT_ON.length;
+      continue;
+    }
+    const remaining = n - i;
+    if (remaining < SYNC_OUTPUT_ON.length && isSyncOutputPrefix(src, i, remaining)) {
+      return { out: out.subarray(0, w), carry: src.subarray(i) };
+    }
+    out[w++] = src[i++];
+  }
+  return { out: w === n ? src : out.subarray(0, w), carry: EMPTY };
+}
 
 type ScheduledTask = () => void;
 
@@ -68,9 +118,8 @@ export interface TerminalWriterTerminal {
 }
 
 /**
- * Bind an xterm instance so the writer can see synchronized-output mode.
- * Wrapping only `{ write, reset }` drops `modes` and silently disables the
- * DECSET 2026 closer (the dashboard freeze this module exists to fix).
+ * Bind an xterm instance for the writer, including a live `modes` getter.
+ * xterm snapshots `modes` on each access — copy-at-construction would stay false.
  */
 export function bindTerminalWriterTarget(
   terminal: {
@@ -108,6 +157,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
   let pendingControls = 0;
   let inFlight: { generation: number; bytes: number } | null = null;
   let stallTimer: ReturnType<typeof setTimeout> | null = null;
+  let syncCarry: Uint8Array = EMPTY;
 
   function request() {
     if (!disposed && !inFlight && (pendingReset || queue.length)) scheduler.request(run);
@@ -118,6 +168,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
     pendingBytes = inFlight?.bytes ?? 0;
     pendingControls = 0;
     pendingReset = false;
+    syncCarry = EMPTY;
     scheduler.cancel(run);
   }
 
@@ -163,6 +214,7 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
   function runTask() {
     if (disposed || inFlight) return;
     if (pendingReset) {
+      syncCarry = EMPTY;
       options.terminal.reset();
       pendingReset = false;
     }
@@ -175,27 +227,19 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
       return;
     }
     const data = entry.data;
+    const stripped = stripSynchronizedOutput(data, syncCarry);
+    syncCarry = stripped.carry;
     const active = { generation, bytes: data.byteLength };
     inFlight = active;
+    if (stripped.out.byteLength === 0) {
+      finishParse(active, entry);
+      return;
+    }
     stallTimer = setTimeout(() => {
       dispose();
       options.onStall();
     }, PARSER_STALL_MS);
-    options.terminal.write(data, () => {
-      if (disposed || inFlight !== active) return;
-      if (options.terminal.modes?.synchronizedOutputMode) {
-        // Keep this parse in-flight until the closer is parsed so the
-        // scheduler does not submit the next chunk against a held renderer.
-        try {
-          options.terminal.write(SYNC_OUTPUT_OFF, () => finishParse(active, entry));
-        } catch {
-          dispose();
-          options.onStall();
-        }
-        return;
-      }
-      finishParse(active, entry);
-    });
+    options.terminal.write(stripped.out, () => finishParse(active, entry));
   }
 
   return {
