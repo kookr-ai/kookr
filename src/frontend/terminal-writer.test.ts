@@ -155,6 +155,17 @@ describe('FR-TERM-003: terminal writer', () => {
     h.writer.dispose();
   });
 
+  test('retires when the synchronized-output closer write throws', () => {
+    const h = harness();
+    const session = h.writer.begin(false);
+    session.write(new TextEncoder().encode(`${SYNC_OUTPUT_ON}hi`));
+    h.turn();
+    h.terminal.write.mockImplementationOnce(() => { throw new Error('closer write failed'); });
+    expect(h.parse).not.toThrow();
+    expect(h.onStall).toHaveBeenCalledOnce();
+    expect(session.write(new Uint8Array(1))).toBe(false);
+  });
+
   test('retires a stalled instance instead of resetting a running parser', () => {
     vi.useFakeTimers();
     const h = harness();

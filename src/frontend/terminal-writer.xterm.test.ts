@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Terminal } from '@xterm/xterm';
-import { createTerminalWriter } from './terminal-writer.js';
+import { bindTerminalWriterTarget, createTerminalWriter } from './terminal-writer.js';
 
 function screen(terminal: Terminal) {
   const buffer = terminal.buffer.active;
@@ -63,9 +63,22 @@ describe('FR-TERM-003: real xterm parsing', () => {
     } finally { writer.dispose(); terminal.dispose(); }
   });
 
-  it('releases synchronized output after Grok-style trailing DECSET 2026h so the pane can paint', async () => {
+  it('reads synchronized-output mode live through bindTerminalWriterTarget', async () => {
     const terminal = new Terminal({ cols: 80, rows: 24 });
-    const writer = createTerminalWriter({ terminal, onStall: () => { throw new Error('parser stalled'); } });
+    const bound = bindTerminalWriterTarget(terminal);
+    try {
+      expect(bound.modes?.synchronizedOutputMode).toBe(false);
+      await write(terminal, new TextEncoder().encode('\x1b[?2026h'));
+      expect(bound.modes?.synchronizedOutputMode).toBe(true);
+    } finally { terminal.dispose(); }
+  });
+
+  it('releases synchronized output after Grok-style trailing DECSET 2026h', async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({
+      terminal: bindTerminalWriterTarget(terminal),
+      onStall: () => { throw new Error('parser stalled'); },
+    });
     try {
       const bytes = new TextEncoder().encode(
         '\x1b[?2026h\x1b[10;1Hhello\x1b[?2026l\x1b[?2026h\x1b[10;1Hworld\x1b[?2026l\x1b[?2026h',
@@ -74,6 +87,23 @@ describe('FR-TERM-003: real xterm parsing', () => {
       await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
       expect(terminal.modes.synchronizedOutputMode).toBe(false);
       expect(terminal.buffer.active.getLine(9)?.translateToString(true)).toContain('world');
+    } finally { writer.dispose(); terminal.dispose(); }
+  });
+
+  it('does not release synchronized output when the pane wrapper omits modes', async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({
+      terminal: {
+        write: (bytes, done) => terminal.write(bytes, done),
+        reset: () => terminal.reset(),
+      },
+      onStall: () => { throw new Error('parser stalled'); },
+    });
+    try {
+      const bytes = new TextEncoder().encode('\x1b[?2026h\x1b[10;1Hworld\x1b[?2026l\x1b[?2026h');
+      const session = writer.begin(false);
+      await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
+      expect(terminal.modes.synchronizedOutputMode).toBe(true);
     } finally { writer.dispose(); terminal.dispose(); }
   });
 
