@@ -10,6 +10,7 @@ import {
   type CollaborationAuditFailure,
   type CollaborationAuditTransportKind,
 } from '../shared/contracts/collaboration-audit.js';
+import { enforceOwnerOnlyFile, OWNER_ONLY_FILE_MODE } from '../shared/owner-only-mode.js';
 
 /** File name of the append-only collaboration-audit log under the data dir. */
 export const COLLABORATION_AUDIT_FILE_NAME = 'collaboration-audit.jsonl';
@@ -106,7 +107,15 @@ export class CollaborationAuditLog {
 
     try {
       await mkdir(dirname(this.filePath), { recursive: true });
-      await appendFile(this.filePath, `${JSON.stringify(event)}\n`, 'utf-8');
+      await appendFile(this.filePath, `${JSON.stringify(event)}\n`, {
+        encoding: 'utf-8',
+        mode: OWNER_ONLY_FILE_MODE,
+      });
+      // appendFile's mode only applies on create; re-apply so pre-existing
+      // world-readable files (and any umask-softened create) end up owner-only.
+      // Best-effort: chmod is a no-op on an already-correct file and must not
+      // fail the append if the filesystem cannot chmod (Windows, exotic FS).
+      enforceOwnerOnlyFile(this.filePath);
       this.lastFailure = undefined;
       return true;
     } catch (err) {
