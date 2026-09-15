@@ -9,7 +9,7 @@ import type {
   DiscoveryOutcome,
   OrphanBinding,
 } from './cost-comparison-scanner-contracts.js';
-import type { CostAgent } from '../shared/contracts/cost-comparison.js';
+import type { CostAgent, CostDataQuality } from '../shared/contracts/cost-comparison.js';
 
 const NOW = new Date('2026-05-08T12:00:00.000Z').getTime();
 const ONE_DAY_MS = 86_400_000;
@@ -657,7 +657,7 @@ describe('aggregate — task identity', () => {
     if (parseError.kind !== 'bound' || noTokens.kind !== 'bound') throw new Error('Expected bound fixtures');
     parseError.binding.hasParseError = true;
     noTokens.binding.hasTokenData = false;
-    const cases: Array<{ id: string; agentType: CostAgent; quality: string }> = [
+    const cases: Array<{ id: string; agentType: CostAgent; quality: CostDataQuality }> = [
       { id: 'claude-priced', agentType: 'claude-code', quality: 'complete' },
       { id: 'claude-missing', agentType: 'claude-code', quality: 'missing-usage' },
       { id: 'undiscovered', agentType: 'codex-cli', quality: 'codex-rollout-not-found' },

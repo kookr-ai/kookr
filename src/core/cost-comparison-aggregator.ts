@@ -309,17 +309,19 @@ function computePerTaskRow(task: Task, agent: CostAgent, input: AggregatorInput)
   const updatedAtMs = task.updatedAt instanceof Date ? task.updatedAt.getTime() : new Date(task.updatedAt).getTime();
   const isTerminal = isTerminalStatus(task.status);
   const durationMs = isTerminal && updatedAtMs > startedAtMs ? updatedAtMs - startedAtMs : null;
+  // Blank names become null; keep the stored spelling (including surrounding spaces).
+  const taskName = task.name?.trim() ? task.name : null;
 
   if (agent === 'claude-code') {
-    return computeClaudeRow(task, startedAtMs, durationMs, isTerminal, input);
+    return computeClaudeRow(task, startedAtMs, durationMs, isTerminal, input, taskName);
   }
-  return computeCodexRow(task, startedAtMs, durationMs, isTerminal, input);
+  return computeCodexRow(task, startedAtMs, durationMs, isTerminal, input, taskName);
 }
 
 function computeClaudeRow(
   task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
+  taskName: string | null,
 ): PerTaskComputed {
-  const taskName = task.name?.trim() ? task.name : null;
   // Prefer the live TokenTracker reading from claudeUsage; fall back to the persisted
   // `task.tokenUsage` snapshot for completed tasks whose transcript is no longer registered.
   // Missing usage is not a verified zero-cost task; surface it explicitly.
@@ -353,8 +355,8 @@ function computeClaudeRow(
 
 function computeCodexRow(
   task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
+  taskName: string | null,
 ): PerTaskComputed {
-  const taskName = task.name?.trim() ? task.name : null;
   const fb = task.completionFeedback?.rating;
   const thumb: 'up' | 'down' | null = fb === 'up' ? 'up' : fb === 'down' ? 'down' : null;
   const outcome = input.codexOutcomes.get(task.id);
