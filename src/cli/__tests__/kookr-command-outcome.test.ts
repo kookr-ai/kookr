@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { collectCommandOutcomes } from '../kookr-command-outcome.js';
+import { collectCommandOutcomes, LOCAL_INTERACTION_TAIL_MAX_BYTES } from '../kookr-command-outcome.js';
 import { CommandJournal, type CommandEnvelope } from '../../remote/command-journal.js';
 import { asActorId, asClientId, asCommandId, asGrantId, asIdempotencyKey, asNodeEpoch, asNodeId, asSessionEpoch, asSessionId } from '../../remote/ids.js';
 
@@ -46,6 +46,43 @@ describe('kookr command outcome', () => {
     await expect(collectCommandOutcomes({ kookrDir: dir })).resolves.toMatchObject([
       { source: 'local', action: 'presetReply', outcome: 'accepted', agentId: 's1' },
     ]);
+  });
+
+  it('reports a local command that lives only in the tailed suffix of a large interactions.jsonl', async () => {
+    const agedOut = `${JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 's1',
+      anomalyType: 'stuck',
+      timestamp: '2026-05-15T18:00:00.000Z',
+      commandId: 'cmd-aged-out',
+    })}\n`;
+    const tailEvent = `${JSON.stringify({
+      type: 'user_input',
+      agentId: 's1',
+      content: 'continue',
+      timestamp: '2026-05-15T19:00:00.000Z',
+      commandId: 'cmd-in-tail',
+    })}\n`;
+    // Pad so the aged-out command sits strictly before the last cap bytes.
+    // No newlines in the pad: parseJsonl drops the truncated first fragment.
+    const pad = 'x'.repeat(LOCAL_INTERACTION_TAIL_MAX_BYTES);
+    await writeFile(
+      join(dir, 'sessions', 's1', 'interactions.jsonl'),
+      `${agedOut}${pad}\n${tailEvent}`,
+      'utf8',
+    );
+
+    const outcomes = await collectCommandOutcomes({ kookrDir: dir });
+    expect(outcomes).toMatchObject([
+      {
+        source: 'local',
+        commandId: 'cmd-in-tail',
+        action: 'presetReply',
+        outcome: 'accepted',
+        agentId: 's1',
+      },
+    ]);
+    expect(outcomes.some((row) => row.commandId === 'cmd-aged-out')).toBe(false);
   });
 
   it('returns remote outcomes from the compacted command journal snapshot', async () => {
