@@ -330,6 +330,89 @@ describe('OverviewEmptyState', () => {
     expect(container.querySelector('[data-testid="overview-running"]')?.textContent).toContain('running 12m');
   });
 
+  describe('per-row dollars-per-hour (#3279)', () => {
+    const usage = (costUsd: number): AgentState['tokenUsage'] => ({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      costUsd,
+    });
+
+    test('shows compact $/h next to duration on each running row after two minutes with positive cost', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-20T11:00:00.000Z'));
+      render({
+        running: [
+          makeRunningAgent('run-1', 'Watch logs', {
+            startedAt: '2026-06-20T10:00:00.000Z',
+            tokenUsage: usage(4),
+          }),
+          makeRunningAgent('run-2', 'Ship the dashboard', {
+            startedAt: '2026-06-20T10:00:00.000Z',
+            tokenUsage: usage(2),
+          }),
+        ],
+      });
+
+      const rows = Array.from(
+        container.querySelectorAll<HTMLButtonElement>(
+          '[data-testid="overview-running"] .overview-waiting-row',
+        ),
+      );
+      expect(rows).toHaveLength(2);
+      expect(rows[0].textContent).toContain('running 1h 0m');
+      expect(rows[0].textContent).toContain('$4.00/h');
+      expect(rows[1].textContent).toContain('running 1h 0m');
+      expect(rows[1].textContent).toContain('$2.00/h');
+      const rates = Array.from(
+        container.querySelectorAll('[data-testid="overview-running-cost-rate"]'),
+      ).map((el) => el.textContent);
+      expect(rates).toEqual(['$4.00/h', '$2.00/h']);
+    });
+
+    test('omits the rate when the session is younger than two minutes', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-20T10:01:59.000Z'));
+      render({
+        running: [
+          makeRunningAgent('run-1', 'Watch logs', {
+            startedAt: '2026-06-20T10:00:00.000Z',
+            tokenUsage: usage(4),
+          }),
+        ],
+      });
+
+      const row = container.querySelector('[data-testid="overview-running"] .overview-waiting-row');
+      expect(row?.textContent).toContain('running 1m');
+      expect(row?.textContent).not.toMatch(/\/h/);
+      expect(container.querySelector('[data-testid="overview-running-cost-rate"]')).toBeNull();
+    });
+
+    test('omits the rate when cost is missing or zero, even after two minutes', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-20T11:00:00.000Z'));
+      render({
+        running: [
+          makeRunningAgent('run-1', 'Watch logs', { startedAt: '2026-06-20T10:00:00.000Z' }),
+          makeRunningAgent('run-2', 'Ship the dashboard', {
+            startedAt: '2026-06-20T10:00:00.000Z',
+            tokenUsage: usage(0),
+          }),
+        ],
+      });
+
+      const rows = Array.from(
+        container.querySelectorAll('[data-testid="overview-running"] .overview-waiting-row'),
+      );
+      expect(rows[0].textContent).toContain('running 1h 0m');
+      expect(rows[0].textContent).not.toMatch(/\/h/);
+      expect(rows[1].textContent).toContain('running 1h 0m');
+      expect(rows[1].textContent).not.toMatch(/\/h/);
+      expect(container.querySelector('[data-testid="overview-running-cost-rate"]')).toBeNull();
+    });
+  });
+
   test('leaves the waiting list and first-run links alone when both waiting and running exist', () => {
     const waiting = [makeWaitingAgent('agent-1', 'Fix the build')];
     const running = [makeRunningAgent('run-1', 'Watch logs')];

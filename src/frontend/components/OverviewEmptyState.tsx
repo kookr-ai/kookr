@@ -16,7 +16,7 @@ import {
   usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
-import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatCost, formatDuration, formatRelativeTimeAgo, prLinkLabel, projectLabel } from '../presentation.js';
+import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, formatCost, formatCostRate, formatDuration, formatRelativeTimeAgo, prLinkLabel, projectLabel } from '../presentation.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
@@ -308,6 +308,9 @@ export function OverviewEmptyState({
             <ul className="overview-waiting-list">
               {running.slice(0, OVERVIEW_RUNNING_LIMIT).map((agent) => {
                 const duration = formatDuration(agent.startedAt);
+                // Per-row burn rate (same helper as finding cards), not the
+                // fleet-total spend chip above.
+                const costRate = formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt);
                 return (
                   <li key={agent.agentId}>
                     <button
@@ -319,6 +322,9 @@ export function OverviewEmptyState({
                       <span className="overview-waiting-meta">
                         {agent.projectDisplayLabel ?? projectLabel(agent.cwd)}
                         {duration && <> · running {duration}</>}
+                        {costRate && (
+                          <> · <span data-testid="overview-running-cost-rate">{costRate}</span></>
+                        )}
                       </span>
                     </button>
                   </li>
