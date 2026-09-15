@@ -311,6 +311,7 @@ export interface TimerDeps {
     | 'recordReclaimed'
     | 'recordAttempted'
     | 'recordSelection'
+    | 'recordReclaimFailure'
     | 'recordSweepFailure'
     | 'recordSweepSuccess'
   >;

@@ -3823,6 +3823,53 @@ describe('diagnostics routes', () => {
       });
     });
 
+    test('issue #3251: exposes reclaimFailedTotal plus last-failure fields; later success does not clear the total', async () => {
+      const metrics = new HungSuspectTtlReclaimMetrics();
+      const baseDeps = {
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        hungSuspectTtlReclaimMetrics: metrics,
+      };
+
+      const before = await mkApp(baseDeps).request('/api/health');
+      const beforeBody = (await before.json()) as { hungSuspectTtlReclaim?: Record<string, unknown> };
+      expect(beforeBody.hungSuspectTtlReclaim).toMatchObject({
+        reclaimFailedTotal: 0,
+        lastReclaimFailureAt: null,
+        lastReclaimFailureCategory: null,
+      });
+
+      metrics.recordReclaimFailure(new TypeError('raw secret detail'), 1_700_000_000_000);
+      const failed = await mkApp(baseDeps).request('/api/health');
+      const failedBody = (await failed.json()) as { hungSuspectTtlReclaim?: Record<string, unknown> };
+      expect(failedBody.hungSuspectTtlReclaim).toMatchObject({
+        reclaimFailedTotal: 1,
+        lastReclaimFailureAt: 1_700_000_000_000,
+        lastReclaimFailureCategory: 'TypeError',
+        reclaimedTotal: 0,
+      });
+      expect(JSON.stringify(failedBody.hungSuspectTtlReclaim)).not.toContain('raw secret detail');
+
+      // A later successful reclaim (and a later successful sweep pass) must
+      // keep the cumulative terminate-failure total — process-lifetime, like
+      // the hung-task reaper sibling. Sweep-level lastFailure* still clear.
+      metrics.recordReclaimed(1);
+      metrics.recordSweepSuccess();
+      const recovered = await mkApp(baseDeps).request('/api/health');
+      const recoveredBody = (await recovered.json()) as {
+        hungSuspectTtlReclaim?: Record<string, unknown>;
+      };
+      expect(recoveredBody.hungSuspectTtlReclaim).toMatchObject({
+        reclaimFailedTotal: 1,
+        lastReclaimFailureAt: 1_700_000_000_000,
+        lastReclaimFailureCategory: 'TypeError',
+        reclaimedTotal: 1,
+        lastFailureCategory: null,
+        lastFailureAtMs: null,
+      });
+    });
+
     test('issue #2225: exposes openPrFailsafeByReason with counts and sample taskIds', async () => {
       const metrics = new HungSuspectTtlReclaimMetrics();
       const openPrMetrics = new OpenPrFailsafeReasonMetrics();

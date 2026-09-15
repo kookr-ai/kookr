@@ -82,14 +82,36 @@ export interface HungSuspectTtlReclaimMetricsSnapshot {
    * later successful pass cleared the current-error state (issue #2897).
    */
   lastFailureAtMs: number | null;
+  /**
+   * Cumulative hungSuspect TTL terminate rejections since process start
+   * (issue #3251). Distinct from {@link sweepFailuresTotal} (whole-pass
+   * throws) and from {@link reclaimedTotal} (successful terminates). A later
+   * successful reclaim does not reset this — process-lifetime, like the
+   * hung-task reaper's `reapFailedTotal`.
+   */
+  reclaimFailedTotal: number;
+  /**
+   * Epoch-ms of the most recent terminate rejection, or `null` if none yet
+   * (issue #3251). Not cleared by a later successful reclaim — matching the
+   * hung-task reaper's `lastReapFailureAt`.
+   */
+  lastReclaimFailureAt: number | null;
+  /**
+   * Sanitized category of the most recent terminate rejection (error class
+   * name, same `[A-Za-z0-9_]` / 48-char cap as {@link lastFailureCategory}),
+   * or `null` if none yet. Never the raw message. Not cleared by a later
+   * successful reclaim.
+   */
+  lastReclaimFailureCategory: string | null;
 }
 
 /** Cap the sanitized failure category so health/metrics stay bounded (issue #2897). */
 const MAX_FAILURE_CATEGORY_LEN = 48;
 
 /**
- * Derive a bounded, sanitized failure category from a caught sweep error
- * (issue #2897). Uses the error's class name only — never the message — and
+ * Derive a bounded, sanitized failure category from a hungSuspect TTL error
+ * (whole-pass sweep throws, issue #2897, and per-task terminate rejects,
+ * issue #3251). Uses the error's class name only — never the message — and
  * strips it to `[A-Za-z0-9_]` so no raw exception text reaches health or
  * Prometheus. Falls back to `'unknown'` for a non-Error throw or empty name.
  */
@@ -117,6 +139,9 @@ export class HungSuspectTtlReclaimMetrics {
   private sweepFailuresTotal = 0;
   private lastFailureCategory: string | null = null;
   private lastFailureAtMs: number | null = null;
+  private reclaimFailedTotal = 0;
+  private lastReclaimFailureAt: number | null = null;
+  private lastReclaimFailureCategory: string | null = null;
 
   recordReclaimed(count: number): void {
     if (count > 0) this.reclaimedTotal += count;
@@ -146,6 +171,19 @@ export class HungSuspectTtlReclaimMetrics {
 
   recordAttempted(count: number): void {
     if (count > 0) this.reclaimAttempted += count;
+  }
+
+  /**
+   * Record one per-task terminate rejection (issue #3251). Bumps the
+   * cumulative failure count and remembers a sanitized category + timestamp.
+   * Does not touch the sweep-level current-error fields ({@link lastFailureCategory}
+   * / {@link lastFailureAtMs}) — those stay the whole-pass signal from #2897.
+   * A later successful reclaim never resets these.
+   */
+  recordReclaimFailure(err: unknown, atMs: number = Date.now()): void {
+    this.reclaimFailedTotal += 1;
+    this.lastReclaimFailureAt = atMs;
+    this.lastReclaimFailureCategory = classifyHungSuspectSweepFailure(err);
   }
 
   /**
@@ -190,6 +228,9 @@ export class HungSuspectTtlReclaimMetrics {
       sweepFailuresTotal: this.sweepFailuresTotal,
       lastFailureCategory: this.lastFailureCategory,
       lastFailureAtMs: this.lastFailureAtMs,
+      reclaimFailedTotal: this.reclaimFailedTotal,
+      lastReclaimFailureAt: this.lastReclaimFailureAt,
+      lastReclaimFailureCategory: this.lastReclaimFailureCategory,
     };
   }
 }
@@ -234,7 +275,7 @@ export interface ReclaimHungSuspectTasksDeps {
   resolveMergedPr?: (task: Task) => MergedPrAttribution | null;
   metrics?: Pick<
     HungSuspectTtlReclaimMetrics,
-    'recordReclaimed' | 'recordAttempted' | 'recordSelection'
+    'recordReclaimed' | 'recordAttempted' | 'recordSelection' | 'recordReclaimFailure'
   >;
 }
 
@@ -345,7 +386,11 @@ export async function reclaimAgedHungSuspectTasks(
           `(threshold ${Math.round(ttlMs / 1000)}s)`,
       });
     } catch (err) {
-      // Raced a manual complete/terminate — skip; the task is no longer hungSuspect.
+      // Terminate rejected: the slot is still held. Count it as a reclaim
+      // failure (issue #3251) so residual with reclaimSucceeded=0 can tell
+      // "still under TTL" from "terminate keeps throwing." Continue so a
+      // later candidate in this pass can still be reclaimed (#3254).
+      deps.metrics?.recordReclaimFailure(err, now.getTime());
       console.warn(
         `[hung-suspect-ttl] could not reclaim task ${task.id}:`,
         err instanceof Error ? err.message : err,
