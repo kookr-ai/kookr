@@ -67,13 +67,16 @@ async function readBoundedTailText(filePath: string, maxBytes: number): Promise<
     // short read would otherwise append trailing NUL bytes to (and corrupt)
     // the most-recent line.
     const { bytesRead } = await handle.read(buffer, 0, length, position);
-    let text = buffer.toString('utf8', 0, bytesRead);
+    const text = buffer.toString('utf8', 0, bytesRead);
     if (!truncated) return text;
+    // A tailed window almost always starts mid-record. Drop the first line,
+    // or the whole window if it has no newline, so a parseable suffix of a
+    // cut record cannot surface as an event. A window that is exactly one
+    // newline-terminated line is included in that drop — the previous byte
+    // is outside the cap, so that line is treated as the cut prefix.
     const nl = text.indexOf('\n');
-    if (nl >= 0 && nl + 1 < text.length) return text.slice(nl + 1);
-    if (nl === 0) return text.slice(1);
     if (nl < 0) return '';
-    return text;
+    return text.slice(nl + 1);
   } finally {
     await handle.close();
   }

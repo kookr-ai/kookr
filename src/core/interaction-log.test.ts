@@ -154,6 +154,29 @@ describe('readInteractionLog', () => {
     expect(events).toEqual([tailEvent]);
   });
 
+  test('drops a parseable only-line truncated window', async () => {
+    const logPath = join(tempDir, 'only-line-tail.jsonl');
+    const droppedPartial = JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 'dropped-partial',
+      anomalyType: 'stuck',
+      timestamp: '2026-03-25T09:00:00Z',
+    });
+    const maxBytes = droppedPartial.length + 1;
+    const aged = `${JSON.stringify({
+      type: 'finding_skipped',
+      agentId: 'aged-out',
+      anomalyType: 'stuck',
+      timestamp: '2026-03-25T08:00:00Z',
+    })}\n`;
+    const prefix = `${aged}${'x'.repeat(maxBytes)}GARBAGE`;
+    writeFileSync(logPath, `${prefix}${droppedPartial}\n`);
+    expect(statSync(logPath).size).toBeGreaterThan(maxBytes);
+
+    const events = await readInteractionLog(logPath, { maxBytes });
+    expect(events).toEqual([]);
+  });
+
   test('default cap tails a lifetime-sized prefix and keeps the last event', async () => {
     const logPath = join(tempDir, 'default-cap.jsonl');
     const aged = `${JSON.stringify({
