@@ -47,3 +47,30 @@ describe('unattended recovery runbook hourly-timer boot window (issue #2642)', (
     expect(doc).not.toMatch(/\/Users\/[^\s]+/);
   });
 });
+
+/**
+ * Drift guard for issue #3255: assumed-submitted prompt-ack lives on the
+ * per-session `promptDelivery` record (#2792). Overnight Grok launches that
+ * never hook-confirm look like healthy workers unless the runbook names that
+ * field. There is no process-wide health gauge for this — do not invent one.
+ */
+describe('unattended recovery runbook assumed-submitted prompt-ack (issue #3255)', () => {
+  const doc = readFileSync(runbookPath, 'utf-8');
+
+  test('matrix names assumed-submitted / prompt-ack against the per-session field', () => {
+    expect(doc).toMatch(/prompt-ack/);
+    expect(doc).toContain('assumed-submitted');
+    expect(doc).toContain('sessions[].promptDelivery');
+    expect(doc).toContain('GET /api/tasks');
+    expect(doc).toContain('## 8. Assumed-submitted prompt-ack');
+  });
+
+  test('does not invent a fleet health alias that does not exist', () => {
+    expect(doc).toMatch(/not.*\/api\/health.*gauge/i);
+    expect(doc).toContain('submit-assumed-after-timeout');
+    expect(doc.toLowerCase()).toMatch(/do \*\*not\*\* treat as confirmed delivery/);
+    expect(doc).not.toMatch(/GET \/api\/health[^.\n]*promptDelivery/);
+    expect(doc).not.toMatch(/health\.promptDelivery/);
+    expect(doc).not.toMatch(/promptAckDrought|promptDeliveryGauge|fleetPromptAck/);
+  });
+});
