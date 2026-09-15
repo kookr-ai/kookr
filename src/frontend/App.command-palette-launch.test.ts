@@ -70,6 +70,7 @@ function setInputValue(input: HTMLInputElement, value: string): void {
 // that App actually passes a working onLaunchProject and that the handler
 // resolves the palette's projectId to a summary and opens the manual launch
 // dialog scoped to that project — without first navigating into its context.
+// Also covers the global Outcome Scoreboard palette action (issue #3281).
 describe('App command-palette project launch', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -167,5 +168,142 @@ describe('App command-palette project launch', () => {
       cwd: '/work/idle',
       parentTaskId: 'original-task',
     }));
+  });
+});
+
+describe('App command-palette Outcome Scoreboard', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useRealTimers();
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    localStorage.clear();
+    localStorage.setItem('kookr:onboarding:seen-v2', 'true');
+    sendMock.mockClear();
+    syncGlobalStore();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/settings')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ cleanupWorktreeOnComplete: true }),
+        } as Response);
+      }
+      if (url.includes('/api/anomaly-stats')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ checks: {}, fires: {}, falsePositives: {} }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ configured: false }),
+      } as Response);
+    }));
+    useKookrStore.setState({
+      serverCwd: '/server/cwd',
+      sttUrl: '',
+      projectSummariesHydrated: true,
+    });
+    useKookrStore.getState().handleProjectSummaries([
+      {
+        project: 'github.com/me/idle',
+        displayName: 'me/idle',
+        activeAgents: 0,
+        attentionScore: 0,
+        recentTasks: [],
+        localPath: '/work/idle',
+      },
+    ]);
+    // Select a project so the findings rail is scoped — the scoreboard action
+    // must stay global and still appear (issue #3281).
+    useKookrStore.getState().selectProject('github.com/me/idle');
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    await act(async () => {
+      root.unmount();
+    });
+    document.body.innerHTML = '';
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  async function openPaletteAndSearch(query: string): Promise<HTMLButtonElement[]> {
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+    });
+    const input = await waitForElement<HTMLInputElement>(container, '[data-testid="command-palette-input"]');
+    await act(async () => {
+      setInputValue(input, query);
+    });
+    return Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="command-palette-action"]'));
+  }
+
+  test('searching scoreboard or outcome finds the global action and opens the existing Outcome Scoreboard', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const scoreboardHits = await openPaletteAndSearch('scoreboard');
+    expect(scoreboardHits.map((row) => row.dataset.actionId)).toEqual(['outcome-scoreboard']);
+    expect(scoreboardHits[0].textContent).toContain('Outcome Scoreboard');
+
+    await act(async () => {
+      scoreboardHits[0].click();
+    });
+    await waitForElement(container, '.operations-panel');
+    const scoreboardTitle = await waitForElement(container, '#outcome-ledger-title');
+    expect(scoreboardTitle.textContent).toBe('Outcome Scoreboard');
+    expect(container.querySelector('[data-testid="command-palette-input"]')).toBeNull();
+
+    // Palette can open over Diagnostics. Running the action again must keep
+    // the panel open (openDiagnostics, not toggleOperations).
+    const stillOpenHits = await openPaletteAndSearch('scoreboard');
+    await act(async () => {
+      stillOpenHits[0].click();
+    });
+    expect(container.querySelector('.operations-panel')).not.toBeNull();
+    expect(container.querySelector('#outcome-ledger-title')?.textContent).toBe('Outcome Scoreboard');
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Close diagnostics"]')?.click();
+    });
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 5_000) {
+      await flush();
+      if (container.querySelector('.operations-panel') === null) break;
+    }
+    expect(container.querySelector('.operations-panel')).toBeNull();
+
+    const outcomeHits = await openPaletteAndSearch('outcome');
+    expect(outcomeHits.map((row) => row.dataset.actionId)).toEqual(['outcome-scoreboard']);
+    await act(async () => {
+      outcomeHits[0].click();
+    });
+    await waitForElement(container, '#outcome-ledger-title');
+    expect(container.querySelector('.operations-panel')).not.toBeNull();
+  });
+
+  test('searching Diagnostics still finds the existing Diagnostics action', async () => {
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const diagnosticsHits = await openPaletteAndSearch('diagnostics');
+    expect(diagnosticsHits.map((row) => row.dataset.actionId)).toEqual(['diagnostics']);
+    expect(diagnosticsHits[0].textContent).toContain('Diagnostics');
+
+    await act(async () => {
+      diagnosticsHits[0].click();
+    });
+    await waitForElement(container, '.operations-panel');
+    expect(container.querySelector('#outcome-ledger-title')?.textContent).toBe('Outcome Scoreboard');
   });
 });

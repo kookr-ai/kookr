@@ -1425,6 +1425,10 @@ export function App() {
         }]
       : []),
     { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: toggleOperations },
+    // Operators type "scoreboard" or "outcome" expecting a jump. Diagnostics
+    // keywords don't include those, so this dedicated global action reuses the
+    // Diagnostics open path instead of adding a panel (issue #3281).
+    { id: 'outcome-scoreboard', label: 'Outcome Scoreboard', section: 'view', keywords: ['scoreboard', 'outcome'], run: openDiagnostics },
     { id: 'coordinator-findings', label: 'Coordinator findings', section: 'view', keywords: ['chain', 'blocked', 'prior'], run: () => setShowCoordinatorFindings((value) => !value) },
     { id: 'oss', label: 'OSS contribution productivity', section: 'view', keywords: ['open source', 'contributions'], run: toggleOssView },
     { id: 'launch', label: 'Launch task', section: 'tools', keywords: ['spawn', 'new task'], run: () => {
