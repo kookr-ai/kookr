@@ -9,6 +9,7 @@ vi.mock('node:child_process', () => ({
 }));
 
 import {
+  configureKbPreflightProbeForTests,
   resetKbPreflightCacheForTests,
   runLaunchDependencyPreflights,
 } from './launch-dependency-runner.js';
@@ -126,6 +127,131 @@ describe('launch dependency runner', () => {
     expect(findings).toEqual([
       expect.objectContaining({ dependency: 'kb', category: 'unknown' }),
     ]);
+  });
+
+  test('classifies a missing kb binary as a configuration finding', async () => {
+    mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: Function) => {
+      const error = Object.assign(new Error('spawn kb ENOENT'), { code: 'ENOENT' });
+      cb(error, '', '');
+    });
+
+    const findings = await runLaunchDependencyPreflights(['kb']);
+
+    expect(findings[0]).toEqual(expect.objectContaining({
+      dependency: 'kb',
+      category: 'configuration',
+    }));
+  });
+
+  test('classifies a max-buffer collection failure as unknown health', async () => {
+    mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: Function) => {
+      const error = Object.assign(new Error('stdout maxBuffer exceeded'), {
+        code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER',
+      });
+      cb(error, 'x'.repeat(64), '');
+    });
+
+    const findings = await runLaunchDependencyPreflights(['kb']);
+
+    expect(findings).toEqual([
+      expect.objectContaining({ dependency: 'kb', category: 'unknown' }),
+    ]);
+  });
+
+  function mockHangingExecFile(): { kill: ReturnType<typeof vi.fn>; callbacks: Function[] } {
+    const kill = vi.fn();
+    const callbacks: Function[] = [];
+    mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: Function) => {
+      callbacks.push(cb);
+      return { pid: 4242, kill };
+    });
+    return { kill, callbacks };
+  }
+
+  test('settles unknown health at the deadline when the child never exits', async () => {
+    vi.useFakeTimers();
+    try {
+      configureKbPreflightProbeForTests({ timeoutMs: 1_000, cleanupGraceMs: 100 });
+      const { kill } = mockHangingExecFile();
+
+      const pending = runLaunchDependencyPreflights(['kb']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(pending).resolves.toEqual([
+        expect.objectContaining({ dependency: 'kb', category: 'unknown' }),
+      ]);
+      expect(kill).toHaveBeenCalledWith('SIGTERM');
+      expect(kill).not.toHaveBeenCalledWith('SIGKILL');
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(kill).toHaveBeenCalledWith('SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('ignores a late success callback after the deadline has settled', async () => {
+    vi.useFakeTimers();
+    try {
+      configureKbPreflightProbeForTests({ timeoutMs: 1_000, cleanupGraceMs: 100 });
+      const { callbacks } = mockHangingExecFile();
+
+      const pending = runLaunchDependencyPreflights(['kb']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      const findings = await pending;
+      expect(findings[0]).toEqual(expect.objectContaining({ category: 'unknown' }));
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+
+      callbacks[0]?.(null, JSON.stringify({
+        status: 'ok',
+        checks: [{ name: 'backend', status: 'ok', detail: 'reachable' }],
+      }), '');
+
+      const cached = await runLaunchDependencyPreflights(['kb']);
+      expect(cached).toEqual(findings);
+      expect(mockExecFile).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('late success from a timed-out child cannot replace a later probe cache', async () => {
+    vi.useFakeTimers();
+    try {
+      configureKbPreflightProbeForTests({ timeoutMs: 1_000, cleanupGraceMs: 100, cacheTtlMs: 500 });
+      const { callbacks } = mockHangingExecFile();
+
+      const first = runLaunchDependencyPreflights(['kb']);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(first).resolves.toEqual([
+        expect.objectContaining({ category: 'unknown' }),
+      ]);
+
+      await vi.advanceTimersByTimeAsync(500);
+
+      mockCommand((_file, args) => {
+        expect(args[0]).toBe('doctor');
+        return {
+          exitCode: 1,
+          stdout: JSON.stringify({
+            status: 'error',
+            checks: [{ name: 'index', status: 'error', detail: 'FAISS index has no chunks' }],
+          }),
+        };
+      });
+
+      const second = await runLaunchDependencyPreflights(['kb']);
+      expect(second[0]).toEqual(expect.objectContaining({ category: 'empty_index_data' }));
+
+      callbacks[0]?.(null, JSON.stringify({
+        status: 'ok',
+        checks: [{ name: 'backend', status: 'ok', detail: 'reachable' }],
+      }), '');
+
+      const third = await runLaunchDependencyPreflights(['kb']);
+      expect(third).toEqual(second);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   describe('preflight result TTL cache (issue #3074)', () => {
