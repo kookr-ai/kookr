@@ -63,6 +63,20 @@ describe('FR-TERM-003: real xterm parsing', () => {
     } finally { writer.dispose(); terminal.dispose(); }
   });
 
+  it('releases synchronized output after Grok-style trailing DECSET 2026h so the pane can paint', async () => {
+    const terminal = new Terminal({ cols: 80, rows: 24 });
+    const writer = createTerminalWriter({ terminal, onStall: () => { throw new Error('parser stalled'); } });
+    try {
+      const bytes = new TextEncoder().encode(
+        '\x1b[?2026h\x1b[10;1Hhello\x1b[?2026l\x1b[?2026h\x1b[10;1Hworld\x1b[?2026l\x1b[?2026h',
+      );
+      const session = writer.begin(false);
+      await new Promise<void>((resolve) => { session.write(bytes); session.barrier(resolve); });
+      expect(terminal.modes.synchronizedOutputMode).toBe(false);
+      expect(terminal.buffer.active.getLine(9)?.translateToString(true)).toContain('world');
+    } finally { writer.dispose(); terminal.dispose(); }
+  });
+
   it('xterm preserves viewed text while trimming and clamps at the oldest retained line', async () => {
     const terminal = new Terminal({ rows: 3, cols: 80, scrollback: 5 });
     try {

@@ -3,6 +3,8 @@ const MAX_PENDING_BYTES = 2 * 1024 * 1024;
 const MAX_PENDING_ENTRIES = 512;
 const MAX_PENDING_CONTROLS = 64;
 const PARSER_STALL_MS = 2000;
+/** CSI DECSET 2026 off. Grok (and Codex) leave this mode on between frames. */
+const SYNC_OUTPUT_OFF = new Uint8Array([0x1b, 0x5b, 0x3f, 0x32, 0x30, 0x32, 0x36, 0x6c]);
 
 type ScheduledTask = () => void;
 
@@ -53,8 +55,19 @@ type QueueEntry =
   | { kind: 'bytes'; data: Uint8Array; onParsed?: () => void }
   | { kind: 'control'; callback: () => void };
 
+interface TerminalWriterTerminal {
+  write(data: Uint8Array, callback: () => void): void;
+  reset(): void;
+  /**
+   * xterm.js 6 holds canvas paints while DECSET 2026 (synchronized output) is
+   * on. Grok emits `ESC[?2026l ESC[?2026h` with no gap, so a parse that ends
+   * on 2026h would otherwise freeze the pane until xterm's 1s timeout.
+   */
+  modes?: { readonly synchronizedOutputMode: boolean };
+}
+
 interface TerminalWriterOptions {
-  terminal: { write(data: Uint8Array, callback: () => void): void; reset(): void };
+  terminal: TerminalWriterTerminal;
   scheduler?: ReturnType<typeof createTerminalWriteScheduler>;
   /** The caller must dispose/recreate xterm and its addons, never reset in place. */
   onStall(): void;
@@ -93,6 +106,27 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
     stallTimer = null;
   }
 
+  function finishParse(
+    active: { generation: number; bytes: number },
+    entry: Extract<QueueEntry, { kind: 'bytes' }>,
+  ): void {
+    if (disposed || inFlight !== active) return;
+    if (stallTimer !== null) clearTimeout(stallTimer);
+    stallTimer = null;
+    inFlight = null;
+    pendingBytes -= active.bytes;
+    if (active.generation === generation) {
+      queue.shift();
+      try { entry.onParsed?.(); }
+      catch { dispose(); options.onStall(); }
+      finally { request(); }
+      return;
+    }
+    // Stale parses still release the transition barrier. They cannot run
+    // acknowledgements or readiness callbacks from the retired connection.
+    request();
+  }
+
   function run() {
     try { runTask(); } catch {
       // A failed parser can have partially mutated its buffer. Retire the
@@ -125,20 +159,18 @@ export function createTerminalWriter(options: TerminalWriterOptions) {
     }, PARSER_STALL_MS);
     options.terminal.write(data, () => {
       if (disposed || inFlight !== active) return;
-      if (stallTimer !== null) clearTimeout(stallTimer);
-      stallTimer = null;
-      inFlight = null;
-      pendingBytes -= active.bytes;
-      if (active.generation === generation) {
-        queue.shift();
-        try { entry.onParsed?.(); }
-        catch { dispose(); options.onStall(); }
-        finally { request(); }
+      if (options.terminal.modes?.synchronizedOutputMode) {
+        // Keep this parse in-flight until the closer is parsed so the
+        // scheduler does not submit the next chunk against a held renderer.
+        try {
+          options.terminal.write(SYNC_OUTPUT_OFF, () => finishParse(active, entry));
+        } catch {
+          dispose();
+          options.onStall();
+        }
         return;
       }
-      // Stale parses still release the transition barrier. They cannot run
-      // acknowledgements or readiness callbacks from the retired connection.
-      request();
+      finishParse(active, entry);
     });
   }
 

@@ -1058,6 +1058,11 @@ task scheduling across panes. Transport credit returns only after parsing.
   instance and requests replacement; it never resets a still-running parser.
 - Bound queued payload bytes and control count. A blocked pane does not delay
   another pane, and each scheduler turn submits at most one chunk.
+- After each parse, synchronized output (DECSET 2026) must be off so xterm can
+  paint. Agents such as Grok Build leave 2026 enabled between frames
+  (`ESC[?2026l` immediately followed by `ESC[?2026h`); a parse that ends on
+  2026h would otherwise freeze the canvas until xterm's 1s timeout. The closer
+  is a local renderer release, not stream bytes, and is not credited.
 
 **Linked tests:** `src/frontend/terminal-writer.test.ts`, `src/frontend/terminal-writer.xterm.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
 
