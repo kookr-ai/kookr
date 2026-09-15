@@ -12,6 +12,7 @@
  * Critical edges that update the file:
  * - ready degrade (`GET /api/ready` flips to not-ready)
  * - schedule dead-man fire
+ * - dead-man self-heal escalate-with-zero-success / later clear (issue #3249)
  * - pipeline starvation fire
  * - SAFE MODE engage
  * - prod smoke tick fire / clear (issue #2032)
@@ -30,6 +31,10 @@ export const OPS_STATUS_MAX_EDGES = 20;
 export type OpsStatusEdgeKind =
   | 'ready_degrade'
   | 'dead_man_fire'
+  /** Self-heal gave up on the current episode with zero lifetime successes (#3249). */
+  | 'dead_man_self_heal_escalate'
+  /** Leftover self-heal-exhausted residual cleared (later success or recover). */
+  | 'dead_man_self_heal_clear'
   | 'starvation_fire'
   | 'safe_mode_engage'
   /** Hourly prod smoke tick entered a failing episode (issue #2032). */
@@ -65,6 +70,27 @@ export interface OpsStatusSnapshot {
   safeMode: SafeModeStatus;
   /** Ring of recent critical edges (newest last). */
   lastEdges: OpsStatusEdge[];
+  /**
+   * Leftover while dead-man self-heal has escalated with zero lifetime
+   * successes (issue #3249). Absent when the leftover does not apply. Bounded
+   * counters only — never a schedule list or secrets.
+   */
+  deadManSelfHealExhausted?: OpsStatusDeadManSelfHealExhausted;
+}
+
+/** Bounded leftover recorded while self-heal has given up with zero successes. */
+export interface OpsStatusDeadManSelfHealExhausted {
+  /** Cumulative self-heal kicks observed when the leftover was recorded. */
+  attempts: number;
+  /** ISO-8601 timestamp the leftover was recorded. */
+  at: string;
+}
+
+/** Self-heal counters sampled for the ops card (issue #3249). No schedule ids. */
+export interface DeadManSelfHealOpsStats {
+  attempts: number;
+  successes: number;
+  escalated: boolean;
 }
 
 /** Live fields sampled at write time (outside the pure edge ring). */
@@ -79,6 +105,8 @@ export interface OpsStatusLiveFields {
 const EDGE_KINDS: ReadonlySet<string> = new Set([
   'ready_degrade',
   'dead_man_fire',
+  'dead_man_self_heal_escalate',
+  'dead_man_self_heal_clear',
   'starvation_fire',
   'safe_mode_engage',
   'smoke_tick_fire',
@@ -105,6 +133,7 @@ export function buildOpsStatusSnapshot(
   fields: OpsStatusLiveFields,
   lastEdges: readonly OpsStatusEdge[],
   updatedAt: string,
+  deadManSelfHealExhausted?: OpsStatusDeadManSelfHealExhausted | null,
 ): OpsStatusSnapshot {
   return {
     schemaVersion: OPS_STATUS_SCHEMA_VERSION,
@@ -125,6 +154,14 @@ export function buildOpsStatusSnapshot(
       at: edge.at,
       ...(edge.detail ? { detail: edge.detail } : {}),
     })),
+    ...(deadManSelfHealExhausted
+      ? {
+          deadManSelfHealExhausted: {
+            attempts: deadManSelfHealExhausted.attempts,
+            at: deadManSelfHealExhausted.at,
+          },
+        }
+      : {}),
   };
 }
 
@@ -182,6 +219,9 @@ export function isOpsStatusSnapshot(value: unknown): value is OpsStatusSnapshot 
   for (const edge of v.lastEdges) {
     if (!isEdgeShape(edge)) return false;
   }
+  if (v.deadManSelfHealExhausted !== undefined && !isExhaustedResidualShape(v.deadManSelfHealExhausted)) {
+    return false;
+  }
   return true;
 }
 
@@ -209,6 +249,24 @@ function isEdgeShape(value: unknown): value is OpsStatusEdge {
   if (typeof e.at !== 'string' || e.at.length === 0) return false;
   if (e.detail !== undefined && typeof e.detail !== 'string') return false;
   return true;
+}
+
+function isExhaustedResidualShape(value: unknown): value is OpsStatusDeadManSelfHealExhausted {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  if (keys.length !== 2 || !keys.includes('attempts') || !keys.includes('at')) return false;
+  const r = value as Record<string, unknown>;
+  return isNonNegInt(r.attempts) && typeof r.at === 'string' && r.at.length > 0;
+}
+
+function isZeroSuccessEscalate(stats: DeadManSelfHealOpsStats): boolean {
+  return stats.escalated === true && stats.successes === 0;
+}
+
+function formatSelfHealCounts(stats: DeadManSelfHealOpsStats): string {
+  const attempts = isNonNegInt(stats.attempts) ? stats.attempts : 0;
+  const successes = isNonNegInt(stats.successes) ? stats.successes : 0;
+  return `attempts=${attempts} successes=${successes}`;
 }
 
 export interface OpsStatusWriterDeps {
@@ -242,6 +300,14 @@ export class OpsStatusWriter {
   private lastReady: boolean | null = null;
   /** Last observed SAFE MODE engagement — used for false→true edge detection. */
   private lastSafeModeEngaged: boolean | null = null;
+  /**
+   * Last observed leftover (escalated with successes 0). True after a
+   * successful escalate write; false after a successful clear. Null until the
+   * first observation so a disk-full escalate still retries.
+   */
+  private lastSelfHealZeroSuccessEscalate: boolean | null = null;
+  /** Writer-owned leftover copied onto every snapshot while the condition holds. */
+  private deadManSelfHealExhausted: OpsStatusDeadManSelfHealExhausted | undefined;
   /** Serialize concurrent edge notes so the ring stays ordered. */
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -308,6 +374,57 @@ export class OpsStatusWriter {
   }
 
   /**
+   * Observe dead-man self-heal counters (issue #3249). Writes only when the
+   * leftover "escalated with zero successes" condition flips:
+   * - false→true (or first true): escalate edge + residual field
+   * - true→false: clear edge and drop the residual (later success, or the
+   *   escalated episode recovered)
+   *
+   * De-dupe advances only after a successful write (same retry contract as
+   * {@link noteReadyVerdict}). Never records schedule ids.
+   */
+  async noteDeadManSelfHeal(stats: DeadManSelfHealOpsStats): Promise<OpsStatusSnapshot | null> {
+    const leftover = isZeroSuccessEscalate(stats);
+    if (leftover) {
+      if (this.lastSelfHealZeroSuccessEscalate === true) return null;
+      const previous = this.deadManSelfHealExhausted;
+      const at = this.now().toISOString();
+      const attempts = isNonNegInt(stats.attempts) ? stats.attempts : 0;
+      this.deadManSelfHealExhausted = { attempts, at };
+      const snap = await this.enqueueWrite({
+        kind: 'dead_man_self_heal_escalate',
+        at,
+        detail: formatSelfHealCounts(stats),
+      });
+      if (!snap) {
+        this.deadManSelfHealExhausted = previous;
+        return null;
+      }
+      this.lastSelfHealZeroSuccessEscalate = true;
+      return snap;
+    }
+
+    if (this.lastSelfHealZeroSuccessEscalate !== true) {
+      this.lastSelfHealZeroSuccessEscalate = false;
+      return null;
+    }
+
+    const previous = this.deadManSelfHealExhausted;
+    this.deadManSelfHealExhausted = undefined;
+    const detail =
+      stats.successes > 0
+        ? `self-heal succeeded (${formatSelfHealCounts(stats)})`
+        : `escalated episode recovered (${formatSelfHealCounts(stats)})`;
+    const snap = await this.noteEdge('dead_man_self_heal_clear', detail);
+    if (!snap) {
+      this.deadManSelfHealExhausted = previous;
+      return null;
+    }
+    this.lastSelfHealZeroSuccessEscalate = false;
+    return snap;
+  }
+
+  /**
    * Observe an operational-alert message. Writes for dead-man / pipeline
    * starvation *fire* transitions and prod-smoke fire/clear (issue #2032);
    * other recovery transitions and non-critical metrics are ignored.
@@ -348,7 +465,12 @@ export class OpsStatusWriter {
     }
 
     const lastEdges = appendOpsStatusEdge(this.lastEdges, edge, this.maxEdges);
-    const snapshot = buildOpsStatusSnapshot(fields, lastEdges, edge.at);
+    const snapshot = buildOpsStatusSnapshot(
+      fields,
+      lastEdges,
+      edge.at,
+      this.deadManSelfHealExhausted,
+    );
 
     try {
       // Compact JSON: edge-triggered critical writes serialize on the event loop;
