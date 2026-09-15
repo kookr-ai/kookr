@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
 import { track, trackClick } from '../../telemetry.js';
 import {
+  formatCostRate,
   formatTokenUsage,
   healthyCurrentToolLabel,
   healthyDotClass,
@@ -48,6 +49,10 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
   const durText = healthyStatusLabel(agent.events, agent.startedAt);
   const toolText = healthyCurrentToolLabel(agent.events);
   const costText = agent.tokenUsage ? formatTokenUsage(agent.tokenUsage) : '';
+  // Same compact $/h finding cards already show; formatCostRate hides it
+  // for sessions younger than two minutes and for zero/unknown cost.
+  const rateText = formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt);
+  const costDisplay = [costText, rateText].filter(Boolean).join(' · ');
 
   function handleReply(e: React.MouseEvent) {
     e.stopPropagation();
@@ -119,10 +124,10 @@ export function HealthyRow({ agent, selected, send, onSchedulePlaybook }: {
                 <span className="healthy-row-tool" title={toolText}>{toolText}</span>
               </>
             )}
-            {costText && (
+            {costDisplay && (
               <>
                 <span className="healthy-row-sep" aria-hidden="true">·</span>
-                <span className="healthy-row-cost">{costText}</span>
+                <span className="healthy-row-cost">{costDisplay}</span>
               </>
             )}
           </div>
