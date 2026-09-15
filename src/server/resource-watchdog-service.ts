@@ -2,11 +2,13 @@
  * Resource watchdog service (issue #1724).
  *
  * Periodic host sampler → pure evaluator → throttled investigation/meta spawn
- * through the existing launch path (capacity/backpressure, reserved slots).
+ * through the existing launch path (capacity/backpressure, reserved slots,
+ * SAFE MODE).
  * Health snapshot is pure in-memory (issue #1553: no scans on `/api/health`).
  */
 
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
+import type { LaunchTaskServerOptions } from './launch-service.js';
 import { isTerminatedAtLaunch, type TaskDisposition } from '../shared/contracts/task.js';
 import {
   evaluateResourceWatchdog,
@@ -54,11 +56,23 @@ export interface ResourceWatchdogServiceDeps {
   /**
    * Launch via the standard path (same as POST /api/tasks). Must honor
    * capacity/backpressure. Injected so tests never spawn real tasks.
+   * Second argument is the trusted server-internal stamp channel (SAFE MODE
+   * project id); production forwards it into `launchTask`.
    */
-  launchTask: (opts: LaunchOpts) => Promise<LaunchResult<{
+  launchTask: (
+    opts: LaunchOpts,
+    serverOpts?: LaunchTaskServerOptions,
+  ) => Promise<LaunchResult<{
     id: string;
     disposition?: Pick<TaskDisposition, 'reason' | 'detail'> | null;
   }>>;
+  /**
+   * Project id the per-project automation gate uses for watchdog spawns
+   * (issue #3224 / R18). Typically the server checkout. Absent means the
+   * launch is unstamped; production always wires this so a missing stamp
+   * cannot slip through when paused-project checks are live.
+   */
+  getAutomationProjectId?: () => string | Promise<string>;
   /** Optional tail of server.log for the brief (already truncated). */
   readServerLogTail?: () => string | null;
   /** Optional recent audit lines for the brief. */
@@ -103,6 +117,7 @@ export class ResourceWatchdogService {
   private readonly stateStore: ResourceWatchdogStateStore;
   private readonly auditSink: ResourceWatchdogAuditSink;
   private readonly launchTask: ResourceWatchdogServiceDeps['launchTask'];
+  private readonly getAutomationProjectId: ResourceWatchdogServiceDeps['getAutomationProjectId'];
   private readonly readServerLogTail: () => string | null;
   private readonly readAuditTail: () => string | null;
   private readonly getStaleDtachCount: (() => number | null) | null;
@@ -144,6 +159,7 @@ export class ResourceWatchdogService {
     this.stateStore = deps.stateStore;
     this.auditSink = deps.auditSink;
     this.launchTask = deps.launchTask;
+    this.getAutomationProjectId = deps.getAutomationProjectId;
     this.readServerLogTail = deps.readServerLogTail ?? (() => null);
     this.readAuditTail = deps.readAuditTail ?? (() => null);
     this.getStaleDtachCount = deps.getStaleDtachCount ?? null;
@@ -698,18 +714,25 @@ export class ResourceWatchdogService {
 
     let failedTaskId: string | null = null;
     try {
+      // Await the project stamp before launch so SAFE MODE engaged during
+      // this async step is still visible at the launch boundary (issue #3224).
+      const automationProjectId = this.getAutomationProjectId
+        ? await this.getAutomationProjectId()
+        : undefined;
       const result = await this.launchTask({
         prompt,
         cwd: config.taskCwd,
         name: resourceWatchdogTaskName(decision.kind),
         disableDedup: true,
-        // 'api' source participates in spawn-burst budgets; actor 'kookr'
-        // may consume reserved self-maintenance slots (#1564 default).
-        launchSource: 'api',
+        // First-class autonomous source (issue #3224): SAFE MODE is re-checked
+        // at the launch boundary after reclaim / project-id resolution. Stays
+        // spawn-budget-capped (only `schedule` is exempt). Actor 'kookr' may
+        // consume reserved self-maintenance slots (#1564 default).
+        launchSource: 'resource-watchdog',
         launchActorId: 'kookr',
         unattended: true,
         autoCloseOnSignal: true,
-      });
+      }, automationProjectId ? { automationProjectId } : undefined);
       const taskId = result.task.id;
       if (isTerminatedAtLaunch(result.task)) {
         failedTaskId = taskId;

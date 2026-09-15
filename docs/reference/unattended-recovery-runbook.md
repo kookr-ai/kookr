@@ -602,7 +602,7 @@ State / audit (no secrets required to read):
 - `{KOOKR_DIR}/resource-watchdog.state.json`
 - `{KOOKR_DIR}/resource-watchdog-audit.jsonl`
 
-Spawns use the normal launch path (capacity + reserved slots). Throttle: at most
+Spawns use the normal launch path (capacity, reserved slots, and SAFE MODE). Throttle: at most
 one investigation spawn per ~30 minutes; after the 24h budget a meta-reflection
 task may replace another investigation. Details:
 [environment-variables.md](./environment-variables.md) (`KOOKR_RESOURCE_WATCHDOG`),

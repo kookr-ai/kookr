@@ -59,6 +59,10 @@ describe('isAutonomousLaunchSource', () => {
     expect(isAutonomousLaunchSource('post-recovery')).toBe(true);
   });
 
+  it('TS-WATCHDOG-SAFE-MODE-001: treats resource-watchdog as autonomous (issue #3224)', () => {
+    expect(isAutonomousLaunchSource('resource-watchdog')).toBe(true);
+  });
+
   it('treats operator-driven sources as non-autonomous', () => {
     for (const source of ['api', 'ui', 'cli', 'websocket', 'remote-chat-telegram', 'remote-relay'] as const) {
       expect(isAutonomousLaunchSource(source)).toBe(false);
