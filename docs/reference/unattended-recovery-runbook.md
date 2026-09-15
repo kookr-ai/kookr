@@ -36,6 +36,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | New launches HTTP **503** with `data_directory_disk_critical` | admission / byte and inode capacity under `KOOKR_DIR` | Inspect `pressureCause`; reclaim byte space or inodes. Reclaim/reap still allowed; see [disk-critical](#2-disk-critical-admission) |
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
+| Agent looks busy after launch but may never have gotten the prompt | per-session `sessions[].promptDelivery` on `GET /api/tasks` (`status: assumed-submitted`) — **not** a `/api/health` gauge | Inspect the pane; relaunch if no work landed. Do **not** treat as confirmed delivery — [prompt-ack](#8-assumed-submitted-prompt-ack) |
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
 | Free capacity and an empty queue, but no visible recovery scout | `postRecoveryQueueFill` | Check lifecycle state, freshness, then the stable row reason — [post-recovery queue fill](#3c-post-recovery-queue-fill-issue-2895) |
@@ -796,6 +797,76 @@ becomes a page only after those two intervals.
 
 ---
 
+## 8. Assumed-submitted prompt-ack
+
+**Symptom.** A launch stays in progress and the pane looks busy, but Kookr
+never saw the hook that means "the initial prompt was accepted"
+(`UserPromptSubmit`). Overnight those sessions look like healthy workers.
+Operators treat them as delivery, then wonder why no work landed.
+
+*Assumed-submitted* is the prompt-delivery status for that case: the pane
+looked busy or was already responding, so Kookr kept the session, but the
+acknowledgement never arrived. Grok is the usual example — its terminal UI
+can look busy without firing that hook. Any adapter that waits on a submit
+hook can persist the same outcome.
+
+**This is a per-session record, not a process-wide health gauge.** There is
+no `/api/health` field for missing prompt acknowledgements. Read
+`sessions[].promptDelivery` on `GET /api/tasks` (the compact task list,
+`?view=compact`, includes it) or `GET /api/tasks/:id`. The record is absent
+on resumed sessions, on sessions launched before this field existed
+(issue #2792), and on adapters that never run the submit-confirm loop
+(for example Codex).
+
+```bash
+# Every session that recorded a launch-time delivery outcome
+curl -fsS "$KOOKR_API_BASE_URL/api/tasks?view=compact" \
+  | python3 -c '
+import json, sys
+for task in json.load(sys.stdin):
+    for session in task.get("sessions") or []:
+        pd = session.get("promptDelivery")
+        if not pd:
+            continue
+        print(task.get("id"), session.get("tmuxSession"),
+              pd.get("status"), pd.get("failureReason"), pd.get("observedAt"))
+'
+```
+
+Typical assumed-submitted shape (counts and timestamp only — never prompt
+text):
+
+```json
+{
+  "status": "assumed-submitted",
+  "confirmationAttempts": 2,
+  "enterWrites": 1,
+  "observedAt": "2026-09-02T12:00:00.000Z",
+  "failureReason": "submit-assumed-after-timeout"
+}
+```
+
+`confirmationAttempts` is how many times Kookr waited for the submit hook.
+`enterWrites` is how many Enter keystrokes it sent. The sample values (2
+waits, 1 Enter) are typical accounting, not a failure threshold.
+
+| Observation | Meaning | Action |
+| --- | --- | --- |
+| `status: "confirmed"` | The submit hook arrived | Treat as delivered |
+| `status: "assumed-submitted"` (`failureReason: submit-assumed-after-timeout`) | Pane looked busy; the ack never arrived | Inspect the pane (`GET /api/tasks/:id/tail`). If no work landed, relaunch. Do **not** treat as confirmed delivery |
+| `status: "open-loop"` | Launch did not wait for a submit hook | Expected for adapters that skip confirmation |
+| Field **absent** | Resumed session, launched before this record existed, or an adapter that never runs the submit-confirm loop (for example Codex) | Cannot infer delivery from this field |
+
+An `unconfirmed` outcome fails the launch and reaps the session before any
+record is written, so it should not appear on a live session.
+
+**First action.** Do not page from `/api/health` for this. Read
+`promptDelivery.status` on the session. For `assumed-submitted`, inspect
+the pane and relaunch if the prompt never took. A busy-looking agent is
+not proof of delivery.
+
+---
+
 ## Related
 
 | Doc | Use when |
@@ -814,4 +885,6 @@ tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `schedules.schedulesPausedByFailure`,
 `data_directory_disk_critical`) and the timer-health last-fired surface
 (`GET /api/health.timerHealth` counts plus `GET /api/diagnostics/timer-health`
-`lastFiredAt` / `overdue`).
+`lastFiredAt` / `overdue`). Per-session launch outcomes use
+`sessions[].promptDelivery` on `GET /api/tasks` — there is no process-wide
+health field for missing prompt acknowledgements.
