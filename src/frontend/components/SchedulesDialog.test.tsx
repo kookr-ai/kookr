@@ -256,6 +256,183 @@ describe('R10.5: SchedulesDialog cwd playbook lookup ordering', () => {
   });
 });
 
+describe('SchedulesDialog search', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let fetchMock: ReturnType<typeof vi.fn>;
+  const schedules = [
+    makeSchedule({ id: 'sched-first', name: 'Nightly triage' }),
+    makeSchedule({
+      id: 'sched-second',
+      name: 'Weekly review',
+      playbook: { path: 'maintenance/Dependency-Audit.md', parameters: { topic: 'parameter-only' } },
+      cwd: '/projects/Frontend',
+      latestExecution: { ...makeSchedule().latestExecution!, message: 'history-only' },
+    }),
+  ];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    syncGlobalStore();
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/schedules') {
+        return jsonResponse({ revision: 1, schedules: useKookrStore.getState().schedules, status: null });
+      }
+      if (url === '/api/schedules/rollups') return jsonResponse({ rollups: [] });
+      if (url === '/api/schedules/preview') {
+        return jsonResponse({ cronDescription: 'Daily at 09:00', nextRuns: [], timezone: 'UTC' });
+      }
+      if (url.startsWith('/api/playbooks')) return jsonResponse([]);
+      return jsonResponse({});
+    });
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    document.body.innerHTML = '';
+  });
+
+  async function render(items = schedules) {
+    useKookrStore.setState({ schedules: items, scheduleRevision: 1, serverCwd: '/repo' });
+    await act(async () => {
+      root.render(<SchedulesDialog onClose={() => {}} />);
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(300); });
+    fetchMock.mockClear();
+  }
+
+  function searchInput(): HTMLInputElement {
+    const input = container.querySelector<HTMLInputElement>('input[type="search"]');
+    expect(input?.labels?.[0]?.textContent).toContain('Search schedules');
+    return input!;
+  }
+
+  function search(query: string) {
+    act(() => changeInput(searchInput(), query));
+  }
+
+  function names(): string[] {
+    return Array.from(container.querySelectorAll('.schedule-manager-title'), (row) => row.textContent!);
+  }
+
+  function button(label: string, scope: ParentNode = container): HTMLButtonElement {
+    const found = Array.from(scope.querySelectorAll('button')).find((item) => item.textContent === label);
+    expect(found).toBeDefined();
+    return found!;
+  }
+
+  function row(name: string): HTMLElement {
+    const found = Array.from(container.querySelectorAll('.schedule-manager-row'))
+      .find((item) => item.querySelector('.schedule-manager-title')?.textContent === name);
+    expect(found).toBeDefined();
+    return found!;
+  }
+
+  test.each([
+    ['  NIGHTLY  ', 'Nightly triage', null],
+    ['  dependency-AUDIT  ', 'Weekly review', 'Playbook: maintenance/Dependency-Audit.md'],
+    ['  FRONTEND  ', 'Weekly review', 'Working directory: /projects/Frontend'],
+  ])('matches a trimmed case-insensitive substring: %s', async (query, expectedName, context) => {
+    await render();
+    const originalRow = row(expectedName);
+    search(query);
+
+    expect(names()).toEqual([expectedName]);
+    expect(container.querySelector('.schedule-manager-row')).toBe(originalRow);
+    if (context) {
+      expect(originalRow.textContent).toContain(context);
+      if (context.startsWith('Playbook:')) {
+        expect(originalRow.textContent).not.toContain('Working directory:');
+      } else {
+        expect(originalRow.textContent).not.toContain('Playbook:');
+      }
+    } else {
+      expect(originalRow.textContent).not.toContain('Playbook:');
+      expect(originalRow.textContent).not.toContain('Working directory:');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useKookrStore.getState().schedules).toEqual(schedules);
+  });
+
+  test('shows both matching context values when playbook and directory match', async () => {
+    await render();
+    search('/');
+    expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(row('Nightly triage').textContent).toContain('Working directory: /repo');
+    expect(row('Nightly triage').textContent).not.toContain('Playbook:');
+    expect(row('Weekly review').textContent).toContain('Playbook: maintenance/Dependency-Audit.md');
+    expect(row('Weekly review').textContent).toContain('Working directory: /projects/Frontend');
+  });
+
+  test.each(['parameter-only', 'history-only', 'no-such-schedule'])(
+    'excludes unrelated text and clears a no-match search: %s', async (query) => {
+      await render();
+      search(query);
+
+      expect(names()).toEqual([]);
+      expect(container.querySelector('[role="status"]')?.textContent).toContain('No schedules match your search.');
+      expect(container.textContent).not.toContain('No schedules yet.');
+      await act(async () => button('Clear search').click());
+      expect(searchInput().value).toBe('');
+      expect(document.activeElement).toBe(searchInput());
+      expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+      expect(container.textContent).not.toContain('No schedules match your search.');
+      expect(container.textContent).not.toContain('Playbook:');
+      expect(container.textContent).not.toContain('Working directory:');
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  test('preserves list order for blank queries and can clear a matching query', async () => {
+    await render();
+    search('   ');
+    expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(container.textContent).not.toContain('Playbook:');
+    expect(container.textContent).not.toContain('Working directory:');
+    search('weekly');
+    await act(async () => button('Clear search').click());
+    expect(names()).toEqual(['Nightly triage', 'Weekly review']);
+    expect(container.textContent).not.toContain('Playbook:');
+    expect(container.textContent).not.toContain('Working directory:');
+  });
+
+  test('keeps the empty collection state distinct from no matches', async () => {
+    await render([]);
+    await act(async () => button('Hide Form').click());
+    expect(container.textContent).toContain('No schedules yet.');
+    expect(container.textContent).not.toContain('No schedules match your search.');
+    expect(container.querySelector('input[type="search"]')).toBeNull();
+  });
+
+  test.each([true, false])('keeps action identity after filtering (enabled=%s)', async (enabled) => {
+    await render([schedules[0], { ...schedules[1], enabled }]);
+    search('frontend');
+    await act(async () => button('Run Now').click());
+    await act(async () => button(enabled ? 'Pause' : 'Resume').click());
+    await act(async () => button('Delete').click());
+    expect(container.querySelector('.confirm-dialog-message')?.textContent).toContain('Weekly review');
+    search('nightly');
+    await act(async () => button('Delete', container.querySelector('.confirm-dialog')!).click());
+
+    expect(fetchMock.mock.calls).toEqual([
+      ['/api/schedules/sched-second/run', { method: 'POST' }],
+      ['/api/schedules/sched-second', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !enabled }),
+      }],
+      ['/api/schedules/sched-second', { method: 'DELETE' }],
+    ]);
+  });
+});
+
 describe('SchedulesDialog task reference', () => {
   let container: HTMLDivElement;
   let root: Root;
