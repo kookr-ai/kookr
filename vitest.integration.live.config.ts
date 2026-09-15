@@ -14,6 +14,7 @@ import { CREDENTIAL_GATED_INTEGRATION_FILES } from './scripts/integration-lane-i
  */
 export default defineConfig({
   test: {
+    maxWorkers: 4,
     include: [...CREDENTIAL_GATED_INTEGRATION_FILES],
     passWithNoTests: true,
     testTimeout: 30_000,

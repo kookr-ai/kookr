@@ -14,6 +14,9 @@ import { SELF_CONTAINED_INTEGRATION_FILES } from './scripts/integration-lane-inv
  */
 export default defineConfig({
   test: {
+    // Same cap as the unit suite so verify/pre-push stays bounded when both
+    // lanes run back to back on a shared workstation.
+    maxWorkers: 4,
     include: [...SELF_CONTAINED_INTEGRATION_FILES],
     passWithNoTests: true,
     testTimeout: 30_000,

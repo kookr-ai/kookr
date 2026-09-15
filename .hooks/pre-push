@@ -394,6 +394,13 @@ else
     echo "Push rejected: tests failed. Fix failing tests before pushing."
     exit 1
   fi
+
+  echo "Running self-contained integration tests..."
+  if ! pnpm test:integration; then
+    echo ""
+    echo "Push rejected: integration tests failed. Fix failing tests before pushing."
+    exit 1
+  fi
 fi
 
 # --- FAA-mitigation gate (issue #2142) -------------------------------------

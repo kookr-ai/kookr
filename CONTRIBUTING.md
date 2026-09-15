@@ -31,19 +31,21 @@ will run:
 pnpm verify
 ```
 
-`pnpm verify` runs the server type-check, E2E type-check, validators, and Vitest
-suite in pre-push order. The push hook still enforces push-specific checks such
-as reviewer-specialist markers, docs-only lane skipping, shell portability for
-changed shell/subprocess files, and plugin packaging rules.
+`pnpm verify` runs the server type-check, E2E type-check, validators, the Vitest
+unit suite, and the self-contained integration lane in pre-push order. The live
+provider integration command stays opt-in. The push hook still enforces
+push-specific checks such as reviewer-specialist markers, docs-only lane
+skipping, shell portability for changed shell/subprocess files, and plugin
+packaging rules.
 
 For narrower inner-loop checks, use the individual commands:
 
 | Command | What it checks |
 |---|---|
-| `pnpm verify` | Full local pre-push verification lanes in order |
+| `pnpm verify` | Full local pre-push verification lanes in order, including unit tests and self-contained integration |
 | `pnpm test` | Vitest unit suite (excludes integration-style `*-integration` / `*.integration` / `*-e2e` files under `src/` and `relay/`) |
-| `pnpm test:integration` | Deterministic root Vitest lane for the self-contained integration-style subset |
-| `pnpm test:integration:live` | Opt-in live-LLM integration lane (credential-gated files skip without API keys) |
+| `pnpm test:integration` | Deterministic root Vitest lane for the self-contained integration-style subset (also run by `pnpm verify` / pre-push) |
+| `pnpm test:integration:live` | Opt-in live-LLM integration lane (credential-gated files skip without API keys; not in verify) |
 | `pnpm test:changed` | Fast inner-loop Vitest run for tests affected by local changes |
 | `pnpm test:hooks` | Bash hook tests under `.claude/hooks-tests/` |
 | `pnpm check:e2e` | TypeScript check for E2E tests (`tsc -p tsconfig.e2e.json`) |
@@ -101,10 +103,10 @@ A useful rule of thumb: if the diff exceeds a few hundred lines outside generate
 4. **Server type-check** — `pnpm build:server` (`tsc`).
 5. **E2E type-check** — `pnpm check:e2e` (`tsc -p tsconfig.e2e.json`).
 6. **Validators** — skill frontmatter, documented commands, and requirements status checks always run.
-7. **Tests** — `pnpm test`.
+7. **Tests** — `pnpm test`, then `pnpm test:integration`.
 8. **Plugin placement + version bump** for changes under `plugin/`. Distributed skills may include Kookr runtime operations and public `KOOKR_*`, CLI, API, or `~/.kookr/` contracts when agents need that procedure from other repositories. They must not depend on the Kookr source checkout as their cwd or contain hardcoded maintainer paths. The gate also rejects `kookr-` prefixes on plugin skills/agents, name collisions between `.claude/<kind>/` and `plugin/<kind>/`, and `plugin/{skills,agents}/**` edits without a corresponding bump in `plugin/.claude-plugin/plugin.json#version`. Keep Kookr source-maintenance workflows in `.claude/`; put cross-repository runtime guidance in the shipped plugin.
 
-Docs-only pushes get a second, narrower shortcut — distinct from step 3's reviewer-specialist allowlist above. Where that allowlist decides whether a *reviewer marker* is required, this one decides whether the *build and test lanes* run at all: for docs-only prose pushes, the hook skips only the TypeScript and Vitest lanes (steps 4, 5, and 7 — `pnpm build:server`, `pnpm check:e2e`, and `pnpm test`). That shortcut is deliberately strict: every changed file must be Markdown under `docs/` or one of the repository's top-level prose docs. Empty diffs, missing/ambiguous `origin/main` comparisons, and any mixed change run the full gate. Validators still run because they check docs and skills directly.
+Docs-only pushes get a second, narrower shortcut — distinct from step 3's reviewer-specialist allowlist above. Where that allowlist decides whether a *reviewer marker* is required, this one decides whether the *build and test lanes* run at all: for docs-only prose pushes, the hook skips only the TypeScript and Vitest lanes (steps 4, 5, and 7 — `pnpm build:server`, `pnpm check:e2e`, `pnpm test`, and `pnpm test:integration`). That shortcut is deliberately strict: every changed file must be Markdown under `docs/` or one of the repository's top-level prose docs. Empty diffs, missing/ambiguous `origin/main` comparisons, and any mixed change run the full gate. Validators still run because they check docs and skills directly.
 
 If any step fails, fix the underlying issue and re-run `git push`. Don't bypass with `--no-verify` — the gates exist because they've caught real regressions.
 
