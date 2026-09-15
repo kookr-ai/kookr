@@ -544,6 +544,45 @@ describe('pending live-log recovery (issue #3176)', () => {
     expect(reopen).toHaveBeenCalledTimes(MAX_LIVE_LOG_RECOVERY_ATTEMPTS_PER_TICK);
   });
 
+  test('recovery does not steal an fd reused after the failed freopen', () => {
+    writeFileSync(logPath, 'live-content-long-enough\n');
+    const recovery = new ServerLogRotationRecovery();
+    let failOpen = true;
+    const reopen = vi.fn((path: string) => {
+      if (failOpen) throwEnospc();
+      throw new Error('refusing to steal occupied stdout fd 1 during live-log recovery');
+    });
+    const openSyncFn = (path: string, flags: string) => {
+      if (failOpen && path === logPath) throwEnospc();
+      return openSync(path, flags);
+    };
+    const first = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => true,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    });
+    expect(first.pendingReopen).toBe(true);
+
+    failOpen = false;
+    const second = maybeRotateServerLog({
+      logPath,
+      maxBytes: 5,
+      generations: 2,
+      stdioOwnsLog: () => false,
+      reopenStdioFn: reopen,
+      openSyncFn,
+      recovery,
+    });
+    expect(second.recovered).toBe(true);
+    expect(second.rotated).toBe(false);
+    expect(existsSync(logPath)).toBe(true);
+    expect(recovery.peek(logPath)).toBeNull();
+  });
+
   test('pending recovery for one path does not authorize reopen of a different missing log', () => {
     writeFileSync(logPath, 'owned-live-long-enough\n');
     const recovery = new ServerLogRotationRecovery();
@@ -661,6 +700,76 @@ try {
     expect(payload.gen3).toBe(false);
     expect(payload.live).toMatch(/AFTER_RECOVERY/);
     expect(payload.live).not.toMatch(/BEFORE_SEED/);
+  });
+
+  test('redirected child does not close an fd that reused stdout after ENOSPC', () => {
+    const harness = join(dir, 'occupied-fd-harness.mjs');
+    const live = join(dir, 'server.log');
+    const rotationSrc = fileURLToPath(new URL('./server-log-rotation.ts', import.meta.url));
+    writeFileSync(live, 'BEFORE_SEED_LONG_ENOUGH\n');
+    writeFileSync(
+      harness,
+      `
+import { readFileSync, writeFileSync, existsSync, openSync as realOpenSync, writeSync, closeSync } from 'node:fs';
+import { maybeRotateServerLog } from ${JSON.stringify(rotationSrc)};
+
+const logPath = process.argv[2];
+let denyLiveOpen = true;
+const openSyncFn = (path, flags) => {
+  if (denyLiveOpen && path === logPath) {
+    const err = new Error('ENOSPC: no space left on device');
+    err.code = 'ENOSPC';
+    throw err;
+  }
+  return realOpenSync(path, flags);
+};
+
+const config = { logPath, maxBytes: 5, generations: 2, openSyncFn };
+try {
+  const first = maybeRotateServerLog(config);
+  denyLiveOpen = false;
+  const stolenFd = realOpenSync(logPath + '.stolen', 'w');
+  const second = maybeRotateServerLog(config);
+  writeSync(stolenFd, 'STOLEN_STILL_OPEN\\n');
+  closeSync(stolenFd);
+  process.stdout.write('AFTER_RECOVERY\\n');
+  writeFileSync(logPath + '.ok', JSON.stringify({
+    firstPending: first.pendingReopen === true,
+    secondRecovered: second.recovered === true,
+    stolen: readFileSync(logPath + '.stolen', 'utf8'),
+    live: existsSync(logPath) ? readFileSync(logPath, 'utf8') : null,
+  }));
+} catch (err) {
+  writeFileSync(logPath + '.err', String(err && err.stack ? err.stack : err));
+  throw err;
+}
+`,
+    );
+
+    const outFd = openSync(live, 'a');
+    const errFd = openSync(live, 'a');
+    try {
+      const result = spawnSync(process.execPath, ['--import', resolveTsxLoader(), harness, live], {
+        encoding: 'utf8',
+        stdio: ['ignore', outFd, errFd],
+      });
+      const childErr = existsSync(`${live}.err`) ? readFileSync(`${live}.err`, 'utf8') : '';
+      expect(result.status, childErr || result.stderr || result.stdout || 'child failed').toBe(0);
+    } finally {
+      closeSync(outFd);
+      closeSync(errFd);
+    }
+
+    const payload = JSON.parse(readFileSync(`${live}.ok`, 'utf8')) as {
+      firstPending: boolean;
+      secondRecovered: boolean;
+      stolen: string;
+      live: string | null;
+    };
+    expect(payload.firstPending).toBe(true);
+    expect(payload.secondRecovered).toBe(true);
+    expect(payload.stolen).toBe('STOLEN_STILL_OPEN\n');
+    expect(payload.live).toMatch(/AFTER_RECOVERY/);
   });
 });
 

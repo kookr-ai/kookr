@@ -292,6 +292,17 @@ function closeIfOpen(fd: number): void {
   }
 }
 
+function isFdOpen(fd: number): boolean {
+  try {
+    fstatSync(fd);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+type ReopenMode = 'rotate' | 'recover';
+
 /**
  * Reopen process stdout (fd 1) and stderr (fd 2) onto `logPath` in append mode.
  *
@@ -299,8 +310,10 @@ function closeIfOpen(fd: number): void {
  * expected to return 1; same for 2. Throws if the OS returns a different fd so
  * we never silently write the live log to an unexpected descriptor.
  *
- * Tolerates fd 1/2 already being closed (a failed freopen after rename leaves
- * them that way) so a later recovery tick can reuse those slots.
+ * Same-tick rotation (`rotate`) still closes the fds this process just owned.
+ * Later-tick recovery (`recover`) never closes an occupied fd 1/2 — after a
+ * failed freopen those slots can have been reused by SQLite/HTTP — and throws
+ * so the write fallback can attach without stealing.
  *
  * Call only after {@link processStdoutPointsAtLog} confirmed ownership, or from
  * pending recovery for a rotation this process already owned. Between close
@@ -308,10 +321,32 @@ function closeIfOpen(fd: number): void {
  * open(2); the fd≠1/2 checks fail closed on that race.
  */
 export function reopenProcessStdio(logPath: string): void {
-  reopenProcessStdioWith(logPath, (path, flags) => openSync(path, flags));
+  reopenProcessStdioWith(logPath, (path, flags) => openSync(path, flags), 'rotate');
 }
 
-function reopenProcessStdioWith(logPath: string, openFn: OpenAppendFn): void {
+function reopenProcessStdioWith(
+  logPath: string,
+  openFn: OpenAppendFn,
+  mode: ReopenMode,
+): void {
+  if (mode === 'recover') {
+    if (isFdOpen(1)) {
+      throw new Error('refusing to steal occupied stdout fd 1 during live-log recovery');
+    }
+    const stdoutFd = openFn(logPath, 'a');
+    if (stdoutFd !== 1) {
+      throw new Error(`expected freopen stdout fd 1, got ${stdoutFd}`);
+    }
+    if (isFdOpen(2)) {
+      throw new Error('refusing to steal occupied stderr fd 2 during live-log recovery');
+    }
+    const stderrFd = openFn(logPath, 'a');
+    if (stderrFd !== 2) {
+      throw new Error(`expected freopen stderr fd 2, got ${stderrFd}`);
+    }
+    return;
+  }
+
   closeIfOpen(1);
   const stdoutFd = openFn(logPath, 'a');
   if (stdoutFd !== 1) {
@@ -373,9 +408,10 @@ function resolveOpenAppend(config: ServerLogRotationConfig): OpenAppendFn {
 function resolveReopen(
   config: ServerLogRotationConfig,
   openFn: OpenAppendFn,
+  mode: ReopenMode,
 ): (logPath: string) => void {
   if (config.reopenStdioFn) return config.reopenStdioFn;
-  return (logPath) => reopenProcessStdioWith(logPath, openFn);
+  return (logPath) => reopenProcessStdioWith(logPath, openFn, mode);
 }
 
 function resolveRecovery(config: ServerLogRotationConfig): ServerLogRotationRecovery {
@@ -457,7 +493,7 @@ function recoverPendingLiveLog(
 ): ServerLogRotationResult {
   const shouldReopen = config.reopenStdio !== false;
   const openFn = resolveOpenAppend(config);
-  const reopen = resolveReopen(config, openFn);
+  const reopen = resolveReopen(config, openFn, 'recover');
   const recovery = resolveRecovery(config);
   const attach = tryAttachLiveStdio(config.logPath, shouldReopen, reopen, openFn);
   if (attach.attached) {
@@ -579,7 +615,7 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
     rotateServerLogGenerations(config.logPath, generations);
     renamed = true;
 
-    const reopen = resolveReopen(config, openFn);
+    const reopen = resolveReopen(config, openFn, 'rotate');
     const attach = tryAttachLiveStdio(config.logPath, shouldReopen, reopen, openFn);
     if (!attach.attached) {
       recovery.mark({ logPath: config.logPath, previousSize });
@@ -604,7 +640,7 @@ export function maybeRotateServerLog(config: ServerLogRotationConfig): ServerLog
       const attach = tryAttachLiveStdio(
         config.logPath,
         shouldReopen,
-        resolveReopen(config, openFn),
+        resolveReopen(config, openFn, 'rotate'),
         openFn,
       );
       if (!attach.attached) {
