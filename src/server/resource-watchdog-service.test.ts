@@ -23,6 +23,13 @@ import type {
 } from '../core/resource-watchdog-types.js';
 import type { LaunchOpts, LaunchResult } from '../shared/contracts/launch.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
+import { AdapterRegistry, type AgentAdapter } from '../adapters/agent-adapter.js';
+import { TaskStore } from '../core/tasks.js';
+import { SpawnRateLimiter, spawnBudgetKey } from '../core/spawn-rate-limiter.js';
+import {
+  launchTask as runLaunchTask,
+  type LaunchServiceDeps,
+} from './launch-service.js';
 
 function baseConfig(overrides: Partial<ResourceWatchdogConfig> = {}): ResourceWatchdogConfig {
   return {
@@ -84,6 +91,7 @@ describe('ResourceWatchdogService', () => {
     sampleImpl?: () => ResourceWatchdogSample;
     hostStaleDtachReaper?: ResourceWatchdogServiceDeps['hostStaleDtachReaper'];
     sessionReaper?: ResourceWatchdogServiceDeps['sessionReaper'];
+    getAutomationProjectId?: ResourceWatchdogServiceDeps['getAutomationProjectId'];
   } = {}) {
     const statePath = join(dir, 'resource-watchdog.state.json');
     const config = baseConfig({
@@ -112,6 +120,9 @@ describe('ResourceWatchdogService', () => {
         : {}),
       ...(opts.hostStaleDtachReaper ? { hostStaleDtachReaper: opts.hostStaleDtachReaper } : {}),
       ...(opts.sessionReaper ? { sessionReaper: opts.sessionReaper } : {}),
+      ...(opts.getAutomationProjectId
+        ? { getAutomationProjectId: opts.getAutomationProjectId }
+        : {}),
       nowMs: () => nowMs,
       nowIso: () => new Date(nowMs).toISOString(),
       logger,
@@ -595,7 +606,7 @@ describe('ResourceWatchdogService', () => {
     expect(launches[0]?.name).toBe('Resource watchdog investigation');
     expect(launches[0]?.unattended).toBe(true);
     expect(launches[0]?.launchActorId).toBe('kookr');
-    expect(launches[0]?.launchSource).toBe('api');
+    expect(launches[0]?.launchSource).toBe('resource-watchdog');
     expect(launches[0]?.disableDedup).toBe(true);
     expect(launches[0]?.prompt).toContain('NO INTERACTIVE PROMPTS');
     expect(launches[0]?.prompt).toContain('REVERSIBLE REMEDIATION ONLY');
@@ -1539,5 +1550,209 @@ describe('ResourceWatchdogService', () => {
       lastSyncReclaim: { ran: true, spawnSkippedBecausePressureCleared: true },
       lastSample: { processCounts: { dtach: 13 } },
     });
+  });
+
+  function makeLaunchBoundary(opts: {
+    isAutomationEnabled: () => boolean;
+    spawnRateLimiter?: LaunchServiceDeps['spawnRateLimiter'];
+  }): {
+    taskStore: TaskStore;
+    adapterLaunch: ReturnType<typeof vi.fn>;
+    launchDeps: LaunchServiceDeps;
+    launcher: ResourceWatchdogServiceDeps['launchTask'];
+  } {
+    const taskStore = new TaskStore();
+    const adapterLaunch = vi.fn(async () => 'must-not-launch');
+    const adapter: AgentAdapter = {
+      agentType: 'claude-code',
+      launch: adapterLaunch,
+      sendInput: vi.fn(),
+      sendKeystroke: vi.fn(),
+      stop: vi.fn(),
+      captureDisplay: vi.fn(async () => ''),
+      onEvent: vi.fn(),
+      onRefreshNeeded: vi.fn(),
+      injectHookEvent: vi.fn(),
+      getEffectiveHookSettings: vi.fn(() => undefined),
+    };
+    const adapterRegistry = new AdapterRegistry();
+    adapterRegistry.register(adapter);
+    const launchDeps: LaunchServiceDeps = {
+      taskStore,
+      adapterRegistry,
+      flushTasks: vi.fn(async () => {}),
+      lifecycleDeps: {
+        monitor: { registerAgent: vi.fn() },
+        watchdog: { registerAgent: vi.fn() },
+        hookWatcher: { isWatching: vi.fn(() => false), watch: vi.fn() },
+        githubScanner: {
+          scanTask: vi.fn(),
+          isActive: vi.fn(() => false),
+          processTaskPrompt: vi.fn(),
+        },
+        autoNameTask: vi.fn(),
+      } as unknown as LaunchServiceDeps['lifecycleDeps'],
+      isAutomationEnabled: opts.isAutomationEnabled,
+      getPausedProjectIds: () => new Set(),
+      ...(opts.spawnRateLimiter ? { spawnRateLimiter: opts.spawnRateLimiter } : {}),
+    };
+    const launcher: ResourceWatchdogServiceDeps['launchTask'] = (launchOpts, serverOpts) =>
+      runLaunchTask(launchDeps, launchOpts, serverOpts);
+    return { taskStore, adapterLaunch, launchDeps, launcher };
+  }
+
+  function seedMetaReflectionBudget(statePath: string): void {
+    const seedStore = new FileResourceWatchdogStateStore(statePath);
+    const stamps = [0, 1, 2, 3].map((i) =>
+      new Date(nowMs - (6 - i) * 60 * 60 * 1000).toISOString(),
+    );
+    seedStore.save({
+      ...emptyResourceWatchdogState(),
+      spawnTimestamps: stamps,
+      lastSpawnAt: stamps[3]!,
+      lastSpawnKind: 'investigation',
+      lastSpawnTaskId: 'old',
+      lastTriggerAt: stamps[3]!,
+      lastTriggerReasons: ['swap_percent'],
+      lastMetaReflectionAt: null,
+    });
+  }
+
+  test.each(['investigation', 'meta_reflection'] as const)(
+    'TS-WATCHDOG-SAFE-MODE-002: %s produces no agent when SAFE MODE is already engaged (issue #3224)',
+    async (kind) => {
+      const { taskStore, adapterLaunch, launcher } = makeLaunchBoundary({
+        isAutomationEnabled: () => false,
+      });
+      if (kind === 'meta_reflection') {
+        seedMetaReflectionBudget(join(dir, 'resource-watchdog.state.json'));
+      }
+      const { service } = makeService({
+        config: { taskCwd: dir },
+        launchImpl: launcher,
+        getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+      });
+      await service.runOnce();
+      expect(service.getHealthSnapshot().lastDecision).toBe('spawn_failed');
+      expect(service.getHealthSnapshot().lastSpawnKind).toBe(kind);
+      expect(service.getHealthSnapshot().lastLaunch?.error).toMatch(/SAFE MODE/i);
+      expect(service.getHealthSnapshot().lastSample).not.toBeNull();
+      expect(taskStore.listTasks()).toHaveLength(0);
+      expect(adapterLaunch).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['investigation', 'meta_reflection'] as const)(
+    'TS-WATCHDOG-SAFE-MODE-003: %s produces no agent when SAFE MODE engages during preparation (issue #3224)',
+    async (kind) => {
+      let automationEnabled = true;
+      const { taskStore, adapterLaunch, launcher } = makeLaunchBoundary({
+        isAutomationEnabled: () => automationEnabled,
+      });
+      if (kind === 'meta_reflection') {
+        seedMetaReflectionBudget(join(dir, 'resource-watchdog.state.json'));
+      }
+      const { service } = makeService({
+        config: { taskCwd: dir },
+        launchImpl: launcher,
+        getAutomationProjectId: async () => {
+          await Promise.resolve();
+          automationEnabled = false;
+          return 'github.com/kookr-ai/kookr';
+        },
+      });
+      await service.runOnce();
+      expect(automationEnabled).toBe(false);
+      expect(service.getHealthSnapshot().lastDecision).toBe('spawn_failed');
+      expect(service.getHealthSnapshot().lastSpawnKind).toBe(kind);
+      expect(service.getHealthSnapshot().lastLaunch?.error).toMatch(/SAFE MODE/i);
+      expect(taskStore.listTasks()).toHaveLength(0);
+      expect(adapterLaunch).not.toHaveBeenCalled();
+    },
+  );
+
+  test('TS-WATCHDOG-SAFE-MODE-004: sampling and health continue while SAFE MODE suppresses actuation (issue #3224)', async () => {
+    const { adapterLaunch, launcher } = makeLaunchBoundary({
+      isAutomationEnabled: () => false,
+    });
+    const sampleImpl = vi.fn(() => ({ ...sample, sampledAt: new Date(nowMs).toISOString() }));
+    const { service } = makeService({
+      config: { taskCwd: dir },
+      launchImpl: launcher,
+      sampleImpl,
+      getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+    });
+    await service.runOnce();
+    expect(service.getHealthSnapshot().lastDecision).toBe('spawn_failed');
+    expect(adapterLaunch).not.toHaveBeenCalled();
+
+    nowMs += 60_000;
+    sample = healthySample({
+      sampledAt: new Date(nowMs).toISOString(),
+      swapUsedPercent: 90,
+    });
+    await service.runOnce();
+    expect(sampleImpl).toHaveBeenCalledTimes(2);
+    expect(service.getHealthSnapshot()).toMatchObject({
+      lastSampleAt: new Date(nowMs).toISOString(),
+      lastDecision: 'suppress_throttled',
+      lastSample: { swapUsedPercent: 90 },
+    });
+    expect(adapterLaunch).not.toHaveBeenCalled();
+  });
+
+  test('TS-WATCHDOG-SAFE-MODE-005: manual API launches still succeed while SAFE MODE is engaged (issue #3224)', async () => {
+    const { taskStore, adapterLaunch, launchDeps } = makeLaunchBoundary({
+      isAutomationEnabled: () => false,
+    });
+    const result = await runLaunchTask(launchDeps, {
+      prompt: 'operator investigation',
+      cwd: dir,
+      launchSource: 'api',
+    });
+    expect(result.task.prompt).toBe('operator investigation');
+    expect(taskStore.listTasks()).toHaveLength(1);
+    expect(adapterLaunch).toHaveBeenCalledOnce();
+  });
+
+  test('TS-WATCHDOG-SAFE-MODE-006: allowed watchdog launches stay spawn-budget-capped (issue #3224)', async () => {
+    const limiter = new SpawnRateLimiter({
+      getLimit: () => 1,
+      getWindowMs: () => 60_000,
+    });
+    const watchdogKey = spawnBudgetKey('resource-watchdog', 'kookr');
+    expect(limiter.tryAcquire(watchdogKey).allowed).toBe(true);
+    const { taskStore, adapterLaunch, launcher } = makeLaunchBoundary({
+      isAutomationEnabled: () => true,
+      spawnRateLimiter: limiter,
+    });
+    const { service } = makeService({
+      config: { taskCwd: dir },
+      launchImpl: launcher,
+      getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+    });
+    await service.runOnce();
+    expect(service.getHealthSnapshot().lastDecision).toBe('spawn_failed');
+    expect(service.getHealthSnapshot().lastLaunch?.error).toMatch(
+      /spawn burst.*resource-watchdog:actor:kookr/i,
+    );
+    expect(taskStore.listTasks()).toHaveLength(0);
+    expect(adapterLaunch).not.toHaveBeenCalled();
+  });
+
+  test('TS-WATCHDOG-SAFE-MODE-007: allowed watchdog investigation still launches through the real boundary (issue #3224)', async () => {
+    const { taskStore, adapterLaunch, launcher } = makeLaunchBoundary({
+      isAutomationEnabled: () => true,
+    });
+    const { service } = makeService({
+      config: { taskCwd: dir },
+      launchImpl: launcher,
+      getAutomationProjectId: () => 'github.com/kookr-ai/kookr',
+    });
+    await service.runOnce();
+    expect(service.getHealthSnapshot().lastDecision).toBe('spawn');
+    expect(taskStore.listTasks()).toHaveLength(1);
+    expect(taskStore.listTasks()[0]?.metadata?.launchSource).toBe('resource-watchdog');
+    expect(adapterLaunch).toHaveBeenCalledOnce();
   });
 });

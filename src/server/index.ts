@@ -1942,7 +1942,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     }),
     stateStore: new FileResourceWatchdogStateStore(resourceWatchdogStatePath),
     auditSink: resourceWatchdogAuditSink,
-    launchTask: (opts) => launchTask(launchServiceDeps, opts),
+    launchTask: (opts, serverOpts) => launchTask(launchServiceDeps, opts, serverOpts),
+    // Stamp the server checkout (typically Kookr). Pausing Lucy does not halt
+    // watchdog recovery; production always stamps so a missing id cannot slip
+    // past the autonomous launch gate (issue #3224).
+    getAutomationProjectId: () => getProjectId(serverCwd),
     // Byte-capped tail only — never readFileSync the whole server.log under
     // pressure (issue #1553 lesson; prod logs can be multi-GB).
     readServerLogTail: () => readTrailingFileBytes(join(kookrDir, 'server.log'), 32 * 1024),

@@ -530,6 +530,21 @@ The system SHALL let an operator blacklist a coding agent so Kookr never creates
 
 **Evidence:** `src/core/settings-store.ts`, `src/server/launch-service.ts`, `src/server/routes/task-routes.ts`, `src/server/schedule-runner.ts`, `src/frontend/components/SettingsDialog.tsx`, `src/core/settings-store.test.ts`, `src/server/launch-service.test.ts`, `src/server/routes/task-routes.test.ts`, `src/server/schedule-runner.test.ts`, `src/frontend/components/SettingsDialog.test.ts`.
 
+### R4.1h: Honor SAFE MODE for Resource-Watchdog Launches [F4.1] — SHALL — `done`
+
+The system SHALL identify resource-watchdog investigation and meta-reflection launches as autonomous and enforce SAFE MODE at the trusted launch boundary, including when the kill-switch engages during asynchronous launch preparation.
+
+**Acceptance criteria:**
+- A resource-watchdog investigation or meta-reflection spawn carries the first-class `resource-watchdog` launch source
+- If SAFE MODE is already engaged, or engages after the watchdog tick has begun but before launch preparation completes, the launch boundary rejects the spawn without creating a task or agent session
+- Watchdog sampling and health reporting continue while actuation is suppressed
+- Watchdog launches consume the general per-source spawn budget and do not inherit the `schedule` exemption; actor `kookr` still qualifies for reserved self-maintenance slots
+- Manual `api`, `ui`, `cli`, `websocket`, and remote launches remain non-autonomous and retain their existing SAFE MODE behavior
+
+**Linked tests:** `TS-WATCHDOG-SAFE-MODE-001`, `TS-WATCHDOG-SAFE-MODE-002`, `TS-WATCHDOG-SAFE-MODE-003`, `TS-WATCHDOG-SAFE-MODE-004`, `TS-WATCHDOG-SAFE-MODE-005`, `TS-WATCHDOG-SAFE-MODE-006`, `TS-WATCHDOG-SAFE-MODE-007`.
+
+**Evidence:** `src/shared/contracts/task.ts`, `src/core/automation-kill-switch.ts`, `src/server/resource-watchdog-service.ts`, `src/server/index.ts`, `src/core/automation-kill-switch.test.ts`, `src/server/resource-watchdog-service.test.ts`.
+
 ### R4.2: Stop Agent [F4.2] — SHOULD — `done`
 
 The system SHOULD allow terminating a running agent from the GUI.
@@ -1964,6 +1979,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
 | R4.1f | F4.1 | SHALL | done | task contracts, automation-kill-switch, post-recovery-service, launch-service |
 | R4.1g | F4.13 | SHALL | done | settings-store, launch-service, schedule-runner, SettingsDialog |
+| R4.1h | F4.1 | SHALL | done | task contracts, automation-kill-switch, resource-watchdog-service |
 | R4.2 | F4.2 | SHOULD | done | claude-code-adapter, local-dtach-backend, ws, DetailPanel |
 | R4.3 | F4.3 | SHOULD | done | tasks (relaunch), ws (relaunch handler), LaunchTaskDialog |
 | R4.4 | F4.4 | SHALL | done | tasks, task-persistence, reconciliation, crash-recovery, diagnostics-routes |

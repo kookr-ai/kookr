@@ -2,10 +2,10 @@
  * Global automation kill-switch + SAFE MODE surfaces (issue #1710 / #1699 WS0.4)
  * and the per-project automation pause conjunction in front of them.
  *
- * When SAFE MODE is engaged, autonomous actuation (schedule fires and
- * schedule-sourced launches) is halted. Manual launches (API / UI / CLI /
- * websocket / remote) remain accepted — distinct from drain mode (#659), which
- * refuses *all* new launches.
+ * When SAFE MODE is engaged, autonomous actuation (schedule fires,
+ * idle-refinery, post-recovery, and resource-watchdog launches) is halted.
+ * Manual launches (API / UI / CLI / websocket / remote) remain accepted —
+ * distinct from drain mode (#659), which refuses *all* new launches.
  *
  * A per-project pause is the same question with a project id: autonomous
  * launches for that project halt while other projects keep firing. It does
@@ -33,17 +33,19 @@ export interface SafeModeStatus {
 
 /**
  * Launch sources that count as autonomous actuation for the kill-switch.
- * Schedule fires, the idle-slot idea refinery (issue #2144), and post-recovery
- * queue fill (issue #2899) are the first-class autonomous spawn paths; other
- * sources (api/ui/cli/websocket/remote) are operator- or human-driven and stay
- * accepted in SAFE MODE.
+ * Schedule fires, the idle-slot idea refinery (issue #2144), post-recovery
+ * queue fill (issue #2899), and resource-watchdog investigation / meta-reflection
+ * (issue #3224) are the first-class autonomous spawn paths; other sources
+ * (api/ui/cli/websocket/remote) are operator- or human-driven and stay accepted
+ * in SAFE MODE.
  */
 export function isAutonomousLaunchSource(
   launchSource: TaskLaunchSource | undefined,
 ): boolean {
   return launchSource === 'schedule'
     || launchSource === 'idle-refinery'
-    || launchSource === 'post-recovery';
+    || launchSource === 'post-recovery'
+    || launchSource === 'resource-watchdog';
 }
 
 /**
