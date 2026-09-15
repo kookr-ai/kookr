@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -658,6 +659,151 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
     const cat = classifyHungSuspectSweepFailure(longName);
     expect(cat).toBe('A'.repeat(48));
     expect(cat.length).toBe(48);
+  });
+
+  it('issue #3254: a per-task terminate reject increments attempted, not reclaimed, and is not a sweep failure', async () => {
+    // Characterization of the catch around terminateTask: a rejecting stop
+    // logs "could not reclaim" and continues. That is distinct from a
+    // whole-sweep throw (issue #2897), which the liveness tick records on
+    // sweepFailuresTotal. Without this fixture a swallowed terminate looks
+    // like "still under TTL" instead of "reclaim tried and failed."
+    const task = makeHungTask({ id: 'fail-terminate' });
+    const taskStore = makeMockTaskStore([task]);
+    const boom = new Error('tmux server not found: no server running');
+    const lifecycleDeps = makeLifecycleDeps(taskStore, {
+      adapter: { stop: vi.fn(async () => { throw boom; }) },
+    });
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    // Seed a prior whole-pass failure so this catch cannot silently start
+    // counting as a sweep crash (or clear the current-error state).
+    metrics.recordSweepFailure(new TypeError('prior sweep boom'), 1_700);
+    const broadcastToAll = vi.fn();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await expect(
+        reclaimAgedHungSuspectTasks(
+          {
+            taskStore,
+            lifecycleDeps,
+            auditLogPath,
+            dispositionLedgerPath,
+            broadcastToAll,
+            isHungSuspect: () => true,
+            getLiveness: () => silentFor(TTL_MS + 60_000),
+            isHoldingOpenPr: () => false,
+            metrics,
+          },
+          { now: NOW, ttlMs: TTL_MS },
+        ),
+      ).resolves.toMatchObject({ reclaimedTaskIds: [] });
+
+      // Terminate never reached the store; disposition / alert / evidence stay skipped.
+      expect(lifecycleDeps.adapter.stop).toHaveBeenCalled();
+      expect(taskStore.terminateTask).not.toHaveBeenCalled();
+      expect(taskStore.setDisposition).not.toHaveBeenCalled();
+      expect(broadcastToAll).not.toHaveBeenCalled();
+      expect(existsSync(auditLogPath)).toBe(false);
+      expect(existsSync(dispositionLedgerPath)).toBe(false);
+
+      const snap = metrics.getSnapshot();
+      expect(snap.reclaimAttempted).toBe(1);
+      expect(snap.reclaimedTotal).toBe(0);
+      expect(snap.reclaimSucceeded).toBe(0);
+      // Whole-sweep throws increment sweepFailuresTotal at the tick boundary.
+      // A per-task terminate reject is swallowed here and must not look like
+      // that whole-pass crash — the seeded prior failure is retained, not bumped.
+      expect(snap.sweepFailuresTotal).toBe(1);
+      expect(snap.lastFailureCategory).toBe('TypeError');
+      expect(snap.lastFailureAtMs).toBe(1_700);
+
+      // Sibling #3251 adds reclaimFailedTotal on this snapshot. When that
+      // field exists, this path must increment it so a swallowed terminate
+      // does not look like "still under TTL."
+      const failedTotal = (snap as { reclaimFailedTotal?: number }).reclaimFailedTotal;
+      if (failedTotal !== undefined) {
+        expect(failedTotal).toBe(1);
+      }
+
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not reclaim task fail-terminate'),
+        boom.message,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('issue #3254: a terminate reject on one task does not abort reclaim of later tasks', async () => {
+    const failing = makeHungTask({
+      id: 'fail-terminate',
+      sessions: [aSession({ tmuxSession: 'kookr-fail', lastStatus: 'inProgress' })],
+    });
+    const ok = makeHungTask({
+      id: 'ok-terminate',
+      sessions: [aSession({ tmuxSession: 'kookr-ok', lastStatus: 'inProgress' })],
+    });
+    const taskStore = makeMockTaskStore([failing, ok]);
+    const lifecycleDeps = makeLifecycleDeps(taskStore, {
+      adapter: {
+        stop: vi.fn(async (sessionId: string) => {
+          if (sessionId === 'kookr-fail') throw new Error('kill -9 failed: EPERM');
+        }),
+      },
+    });
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath,
+          dispositionLedgerPath,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          metrics,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+
+      expect(result.reclaimedTaskIds).toEqual(['ok-terminate']);
+      expect(lifecycleDeps.adapter.stop).toHaveBeenCalledWith('kookr-fail');
+      expect(lifecycleDeps.adapter.stop).toHaveBeenCalledWith('kookr-ok');
+      expect(taskStore.terminateTask).toHaveBeenCalledTimes(1);
+      expect(taskStore.terminateTask).toHaveBeenCalledWith('ok-terminate', expect.anything());
+      expect(taskStore.setDisposition).toHaveBeenCalledWith(
+        'ok-terminate',
+        expect.objectContaining({ reason: 'hung_suspect_ttl' }),
+      );
+      expect(taskStore.setDisposition).not.toHaveBeenCalledWith(
+        'fail-terminate',
+        expect.anything(),
+      );
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not reclaim task fail-terminate'),
+        'kill -9 failed: EPERM',
+      );
+      // attempted includes the terminate race that did not succeed; reclaimed
+      // counts only the task whose stop resolved. Neither is a sweep crash.
+      const snap = metrics.getSnapshot();
+      expect(snap).toMatchObject({
+        reclaimAttempted: 2,
+        reclaimedTotal: 1,
+        reclaimSucceeded: 1,
+        sweepFailuresTotal: 0,
+      });
+      // Once #3251 lands, the per-task failure counter counts the reject (1),
+      // not every attempt (2).
+      const failedTotal = (snap as { reclaimFailedTotal?: number }).reclaimFailedTotal;
+      if (failedTotal !== undefined) {
+        expect(failedTotal).toBe(1);
+      }
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('does not reclaim a task that is not classified hungSuspect', async () => {
