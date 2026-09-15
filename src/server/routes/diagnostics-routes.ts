@@ -810,6 +810,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
           sweepFailuresTotal: hungSuspectTtlReclaimSnapshot.sweepFailuresTotal,
           lastFailureCategory: hungSuspectTtlReclaimSnapshot.lastFailureCategory,
           lastFailureAtMs: hungSuspectTtlReclaimSnapshot.lastFailureAtMs,
+          // Issue #3251: per-task terminate-reject counter. Distinct from
+          // sweepFailuresTotal (whole-pass throws). Cumulative total is
+          // process-lifetime — a later successful reclaim does not reset it.
+          reclaimFailedTotal: hungSuspectTtlReclaimSnapshot.reclaimFailedTotal,
+          lastReclaimFailureAt: hungSuspectTtlReclaimSnapshot.lastReclaimFailureAt,
+          lastReclaimFailureCategory: hungSuspectTtlReclaimSnapshot.lastReclaimFailureCategory,
           ...(openPrFailsafeByReason ? { openPrFailsafeByReason } : {}),
         }
       : undefined;

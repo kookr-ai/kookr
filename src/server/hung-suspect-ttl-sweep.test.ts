@@ -716,14 +716,11 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       expect(snap.sweepFailuresTotal).toBe(1);
       expect(snap.lastFailureCategory).toBe('TypeError');
       expect(snap.lastFailureAtMs).toBe(1_700);
-
-      // Sibling #3251 adds reclaimFailedTotal on this snapshot. When that
-      // field exists, this path must increment it so a swallowed terminate
-      // does not look like "still under TTL."
-      const failedTotal = (snap as { reclaimFailedTotal?: number }).reclaimFailedTotal;
-      if (failedTotal !== undefined) {
-        expect(failedTotal).toBe(1);
-      }
+      // Issue #3251: the per-task counter records the reject without mixing
+      // into the sweep-level current-error fields above.
+      expect(snap.reclaimFailedTotal).toBe(1);
+      expect(snap.lastReclaimFailureAt).toBe(NOW.getTime());
+      expect(snap.lastReclaimFailureCategory).toBe('Error');
 
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining('could not reclaim task fail-terminate'),
@@ -788,19 +785,130 @@ describe('reclaimAgedHungSuspectTasks (issue #1935)', () => {
       );
       // attempted includes the terminate race that did not succeed; reclaimed
       // counts only the task whose stop resolved. Neither is a sweep crash.
+      // Issue #3251: the per-task failure counter counts the reject (1),
+      // not every attempt (2), and a sibling success in the same pass does
+      // not clear the cumulative failure total.
       const snap = metrics.getSnapshot();
       expect(snap).toMatchObject({
         reclaimAttempted: 2,
         reclaimedTotal: 1,
         reclaimSucceeded: 1,
         sweepFailuresTotal: 0,
+        reclaimFailedTotal: 1,
       });
-      // Once #3251 lands, the per-task failure counter counts the reject (1),
-      // not every attempt (2).
-      const failedTotal = (snap as { reclaimFailedTotal?: number }).reclaimFailedTotal;
-      if (failedTotal !== undefined) {
-        expect(failedTotal).toBe(1);
-      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('issue #3251: terminate reject increments reclaimFailedTotal and does not increment reclaimedTotal', async () => {
+    const task = makeHungTask({ id: 'fail-terminate' });
+    const taskStore = makeMockTaskStore([task]);
+    const boom = new TypeError('raw secret detail');
+    const lifecycleDeps = makeLifecycleDeps(taskStore, {
+      adapter: { stop: vi.fn(async () => { throw boom; }) },
+    });
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      const result = await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          metrics,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+
+      expect(result.reclaimedTaskIds).toEqual([]);
+      const snap = metrics.getSnapshot();
+      expect(snap.reclaimFailedTotal).toBe(1);
+      expect(snap.reclaimedTotal).toBe(0);
+      expect(snap.reclaimSucceeded).toBe(0);
+      expect(snap.reclaimAttempted).toBe(1);
+      expect(snap.lastReclaimFailureAt).toBe(NOW.getTime());
+      expect(snap.lastReclaimFailureCategory).toBe('TypeError');
+      // Category is the error class only — never the raw message.
+      expect(snap.lastReclaimFailureCategory).not.toContain('raw secret');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('issue #3251: a later successful reclaim does not clear reclaimFailedTotal', async () => {
+    const failing = makeHungTask({
+      id: 'fail-first',
+      sessions: [aSession({ tmuxSession: 'kookr-fail', lastStatus: 'inProgress' })],
+    });
+    const later = makeHungTask({
+      id: 'ok-later',
+      sessions: [aSession({ tmuxSession: 'kookr-ok', lastStatus: 'inProgress' })],
+    });
+    const tasks = [failing];
+    const taskStore = makeMockTaskStore(tasks);
+    const lifecycleDeps = makeLifecycleDeps(taskStore, {
+      adapter: {
+        stop: vi.fn(async (sessionId: string) => {
+          if (sessionId === 'kookr-fail') throw new Error('kill -9 failed: EPERM');
+        }),
+      },
+    });
+    const metrics = new HungSuspectTtlReclaimMetrics();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          metrics,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+
+      expect(metrics.getSnapshot()).toMatchObject({
+        reclaimFailedTotal: 1,
+        reclaimedTotal: 0,
+        lastReclaimFailureAt: NOW.getTime(),
+        lastReclaimFailureCategory: 'Error',
+      });
+
+      // A later pass reclaims a different task successfully. Sweep-success
+      // (issue #2897) also fires here via recordSweepSuccess in the caller;
+      // neither that nor recordReclaimed may zero the terminate-failure total.
+      tasks.splice(0, 1, later);
+      await reclaimAgedHungSuspectTasks(
+        {
+          taskStore,
+          lifecycleDeps,
+          auditLogPath,
+          isHungSuspect: () => true,
+          getLiveness: () => silentFor(TTL_MS + 60_000),
+          isHoldingOpenPr: () => false,
+          metrics,
+        },
+        { now: NOW, ttlMs: TTL_MS },
+      );
+      metrics.recordSweepSuccess();
+
+      const snap = metrics.getSnapshot();
+      expect(snap.reclaimFailedTotal).toBe(1);
+      expect(snap.reclaimedTotal).toBe(1);
+      expect(snap.reclaimSucceeded).toBe(1);
+      expect(snap.lastReclaimFailureAt).toBe(NOW.getTime());
+      expect(snap.lastReclaimFailureCategory).toBe('Error');
+      // Sweep-level current-error is cleared; terminate-failure last-* is not.
+      expect(snap.lastFailureCategory).toBeNull();
+      expect(snap.lastFailureAtMs).toBeNull();
     } finally {
       warn.mockRestore();
     }
