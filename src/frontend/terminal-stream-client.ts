@@ -9,6 +9,12 @@ import type { createTerminalWriter, TerminalWriteSession } from './terminal-writ
 export interface TerminalContinuity {
   cursor: TerminalResumeCursor | null;
   hadView: boolean;
+  /**
+   * Last seed could not certify a resume cursor (absolute-TUI reconstruct,
+   * or any display-only seed with no history). Reconnect as a new view
+   * instead of blocking on "parser continuity unavailable".
+   */
+  resumeUnavailable?: boolean;
 }
 export interface TerminalStreamState {
   kind: 'negotiating' | 'seeding' | 'live' | 'suspended' | 'lagged' | 'incompatible'
@@ -212,6 +218,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
           const size = options.getSize();
           options.continuity.cursor = control.cursor?.cols === size.cols && control.cursor.rows === size.rows ? control.cursor : null;
           options.continuity.hadView = true;
+          options.continuity.resumeUnavailable = !control.cursor && !control.historyAvailable;
           attempt.ready = !control.screenUnavailable;
           state(control.screenUnavailable
             ? { kind: 'unavailable', reason: 'current terminal screen unavailable' }
@@ -284,7 +291,8 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   }
   function connect(newView: boolean) {
     if (stopped || suspended || active) return;
-    if (!newView && options.continuity.hadView && !options.continuity.cursor) {
+    const openNewView = newView || (!!options.continuity.resumeUnavailable && !options.continuity.cursor);
+    if (!openNewView && options.continuity.hadView && !options.continuity.cursor) {
       state({ kind: 'continuity-unavailable', reason: 'parser continuity unavailable' }); return;
     }
     const now = performance.now();
@@ -303,8 +311,8 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       emit: options.onTelemetry, requestFrame: options.requestFrame, cancelFrame: options.cancelFrame });
     const size = options.getSize();
     const cursor = options.continuity.cursor;
-    const requestedCursor = !newView && cursor?.cols === size.cols && cursor.rows === size.rows ? cursor : null;
-    if (!newView && options.continuity.hadView && !requestedCursor) {
+    const requestedCursor = !openNewView && cursor?.cols === size.cols && cursor.rows === size.rows ? cursor : null;
+    if (!openNewView && options.continuity.hadView && !requestedCursor) {
       try { socket.close(); } catch { /* Already disconnected. */ }
       metrics.dispose('superseded');
       state({ kind: 'continuity-unavailable', reason: 'parser geometry changed' }); return;

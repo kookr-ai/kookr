@@ -23,6 +23,7 @@
 
 import { setImmediate as yieldImmediate } from 'node:timers/promises';
 import { performance } from 'node:perf_hooks';
+import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import type { TerminalSourceRange } from '../shared/terminal-stream.js';
 
 export interface ReconstructAbsoluteTuiScreenOptions {
@@ -95,7 +96,7 @@ export interface ReconstructAbsoluteTuiScreenStats {
   queueDepth: number;
 }
 
-const DEFAULT_COLS = 200;
+const DEFAULT_COLS = ABSOLUTE_TUI_COLS;
 const DEFAULT_ROWS = 50;
 const DEFAULT_MIN_PRINTABLE = 40;
 /** Default budget keeps attach under a frame-ish slice of the event loop. */

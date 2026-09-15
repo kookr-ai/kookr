@@ -29,27 +29,30 @@ export interface AbsolutePositionTuiRingStats {
   maxCol: number;
 }
 
-/**
- * Scan a byte buffer for CUP / ED2 / DECSET 2026 markers without allocating a
- * full UTF-8 string of multi-megabyte rings.
- */
-export function inspectAbsolutePositionTuiRing(bytes: Uint8Array): AbsolutePositionTuiRingStats {
-  const sample = bytes.length > SAMPLE_TAIL_BYTES
-    ? bytes.subarray(bytes.length - SAMPLE_TAIL_BYTES)
-    : bytes;
+interface CsiScan {
+  cupCount: number;
+  ed2Count: number;
+  syncOutputCount: number;
+  maxCol: number;
+}
 
+/**
+ * Scan `[from, to)` for CUP / ED2 / DECSET 2026 markers without allocating a
+ * UTF-8 string of multi-megabyte rings.
+ */
+function scanCsiRange(bytes: Uint8Array, from: number, to: number): CsiScan {
   let cupCount = 0;
   let ed2Count = 0;
   let syncOutputCount = 0;
   let maxCol = 0;
 
-  for (let i = 0; i < sample.length; i++) {
+  for (let i = from; i < to; i++) {
     // ESC [
-    if (sample[i] !== 0x1b || sample[i + 1] !== 0x5b) continue;
+    if (bytes[i] !== 0x1b || bytes[i + 1] !== 0x5b) continue;
 
     let j = i + 2;
     // Optional private marker for DECSET (?…)
-    const privateMarker = sample[j] === 0x3f /* ? */ ? sample[j++] : 0;
+    const privateMarker = bytes[j] === 0x3f /* ? */ ? bytes[j++] : 0;
 
     let n1 = -1;
     let n2 = -1;
@@ -57,8 +60,8 @@ export function inspectAbsolutePositionTuiRing(bytes: Uint8Array): AbsolutePosit
     let hasDigit = false;
     let paramIndex = 0;
 
-    while (j < sample.length) {
-      const b = sample[j];
+    while (j < to) {
+      const b = bytes[j];
       if (b >= 0x30 && b <= 0x39) {
         current = current * 10 + (b - 0x30);
         hasDigit = true;
@@ -99,11 +102,29 @@ export function inspectAbsolutePositionTuiRing(bytes: Uint8Array): AbsolutePosit
     }
   }
 
+  return { cupCount, ed2Count, syncOutputCount, maxCol };
+}
+
+/**
+ * Scan a byte buffer for CUP / ED2 / DECSET 2026 markers without allocating a
+ * full UTF-8 string of multi-megabyte rings.
+ *
+ * Density (CUP / ED2 / sync) uses the newest 256 KiB so a long-idle Grok
+ * spinner still looks like an absolute TUI. `maxCol` is taken from the whole
+ * buffer: Grok's idle tail often only updates a low-column spinner, which
+ * used to drop the session onto the streaming viewport-ring smash path.
+ */
+export function inspectAbsolutePositionTuiRing(bytes: Uint8Array): AbsolutePositionTuiRingStats {
+  const tailStart = bytes.length > SAMPLE_TAIL_BYTES ? bytes.length - SAMPLE_TAIL_BYTES : 0;
+  const tail = scanCsiRange(bytes, tailStart, bytes.length);
+  const prefixMaxCol = tailStart === 0 ? 0 : scanCsiRange(bytes, 0, tailStart).maxCol;
+  const maxCol = Math.max(tail.maxCol, prefixMaxCol);
+
   return {
-    sampleBytes: sample.length,
-    cupCount,
-    ed2Count,
-    syncOutputCount,
+    sampleBytes: bytes.length - tailStart,
+    cupCount: tail.cupCount,
+    ed2Count: tail.ed2Count,
+    syncOutputCount: tail.syncOutputCount,
     maxCol,
   };
 }

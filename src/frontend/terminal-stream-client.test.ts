@@ -82,6 +82,24 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
+  test('reconnects a display-only absolute seed as a new view instead of blocking on a missing cursor', () => {
+    const h = harness();
+    h.hello(); h.begin(); h.data('seed');
+    h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: false, approximate: true });
+    h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    expect(h.continuity.cursor).toBeNull();
+    expect(h.continuity.resumeUnavailable).toBe(true);
+    h.socket.onclose?.({ code: TERMINAL_CLOSE.lagged });
+    h.client.retry();
+    expect(h.sockets).toHaveLength(2);
+    h.hello(h.sockets[1]);
+    const attach = h.sockets[1].send.mock.calls.map(([frame]) => JSON.parse(frame)).find((frame) => frame.type === 'attach');
+    expect(attach).toMatchObject({ acceptGap: true });
+    expect(attach.cursor).toBeUndefined();
+    h.client.stop(); h.writer.dispose();
+  });
+
   test('keeps an approximate initial view interactive without certifying later resume', () => {
     const h = harness(); h.hello(); h.begin(); h.data('suffix');
     h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true });
