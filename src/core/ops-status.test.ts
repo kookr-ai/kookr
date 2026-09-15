@@ -67,6 +67,43 @@ describe('ops-status schema', () => {
     expect(JSON.stringify(snap)).not.toMatch(/token|password|secret|api[_-]?key|authorization/i);
   });
 
+  it('schema guard accepts dead-man self-heal leftover and rejects extra residual keys (issue #3249)', () => {
+    const snap = buildOpsStatusSnapshot(
+      LIVE,
+      [{ kind: 'dead_man_self_heal_escalate', at: '2026-08-03T12:00:00.000Z', detail: 'attempts=3 successes=0' }],
+      '2026-08-03T12:00:00.000Z',
+      { attempts: 3, at: '2026-08-03T12:00:00.000Z' },
+    );
+    expect(isOpsStatusSnapshot(snap)).toBe(true);
+    expect(snap.deadManSelfHealExhausted).toEqual({
+      attempts: 3,
+      at: '2026-08-03T12:00:00.000Z',
+    });
+    expect(JSON.stringify(snap)).not.toMatch(/token|password|secret|api[_-]?key|authorization/i);
+
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      deadManSelfHealExhausted: {
+        attempts: 3,
+        at: '2026-08-03T12:00:00.000Z',
+        webhookToken: 'secret',
+      },
+    })).toBe(false);
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      lastEdges: [{ kind: 'dead_man_self_heal_escalate', at: '2026-08-03T12:00:00.000Z' }],
+    })).toBe(true);
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      deadManSelfHealExhausted: { attempts: -1, at: '2026-08-03T12:00:00.000Z' },
+    })).toBe(false);
+    expect(isOpsStatusSnapshot({
+      ...snap,
+      deadManSelfHealExhausted: { attempts: 3, at: '' },
+    })).toBe(false);
+    expect(isOpsStatusSnapshot({ ...snap, deadManSelfHealExhausted: null })).toBe(false);
+  });
+
   it('isOpsStatusSnapshot rejects wrong version, missing fields, and bad edges', () => {
     const good = buildOpsStatusSnapshot(LIVE, [], '2026-08-03T12:00:00.000Z');
     expect(isOpsStatusSnapshot(good)).toBe(true);
@@ -364,5 +401,220 @@ describe('OpsStatusWriter', () => {
     await writer.noteEdge('ready_degrade');
     expect(writes).toHaveLength(1);
     expect(isOpsStatusSnapshot(JSON.parse(writes[0]!))).toBe(true);
+  });
+
+  it('writes the card when self-heal escalates with zero successes (issue #3249)', async () => {
+    const { writer, filePath } = await makeWriter();
+
+    expect(await writer.noteDeadManSelfHeal({
+      attempts: 0,
+      successes: 0,
+      escalated: false,
+    })).toBeNull();
+
+    const snap = await writer.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+    });
+    expect(snap).not.toBeNull();
+    expect(isOpsStatusSnapshot(snap)).toBe(true);
+    expect(snap?.lastEdges).toEqual([
+      {
+        kind: 'dead_man_self_heal_escalate',
+        at: '2026-08-03T15:00:00.000Z',
+        detail: 'attempts=3 successes=0',
+      },
+    ]);
+    expect(snap?.deadManSelfHealExhausted).toEqual({
+      attempts: 3,
+      at: '2026-08-03T15:00:00.000Z',
+    });
+    expect(JSON.stringify(snap)).not.toMatch(/token|password|secret|api[_-]?key|authorization/i);
+    expect(JSON.stringify(snap)).not.toMatch(/scheduleIds|schedulesPaused/);
+
+    const onDisk = JSON.parse(await readFile(filePath, 'utf-8')) as OpsStatusSnapshot;
+    expect(isOpsStatusSnapshot(onDisk)).toBe(true);
+    expect(onDisk).toEqual(snap);
+
+    // Still leftover → no second write.
+    expect(await writer.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+    })).toBeNull();
+  });
+
+  it('drops the leftover and writes a clear edge after a later successful self-heal (issue #3249)', async () => {
+    let tick = 0;
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: () => new Date(`2026-08-03T15:00:0${tick++}.000Z`),
+      logger: { warn: vi.fn() },
+    });
+
+    await writer.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+    const cleared = await writer.noteDeadManSelfHeal({
+      attempts: 4,
+      successes: 1,
+      escalated: false,
+    });
+
+    expect(cleared?.lastEdges.map((e) => e.kind)).toEqual([
+      'dead_man_self_heal_escalate',
+      'dead_man_self_heal_clear',
+    ]);
+    expect(cleared?.lastEdges[1]?.detail).toBe('self-heal succeeded (attempts=4 successes=1)');
+    expect(cleared?.deadManSelfHealExhausted).toBeUndefined();
+    expect(isOpsStatusSnapshot(cleared)).toBe(true);
+    expect(JSON.stringify(cleared)).not.toMatch(/token|password|secret|api[_-]?key|authorization/i);
+
+    const onDisk = JSON.parse(await readFile(filePath, 'utf-8')) as OpsStatusSnapshot;
+    expect(onDisk.deadManSelfHealExhausted).toBeUndefined();
+    expect(onDisk.lastEdges).toHaveLength(2);
+  });
+
+  it('drops leftover on escalated-episode recovery and ignores escalate with successes > 0', async () => {
+    const { writer, filePath } = await makeWriter();
+
+    await writer.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+    const recovered = await writer.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: false,
+    });
+    expect(recovered?.lastEdges[1]?.kind).toBe('dead_man_self_heal_clear');
+    expect(recovered?.lastEdges[1]?.detail).toBe(
+      'escalated episode recovered (attempts=3 successes=0)',
+    );
+    expect(recovered?.deadManSelfHealExhausted).toBeUndefined();
+
+    expect(await writer.noteDeadManSelfHeal({
+      attempts: 5,
+      successes: 2,
+      escalated: true,
+    })).toBeNull();
+    const onDisk = JSON.parse(await readFile(filePath, 'utf-8')) as OpsStatusSnapshot;
+    expect(onDisk.lastEdges).toHaveLength(2);
+    expect(onDisk.deadManSelfHealExhausted).toBeUndefined();
+  });
+
+  it('retries self-heal escalate after ENOSPC so disk-full does not suppress the leftover', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    let failOnce = true;
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      writeFileAtomically: async (path, data) => {
+        if (failOnce) {
+          failOnce = false;
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        await atomicWriteFile(path, data);
+      },
+      logger: { warn: vi.fn() },
+    });
+
+    await expect(writer.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+    })).resolves.toBeNull();
+    const snap = await writer.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+    });
+    expect(snap?.lastEdges[0]?.kind).toBe('dead_man_self_heal_escalate');
+    expect(snap?.deadManSelfHealExhausted?.attempts).toBe(3);
+    expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
+  });
+
+  it('preserves leftover across unrelated edges until it is cleared', async () => {
+    const { writer } = await makeWriter();
+    await writer.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+    const other = await writer.noteEdge('ready_degrade', 'drain-mode');
+    expect(other?.deadManSelfHealExhausted).toEqual({
+      attempts: 3,
+      at: '2026-08-03T15:00:00.000Z',
+    });
+    expect(other?.lastEdges.map((e) => e.kind)).toEqual([
+      'dead_man_self_heal_escalate',
+      'ready_degrade',
+    ]);
+  });
+
+  it('hydrates leftover from disk so a restarted writer can clear it (issue #3249)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    const first = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      logger: { warn: vi.fn() },
+    });
+    await first.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+
+    const restarted = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T16:00:00.000Z'),
+      logger: { warn: vi.fn() },
+    });
+    const cleared = await restarted.noteDeadManSelfHeal({
+      attempts: 3,
+      successes: 0,
+      escalated: false,
+    });
+    expect(cleared?.lastEdges.map((e) => e.kind)).toEqual([
+      'dead_man_self_heal_escalate',
+      'dead_man_self_heal_clear',
+    ]);
+    expect(cleared?.deadManSelfHealExhausted).toBeUndefined();
+    expect(isOpsStatusSnapshot(JSON.parse(await readFile(filePath, 'utf-8')))).toBe(true);
+    expect(JSON.parse(await readFile(filePath, 'utf-8')).deadManSelfHealExhausted).toBeUndefined();
+  });
+
+  it('retries self-heal clear after ENOSPC so leftover is not dropped in memory only', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'ops-status-'));
+    const filePath = opsStatusPath(dir);
+    let failClear = false;
+    const writer = new OpsStatusWriter({
+      filePath,
+      getLiveFields: () => LIVE,
+      now: fixedNow('2026-08-03T15:00:00.000Z'),
+      writeFileAtomically: async (path, data) => {
+        if (failClear) {
+          failClear = false;
+          throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' });
+        }
+        await atomicWriteFile(path, data);
+      },
+      logger: { warn: vi.fn() },
+    });
+
+    await writer.noteDeadManSelfHeal({ attempts: 3, successes: 0, escalated: true });
+    failClear = true;
+    await expect(writer.noteDeadManSelfHeal({
+      attempts: 4,
+      successes: 1,
+      escalated: false,
+    })).resolves.toBeNull();
+    expect(JSON.parse(await readFile(filePath, 'utf-8')).deadManSelfHealExhausted).toEqual({
+      attempts: 3,
+      at: '2026-08-03T15:00:00.000Z',
+    });
+    const snap = await writer.noteDeadManSelfHeal({
+      attempts: 4,
+      successes: 1,
+      escalated: false,
+    });
+    expect(snap?.lastEdges[1]?.kind).toBe('dead_man_self_heal_clear');
+    expect(snap?.deadManSelfHealExhausted).toBeUndefined();
   });
 });

@@ -46,6 +46,27 @@ describe('createScheduleRuntime', () => {
     }));
   });
 
+  test('forwards dead-man self-heal stats to the ops-status hook (issue #3249)', async () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'kookr-schedule-self-heal-'));
+    const seen: Array<{ attempts: number; successes: number; escalated: boolean }> = [];
+    const runtime = await createScheduleRuntime({
+      kookrDir: tempDir,
+      taskStore: new TaskStore(),
+      launchServiceDeps: {} as LaunchServiceDeps,
+      getMaxActiveTasks: () => 5,
+      broadcastToAll: () => {},
+      onDeadManSelfHealStats: (stats) => seen.push(stats),
+    });
+
+    runtime.scheduleService.setDeadManSelfHealStats({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+    });
+
+    expect(seen).toEqual([{ attempts: 3, successes: 0, escalated: true }]);
+  });
+
   test('forwards schedule source, target, parameters, and model tier through the loop composition root', async () => {
     tempDir = mkdtempSync(join(tmpdir(), 'kookr-schedule-tier-'));
     const taskStore = new TaskStore();

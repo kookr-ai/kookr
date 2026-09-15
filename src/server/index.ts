@@ -2345,6 +2345,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getBuildTimestamp: () => buildInfo.buildTimestamp || undefined,
     // issue #1995: dead-man fire also refreshes the on-disk ops-status card.
     onOperationalAlert: noteOpsStatusAlert,
+    // issue #3249: self-heal escalate-with-zero-success leftover on the same card.
+    onDeadManSelfHealStats: (stats) => {
+      void opsStatusWriter.noteDeadManSelfHeal(stats);
+    },
     // issue #1895 / #1699 WS1.3: feed schedule-level agent substitutions into
     // the WS1.5 provider-health counter.
     recordAgentSubstitution: () => providerHealthTracker.recordSubstitution(),

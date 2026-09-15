@@ -502,6 +502,17 @@ export interface ScheduleServiceDeps {
    * Absent → only the unambiguous `server-restart` reason is exempted.
    */
   isServerRestarting?: () => boolean;
+  /**
+   * Optional ops-status hook (issue #3249). Invoked after each self-heal
+   * counter push so the durable card can record escalate-with-zero-success
+   * leftover. Must not throw; the setter swallows hook errors. Counters only
+   * — never a schedule list.
+   */
+  onDeadManSelfHealStats?: (stats: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+  }) => void;
 }
 
 export class ScheduleService {
@@ -516,6 +527,11 @@ export class ScheduleService {
   private readonly getDaemonHealthy?: () => boolean;
   private readonly getReadyAt?: () => string | undefined;
   private readonly isServerRestarting?: () => boolean;
+  private readonly onDeadManSelfHealStats?: (stats: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+  }) => void;
   private runnerStartedAt?: string;
   private lastTickCompletedAt?: string;
   private lastError?: string;
@@ -540,6 +556,7 @@ export class ScheduleService {
     this.getDaemonHealthy = deps.getDaemonHealthy;
     this.getReadyAt = deps.getReadyAt;
     this.isServerRestarting = deps.isServerRestarting;
+    this.onDeadManSelfHealStats = deps.onDeadManSelfHealStats;
   }
 
   /**
@@ -746,6 +763,19 @@ export class ScheduleService {
       escalated: stats.escalated,
       ...(stats.class ? { class: stats.class } : {}),
     };
+    if (!this.onDeadManSelfHealStats) return;
+    try {
+      this.onDeadManSelfHealStats({
+        attempts: stats.attempts,
+        successes: stats.successes,
+        escalated: stats.escalated,
+      });
+    } catch (err) {
+      console.warn(
+        '[schedule] onDeadManSelfHealStats threw (ignored):',
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   }
 
   recordRunnerStarted(catchUpMode: 'auto' | 'manual' | 'off'): void {

@@ -3149,3 +3149,37 @@ describe('ScheduleService accepted-receipt durability (issue #3146)', () => {
     });
   });
 });
+
+describe('ScheduleService dead-man self-heal ops hook (issue #3249)', () => {
+  it('forwards bounded counters to the ops-status hook and swallows hook throws', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'schedule-service-self-heal-'));
+    const store = new ScheduleStore(dir);
+    const seen: Array<{ attempts: number; successes: number; escalated: boolean }> = [];
+    const service = new ScheduleService({
+      store,
+      validator: new ScheduleValidator(),
+      onDeadManSelfHealStats: (stats) => {
+        seen.push(stats);
+        if (stats.escalated && stats.successes === 0) {
+          throw new Error('hook boom');
+        }
+      },
+    });
+
+    service.setDeadManSelfHealStats({ attempts: 3, successes: 0, escalated: true, class: 'auth_expired' });
+    expect(service.getStatusSnapshot().deadManSelfHeal).toEqual({
+      attempts: 3,
+      successes: 0,
+      escalated: true,
+      class: 'auth_expired',
+    });
+    expect(seen).toEqual([{ attempts: 3, successes: 0, escalated: true }]);
+
+    service.setDeadManSelfHealStats({ attempts: 4, successes: 1, escalated: false });
+    expect(seen).toEqual([
+      { attempts: 3, successes: 0, escalated: true },
+      { attempts: 4, successes: 1, escalated: false },
+    ]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

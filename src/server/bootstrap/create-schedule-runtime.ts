@@ -83,6 +83,16 @@ export interface ScheduleRuntimeDeps {
    */
   onOperationalAlert?: (alert: Extract<ServerMessage, { type: 'alert' }>) => void;
   /**
+   * Optional ops-status hook for dead-man self-heal leftover (issue #3249).
+   * Forwarded to {@link ScheduleService.setDeadManSelfHealStats}; the writer
+   * de-dupes. Must not throw.
+   */
+  onDeadManSelfHealStats?: (stats: {
+    attempts: number;
+    successes: number;
+    escalated: boolean;
+  }) => void;
+  /**
    * Re-queue-after-reset scheduler (issue #1896 / #1699 WS1.4). When provided,
    * its `sweep()` runs once per schedule-runner tick so provider-paused issues
    * auto-resume at their reset time (jittered, token-bucket-bounded, lease-keyed
@@ -217,6 +227,10 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
     // session-death as restart churn only when a graceful redeploy actually
     // caused the stop (same marker the runner uses for skipped_server_restarting).
     isServerRestarting: () => isServerRestartingActive(deps.kookrDir),
+    // issue #3249: self-heal escalate-with-zero-success leftover on the ops card.
+    ...(deps.onDeadManSelfHealStats
+      ? { onDeadManSelfHealStats: deps.onDeadManSelfHealStats }
+      : {}),
   });
   await scheduleService.reconcileOnStartup(deps.taskStore);
   // Issue #2520: post-deploy diagnostic — list consecutive_failures holds older
