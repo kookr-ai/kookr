@@ -309,15 +309,18 @@ function computePerTaskRow(task: Task, agent: CostAgent, input: AggregatorInput)
   const updatedAtMs = task.updatedAt instanceof Date ? task.updatedAt.getTime() : new Date(task.updatedAt).getTime();
   const isTerminal = isTerminalStatus(task.status);
   const durationMs = isTerminal && updatedAtMs > startedAtMs ? updatedAtMs - startedAtMs : null;
+  // Blank names become null; keep the stored spelling (including surrounding spaces).
+  const taskName = task.name?.trim() ? task.name : null;
 
   if (agent === 'claude-code') {
-    return computeClaudeRow(task, startedAtMs, durationMs, isTerminal, input);
+    return computeClaudeRow(task, startedAtMs, durationMs, isTerminal, input, taskName);
   }
-  return computeCodexRow(task, startedAtMs, durationMs, isTerminal, input);
+  return computeCodexRow(task, startedAtMs, durationMs, isTerminal, input, taskName);
 }
 
 function computeClaudeRow(
   task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
+  taskName: string | null,
 ): PerTaskComputed {
   // Prefer the live TokenTracker reading from claudeUsage; fall back to the persisted
   // `task.tokenUsage` snapshot for completed tasks whose transcript is no longer registered.
@@ -329,7 +332,7 @@ function computeClaudeRow(
   if (!usage) {
     return {
       row: {
-        taskId: task.id, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'missing-usage',
@@ -340,7 +343,7 @@ function computeClaudeRow(
 
   return {
     row: {
-      taskId: task.id, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
+      taskId: task.id, taskName, agent: 'claude-code', model: null, playbookId: task.playbookId ?? null,
       startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
       inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens, cacheWriteTokens: usage.cacheWriteTokens,
@@ -352,6 +355,7 @@ function computeClaudeRow(
 
 function computeCodexRow(
   task: Task, startedAtMs: number, durationMs: number | null, isTerminal: boolean, input: AggregatorInput,
+  taskName: string | null,
 ): PerTaskComputed {
   const fb = task.completionFeedback?.rating;
   const thumb: 'up' | 'down' | null = fb === 'up' ? 'up' : fb === 'down' ? 'down' : null;
@@ -361,7 +365,7 @@ function computeCodexRow(
   if (!outcome) {
     return {
       row: {
-        taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-not-found',
@@ -373,7 +377,7 @@ function computeCodexRow(
   if (outcome.kind === 'abandoned') {
     return {
       row: {
-        taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-abandoned',
@@ -385,7 +389,7 @@ function computeCodexRow(
   if (outcome.kind === 'not-found') {
     return {
       row: {
-        taskId: task.id, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'codex-cli', model: null, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-rollout-not-found',
@@ -398,7 +402,7 @@ function computeCodexRow(
   if (binding.hasParseError) {
     return {
       row: {
-        taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-parse-error',
@@ -410,7 +414,7 @@ function computeCodexRow(
   if (!binding.hasTokenData) {
     return {
       row: {
-        taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
+        taskId: task.id, taskName, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
         startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb, dataQuality: 'codex-no-tokens',
@@ -432,7 +436,7 @@ function computeCodexRow(
 
   return {
     row: {
-      taskId: task.id, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
+      taskId: task.id, taskName, agent: 'codex-cli', model: binding.model, playbookId: task.playbookId ?? null,
       startedAt: new Date(startedAtMs).toISOString(), status: task.status, isTerminal, durationMs,
       inputTokens: billedInput,
       outputTokens: binding.totalOutputTokens,

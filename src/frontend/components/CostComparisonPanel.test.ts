@@ -214,10 +214,44 @@ describe('CostComparisonPanel', () => {
     expect(thumbStat).toBe('👍 rate —');
   });
 
+  test('distinguishes otherwise identical tasks by name and renders names as plain text', async () => {
+    mockFetchSequential([{
+      body: makeResponse({ perTask: [
+        taskRow({ taskId: 'login', taskName: 'Fix <b>login</b>' }),
+        taskRow({ taskId: 'logout', taskName: 'Fix logout' }),
+      ] }),
+    }]);
+    const el = mount();
+    await flush();
+    const table = el.querySelector('.cost-per-task-table')!;
+    expect(Array.from(table.querySelectorAll('th'), cell => cell.textContent))
+      .toEqual(['Task', 'Started', 'Agent', 'Model', 'Playbook', 'Dur', 'Cost', '👍Feedback', 'Quality']);
+    const rows = Array.from(table.querySelectorAll('tbody tr'), row =>
+      Array.from(row.querySelectorAll('td'), cell => cell.textContent));
+    expect(rows.map(row => row[0])).toEqual(['Fix <b>login</b>', 'Fix logout']);
+    expect(rows[0].slice(1)).toEqual(rows[1].slice(1));
+    expect(table.querySelector('b')).toBeNull();
+  });
+
+  test('falls back to IDs for unnamed and legacy rows, including incomplete costs', async () => {
+    const { taskName: _omitted, ...legacyRow } = taskRow({ taskId: 'legacy-task', dataQuality: 'codex-parse-error' });
+    mockFetchSequential([{
+      body: { ...makeResponse(), perTask: [
+        taskRow({ taskId: 'unnamed-task', taskName: null, dataQuality: 'missing-usage', estimatedCostUsd: null }),
+        { ...legacyRow, estimatedCostUsd: null, prompt: 'Never display this prompt' },
+      ] },
+    }]);
+    const el = mount();
+    await flush();
+    expect(Array.from(el.querySelectorAll('.cost-per-task-table tbody tr'), row => row.querySelector('td')?.textContent))
+      .toEqual(['unnamed-task', 'legacy-task']);
+    expect(el.textContent).not.toContain('Never display this prompt');
+  });
+
   test('renders the "—" cost cell with a dataQuality tooltip when cost is null', async () => {
     const response = makeResponse({
       perTask: [{
-        taskId: 't1', agent: 'codex-cli', model: null, playbookId: null,
+        taskId: 't1', taskName: 'Find rollout', agent: 'codex-cli', model: null, playbookId: null,
         startedAt: '2026-05-08T11:00:00Z', status: 'completed', isTerminal: true, durationMs: 60_000,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb: null, dataQuality: 'codex-rollout-not-found',
@@ -234,12 +268,13 @@ describe('CostComparisonPanel', () => {
     // tooltip text for screen readers. Check the visible glyph specifically.
     expect(costCell?.querySelector('[aria-hidden]')?.textContent).toBe('—');
     expect(el.querySelector('.cost-quality-badge')?.textContent).toBe('missing rollout');
+    expect(el.querySelector('.cost-per-task-table tbody td')?.textContent).toBe('Find rollout');
   });
 
   test('renders running duration and missing-usage badge', async () => {
     const response = makeResponse({
       perTask: [{
-        taskId: 't1', agent: 'claude-code', model: null, playbookId: null,
+        taskId: 't1', taskName: 'Track live usage', agent: 'claude-code', model: null, playbookId: null,
         startedAt: '2026-05-08T11:00:00Z', status: 'inProgress', isTerminal: false, durationMs: null,
         inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
         estimatedCostUsd: null, thumb: null, dataQuality: 'missing-usage',
@@ -251,6 +286,7 @@ describe('CostComparisonPanel', () => {
     expect(el.querySelector('.cost-per-task-table')?.textContent).toContain('running');
     expect(el.querySelector('.cost-quality-badge')?.textContent).toBe('missing usage');
     expect(el.querySelector('.cost-quality-badge')?.getAttribute('aria-label')).toContain('Usage not available');
+    expect(el.querySelector('.cost-per-task-table tbody td')?.textContent).toBe('Track live usage');
   });
 
   test('renders unbound Codex as a coverage caveat, not an aggregate peer card', async () => {
@@ -448,7 +484,7 @@ describe('CostComparisonPanel', () => {
 
   function taskRow(overrides: Partial<PerTaskRow> = {}): PerTaskRow {
     return {
-      taskId: 't1', agent: 'claude-code', model: 'sonnet', playbookId: 'oss-pr',
+      taskId: 't1', taskName: 'Fix login', agent: 'claude-code', model: 'sonnet', playbookId: 'oss-pr',
       startedAt: '2026-05-08T11:00:00Z', status: 'completed', isTerminal: true, durationMs: 65_000,
       inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0,
       estimatedCostUsd: 0.1234, thumb: 'up', dataQuality: 'complete',
@@ -524,9 +560,9 @@ describe('CostComparisonPanel', () => {
     // claude avg = 1.86/6 = 0.3100, codex avg = 1.92/4 = 0.4800 → Codex 1.55×; no feedback → — / —
     expect(lines).toContain('oss-pr,0.3100,6,0.4800,4,Codex 1.55×,— / —');
     expect(lines).toContain('Per task');
-    expect(lines).toContain('Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality');
+    expect(lines).toContain('Task,Task ID,Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality');
     // duration 65_000ms → 1m05s, cost 0.1234, thumb up, complete → priced
-    expect(lines).toContain('2026-05-08T11:00:00.000Z,Claude,sonnet,oss-pr,1m05s,0.1234,up,priced');
+    expect(lines).toContain('Fix login,t1,2026-05-08T11:00:00.000Z,Claude,sonnet,oss-pr,1m05s,0.1234,up,priced');
     expect(filename).toMatch(/^kookr-cost-comparison-7d-all-.*\.csv$/);
   });
 
@@ -540,9 +576,11 @@ describe('CostComparisonPanel', () => {
     const { lines } = await clickExportAndRead(el);
     // Section labels + column headers present; no data rows, no crash.
     expect(lines).toContain('Per playbook');
-    expect(lines).toContain('Per task');
-    expect(lines).toContain('Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality');
-    expect(lines.filter((l) => l.startsWith('2026-'))).toHaveLength(0);
+    expect(lines.slice(lines.indexOf('Per task'))).toEqual([
+      'Per task',
+      'Task,Task ID,Started,Agent,Model,Playbook,Duration,Cost (USD),Feedback,Quality',
+      '',
+    ]);
   });
 
   test('exports empty cells for null cost / model / playbook', async () => {
@@ -557,6 +595,18 @@ describe('CostComparisonPanel', () => {
     );
     // ISO date, Claude, empty model, empty playbook, 1m05s, empty cost, empty feedback, quality label.
     expect(csv).toContain('2026-05-08T11:00:00.000Z,Claude,,,1m05s,,,missing usage');
+  });
+
+  test('exports the ID as Task for unnamed and legacy rows', async () => {
+    const { taskName: _omitted, ...legacyRow } = taskRow({ taskId: 'legacy-task' });
+    mockFetchSequential([{
+      body: { ...makeResponse(), perTask: [taskRow({ taskId: 'unnamed-task', taskName: null }), legacyRow] },
+    }]);
+    const el = mount();
+    await flush();
+    const { lines } = await clickExportAndRead(el);
+    expect(lines).toContain('unnamed-task,unnamed-task,2026-05-08T11:00:00.000Z,Claude,sonnet,oss-pr,1m05s,0.1234,up,priced');
+    expect(lines).toContain('legacy-task,legacy-task,2026-05-08T11:00:00.000Z,Claude,sonnet,oss-pr,1m05s,0.1234,up,priced');
   });
 
   test('exported preamble follows the active window and agent filter', async () => {
@@ -591,7 +641,7 @@ describe('CostComparisonPanel', () => {
     const fetchSpy = vi.fn()
       .mockImplementationOnce(() => Promise.resolve({
         ok: true, status: 200,
-        json: () => Promise.resolve(makeResponse({ perTask: [taskRow({ playbookId: '7d-row' })] })),
+        json: () => Promise.resolve(makeResponse({ perTask: [taskRow({ taskName: 'Original task', taskId: 'original-id', playbookId: '7d-row' })] })),
       } as unknown as Response))
       .mockImplementation(() => new Promise<Response>(() => undefined));
     vi.stubGlobal('fetch', fetchSpy);
@@ -609,11 +659,15 @@ describe('CostComparisonPanel', () => {
     // query that produced the rows, NOT the live 30d filter.
     const { lines, csv, filename } = await clickExportAndRead(el);
     expect(lines).toContain('Window,7d');
+    expect(lines).toContain('Agent filter,all');
+    expect(lines).toContain('Search,(none)');
+    expect(lines).toContain('Original task,original-id,2026-05-08T11:00:00.000Z,Claude,sonnet,7d-row,1m05s,0.1234,up,priced');
     expect(csv).toContain('7d-row');
+    expect(el.querySelector('.cost-per-task-table tbody td')?.textContent).toBe('Original task');
     expect(filename).toMatch(/^kookr-cost-comparison-7d-all-.*\.csv$/);
   });
 
-  test('buildCostComparisonCsv escapes commas and quotes in free-text fields', () => {
+  test('buildCostComparisonCsv escapes commas, quotes and line breaks in names and other free-text fields', () => {
     const playbook: PerPlaybookRow = {
       playbookId: 'pb-x', playbookName: 'reports, "weekly"',
       perAgent: { 'claude-code': emptyAgg('claude-code', { pricedTaskCount: 1, totalCostUsd: 0.5 }) },
@@ -621,13 +675,29 @@ describe('CostComparisonPanel', () => {
     const csv = buildCostComparisonCsv(
       makeResponse({
         perPlaybook: [playbook],
-        perTask: [taskRow({ model: 'gpt-5, "codex"' })],
+        perTask: [taskRow({ taskName: 'Fix "login",\nhandle\rredirects', taskId: 'task,"id"', model: 'gpt-5, "codex"' })],
       }),
       { window: '7d', agent: 'all', search: '' },
     );
     // Comma + quote force quoting; inner quotes are doubled.
     expect(csv).toContain('"reports, ""weekly""",0.5000,1');
     expect(csv).toContain('"gpt-5, ""codex"""');
+    expect(csv).toContain('"Fix ""login"",\nhandle\rredirects","task,""id""",2026-05-08T11:00:00.000Z');
+  });
+
+  test.each([
+    ['=SUM(A1)', "'=SUM(A1)"],
+    ['+1', "'+1"],
+    ['-1', "'-1"],
+    ['@ref', "'@ref"],
+    ['\tformula', "'\tformula"],
+    ['\rformula', '"\'\rformula"'],
+  ])('neutralizes formula-leading task names and IDs (%j)', (value, escaped) => {
+    const csv = buildCostComparisonCsv(
+      makeResponse({ perTask: [taskRow({ taskName: value, taskId: value })] }),
+      { window: '7d', agent: 'all', search: '' },
+    );
+    expect(csv).toContain(`${escaped},${escaped},2026-05-08T11:00:00.000Z`);
   });
 
   test('buildCostComparisonCsv neutralizes every leading formula character', () => {

@@ -61,6 +61,8 @@ export interface PerPlaybookRow {
 
 export interface PerTaskRow {
   taskId: string;
+  /** Existing display name; absent or blank names are null. Never populated from the prompt. */
+  taskName: string | null;
   agent: CostAgent;
   model: string | null;
   playbookId: string | null;

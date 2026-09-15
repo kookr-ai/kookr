@@ -9,7 +9,7 @@ import type {
   DiscoveryOutcome,
   OrphanBinding,
 } from './cost-comparison-scanner-contracts.js';
-import type { CostAgent } from '../shared/contracts/cost-comparison.js';
+import type { CostAgent, CostDataQuality } from '../shared/contracts/cost-comparison.js';
 
 const NOW = new Date('2026-05-08T12:00:00.000Z').getTime();
 const ONE_DAY_MS = 86_400_000;
@@ -646,6 +646,71 @@ describe('aggregate — unbound Codex coverage caveat', () => {
     }));
     expect(r.unboundCodex).toBeDefined();
     expect(r.notes.some(n => n.message.includes('not bound to any Kookr task'))).toBe(true);
+  });
+});
+
+describe('aggregate — task identity', () => {
+  test('keeps the name on every cost and data-quality branch', () => {
+    const totals = { in: 1000, out: 100, cached: 0 };
+    const parseError = boundOutcome('parse-error', 'gpt-5.3-codex', totals);
+    const noTokens = boundOutcome('no-tokens', 'gpt-5.3-codex', totals);
+    if (parseError.kind !== 'bound' || noTokens.kind !== 'bound') throw new Error('Expected bound fixtures');
+    parseError.binding.hasParseError = true;
+    noTokens.binding.hasTokenData = false;
+    const cases: Array<{ id: string; agentType: CostAgent; quality: CostDataQuality }> = [
+      { id: 'claude-priced', agentType: 'claude-code', quality: 'complete' },
+      { id: 'claude-missing', agentType: 'claude-code', quality: 'missing-usage' },
+      { id: 'undiscovered', agentType: 'codex-cli', quality: 'codex-rollout-not-found' },
+      { id: 'not-found', agentType: 'codex-cli', quality: 'codex-rollout-not-found' },
+      { id: 'abandoned', agentType: 'codex-cli', quality: 'codex-rollout-abandoned' },
+      { id: 'parse-error', agentType: 'codex-cli', quality: 'codex-parse-error' },
+      { id: 'no-tokens', agentType: 'codex-cli', quality: 'codex-no-tokens' },
+      { id: 'unknown-price', agentType: 'codex-cli', quality: 'unknown-pricing' },
+      { id: 'codex-priced', agentType: 'codex-cli', quality: 'complete' },
+    ];
+    const r = aggregate(baseInput({
+      tasks: cases.map(({ id, agentType }) => task({ id, agentType, name: `Task ${id}` })),
+      claudeUsage: new Map([['claude-priced', tokenUsage({ costUsd: 1 })]]),
+      codexOutcomes: new Map([
+        ['not-found', { kind: 'not-found', reason: 'no-candidates', candidateCount: 0 }],
+        ['abandoned', { kind: 'abandoned', mostRecentRolloutMtimeMs: NOW - ONE_DAY_MS }],
+        ['parse-error', parseError],
+        ['no-tokens', noTokens],
+        ['unknown-price', boundOutcome('unknown-price', 'unknown-model', totals)],
+        ['codex-priced', boundOutcome('codex-priced', 'gpt-5.3-codex', totals)],
+      ]),
+    }));
+
+    expect(r.perTask.map(row => ({ taskId: row.taskId, taskName: row.taskName, dataQuality: row.dataQuality })))
+      .toEqual(cases.map(({ id, quality }) => ({ taskId: id, taskName: `Task ${id}`, dataQuality: quality })));
+  });
+
+  test.each([undefined, '', ' \t\n '])('normalizes absent or blank names (%j) without exposing prompts', (name) => {
+    const r = aggregate(baseInput({
+      tasks: [
+        task({ id: 'claude', agentType: 'claude-code', name, prompt: 'Private full prompt' }),
+        task({ id: 'codex', agentType: 'codex-cli', name, prompt: 'Private full prompt' }),
+      ],
+      taskNameQuery: 'private',
+    }));
+    expect(r.perTask.map(row => [row.taskId, row.taskName])).toEqual([['claude', null], ['codex', null]]);
+    expect(JSON.stringify(r.perTask)).not.toContain('Private full prompt');
+  });
+
+  test('preserves nonblank display names and stable order for otherwise identical tasks', () => {
+    const r = aggregate(baseInput({
+      tasks: [
+        task({ id: 'first', agentType: 'claude-code', name: ' Fix login ' }),
+        task({ id: 'second', agentType: 'claude-code', name: 'Fix logout' }),
+      ],
+      claudeUsage: new Map([
+        ['first', tokenUsage({ costUsd: 0.5 })],
+        ['second', tokenUsage({ costUsd: 0.5 })],
+      ]),
+    }));
+    expect(r.perTask.map(row => [row.taskId, row.taskName, row.estimatedCostUsd]))
+      .toEqual([['first', ' Fix login ', 0.5], ['second', 'Fix logout', 0.5]]);
+    expect(r.aggregate['claude-code']?.totalCostUsd).toBe(1);
   });
 });
 
