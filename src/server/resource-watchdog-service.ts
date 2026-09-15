@@ -487,7 +487,7 @@ export class ResourceWatchdogService {
 
     // action === 'spawn' — reclaim-before-spawn (issue #3247) lives in
     // handleSpawn; auto_enable audit is recorded only if spawn still proceeds.
-    this.lastDecision = 'spawn';
+    this.lastDecision = 'auto_enable';
     this.startLaunch(
       config,
       sample,
@@ -603,6 +603,7 @@ export class ResourceWatchdogService {
     }
 
     if (opts.autoEnabled) {
+      this.lastDecision = 'spawn';
       this.auditSink.append(buildAuditRecord({
         action: 'auto_enable',
         timestamp: this.nowIso(),
@@ -1032,8 +1033,17 @@ export function createResourceWatchdogService(
 /** Pre-kill dtach master count minus successful reaps from one host-stale sweep. */
 function remainingDtachAfterSweep(result: unknown): number | null {
   if (!result || typeof result !== 'object') return null;
-  const rec = result as { plan?: { dtachCount?: unknown }; reaped?: unknown };
+  const rec = result as {
+    plan?: { dtachCount?: unknown };
+    reaped?: unknown;
+    dryRun?: unknown;
+  };
+  // Dry-run pushes would-reap pids into `reaped` without killing. Disabled
+  // sweeps return dtachCount 0 with an empty reaped list. Both would
+  // false-clear pressure if subtracted; fall back to the live gauge.
+  if (rec.dryRun === true) return null;
   if (typeof rec.plan?.dtachCount !== 'number' || !Array.isArray(rec.reaped)) return null;
+  if (rec.plan.dtachCount === 0 && rec.reaped.length === 0) return null;
   return Math.max(0, rec.plan.dtachCount - rec.reaped.length);
 }
 
