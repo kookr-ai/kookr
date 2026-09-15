@@ -255,6 +255,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
   test('clicking the chip opens live friction diagnostics', async () => {
     const onOpenLiveFriction = vi.fn();
+    const onOpenDiagnostics = vi.fn();
     stubFetch((url) => {
       if (url.startsWith('/api/live-friction-calibration')) {
         return frictionSnapshot();
@@ -269,6 +270,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
           total: 2,
           onShowShortcuts: vi.fn(),
           onOpenLiveFriction,
+          onOpenDiagnostics,
         }),
       );
     });
@@ -282,5 +284,6 @@ describe('StatusBar live friction chip (issue #2596)', () => {
     });
 
     expect(onOpenLiveFriction).toHaveBeenCalledOnce();
+    expect(onOpenDiagnostics).not.toHaveBeenCalled();
   });
 });

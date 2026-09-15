@@ -100,8 +100,9 @@ interface Props {
    */
   onOpenLiveFriction?: () => void;
   /**
-   * Open Diagnostics when the overdue-timer pill is clicked (issue #2643).
-   * Optional so isolated StatusBar tests need no App wiring.
+   * Open Diagnostics when the overdue-timer pill or time-to-unblock chip
+   * is clicked (issues #2643, #3280). Optional so isolated StatusBar tests
+   * need no App wiring.
    */
   onOpenDiagnostics?: () => void;
   reflectionSuggestion?: {
@@ -540,6 +541,20 @@ export function StatusBar({
     && timeToUnblock.sampleCount >= TIME_TO_UNBLOCK_MIN_SAMPLES
     && timeToUnblock.medianMs !== null
     && Number.isFinite(timeToUnblock.medianMs);
+  const unblockLabel = showUnblockChip && timeToUnblock?.medianMs != null
+    ? formatTimeToUnblockChipLabel(
+      timeToUnblock.sampleCount,
+      timeToUnblock.medianMs,
+      timeToUnblock.windowMs,
+    )
+    : '';
+  const unblockTitle = showUnblockChip && timeToUnblock?.medianMs != null
+    ? formatTimeToUnblockChipTitle(
+      timeToUnblock.sampleCount,
+      timeToUnblock.medianMs,
+      timeToUnblock.windowMs,
+    )
+    : '';
 
   const oldestWaitLabel = findings > 0
     ? formatOldestFindingWait(oldestFindingWaitStartedAt)
@@ -609,23 +624,28 @@ export function StatusBar({
             oldest {oldestWaitLabel}
           </span>
         )}
-        {showUnblockChip && timeToUnblock?.medianMs != null && (
-          <span
-            className="time-to-unblock-pill"
-            data-testid="time-to-unblock-chip"
-            role="status"
-            title={formatTimeToUnblockChipTitle(
-              timeToUnblock.sampleCount,
-              timeToUnblock.medianMs,
-              timeToUnblock.windowMs,
-            )}
-          >
-            {formatTimeToUnblockChipLabel(
-              timeToUnblock.sampleCount,
-              timeToUnblock.medianMs,
-              timeToUnblock.windowMs,
-            )}
-          </span>
+        {showUnblockChip && (
+          onOpenDiagnostics ? (
+            <button
+              type="button"
+              className="time-to-unblock-pill"
+              data-testid="time-to-unblock-chip"
+              title={unblockTitle}
+              aria-label={`${unblockLabel}. Open Diagnostics`}
+              onClick={onOpenDiagnostics}
+            >
+              {unblockLabel}
+            </button>
+          ) : (
+            <span
+              className="time-to-unblock-pill"
+              data-testid="time-to-unblock-chip"
+              role="status"
+              title={unblockTitle}
+            >
+              {unblockLabel}
+            </span>
+          )
         )}
         {showFrictionChip && frictionCounts && (
           onOpenLiveFriction ? (
