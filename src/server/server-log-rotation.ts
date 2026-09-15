@@ -689,13 +689,20 @@ export function runScheduledServerLogRotation(config: ServerLogRotationConfig): 
     }
   } else if (result.recovered) {
     const line = `[server-log-rotation] restored live log ${config.logPath}\n`;
+    // writeSync(1) is only safe when fd 1 is still the live log. After ENOSPC,
+    // POSIX may have reused that slot; fallback patches process.stdout.write
+    // onto a new fd. Hitting the reused slot would corrupt SQLite/HTTP.
     try {
-      writeSync(1, line);
+      if (processStdoutPointsAtLog(config.logPath)) {
+        writeSync(1, line);
+      } else {
+        console.log(line.trimEnd());
+      }
     } catch {
       try {
         console.log(line.trimEnd());
       } catch {
-        // Last-resort swallow — descriptors are attached.
+        // Last-resort swallow — logging was restored via fallback or reopen.
       }
     }
     if (result.error) {

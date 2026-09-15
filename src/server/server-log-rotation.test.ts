@@ -501,6 +501,9 @@ describe('pending live-log recovery (issue #3176)', () => {
     expect(recovery.peek(logPath)).toBeNull();
     expect(readFileSync(`${logPath}.1`, 'utf8')).toBe('live-content-long-enough\n');
     expect(readFileSync(`${logPath}.2`, 'utf8')).toBe('prev-gen\n');
+    expect(logSpy.mock.calls.some((args) => String(args[0]).includes('restored live log'))).toBe(
+      true,
+    );
 
     errSpy.mockRestore();
     logSpy.mockRestore();
