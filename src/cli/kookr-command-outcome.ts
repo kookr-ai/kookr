@@ -3,6 +3,19 @@ import { join } from 'node:path';
 
 import { CommandJournal, type CommandAuditRow, type CommandOutcome, type CommandResult, type RemoteCommandAction } from '../remote/command-journal.js';
 
+/**
+ * Per-file byte cap when scanning local interaction logs for
+ * `kookr command outcome`.
+ *
+ * After a host restart the CLI walks every session log, including
+ * long-lived ones kept for audit. Reading those files in full is slow
+ * and memory-heavy exactly when the operator is asking whether a skip
+ * or reply landed. Files larger than this cap are read from the end
+ * only (the last 256 KiB). Commands that sit before that suffix are
+ * missed. Logs are not deleted.
+ */
+export const LOCAL_INTERACTION_TAIL_MAX_BYTES = 256 * 1024; // 256 KiB
+
 export interface AggregatedCommandOutcome {
   source: 'local' | 'remote';
   commandId?: string;
@@ -15,14 +28,12 @@ export interface AggregatedCommandOutcome {
 }
 
 async function readJsonl(path: string): Promise<unknown[]> {
-  let raw = '';
-  try {
-    raw = await readFile(path, 'utf8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
-    throw err;
-  }
-  return parseJsonl(raw);
+  const size = await fileSize(path);
+  if (size === 0) return [];
+  const offset = size > LOCAL_INTERACTION_TAIL_MAX_BYTES
+    ? size - LOCAL_INTERACTION_TAIL_MAX_BYTES
+    : 0;
+  return parseJsonl(await readFileTail(path, offset));
 }
 
 function parseJsonl(raw: string): unknown[] {

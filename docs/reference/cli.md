@@ -1154,8 +1154,15 @@ kookr command outcome <commandId>
 
 The command reads local interaction logs and the remote command journal from the
 Kookr data directory, then prints one JSON object per line. Without an argument,
-it prints every recorded outcome in timestamp order. With a `commandId`, it
-prints only matching records.
+it prints matching records in timestamp order. With a `commandId`, it prints
+only those records.
+
+After a host restart this command used to read every local interaction log in
+full, including large files kept for later inspection. It now reads only the
+last 256 KiB of each local log (`interaction-log.jsonl` and
+`sessions/*/interactions.jsonl`). A skip or reply that sits before that suffix
+will not be reported, even though the file is still on disk. How remote command
+journals are read is unchanged.
 
 Output records include fields such as `source`, `commandId`, `action`,
 `outcome`, `timestamp`, `agentId`, and `taskId` when those values are available.
