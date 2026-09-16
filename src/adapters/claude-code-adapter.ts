@@ -455,7 +455,14 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             readyPollMs: this.promptReadyPollMs,
             readySettleMs: this.promptReadySettleMs,
             isBlocked: isClaudeStartupDialogBlocking,
-            onBlocked: () => dismissClaudeStartupDialog(tmuxName, { inputWriter: this.inputWriter }),
+            onBlocked: (() => {
+              let accepts = 0;
+              return () => {
+                if (accepts >= 3) return Promise.resolve();
+                accepts += 1;
+                return dismissClaudeStartupDialog(tmuxName, { inputWriter: this.inputWriter });
+              };
+            })(),
           }),
           opts?.signal,
           tmuxName,

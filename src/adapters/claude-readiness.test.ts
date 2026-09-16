@@ -54,6 +54,12 @@ describe('isClaudeStartupDialogBlocking', () => {
     expect(isClaudeStartupDialogBlocking(enc.encode(BYPASS_PANE))).toBe(true);
     expect(isClaudeStartupDialogBlocking(enc.encode('\x1b[?2004hClaudeCode\n❯ ? for shortcuts'))).toBe(false);
   });
+
+  test('is false once composer chrome is appended after the dialog (PTY ring)', () => {
+    const enc = new TextEncoder();
+    const ring = TRUST_PANE_SPACED + '\n? for shortcuts\nshift+tab to cycle';
+    expect(isClaudeStartupDialogBlocking(enc.encode(ring))).toBe(false);
+  });
 });
 
 describe('dismissClaudeStartupDialog', () => {

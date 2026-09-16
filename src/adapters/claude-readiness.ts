@@ -51,9 +51,29 @@ function realSleep(ms: number): Promise<void> {
 
 const paneDecoder = new TextDecoder('utf-8', { fatal: false });
 
-/** True when the captured pane is a Claude startup dialog that defaults to No, exit. */
+/**
+ * Composer-only chrome the trust / bypass dialogs do not paint. Production
+ * `captureBytes` is an append-only PTY ring, so dialog labels remain after
+ * dismiss; these markers mean the composer has painted on top and the
+ * dialog is no longer the live UI. Do not use the shared
+ * `bypasspermissions` composer marker — the bypass-permissions *warning*
+ * compact-matches it too.
+ */
+const COMPOSER_AFTER_DIALOG_MARKERS: readonly string[] = ['forshortcuts', 'shift+tab'];
+
+/**
+ * True when the captured bytes still represent a live Claude startup
+ * dialog whose default is No, exit. False once composer chrome that those
+ * dialogs never show has been appended (ring-buffer safe).
+ */
 export function isClaudeStartupDialogBlocking(rawBytes: Uint8Array): boolean {
-  return detectClaudeBlockingStartupDialog(paneDecoder.decode(rawBytes)) !== null;
+  const text = paneDecoder.decode(rawBytes);
+  if (!detectClaudeBlockingStartupDialog(text)) return false;
+  const compact = compactClaudePane(text);
+  if (COMPOSER_AFTER_DIALOG_MARKERS.some((marker) => compact.includes(marker))) {
+    return false;
+  }
+  return true;
 }
 
 /**

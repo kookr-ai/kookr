@@ -960,12 +960,12 @@ describe('waitForReady needs paste-mode AND a painted composer (#2977)', () => {
     const sleep = vi.fn(async (_ms: number) => {
       polls += 1;
       if (polls === 1) {
-        const session = backend.sessions.get('s-dismiss')!;
-        session.paneContent = '\x1b[?2004h❯ No, exit\n  Yes, I trust this folder';
+        backend.emit('s-dismiss', '\x1b[?2004h❯ No, exit\n  Yes, I trust this folder');
       }
       if (polls === 3) {
-        const session = backend.sessions.get('s-dismiss')!;
-        session.paneContent = `\x1b[?2004h${COMPOSER_PAINT}`;
+        // Production captureBytes is an append-only PTY ring: dialog labels
+        // remain after the composer paints.
+        backend.emit('s-dismiss', `\x1b[?2004h${COMPOSER_PAINT}`);
       }
     });
 
@@ -977,7 +977,10 @@ describe('waitForReady needs paste-mode AND a painted composer (#2977)', () => {
       readySettleMs: 0,
       submitDelayMs: 0,
       sleep,
-      isBlocked: (bytes) => new TextDecoder().decode(bytes).includes('Yes, I trust this folder'),
+      isBlocked: (bytes) => {
+        const text = new TextDecoder().decode(bytes);
+        return text.includes('Yes, I trust this folder') && !text.includes('shift+tab');
+      },
       onBlocked: async () => {
         blockedCalls.push(polls);
       },

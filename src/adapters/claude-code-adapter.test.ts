@@ -102,14 +102,17 @@ describe('ClaudeCodeAdapter', () => {
     const launchPromise = dialogAdapter.launch(task.id, 'Fix bug', '/tmp/untrusted-project');
     await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
     const sessionId = [...backend.sessions.keys()][0]!;
-    backend.sessions.get(sessionId)!.paneContent =
-      '\x1b[?2004hAccessing workspace\n❯ No, exit\n  Yes, I trust this folder';
+    backend.emit(
+      sessionId,
+      '\x1b[?2004hAccessing workspace\n❯ No, exit\n  Yes, I trust this folder',
+    );
 
     await vi.waitFor(
       () => expect(writes.some((w) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42)).toBe(true),
       { timeout: 2_000 },
     );
-    backend.sessions.get(sessionId)!.paneContent = COMPOSER_READY_PANE;
+    // Ring-buffer model: composer chrome is appended; dialog labels remain.
+    backend.emit(sessionId, COMPOSER_READY_PANE);
     dialogAdapter.injectHookEvent(sessionId, JSON.stringify({
       session_id: '00000000-0000-0000-0000-aaaaaaaaaaaa',
       hook_event_name: 'UserPromptSubmit',
