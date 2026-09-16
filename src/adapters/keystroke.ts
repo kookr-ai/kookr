@@ -13,6 +13,8 @@ const ENTER_BYTES = Uint8Array.of(0x0d);
 const CR_LF_BYTES = Uint8Array.of(0x0d, 0x0a);
 const ESC_BYTES = Uint8Array.of(0x1b);
 const TAB_BYTES = Uint8Array.of(0x09);
+/** CSI CUD: Down is ESC [ B. Used to move off Claude's "No, exit" default. */
+const DOWN_BYTES = Uint8Array.of(0x1b, 0x5b, 0x42);
 /**
  * Ctrl-U (NAK, 0x15) — "kill line" in readline-style editors. Both the
  * Claude Code and Codex CLI composers honor it as delete-to-start-of-line,
@@ -66,6 +68,9 @@ export function translateKeystroke(key: string): Uint8Array {
       return ESC_BYTES;
     case 'Tab':
       return TAB_BYTES;
+    case 'Down':
+    case 'ArrowDown':
+      return DOWN_BYTES;
     default:
       return encoder.encode(key);
   }

@@ -43,6 +43,8 @@ import {
   resolveBracketedPasteSubmit,
   toPromptDeliveryHealth,
 } from './agent-launch-context.js';
+import { ensureClaudeWorkspaceTrusted } from './claude-config.js';
+import { dismissClaudeStartupDialog, isClaudeStartupDialogBlocking } from './claude-readiness.js';
 import type { PromptDeliveryHealth } from '../core/session-read-model.js';
 import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
@@ -140,6 +142,14 @@ export interface ClaudeCodeAdapterOptions {
   /** Settle cushion after both readiness signals, before the paste (#2977). */
   promptReadySettleMs?: number;
   /**
+   * Pre-mark `cwd` trusted in `~/.claude.json` before spawn (issue #3295).
+   * Defaults to false so unit tests cannot rewrite the operator's trust
+   * store; production enables this in `createAgentRuntime`.
+   */
+  trustWorkspace?: boolean;
+  /** Override `~/.claude.json`. Tests inject a temp path. */
+  claudeConfigPath?: string;
+  /**
    * Live getter for the configured per-agent-type effort default for
    * claude-code (#681). Called on every launch; returning a value pushes
    * `--effort <level>` into the argv (unless a per-task override is supplied
@@ -229,6 +239,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private promptReadyTimeoutMs?: number;
   private promptReadyPollMs?: number;
   private promptReadySettleMs?: number;
+  private trustWorkspace: boolean;
+  private claudeConfigPath?: string;
   private resolveDefaultEffort?: () => string | undefined;
   private inputWriter: TerminalInputWriterPort;
 
@@ -254,6 +266,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.promptReadyTimeoutMs = options?.promptReadyTimeoutMs;
     this.promptReadyPollMs = options?.promptReadyPollMs;
     this.promptReadySettleMs = options?.promptReadySettleMs;
+    this.trustWorkspace = options?.trustWorkspace ?? false;
+    this.claudeConfigPath = options?.claudeConfigPath;
     this.resolveDefaultEffort = options?.resolveDefaultEffort;
   }
 
@@ -379,6 +393,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       args.push('--settings', settingsPath);
     }
 
+    if (this.trustWorkspace) {
+      try {
+        await ensureClaudeWorkspaceTrusted(cwd, { configPath: this.claudeConfigPath });
+      } catch (err) {
+        console.warn(
+          `[claude-code-adapter] failed to pre-trust workspace ${cwd}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
     throwIfLaunchAborted(opts?.signal);
     await this.backend.createSession({
       id: tmuxName,
@@ -429,6 +454,15 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             readyTimeoutMs: this.promptReadyTimeoutMs,
             readyPollMs: this.promptReadyPollMs,
             readySettleMs: this.promptReadySettleMs,
+            isBlocked: isClaudeStartupDialogBlocking,
+            onBlocked: (() => {
+              let accepts = 0;
+              return () => {
+                if (accepts >= 3) return Promise.resolve();
+                accepts += 1;
+                return dismissClaudeStartupDialog(tmuxName, { inputWriter: this.inputWriter });
+              };
+            })(),
           }),
           opts?.signal,
           tmuxName,

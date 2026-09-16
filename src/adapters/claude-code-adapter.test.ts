@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
@@ -49,6 +49,82 @@ describe('ClaudeCodeAdapter', () => {
 
   afterEach(() => {
     warnSpy.mockRestore();
+  });
+
+  test('launch pre-trusts the workspace in ~/.claude.json before starting the session', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-adapter-trust-'));
+    const settingsDir = join(tempDir, 'settings');
+    const hooksDir = join(tempDir, 'hooks');
+    const configPath = join(tempDir, '.claude.json');
+    mkdirSync(settingsDir, { recursive: true });
+    mkdirSync(hooksDir, { recursive: true });
+
+    const trustingAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      settingsDir,
+      hooksDir,
+      claudeConfigPath: configPath,
+      trustWorkspace: true,
+      writeFile: (path, content) => {
+        writeFileSync(path, content);
+        return Promise.resolve();
+      },
+      promptBracketedPaste: false,
+    });
+    const task = taskStore.createTask('Fix bug', '/tmp/untrusted-project');
+
+    try {
+      await trustingAdapter.launch(task.id, 'Fix bug', '/tmp/untrusted-project');
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+        projects: Record<string, { hasTrustDialogAccepted: boolean }>;
+      };
+      expect(parsed.projects['/tmp/untrusted-project']?.hasTrustDialogAccepted).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('launch accepts a trust dialog with Down+Enter before the task prompt (#3295)', async () => {
+    const writes: Uint8Array[] = [];
+    const origWrite = backend.writeInput.bind(backend);
+    backend.writeInput = async (id, data, meta) => {
+      writes.push(data);
+      return origWrite(id, data, meta);
+    };
+    const dialogAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 2_000,
+      promptReadyPollMs: 10,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 200,
+      promptSubmitRetries: 0,
+    });
+    const task = taskStore.createTask('Fix bug', '/tmp/untrusted-project');
+    const launchPromise = dialogAdapter.launch(task.id, 'Fix bug', '/tmp/untrusted-project');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.emit(
+      sessionId,
+      '\x1b[?2004hAccessing workspace\n❯ No, exit\n  Yes, I trust this folder',
+    );
+
+    await vi.waitFor(
+      () => expect(writes.some((w) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42)).toBe(true),
+      { timeout: 2_000 },
+    );
+    // Ring-buffer model: composer chrome is appended; dialog labels remain.
+    backend.emit(sessionId, COMPOSER_READY_PANE);
+    dialogAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-aaaaaaaaaaaa',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Fix bug',
+    }));
+    await launchPromise;
+    const downIdx = writes.findIndex((w) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42);
+    const promptIdx = writes.findIndex((w) => new TextDecoder().decode(w).includes('Fix bug'));
+    expect(downIdx).toBeGreaterThanOrEqual(0);
+    // Prompt body is writeSequence, not writeInput. Assert Down happened and session lived.
+    expect(backend.getWrittenText(sessionId)).toContain('Fix bug');
+    expect(promptIdx === -1 || downIdx < promptIdx).toBe(true);
   });
 
   test('launch creates a session with correct SessionSpec', async () => {

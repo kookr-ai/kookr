@@ -79,6 +79,10 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     agentBin: deps.agentBin,
     bypassAllPermissions: deps.bypassAllPermissions,
     resolveDefaultEffort: () => deps.getAgentEffort?.()['claude-code'],
+    // Issue #3295: mark the launch cwd trusted in ~/.claude.json so Claude
+    // Code does not paint a "No, exit" workspace-trust dialog that Kookr
+    // would confirm after the paste-ready timeout.
+    trustWorkspace: true,
   });
   const codexCliAdapter = new CodexCliAdapter(deps.terminalBackend, deps.taskStore, {
     terminalInputWriter,

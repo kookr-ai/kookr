@@ -185,8 +185,8 @@ UserPromptSubmit hook (completed)
 **Observed:** Both `claude` and `codex` (interactive) present a full-screen "do you trust this folder?" dialog on first launch in a given workdir. In tmux this dialog waits for keystroke input. Kookr's current adapter just launches and walks away, so the first Codex/Claude session in any new workdir **hangs forever** with zero hook events.
 
 **Fix location:** **Kookr.**
-- For Codex: programmatically add `[projects."/abs/path"] trust_level = "trusted"` to `~/.codex/config.toml` before launch.
-- For Claude Code: Claude doesn't persist trust the same way; investigate `--add-dir` / auto-answer options, or pre-approve via keystroke injection.
+- For Codex: programmatically add `[projects."/abs/path"] trust_level = "trusted"` to `~/.codex/config.toml` before launch (done).
+- For Claude Code: persist `projects[cwd].hasTrustDialogAccepted = true` in `~/.claude.json` before spawn, and accept a remaining "No, exit" dialog with Down+Enter rather than pasting the task prompt onto it (issue #3295) (done).
 
 **Fix location (alt):** **Codex fork.** Add `--trust-workspace` flag to skip the prompt for supervised launches.
 

@@ -405,6 +405,20 @@ export interface DeliverInitialPromptOptions {
   /** Bracketed-paste ready wait poll interval. */
   readyPollMs?: number;
   /**
+   * True when the captured pane is a blocking startup dialog (Claude
+   * workspace-trust / bypass-permissions, both default to "No, exit").
+   * Takes precedence over paste-mode + composer chrome: those dialogs
+   * also emit DECSET 2004 and can match the "bypasspermissions" footer
+   * marker. Issue #3295.
+   */
+  isBlocked?: (rawBytes: Uint8Array) => boolean;
+  /**
+   * Called when {@link isBlocked} is true so the adapter can accept the
+   * dialog (Down, then Enter) instead of delivering the task prompt onto
+   * "No, exit".
+   */
+  onBlocked?: (rawBytes: Uint8Array) => Promise<void>;
+  /**
    * Bracketed-paste mode only: cushion (ms) after the readiness signals are
    * observed and before the paste block is written. Defaults to
    * {@link DEFAULT_PROMPT_READY_SETTLE_MS}. Skipped entirely when the
@@ -589,18 +603,40 @@ export function stripTerminalControls(text: string): string {
  *
  * On timeout this still returns without throwing so delivery proceeds
  * fail-open — and skips the settle cushion, so a timed-out wait costs no
- * more than before.
+ * more than before — UNLESS {@link DeliverInitialPromptOptions.isBlocked}
+ * is still true. Delivering Enter onto Claude's "No, exit" trust dialog
+ * kills the session (issue #3295); that path must fail closed.
  */
+export class PromptDeliveryBlockedError extends Error {
+  readonly code = 'startup_ui_blocked';
+
+  constructor(sessionId: SessionId) {
+    super(
+      `Agent startup UI is still blocking session ${sessionId} — ` +
+        `not delivering the prompt onto it`,
+    );
+    this.name = 'PromptDeliveryBlockedError';
+  }
+}
+
 async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
   options: Required<
     Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'readySettleMs' | 'sleep'>
-  >,
+  > &
+    Pick<DeliverInitialPromptOptions, 'isBlocked' | 'onBlocked'>,
 ): Promise<void> {
   const deadline = Date.now() + options.readyTimeoutMs;
   while (Date.now() <= deadline) {
     const bytes = await backend.captureBytes(sessionId);
+    if (options.isBlocked?.(bytes)) {
+      await options.onBlocked?.(bytes);
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      await options.sleep(Math.min(options.readyPollMs, remainingMs));
+      continue;
+    }
     if (isBracketedPasteModeEnabled(bytes) && isClaudeComposerReady(bytes)) {
       await options.sleep(options.readySettleMs);
       return;
@@ -609,6 +645,10 @@ async function waitForPasteReady(
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) break;
     await options.sleep(Math.min(options.readyPollMs, remainingMs));
+  }
+  const last = await backend.captureBytes(sessionId);
+  if (options.isBlocked?.(last)) {
+    throw new PromptDeliveryBlockedError(sessionId);
   }
   // Fail-open, but not silently: if the composer markers ever stop matching
   // (a footer reword, an agent parked on a trust-folder or login screen), every
@@ -726,7 +766,14 @@ export async function deliverInitialPromptToSession(
   const readySettleMs = options.readySettleMs ?? DEFAULT_PROMPT_READY_SETTLE_MS;
   const sleep = options.sleep ?? realSleep;
   if (options.waitForReady) {
-    await waitForPasteReady(backend, sessionId, { readyTimeoutMs, readyPollMs, readySettleMs, sleep });
+    await waitForPasteReady(backend, sessionId, {
+      readyTimeoutMs,
+      readyPollMs,
+      readySettleMs,
+      sleep,
+      isBlocked: options.isBlocked,
+      onBlocked: options.onBlocked,
+    });
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own
   // write so it is parsed as a keystroke, not paste content.

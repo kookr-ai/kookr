@@ -13,6 +13,7 @@ import {
   isClaudeComposerReady,
   isBracketedPasteModeEnabled,
   isClaudeBusyOrResponding,
+  PromptDeliveryBlockedError,
   PROMPT_BRACKETED_PASTE_ENV,
   DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
@@ -923,6 +924,70 @@ describe('waitForReady needs paste-mode AND a painted composer (#2977)', () => {
 
     expect(sleep).not.toHaveBeenCalledWith(9_999);
     expect(backend.getWrittenText('s-nosettle')).toBe('\x1b[200~go\x1b[201~\r');
+  });
+
+  test('a blocking startup dialog is not treated as ready and fails closed on timeout (#3295)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-trust', 'claude');
+    backend.emit(
+      's-trust',
+      '\x1b[?2004hWARNING: Bypass Permissions mode\n❯ No, exit\n  Yes, I accept',
+    );
+    const writeSeqSpy = vi.spyOn(backend, 'writeSequence');
+    const sleep = vi.fn(async (_ms: number) => {});
+
+    await expect(
+      deliverInitialPromptToSession(backend, 's-trust', 'go', {
+        bracketedPaste: true,
+        waitForReady: true,
+        readyTimeoutMs: 25,
+        readyPollMs: 10,
+        readySettleMs: 0,
+        submitDelayMs: 0,
+        sleep,
+        isBlocked: (bytes) => new TextDecoder().decode(bytes).includes('Yes, I accept'),
+        onBlocked: async () => {},
+      }),
+    ).rejects.toBeInstanceOf(PromptDeliveryBlockedError);
+    expect(writeSeqSpy).not.toHaveBeenCalled();
+  });
+
+  test('onBlocked runs while the dialog is up, then paste waits for the composer (#3295)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession('s-dismiss', 'claude');
+    const blockedCalls: number[] = [];
+    let polls = 0;
+    const sleep = vi.fn(async (_ms: number) => {
+      polls += 1;
+      if (polls === 1) {
+        backend.emit('s-dismiss', '\x1b[?2004h❯ No, exit\n  Yes, I trust this folder');
+      }
+      if (polls === 3) {
+        // Production captureBytes is an append-only PTY ring: dialog labels
+        // remain after the composer paints.
+        backend.emit('s-dismiss', `\x1b[?2004h${COMPOSER_PAINT}`);
+      }
+    });
+
+    await deliverInitialPromptToSession(backend, 's-dismiss', 'go', {
+      bracketedPaste: true,
+      waitForReady: true,
+      readyTimeoutMs: DEFAULT_PROMPT_READY_TIMEOUT_MS,
+      readyPollMs: 10,
+      readySettleMs: 0,
+      submitDelayMs: 0,
+      sleep,
+      isBlocked: (bytes) => {
+        const text = new TextDecoder().decode(bytes);
+        return text.includes('Yes, I trust this folder') && !text.includes('shift+tab');
+      },
+      onBlocked: async () => {
+        blockedCalls.push(polls);
+      },
+    });
+
+    expect(blockedCalls.length).toBeGreaterThan(0);
+    expect(backend.getWrittenText('s-dismiss')).toContain('go');
   });
 });
 
