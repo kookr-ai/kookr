@@ -188,6 +188,13 @@ export function registerScheduleRoutes(app: Hono, deps: RouteDeps): void {
       else if (body.failOnPlaybookDrift === false || body.failOnPlaybookDrift === null) {
         patch.failOnPlaybookDrift = null;
       }
+      // Declarative recovery-critical failure policy (issue #3085). `null` (or
+      // 'default') clears it; a string is validated in the store. Omit leaves
+      // it unchanged.
+      if (body.failurePolicy === null) patch.failurePolicy = null;
+      else if (typeof body.failurePolicy === "string") {
+        patch.failurePolicy = body.failurePolicy as UpdateScheduleDefinitionInput["failurePolicy"];
+      }
 
       return c.json(await deps.scheduleService.updateDefinition(id, patch));
     } catch (err) {

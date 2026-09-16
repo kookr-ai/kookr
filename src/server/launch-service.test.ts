@@ -6151,3 +6151,54 @@ describe('launchFreshTaskSession timeout and cancellation (issue #2766)', () => 
     }
   });
 });
+
+describe('launchTask per-schedule provider avoidance (issue #3085)', () => {
+  let store: TaskStore;
+  let deps: LaunchServiceDeps;
+
+  beforeEach(() => {
+    store = new TaskStore();
+    deps = makeDeps(store);
+  });
+
+  it('steers a round-robin launch off an avoided provider and records a boot_backoff hop', async () => {
+    // Cursor 0 → claude-code is the natural round-robin pick; avoiding it must
+    // rotate to the healthy codex-cli in the SAME fire.
+    const result = await launchTask(deps, {
+      prompt: 'recovery fire',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+      avoidAgentTypes: ['claude-code'],
+    });
+    expect(result.task.agentType).toBe('codex-cli');
+    expect(result.agentSubstitutionChain).toEqual([
+      { reason: 'boot_backoff', from: 'claude-code', to: 'codex-cli' },
+    ]);
+    expect(deps.adapterRegistry.get('codex-cli').launch).toHaveBeenCalledOnce();
+    expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+  });
+
+  it('never empties the rotation: avoiding every launchable falls back to the cursor pick', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'both broken',
+      cwd: '/tmp',
+      agentType: 'round-robin',
+      avoidAgentTypes: ['claude-code', 'codex-cli'],
+    });
+    // Fallback to the full rotation (cursor 0 → claude-code); no backoff hop
+    // because the attempted provider equals the originally selected one.
+    expect(result.task.agentType).toBe('claude-code');
+    expect(result.agentSubstitutionChain).toBeUndefined();
+  });
+
+  it('does not apply avoidance to an explicit concrete pin', async () => {
+    const result = await launchTask(deps, {
+      prompt: 'pinned',
+      cwd: '/tmp',
+      agentType: 'claude-code',
+      avoidAgentTypes: ['claude-code'],
+    });
+    expect(result.task.agentType).toBe('claude-code');
+    expect(result.agentSubstitutionChain).toBeUndefined();
+  });
+});

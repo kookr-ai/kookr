@@ -92,6 +92,70 @@ export function normalizeScheduleLoopConfig(raw: unknown): ScheduleLoopConfig | 
 export type ScheduleStopReason = 'trigger_limit_reached' | 'consecutive_failures';
 export type ScheduleLastRunStatus = 'completed' | 'cancelled' | 'failed' | 'skipped';
 
+/**
+ * Declarative failure policy for a schedule (issue #3085).
+ *
+ * - `default` (or absent) — the general fleet's fail-closed behavior: a
+ *   `consecutiveFailures` streak crossing `scheduleFailureAlertThreshold`
+ *   auto-pauses the schedule (issue #2353).
+ * - `recovery_critical` — a project recovery sentinel whose liveness must
+ *   survive sparse provider/boot failures. Declaring it makes recovery
+ *   criticality DATA rather than a hard-coded allowlist (the bootstrap set of
+ *   #2530 stays a strict subset): the schedule is never auto-paused by a
+ *   provider/boot failure streak — it backs off (steering its next fire away
+ *   from the boot-broken provider via {@link Schedule.recentProviderFailures})
+ *   and raises the edge-triggered operational alert instead of disabling. An
+ *   explicit operator hold still wins and is never auto-cleared.
+ */
+export type ScheduleFailurePolicy = 'default' | 'recovery_critical';
+
+const SCHEDULE_FAILURE_POLICIES: ReadonlySet<string> = new Set(['default', 'recovery_critical']);
+
+export function isScheduleFailurePolicy(value: unknown): value is ScheduleFailurePolicy {
+  return typeof value === 'string' && SCHEDULE_FAILURE_POLICIES.has(value);
+}
+
+/**
+ * One remembered provider/boot failure for a schedule (issue #3085). A durable,
+ * per-schedule complement to the process-wide boot-latency monitor
+ * (`agent-boot-latency.ts`), whose evidence expires after 10 minutes and needs
+ * two samples — too transient for a schedule firing every 30 minutes, which
+ * arrives after its prior failure aged out and re-selects the same broken
+ * provider. Recorded when a recovery-critical schedule's fire fails on a
+ * resolved provider; consulted on the next fire to deprioritize that provider;
+ * cleared for a provider that later launches cleanly, and otherwise aged out by
+ * the caller's avoidance window so a recovered provider is re-probed.
+ */
+export interface ScheduleProviderFailure {
+  /** Concrete agent type whose launch/boot failed. */
+  provider: string;
+  /** ISO timestamp the failure was recorded. */
+  at: string;
+  /** The schedule execution reason code of the failure, when known. */
+  reasonCode?: string;
+}
+
+/** Max remembered {@link ScheduleProviderFailure} entries per schedule (one per provider suffices). */
+export const MAX_RECENT_PROVIDER_FAILURES = 8;
+
+/**
+ * Reason codes that attribute a `dispatch_failed` fire to a genuine provider
+ * launch/boot failure (issue #3085) — the only failures that should populate a
+ * schedule's per-provider {@link recordProviderFailure} memory. Backpressure,
+ * config, and lifecycle rejections (`pending_queue_full`, `validation`,
+ * `safe_mode`, `project_automation`, …) are not the provider's fault, so a
+ * pinned recovery-critical schedule must not remember its healthy pin as
+ * boot-broken when it hits one. Mirrors the boot-latency evidence sites in
+ * `launch-service.ts`, where the resolved provider is only stamped on the error
+ * for these same launch/boot abandonment failures.
+ */
+export const PROVIDER_BOOT_FAILURE_REASON_CODES = ['launch_error', 'session_gone'] as const;
+
+/** True when a reason code attributes a failed fire to a provider launch/boot failure (issue #3085). */
+export function isProviderBootFailureReason(reasonCode: string | undefined): boolean {
+  return (PROVIDER_BOOT_FAILURE_REASON_CODES as readonly string[]).includes(reasonCode ?? '');
+}
+
 const SCHEDULE_LAST_RUN_STATUSES: ReadonlySet<string> = new Set([
   'completed',
   'cancelled',
@@ -246,6 +310,14 @@ export type ScheduleExecutionReasonCode =
    */
   | 'agent_substituted'
   /**
+   * A recovery-critical schedule's round-robin pick was steered off a
+   * provider whose boot failed on a prior fire (issue #3085). The launch still
+   * succeeded — on the alternate provider — so this is an accepted/backoff
+   * outcome, distinct from `agent_substituted` (an unavailable pin) so the
+   * ledger shows the durable per-schedule provider avoidance, not a pin gap.
+   */
+  | 'provider_backoff'
+  /**
    * Reason code for {@link ScheduleExecutionOutcome.skipped_provider_paused}
    * (issue #1895): no launchable substitute for an unavailable pin — fire
    * parked rather than dispatched into a known-missing agent.
@@ -363,6 +435,21 @@ export interface ScheduleExecutionLedgerEntry {
    * detection could not run.
    */
   playbookSource?: SchedulePlaybookCheckoutSource;
+  /**
+   * Provider the fire's rotation/pin would have selected before any
+   * per-schedule provider avoidance or substitution (issue #3085). Present only
+   * when it differs from {@link attemptedProvider} — i.e. a `provider_backoff`
+   * or `agent_substituted` fire — so the ledger distinguishes the originally
+   * selected provider from the one actually attempted.
+   */
+  requestedProvider?: string;
+  /**
+   * Provider the fire actually attempted (issue #3085) — the resolved concrete
+   * agent for a launched fire, or the provider whose boot failed for a
+   * `dispatch_failed` fire. Absent when no concrete provider was resolved
+   * (validation/backpressure rejections).
+   */
+  attemptedProvider?: string;
 }
 
 /**
@@ -478,6 +565,10 @@ export interface ScheduleLatestExecutionStatus {
    * #2945). Absent when detection did not run.
    */
   playbookSource?: SchedulePlaybookCheckoutSource;
+  /** Provider the most recent fire would have selected before avoidance (issue #3085). */
+  requestedProvider?: string;
+  /** Provider the most recent fire actually attempted (issue #3085). */
+  attemptedProvider?: string;
 }
 
 export interface Schedule {
@@ -571,6 +662,24 @@ export interface Schedule {
    * `skipped_playbook_drift` and does not launch.
    */
   failOnPlaybookDrift?: boolean;
+  /**
+   * Declarative failure policy (issue #3085). `recovery_critical` marks a
+   * project recovery sentinel that must not be auto-paused by a provider/boot
+   * failure streak — recovery criticality as data, not a hard-coded allowlist.
+   * Absent ⇒ `default` (the general fail-closed policy). See
+   * {@link ScheduleFailurePolicy}.
+   */
+  failurePolicy?: ScheduleFailurePolicy;
+  /**
+   * Durable memory of recent provider/boot failures for this schedule (issue
+   * #3085), so a low-cadence recovery sentinel can steer its next fire away
+   * from a provider whose boot failed on a prior fire even after the global
+   * boot-latency window aged that evidence out. Only maintained for a
+   * `recovery_critical` schedule; consulted by the runner within an avoidance
+   * window and cleared when a provider later launches cleanly. See
+   * {@link ScheduleProviderFailure}.
+   */
+  recentProviderFailures?: ScheduleProviderFailure[];
   /** Legacy dispatch fields kept for migration compatibility. */
   lastRunAt?: string;
   lastRunTaskId?: string;
@@ -702,6 +811,12 @@ export interface CreateScheduleInput {
    * warn-and-still-launch.
    */
   failOnPlaybookDrift?: boolean;
+  /**
+   * Declarative failure policy (issue #3085). Set `recovery_critical` for a
+   * project recovery sentinel that must survive sparse provider/boot failures.
+   * Omit ⇒ `default`.
+   */
+  failurePolicy?: ScheduleFailurePolicy;
 }
 
 export interface UpdateScheduleDefinitionInput {
@@ -732,6 +847,11 @@ export interface UpdateScheduleDefinitionInput {
    * (issue #2945). Omit to leave unchanged.
    */
   failOnPlaybookDrift?: boolean | null;
+  /**
+   * Set the declarative failure policy (issue #3085); pass `null` to clear back
+   * to `default`. Omit to leave unchanged.
+   */
+  failurePolicy?: ScheduleFailurePolicy | null;
 }
 
 
@@ -744,6 +864,64 @@ export function resolveScheduleAgentSelection(
   getDefaultAgentType?: () => AgentSelection,
 ): AgentSelection {
   return schedule.agentType ?? getDefaultAgentType?.() ?? DEFAULT_AGENT_TYPE;
+}
+
+/**
+ * Upsert a provider/boot failure into a schedule's {@link ScheduleProviderFailure}
+ * memory (issue #3085), replacing any prior entry for the same provider so the
+ * timestamp always reflects the most recent failure. Returns a NEW bounded
+ * array (newest last), capped at {@link MAX_RECENT_PROVIDER_FAILURES}. Pure.
+ */
+export function recordProviderFailure(
+  existing: readonly ScheduleProviderFailure[] | undefined,
+  provider: string,
+  at: string,
+  reasonCode?: string,
+  cap: number = MAX_RECENT_PROVIDER_FAILURES,
+): ScheduleProviderFailure[] {
+  const withoutProvider = (existing ?? []).filter((f) => f.provider !== provider);
+  const entry: ScheduleProviderFailure = { provider, at, ...(reasonCode ? { reasonCode } : {}) };
+  const next = [...withoutProvider, entry];
+  return next.length > cap ? next.slice(next.length - cap) : next;
+}
+
+/**
+ * Drop a provider's entry from a schedule's failure memory (issue #3085) — a
+ * provider that later launches cleanly has proven healthy for this schedule.
+ * Returns a NEW array, or `undefined` when nothing remains (so the field can be
+ * dropped rather than persisted empty). Pure.
+ */
+export function clearProviderFailure(
+  existing: readonly ScheduleProviderFailure[] | undefined,
+  provider: string,
+): ScheduleProviderFailure[] | undefined {
+  if (!existing || existing.length === 0) return undefined;
+  const next = existing.filter((f) => f.provider !== provider);
+  return next.length === 0 ? undefined : next;
+}
+
+/**
+ * The set of providers a schedule should avoid on its next fire (issue #3085):
+ * remembered failures whose timestamp is within `windowMs` of `nowMs`. Older
+ * entries are stale — the provider has had time to recover and is re-probed by
+ * a real fire. Pure; order follows the stored list.
+ */
+export function providersToAvoid(
+  schedule: Pick<Schedule, 'recentProviderFailures'>,
+  nowMs: number,
+  windowMs: number,
+): string[] {
+  const failures = schedule.recentProviderFailures;
+  if (!failures || failures.length === 0 || !(windowMs > 0)) return [];
+  const cutoff = nowMs - windowMs;
+  const out: string[] = [];
+  for (const f of failures) {
+    const atMs = Date.parse(f.at);
+    if (!Number.isNaN(atMs) && atMs >= cutoff && !out.includes(f.provider)) {
+      out.push(f.provider);
+    }
+  }
+  return out;
 }
 
 export class ScheduleValidationError extends Error {
@@ -945,6 +1123,11 @@ export class ScheduleStore {
         modelTier: 'Cannot be combined with model or effort pins',
       });
     }
+    if (input.failurePolicy !== undefined && !isScheduleFailurePolicy(input.failurePolicy)) {
+      throw new ScheduleValidationError('Invalid failure policy', {
+        failurePolicy: 'Must be one of: default, recovery_critical',
+      });
+    }
 
     const now = new Date().toISOString();
     // Accept loop config at the top level or nested under playbook (issue #1899).
@@ -972,6 +1155,9 @@ export class ScheduleStore {
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(loop ? { loop } : {}),
       ...(input.failOnPlaybookDrift === true ? { failOnPlaybookDrift: true } : {}),
+      ...(input.failurePolicy && input.failurePolicy !== 'default'
+        ? { failurePolicy: input.failurePolicy }
+        : {}),
       executionLedger: [],
       createdAt: now,
       updatedAt: now,
@@ -1021,6 +1207,15 @@ export class ScheduleStore {
       });
     }
 
+    if (
+      patch.failurePolicy !== undefined
+      && patch.failurePolicy !== null
+      && !isScheduleFailurePolicy(patch.failurePolicy)
+    ) {
+      throw new ScheduleValidationError('Invalid failure policy', {
+        failurePolicy: 'Must be one of: default, recovery_critical',
+      });
+    }
     const {
       maxTriggers,
       loop: patchLoop,
@@ -1028,6 +1223,7 @@ export class ScheduleStore {
       agentType: patchAgentType,
       modelTier: patchModelTier,
       failOnPlaybookDrift: patchFailOnPlaybookDrift,
+      failurePolicy: patchFailurePolicy,
       ...rest
     } = patch;
     const nextTriggerState = computeUpdatedTriggerState(existing, maxTriggers, new Date().toISOString());
@@ -1071,6 +1267,11 @@ export class ScheduleStore {
       ...(patchFailOnPlaybookDrift === true
         ? { failOnPlaybookDrift: true }
         : {}),
+      // failurePolicy: `null` (or `default`) clears; a valid policy sets it;
+      // omit leaves the existing value (issue #3085).
+      ...(patchFailurePolicy && patchFailurePolicy !== 'default'
+        ? { failurePolicy: patchFailurePolicy }
+        : {}),
       updatedAt: new Date().toISOString(),
     };
     // Explicit clear: spreading `{ loop: undefined }` leaves a key behind on
@@ -1086,6 +1287,11 @@ export class ScheduleStore {
     }
     if (patchFailOnPlaybookDrift === false || patchFailOnPlaybookDrift === null) {
       delete updated.failOnPlaybookDrift;
+    }
+    // Explicit clear of the failure policy (issue #3085): `null` or `default`
+    // returns the schedule to the general fail-closed policy.
+    if (patchFailurePolicy === null || patchFailurePolicy === 'default') {
+      delete updated.failurePolicy;
     }
     this.schedules.set(id, updated);
     this.syncRollup(updated);
@@ -1329,6 +1535,18 @@ function normalizeSchedule(raw: unknown): Schedule | null {
       return loop ? { loop } : {};
     })(),
     ...(candidate.failOnPlaybookDrift === true ? { failOnPlaybookDrift: true } : {}),
+    // Declarative failure policy (issue #3085) — only rehydrate a recognised
+    // non-default value; anything else degrades to the general policy.
+    ...(candidate.failurePolicy && candidate.failurePolicy !== 'default'
+      && isScheduleFailurePolicy(candidate.failurePolicy)
+      ? { failurePolicy: candidate.failurePolicy }
+      : {}),
+    // Durable provider-failure memory (issue #3085). Legacy schedules predate
+    // it; drop malformed entries rather than trust them.
+    ...(() => {
+      const failures = normalizeRecentProviderFailures(candidate.recentProviderFailures);
+      return failures.length > 0 ? { recentProviderFailures: failures } : {};
+    })(),
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
     updatedAt: typeof candidate.updatedAt === 'string' ? candidate.updatedAt : new Date().toISOString(),
     ...(typeof candidate.lastRunAt === 'string' ? { lastRunAt: candidate.lastRunAt } : {}),
@@ -1349,6 +1567,32 @@ function normalizeSchedule(raw: unknown): Schedule | null {
   };
 
   return normalized;
+}
+
+/**
+ * Rehydrate a schedule's {@link ScheduleProviderFailure} memory (issue #3085),
+ * dropping malformed entries and bounding to {@link MAX_RECENT_PROVIDER_FAILURES}
+ * newest so a legacy oversized blob converges on first read.
+ */
+function normalizeRecentProviderFailures(raw: unknown): ScheduleProviderFailure[] {
+  if (!Array.isArray(raw)) return [];
+  const out: ScheduleProviderFailure[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const candidate = item as Partial<ScheduleProviderFailure>;
+    if (typeof candidate.provider !== 'string' || candidate.provider.length === 0) continue;
+    if (typeof candidate.at !== 'string' || Number.isNaN(Date.parse(candidate.at))) continue;
+    out.push({
+      provider: candidate.provider,
+      at: candidate.at,
+      ...(typeof candidate.reasonCode === 'string' && candidate.reasonCode.length > 0
+        ? { reasonCode: candidate.reasonCode }
+        : {}),
+    });
+  }
+  return out.length > MAX_RECENT_PROVIDER_FAILURES
+    ? out.slice(out.length - MAX_RECENT_PROVIDER_FAILURES)
+    : out;
 }
 
 function normalizeExecutionLedger(raw: unknown): ScheduleExecutionLedgerEntry[] {
@@ -1409,6 +1653,13 @@ function normalizeExecutionLedgerEntry(raw: unknown): ScheduleExecutionLedgerEnt
     ...(mergeCommit ? { mergeCommit } : {}),
     ...(terminalReason ? { terminalReason } : {}),
     ...(playbookSource ? { playbookSource } : {}),
+    // Provider selection provenance (issue #3085).
+    ...(typeof candidate.requestedProvider === 'string' && candidate.requestedProvider.length > 0
+      ? { requestedProvider: candidate.requestedProvider }
+      : {}),
+    ...(typeof candidate.attemptedProvider === 'string' && candidate.attemptedProvider.length > 0
+      ? { attemptedProvider: candidate.attemptedProvider }
+      : {}),
   };
 }
 
@@ -1500,6 +1751,13 @@ function normalizeLatestExecution(raw: unknown): ScheduleLatestExecutionStatus |
     ...(candidate.message ? { message: candidate.message } : {}),
     ...(terminalReason ? { terminalReason } : {}),
     ...(playbookSource ? { playbookSource } : {}),
+    // Provider selection provenance (issue #3085).
+    ...(typeof candidate.requestedProvider === 'string' && candidate.requestedProvider.length > 0
+      ? { requestedProvider: candidate.requestedProvider }
+      : {}),
+    ...(typeof candidate.attemptedProvider === 'string' && candidate.attemptedProvider.length > 0
+      ? { attemptedProvider: candidate.attemptedProvider }
+      : {}),
   };
 }
 

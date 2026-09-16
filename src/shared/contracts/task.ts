@@ -96,7 +96,7 @@ export interface TaskLaunchPermissionPosture {
  * task record and schedule ledger show the full path (e.g. grok→claude then
  * claude→codex) instead of only the first hop.
  */
-export type AgentSubstitutionReason = 'schedule_sub' | 'quota_rotate' | 'task_migrate';
+export type AgentSubstitutionReason = 'schedule_sub' | 'quota_rotate' | 'task_migrate' | 'boot_backoff';
 
 export interface AgentSubstitutionHop {
   reason: AgentSubstitutionReason;
@@ -125,7 +125,10 @@ export interface TaskMetadata {
   /**
    * Full agent substitution chain for this launch (issue #2001). Empty/absent
    * when the requested agent launched unchanged. Each hop records why it
-   * happened (`schedule_sub` or `quota_rotate`) so receipts match reality.
+   * happened (`schedule_sub`, `quota_rotate`, or a `boot_backoff` where a
+   * recovery-critical schedule's per-schedule provider avoidance rotated the
+   * round-robin pick off a boot-broken provider — issue #3085) so receipts
+   * match reality.
    */
   agentSubstitutionChain?: AgentSubstitutionHop[];
 }

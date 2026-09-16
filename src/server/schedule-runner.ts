@@ -11,7 +11,9 @@ import {
   isTriggerLimitExhausted,
   scheduleResolutionSignature,
   resolveScheduleAgentSelection,
+  providersToAvoid,
 } from '../core/schedule.js';
+import { isRecoveryCriticalSchedule } from '../core/critical-schedule-rearm.js';
 import {
   isAgentType,
   isValidEffortForAgent,
@@ -28,7 +30,7 @@ import type { AgentSubstitutionHop } from '../shared/contracts/task.js';
 import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.js';
 import { ScheduleService, isExecutionReceiptNotFoundError } from './schedule-service.js';
 import { ScheduleValidator, resolveSchedulePlaybookSync, type ResolvedScheduleLaunch } from './schedule-validator.js';
-import { isPendingQueueFullError, isQuotaHeadroomAdmissionError, launchPhaseTimingsOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
+import { isPendingQueueFullError, isQuotaHeadroomAdmissionError, launchPhaseTimingsOf, resolvedAgentTypeOf, type LaunchOpts, type LaunchResult, type LaunchTaskServerOptions } from './launch-service.js';
 import {
   EMPTY_PAUSED_PROJECT_IDS,
   isSafeModeExemptSchedule,
@@ -1218,15 +1220,25 @@ export class ScheduleRunner {
       });
     }
 
+    // Per-schedule provider avoidance (issue #3085): a recovery-critical
+    // schedule steers this fire off a provider its own prior fire boot-failed,
+    // durably across cadence (empty for non-recovery-critical schedules).
+    const avoidAgentTypes = this.providerAvoidanceFor(schedule, new Date());
+
     // issue #1895 / #1699 WS1.3: pinned-agent availability. Round-robin is
     // resolved inside launchTask; a concrete pin must not pass through to a
     // missing/paused adapter and surface as dispatch_failed.
     // issue #2194: Grok auth expiry is treated as "not launchable" here so
     // substitution can pick a non-Grok backend instead of fail-closing.
-    const agentResolution = this.resolveScheduleAgent(schedule);
+    const agentResolution = this.resolveScheduleAgent(schedule, avoidAgentTypes);
     if (agentResolution?.kind === 'unavailable') {
       return this.parkUnavailableAgent(schedule, receipt, agentResolution.from);
     }
+    // Concrete provider hint for a failed fire's ledger/memory (#3085): known
+    // for a resolved pin/substitute (PinnedAgentResolution always names a
+    // concrete agent); a round-robin fire's concrete provider is only known
+    // inside launchTask and is read off the thrown error instead.
+    const pinnedAttemptedHint: AgentType | undefined = agentResolution?.agentType;
 
     // #1526 Phase A / FM8: no capacity pre-check here anymore. At capacity,
     // the launcher (the normal task-submission path) pends the task instead
@@ -1284,6 +1296,9 @@ export class ScheduleRunner {
         ...(retainedEffort !== undefined ? { effort: retainedEffort } : {}),
         ...(retainedModel !== undefined ? { model: retainedModel } : {}),
         ...(priorAgentSubstitutions ? { priorAgentSubstitutions } : {}),
+        // Per-schedule provider avoidance (#3085): steer round-robin (and a
+        // pinned fallback) off this schedule's boot-broken provider(s).
+        ...(avoidAgentTypes.length > 0 ? { avoidAgentTypes } : {}),
         disableDedup: true,
         // issue #1526 Phase C / C3: mark schedule provenance. This (a)
         // exempts the fire from the per-source spawn burst budget — schedules
@@ -1303,14 +1318,17 @@ export class ScheduleRunner {
         agentResolution,
         result.agentSubstitutionChain,
       );
-      if (substituted || (result.agentSubstitutionChain?.length ?? 0) > 0) {
+      // A pure boot-backoff chain (#3085) is a per-schedule provider avoidance,
+      // not an unavailable-pin substitution — it must not inflate the WS1.5
+      // pool-health substitution counter, which tracks pin gaps.
+      const chain = result.agentSubstitutionChain ?? [];
+      const substitutionHops = chain.filter((hop) => hop.reason !== 'boot_backoff');
+      const bootBackoffHops = chain.filter((hop) => hop.reason === 'boot_backoff');
+      if (substituted || substitutionHops.length > 0) {
         try {
-          // Count every hop (schedule_sub + any quota_rotate) for the pool-health counter.
-          const hopCount = Math.max(
-            1,
-            result.agentSubstitutionChain?.length
-              ?? (substituted ? 1 : 0),
-          );
+          // Count every pin-substitution hop (schedule_sub + any quota_rotate)
+          // for the pool-health counter — never a boot_backoff hop.
+          const hopCount = Math.max(1, substitutionHops.length || (substituted ? 1 : 0));
           for (let i = 0; i < hopCount; i++) {
             this.deps.recordAgentSubstitution?.();
           }
@@ -1318,15 +1336,28 @@ export class ScheduleRunner {
           console.error('[schedule] recordAgentSubstitution failed:', err);
         }
         const chainMsg = formatSubstitutionChain(
-          result.agentSubstitutionChain
-            ?? (agentResolution?.kind === 'substituted'
+          chain.length > 0
+            ? chain
+            : agentResolution?.kind === 'substituted'
               ? [{ reason: 'schedule_sub' as const, from: agentResolution.from, to: agentResolution.agentType }]
-              : []),
+              : [],
         );
         console.warn(
           `[schedule] Substituted unavailable agent for "${schedule.name}": ${chainMsg}`,
         );
+      } else if (bootBackoffHops.length > 0) {
+        // Recovery-critical provider backoff (#3085): logged for operator
+        // visibility, but not counted as a pin substitution.
+        console.warn(
+          `[schedule] Backed off boot-broken provider for "${schedule.name}": ${formatSubstitutionChain(bootBackoffHops)}`,
+        );
       }
+      // Provider selection provenance (#3085): the concrete provider the fire
+      // launched on, and — via the first substitution/backoff hop — the one
+      // originally selected before any avoidance, so the ledger can distinguish
+      // them (AC5) and clear a now-healthy provider from the schedule memory.
+      const attemptedProvider = result.task.agentType;
+      const requestedProvider = result.agentSubstitutionChain?.[0]?.from;
       await this.bindLaunchedTaskReceipt(
         schedule,
         receipt,
@@ -1336,6 +1367,8 @@ export class ScheduleRunner {
           ...acceptDetails,
           ...(result.parked ? { dependencyParked: true } : {}),
           ...(drift ? { playbookSource: toSchedulePlaybookSource(drift) } : {}),
+          ...(attemptedProvider ? { attemptedProvider } : {}),
+          ...(requestedProvider ? { requestedProvider } : {}),
         },
       );
       console.log(
@@ -1354,7 +1387,7 @@ export class ScheduleRunner {
           : {}),
       };
     } catch (err) {
-      return this.recordFireFailure(schedule, receipt, err);
+      return this.recordFireFailure(schedule, receipt, err, pinnedAttemptedHint);
     }
   }
 
@@ -1593,6 +1626,7 @@ export class ScheduleRunner {
     schedule: Schedule,
     receipt: { id: string },
     err: unknown,
+    attemptedProviderHint?: AgentType,
   ): Promise<{ error: string }> {
     // Issue #1894 recurrence (2026-08-27): a fire refused before any task
     // record because the resolved provider has no live quota headroom is
@@ -1630,6 +1664,12 @@ export class ScheduleRunner {
     // from the ledger — the row would otherwise have no taskId link, since a
     // failed fire never calls markExecutionAccepted.
     const launchPhaseTimings = launchPhaseTimingsOf(err);
+    // The concrete provider whose launch/boot failed (issue #3085): read off
+    // the error for a round-robin fire (resolved inside launchTask), falling
+    // back to the pinned/substituted hint the runner already resolved. Feeds
+    // the recovery-critical schedule's durable provider-failure memory and the
+    // ledger's `attemptedProvider`.
+    const attemptedProvider = resolvedAgentTypeOf(err) ?? attemptedProviderHint;
     console.error(`[schedule] Error firing "${schedule.name}":`, message);
     await this.recordFireOutcome(
       schedule,
@@ -1637,7 +1677,10 @@ export class ScheduleRunner {
       'dispatch_failed',
       reasonCode,
       message,
-      launchPhaseTimings ? { launchPhaseTimings } : {},
+      {
+        ...(launchPhaseTimings ? { launchPhaseTimings } : {}),
+        ...(attemptedProvider ? { attemptedProvider } : {}),
+      },
     );
     return { error: message };
   }
@@ -1722,7 +1765,23 @@ export class ScheduleRunner {
    * from the launchable set so substitution can land on a healthy non-Grok
    * backend instead of dispatching into a known auth failure.
    */
-  private resolveScheduleAgent(schedule: Schedule): PinnedAgentResolution | null {
+  /**
+   * Providers this fire should steer away from (issue #3085): a
+   * recovery-critical schedule's remembered boot/dispatch failures still inside
+   * the cadence-derived avoidance window. Empty for a non-recovery-critical
+   * schedule, so the general fleet's rotation is byte-for-byte unchanged (AC4).
+   */
+  private providerAvoidanceFor(schedule: Schedule, now: Date): AgentType[] {
+    if (!isRecoveryCriticalSchedule(schedule)) return [];
+    const windowMs = estimateProviderAvoidWindowMs(schedule);
+    return providersToAvoid(schedule, now.getTime(), windowMs)
+      .filter((p): p is AgentType => isAgentType(p));
+  }
+
+  private resolveScheduleAgent(
+    schedule: Schedule,
+    avoidAgentTypes: readonly AgentType[] = [],
+  ): PinnedAgentResolution | null {
     if (!this.deps.getAvailableAgentTypes) return null;
     // Unpinned schedules inherit the live server default before availability
     // substitution — same agent launchTask would pick if agentType were omitted.
@@ -1736,7 +1795,15 @@ export class ScheduleRunner {
       }),
       this.deps.getBlacklistedAgentTypes?.() ?? [],
     );
-    const deprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
+    const bootDeprioritized = this.deps.getDeprioritizedAgentTypes?.(available) ?? [];
+    // Merge the per-schedule provider avoidance (#3085) so a recovery-critical
+    // pinned schedule also steers off a boot-broken provider. Restricted to the
+    // launchable set; `resolvePinnedAgentFallback` keeps its own fallback rule
+    // (honored only while a healthy alternative remains).
+    const avoidLaunchable = avoidAgentTypes.filter((type) => available.includes(type));
+    const deprioritized = avoidLaunchable.length > 0
+      ? [...bootDeprioritized, ...avoidLaunchable.filter((t) => !bootDeprioritized.includes(t))]
+      : bootDeprioritized;
     const policy = this.deps.getAgentFallbackPolicy?.();
     return resolvePinnedAgentFallback(selection, available, deprioritized, policy);
   }
@@ -2025,7 +2092,7 @@ export function defaultExecScheduleProbe(
 function buildSubstitutionAcceptDetails(
   agentResolution: PinnedAgentResolution | null | undefined,
   chain: readonly AgentSubstitutionHop[] | undefined,
-): { reasonCode: 'agent_substituted'; message: string } | Record<string, never> {
+): { reasonCode: 'agent_substituted' | 'provider_backoff'; message: string } | Record<string, never> {
   const hops = chain && chain.length > 0
     ? chain
     : agentResolution?.kind === 'substituted'
@@ -2036,10 +2103,21 @@ function buildSubstitutionAcceptDetails(
         }]
       : [];
   if (hops.length === 0) return {};
-  return {
-    reasonCode: 'agent_substituted' as const,
-    message: `Substituted unavailable agent ${formatSubstitutionChain(hops)}`,
-  };
+  // A chain whose only hops are per-schedule boot-backoff rotations (#3085) is
+  // an accepted provider avoidance, not an unavailable-pin substitution — label
+  // it `provider_backoff` so the ledger shows the durable avoidance. A mix that
+  // also carries an unavailable-pin (`schedule_sub`) or quota hop stays
+  // `agent_substituted`.
+  const onlyBootBackoff = hops.every((hop) => hop.reason === 'boot_backoff');
+  return onlyBootBackoff
+    ? {
+        reasonCode: 'provider_backoff' as const,
+        message: `Backed off boot-broken provider ${formatSubstitutionChain(hops)}`,
+      }
+    : {
+        reasonCode: 'agent_substituted' as const,
+        message: `Substituted unavailable agent ${formatSubstitutionChain(hops)}`,
+      };
 }
 
 /** Format hops as `a → b → c` (with reason tags when multi-hop). */
@@ -2171,4 +2249,41 @@ function computeNextRunFor(schedule: Schedule): Date | null {
     ? new Date(schedule.lastScheduledFor)
     : new Date(schedule.createdAt);
   return nextRun(schedule.cron, after);
+}
+
+/** Floor/ceiling/fallback for the per-schedule provider-avoidance window (issue #3085). */
+export const MIN_PROVIDER_AVOID_WINDOW_MS = 20 * 60_000;
+export const MAX_PROVIDER_AVOID_WINDOW_MS = 24 * 60 * 60_000;
+export const DEFAULT_PROVIDER_AVOID_WINDOW_MS = 60 * 60_000;
+
+/**
+ * Estimate a schedule's cron cadence (ms between consecutive fires) from two
+ * successive `nextRun` evaluations (issue #3085). `undefined` when the cron is
+ * unparseable or does not produce two future fires.
+ */
+export function estimateScheduleCadenceMs(schedule: Schedule): number | undefined {
+  try {
+    const first = nextRun(schedule.cron, new Date());
+    if (!first) return undefined;
+    const second = nextRun(schedule.cron, first);
+    if (!second) return undefined;
+    const delta = second.getTime() - first.getTime();
+    return delta > 0 ? delta : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Window a remembered provider failure stays in effect for a schedule (issue
+ * #3085). Derived from the cadence so the memory reliably outlasts one interval
+ * — the exact gap the 10-minute process-wide boot-latency window cannot cover
+ * for a low-cadence sentinel — clamped to a sane floor/ceiling. A provider that
+ * launches cleanly is cleared immediately regardless; this only bounds how long
+ * a never-retried provider stays deprioritized before it is re-probed.
+ */
+export function estimateProviderAvoidWindowMs(schedule: Schedule): number {
+  const cadence = estimateScheduleCadenceMs(schedule);
+  if (cadence === undefined) return DEFAULT_PROVIDER_AVOID_WINDOW_MS;
+  return Math.min(MAX_PROVIDER_AVOID_WINDOW_MS, Math.max(MIN_PROVIDER_AVOID_WINDOW_MS, cadence * 2));
 }

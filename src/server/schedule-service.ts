@@ -19,7 +19,10 @@ import {
   type ScheduleTerminalReason,
   type UpdateScheduleDefinitionInput,
   isTriggerLimitExhausted,
+  isProviderBootFailureReason,
   pruneExecutionLedger,
+  recordProviderFailure,
+  clearProviderFailure,
   ScheduleStore,
   ScheduleValidationError,
 } from '../core/schedule.js';
@@ -35,7 +38,7 @@ import type { TokenUsage } from '../core/usage-types.js';
 import type { LaunchPhaseTimings } from '../core/launch-phase-timings.js';
 import {
   decideTransientFailureRearm,
-  isBootstrapCriticalSchedule,
+  isRecoveryCriticalSchedule,
 } from '../core/critical-schedule-rearm.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 import { ScheduleValidator, validateCron } from './schedule-validator.js';
@@ -637,13 +640,16 @@ export class ScheduleService {
    * `stopReason: consecutive_failures` and `operatorHold: true` so critical
    * recovery re-arm cannot re-enable a known-dead loop. Empty when no pause.
    *
-   * Bootstrap-safe exception (issue #2530): a schedule in the recovery sub-tier
-   * (the PR merge/rebase watchdog) is NEVER auto-paused. Its liveness gates the
-   * fleet's ability to land its own fixes, so disabling it can sever the very
-   * recovery path a cascade needs. It stays enabled and relies on the
-   * edge-triggered failure alert (#1665) for out-of-fleet visibility, falling
-   * back to its normal cron cadence rather than fail-closed disable. The general
-   * fleet's fail-closed behavior is unchanged.
+   * Recovery-critical exception (issues #2530 / #3085): a recovery-critical
+   * schedule is NEVER auto-paused. This covers both the hard-coded bootstrap
+   * sub-tier (the PR merge/rebase watchdog, #2530) and any schedule that
+   * DECLARES `failurePolicy: recovery_critical` (#3085) — recovery criticality
+   * as data, not a name allowlist. Its liveness gates recovery, so disabling it
+   * can sever the very recovery path a cascade needs. It stays enabled and
+   * relies on the edge-triggered failure alert (#1665) for out-of-fleet
+   * visibility, backing off (steering its next fire off the boot-broken
+   * provider) on its normal cron cadence rather than fail-closed disable. The
+   * general fleet's fail-closed behavior is unchanged.
    */
   private autoPausePatch(
     schedule: Schedule,
@@ -663,7 +669,7 @@ export class ScheduleService {
     if (!shouldAutoPauseForConsecutiveFailures(consecutiveFailures, threshold, schedule.enabled)) {
       return {};
     }
-    if (isBootstrapCriticalSchedule(schedule)) {
+    if (isRecoveryCriticalSchedule(schedule)) {
       return {};
     }
     return {
@@ -1277,6 +1283,18 @@ export class ScheduleService {
       message?: string;
       dependencyParked?: boolean;
       playbookSource?: SchedulePlaybookCheckoutSource;
+      /**
+       * Provider the fire's rotation/pin would have selected before any
+       * per-schedule avoidance (issue #3085); recorded on the ledger only when
+       * it differs from {@link attemptedProvider}.
+       */
+      requestedProvider?: string;
+      /**
+       * Provider the fire actually launched on (issue #3085). For a
+       * recovery-critical schedule this provider is cleared from
+       * {@link Schedule.recentProviderFailures} — it just proved healthy.
+       */
+      attemptedProvider?: string;
     } = {},
     // issue #3146: context to synthesize a receipt when the reserved one
     // rotated out of `currentExecution` between reservation and this write
@@ -1333,12 +1351,31 @@ export class ScheduleService {
       reasonCode,
       ...(details.message ? { message: details.message } : {}),
       ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
+      ...(details.requestedProvider && details.requestedProvider !== details.attemptedProvider
+        ? { requestedProvider: details.requestedProvider }
+        : {}),
+      ...(details.attemptedProvider ? { attemptedProvider: details.attemptedProvider } : {}),
     };
+    // A provider that just launched cleanly has proven healthy for this
+    // schedule (issue #3085): drop it from the recovery-critical schedule's
+    // failure memory so it re-enters rotation. A different provider's remembered
+    // failure (e.g. still-broken A while this fire ran on B) is preserved.
+    const clearedProviderFailures =
+      details.attemptedProvider !== undefined && isRecoveryCriticalSchedule(schedule)
+        ? clearProviderFailure(schedule.recentProviderFailures, details.attemptedProvider)
+        : schedule.recentProviderFailures;
+    const providerMemoryPatch =
+      clearedProviderFailures === schedule.recentProviderFailures
+        ? {}
+        : clearedProviderFailures && clearedProviderFailures.length > 0
+          ? { recentProviderFailures: clearedProviderFailures }
+          : { recentProviderFailures: undefined };
     this.store.replace({
       ...schedule,
       lastRunAt: triggeredAt,
       lastRunTaskId: taskId,
       ...consumeCronTrigger(schedule, receipt.trigger, true, triggeredAt),
+      ...providerMemoryPatch,
       latestExecution,
       executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
         schedule,
@@ -1350,6 +1387,8 @@ export class ScheduleService {
           taskId,
           ...(details.message ? { message: details.message } : {}),
           ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
+          ...(details.requestedProvider ? { requestedProvider: details.requestedProvider } : {}),
+          ...(details.attemptedProvider ? { attemptedProvider: details.attemptedProvider } : {}),
         },
       )),
       currentExecution: {
@@ -1424,6 +1463,14 @@ export class ScheduleService {
       blockingTaskId?: string;
       launchPhaseTimings?: LaunchPhaseTimings;
       playbookSource?: SchedulePlaybookCheckoutSource;
+      /**
+       * Concrete provider whose launch/boot failed for this fire (issue #3085).
+       * On a `dispatch_failed` fire of a recovery-critical schedule it is
+       * remembered in {@link Schedule.recentProviderFailures} so the next fire
+       * can steer round-robin off it, and recorded as the ledger's
+       * `attemptedProvider`.
+       */
+      attemptedProvider?: string;
     } = {},
   ): Promise<void> {
     const schedule = this.requireSchedule(scheduleId);
@@ -1464,12 +1511,39 @@ export class ScheduleService {
       : isHealthySkipOutcome(outcome)
         ? 'skipped'
         : schedule.lastRunStatus;
+    // Durable per-schedule provider-failure memory (issue #3085): a
+    // recovery-critical schedule's failed fire on a concrete provider is
+    // remembered so its next fire steers round-robin off that provider — even
+    // after the process-wide 10-minute boot-latency window aged the evidence
+    // out. Gated to a genuine execution failure whose reason is
+    // provider-boot-attributable (`launch_error`/`session_gone`), with a
+    // resolved provider, and only for recovery-critical schedules. The reason
+    // guard keeps a pinned schedule from mis-recording its healthy pin when a
+    // fire fails for backpressure/config reasons (e.g. `pending_queue_full`),
+    // which carry the pin as `attemptedProvider` but are not the provider's
+    // fault. General schedules are unchanged.
+    const recordProviderMemory =
+      isFailure
+      && details.attemptedProvider !== undefined
+      && isProviderBootFailureReason(reasonCode)
+      && isRecoveryCriticalSchedule(schedule);
+    const nextProviderFailures = recordProviderMemory
+      ? recordProviderFailure(
+          schedule.recentProviderFailures,
+          details.attemptedProvider!,
+          evaluatedAt,
+          reasonCode,
+        )
+      : schedule.recentProviderFailures;
     this.store.replace({
       ...schedule,
       lastRunAt: receipt.evaluatedAt,
       lastRunTaskId: receipt.taskId,
       ...(lastRunStatus ? { lastRunStatus } : {}),
       consecutiveFailures,
+      ...(nextProviderFailures && nextProviderFailures.length > 0
+        ? { recentProviderFailures: nextProviderFailures }
+        : {}),
       ...consumeCronTrigger(schedule, receipt.trigger, outcome === 'dispatch_failed', evaluatedAt),
       // Auto-pause (issue #2353) wins over a still-enabled trigger-budget
       // residual: fail-closed parking stops further fires until re-enable.
@@ -1485,6 +1559,7 @@ export class ScheduleService {
         reasonCode,
         ...(message ? { message } : {}),
         ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
+        ...(details.attemptedProvider ? { attemptedProvider: details.attemptedProvider } : {}),
       },
       executionLedger: upsertLedgerEntry(schedule.executionLedger, ledgerEntryFromReceipt(
         schedule,
@@ -1498,6 +1573,7 @@ export class ScheduleService {
           ...(message ? { message } : {}),
           ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
           ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
+          ...(details.attemptedProvider ? { attemptedProvider: details.attemptedProvider } : {}),
         },
       )),
       currentExecution: {
@@ -1990,6 +2066,8 @@ function ledgerEntryFromReceipt(
     message?: string;
     launchPhaseTimings?: LaunchPhaseTimings;
     playbookSource?: SchedulePlaybookCheckoutSource;
+    requestedProvider?: string;
+    attemptedProvider?: string;
   },
 ): ScheduleExecutionLedgerEntry {
   return {
@@ -2009,6 +2087,13 @@ function ledgerEntryFromReceipt(
     ...(details.message ? { message: details.message } : {}),
     ...(details.launchPhaseTimings ? { launchPhaseTimings: details.launchPhaseTimings } : {}),
     ...(details.playbookSource ? { playbookSource: details.playbookSource } : {}),
+    // Provider selection provenance (issue #3085). `requestedProvider` only
+    // carried when it differs from `attemptedProvider`, so a same-provider fire
+    // stays clean.
+    ...(details.requestedProvider && details.requestedProvider !== details.attemptedProvider
+      ? { requestedProvider: details.requestedProvider }
+      : {}),
+    ...(details.attemptedProvider ? { attemptedProvider: details.attemptedProvider } : {}),
   };
 }
 

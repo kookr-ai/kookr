@@ -9,10 +9,16 @@ import {
   pruneExecutionLedger,
   isPendingLedgerEntry,
   hasScheduleLoopConfig,
+  isScheduleFailurePolicy,
   normalizeScheduleLoopConfig,
   resolveScheduleAgentSelection,
+  recordProviderFailure,
+  clearProviderFailure,
+  providersToAvoid,
   MAX_LEDGER_ENTRIES,
+  MAX_RECENT_PROVIDER_FAILURES,
   type ScheduleExecutionLedgerEntry,
+  type ScheduleProviderFailure,
 } from './schedule.js';
 
 describe('ScheduleStore', () => {
@@ -1459,5 +1465,190 @@ describe('ScheduleStore', () => {
       expect(ledger[0].id).toBe(`s1:cron:${over - MAX_LEDGER_ENTRIES}`);
       expect(ledger[ledger.length - 1].id).toBe(`s1:cron:${over - 1}`);
     });
+  });
+});
+
+describe('failure policy + provider-failure memory (issue #3085)', () => {
+  it('isScheduleFailurePolicy accepts only known values', () => {
+    expect(isScheduleFailurePolicy('default')).toBe(true);
+    expect(isScheduleFailurePolicy('recovery_critical')).toBe(true);
+    expect(isScheduleFailurePolicy('other')).toBe(false);
+    expect(isScheduleFailurePolicy(undefined)).toBe(false);
+  });
+
+  describe('recordProviderFailure', () => {
+    it('upserts a provider, replacing a prior entry so the timestamp is the latest', () => {
+      const first = recordProviderFailure(undefined, 'claude-code', '2026-09-09T11:00:00.000Z', 'launch_error');
+      expect(first).toEqual([
+        { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z', reasonCode: 'launch_error' },
+      ]);
+      const second = recordProviderFailure(first, 'claude-code', '2026-09-09T11:41:00.000Z');
+      expect(second).toEqual([{ provider: 'claude-code', at: '2026-09-09T11:41:00.000Z' }]);
+    });
+
+    it('keeps distinct providers and bounds the list to the cap', () => {
+      let list: ScheduleProviderFailure[] = [];
+      for (let i = 0; i < MAX_RECENT_PROVIDER_FAILURES + 3; i++) {
+        list = recordProviderFailure(list, `agent-${i}`, `2026-09-09T${String(i).padStart(2, '0')}:00:00.000Z`);
+      }
+      expect(list).toHaveLength(MAX_RECENT_PROVIDER_FAILURES);
+      // Newest retained, oldest dropped.
+      expect(list[list.length - 1].provider).toBe(`agent-${MAX_RECENT_PROVIDER_FAILURES + 2}`);
+      expect(list[0].provider).toBe('agent-3');
+    });
+  });
+
+  describe('clearProviderFailure', () => {
+    it('drops the named provider and returns undefined when empty', () => {
+      const list = recordProviderFailure(undefined, 'codex-cli', '2026-09-09T11:00:00.000Z');
+      expect(clearProviderFailure(list, 'codex-cli')).toBeUndefined();
+    });
+    it('preserves other providers still remembered', () => {
+      let list = recordProviderFailure(undefined, 'claude-code', '2026-09-09T11:00:00.000Z');
+      list = recordProviderFailure(list, 'grok-build', '2026-09-09T11:05:00.000Z');
+      expect(clearProviderFailure(list, 'grok-build')).toEqual([
+        { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z' },
+      ]);
+    });
+  });
+
+  describe('providersToAvoid', () => {
+    const now = Date.parse('2026-09-09T12:00:00.000Z');
+    it('returns providers whose failure is within the window', () => {
+      const schedule = {
+        recentProviderFailures: [
+          { provider: 'claude-code', at: '2026-09-09T11:45:00.000Z' },
+        ],
+      };
+      // 30-minute window comfortably covers a 15-minute-old failure.
+      expect(providersToAvoid(schedule, now, 30 * 60_000)).toEqual(['claude-code']);
+    });
+    it('ages out a failure older than the window so a recovered provider is re-probed', () => {
+      const schedule = {
+        recentProviderFailures: [
+          { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z' }, // 60m ago
+        ],
+      };
+      expect(providersToAvoid(schedule, now, 30 * 60_000)).toEqual([]);
+    });
+    it('is empty for a schedule with no memory or a non-positive window', () => {
+      expect(providersToAvoid({}, now, 30 * 60_000)).toEqual([]);
+      expect(providersToAvoid(
+        { recentProviderFailures: [{ provider: 'x', at: '2026-09-09T11:59:00.000Z' }] },
+        now,
+        0,
+      )).toEqual([]);
+    });
+  });
+});
+
+describe('ScheduleStore failurePolicy + provider memory persistence (issue #3085)', () => {
+  let dir: string;
+  let store: ScheduleStore;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'schedule-fp-test-'));
+    store = new ScheduleStore(dir);
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('create stores a recovery_critical policy and rejects an invalid one', () => {
+    const s = store.create({
+      name: 'sentinel',
+      cron: '11,41 * * * *',
+      playbook: { path: 'sentinel.md', parameters: {} },
+      cwd: '/tmp',
+      failurePolicy: 'recovery_critical',
+    });
+    expect(s.failurePolicy).toBe('recovery_critical');
+    expect(() => store.create({
+      name: 'bad',
+      cron: '0 0 * * *',
+      playbook: { path: 'x.md', parameters: {} },
+      cwd: '/tmp',
+      // @ts-expect-error invalid policy is rejected at runtime
+      failurePolicy: 'nope',
+    })).toThrow(ScheduleValidationError);
+  });
+
+  it('create omits a default policy so the field stays absent', () => {
+    const s = store.create({
+      name: 'plain',
+      cron: '0 0 * * *',
+      playbook: { path: 'x.md', parameters: {} },
+      cwd: '/tmp',
+      failurePolicy: 'default',
+    });
+    expect(s.failurePolicy).toBeUndefined();
+  });
+
+  it('updateDefinition sets and clears the failure policy', () => {
+    const s = store.create({
+      name: 'sentinel',
+      cron: '0 0 * * *',
+      playbook: { path: 'x.md', parameters: {} },
+      cwd: '/tmp',
+    });
+    expect(store.updateDefinition(s.id, { failurePolicy: 'recovery_critical' }).failurePolicy)
+      .toBe('recovery_critical');
+    // Omitting leaves it unchanged.
+    expect(store.updateDefinition(s.id, { name: 'renamed' }).failurePolicy)
+      .toBe('recovery_critical');
+    // null clears back to default.
+    expect(store.updateDefinition(s.id, { failurePolicy: null }).failurePolicy)
+      .toBeUndefined();
+  });
+
+  it('round-trips failurePolicy and recentProviderFailures through persist/reload', async () => {
+    const s = store.create({
+      name: 'sentinel',
+      cron: '0 0 * * *',
+      playbook: { path: 'x.md', parameters: {} },
+      cwd: '/tmp',
+      failurePolicy: 'recovery_critical',
+    });
+    store.replace({
+      ...store.get(s.id)!,
+      recentProviderFailures: [
+        { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z', reasonCode: 'launch_error' },
+      ],
+    });
+    await store.persist();
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    const back = reloaded.get(s.id)!;
+    expect(back.failurePolicy).toBe('recovery_critical');
+    expect(back.recentProviderFailures).toEqual([
+      { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z', reasonCode: 'launch_error' },
+    ]);
+  });
+
+  it('drops malformed provider-failure entries on reload', async () => {
+    const raw = [{
+      id: 's1',
+      name: 'sentinel',
+      enabled: true,
+      cron: '0 0 * * *',
+      playbook: { path: 'x.md', parameters: {} },
+      cwd: '/tmp',
+      failurePolicy: 'recovery_critical',
+      recentProviderFailures: [
+        { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z' },
+        { provider: '', at: '2026-09-09T11:00:00.000Z' },
+        { provider: 'grok-build', at: 'not-a-date' },
+        { at: '2026-09-09T11:00:00.000Z' },
+      ],
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      executionLedger: [],
+    }];
+    await writeFile(join(dir, 'schedules.json'), JSON.stringify(raw), 'utf-8');
+    const reloaded = new ScheduleStore(dir);
+    await reloaded.load();
+    expect(reloaded.get('s1')!.recentProviderFailures).toEqual([
+      { provider: 'claude-code', at: '2026-09-09T11:00:00.000Z' },
+    ]);
   });
 });

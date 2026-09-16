@@ -1150,6 +1150,45 @@ export function launchPhaseTimingsOf(err: unknown): LaunchPhaseTimings | undefin
   return undefined;
 }
 
+/** Union of two agent-type lists, order-stable, first-seen wins (issue #3085). */
+function mergeAgentTypeSets(
+  a: readonly AgentType[],
+  b: readonly AgentType[],
+): AgentType[] {
+  const out: AgentType[] = [...a];
+  for (const type of b) {
+    if (!out.includes(type)) out.push(type);
+  }
+  return out;
+}
+
+/**
+ * Marker carrying the CONCRETE agent type a failed launch actually resolved to,
+ * back to the schedule runner (issue #3085). A round-robin schedule fire does
+ * not know which provider the rotation picked — that resolution happens inside
+ * launchTask — so on a boot/dispatch failure the runner reads it off the error
+ * to record a durable per-schedule provider-failure memory. Stamped at the
+ * failure sites that also record boot-latency evidence (the same
+ * provider-attributable launch abandonment). A Symbol key never shows up in
+ * JSON serialization of the error.
+ */
+const RESOLVED_AGENT_TYPE = Symbol('kookr.resolvedAgentType');
+
+export function attachResolvedAgentType(err: unknown, agentType: AgentType): void {
+  if (err && typeof err === 'object') {
+    (err as Record<symbol, unknown>)[RESOLVED_AGENT_TYPE] = agentType;
+  }
+}
+
+/** Read the concrete resolved agent type attached to a thrown launch error (issue #3085). */
+export function resolvedAgentTypeOf(err: unknown): AgentType | undefined {
+  if (err && typeof err === 'object') {
+    const value = (err as Record<symbol, unknown>)[RESOLVED_AGENT_TYPE];
+    if (typeof value === 'string' && isAgentType(value)) return value;
+  }
+  return undefined;
+}
+
 /**
  * Reserve/replay wrapper (see {@link launchTask} docs). Loops rather than
  * recursing when a reservation resolves to "try again" (the owner's launch
@@ -1361,13 +1400,29 @@ async function launchTaskCore(
   // `peek` (not advance): the rotation cursor must only move once a task is
   // actually committed, so a deduplicated or rejected launch does not consume
   // a rotation slot. The matching `advance()` calls fire after `createTask`.
+  const bootDeprioritized = deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [];
+  // Per-schedule provider avoidance (issue #3085): a recovery-critical schedule
+  // steers this fire off a provider its own prior fire boot-failed. Restricted
+  // to launchable types so an unknown/blacklisted entry can never widen the
+  // rotation, and merged with the process-wide boot-latency signal.
+  const avoidTypes = (opts.avoidAgentTypes ?? []).filter(
+    (type): type is AgentType => launchableTypes.includes(type),
+  );
+  const cursorForResolution = deps.roundRobinCursor?.peek() ?? 0;
+  // The rotation pick WITHOUT per-schedule avoidance — the "originally
+  // selected" provider surfaced to the schedule ledger (issue #3085 AC5).
+  const requestedRoundRobinAgent: AgentType | undefined = isRoundRobin
+    ? resolveRoundRobinAgent(cursorForResolution, launchableTypes, bootDeprioritized)
+    : undefined;
   let agentType: AgentType = isRoundRobin
     ? resolveRoundRobinAgent(
-        deps.roundRobinCursor?.peek() ?? 0,
+        cursorForResolution,
         launchableTypes,
         // Boot-reliability failover precondition (#1898): skip agents whose
         // recent boot latency is unhealthy while a healthier one is registered.
-        deps.getDeprioritizedAgentTypes?.(launchableTypes) ?? [],
+        // Plus the per-schedule avoided providers (#3085). Same fallback rule:
+        // honored only while a non-deprioritized launchable type remains.
+        mergeAgentTypeSets(bootDeprioritized, avoidTypes),
       )
     : requestedAgent;
   // Implicit default landed on a blacklisted agent: skip to a remaining
@@ -1418,6 +1473,29 @@ async function launchTaskCore(
   const agentSubstitutionChain: AgentSubstitutionHop[] = [
     ...(opts.priorAgentSubstitutions ?? []),
   ];
+  // Boot-backoff hop (issue #3085): per-schedule provider avoidance perturbed
+  // the round-robin pick. Both `resolveRoundRobinAgent` calls use the SAME
+  // `bootDeprioritized` snapshot, so any difference between the pre-avoidance
+  // pick (`requestedRoundRobinAgent`) and the resolved `agentType` is caused by
+  // `avoidTypes` — either the originally selected provider was itself avoided,
+  // or removing an avoided provider shrank the rotation and shifted the cursor
+  // modulo onto a different one. Recording the hop whenever they differ (with a
+  // non-empty avoid set) keeps the ledger's requested→attempted provenance (AC5)
+  // complete for 3+-provider fleets, not just the 2-provider case. Reuses the
+  // #2001 chain machinery already threaded through every return path and stamped
+  // on task metadata.
+  if (
+    isRoundRobin
+    && requestedRoundRobinAgent !== undefined
+    && agentType !== requestedRoundRobinAgent
+    && avoidTypes.length > 0
+  ) {
+    agentSubstitutionChain.push({
+      reason: 'boot_backoff',
+      from: requestedRoundRobinAgent,
+      to: agentType,
+    });
+  }
 
   // Validate a per-task effort override against the *resolved* agent's allowed
   // set (#681), before any side effect or task record. Done here — not at the
@@ -2484,6 +2562,7 @@ async function launchTaskCore(
           reason: classifyLaunchFailureReason(err),
         });
         deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+        attachResolvedAgentType(err, agentType);
         throw err;
       }
       const currentAfterCleanup = taskStore.getTask(task.id);
@@ -2509,6 +2588,7 @@ async function launchTaskCore(
         reason: classifyLaunchFailureReason(err),
       });
       deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+      attachResolvedAgentType(err, agentType);
       if (isRoundRobin) deps.roundRobinCursor?.advance();
       if (resolvedClaimKey) {
         await deps.flushTasks().catch((flushErr) => {
@@ -2598,6 +2678,7 @@ async function launchTaskCore(
     // other best-effort metrics — so instrumentation can never pre-empt the
     // queryable disposition or mask the original launch error.
     deps.recordLaunchBootLatency?.(agentType, phaseTimings);
+    attachResolvedAgentType(err, agentType);
     markDisposedTask(err, task.id);
     throw err;
   }

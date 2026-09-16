@@ -7,6 +7,7 @@ import {
   decideTransientFailureRearm,
   isBootstrapCriticalSchedule,
   isCriticalAllowlistedSchedule,
+  isRecoveryCriticalSchedule,
   isTransientFailureRearmReason,
   listCriticalSchedulesToRearm,
   playbookBasename,
@@ -29,6 +30,43 @@ describe('playbookBasename', () => {
       'lucy-orchestration-effectiveness.md',
     );
     expect(playbookBasename('a\\b\\foo.md')).toBe('foo.md');
+  });
+});
+
+describe('isRecoveryCriticalSchedule (issue #3085)', () => {
+  it('matches a schedule that DECLARES the recovery_critical failure policy', () => {
+    expect(
+      isRecoveryCriticalSchedule({
+        name: 'Earnings Watch Orchestration Supervisor',
+        playbook: { path: 'some-project-sentinel.md' },
+        failurePolicy: 'recovery_critical',
+      }),
+    ).toBe(true);
+  });
+
+  it('keeps the hard-coded bootstrap sub-tier as a strict subset (no policy needed)', () => {
+    expect(
+      isRecoveryCriticalSchedule({
+        name: 'PR Merge/Rebase Watchdog',
+        playbook: { path: 'pr-merge-rebase-watchdog.md' },
+      }),
+    ).toBe(true);
+  });
+
+  it('does not match a general schedule with the default (or absent) policy', () => {
+    expect(
+      isRecoveryCriticalSchedule({
+        name: 'nightly cleanup',
+        playbook: { path: 'cleanup.md' },
+      }),
+    ).toBe(false);
+    expect(
+      isRecoveryCriticalSchedule({
+        name: 'nightly cleanup',
+        playbook: { path: 'cleanup.md' },
+        failurePolicy: 'default',
+      }),
+    ).toBe(false);
   });
 });
 

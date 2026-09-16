@@ -215,7 +215,15 @@ export class AgentBootLatencyMonitor {
   /**
    * Count resolved launches with no boot-healthy choice, once when accepted
    * into the queue or handed to an adapter. Rejected and duplicate requests
-   * are excluded. Selection is unchanged; its fix is tracked in #3085.
+   * are excluded.
+   *
+   * This process-wide signal deprioritizes an unhealthy agent only within its
+   * short (default 10-minute) staleness window and after ≥2 samples — too
+   * transient for a low-cadence schedule, whose next fire arrives after the
+   * evidence aged out. Issue #3085 complements it with a DURABLE, per-schedule
+   * provider-failure memory (`Schedule.recentProviderFailures`, fed into the
+   * round-robin resolver via `LaunchOpts.avoidAgentTypes`) so a recovery-critical
+   * sentinel steers off a boot-broken provider across its cadence.
    */
   recordLaunchResolution(launchableTypes: readonly AgentType[]): void {
     if (launchableTypes.length > 0 && launchableTypes.every((type) => this.isUnhealthy(type))) {
