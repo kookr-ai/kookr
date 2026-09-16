@@ -1118,7 +1118,10 @@ kookr logs <taskId> --dir ~/.kookr-4801
 
 `kookr logs` operates directly on the on-disk data directory (like
 `kookr maintenance`). It resolves the data directory the same way, looks the
-task up in `tasks.json`, reads each of its sessions' persisted hook JSONL under
+task up in the configured task store — `tasks.sqlite` by default (issue #1755),
+falling back to the legacy `tasks.json` when no SQLite database is present or
+when `KOOKR_TASK_STORE=json` is set — reads each of its sessions' persisted hook
+JSONL under
 `<dataDir>/hooks/<session>.jsonl` — including any rotated `<session>.jsonl.N`
 generations the writer's size cap split off (issue #1433), stitched in
 chronological order — parses records with the same framing parser the production
