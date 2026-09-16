@@ -1,7 +1,9 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+
+import Database from 'better-sqlite3';
 
 import { parseLogsArgs, runLogsCli } from './kookr-logs.js';
 
@@ -232,5 +234,212 @@ describe('runLogsCli', () => {
     const code = await runLogsCli(['task-nosess', '--dir', dataDir], { env, out: c.out, err: c.err });
     expect(code).toBe(0);
     expect(c.logs.join('\n')).toMatch(/no sessions with hook logs yet/);
+  });
+});
+
+describe('runLogsCli — SQLite task store (#3214)', () => {
+  let dataDir: string;
+  // Default env leaves KOOKR_TASK_STORE unset, so the store defaults to SQLite.
+  const env = { HOME: '/unused', KOOKR_PORT: '' } as NodeJS.ProcessEnv;
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(join(tmpdir(), 'kookr-logs-sqlite-'));
+    await mkdir(join(dataDir, 'hooks'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Build a minimal `tasks.sqlite` matching the columns the CLI's read-only
+   * lookup touches (`id`, `data`). Uses WAL + a truncating checkpoint so the
+   * fixture mirrors the production store's journal mode and the read-only
+   * reader is exercised against a real WAL-mode database file.
+   */
+  function writeSqliteTasks(
+    tasks: Array<{ id: string; sessions: Array<{ tmuxSession: string }> }>,
+  ): void {
+    const db = new Database(join(dataDir, 'tasks.sqlite'));
+    try {
+      db.pragma('journal_mode = WAL');
+      db.exec('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+      const insert = db.prepare('INSERT INTO tasks (id, data) VALUES (?, ?)');
+      for (const t of tasks) insert.run(t.id, JSON.stringify(t));
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } finally {
+      db.close();
+    }
+  }
+
+  async function writeJsonTasks(tasks: unknown[]): Promise<void> {
+    await writeFile(join(dataDir, 'tasks.json'), JSON.stringify({ version: 2, tasks }), 'utf8');
+  }
+
+  async function writeHooks(stem: string, records: string[]): Promise<void> {
+    await writeFile(
+      join(dataDir, 'hooks', `${stem}.jsonl`),
+      records.map((r) => `${r}\n`).join(''),
+      'utf8',
+    );
+  }
+
+  test('resolves a SQLite-only task with multiple sessions and reads its hook records', async () => {
+    // No tasks.json at all — the mapping lives solely in SQLite (acceptance #1).
+    writeSqliteTasks([
+      { id: 'task-sql', sessions: [{ tmuxSession: 'kookr-s1' }, { tmuxSession: 'kookr-s2' }] },
+    ]);
+    await writeHooks('kookr-s1', [record({ hook_event_name: 'SessionStart' })]);
+    await writeHooks('kookr-s2', [record({ hook_event_name: 'Stop' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-sql', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as {
+      hookLogs: string[];
+      totalRecords: number;
+      records: Array<{ session: string; event: Record<string, unknown> }>;
+    };
+    // Both sessions resolved from SQLite, in stored order (acceptance: order preserved).
+    expect(envelope.hookLogs).toEqual(['kookr-s1', 'kookr-s2']);
+    expect(envelope.totalRecords).toBe(2);
+    expect(envelope.records.map((r) => r.session)).toEqual(['kookr-s1', 'kookr-s2']);
+    expect(envelope.records.map((r) => r.event.hook_event_name)).toEqual(['SessionStart', 'Stop']);
+  });
+
+  test('resolves against a live WAL database with uncheckpointed frames', async () => {
+    // Production runs `synchronous = NORMAL` and only checkpoints periodically,
+    // so between checkpoints the latest task→session mapping lives in the `-wal`
+    // sidecar, not yet merged into the main file. Keep a writer connection open
+    // (no checkpoint) so `-wal`/`-shm` are live on disk, and prove the read-only
+    // reader still resolves the pending mapping in order.
+    const writer = new Database(join(dataDir, 'tasks.sqlite'));
+    try {
+      writer.pragma('journal_mode = WAL');
+      writer.exec('CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+      writer.prepare('INSERT INTO tasks (id, data) VALUES (?, ?)').run(
+        'task-wal',
+        JSON.stringify({
+          id: 'task-wal',
+          sessions: [{ tmuxSession: 'kookr-w1' }, { tmuxSession: 'kookr-w2' }],
+        }),
+      );
+      await writeHooks('kookr-w1', [record({ hook_event_name: 'SessionStart' })]);
+      await writeHooks('kookr-w2', [record({ hook_event_name: 'Stop' })]);
+
+      const c = captureConsole();
+      const code = await runLogsCli(['task-wal', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+      expect(code).toBe(0);
+      const envelope = JSON.parse(c.logs[0]) as {
+        hookLogs: string[];
+        records: Array<{ event: Record<string, unknown> }>;
+      };
+      expect(envelope.hookLogs).toEqual(['kookr-w1', 'kookr-w2']);
+      expect(envelope.records.map((r) => r.event.hook_event_name)).toEqual(['SessionStart', 'Stop']);
+    } finally {
+      writer.close();
+    }
+  });
+
+  test('a stale tasks.json export does not override the current SQLite mapping', async () => {
+    // SQLite maps the task to its live session; a stale JSON export points at a
+    // different, older session. The stale session's hook file is present and
+    // *would* resolve if JSON were consulted — so the test proves SQLite wins,
+    // not merely that the stale path happened to dead-end (acceptance #2).
+    writeSqliteTasks([{ id: 'task-x', sessions: [{ tmuxSession: 'kookr-current' }] }]);
+    await writeJsonTasks([{ id: 'task-x', sessions: [{ tmuxSession: 'kookr-stale' }] }]);
+    await writeHooks('kookr-current', [record({ hook_event_name: 'PreToolUse', tool_name: 'Bash' })]);
+    await writeHooks('kookr-stale', [record({ hook_event_name: 'SessionStart' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-x', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as {
+      hookLogs: string[];
+      records: Array<{ event: Record<string, unknown> }>;
+    };
+    // The live SQLite session wins; the stale JSON session is never consulted.
+    expect(envelope.hookLogs).toEqual(['kookr-current']);
+    expect(envelope.records.map((r) => r.event.hook_event_name)).toEqual(['PreToolUse']);
+  });
+
+  test('lookup reads only the requested task’s mapping', async () => {
+    // Two tasks in the same store; only the requested one's sessions are read.
+    writeSqliteTasks([
+      { id: 'task-a', sessions: [{ tmuxSession: 'kookr-a' }] },
+      { id: 'task-b', sessions: [{ tmuxSession: 'kookr-b' }] },
+    ]);
+    await writeHooks('kookr-a', [record({ hook_event_name: 'PreToolUse', tool_name: 'Read' })]);
+    await writeHooks('kookr-b', [record({ hook_event_name: 'PreToolUse', tool_name: 'Write' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-a', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as { hookLogs: string[] };
+    expect(envelope.hookLogs).toEqual(['kookr-a']);
+    // The other task's session is not resolved or read.
+    expect(c.logs[0]).not.toContain('kookr-b');
+    expect(c.logs[0]).not.toContain('Write');
+  });
+
+  test('explicit KOOKR_TASK_STORE=json reads tasks.json even when tasks.sqlite exists', async () => {
+    // Both stores present but disagree; explicit JSON mode uses tasks.json (acceptance #3).
+    const jsonEnv = { ...env, KOOKR_TASK_STORE: 'json' } as NodeJS.ProcessEnv;
+    writeSqliteTasks([{ id: 'task-j', sessions: [{ tmuxSession: 'kookr-sqlite' }] }]);
+    await writeJsonTasks([{ id: 'task-j', sessions: [{ tmuxSession: 'kookr-json' }] }]);
+    await writeHooks('kookr-json', [record({ hook_event_name: 'Stop' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-j', '--json', '--dir', dataDir], { env: jsonEnv, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as { hookLogs: string[] };
+    expect(envelope.hookLogs).toEqual(['kookr-json']);
+  });
+
+  test('falls back to tasks.json when no tasks.sqlite is present', async () => {
+    // Default (SQLite) mode, but the DB is absent — the legacy JSON snapshot is
+    // still honored so existing single-store deployments keep working.
+    await writeJsonTasks([{ id: 'task-legacy', sessions: [{ tmuxSession: 'kookr-legacy' }] }]);
+    await writeHooks('kookr-legacy', [record({ hook_event_name: 'SessionStart' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['task-legacy', '--json', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    const envelope = JSON.parse(c.logs[0]) as { hookLogs: string[] };
+    expect(envelope.hookLogs).toEqual(['kookr-legacy']);
+  });
+
+  test('a direct session id still resolves when SQLite has no matching task', async () => {
+    writeSqliteTasks([{ id: 'other-task', sessions: [{ tmuxSession: 'kookr-other' }] }]);
+    await writeHooks('kookr-direct', [record({ hook_event_name: 'PreToolUse', tool_name: 'Grep' })]);
+
+    const c = captureConsole();
+    const code = await runLogsCli(['kookr-direct', '--dir', dataDir], { env, out: c.out, err: c.err });
+    expect(code).toBe(0);
+    expect(c.logs.join('\n')).toContain('PreToolUse (Grep)');
+  });
+
+  test('a corrupt SQLite store gives a defined diagnostic outcome without masking it or mutating files', async () => {
+    // A non-database file at the store path. The lookup must not silently fall
+    // back to a (stale) tasks.json, and must not create/rename/checkpoint the DB
+    // (acceptance #4 + risk: avoid masking DB failures with stale JSON).
+    const corrupt = 'this is not a sqlite database';
+    await writeFile(join(dataDir, 'tasks.sqlite'), corrupt, 'utf8');
+    // A tasks.json that WOULD resolve — it must be ignored, not used to mask.
+    await writeJsonTasks([{ id: 'task-c', sessions: [{ tmuxSession: 'kookr-json-c' }] }]);
+    await writeHooks('kookr-json-c', [record({ hook_event_name: 'Stop' })]);
+
+    const before = await readdir(dataDir);
+    const c = captureConsole();
+    const code = await runLogsCli(['task-c', '--dir', dataDir], { env, out: c.out, err: c.err });
+    // No task resolved and no direct hook log named 'task-c' → exit 1 with a hint.
+    expect(code).toBe(1);
+    expect(c.errors.join('\n')).toMatch(/No task or hook log found for 'task-c'/);
+    expect(c.errors.join('\n')).toMatch(/could not read tasks\.sqlite/);
+    // The stale JSON mapping was never consulted.
+    expect(c.logs.join('\n')).not.toContain('Stop');
+    // The store file is untouched and no sidecar/backup files were created.
+    expect(await readFile(join(dataDir, 'tasks.sqlite'), 'utf8')).toBe(corrupt);
+    expect((await readdir(dataDir)).sort()).toEqual(before.sort());
   });
 });
