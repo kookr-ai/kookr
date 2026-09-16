@@ -14,8 +14,7 @@
 import { stripTerminalControls } from './agent-launch-context.js';
 import { ENTER_BYTES, translateKeystroke } from './keystroke.js';
 import type { TerminalInputWriterPort } from '../core/ports/terminal-input-writer-port.js';
-import type { SessionId, TerminalBackend } from './terminal-backend.js';
-import { raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
+import type { SessionId } from './terminal-backend.js';
 
 export type ClaudeBlockingStartupDialog = 'workspace-trust' | 'bypass-permissions';
 
@@ -39,80 +38,40 @@ export function detectClaudeBlockingStartupDialog(
   return null;
 }
 
-export class ClaudeStartupDialogError extends Error {
-  readonly code = 'claude_startup_dialog';
-  readonly dialog: ClaudeBlockingStartupDialog;
-
-  constructor(dialog: ClaudeBlockingStartupDialog, sessionId: string) {
-    super(
-      `Claude Code is still showing the ${dialog} dialog on session ${sessionId} ` +
-        `(default choice is "No, exit") — launch aborted instead of confirming exit`,
-    );
-    this.name = 'ClaudeStartupDialogError';
-    this.dialog = dialog;
-  }
-}
-
-export interface AcceptClaudeStartupDialogsOptions {
+export interface DismissClaudeStartupDialogOptions {
   inputWriter: TerminalInputWriterPort;
-  timeoutMs: number;
-  pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
-  signal?: AbortSignal;
 }
 
-const DEFAULT_POLL_MS = 100;
 const SELECT_SETTLE_MS = 80;
-const AFTER_ENTER_MS = 250;
-const MAX_ACCEPTS = 3;
 
 function realSleep(ms: number): Promise<void> {
   return ms > 0 ? new Promise((res) => setTimeout(res, ms)) : Promise.resolve();
 }
 
+const paneDecoder = new TextDecoder('utf-8', { fatal: false });
+
+/** True when the captured pane is a Claude startup dialog that defaults to No, exit. */
+export function isClaudeStartupDialogBlocking(rawBytes: Uint8Array): boolean {
+  return detectClaudeBlockingStartupDialog(paneDecoder.decode(rawBytes)) !== null;
+}
+
 /**
- * If Claude is showing a blocking startup dialog, accept the non-exit
- * option. Repeats for stacked dialogs (trust, then bypass-permissions).
- * Returns once no dialog is visible. Throws {@link ClaudeStartupDialogError}
- * if a dialog is still up at the deadline so the caller does not deliver
- * the task prompt onto "No, exit".
+ * Accept the non-exit option on a visible Claude startup dialog (Down,
+ * then Enter). The paste-ready wait calls this when {@link isClaudeStartupDialogBlocking}
+ * is true, then keeps polling until the composer is ready or the wait
+ * fails closed.
  */
-export async function acceptClaudeStartupDialogsIfPresent(
-  backend: TerminalBackend,
+export async function dismissClaudeStartupDialog(
   sessionId: SessionId,
-  options: AcceptClaudeStartupDialogsOptions,
+  options: DismissClaudeStartupDialogOptions,
 ): Promise<void> {
-  const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
   const sleep = options.sleep ?? realSleep;
-  const deadline = Date.now() + options.timeoutMs;
-  let accepts = 0;
-
-  const loop = async (): Promise<void> => {
-    while (Date.now() <= deadline) {
-      throwIfLaunchAborted(options.signal, sessionId);
-      const bytes = await backend.captureBytes(sessionId);
-      const dialog = detectClaudeBlockingStartupDialog(new TextDecoder('utf-8', { fatal: false }).decode(bytes));
-      if (!dialog) return;
-      if (accepts >= MAX_ACCEPTS) {
-        throw new ClaudeStartupDialogError(dialog, sessionId);
-      }
-      await options.inputWriter.writeInput(sessionId, translateKeystroke('Down'), {
-        reason: 'claude-startup-dialog-down',
-      });
-      await sleep(SELECT_SETTLE_MS);
-      await options.inputWriter.writeInput(sessionId, ENTER_BYTES, {
-        reason: 'claude-startup-dialog-enter',
-      });
-      accepts += 1;
-      await sleep(AFTER_ENTER_MS);
-    }
-
-    const bytes = await backend.captureBytes(sessionId);
-    const still = detectClaudeBlockingStartupDialog(
-      new TextDecoder('utf-8', { fatal: false }).decode(bytes),
-    );
-    if (still) throw new ClaudeStartupDialogError(still, sessionId);
-  };
-
-  await raceAgainstLaunchAbort(loop(), options.signal, sessionId);
+  await options.inputWriter.writeInput(sessionId, translateKeystroke('Down'), {
+    reason: 'claude-startup-dialog-down',
+  });
+  await sleep(SELECT_SETTLE_MS);
+  await options.inputWriter.writeInput(sessionId, ENTER_BYTES, {
+    reason: 'claude-startup-dialog-enter',
+  });
 }

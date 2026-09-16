@@ -589,6 +589,8 @@ kookr/
 │   │   ├── agent-adapter.ts               # Common AgentAdapter interface
 │   │   ├── routing-agent-adapter.ts       # Dispatches by agentType
 │   │   ├── claude-code-adapter.ts         # Managed Claude Code sessions
+│   │   ├── claude-config.ts               # Claude ~/.claude.json workspace-trust persistence
+│   │   ├── claude-readiness.ts            # Startup-dialog guard (trust / bypass-permissions)
 │   │   ├── codex-cli-adapter.ts           # Managed Codex CLI sessions
 │   │   ├── codex-config.ts                # Codex CLI config/settings emission
 │   │   ├── codex-rollout-scanner.ts       # Codex rollout metadata discovery

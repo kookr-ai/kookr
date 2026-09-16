@@ -186,7 +186,7 @@ UserPromptSubmit hook (completed)
 
 **Fix location:** **Kookr.**
 - For Codex: programmatically add `[projects."/abs/path"] trust_level = "trusted"` to `~/.codex/config.toml` before launch (done).
-- For Claude Code: persist `projects[cwd].hasTrustDialogAccepted = true` in `~/.claude.json` before spawn, and accept a remaining "No, exit" dialog with Down+Enter rather than pasting the task prompt onto it (issue #3295).
+- For Claude Code: persist `projects[cwd].hasTrustDialogAccepted = true` in `~/.claude.json` before spawn, and accept a remaining "No, exit" dialog with Down+Enter rather than pasting the task prompt onto it (issue #3295) (done).
 
 **Fix location (alt):** **Codex fork.** Add `--trust-workspace` flag to skip the prompt for supervised launches.
 

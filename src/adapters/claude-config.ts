@@ -1,6 +1,10 @@
+import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+
+/** Serialize in-process writers so concurrent launches cannot tear ~/.claude.json. */
+let writeChain: Promise<unknown> = Promise.resolve();
 
 /**
  * Claude Code workspace-trust persistence (PoC 003 gap 8).
@@ -93,23 +97,32 @@ export async function ensureClaudeWorkspaceTrusted(
   cwd: string,
   options?: EnsureClaudeWorkspaceTrustedOptions,
 ): Promise<'updated' | 'unchanged'> {
-  const configPath = options?.configPath ?? defaultClaudeConfigPath();
-  const absCwd = resolve(cwd);
+  const run = async (): Promise<'updated' | 'unchanged'> => {
+    const configPath = options?.configPath ?? defaultClaudeConfigPath();
+    const absCwd = resolve(cwd);
 
-  let parsed: unknown = {};
-  try {
-    parsed = JSON.parse(await readFile(configPath, 'utf-8')) as unknown;
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') throw error;
-  }
+    let parsed: unknown = {};
+    try {
+      parsed = JSON.parse(await readFile(configPath, 'utf-8')) as unknown;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') throw error;
+    }
 
-  const { next, changed } = upsertClaudeWorkspaceTrust(parsed, absCwd);
-  if (!changed) return 'unchanged';
+    const { next, changed } = upsertClaudeWorkspaceTrust(parsed, absCwd);
+    if (!changed) return 'unchanged';
 
-  await mkdir(dirname(configPath), { recursive: true });
-  const tmpPath = `${configPath}.${process.pid}.tmp`;
-  await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
-  await rename(tmpPath, configPath);
-  return 'updated';
+    await mkdir(dirname(configPath), { recursive: true });
+    const tmpPath = `${configPath}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+    await writeFile(tmpPath, `${JSON.stringify(next, null, 2)}\n`, 'utf-8');
+    await rename(tmpPath, configPath);
+    return 'updated';
+  };
+
+  const next = writeChain.then(run, run);
+  writeChain = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
 }

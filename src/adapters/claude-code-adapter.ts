@@ -35,7 +35,6 @@ import { inferGitInfoPathFromEvent } from './git-path-inference.js';
 import { isValidEffortForAgent, isValidModelForAgent } from '../shared/contracts/agent-types.js';
 import {
   buildAgentLaunchContext,
-  DEFAULT_PROMPT_READY_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
   deliverInitialPromptToSession,
@@ -45,7 +44,7 @@ import {
   toPromptDeliveryHealth,
 } from './agent-launch-context.js';
 import { ensureClaudeWorkspaceTrusted } from './claude-config.js';
-import { acceptClaudeStartupDialogsIfPresent } from './claude-readiness.js';
+import { dismissClaudeStartupDialog, isClaudeStartupDialogBlocking } from './claude-readiness.js';
 import type { PromptDeliveryHealth } from '../core/session-read-model.js';
 import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
@@ -425,19 +424,6 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // Phase instrumentation (issue #1589): agent-boot covers readiness and the
     // initial-prompt delivery/submit-confirmation loop below.
     opts?.onPhase?.('agent-boot');
-    if (!useResume) {
-      try {
-        await acceptClaudeStartupDialogsIfPresent(this.backend, tmuxName, {
-          inputWriter: this.inputWriter,
-          timeoutMs: this.promptReadyTimeoutMs ?? DEFAULT_PROMPT_READY_TIMEOUT_MS,
-          pollMs: this.promptReadyPollMs,
-          signal: opts?.signal,
-        });
-      } catch (err) {
-        await this.cleanupFailedLaunch(tmuxName);
-        throw err;
-      }
-    }
     // Durable record of the initial-prompt delivery outcome (#2792). Stays
     // undefined for the resume path (no fresh delivery occurs); set once
     // delivery is confirmed/assumed for a fresh launch and attached to the
@@ -468,6 +454,8 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             readyTimeoutMs: this.promptReadyTimeoutMs,
             readyPollMs: this.promptReadyPollMs,
             readySettleMs: this.promptReadySettleMs,
+            isBlocked: isClaudeStartupDialogBlocking,
+            onBlocked: () => dismissClaudeStartupDialog(tmuxName, { inputWriter: this.inputWriter }),
           }),
           opts?.signal,
           tmuxName,

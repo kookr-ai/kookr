@@ -89,6 +89,26 @@ describe('ensureClaudeWorkspaceTrusted', () => {
     }
   });
 
+  test('serializes concurrent first-time cwds so neither trust bit is dropped', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'claude-config-race-'));
+    const configPath = join(tempDir, '.claude.json');
+    await writeFile(configPath, '{"projects":{}}\n', 'utf-8');
+
+    try {
+      await Promise.all([
+        ensureClaudeWorkspaceTrusted('/tmp/one', { configPath }),
+        ensureClaudeWorkspaceTrusted('/tmp/two', { configPath }),
+      ]);
+      const parsed = JSON.parse(await readFile(configPath, 'utf-8')) as {
+        projects: Record<string, { hasTrustDialogAccepted: boolean }>;
+      };
+      expect(parsed.projects['/tmp/one']?.hasTrustDialogAccepted).toBe(true);
+      expect(parsed.projects['/tmp/two']?.hasTrustDialogAccepted).toBe(true);
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   test('does not wipe a corrupt config', async () => {
     const tempDir = await mkdtemp(join(tmpdir(), 'claude-config-bad-'));
     const configPath = join(tempDir, '.claude.json');

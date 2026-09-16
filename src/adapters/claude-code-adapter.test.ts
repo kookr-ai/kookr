@@ -83,6 +83,47 @@ describe('ClaudeCodeAdapter', () => {
     }
   });
 
+  test('launch accepts a trust dialog with Down+Enter before the task prompt (#3295)', async () => {
+    const writes: Uint8Array[] = [];
+    const origWrite = backend.writeInput.bind(backend);
+    backend.writeInput = async (id, data, meta) => {
+      writes.push(data);
+      return origWrite(id, data, meta);
+    };
+    const dialogAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      promptBracketedPaste: true,
+      promptReadyTimeoutMs: 2_000,
+      promptReadyPollMs: 10,
+      promptReadySettleMs: 0,
+      promptSubmitConfirmTimeoutMs: 200,
+      promptSubmitRetries: 0,
+    });
+    const task = taskStore.createTask('Fix bug', '/tmp/untrusted-project');
+    const launchPromise = dialogAdapter.launch(task.id, 'Fix bug', '/tmp/untrusted-project');
+    await vi.waitFor(() => expect(backend.sessions.size).toBe(1));
+    const sessionId = [...backend.sessions.keys()][0]!;
+    backend.sessions.get(sessionId)!.paneContent =
+      '\x1b[?2004hAccessing workspace\n❯ No, exit\n  Yes, I trust this folder';
+
+    await vi.waitFor(
+      () => expect(writes.some((w) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42)).toBe(true),
+      { timeout: 2_000 },
+    );
+    backend.sessions.get(sessionId)!.paneContent = COMPOSER_READY_PANE;
+    dialogAdapter.injectHookEvent(sessionId, JSON.stringify({
+      session_id: '00000000-0000-0000-0000-aaaaaaaaaaaa',
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'Fix bug',
+    }));
+    await launchPromise;
+    const downIdx = writes.findIndex((w) => w.length === 3 && w[0] === 0x1b && w[1] === 0x5b && w[2] === 0x42);
+    const promptIdx = writes.findIndex((w) => new TextDecoder().decode(w).includes('Fix bug'));
+    expect(downIdx).toBeGreaterThanOrEqual(0);
+    // Prompt body is writeSequence, not writeInput. Assert Down happened and session lived.
+    expect(backend.getWrittenText(sessionId)).toContain('Fix bug');
+    expect(promptIdx === -1 || downIdx < promptIdx).toBe(true);
+  });
+
   test('launch creates a session with correct SessionSpec', async () => {
     const task = taskStore.createTask('Fix auth bug', '/home/user/project');
     const sessionId = await adapter.launch(task.id, 'Fix auth bug', '/home/user/project');
