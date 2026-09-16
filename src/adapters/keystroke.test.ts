@@ -1,7 +1,14 @@
 import { describe, expect, test } from 'vitest';
-import { encodeBracketedPaste, PASTE_START_TEXT, PASTE_END_TEXT } from './keystroke.js';
+import { encodeBracketedPaste, PASTE_START_TEXT, PASTE_END_TEXT, translateKeystroke } from './keystroke.js';
 
 const decoder = new TextDecoder();
+
+describe('translateKeystroke', () => {
+  test('maps Down to CSI CUD so Claude trust dialogs can leave No, exit', () => {
+    expect(Buffer.from(translateKeystroke('Down')).equals(Buffer.from([0x1b, 0x5b, 0x42]))).toBe(true);
+    expect(Buffer.from(translateKeystroke('ArrowDown'))).toEqual(Buffer.from(translateKeystroke('Down')));
+  });
+});
 
 describe('encodeBracketedPaste', () => {
   test('wraps the message body in DECSET 2004 paste markers', () => {

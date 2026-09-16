@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
@@ -49,6 +49,38 @@ describe('ClaudeCodeAdapter', () => {
 
   afterEach(() => {
     warnSpy.mockRestore();
+  });
+
+  test('launch pre-trusts the workspace in ~/.claude.json before starting the session', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'claude-adapter-trust-'));
+    const settingsDir = join(tempDir, 'settings');
+    const hooksDir = join(tempDir, 'hooks');
+    const configPath = join(tempDir, '.claude.json');
+    mkdirSync(settingsDir, { recursive: true });
+    mkdirSync(hooksDir, { recursive: true });
+
+    const trustingAdapter = new ClaudeCodeAdapter(backend, taskStore, {
+      settingsDir,
+      hooksDir,
+      claudeConfigPath: configPath,
+      trustWorkspace: true,
+      writeFile: (path, content) => {
+        writeFileSync(path, content);
+        return Promise.resolve();
+      },
+      promptBracketedPaste: false,
+    });
+    const task = taskStore.createTask('Fix bug', '/tmp/untrusted-project');
+
+    try {
+      await trustingAdapter.launch(task.id, 'Fix bug', '/tmp/untrusted-project');
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8')) as {
+        projects: Record<string, { hasTrustDialogAccepted: boolean }>;
+      };
+      expect(parsed.projects['/tmp/untrusted-project']?.hasTrustDialogAccepted).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 
   test('launch creates a session with correct SessionSpec', async () => {
