@@ -230,6 +230,44 @@ describe('schedule routes', () => {
       expect(store.list()).toHaveLength(0);
     });
 
+    test('creates a recovery_critical sentinel via the create route (issue #3085)', async () => {
+      const res = await mkApp({ scheduleService: service }).request(
+        '/api/schedules',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Earnings Watch Supervisor',
+            cron: '11,41 * * * *',
+            cwd: tempDir,
+            agentType: 'round-robin',
+            failurePolicy: 'recovery_critical',
+            playbook: { path: 'daily.md', parameters: {} },
+          }),
+        },
+      );
+      expect(res.status).toBe(201);
+      const schedule = await res.json();
+      expect(schedule.failurePolicy).toBe('recovery_critical');
+      expect(store.get(schedule.id)?.failurePolicy).toBe('recovery_critical');
+    });
+
+    test('rejects an invalid failure policy on create without creating a schedule (issue #3085)', async () => {
+      const res = await mkApp({ scheduleService: service }).request('/api/schedules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Bad policy sentinel',
+          cron: '*/30 * * * *',
+          cwd: tempDir,
+          failurePolicy: 'nope',
+          playbook: { path: 'daily.md', parameters: {} },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(store.list()).toHaveLength(0);
+    });
+
     test('rejects cron expressions that fire more often than every five minutes', async () => {
       const res = await mkApp({ scheduleService: service }).request(
         '/api/schedules',
@@ -402,6 +440,48 @@ Do not schedule.
       expect(clear.status).toBe(200);
       expect((await clear.json()).failOnPlaybookDrift).toBeUndefined();
       expect(store.get(schedule.id)?.failOnPlaybookDrift).toBeUndefined();
+    });
+
+    test('sets and clears the recovery_critical failure policy (issue #3085)', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      expect(store.get(schedule.id)?.failurePolicy).toBeUndefined();
+
+      const arm = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failurePolicy: 'recovery_critical' }),
+        },
+      );
+      expect(arm.status).toBe(200);
+      expect((await arm.json()).failurePolicy).toBe('recovery_critical');
+      expect(store.get(schedule.id)?.failurePolicy).toBe('recovery_critical');
+
+      const clear = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failurePolicy: null }),
+        },
+      );
+      expect(clear.status).toBe(200);
+      expect((await clear.json()).failurePolicy).toBeUndefined();
+      expect(store.get(schedule.id)?.failurePolicy).toBeUndefined();
+    });
+
+    test('rejects an invalid failure policy with 400 (issue #3085)', async () => {
+      const schedule = await seedSchedule(service, tempDir);
+      const res = await mkApp({ scheduleService: service }).request(
+        `/api/schedules/${schedule.id}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ failurePolicy: 'nope' }),
+        },
+      );
+      expect(res.status).toBe(400);
     });
 
     // issue #2193 gap 2: loop must not be silently dropped by the PATCH allowlist.

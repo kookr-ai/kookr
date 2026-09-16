@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm, mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { ScheduleStore, ScheduleValidationError } from '../core/schedule.js';
+import { ScheduleStore, ScheduleValidationError, type Schedule } from '../core/schedule.js';
 import {
   ScheduleRunner,
   defaultExecScheduleProbe,
@@ -12,10 +12,15 @@ import {
   SCHEDULE_GATE_MAX_TASK_AGE_MS,
   FIRE_WALL_CLOCK_CAP_MS,
   SCHEDULE_MAX_FIRES_PER_TICK,
+  estimateScheduleCadenceMs,
+  estimateProviderAvoidWindowMs,
+  MIN_PROVIDER_AVOID_WINDOW_MS,
+  MAX_PROVIDER_AVOID_WINDOW_MS,
+  DEFAULT_PROVIDER_AVOID_WINDOW_MS,
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
-import { PendingQueueFullError, QuotaHeadroomAdmissionError } from './launch-service.js';
+import { PendingQueueFullError, QuotaHeadroomAdmissionError, attachResolvedAgentType } from './launch-service.js';
 import { isGenuineExecutionFailure, isExecutionReceiptNotFoundError } from './schedule-service.js';
 import { aTask } from '../core/__fixtures__/task-builders.js';
 
@@ -39,6 +44,7 @@ describe('ScheduleRunner', () => {
     launchSource?: string;
     dependencies?: string[];
     autoCloseOnSignal?: boolean;
+    avoidAgentTypes?: readonly string[];
     playbookParameterValues?: Record<string, string>;
     playbookSource?: {
       id: string;
@@ -2303,6 +2309,144 @@ Do not launch this.
     await runner.stop();
 
     expect(tryAcquireCalled).toBe(false);
+  });
+
+  describe('recovery-critical provider backoff across cadence (issue #3085)', () => {
+    // A round-robin recovery sentinel whose rotation resolves to claude-code
+    // first. The stub models launchTask: it steers off any avoided provider,
+    // boot-fails on claude-code (attaching the resolved provider to the error,
+    // as launchTask does), and succeeds on codex-cli.
+    function providerModellingLauncher(): NonNullable<ScheduleRunnerDeps['launcher']> {
+      return async (opts) => {
+        const avoided = new Set(opts.avoidAgentTypes ?? []);
+        const resolved = avoided.has('claude-code') ? 'codex-cli' : 'claude-code';
+        if (resolved === 'claude-code') {
+          // Plain launch abandonment → mapErrorToReasonCode → 'launch_error'
+          // (a provider-boot-attributable reason that records provider memory).
+          const err = new Error('agent-boot abandoned');
+          attachResolvedAgentType(err, 'claude-code');
+          throw err;
+        }
+        const taskId = `task-${++taskIdCounter}`;
+        launched.push({ prompt: opts.prompt, cwd: opts.cwd, agentType: opts.agentType, avoidAgentTypes: opts.avoidAgentTypes });
+        activeTaskIds.add(taskId);
+        activeCount += 1;
+        return {
+          task: aTask({ id: taskId, prompt: opts.prompt, cwd: opts.cwd, agentType: 'codex-cli' }),
+          queued: false,
+          agentSubstitutionChain: avoided.has('claude-code')
+            ? [{ reason: 'boot_backoff' as const, from: 'claude-code' as const, to: 'codex-cli' as const }]
+            : undefined,
+        };
+      };
+    }
+
+    it('AC1: after a provider-A boot failure the next fire runs provider B with no manual re-enable', async () => {
+      // Threshold-armed service so three genuine dispatch failures WOULD normally
+      // auto-pause an ordinary schedule — the recovery-critical policy must prevent that.
+      const dir2 = dir;
+      const armedService = new ScheduleService({
+        store,
+        validator,
+        getFailureAlertThreshold: () => 3,
+      });
+      const schedule = store.create({
+        name: 'Earnings Watch Orchestration Supervisor',
+        cron: '0,30 * * * *', // 30-minute cadence
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir2,
+        agentType: 'round-robin',
+        failurePolicy: 'recovery_critical',
+      });
+      // Make the first slot due.
+      replaceSchedule(schedule.id, { createdAt: new Date(Date.now() - 40 * 60_000).toISOString() });
+
+      const runner = createRunner({ service: armedService, launcher: providerModellingLauncher() });
+
+      // Fire 1: rotation picks claude-code, which boot-fails.
+      await runner.tick();
+      const afterFire1 = store.get(schedule.id)!;
+      expect(afterFire1.latestExecution?.outcome).toBe('dispatch_failed');
+      expect(afterFire1.latestExecution?.attemptedProvider).toBe('claude-code');
+      // Recovery-critical: not auto-paused; still enabled; failed provider remembered.
+      expect(afterFire1.enabled).toBe(true);
+      expect(afterFire1.operatorHold).toBeUndefined();
+      expect(afterFire1.recentProviderFailures?.map((f) => f.provider)).toEqual(['claude-code']);
+
+      // Make the NEXT 30-minute slot due (simulating the schedule's next cadence)
+      // AND age the remembered failure to ~29 minutes old. This is the crux of
+      // the issue: 29 min is PAST the process-wide 10-minute boot-latency window
+      // (which would have forgotten claude-code and re-selected it) but within
+      // this 30-minute schedule's cadence-derived avoidance window (~60 min), so
+      // only the durable per-schedule memory can still steer the fire.
+      const agedFailure = store.get(schedule.id)!.recentProviderFailures!.map((f) => ({
+        ...f,
+        at: new Date(Date.now() - 29 * 60_000).toISOString(),
+      }));
+      replaceSchedule(schedule.id, {
+        lastScheduledFor: new Date(Date.now() - 31 * 60_000).toISOString(),
+        recentProviderFailures: agedFailure,
+      });
+
+      // Fire 2: the durable memory steers round-robin off claude-code onto codex-cli.
+      await runner.tick();
+      const afterFire2 = store.get(schedule.id)!;
+      expect(afterFire2.enabled).toBe(true); // never needed a manual re-enable
+      expect(afterFire2.latestExecution?.outcome).toBe('running');
+      expect(afterFire2.latestExecution?.attemptedProvider).toBe('codex-cli');
+      expect(afterFire2.latestExecution?.requestedProvider).toBe('claude-code');
+      expect(afterFire2.latestExecution?.reasonCode).toBe('provider_backoff');
+      // The launcher received the avoidance instruction.
+      expect(launched.at(-1)?.avoidAgentTypes).toEqual(['claude-code']);
+    });
+
+    it('AC2: three provider/boot failures back off + alert but never disable a recovery-critical schedule', async () => {
+      const alerts: Array<Extract<import('../shared/contracts/messages.js').ServerMessage, { type: 'alert' }>> = [];
+      const armedService = new ScheduleService({
+        store,
+        validator,
+        getFailureAlertThreshold: () => 3,
+        emitAlert: (m) => alerts.push(m),
+      });
+      const schedule = store.create({
+        name: 'sentinel',
+        cron: '0,30 * * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        agentType: 'round-robin',
+        failurePolicy: 'recovery_critical',
+      });
+      // A launcher that boot-fails on WHATEVER it resolves (both providers down),
+      // so avoidance cannot rescue it — the pure fail-closed pressure test.
+      const alwaysFail = async (opts: Parameters<NonNullable<ScheduleRunnerDeps['launcher']>>[0]) => {
+        const err = new Error('agent-boot abandoned');
+        attachResolvedAgentType(err, 'claude-code');
+        void opts;
+        throw err;
+      };
+      const runner = createRunner({ service: armedService, launcher: alwaysFail });
+
+      for (let i = 0; i < 3; i++) {
+        replaceSchedule(schedule.id, {
+          ...(i === 0
+            ? { createdAt: new Date(Date.now() - 40 * 60_000).toISOString() }
+            : { lastScheduledFor: new Date(Date.now() - 31 * 60_000).toISOString() }),
+        });
+        await runner.tick();
+      }
+
+      const after = store.get(schedule.id)!;
+      expect(after.enabled).toBe(true);
+      expect(after.stopReason).toBeUndefined();
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.consecutiveFailures).toBe(3);
+      // Operational alert recorded (the per-schedule consecutive-failure alert);
+      // not a "paused" alert.
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].operationalAlert?.key).toBe(`schedule:failures:${schedule.id}`);
+      expect(fired[0].summary).not.toContain('auto-paused');
+    });
   });
 
   it('denies catch-up with a backoff reason after the arbiter starts a cooldown window (#1900)', async () => {
@@ -5133,5 +5277,30 @@ Do the test thing.
       drifted: true,
     });
     expect(reloaded.get(schedule.id)!.failOnPlaybookDrift).toBeUndefined();
+  });
+});
+
+describe('provider-avoidance window derivation (issue #3085)', () => {
+  const sched = (cron: string): Schedule => ({ cron } as Schedule);
+
+  it('estimateScheduleCadenceMs returns the gap between consecutive fires', () => {
+    expect(estimateScheduleCadenceMs(sched('0,30 * * * *'))).toBe(30 * 60_000);
+    expect(estimateScheduleCadenceMs(sched('0 * * * *'))).toBe(60 * 60_000);
+  });
+
+  it('estimateScheduleCadenceMs returns undefined for an unparseable cron', () => {
+    expect(estimateScheduleCadenceMs(sched('not a cron'))).toBeUndefined();
+  });
+
+  it('estimateProviderAvoidWindowMs is 2x cadence, clamped to the floor/ceiling', () => {
+    // 30-min cadence → 60 min window (comfortably outlasts the 10-min transient
+    // boot-latency window a low-cadence sentinel would otherwise fall through).
+    expect(estimateProviderAvoidWindowMs(sched('0,30 * * * *'))).toBe(60 * 60_000);
+    // A fast 1-min cadence floors at MIN rather than 2 min.
+    expect(estimateProviderAvoidWindowMs(sched('* * * * *'))).toBe(MIN_PROVIDER_AVOID_WINDOW_MS);
+    // A daily cadence (48h at 2x) is capped at MAX.
+    expect(estimateProviderAvoidWindowMs(sched('0 0 * * *'))).toBe(MAX_PROVIDER_AVOID_WINDOW_MS);
+    // An unparseable cron falls back to the default.
+    expect(estimateProviderAvoidWindowMs(sched('not a cron'))).toBe(DEFAULT_PROVIDER_AVOID_WINDOW_MS);
   });
 });

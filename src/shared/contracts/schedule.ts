@@ -133,6 +133,12 @@ export type ScheduleExecutionReasonCode =
   | 'relaunch_lease_held'
   /** Pinned agent substituted to an available agent (issue #1895). Mirrors `core/schedule`. */
   | 'agent_substituted'
+  /**
+   * Recovery-critical schedule's round-robin pick steered off a boot-broken
+   * provider it remembered from a prior fire (issue #3085). Mirrors
+   * `core/schedule`.
+   */
+  | 'provider_backoff'
   /** Parked fire — no substitute for unavailable pin (issue #1895). Mirrors `core/schedule`. */
   | 'provider_paused'
   /**
@@ -233,6 +239,14 @@ export interface ScheduleExecutionLedgerEntry {
    * `core/schedule`.
    */
   playbookSource?: SchedulePlaybookCheckoutSource;
+  /**
+   * Provider the fire's rotation/pin would have selected before any per-schedule
+   * avoidance/substitution (issue #3085). Present only when it differs from
+   * {@link attemptedProvider}. Mirrors `core/schedule`.
+   */
+  requestedProvider?: string;
+  /** Provider the fire actually attempted (issue #3085). Mirrors `core/schedule`. */
+  attemptedProvider?: string;
 }
 
 /**
@@ -282,6 +296,27 @@ export interface ScheduleLatestExecutionStatus {
    * #2945). Mirrors `core/schedule`.
    */
   playbookSource?: SchedulePlaybookCheckoutSource;
+  /** Provider the most recent fire would have selected before avoidance (issue #3085). Mirrors `core/schedule`. */
+  requestedProvider?: string;
+  /** Provider the most recent fire actually attempted (issue #3085). Mirrors `core/schedule`. */
+  attemptedProvider?: string;
+}
+
+/**
+ * Declarative failure policy (issue #3085). `recovery_critical` marks a project
+ * recovery sentinel that must not be auto-paused by a provider/boot failure
+ * streak. Absent ⇒ `default`. Mirrors `core/schedule`.
+ */
+export type ScheduleFailurePolicy = 'default' | 'recovery_critical';
+
+/**
+ * One remembered provider/boot failure for a schedule (issue #3085). Mirrors
+ * `core/schedule`.
+ */
+export interface ScheduleProviderFailure {
+  provider: string;
+  at: string;
+  reasonCode?: string;
 }
 
 export interface Schedule {
@@ -343,6 +378,17 @@ export interface Schedule {
    * warn-and-still-launch. Mirrors `core/schedule`.
    */
   failOnPlaybookDrift?: boolean;
+  /**
+   * Declarative failure policy (issue #3085). `recovery_critical` schedules are
+   * never auto-paused by a provider/boot failure streak. Mirrors `core/schedule`.
+   */
+  failurePolicy?: ScheduleFailurePolicy;
+  /**
+   * Durable memory of recent provider/boot failures (issue #3085), consulted to
+   * steer a recovery-critical schedule's next fire off a boot-broken provider.
+   * Mirrors `core/schedule`.
+   */
+  recentProviderFailures?: ScheduleProviderFailure[];
   lastRunAt?: string;
   lastRunTaskId?: string;
   /**

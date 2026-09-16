@@ -1722,6 +1722,174 @@ describe('ScheduleService consecutive-failure alerting (issue #1665)', () => {
     }
   });
 
+  // ---- issue #3085: declarative recovery-critical policy + provider backoff ----
+
+  async function failOnProvider(
+    service: ScheduleService,
+    store: ScheduleStore,
+    scheduleId: string,
+    scheduledFor: string,
+    provider: string,
+  ): Promise<void> {
+    const receipt = await service.reserveExecution(store.get(scheduleId)!, 'cron', scheduledFor);
+    await service.markExecutionOutcome(
+      scheduleId,
+      receipt.id,
+      'dispatch_failed',
+      'launch_error',
+      'boot failed',
+      { attemptedProvider: provider },
+    );
+  }
+
+  it('never auto-pauses a DECLARED recovery_critical schedule and remembers the failed provider (issue #3085)', async () => {
+    const { service, store, alerts, cleanup } = alertServiceHarness(3);
+    try {
+      const sentinel = store.create({
+        name: 'Earnings Watch Orchestration Supervisor',
+        cron: '11,41 * * * *',
+        playbook: { path: 'earnings-watch-supervisor.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'round-robin',
+        failurePolicy: 'recovery_critical',
+      });
+
+      // Three consecutive provider/boot failures on claude-code — the exact
+      // streak that fail-closes an ordinary schedule.
+      await failOnProvider(service, store, sentinel.id, '2026-09-09T11:11:00.000Z', 'claude-code');
+      await failOnProvider(service, store, sentinel.id, '2026-09-09T11:41:00.000Z', 'claude-code');
+      await failOnProvider(service, store, sentinel.id, '2026-09-09T12:11:00.000Z', 'claude-code');
+
+      const after = store.get(sentinel.id)!;
+      // AC2: three failures cannot permanently disable it — backoff + alert, not a hold.
+      expect(after.enabled).toBe(true);
+      expect(after.operatorHold).toBeUndefined();
+      expect(after.stopReason).toBeUndefined();
+      expect(after.consecutiveFailures).toBe(3);
+      // The backoff: the boot-broken provider is remembered for the next fire.
+      expect(after.recentProviderFailures?.map((f) => f.provider)).toEqual(['claude-code']);
+      // An operational alert is recorded (out-of-fleet visibility): the
+      // consecutive-failure alert, keyed per schedule, and NOT a paused alert.
+      const fired = alerts.filter((a) => a.operationalAlert?.state === 'fired');
+      expect(fired).toHaveLength(1);
+      expect(fired[0].operationalAlert?.key).toBe(`schedule:failures:${sentinel.id}`);
+      expect(fired[0].operationalAlert?.metric).toBe('schedule_consecutive_failures');
+      expect(fired[0].summary).not.toContain('auto-paused');
+      // The failed provider is on the ledger as the attempted provider (AC5).
+      expect(after.latestExecution?.attemptedProvider).toBe('claude-code');
+      expect(after.executionLedger.at(-1)?.attemptedProvider).toBe('claude-code');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a general (default-policy) schedule still fail-closes on the same streak (issue #3085 AC4)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const general = store.create({
+        name: 'ordinary loop',
+        cron: '11,41 * * * *',
+        playbook: { path: 'ordinary.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'round-robin',
+      });
+      await failOnProvider(service, store, general.id, '2026-09-09T11:11:00.000Z', 'claude-code');
+      await failOnProvider(service, store, general.id, '2026-09-09T11:41:00.000Z', 'claude-code');
+      await failOnProvider(service, store, general.id, '2026-09-09T12:11:00.000Z', 'claude-code');
+      const after = store.get(general.id)!;
+      expect(after.enabled).toBe(false);
+      expect(after.stopReason).toBe('consecutive_failures');
+      expect(after.operatorHold).toBe(true);
+      // General schedules do not maintain provider-failure memory.
+      expect(after.recentProviderFailures).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('clears a provider from memory when it later launches cleanly, and records requested vs attempted (issue #3085 AC5)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const sentinel = store.create({
+        name: 'sentinel',
+        cron: '11,41 * * * *',
+        playbook: { path: 'sentinel.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'round-robin',
+        failurePolicy: 'recovery_critical',
+      });
+      // Fire 1: claude-code boot-fails → remembered.
+      await failOnProvider(service, store, sentinel.id, '2026-09-09T11:11:00.000Z', 'claude-code');
+      expect(store.get(sentinel.id)!.recentProviderFailures?.map((f) => f.provider)).toEqual(['claude-code']);
+
+      // Fire 2: rotation backs off to codex-cli, which launches cleanly.
+      const receipt = await service.reserveExecution(store.get(sentinel.id)!, 'cron', '2026-09-09T11:41:00.000Z');
+      await service.markExecutionAccepted(sentinel.id, receipt.id, 'task-2', false, {
+        reasonCode: 'provider_backoff',
+        requestedProvider: 'claude-code',
+        attemptedProvider: 'codex-cli',
+      });
+
+      const after = store.get(sentinel.id)!;
+      // codex-cli was never in memory, so this step verifies that clearing a
+      // provider preserves a still-broken sibling (claude-code) — the real
+      // clear-on-recovery is exercised at fire 3 below.
+      expect(after.recentProviderFailures?.map((f) => f.provider)).toEqual(['claude-code']);
+      // Ledger distinguishes originally selected from actually attempted.
+      expect(after.latestExecution?.requestedProvider).toBe('claude-code');
+      expect(after.latestExecution?.attemptedProvider).toBe('codex-cli');
+      expect(after.executionLedger.at(-1)?.requestedProvider).toBe('claude-code');
+      expect(after.executionLedger.at(-1)?.attemptedProvider).toBe('codex-cli');
+      expect(after.latestExecution?.reasonCode).toBe('provider_backoff');
+
+      // Fire 3: claude-code itself recovers and launches cleanly → cleared.
+      const r3 = await service.reserveExecution(store.get(sentinel.id)!, 'cron', '2026-09-09T12:11:00.000Z');
+      await service.markExecutionAccepted(sentinel.id, r3.id, 'task-3', false, {
+        attemptedProvider: 'claude-code',
+      });
+      expect(store.get(sentinel.id)!.recentProviderFailures).toBeUndefined();
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('a human hold on a recovery-critical schedule is authoritative and never auto-cleared (issue #3085 AC3)', async () => {
+    const { service, store, cleanup } = alertServiceHarness(3);
+    try {
+      const sentinel = store.create({
+        name: 'sentinel',
+        cron: '11,41 * * * *',
+        playbook: { path: 'sentinel.md', parameters: {} },
+        cwd: '/tmp',
+        agentType: 'round-robin',
+        failurePolicy: 'recovery_critical',
+      });
+      // Operator explicitly pauses it.
+      const held = await service.setEnabled(sentinel.id, false, { operatorHold: true });
+      expect(held.operatorHold).toBe(true);
+      expect(held.holdSource).toBe('operator');
+
+      // A late fire failure records its outcome but must not clear the operator
+      // hold or re-enable the schedule.
+      await failOnProvider(service, store, sentinel.id, '2026-09-09T11:11:00.000Z', 'claude-code');
+      const after = store.get(sentinel.id)!;
+      expect(after.enabled).toBe(false);
+      expect(after.operatorHold).toBe(true);
+      expect(after.holdSource).toBe('operator');
+
+      // The automated re-arm sweep (issue #2459) must also leave a human hold
+      // authoritative — an `operator`-sourced hold is never auto-cleared, even
+      // on a recovery-critical schedule.
+      await service.rearmTransientFailureHolds(true, '2027-01-01T00:00:00.000Z');
+      const swept = store.get(sentinel.id)!;
+      expect(swept.enabled).toBe(false);
+      expect(swept.operatorHold).toBe(true);
+      expect(swept.holdSource).toBe('operator');
+    } finally {
+      cleanup();
+    }
+  });
+
   it('reconcile maps terminated (timeout) tasks to cancelled so the streak increments (issue #2353)', async () => {
     const { service, store, cleanup } = alertServiceHarness(3);
     try {

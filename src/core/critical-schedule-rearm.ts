@@ -99,6 +99,12 @@ export interface CriticalRearmScheduleView {
   name: string;
   enabled: boolean;
   /**
+   * Declarative recovery-critical failure policy (issue #3085). Distinct from
+   * the hard-coded bootstrap allowlist below: a project schedule can DECLARE
+   * itself recovery-critical. See {@link isRecoveryCriticalSchedule}.
+   */
+  failurePolicy?: string;
+  /**
    * Explicit operator hold (issue #2196). When true, recovery re-arm must not
    * re-enable the schedule. Cleared when the operator re-enables manually.
    */
@@ -154,6 +160,24 @@ export function isCriticalAllowlistedSchedule(
   }
   const name = schedule.name ?? '';
   return CRITICAL_SCHEDULE_NAME_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * True when a schedule is recovery-critical (issue #3085) — either it DECLARES
+ * the `recovery_critical` failure policy (declarative, any project schedule) or
+ * it is in the hard-coded bootstrap sub-tier ({@link isBootstrapCriticalSchedule}),
+ * which stays a strict subset. A recovery-critical schedule is never auto-paused
+ * by a provider/boot failure streak: it backs off and alerts instead of parking,
+ * so a low-cadence sentinel cannot permanently disable itself over sparse boot
+ * failures while a healthy provider remains. Explicit operator holds still win.
+ */
+export function isRecoveryCriticalSchedule(
+  schedule: Pick<CriticalRearmScheduleView, 'name' | 'playbook' | 'failurePolicy'>,
+): boolean {
+  if (schedule.failurePolicy === 'recovery_critical') {
+    return true;
+  }
+  return isBootstrapCriticalSchedule(schedule);
 }
 
 /**

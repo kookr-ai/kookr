@@ -159,6 +159,17 @@ export interface LaunchOpts {
    * on task metadata.
    */
   priorAgentSubstitutions?: readonly AgentSubstitutionHop[];
+  /**
+   * Extra agent types to deprioritize for THIS launch only (issue #3085).
+   * Merged with the process-wide boot-latency deprioritization when resolving
+   * the `round-robin` sentinel (and a pinned-agent fallback), so a low-cadence
+   * recovery-critical schedule can steer its next fire away from a provider
+   * whose boot failed on its own prior fire — even after the global 10-minute
+   * boot-health window aged that evidence out. Same fallback semantics as the
+   * boot-latency signal: honored only while a non-avoided launchable agent
+   * remains, so it can never empty the rotation. Absent ⇒ today's behavior.
+   */
+  avoidAgentTypes?: readonly AgentType[];
 }
 
 /**
