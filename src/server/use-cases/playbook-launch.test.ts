@@ -606,13 +606,16 @@ Review tests.
 
       // A local/ id for some *other* directory must not be silently upgraded:
       // that would be a genuine cross-project mismatch, not an identity refresh.
+      // Assert the hosted target id appears in the rejection so this pins the
+      // real discriminator (target resolved to a hosted id, yet the local alias
+      // named a different checkout), not merely "some mismatch was rejected".
       await expect(preparePlaybookLaunch({
         playbookSourceCwd: sourceCwd,
         taskTargetCwd: targetCwd,
         projectId: 'local/some-other-checkout',
         playbookPath: 'quality.md',
         parameterValues: {},
-      })).rejects.toThrow(/projectId.*does not match target cwd project/i);
+      })).rejects.toThrow(/does not match target cwd project github\.com\/jeanibarz\/encheres-vo/i);
     } finally {
       await rm(sourceCwd, { recursive: true, force: true });
       await rm(targetCwd, { recursive: true, force: true });
