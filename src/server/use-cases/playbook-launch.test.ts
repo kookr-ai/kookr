@@ -556,6 +556,72 @@ Work on {{repoFullName}}.
     }
   });
 
+  it('self-heals a stale local/ projectId when the checkout has gained a github remote', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      const env = cleanGitEnv();
+      execFileSync('git', ['init', '--initial-branch=main'], { cwd: targetCwd, env });
+      execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:jeanibarz/encheres-vo.git'], { cwd: targetCwd, env });
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'quality.md'), `---
+name: Quality
+---
+
+Review tests.
+`);
+
+      // The launch surface still holds the id from when the checkout had no
+      // remote (local/<dirname>); the cwd now resolves to the hosted identity.
+      const launch = await preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: `local/${basename(targetCwd)}`,
+        playbookPath: 'quality.md',
+        parameterValues: {},
+      });
+
+      // The task is attributed under the current hosted identity, not rejected.
+      expect(launch.projectId).toBe('github.com/jeanibarz/encheres-vo');
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a local/ projectId whose name does not match the target checkout', async () => {
+    const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
+    const targetCwd = await mkdtemp(join(tmpdir(), 'playbook-target-'));
+    try {
+      const env = cleanGitEnv();
+      execFileSync('git', ['init', '--initial-branch=main'], { cwd: targetCwd, env });
+      execFileSync('git', ['remote', 'add', 'origin', 'git@github.com:jeanibarz/encheres-vo.git'], { cwd: targetCwd, env });
+      await mkdir(join(sourceCwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(sourceCwd, '.kookr', 'playbooks', 'quality.md'), `---
+name: Quality
+---
+
+Review tests.
+`);
+
+      // A local/ id for some *other* directory must not be silently upgraded:
+      // that would be a genuine cross-project mismatch, not an identity refresh.
+      // Assert the hosted target id appears in the rejection so this pins the
+      // real discriminator (target resolved to a hosted id, yet the local alias
+      // named a different checkout), not merely "some mismatch was rejected".
+      await expect(preparePlaybookLaunch({
+        playbookSourceCwd: sourceCwd,
+        taskTargetCwd: targetCwd,
+        projectId: 'local/some-other-checkout',
+        playbookPath: 'quality.md',
+        parameterValues: {},
+      })).rejects.toThrow(/does not match target cwd project github\.com\/jeanibarz\/encheres-vo/i);
+    } finally {
+      await rm(sourceCwd, { recursive: true, force: true });
+      await rm(targetCwd, { recursive: true, force: true });
+    }
+  });
+
   it('preserves legacy cwd behavior when frontmatter cwd pins execution', async () => {
     const sourceCwd = await mkdtemp(join(tmpdir(), 'playbook-source-'));
     const pinnedCwd = await mkdtemp(join(tmpdir(), 'playbook-pinned-'));

@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { existsSync } from 'node:fs';
 import { parsePlaybook, interpolateParameters } from '../../core/playbook-parser.js';
 import { readEvolutionConfig } from '../../core/evolution-config.js';
@@ -133,10 +133,22 @@ export async function preparePlaybookLaunchWithMetadata(input: PreparePlaybookLa
       throw new Error(`Requested projectId ${requestedProjectId} does not match tracked-project parameter ${parameterProjectId}.`);
     }
     const targetProjectId = await getProjectId(effectiveCwd);
-    if (requestedProjectId !== targetProjectId) {
+    if (requestedProjectId === targetProjectId) {
+      projectId = requestedProjectId;
+    } else if (isStaleLocalAliasOfCwd(requestedProjectId, targetProjectId, effectiveCwd)) {
+      // Self-heal: the checkout was registered as `requestedProjectId` while it
+      // had no git remote, and now resolves to the hosted `targetProjectId`.
+      // Attribute the task under the current identity instead of failing.
+      // Newly launched tasks adopt the hosted id; tasks already recorded under
+      // the local/ id keep it (their history splits at the transition).
+      console.warn(
+        `[playbook-launch] Upgrading stale local project id "${requestedProjectId}" to `
+        + `"${targetProjectId}" for ${effectiveCwd} (checkout gained a git remote).`,
+      );
+      projectId = targetProjectId;
+    } else {
       throw new Error(`Requested projectId ${requestedProjectId} does not match target cwd project ${targetProjectId}.`);
     }
-    projectId = requestedProjectId;
   }
   if (!projectId) {
     const repoFullName = parameterValues.repoFullName;
@@ -282,6 +294,29 @@ function projectIdFromTrackedProjectParam(
     }
   }
   return undefined;
+}
+
+/**
+ * A project first tracked while it had no git remote is registered as
+ * `local/<dirname>`. Once that same checkout gains a remote (or its remote
+ * URL changes), `getProjectId` resolves it to the canonical hosted identity
+ * (e.g. `github.com/owner/repo`), so a launch surface still holding the stale
+ * `local/<dirname>` id would mismatch the target cwd and fail.
+ *
+ * This recognises exactly that safe upgrade: the requested id is the stale
+ * local alias *of this very checkout* (`local/<basename(effectiveCwd)>`, which
+ * is precisely what `getProjectId` would have returned for a remote-less cwd)
+ * and the target id is a concrete hosted identity. Any other divergence is a
+ * genuine cross-project mismatch and is still rejected.
+ */
+function isStaleLocalAliasOfCwd(
+  requestedProjectId: string,
+  targetProjectId: string,
+  effectiveCwd: string,
+): boolean {
+  if (!effectiveCwd) return false;
+  if (targetProjectId.startsWith('local/')) return false;
+  return requestedProjectId === `local/${basename(effectiveCwd)}`;
 }
 
 function normalizeRequestedProjectId(projectId: string | undefined): string | undefined {
