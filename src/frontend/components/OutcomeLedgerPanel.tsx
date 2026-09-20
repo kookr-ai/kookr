@@ -656,9 +656,9 @@ function TaskAuditRow({
   return (
     <div className="outcome-task-row">
       {canOpen && onOpen ? (
-        // Live task: the same button finding rows already use. It selects by
-        // task.taskId, never the display label, so a shared name can't open
-        // the wrong task. Historical rows stay a span below.
+        // Live task: a real button so the same action is reachable by click,
+        // keyboard, and screen reader. It selects by task.taskId, never the
+        // display label, so a shared name can't open the wrong task.
         <button
           type="button"
           className="outcome-task-label outcome-task-open"

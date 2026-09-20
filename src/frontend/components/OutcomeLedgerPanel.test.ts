@@ -383,6 +383,10 @@ describe('OutcomeLedgerPanel', () => {
 
     await flush();
 
+    const labels = Array.from(el.querySelectorAll('.outcome-task-label'));
+    expect(labels.map((node) => node.textContent)).toEqual(['Shared name', 'Shared name']);
+    expect(labels.map((node) => node.tagName)).toEqual(['BUTTON', 'SPAN']);
+
     const openButton = el.querySelector<HTMLButtonElement>('button.outcome-task-open');
     expect(openButton).toBeTruthy();
     expect(openButton?.getAttribute('aria-label')).toBe('Open task Shared name');
@@ -411,7 +415,7 @@ describe('OutcomeLedgerPanel', () => {
     const historical = labels.find((cell) => cell.textContent === 'Historical flagged');
     expect(historical).toBeTruthy();
     expect(historical?.tagName).toBe('SPAN');
-    expect(historical?.querySelector('button')).toBeNull();
+    expect(labels.filter((cell) => cell.tagName === 'BUTTON')).toHaveLength(1);
     expect(el.textContent).toContain('Historical flagged');
     expect(onOpenTask).not.toHaveBeenCalled();
   });
