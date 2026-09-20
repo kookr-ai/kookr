@@ -76,6 +76,16 @@ const FINDINGS_SECTION_COLLAPSED_KEYS = [
   COMPLETED_SECTION_COLLAPSED_KEY,
 ] as const;
 
+// Survives FindingsPanel remount (mobile findings/task tabs) so a consumed
+// chip click cannot re-expand after the operator collapses Completed.
+// useRef(0) would reset on remount and replay the last nonce.
+let lastHandledExpandCompletedNonce = 0;
+
+/** Test-only: isolate nonce high-water across FindingsPanel test files. */
+export function __resetExpandCompletedNonceForTests(): void {
+  lastHandledExpandCompletedNonce = 0;
+}
+
 /**
  * Severity display order, most-urgent first. Kept identical to the CLI's
  * `SEVERITIES` (`bin/kookr-status.js`) so the dashboard header and
@@ -266,20 +276,17 @@ export function FindingsPanel({
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
   const completedSectionRef = useRef<HTMLDivElement>(null);
-  // Seed at 0, not the current nonce. DetailPanel's share nonce seeds from
-  // the prop so a remount does not re-open the modal. This path is the
-  // opposite: on mobile, App switches to the findings tab (remounting this
-  // panel) and bumps the nonce in the same click, so a remount with nonce > 0
-  // must still expand and scroll.
-  const lastExpandCompletedNonceRef = useRef(0);
-  // Status-bar 24h chip click: expand on the nonce bump, then scroll after
-  // paint so the header (and newly revealed rows) land in view. Count-only
-  // re-renders leave the nonce unchanged and do not run this path.
+  // Status-bar 24h chip click: expand immediately, then scroll after paint.
+  // Mark the nonce handled only when the timer fires so React StrictMode's
+  // effect replay (cleanup cancels the first timer) still scrolls. A module
+  // high-water survives mobile tab remounts; a ref seeded at 0 would replay
+  // the last click and override a manual collapse. Count-only re-renders
+  // leave the nonce unchanged and do not run this path.
   useEffect(() => {
-    if (!expandCompletedNonce || expandCompletedNonce <= lastExpandCompletedNonceRef.current) return;
-    lastExpandCompletedNonceRef.current = expandCompletedNonce;
+    if (!expandCompletedNonce || expandCompletedNonce <= lastHandledExpandCompletedNonce) return;
     expandCompleted();
     const timer = window.setTimeout(() => {
+      lastHandledExpandCompletedNonce = expandCompletedNonce;
       completedSectionRef.current?.scrollIntoView?.({ block: 'nearest' });
     }, 0);
     return () => window.clearTimeout(timer);

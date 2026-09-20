@@ -14,6 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   FindingsPanel,
   COMPLETED_SECTION_COLLAPSED_KEY,
+  __resetExpandCompletedNonceForTests,
 } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
@@ -74,6 +75,7 @@ describe('FindingsPanel completed-24h chip expand request (issue #3333)', () => 
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.useFakeTimers();
     localStorage.clear();
+    __resetExpandCompletedNonceForTests();
     syncGlobalStore();
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -139,6 +141,51 @@ describe('FindingsPanel completed-24h chip expand request (issue #3333)', () => 
 
     expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
     expect(container.querySelectorAll('.completed-row').length).toBe(1);
+    expect(scrolledElements).toHaveLength(1);
+    expect(scrolledElements[0]).toBe(container.querySelector('.completed-section'));
+  });
+
+  test('a consumed click does not re-expand after remount if the operator collapsed Completed', () => {
+    renderPanel(root!, { expandCompletedNonce: 0 });
+    renderPanel(root!, { expandCompletedNonce: 1 });
+    act(() => vi.runOnlyPendingTimers());
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    const header = container.querySelector<HTMLButtonElement>('.completed-section .section-header');
+    act(() => header!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(localStorage.getItem(COMPLETED_SECTION_COLLAPSED_KEY)).toBe('1');
+
+    act(() => root!.unmount());
+    root = createRoot(container);
+    scrolledElements.length = 0;
+    renderPanel(root, { expandCompletedNonce: 1 });
+    act(() => vi.runOnlyPendingTimers());
+
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+    expect(scrolledElements).toHaveLength(0);
+  });
+
+  test('a chip click that mounts the panel under StrictMode still scrolls', () => {
+    act(() => root!.unmount());
+    root = createRoot(container);
+    act(() => {
+      root!.render(React.createElement(React.StrictMode, null, React.createElement(FindingsPanel, {
+        findings: [],
+        healthy: [],
+        pending: [],
+        snoozed: [],
+        completed: [makeAgent()],
+        selectedAgentId: null,
+        send: vi.fn(),
+        clearCompletedFinishedCount: 1,
+        clearCompletedTerminatedCount: 0,
+        expandCompletedNonce: 1,
+      })));
+    });
+    act(() => vi.runOnlyPendingTimers());
+
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
     expect(scrolledElements).toHaveLength(1);
     expect(scrolledElements[0]).toBe(container.querySelector('.completed-section'));
   });
