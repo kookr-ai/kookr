@@ -10,12 +10,20 @@
 export const LAUNCH_OUTCOMES_ROUTE = '/api/diagnostics/launch-outcomes';
 export const LAUNCH_OUTCOME_METRICS_SCHEMA_VERSION = 'launch-outcome-metrics.v1' as const;
 
+/**
+ * Launch-outcome reason when the composer never looked ready before Kookr
+ * pasted the initial prompt (issue #3310). Delivery still fail-opens; this
+ * class is how overnight prompt-loss shows up on
+ * `GET /api/diagnostics/launch-outcomes` instead of only a `console.warn`.
+ */
+export const PASTE_READINESS_TIMEOUT_REASON = 'paste_readiness_timeout' as const;
+
 export type LaunchOutcome = 'success' | 'failure';
 
 export interface LaunchOutcomeSample {
   agentType: string;
   outcome: LaunchOutcome;
-  /** Optional short failure class for operators (e.g. `handshake_timeout`). */
+  /** Optional short failure class for operators (e.g. `handshake_timeout`, `paste_readiness_timeout`). */
   reason?: string;
 }
 
@@ -102,6 +110,21 @@ export class LaunchOutcomeMetrics {
   }
 }
 
+/**
+ * Process-local sink used by the adapter paste-readiness wait, which sits
+ * below launch-service DI. Bound once at server boot to the same instance
+ * the diagnostics route snapshots. Tests inject a local instance instead.
+ */
+let boundLaunchOutcomeMetrics: LaunchOutcomeMetrics | undefined;
+
+export function bindLaunchOutcomeMetrics(metrics: LaunchOutcomeMetrics | undefined): void {
+  boundLaunchOutcomeMetrics = metrics;
+}
+
+export function recordBoundLaunchOutcome(sample: LaunchOutcomeSample): void {
+  boundLaunchOutcomeMetrics?.record(sample);
+}
+
 export function emptyLaunchOutcomeMetricsSnapshot(): LaunchOutcomeMetricsSnapshot {
   return {
     schemaVersion: LAUNCH_OUTCOME_METRICS_SCHEMA_VERSION,
@@ -115,6 +138,9 @@ export function emptyLaunchOutcomeMetricsSnapshot(): LaunchOutcomeMetricsSnapsho
 /** Classify a launch error for the optional `reason` field (best-effort). */
 export function classifyLaunchFailureReason(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
+  if (/paste-readiness wait timed out/i.test(message)) {
+    return PASTE_READINESS_TIMEOUT_REASON;
+  }
   if (/did not acknowledge the initial prompt|Initial prompt submission was not confirmed/i.test(message)) {
     return 'handshake_timeout';
   }

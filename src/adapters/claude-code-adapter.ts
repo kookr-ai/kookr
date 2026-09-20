@@ -448,6 +448,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
             inputWriter: this.inputWriter,
             bracketedPaste: this.promptBracketedPaste,
             waitForReady: this.promptBracketedPaste,
+            agentType: this.agentType,
             awaitSubmit: this.promptBracketedPaste ? awaitSubmit : undefined,
             submitConfirmTimeoutMs: this.promptSubmitConfirmTimeoutMs,
             submitRetries: this.promptSubmitRetries,

@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   LaunchOutcomeMetrics,
+  PASTE_READINESS_TIMEOUT_REASON,
+  bindLaunchOutcomeMetrics,
   classifyLaunchFailureReason,
   emptyLaunchOutcomeMetricsSnapshot,
+  recordBoundLaunchOutcome,
 } from './launch-outcome-metrics.js';
+
+afterEach(() => {
+  bindLaunchOutcomeMetrics(undefined);
+});
 
 describe('LaunchOutcomeMetrics', () => {
   it('tracks success/failure rates per agent type', () => {
@@ -79,5 +86,52 @@ describe('classifyLaunchFailureReason', () => {
     ).toBe('agent_boot_timeout');
     expect(classifyLaunchFailureReason(new Error('Grok authentication expired'))).toBe('launch_refused');
     expect(classifyLaunchFailureReason(new Error('disk full'))).toBe('launch_error');
+    expect(
+      classifyLaunchFailureReason(
+        new Error('[agent-launch] paste-readiness wait timed out for s1 after 8000ms; delivering anyway'),
+      ),
+    ).toBe(PASTE_READINESS_TIMEOUT_REASON);
+  });
+});
+
+describe('paste_readiness_timeout launch-outcome samples (issue #3310)', () => {
+  it('snapshots the reason so GET /api/diagnostics/launch-outcomes can show it', () => {
+    const metrics = new LaunchOutcomeMetrics();
+    metrics.record({
+      agentType: 'claude-code',
+      outcome: 'failure',
+      reason: PASTE_READINESS_TIMEOUT_REASON,
+    });
+    expect(metrics.snapshot().byAgentType[0]).toEqual({
+      agentType: 'claude-code',
+      attempts: 1,
+      successes: 0,
+      failures: 1,
+      failureRate: 1,
+      lastFailureReason: 'paste_readiness_timeout',
+    });
+  });
+
+  it('records through the process bind used by the paste-readiness wait', () => {
+    const metrics = new LaunchOutcomeMetrics();
+    bindLaunchOutcomeMetrics(metrics);
+    recordBoundLaunchOutcome({
+      agentType: 'claude-code',
+      outcome: 'failure',
+      reason: PASTE_READINESS_TIMEOUT_REASON,
+    });
+    expect(metrics.snapshot().byAgentType[0]?.lastFailureReason).toBe(
+      PASTE_READINESS_TIMEOUT_REASON,
+    );
+  });
+
+  it('is a no-op when nothing is bound', () => {
+    expect(() =>
+      recordBoundLaunchOutcome({
+        agentType: 'claude-code',
+        outcome: 'failure',
+        reason: PASTE_READINESS_TIMEOUT_REASON,
+      }),
+    ).not.toThrow();
   });
 });

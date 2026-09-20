@@ -92,7 +92,7 @@ import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 import { resolveTaskAttentionSignals } from './task-attention-signals.js';
 import { IdempotencyLedger } from '../core/idempotency-ledger.js';
-import { LaunchOutcomeMetrics } from '../core/launch-outcome-metrics.js';
+import { LaunchOutcomeMetrics, bindLaunchOutcomeMetrics } from '../core/launch-outcome-metrics.js';
 import { AgentBootLatencyMonitor } from '../core/agent-boot-latency.js';
 import {
   GrokAuthAvailabilityCache,
@@ -1747,6 +1747,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Per-agent launch success/failure counters (issue #1808) — shared by the
   // launch service (writers) and diagnostics routes (readers).
   const launchOutcomeMetrics = new LaunchOutcomeMetrics();
+  bindLaunchOutcomeMetrics(launchOutcomeMetrics);
 
   // Boot-reliability (launch-latency) signal (issue #1898, WS1.6) — fed one
   // `agent-boot` sample per finalized launch from the #1589 phase timings, and

@@ -15,6 +15,11 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import { DEFAULT_AGENT_TERM } from './session-term-env.js';
+import {
+  PASTE_READINESS_TIMEOUT_REASON,
+  recordBoundLaunchOutcome,
+  type LaunchOutcomeMetrics,
+} from '../core/launch-outcome-metrics.js';
 
 const promptEncoder = new TextEncoder();
 const promptDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -456,6 +461,17 @@ export interface DeliverInitialPromptOptions {
    * tests inject a stub to assert ordering without spending real time.
    */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Agent type for a paste-readiness timeout sample (issue #3310). Required
+   * to record on `GET /api/diagnostics/launch-outcomes`; omitted calls still
+   * fail-open and warn, they just skip the metric.
+   */
+  agentType?: string;
+  /**
+   * Optional metrics sink. Tests inject a local instance. Production leaves
+   * this unset so the wait records through the process bind wired at boot.
+   */
+  launchOutcomeMetrics?: LaunchOutcomeMetrics;
 }
 
 /**
@@ -606,6 +622,11 @@ export function stripTerminalControls(text: string): string {
  * more than before — UNLESS {@link DeliverInitialPromptOptions.isBlocked}
  * is still true. Delivering Enter onto Claude's "No, exit" trust dialog
  * kills the session (issue #3295); that path must fail closed.
+ *
+ * The timeout is also recorded as a launch-outcome failure with reason
+ * {@link PASTE_READINESS_TIMEOUT_REASON} (issue #3310) so a night of
+ * silent prompt-loss is visible on `GET /api/diagnostics/launch-outcomes`.
+ * That sample does not fail the launch; fail-open delivery continues.
  */
 export class PromptDeliveryBlockedError extends Error {
   readonly code = 'startup_ui_blocked';
@@ -619,13 +640,30 @@ export class PromptDeliveryBlockedError extends Error {
   }
 }
 
+function recordPasteReadinessTimeout(
+  options: Pick<DeliverInitialPromptOptions, 'agentType' | 'launchOutcomeMetrics'>,
+): void {
+  const agentType = options.agentType?.trim();
+  if (!agentType) return;
+  const sample = {
+    agentType,
+    outcome: 'failure' as const,
+    reason: PASTE_READINESS_TIMEOUT_REASON,
+  };
+  if (options.launchOutcomeMetrics) {
+    options.launchOutcomeMetrics.record(sample);
+    return;
+  }
+  recordBoundLaunchOutcome(sample);
+}
+
 async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
   options: Required<
     Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'readySettleMs' | 'sleep'>
   > &
-    Pick<DeliverInitialPromptOptions, 'isBlocked' | 'onBlocked'>,
+    Pick<DeliverInitialPromptOptions, 'isBlocked' | 'onBlocked' | 'agentType' | 'launchOutcomeMetrics'>,
 ): Promise<void> {
   const deadline = Date.now() + options.readyTimeoutMs;
   while (Date.now() <= deadline) {
@@ -659,6 +697,7 @@ async function waitForPasteReady(
     `[agent-launch] paste-readiness wait timed out for ${sessionId} after ${options.readyTimeoutMs}ms; `
     + 'delivering anyway (prompt loss is possible — see #2977)',
   );
+  recordPasteReadinessTimeout(options);
 }
 
 /** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */
@@ -773,6 +812,8 @@ export async function deliverInitialPromptToSession(
       sleep,
       isBlocked: options.isBlocked,
       onBlocked: options.onBlocked,
+      agentType: options.agentType,
+      launchOutcomeMetrics: options.launchOutcomeMetrics,
     });
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own
