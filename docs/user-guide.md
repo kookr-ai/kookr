@@ -282,6 +282,44 @@ Once data has loaded, **Export CSV** downloads the loaded window and project sco
 
 Unknown rates, durations, and task costs are empty CSV cells; recorded zeros stay numeric. Rates are fractions from 0 to 1 (0.5000 means 50%), and durations use milliseconds. Per-agent rates are exported even for low samples, so apply the same caution outside the dashboard. Comparison changes are not exported.
 
+## Cost Comparison
+
+Use Cost Comparison to estimate Claude vs Codex spend by playbook, agent, and task, and to see whether enough usage data exists to trust those estimates. Dollar figures are estimates from recorded token counts and a pricing table, not invoices. Only Claude Code and Codex CLI appear here.
+
+Open the panel from the command palette: press `Ctrl+K` / `Cmd+K`, search **Cost comparison**, and run that action. Close it with Escape.
+
+Choose **24h**, **7d**, **30d**, or **all** (All time) from the time-window menu. Bounded windows cover the most recent period and select tasks by **creation time**. A task created earlier is excluded even if it finished during that period. Choose **All** (Claude and Codex), **Claude**, or **Codex** from the agent filter chips. Type in **Search task names** to narrow the tables by task name or prompt text — the box is labeled for names, but prompt text matches too. Window, agent, and search all apply to the tables, the priced/excluded counts, and CSV export. Parse-error notes and unbound Codex figures follow the time window (the Claude agent filter also hides unbound Codex); they do not shrink with search.
+
+The initial scope is All (Claude and Codex) over 7d. Your browser remembers the window and agent filter across reopening and refresh. Search is a one-off query and is not remembered.
+
+### Reading The Panel
+
+The coverage strip reports how many tasks match the current filters (**in scope**), how many of those have a computed dollar estimate (**priced**), and how many do not (**excluded** — the same rows the Tasks table shows as unpriced, with a dash in Cost). Only priced rows feed dollar averages and totals; excluded rows still appear in the task list so you can see why they dropped out. Live tasks are included in the counts and show as running in the task table.
+
+**Unbound Codex** is Codex usage on disk that is not attached to a current Kookr task — for example a session Kookr did not launch, or one whose Kookr task record is no longer kept. Those dollar amounts appear under **Coverage caveats**, not in the playbook table, so playbook averages stay comparable. Switching the agent filter to Claude hides unbound Codex, because that filter is asking for Claude data only.
+
+Notes above the tables warn about coverage problems such as parse errors, unknown model prices, stale prices, abandoned Codex sessions (a Kookr task whose Codex session never finished), and unbound Codex. Abandoned sessions are excluded Kookr tasks; unbound Codex is extra usage with no current Kookr task. The first three notes show immediately; any further notes hide behind a count until you expand them. Read the notes and coverage caveats before treating totals as complete.
+
+The panel has three sections:
+
+| Section | What it shows |
+|---|---|
+| **Per playbook** | One row per playbook that has at least one matching run in the window (tasks with no playbook are grouped as `<no-playbook>`). Each side shows Claude's and Codex's average estimated cost among priced tasks only — `n` is that priced count, not all runs. A cost ratio names the more expensive side. Thumbs-up rates use rated tasks only, with their own sample size. |
+| **Aggregate** | Totals across every matching task in the window — playbook runs and one-off work (grouped as `<no-playbook>`) together. The heading labels this a **weak signal** because mixing those into one average is not a fair Claude-vs-Codex comparison. Cards show task count, total estimated dollars, token volume, duration percentiles, and thumbs-up rate. |
+| **Tasks** | One row per matching Kookr task, newest first: name, start time, agent, model, playbook, duration, estimated cost, feedback, and a quality badge. |
+
+A playbook cell with `n=0` has no priced runs for that agent in the window — the average is a dash, not $0. Cost ratio `Claude 2.50×` means Claude's average is two and a half times Codex's among priced tasks. Thumbs-up rates use only rated tasks; unrated tasks are not negative votes. A 100% rate with `n=1` is one vote, not a strong comparison.
+
+### Reading Quality And Coverage
+
+Only **priced** rows enter dollar averages and totals. Each task row has a **quality badge**. Hover it for that row's reason. **Zero tokens** is still priced ($0.00): usage data exists and is empty, which is not the same as missing usage. A dash in Cost means the badge is telling you the row is unpriced, not that the task was free.
+
+### Exporting CSV
+
+Once data has loaded, **Export CSV** downloads the currently displayed playbook and task rows. The file names the window, agent filter, and search that produced those rows, then **Per playbook** and **Per task** sections. Task rows include the stable task ID. Unpriced costs are empty cells; recorded zeros stay numeric. Dollar amounts are bare numbers so a spreadsheet can sum them; timestamps are ISO 8601.
+
+The export is the filtered view, not a complete billing history. Unbound Codex totals and raw token counts are omitted so the file does not imply a completeness the panel itself caveats.
+
 ## GitHub Awareness
 
 When an agent references GitHub PRs or issues, Kookr associates those references with the task. It can then poll PR state, CI status, review decisions, and unresolved review threads, routing actionable changes back into the findings queue.
