@@ -473,16 +473,18 @@ The system SHALL warn in the Launch dialog and Quick Launch bar before submit wh
 
 ### R4.1d: Warn When Claude Plan Quota Will Rotate or Deny [F4.1] — SHALL — `done`
 
-The system SHALL warn in the Launch dialog before submit when the existing Claude plan-quota gate would rotate the launch to a fallback agent or deny it, without changing admission, the settings threshold, billing, or spending limits.
+The system SHALL warn in the Launch dialog and Quick Launch bar before submit when the existing Claude plan-quota gate would rotate the launch to a fallback agent or deny it, without changing admission, the settings threshold, billing, or spending limits.
 
 **Acceptance criteria:**
-- Given 5-hour (or 7-day) utilization at or above the configured `quotaHeadroomThreshold` and Claude Code selected (or next in round-robin), when the Launch dialog is open, then a quota banner is visible before submit
+- Given 5-hour (or 7-day) utilization at or above the configured `quotaHeadroomThreshold` and Claude Code selected (or next in round-robin), when the Launch dialog or Quick Launch bar is open, then a quota banner is visible before submit
 - The banner names current utilization, which window bound, and the reset time when present, and says submit will rotate to the configured fallback
 - The banner is hidden when the evaluator would admit, when quota data is missing, or when the chosen agent cannot be Claude Code
 - When the quota sample is older than five minutes, the banner mentions that the reading is stale
-- Server admission and `quotaHeadroomThreshold` stay unchanged; Launch stays enabled (warning only)
+- Server admission and `quotaHeadroomThreshold` stay unchanged; Launch and Quick Launch stay enabled (warning only)
+- The Launch submit control and the Quick Launch prompt input include the banner in their accessible description when it is visible
+- When Grok authentication is unusable, round-robin on Quick Launch uses the same Grok-usable filter as the Launch dialog before deciding whether this pick would consume Claude quota
 
-**Evidence:** `src/shared/quota-headroom-admission.ts`, `src/shared/launch-quota-warning.ts`, `src/shared/launch-quota-warning.test.ts`, `src/frontend/components/LaunchQuotaBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.quota.test.ts`.
+**Evidence:** `src/shared/quota-headroom-admission.ts`, `src/shared/launch-quota-warning.ts`, `src/shared/launch-quota-warning.test.ts`, `src/frontend/components/LaunchQuotaBanner.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/LaunchTaskDialog.quota.test.ts`, `src/frontend/components/QuickLaunch.tsx`, `src/frontend/components/QuickLaunch.quota.test.ts`.
 
 ### R4.1e: Warn When the Launch Directory Already Has Live Agents [F4.1] — SHALL — `done`
 
@@ -2025,7 +2027,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R4.1a | F4.1 | SHALL | done | grok-auth-preflight, grok-build-adapter |
 | R4.1b | F4.1 | SHALL | done | grok-auth-status, grok-auth-routes, LaunchTaskDialog, QuickLaunch |
 | R4.1c | F17.4 | SHALL | done | launch-duplicate, LaunchDuplicateBanner, LaunchTaskDialog, QuickLaunch |
-| R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog |
+| R4.1d | F4.1 | SHALL | done | quota-headroom-admission, launch-quota-warning, LaunchQuotaBanner, LaunchTaskDialog, QuickLaunch |
 | R4.1e | F4.1 | SHALL | done | launch-duplicate, LaunchBusyDirectoryBanner, LaunchTaskDialog |
 | R4.1f | F4.1 | SHALL | done | task contracts, automation-kill-switch, post-recovery-service, launch-service |
 | R4.1g | F4.13 | SHALL | done | settings-store, launch-service, schedule-runner, SettingsDialog |

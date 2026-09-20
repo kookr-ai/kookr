@@ -29,6 +29,8 @@ import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
 import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { CLI_INSTALL_BANNER_ID, CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
+import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.js';
+import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
 
@@ -197,6 +199,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     availableAgentTypeIds,
     grokAuth?.roundRobinIndex ?? 0,
   ) && Boolean(grokAuth?.message);
+  // Same non-blocking Claude-plan warning Launch and Playbook already show.
+  // Pass the Grok-usable bit so round-robin skips an unusable Grok pick
+  // before deciding whether this launch would consume Claude quota.
+  const quotaWarning = useLaunchQuotaWarning(
+    agentType,
+    grokAuth ? !grokAuth.launchWouldRefuse : undefined,
+  );
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
@@ -324,6 +333,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           aria-describedby={[
             noAgentCliDetected ? CLI_INSTALL_BANNER_ID : null,
             showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,
+            quotaWarning ? LAUNCH_QUOTA_BANNER_ID : null,
             activeDuplicate ? LAUNCH_DUPLICATE_BANNER_ID : null,
           ].filter(Boolean).join(' ') || undefined}
         />
@@ -352,6 +362,9 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       {noAgentCliDetected && <CliInstallGuidanceBanner />}
       {showGrokAuthBanner && grokAuth?.message && (
         <GrokAuthPreflightBanner message={grokAuth.message} />
+      )}
+      {quotaWarning && (
+        <LaunchQuotaBanner message={quotaWarning.message} />
       )}
       {activeDuplicate && (
         <LaunchDuplicateBanner
