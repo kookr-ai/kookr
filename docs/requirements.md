@@ -1495,6 +1495,21 @@ The system SHALL run one bounded pass of the existing host-stale dtach reaper an
 
 **Evidence:** `src/core/resource-watchdog-types.ts`, `src/server/resource-watchdog-service.ts`, `src/server/index.ts` (reaper wiring), `src/server/resource-watchdog-service.test.ts`, `docs/architecture.md`, `docs/reference/api.md`.
 
+### R6.17: Publish Operational-Alert-Sink Writability on GET /api/health [#3315] — SHALL — `done`
+
+The system SHALL publish the operational-alert JSONL sink's in-memory writability on `GET /api/health` so a remote operator can tell a frozen incident log (disk full, permission denied) from a quiet day without reading the server log.
+
+**Acceptance criteria:**
+- `GET /api/health` includes `operationalAlertSink.writable` when the sink is wired
+- The block also includes `configured` and, after a failed append, `lastFailure.ts` plus `lastFailure.message`
+- A failed append flips `writable` to false and records `lastFailure` without throwing to callers
+- The health projection never includes alert summary, details, or bodies
+- The block is omitted when the sink is not wired (partial test harnesses)
+
+**Dependencies:** R6.8.
+
+**Evidence:** `src/server/operational-alert-sink.ts` (`status()`), `src/server/index.ts` (sink wiring), `src/server/routes/diagnostics-routes.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -2049,6 +2064,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R6.14 | #2902 | SHALL | done | resource-watchdog fail-closed spawn reservation and persistence health |
 | R6.15 | #3112 | SHALL | done | fatal-error-counters, processFatal health projection |
 | R6.16 | #3247 | SHALL | done | resource-watchdog reclaim-before-spawn and lastSyncReclaim health |
+| R6.17 | #3315 | SHALL | done | operationalAlertSink writability on GET /api/health |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

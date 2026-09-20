@@ -2725,6 +2725,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       detectorBroadcast(alert);
       noteOpsStatusAlert(alert);
     }),
+    // Issue #3315: the same sink instance the schedule runtime owns, so
+    // status()/lastFailure on /api/health stay unified with the writer.
+    operationalAlertSink,
     // issues #1590/#1992/#2926: feed the load-based POST /api/tasks admission
     // gates the same already-sampled resource snapshot (event-loop p95 plus
     // data-dir byte/inode capacity) and the sustain tracker on every tick.

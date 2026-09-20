@@ -896,6 +896,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     // Delivery-bridge health (issue #3046). Undefined when the bridge is
     // unconfigured or before the service is wired at startup ⇒ block omitted.
     const signalDeliveryBlock = deps.getSignalDeliveryStatus?.();
+    // Issue #3315: project the operational-alert JSONL sink's in-memory
+    // writability so a frozen incident log (ENOSPC / EACCES) is distinguishable
+    // from a quiet day. Cheap status() read — never opens the file, never dumps
+    // alert bodies (lastFailure is the append errno, not the alert summary).
+    // Omitted when the sink is not wired (partial test harnesses).
+    const operationalAlertSinkBlock = deps.operationalAlertSink?.status();
 
     // Issue #1750: top-level machine-readable serving SHA so deploy/outcome
     // probes (and extractServingSha in incident-close-out) can read the commit
@@ -1102,6 +1108,10 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       // Makes a silently-failing (revoked webhook / bad token / 429) Discord or
       // Telegram bridge glanceable. Absent when the bridge is unconfigured.
       ...(signalDeliveryBlock ? { signalDelivery: signalDeliveryBlock } : {}),
+      // Issue #3315: configured / writable / lastFailure from the sink's
+      // in-memory status(). A Discord-only operator can tell "disk-full, alerts
+      // not recording" from "no alerts fired" without reading the server log.
+      ...(operationalAlertSinkBlock ? { operationalAlertSink: operationalAlertSinkBlock } : {}),
       // Issue #2636: four-field timer-health summary so last-good health
       // (the snapshot Lucy reads after HTTP goes dark) can say whether a
       // safety-net timer is overdue without a second curl. Counts only —
