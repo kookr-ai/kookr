@@ -278,6 +278,61 @@ describe('CompletedRow completion-rating pill', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  test('clicking the my_prompt label does not first persist a bare thumbs-down', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent());
+    root = rendered;
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!.click();
+    });
+    const checkbox = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+      .find((input) => input.closest('label')?.textContent?.includes('My prompt was unclear'))!;
+    act(() => {
+      container.querySelector('.completed-row-rating-wrap')!.dispatchEvent(
+        new FocusEvent('blur', { bubbles: true, relatedTarget: null }),
+      );
+      checkbox.click();
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down', downReason: 'my_prompt' },
+    });
+  });
+
+  test('switching back to down before an up snapshot still persists down', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ completionFeedback: { rating: 'down' } }),
+    );
+    root = rendered;
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="completed-row-rating"]')!.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs up"]')!.click();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'up' },
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="completed-row-rating"]')!.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!.click();
+    });
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+    });
+  });
+
   test('tabbing out of a thumbs-down editor persists the draft', () => {
     const { root: rendered, send } = renderRow(container, makeAgent());
     root = rendered;

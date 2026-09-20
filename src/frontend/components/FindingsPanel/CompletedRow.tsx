@@ -80,17 +80,13 @@ function CompletedRowRatingControl({
   const feedbackRef = useRef(feedback);
   feedbackRef.current = feedback;
 
-  // Drop the optimistic copy only when the snapshot matches it. A stale
-  // persisted rating must not overwrite a pending local send.
+  // Drop the optimistic copy only when the snapshot matches both the local
+  // draft AND the last successful send (server ack). Equality with a stale
+  // persisted rating is not confirmation.
   useEffect(() => {
-    if (local) {
-      if (sameFeedback(local, persisted)) {
-        sentRef.current = persisted;
-        setLocal(undefined);
-      }
-      return;
+    if (local && sameFeedback(local, persisted) && sameFeedback(sentRef.current, persisted)) {
+      setLocal(undefined);
     }
-    sentRef.current = persisted;
   }, [persisted, local]);
   // Unrated rows keep thumbs visible (there is no pill to reopen). Rated rows
   // keep the pill mounted and expand the editor beside it.
@@ -175,7 +171,10 @@ function CompletedRowRatingControl({
       onClick={(e) => e.stopPropagation()}
       onBlur={(e) => {
         const next = e.relatedTarget;
-        if (next instanceof Node && wrapRef.current?.contains(next)) return;
+        // Label clicks blur with relatedTarget null before focusing the
+        // checkbox; that must not commit a bare thumbs-down.
+        if (!(next instanceof Node)) return;
+        if (wrapRef.current?.contains(next)) return;
         const draft = feedbackRef.current;
         if (draft?.rating === 'down') persist(draft);
       }}
