@@ -2,7 +2,11 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import {
+  QuotaAdapter,
+  sanitizeQuotaPollerLastError,
+} from '../../adapters/quota-adapter.js';
 import { TaskStore } from '../../core/tasks.js';
 import { LaunchDependencyAdmission } from '../../core/launch-dependency-admission.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
@@ -1866,6 +1870,112 @@ describe('diagnostics routes', () => {
       expect(body.orchestrationPause!.pauseProvenance).toMatchObject({
         historicalOverlap: { incompleteRecordCount: 1 },
       });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — quota poller state (issue #3312)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health quotaPoller block (issue #3312)', () => {
+    test('omits the block when the adapter is not wired', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { quotaPoller?: unknown };
+
+      expect(body).not.toHaveProperty('quotaPoller');
+    });
+
+    test('projects a live adapter snapshot next to the quota sample', async () => {
+      const adapter = new QuotaAdapter(120_000);
+      const kookrDir = join(tempDir, 'quota-poller-health');
+      mkdirSync(kookrDir, { recursive: true });
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        kookrDir,
+        settings: {
+          get: () => ({ ...DEFAULT_SETTINGS, defaultAgentType: 'claude-code' }),
+          getLoadedFromDefaults: () => false,
+          getLoadWarnings: () => [],
+          update: async () => [],
+        } as unknown as RouteDeps['settings'],
+        getDefaultAgentType: () => 'claude-code',
+        getQuotaStatus: () => ({
+          fiveHour: { utilization: 30, resetsAt: '2026-08-19T05:00:00.000Z' },
+          sevenDay: { utilization: 55, resetsAt: '2026-08-25T00:00:00.000Z' },
+          updatedAt: 0,
+        }),
+        getQuotaPollerHealth: () => adapter.getHealthSnapshot(),
+      }).request('/api/health')).json() as {
+        quotaPoller?: {
+          state: string;
+          lastError: string | null;
+          currentIntervalMs: number;
+          consecutiveFailures: number;
+        };
+        orchestrationPause?: { defaultAgentQuota?: { utilization?: number } };
+      };
+
+      expect(body.quotaPoller).toEqual(adapter.getHealthSnapshot());
+      expect(body.quotaPoller).toEqual({
+        state: 'idle',
+        lastError: null,
+        currentIntervalMs: 120_000,
+        consecutiveFailures: 0,
+      });
+      expect(body.orchestrationPause?.defaultAgentQuota).toMatchObject({ utilization: 55 });
+    });
+
+    test.each(['auth_failed', 'backoff', 'disabled'] as const)(
+      'projects %s distinctly from healthy',
+      async (state) => {
+        const body = await (await mkApp({
+          taskStore: new TaskStore(),
+          queue: new AttentionQueue(),
+          buildInfo: {} as never,
+          getQuotaPollerHealth: () => ({
+            state,
+            lastError: `${state} diagnostic`,
+            currentIntervalMs: state === 'backoff' ? 240_000 : 120_000,
+            consecutiveFailures: 1,
+          }),
+        }).request('/api/health')).json() as {
+          quotaPoller?: { state: string; lastError: string | null; consecutiveFailures: number };
+        };
+
+        expect(body.quotaPoller?.state).toBe(state);
+        expect(body.quotaPoller?.lastError).toBe(`${state} diagnostic`);
+        expect(body.quotaPoller?.consecutiveFailures).toBe(1);
+      },
+    );
+
+    test('HTTP body stays secret-free when the snapshot lastError had a path and token', async () => {
+      const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+      const token = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+      const lastError = sanitizeQuotaPollerLastError(
+        `Cannot read credentials: ENOENT: no such file or directory, open '${credentialsPath}' Authorization: Bearer ${token}`,
+      );
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getQuotaPollerHealth: () => ({
+          state: 'disabled',
+          lastError,
+          currentIntervalMs: 120_000,
+          consecutiveFailures: 0,
+        }),
+      }).request('/api/health')).json();
+      const serialized = JSON.stringify(body.quotaPoller);
+
+      expect(body.quotaPoller.lastError).toContain('<credentials>');
+      expect(serialized).not.toContain(credentialsPath);
+      expect(serialized).not.toContain(token);
+      expect(serialized).not.toContain(homedir());
+      expect(serialized).not.toContain('accessToken');
     });
   });
 

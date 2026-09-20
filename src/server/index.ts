@@ -2891,6 +2891,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Issue #2672 Phase B: project the default agent's quota utilization onto
     // `/api/health` and the orchestration status surface.
     getQuotaStatus: () => quotaAdapter.getLatest(),
+    // Issue #3312: poller state / lastError / backoff, next to the quota sample
+    // so a frozen snapshot is not mistaken for a healthy poller.
+    getQuotaPollerHealth: () => quotaAdapter.getHealthSnapshot(),
     getDefaultAgentType,
     auditLogPath: join(kookrDir, 'audit.jsonl'),
     settings: {

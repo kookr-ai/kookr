@@ -453,6 +453,14 @@ export interface RouteDeps {
    * status surface. Absent in lightweight test harnesses.
    */
   getQuotaStatus?: () => import('../../core/quota-types.js').QuotaStatus | null;
+  /**
+   * Quota poller diagnostics (issue #3312). `/api/health` reads only this
+   * cheap in-memory snapshot (state / lastError / interval / consecutive
+   * failures) so a dark or auth-failed poller is distinguishable from
+   * "never polled." Absent in lightweight test harnesses ⇒ health omits the
+   * block. The snapshot is secret-free: no access tokens or credential paths.
+   */
+  getQuotaPollerHealth?: () => import('../../adapters/quota-adapter.js').QuotaPollerHealthSnapshot;
   /** Live getter for the configured default agent selection (issue #2672). */
   getDefaultAgentType?: () => import('../../shared/contracts/agent-types.js').AgentSelection;
   /** Live default for task completion worktree cleanup. */

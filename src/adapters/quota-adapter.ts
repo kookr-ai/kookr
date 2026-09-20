@@ -3,9 +3,50 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 
 import type { QuotaStatus, QuotaWindow } from '../core/quota-types.js';
+import { redactSecrets } from '../core/redact-secrets.js';
 
 /** Poller status for diagnostics. */
 export type PollerState = 'idle' | 'polling' | 'healthy' | 'backoff' | 'auth_failed' | 'disabled';
+
+const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
+
+/** Cap for the operator-visible lastError on GET /api/health (issue #3312). */
+export const QUOTA_POLLER_LAST_ERROR_MAX_CHARS = 500;
+
+/**
+ * Secret-free quota-poller projection for GET `/api/health` (issue #3312).
+ *
+ * Distinguishes a poller that is healthy from one that is backing off,
+ * auth-failed, or disabled — health previously only showed utilization from
+ * the last *successful* snapshot, so an hours-long auth failure looked the
+ * same as "never polled."
+ */
+export interface QuotaPollerHealthSnapshot {
+  state: PollerState;
+  lastError: string | null;
+  currentIntervalMs: number;
+  consecutiveFailures: number;
+}
+
+/**
+ * Strip credential paths and known secret patterns from a poller lastError
+ * before it leaves the process on `/api/health`. Node `ENOENT` messages
+ * include the credentials file path; the health block must not.
+ */
+export function sanitizeQuotaPollerLastError(message: string | null): string | null {
+  if (message === null) return null;
+  let out = message.split(CREDENTIALS_PATH).join('<credentials>');
+  const home = homedir();
+  // Skip a one-character home (e.g. "/") so we do not rewrite every slash.
+  if (home.length > 1) {
+    out = out.split(home).join('~');
+  }
+  out = redactSecrets(out).replace(/\s+/g, ' ').trim();
+  if (out.length > QUOTA_POLLER_LAST_ERROR_MAX_CHARS) {
+    return `${out.slice(0, QUOTA_POLLER_LAST_ERROR_MAX_CHARS - 3)}...`;
+  }
+  return out.length > 0 ? out : null;
+}
 
 interface CredentialsFile {
   claudeAiOauth?: {
@@ -14,8 +55,6 @@ interface CredentialsFile {
     rateLimitTier?: string;
   };
 }
-
-const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
 // OAuth usage endpoint (undocumented but functional)
 const USAGE_API = 'https://api.anthropic.com/api/oauth/usage';
@@ -119,6 +158,19 @@ export class QuotaAdapter {
   /** Get the current effective polling interval in ms. */
   getCurrentIntervalMs(): number {
     return this.currentIntervalMs;
+  }
+
+  /**
+   * Secret-free poller diagnostics for GET `/api/health` (issue #3312).
+   * Cheap in-memory read; never touches disk or the usage endpoint.
+   */
+  getHealthSnapshot(): QuotaPollerHealthSnapshot {
+    return {
+      state: this.state,
+      lastError: sanitizeQuotaPollerLastError(this.lastError),
+      currentIntervalMs: this.currentIntervalMs,
+      consecutiveFailures: this.consecutiveFailures,
+    };
   }
 
   /**

@@ -590,6 +590,12 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       };
     }
 
+    // Quota poller liveness (issue #3312): cheap in-memory snapshot so an
+    // auth-failed / backoff / disabled poller is distinguishable from a
+    // healthy one. Omitted when the adapter is not wired (tests). The
+    // snapshot is already secret-free (no tokens, no credential paths).
+    const quotaPollerBlock = deps.getQuotaPollerHealth?.();
+
     // Lesson yield (issue #1538) — last-24h flywheel health. Served
     // stale-while-revalidate (issue #1553): the response uses whatever
     // snapshot the last background scan produced (staleness is visible via
@@ -979,6 +985,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
       ...(safeModeBlock ? { safeMode: safeModeBlock } : {}),
       ...(projectAutomationBlock ? { projectAutomation: projectAutomationBlock } : {}),
       ...(orchestrationPauseBlock ? { orchestrationPause: orchestrationPauseBlock } : {}),
+      ...(quotaPollerBlock ? { quotaPoller: quotaPollerBlock } : {}),
       ...(lessonYieldBlock ? { lessonYield: lessonYieldBlock } : {}),
       // camelCase + snake_case: dashboard/status CLI use camelCase; daily
       // reports and the issue acceptance criterion name the metric
