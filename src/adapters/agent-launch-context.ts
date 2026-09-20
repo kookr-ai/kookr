@@ -15,6 +15,11 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import { DEFAULT_AGENT_TERM } from './session-term-env.js';
+import {
+  PASTE_READINESS_TIMEOUT_REASON,
+  noteBoundLaunchOutcomeReason,
+  type LaunchOutcomeMetrics,
+} from '../core/launch-outcome-metrics.js';
 
 const promptEncoder = new TextEncoder();
 const promptDecoder = new TextDecoder('utf-8', { fatal: false });
@@ -456,6 +461,18 @@ export interface DeliverInitialPromptOptions {
    * tests inject a stub to assert ordering without spending real time.
    */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Agent type for a paste-readiness timeout note (issue #3310). Required
+   * to stamp `lastFailureReason` on `GET /api/diagnostics/launch-outcomes`;
+   * omitted calls still fail-open and warn, they just skip the metric.
+   */
+  agentType?: string;
+  /**
+   * Optional metrics sink. Tests inject a local instance. Production leaves
+   * this unset so the wait notes the reason through the process bind wired
+   * at boot.
+   */
+  launchOutcomeMetrics?: LaunchOutcomeMetrics;
 }
 
 /**
@@ -586,6 +603,35 @@ export function stripTerminalControls(text: string): string {
 }
 
 /**
+ * Thrown when a Claude startup dialog is still blocking at the end of the
+ * paste-readiness wait. Delivery must fail closed here: Enter on "No, exit"
+ * kills the session (issue #3295).
+ */
+export class PromptDeliveryBlockedError extends Error {
+  readonly code = 'startup_ui_blocked';
+
+  constructor(sessionId: SessionId) {
+    super(
+      `Agent startup UI is still blocking session ${sessionId} — ` +
+        `not delivering the prompt onto it`,
+    );
+    this.name = 'PromptDeliveryBlockedError';
+  }
+}
+
+function notePasteReadinessTimeout(
+  options: Pick<DeliverInitialPromptOptions, 'agentType' | 'launchOutcomeMetrics'>,
+): void {
+  const agentType = options.agentType?.trim();
+  if (!agentType) return;
+  if (options.launchOutcomeMetrics) {
+    options.launchOutcomeMetrics.noteFailureReason(agentType, PASTE_READINESS_TIMEOUT_REASON);
+    return;
+  }
+  noteBoundLaunchOutcomeReason(agentType, PASTE_READINESS_TIMEOUT_REASON);
+}
+
+/**
  * Wait until the session is ready to receive a bracketed paste. Readiness
  * needs BOTH signals, then a settle cushion:
  *
@@ -606,26 +652,20 @@ export function stripTerminalControls(text: string): string {
  * more than before — UNLESS {@link DeliverInitialPromptOptions.isBlocked}
  * is still true. Delivering Enter onto Claude's "No, exit" trust dialog
  * kills the session (issue #3295); that path must fail closed.
+ *
+ * The timeout also stamps launch-outcome {@link PASTE_READINESS_TIMEOUT_REASON}
+ * (issue #3310) so overnight prompt-loss is visible on
+ * `GET /api/diagnostics/launch-outcomes`. That note does not count as a
+ * second launch sample; launch-service still records the real success or
+ * failure for the launch.
  */
-export class PromptDeliveryBlockedError extends Error {
-  readonly code = 'startup_ui_blocked';
-
-  constructor(sessionId: SessionId) {
-    super(
-      `Agent startup UI is still blocking session ${sessionId} — ` +
-        `not delivering the prompt onto it`,
-    );
-    this.name = 'PromptDeliveryBlockedError';
-  }
-}
-
 async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
   options: Required<
     Pick<DeliverInitialPromptOptions, 'readyTimeoutMs' | 'readyPollMs' | 'readySettleMs' | 'sleep'>
   > &
-    Pick<DeliverInitialPromptOptions, 'isBlocked' | 'onBlocked'>,
+    Pick<DeliverInitialPromptOptions, 'isBlocked' | 'onBlocked' | 'agentType' | 'launchOutcomeMetrics'>,
 ): Promise<void> {
   const deadline = Date.now() + options.readyTimeoutMs;
   while (Date.now() <= deadline) {
@@ -659,6 +699,7 @@ async function waitForPasteReady(
     `[agent-launch] paste-readiness wait timed out for ${sessionId} after ${options.readyTimeoutMs}ms; `
     + 'delivering anyway (prompt loss is possible — see #2977)',
   );
+  notePasteReadinessTimeout(options);
 }
 
 /** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */
@@ -773,6 +814,8 @@ export async function deliverInitialPromptToSession(
       sleep,
       isBlocked: options.isBlocked,
       onBlocked: options.onBlocked,
+      agentType: options.agentType,
+      launchOutcomeMetrics: options.launchOutcomeMetrics,
     });
   }
   // Deliver the body wrapped in paste markers, then send Enter as its own

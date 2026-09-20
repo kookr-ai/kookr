@@ -1,9 +1,16 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
   LaunchOutcomeMetrics,
+  PASTE_READINESS_TIMEOUT_REASON,
+  bindLaunchOutcomeMetrics,
   classifyLaunchFailureReason,
   emptyLaunchOutcomeMetricsSnapshot,
+  noteBoundLaunchOutcomeReason,
 } from './launch-outcome-metrics.js';
+
+afterEach(() => {
+  bindLaunchOutcomeMetrics(undefined);
+});
 
 describe('LaunchOutcomeMetrics', () => {
   it('tracks success/failure rates per agent type', () => {
@@ -79,5 +86,37 @@ describe('classifyLaunchFailureReason', () => {
     ).toBe('agent_boot_timeout');
     expect(classifyLaunchFailureReason(new Error('Grok authentication expired'))).toBe('launch_refused');
     expect(classifyLaunchFailureReason(new Error('disk full'))).toBe('launch_error');
+  });
+});
+
+describe('paste_readiness_timeout launch-outcome notes (issue #3310)', () => {
+  it('stamps lastFailureReason without counting a second launch attempt', () => {
+    const metrics = new LaunchOutcomeMetrics();
+    metrics.noteFailureReason('claude-code', PASTE_READINESS_TIMEOUT_REASON);
+    metrics.record({ agentType: 'claude-code', outcome: 'success' });
+    expect(metrics.snapshot().byAgentType[0]).toEqual({
+      agentType: 'claude-code',
+      attempts: 1,
+      successes: 1,
+      failures: 0,
+      failureRate: 0,
+      lastFailureReason: 'paste_readiness_timeout',
+    });
+  });
+
+  it('notes through the process bind used by the paste-readiness wait', () => {
+    const metrics = new LaunchOutcomeMetrics();
+    bindLaunchOutcomeMetrics(metrics);
+    noteBoundLaunchOutcomeReason('claude-code', PASTE_READINESS_TIMEOUT_REASON);
+    expect(metrics.snapshot().byAgentType[0]?.lastFailureReason).toBe(
+      PASTE_READINESS_TIMEOUT_REASON,
+    );
+    expect(metrics.snapshot().totalAttempts).toBe(0);
+  });
+
+  it('is a no-op when nothing is bound', () => {
+    expect(() =>
+      noteBoundLaunchOutcomeReason('claude-code', PASTE_READINESS_TIMEOUT_REASON),
+    ).not.toThrow();
   });
 });
