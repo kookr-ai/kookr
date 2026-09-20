@@ -16,9 +16,7 @@ You run several Claude Code, Codex CLI, or Grok Build agents in parallel. One lo
 
 **Kookr watches the agents, explains what needs attention, and routes you to the most urgent one.**
 
-<a href="https://youtu.be/DHZrO8T_6Xg">
-  <img src="https://img.youtube.com/vi/DHZrO8T_6Xg/maxresdefault.jpg" alt="Watch the Kookr narrated demo on YouTube" width="960" />
-</a>
+<img src="assets/branding/derived/kookr-screenshot.png" alt="Kookr dashboard with supervisor findings, live agent sessions, and the attention queue" width="960" />
 
 [Watch the narrated demo video on YouTube](https://youtu.be/DHZrO8T_6Xg)
 
