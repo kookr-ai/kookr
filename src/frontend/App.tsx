@@ -1704,6 +1704,7 @@ export function App() {
         onOpenCapacity={openSettingsAtMaxActiveTasks}
         onOpenLiveFriction={openLiveFrictionDiagnostics}
         onOpenDiagnostics={openDiagnostics}
+        onOpenCostComparison={() => openModal('costComparison')}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}

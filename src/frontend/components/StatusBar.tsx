@@ -105,6 +105,11 @@ interface Props {
    * need no App wiring.
    */
   onOpenDiagnostics?: () => void;
+  /**
+   * Open Cost Comparison when the 24h cost chip is clicked (issue #3335).
+   * Optional so isolated StatusBar tests need no App wiring.
+   */
+  onOpenCostComparison?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -442,6 +447,7 @@ export function StatusBar({
   onOpenCapacity,
   onOpenLiveFriction,
   onOpenDiagnostics,
+  onOpenCostComparison,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -567,6 +573,12 @@ export function StatusBar({
   const showLaunchedChip = shouldShowLaunchedInWindowChip(launchedLast24h);
   const showCost24hChip = cost24h !== null
     && shouldShow24hCostChip(cost24h.costUsd, cost24h.readiness, cost24h.costCoverage);
+  const cost24hLabel = showCost24hChip && cost24h
+    ? format24hCostChipLabel(cost24h.costUsd)
+    : '';
+  const cost24hTitle = showCost24hChip && cost24h
+    ? format24hCostChipTitle(cost24h.costUsd)
+    : '';
 
   const hasNewAchievements = useMemo(() => {
     const lastOpen = typeof localStorage !== 'undefined'
@@ -605,14 +617,27 @@ export function StatusBar({
           </span>
         )}
         {showCost24hChip && cost24h && (
-          <span
-            className="cost-24h-pill"
-            data-testid="cost-24h-chip"
-            role="status"
-            title={format24hCostChipTitle(cost24h.costUsd)}
-          >
-            {format24hCostChipLabel(cost24h.costUsd)}
-          </span>
+          onOpenCostComparison ? (
+            <button
+              type="button"
+              className="cost-24h-pill"
+              data-testid="cost-24h-chip"
+              title={cost24hTitle}
+              aria-label={`${cost24hLabel}. Open Cost Comparison`}
+              onClick={onOpenCostComparison}
+            >
+              {cost24hLabel}
+            </button>
+          ) : (
+            <span
+              className="cost-24h-pill"
+              data-testid="cost-24h-chip"
+              role="status"
+              title={cost24hTitle}
+            >
+              {cost24hLabel}
+            </span>
+          )
         )}
         {oldestWaitLabel && (
           <span

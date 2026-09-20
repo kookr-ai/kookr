@@ -286,7 +286,7 @@ Unknown rates, durations, and task costs are empty CSV cells; recorded zeros sta
 
 Use Cost Comparison to estimate Claude vs Codex spend by playbook, agent, and task, and to see whether enough usage data exists to trust those estimates. Dollar figures are estimates from recorded token counts and a pricing table, not invoices. Only Claude Code and Codex CLI appear here.
 
-Open the panel from the command palette: press `Ctrl+K` / `Cmd+K`, search **Cost comparison**, and run that action. Close it with Escape.
+Open the panel from the command palette (`Ctrl+K` / `Cmd+K`, search **Cost comparison**) or by clicking the rolling 24-hour spend figure in the bottom status bar when that chip is visible. Close it with Escape.
 
 Choose **24h**, **7d**, **30d**, or **all** (All time) from the time-window menu. Bounded windows cover the most recent period and select tasks by **creation time**. A task created earlier is excluded even if it finished during that period. Choose **All** (Claude and Codex), **Claude**, or **Codex** from the agent filter chips. Type in **Search task names** to narrow the tables by task name or prompt text — the box is labeled for names, but prompt text matches too. Window, agent, and search all apply to the tables, the priced/excluded counts, and CSV export. Parse-error notes and unbound Codex figures follow the time window (the Claude agent filter also hides unbound Codex); they do not shrink with search.
 
