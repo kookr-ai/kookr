@@ -3,6 +3,9 @@ import type { TaskCompletionFeedback } from '../../shared/contracts/messages.js'
 import type { WorktreeCleanupVerdict } from '../../shared/contracts/worktree-cleanup-verdict.js';
 import { CleanupWorktreeOption } from './CleanupWorktreeOption.js';
 
+/** Shared with the completed-row late-rate editor so down-reason copy cannot drift. */
+export const MY_PROMPT_DOWN_REASON_LABEL = 'My prompt was unclear (skips structural-fix proposals)';
+
 interface Props {
   feedback: TaskCompletionFeedback | undefined;
   requestReflect: boolean;
@@ -136,7 +139,7 @@ export function CompleteDialogFooter({
                 checked={feedback.downReason === 'my_prompt'}
                 onChange={(e) => setMyPromptUnclear(e.target.checked)}
               />
-              <span>My prompt was unclear (skips structural-fix proposals)</span>
+              <span>{MY_PROMPT_DOWN_REASON_LABEL}</span>
             </label>
           )}
           <label className="complete-feedback-checkbox">

@@ -1,6 +1,7 @@
-import React from 'react';
-import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
+import React, { useEffect, useRef, useState } from 'react';
+import type { AgentState, ClientMessage, TaskCompletionFeedback } from '../../../shared/protocol.js';
 import { track } from '../../telemetry.js';
+import { MY_PROMPT_DOWN_REASON_LABEL } from '../CompleteDialogFooter.js';
 import {
   formatDuration,
   formatTokenUsage,
@@ -20,6 +21,231 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
+
+function ratingCopy(feedback: TaskCompletionFeedback): { emoji: string; title: string } {
+  const emoji = feedback.rating === 'up' ? '👍' : '👎';
+  const ratingWord = feedback.rating === 'up' ? 'Rated good' : 'Rated bad';
+  const downReasonLabel =
+    feedback.downReason === 'agent_behavior'
+      ? 'Agent behavior'
+      : feedback.downReason === 'my_prompt'
+        ? 'My prompt was unclear'
+        : undefined;
+  const ratingNoteParts = [feedback.note, downReasonLabel].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  );
+  const title =
+    ratingNoteParts.length > 0 ? `${ratingWord}: ${ratingNoteParts.join(' — ')}` : ratingWord;
+  return { emoji, title };
+}
+
+function nextFeedback(
+  current: TaskCompletionFeedback | undefined,
+  rating: 'up' | 'down',
+): TaskCompletionFeedback {
+  const next: TaskCompletionFeedback = { rating };
+  if (current?.note) next.note = current.note;
+  if (rating === 'down' && current?.downReason) next.downReason = current.downReason;
+  return next;
+}
+
+function sameFeedback(
+  a: TaskCompletionFeedback | undefined,
+  b: TaskCompletionFeedback | undefined,
+): boolean {
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.rating === b.rating
+    && (a.note ?? '') === (b.note ?? '')
+    && a.downReason === b.downReason;
+}
+
+function CompletedRowRatingControl({
+  taskId,
+  persisted,
+  send,
+}: {
+  taskId: string;
+  persisted: TaskCompletionFeedback | undefined;
+  send: (msg: ClientMessage) => boolean | void;
+}): JSX.Element {
+  const [local, setLocal] = useState<TaskCompletionFeedback | undefined>(undefined);
+  const [editorOpen, setEditorOpen] = useState(persisted === undefined);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLButtonElement>(null);
+  const firstThumbRef = useRef<HTMLButtonElement>(null);
+  const moveFocusIntoEditor = useRef(false);
+  const sentRef = useRef<TaskCompletionFeedback | undefined>(persisted);
+  const feedback = local ?? persisted;
+  const feedbackRef = useRef(feedback);
+  feedbackRef.current = feedback;
+
+  // Drop the optimistic copy only when the snapshot matches both the local
+  // draft AND the last successful send (server ack). Equality with a stale
+  // persisted rating is not confirmation.
+  useEffect(() => {
+    if (local && sameFeedback(local, persisted) && sameFeedback(sentRef.current, persisted)) {
+      setLocal(undefined);
+    }
+  }, [persisted, local]);
+  // Unrated rows keep thumbs visible (there is no pill to reopen). Rated rows
+  // keep the pill mounted and expand the editor beside it.
+  const showEditor = editorOpen || feedback === undefined;
+
+  function persist(next: TaskCompletionFeedback): boolean {
+    if (sameFeedback(sentRef.current, next)) return true;
+    const accepted = send({ type: 'setTaskFeedback', taskId, feedback: next });
+    if (accepted === false) return false;
+    sentRef.current = next;
+    return true;
+  }
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+
+  // Keyboard collapse unmounts the row without a mousedown-outside. Persist
+  // a thumbs-down draft so it is not discarded with the DOM.
+  useEffect(() => {
+    return () => {
+      const draft = feedbackRef.current;
+      if (draft?.rating === 'down') persistRef.current(draft);
+    };
+  }, []);
+
+  function closeEditor(opts: { persistDraft?: boolean } = {}) {
+    const persistDraft = opts.persistDraft !== false;
+    const draft = feedbackRef.current;
+    // Thumbs-down stays a local draft until the editor commits so my_prompt
+    // can ride on the first setTaskFeedback (down amends auto-spawn reflect).
+    if (persistDraft && draft?.rating === 'down' && !persist(draft)) return;
+    setEditorOpen(false);
+    queueMicrotask(() => pillRef.current?.focus());
+  }
+
+  useEffect(() => {
+    // Unrated editors have no overlay to dismiss — skip outside-click / Escape
+    // until a draft rating exists.
+    if (!editorOpen || feedback === undefined) return;
+    function onDoc(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        closeEditor();
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeEditor();
+      }
+    }
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [editorOpen, feedback]);
+
+  useEffect(() => {
+    if (!showEditor || !moveFocusIntoEditor.current) return;
+    moveFocusIntoEditor.current = false;
+    firstThumbRef.current?.focus();
+  }, [showEditor]);
+
+  function submit(next: TaskCompletionFeedback, opts: { persistNow?: boolean } = {}) {
+    // Unlike the complete dialog, late rating cannot clear — setTaskFeedback
+    // always requires a rating. Clicking the active thumb is a no-op.
+    if (sameFeedback(feedback, next)) return;
+    const persistNow = opts.persistNow ?? next.rating === 'up';
+    if (persistNow && !persist(next)) return;
+    setLocal(next);
+    feedbackRef.current = next;
+    if (next.rating === 'up') closeEditor({ persistDraft: false });
+  }
+
+  const pill = feedback ? ratingCopy(feedback) : null;
+  const pillLabel = pill ? `${pill.title}. Change rating.` : '';
+
+  return (
+    <div
+      className="completed-row-rating-wrap"
+      ref={wrapRef}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        // Label clicks blur with relatedTarget null before focusing the
+        // checkbox; that must not commit a bare thumbs-down.
+        if (!(next instanceof Node)) return;
+        if (wrapRef.current?.contains(next)) return;
+        const draft = feedbackRef.current;
+        if (draft?.rating === 'down') persist(draft);
+      }}
+    >
+      {pill && feedback && (
+        <button
+          ref={pillRef}
+          type="button"
+          className={`completed-row-rating completed-row-rating--${feedback.rating}`}
+          title={pillLabel}
+          aria-label={pillLabel}
+          aria-expanded={showEditor}
+          data-testid="completed-row-rating"
+          onClick={() => {
+            if (showEditor) {
+              closeEditor();
+              return;
+            }
+            moveFocusIntoEditor.current = true;
+            setEditorOpen(true);
+          }}
+        >
+          {pill.emoji}
+        </button>
+      )}
+      {showEditor && (
+        <div
+          className="completed-row-rating-editor"
+          role="group"
+          aria-label={feedback ? 'Change task rating' : 'Rate this task'}
+          data-testid="completed-row-rate-editor"
+        >
+          <button
+            ref={firstThumbRef}
+            type="button"
+            className={`btn-thumb ${feedback?.rating === 'up' ? 'btn-thumb-active' : ''}`}
+            onClick={() => submit(nextFeedback(feedback, 'up'))}
+            aria-pressed={feedback?.rating === 'up'}
+            aria-label="Thumbs up"
+          >
+            👍
+          </button>
+          <button
+            type="button"
+            className={`btn-thumb ${feedback?.rating === 'down' ? 'btn-thumb-active' : ''}`}
+            onClick={() => submit(nextFeedback(feedback, 'down'))}
+            aria-pressed={feedback?.rating === 'down'}
+            aria-label="Thumbs down"
+          >
+            👎
+          </button>
+          {feedback?.rating === 'down' && (
+            <label className="complete-feedback-checkbox">
+              <input
+                type="checkbox"
+                checked={feedback.downReason === 'my_prompt'}
+                onChange={(e) => {
+                  const next: TaskCompletionFeedback = { rating: 'down' };
+                  if (feedback.note) next.note = feedback.note;
+                  if (e.target.checked) next.downReason = 'my_prompt';
+                  submit(next, { persistNow: true });
+                }}
+              />
+              <span>{MY_PROMPT_DOWN_REASON_LABEL}</span>
+            </label>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask, onSchedulePlaybook }: {
   agent: AgentState;
@@ -61,25 +287,16 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
     ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
     : terminalLabel;
 
-  // The operator's completion rating (issue #3097). Captured in
-  // CompleteDialogFooter and persisted on the DTO but never surfaced until now;
-  // render it as a display-only pill so rated tasks are reviewable. Clicking it
-  // just selects the row (no onClick of its own) — it never re-opens the rating
-  // flow.
+  // Completion rating (issues #3097 / #3330). Live completed rows can set or
+  // change it here via setTaskFeedback; cancelled/terminated and archive-only
+  // rows stay display-only when a rating already exists.
   const feedback = agent.completionFeedback;
-  const ratingEmoji = feedback?.rating === 'up' ? '👍' : '👎';
-  const ratingWord = feedback?.rating === 'up' ? 'Rated good' : 'Rated bad';
-  const downReasonLabel =
-    feedback?.downReason === 'agent_behavior'
-      ? 'Agent behavior'
-      : feedback?.downReason === 'my_prompt'
-        ? 'My prompt was unclear'
-        : undefined;
-  const ratingNoteParts = [feedback?.note, downReasonLabel].filter(
-    (part): part is string => typeof part === 'string' && part.length > 0,
+  const canRate = Boolean(
+    agent.taskId
+    && isLiveTask
+    && !pendingDeletion
+    && agent.taskStatus === 'completed',
   );
-  const ratingTitle =
-    ratingNoteParts.length > 0 ? `${ratingWord}: ${ratingNoteParts.join(' — ')}` : ratingWord;
 
   function selectCompletedAgent() {
     if (pendingDeletion) return;
@@ -118,14 +335,21 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt, agent.finishedAt)}
           </span>
-          {feedback && (
+          {canRate && agent.taskId && (
+            <CompletedRowRatingControl
+              taskId={agent.taskId}
+              persisted={feedback}
+              send={send}
+            />
+          )}
+          {!canRate && feedback && (
             <span
               className={`completed-row-rating completed-row-rating--${feedback.rating}`}
-              title={ratingTitle}
-              aria-label={ratingTitle}
+              title={ratingCopy(feedback).title}
+              aria-label={ratingCopy(feedback).title}
               data-testid="completed-row-rating"
             >
-              {ratingEmoji}
+              {ratingCopy(feedback).emoji}
             </span>
           )}
           <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>
