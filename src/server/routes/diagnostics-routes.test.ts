@@ -2890,6 +2890,8 @@ describe('diagnostics routes', () => {
           skipped: number;
           failed: number;
           crashLoopSkips: number;
+          unverified: number;
+          repaired: number;
           generatedAt: string;
           relaunchedEntries?: unknown;
         };
@@ -2899,6 +2901,8 @@ describe('diagnostics routes', () => {
         skipped: 3,
         failed: 1,
         crashLoopSkips: 2,
+        unverified: 0,
+        repaired: 0,
         generatedAt: '2026-08-12T00:00:00.000Z',
       });
       // Counts only — no full entry arrays on the compact health surface.
@@ -2907,7 +2911,9 @@ describe('diagnostics routes', () => {
         'failed',
         'generatedAt',
         'relaunched',
+        'repaired',
         'skipped',
+        'unverified',
       ]);
     });
 
@@ -2948,6 +2954,8 @@ describe('diagnostics routes', () => {
         skipped: 1,
         failed: 0,
         crashLoopSkips: 1,
+        unverified: 0,
+        repaired: 0,
       });
     });
 
@@ -2973,6 +2981,8 @@ describe('diagnostics routes', () => {
           skipped: number;
           failed: number;
           crashLoopSkips: number;
+          unverified: number;
+          repaired: number;
           generatedAt: string;
         };
       };
@@ -2981,8 +2991,83 @@ describe('diagnostics routes', () => {
         skipped: 0,
         failed: 0,
         crashLoopSkips: 0,
+        unverified: 0,
+        repaired: 0,
         generatedAt: gate.getProgress().readyAt,
       });
+    });
+
+    test('projects post-restart unverified and repaired counts (issue #3316)', async () => {
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        serverStartedAt: '2026-08-12T00:00:00.000Z',
+        startupRecoverySummary: {
+          relaunched: [],
+          skipped: [],
+          failed: [],
+          postRestartRecovery: {
+            restartEpoch: 1_700_000_000_000,
+            verified: [
+              {
+                sessionId: 'wedged',
+                classification: 'recovered-unverified',
+                restartEpoch: 1_700_000_000_000,
+                repairAttempts: 2,
+                identityVerified: false,
+                masterPid: -1,
+                agentPid: null,
+                livenessObserved: false,
+                elapsedMs: 40,
+                failureReason: 'no-liveness-after-repair',
+              },
+              {
+                sessionId: 'healed',
+                classification: 'recovered-live',
+                restartEpoch: 1_700_000_000_000,
+                repairAttempts: 1,
+                identityVerified: true,
+                masterPid: 100,
+                agentPid: 101,
+                livenessObserved: true,
+                elapsedMs: 12,
+              },
+            ],
+            errors: [{ sessionId: 'boom', error: 'attach failed' }],
+            live: 1,
+            idle: 0,
+            repaired: 1,
+            unverified: 1,
+          },
+        },
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const body = await res.json() as {
+        startupRecovery?: {
+          relaunched: number;
+          skipped: number;
+          failed: number;
+          crashLoopSkips: number;
+          unverified: number;
+          repaired: number;
+          generatedAt: string;
+          verified?: unknown;
+          errors?: unknown;
+        };
+      };
+      expect(body.startupRecovery).toEqual({
+        relaunched: 0,
+        skipped: 0,
+        failed: 0,
+        crashLoopSkips: 0,
+        unverified: 1,
+        repaired: 1,
+        generatedAt: '2026-08-12T00:00:00.000Z',
+      });
+      // Counts only — do not copy the post-restart finding lists onto health.
+      expect(body.startupRecovery).not.toHaveProperty('verified');
+      expect(body.startupRecovery).not.toHaveProperty('errors');
     });
   });
 

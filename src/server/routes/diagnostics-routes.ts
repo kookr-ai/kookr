@@ -49,6 +49,7 @@ import { probeSttHealth } from '../../adapters/circuit-breaker-stt-client.js';
 import { validateSpeechServiceUrl } from '../speech-service-url.js';
 import type { RouteDeps } from './shared.js';
 import { isCrashLoopSkipReason, type CrashRecoveryResult } from '../crash-recovery.js';
+import type { PostRestartRecoverySummary } from '../post-restart-recovery.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
@@ -2312,12 +2313,16 @@ export function checkSchedulesPausedReadiness(
  * Counts only — full relaunched/skipped/failed entry lists stay on
  * `GET /api/startup-summary`. `crashLoopSkips` is the subset of `skipped`
  * whose reason came from either crash-loop guard (see crash-recovery.ts).
+ * `unverified` / `repaired` are post-restart transport-verification counts
+ * (issue #3316); zeros when that phase had nothing to report.
  */
 export interface StartupRecoveryHealthSummary {
   relaunched: number;
   skipped: number;
   failed: number;
   crashLoopSkips: number;
+  unverified: number;
+  repaired: number;
   generatedAt: string;
 }
 
@@ -2327,11 +2332,19 @@ const EMPTY_CRASH_RECOVERY_RESULT: CrashRecoveryResult = {
   failed: [],
 };
 
+type StartupRecoveryHealthSource = Pick<
+  CrashRecoveryResult,
+  'relaunched' | 'skipped' | 'failed'
+> & {
+  postRestartRecovery?: Pick<PostRestartRecoverySummary, 'unverified' | 'repaired'>;
+};
+
 /**
- * Project a full crash-recovery result into health counts.
+ * Project a full crash-recovery result (plus optional post-restart counts)
+ * into health counts.
  */
 export function buildStartupRecoveryHealthSummary(
-  summary: Pick<CrashRecoveryResult, 'relaunched' | 'skipped' | 'failed'>,
+  summary: StartupRecoveryHealthSource,
   generatedAt: string,
 ): StartupRecoveryHealthSummary {
   let crashLoopSkips = 0;
@@ -2345,16 +2358,19 @@ export function buildStartupRecoveryHealthSummary(
     skipped: summary.skipped.length,
     failed: summary.failed.length,
     crashLoopSkips,
+    unverified: summary.postRestartRecovery?.unverified ?? 0,
+    repaired: summary.postRestartRecovery?.repaired ?? 0,
     generatedAt,
   };
 }
 
 /**
- * Resolve the optional `startupRecovery` health block (issue #2351).
+ * Resolve the optional `startupRecovery` health block (issue #2351 / #3316).
  *
  * - Omitted before recovery completes when no summary has been stored yet.
  * - After `startupReadiness` reports `readyAt` (or once a summary exists),
- *   returns counts — zeros when crash recovery had nothing to report.
+ *   returns counts — zeros when crash recovery or post-restart verification
+ *   had nothing to report.
  * - `generatedAt` prefers readiness `readyAt`, then the caller fallback
  *   (typically `serverStartedAt`), then "now" for partial test harnesses.
  */
