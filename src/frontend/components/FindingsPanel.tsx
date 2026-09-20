@@ -76,16 +76,6 @@ const FINDINGS_SECTION_COLLAPSED_KEYS = [
   COMPLETED_SECTION_COLLAPSED_KEY,
 ] as const;
 
-// Survives FindingsPanel remount (mobile findings/task tabs) so a consumed
-// chip click cannot re-expand after the operator collapses Completed.
-// useRef(0) would reset on remount and replay the last nonce.
-let lastHandledExpandCompletedNonce = 0;
-
-/** Test-only: isolate nonce high-water across FindingsPanel test files. */
-export function __resetExpandCompletedNonceForTests(): void {
-  lastHandledExpandCompletedNonce = 0;
-}
-
 /**
  * Severity display order, most-urgent first. Kept identical to the CLI's
  * `SEVERITIES` (`bin/kookr-status.js`) so the dashboard header and
@@ -168,6 +158,13 @@ interface Props {
    * count refresh never pops the section open.
    */
   expandCompletedNonce?: number;
+  /**
+   * App-owned high-water for {@link expandCompletedNonce}. Survives this
+   * panel's mobile-tab remount (App stays mounted) but resets when App itself
+   * remounts (error-boundary recovery). Isolated tests may omit it; they get
+   * a per-instance ref.
+   */
+  consumedExpandNonceRef?: { current: number };
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -202,6 +199,7 @@ export function FindingsPanel({
   onLaunch,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
   expandCompletedNonce = 0,
+  consumedExpandNonceRef,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const archivedAgents = useKookrStore((s) => s.archivedAgents);
@@ -276,21 +274,23 @@ export function FindingsPanel({
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
   const completedSectionRef = useRef<HTMLDivElement>(null);
+  const fallbackConsumedExpandNonceRef = useRef(0);
+  const consumedNonceRef = consumedExpandNonceRef ?? fallbackConsumedExpandNonceRef;
   // Status-bar 24h chip click: expand immediately, then scroll after paint.
   // Mark the nonce handled only when the timer fires so React StrictMode's
-  // effect replay (cleanup cancels the first timer) still scrolls. A module
-  // high-water survives mobile tab remounts; a ref seeded at 0 would replay
-  // the last click and override a manual collapse. Count-only re-renders
-  // leave the nonce unchanged and do not run this path.
+  // effect replay (cleanup cancels the first timer) still scrolls. The
+  // high-water lives on App's ref so a FindingsPanel remount (mobile tabs)
+  // does not replay the last click, while an App remount (error recovery)
+  // starts clean. Count-only re-renders leave the nonce unchanged.
   useEffect(() => {
-    if (!expandCompletedNonce || expandCompletedNonce <= lastHandledExpandCompletedNonce) return;
+    if (!expandCompletedNonce || expandCompletedNonce <= consumedNonceRef.current) return;
     expandCompleted();
     const timer = window.setTimeout(() => {
-      lastHandledExpandCompletedNonce = expandCompletedNonce;
+      consumedNonceRef.current = expandCompletedNonce;
       completedSectionRef.current?.scrollIntoView?.({ block: 'nearest' });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, [expandCompletedNonce, expandCompleted]);
+  }, [expandCompletedNonce, expandCompleted, consumedNonceRef]);
   const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);

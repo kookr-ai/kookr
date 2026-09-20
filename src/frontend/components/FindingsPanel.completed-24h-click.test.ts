@@ -14,7 +14,6 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   FindingsPanel,
   COMPLETED_SECTION_COLLAPSED_KEY,
-  __resetExpandCompletedNonceForTests,
 } from './FindingsPanel.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
@@ -45,6 +44,7 @@ function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
 function renderPanel(root: Root, props: {
   completed?: AgentState[];
   expandCompletedNonce?: number;
+  consumedExpandNonceRef?: { current: number };
   send?: (msg: ClientMessage) => void;
 }): void {
   act(() => {
@@ -59,6 +59,7 @@ function renderPanel(root: Root, props: {
       clearCompletedFinishedCount: 1,
       clearCompletedTerminatedCount: 0,
       expandCompletedNonce: props.expandCompletedNonce,
+      consumedExpandNonceRef: props.consumedExpandNonceRef,
     }));
   });
 }
@@ -75,7 +76,6 @@ describe('FindingsPanel completed-24h chip expand request (issue #3333)', () => 
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.useFakeTimers();
     localStorage.clear();
-    __resetExpandCompletedNonceForTests();
     syncGlobalStore();
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
@@ -146,8 +146,9 @@ describe('FindingsPanel completed-24h chip expand request (issue #3333)', () => 
   });
 
   test('a consumed click does not re-expand after remount if the operator collapsed Completed', () => {
-    renderPanel(root!, { expandCompletedNonce: 0 });
-    renderPanel(root!, { expandCompletedNonce: 1 });
+    const consumedExpandNonceRef = { current: 0 };
+    renderPanel(root!, { expandCompletedNonce: 0, consumedExpandNonceRef });
+    renderPanel(root!, { expandCompletedNonce: 1, consumedExpandNonceRef });
     act(() => vi.runOnlyPendingTimers());
     expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
 
@@ -159,11 +160,32 @@ describe('FindingsPanel completed-24h chip expand request (issue #3333)', () => 
     act(() => root!.unmount());
     root = createRoot(container);
     scrolledElements.length = 0;
-    renderPanel(root, { expandCompletedNonce: 1 });
+    renderPanel(root, { expandCompletedNonce: 1, consumedExpandNonceRef });
     act(() => vi.runOnlyPendingTimers());
 
     expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
     expect(scrolledElements).toHaveLength(0);
+  });
+
+  test('an App remount (error recovery) starts a fresh high-water so later clicks still expand', () => {
+    const firstAppRef = { current: 0 };
+    renderPanel(root!, { expandCompletedNonce: 1, consumedExpandNonceRef: firstAppRef });
+    act(() => vi.runOnlyPendingTimers());
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+
+    const header = container.querySelector<HTMLButtonElement>('.completed-section .section-header');
+    act(() => header!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('false');
+
+    act(() => root!.unmount());
+    root = createRoot(container);
+    scrolledElements.length = 0;
+    const recoveredAppRef = { current: 0 };
+    renderPanel(root, { expandCompletedNonce: 1, consumedExpandNonceRef: recoveredAppRef });
+    act(() => vi.runOnlyPendingTimers());
+
+    expect(container.querySelector('.completed-section .section-header')?.getAttribute('aria-expanded')).toBe('true');
+    expect(scrolledElements).toHaveLength(1);
   });
 
   test('a chip click that mounts the panel under StrictMode still scrolls', () => {

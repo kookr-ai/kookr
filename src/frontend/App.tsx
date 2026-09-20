@@ -390,6 +390,7 @@ export function App() {
   // because on mobile the Task tab unmounts FindingsPanel — without that,
   // the nonce bump would land on a missing rail.
   const [expandCompletedNonce, setExpandCompletedNonce] = useState(0);
+  const consumedExpandNonceRef = useRef(0);
   const expandCompletedRail = useCallback(() => {
     setMobileTab('findings');
     setExpandCompletedNonce((n) => n + 1);
@@ -1377,6 +1378,7 @@ export function App() {
       shortcutBindings={shortcutBindings}
       onLaunch={() => openBlankLaunch('findings_empty')}
       expandCompletedNonce={expandCompletedNonce}
+      consumedExpandNonceRef={consumedExpandNonceRef}
     />
   );
 
