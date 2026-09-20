@@ -26,8 +26,11 @@ import { getCompactTasks } from '../api/index.js';
 import { findActiveLaunchDuplicate, withLaunchTaskCwds } from '../../shared/launch-duplicate.js';
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useGrokAuthStatus } from '../hooks/useGrokAuthStatus.js';
+import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { GROK_AUTH_BANNER_ID, GrokAuthPreflightBanner } from './GrokAuthPreflightBanner.js';
 import { CLI_INSTALL_BANNER_ID, CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
+import { RecentPromptsPicker } from './RecentPromptsPicker.js';
+import { track } from '../telemetry.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -53,6 +56,12 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   // not drift after a launch — parity with LaunchTaskDialog / PlaybookBrowser.
   const grokAuth = useGrokAuthStatus();
   const launchCwds = useLaunchTaskCwds();
+  // Same recall list the Launch dialog Manual tab uses. Fetch once the working
+  // directory has resolved (the hook captures cwd at that moment and will not
+  // refetch on later edits). Fail closed to [] so the picker hides. Selecting a
+  // row fills the prompt only — no submit, and cwd / agent / effort / model pins
+  // stay as the operator set them.
+  const recentPrompts = useRecentPrompts({ enabled: cwd.trim().length > 0, cwd });
   const duplicateCandidates = useMemo(
     () => withLaunchTaskCwds(agents, launchCwds),
     [agents, launchCwds],
@@ -324,6 +333,15 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           </Suspense>
         )}
       </div>
+      <RecentPromptsPicker
+        entries={recentPrompts}
+        currentCwd={cwd}
+        onSelect={(recalled, meta) => {
+          setPrompt(recalled);
+          inputRef.current?.focus();
+          track({ type: 'launch_prompt_recall_used', cwdMatch: meta.cwdMatch, rank: meta.rank });
+        }}
+      />
       <span
         className={agentFallbackNotice ? 'agent-type-select-hint' : 'sr-only'}
         role="status"
