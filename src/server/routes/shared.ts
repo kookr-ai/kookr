@@ -361,6 +361,18 @@ export interface RouteDeps {
    */
   emitOperationalAlert?: (alert: Extract<ServerMessage, { type: 'alert' }>) => void;
   /**
+   * Durable operational-alert JSONL sink (issue #3315). `/api/health` reads
+   * only `status()` — configured / writable / lastFailure timestamp+message —
+   * so a frozen incident log (ENOSPC) is distinguishable from a quiet day.
+   * Cheap in-memory read; never opens the file and never dumps alert bodies.
+   * Absent in partial test harnesses ⇒ health omits the `operationalAlertSink`
+   * block.
+   */
+  operationalAlertSink?: Pick<
+    import('../operational-alert-sink.js').OperationalAlertSink,
+    'status'
+  >;
+  /**
    * Coalesced full-snapshot rebuild request from the event pipeline (#704 / #2096).
    * HTTP mutate handlers (Ralph, etc.) should call this instead of building
    * `createSnapshotMessage` + `broadcastToAll` synchronously. Optional so

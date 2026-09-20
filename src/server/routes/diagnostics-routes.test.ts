@@ -47,6 +47,7 @@ import {
 } from '../invent-priority-health-refresher.js';
 import { createSystemdNotifier, type SystemdNotifierHealthBlock } from '../systemd-notify.js';
 import { LastGoodHealthWriter } from '../last-good-health.js';
+import { OperationalAlertSink } from '../operational-alert-sink.js';
 import { HungSuspectTtlReclaimMetrics } from '../hung-suspect-ttl-sweep.js';
 import { FinishedAwaitingAckTtlReclaimMetrics } from '../finished-awaiting-ack-ttl-sweep.js';
 import { ProviderPausedOccupancyMetrics } from '../provider-paused-ttl-sweep.js';
@@ -1033,6 +1034,98 @@ describe('diagnostics routes', () => {
       }).request('/api/health')).json() as { signalDelivery?: unknown };
 
       expect(body).not.toHaveProperty('signalDelivery');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // GET /api/health — operationalAlertSink block (issue #3315)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health operationalAlertSink block (issue #3315)', () => {
+    test('omits the block when the sink is not wired', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { operationalAlertSink?: unknown };
+
+      expect(body).not.toHaveProperty('operationalAlertSink');
+    });
+
+    test('projects configured/writable from status() without lastFailure when the sink is healthy', async () => {
+      const sink = new OperationalAlertSink({ kookrDir: tempDir });
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        operationalAlertSink: sink,
+      }).request('/api/health')).json() as {
+        operationalAlertSink?: { configured: boolean; writable: boolean; lastFailure?: unknown };
+      };
+
+      expect(body.operationalAlertSink).toEqual({ configured: true, writable: true });
+      expect(body.operationalAlertSink).not.toHaveProperty('lastFailure');
+    });
+
+    test('a failed append flips writable to false and records lastFailure without throwing or dumping alert bodies', async () => {
+      const occupied = join(tempDir, 'occupied');
+      writeFileSync(occupied, 'x');
+      const sink = new OperationalAlertSink({
+        filePath: join(occupied, 'nested', 'operational-alerts.jsonl'),
+        now: () => new Date('2026-09-20T00:00:00.000Z'),
+        logger: { error: () => {} },
+      });
+      const alert = {
+        type: 'alert' as const,
+        agentId: 'system',
+        summary: 'SECRET-ALERT-SUMMARY-should-not-appear',
+        details: 'SECRET-ALERT-DETAILS-should-not-appear',
+        severity: 'warning' as const,
+        operationalAlert: {
+          key: 'schedule:dead_man',
+          metric: 'schedule_starvation',
+          state: 'fired' as const,
+        },
+      };
+
+      await expect(sink.append(alert)).resolves.toBe(false);
+
+      const res = await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        operationalAlertSink: sink,
+      }).request('/api/health');
+      expect(res.status).toBe(200);
+      const raw = await res.text();
+      const body = JSON.parse(raw) as {
+        operationalAlertSink: {
+          configured: boolean;
+          writable: boolean;
+          lastFailure?: { ts: string; message: string };
+        };
+      };
+
+      expect(body.operationalAlertSink.configured).toBe(true);
+      expect(body.operationalAlertSink.writable).toBe(false);
+      expect(body.operationalAlertSink.lastFailure?.ts).toBe('2026-09-20T00:00:00.000Z');
+      expect(body.operationalAlertSink.lastFailure?.message.length).toBeGreaterThan(0);
+      expect(raw).not.toContain('SECRET-ALERT-SUMMARY-should-not-appear');
+      expect(raw).not.toContain('SECRET-ALERT-DETAILS-should-not-appear');
+      expect(raw).not.toContain('schedule:dead_man');
+    });
+
+    test('unconfigured sink still reports configured:false writable:true', async () => {
+      const sink = new OperationalAlertSink({ filePath: null });
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        operationalAlertSink: sink,
+      }).request('/api/health')).json() as {
+        operationalAlertSink?: { configured: boolean; writable: boolean };
+      };
+
+      expect(body.operationalAlertSink).toEqual({ configured: false, writable: true });
     });
   });
 
