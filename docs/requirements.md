@@ -867,10 +867,11 @@ The system SHALL preserve required work without consuming a worker when confirme
 
 ### R4b.13: Recall a Recent Manual-Launch Prompt at Launch [F4.1] — SHOULD — `done`
 
-The system SHOULD let the operator refill the Launch dialog's task description from a prompt they previously sent via a manual launch, biased toward the current working directory, so a prompt can be repeated on a specific repository without authoring a playbook. See `docs/rfc/rfc-launch-prompt-recall.md`.
+The system SHOULD let the operator refill the Launch dialog's task description — and the Quick Launch compact prompt — from a prompt they previously sent via a manual launch, biased toward the current working directory, so a prompt can be repeated on a specific repository without authoring a playbook. See `docs/rfc/rfc-launch-prompt-recall.md`.
 
 **Acceptance criteria:**
 - The Manual tab surfaces a "Recent prompts" picker listing the operator's recent manual-launch prompts (`provenance.kind === 'manual'`), most-recent first; selecting one fills the description with that exact text and does not submit, change the working directory/agent/completion criteria, or overwrite a non-empty prompt except as the direct result of that selection
+- Quick Launch mounts the same picker; selecting a row copies the prompt text into the compact input and does not launch or change working directory, agent, effort, or model pins. An empty history or a failed fetch hides the picker, matching the dialog.
 - A prompt ever launched against the current (canonicalized) working directory ranks ahead of prompts never launched there, computed over all occurrences before the result cap
 - Recall is server-backed and read-only: it projects the live task store unioned with a bounded read of the durable terminal-task archive (R4b.12 / #2765), so it recovers prompts already sent — including from other sessions and on a fresh browser — and survives the 1-day live-store prune. It exposes no prompt bodies the same-origin dashboard cannot already obtain via `GET /api/tasks?view=full`
 - The prompt shown is the display prompt (`displayPromptForTask`): guardrail preamble stripped, `userPrompt` preferred, legacy `prompt` as fallback; entries are deduped on display text
@@ -878,7 +879,7 @@ The system SHOULD let the operator refill the Launch dialog's task description f
 - Fetch fails closed: a non-2xx, aborted, or malformed response yields no recall and never blocks a launch; the fetch happens once when the manual tab is shown, not per cwd keystroke
 - `GET /api/tasks/recent-prompts` validates and clamps `limit` (default 20, max 50) and is registered before `/api/tasks/:id` so the literal path is not captured as a task id
 
-**Evidence:** `src/core/recent-manual-prompts.ts`, `src/shared/contracts/recent-prompts.ts`, `src/server/routes/task-routes.ts` (`GET /api/tasks/recent-prompts`), `src/frontend/api/tasks.ts` (`getRecentPrompts`), `src/frontend/hooks/useRecentPrompts.ts`, `src/frontend/components/RecentPromptsPicker.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, and focused tests beside each module (`src/core/recent-manual-prompts.test.ts`, `src/server/routes/task-routes.recent-prompts.test.ts`, `src/frontend/components/RecentPromptsPicker.test.tsx`, `src/frontend/components/LaunchTaskDialog.recall.test.tsx`, `src/shared/contracts/recent-prompts.test.ts`).
+**Evidence:** `src/core/recent-manual-prompts.ts`, `src/shared/contracts/recent-prompts.ts`, `src/server/routes/task-routes.ts` (`GET /api/tasks/recent-prompts`), `src/frontend/api/tasks.ts` (`getRecentPrompts`), `src/frontend/hooks/useRecentPrompts.ts`, `src/frontend/components/RecentPromptsPicker.tsx`, `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, and focused tests beside each module (`src/core/recent-manual-prompts.test.ts`, `src/server/routes/task-routes.recent-prompts.test.ts`, `src/frontend/components/RecentPromptsPicker.test.tsx`, `src/frontend/components/LaunchTaskDialog.recall.test.tsx`, `src/frontend/components/QuickLaunch.recent-prompts.test.ts`, `src/shared/contracts/recent-prompts.test.ts`).
 
 ### R4b.13: Portable Small-Model Intent [F4.1, F11] — SHALL — `done`
 
