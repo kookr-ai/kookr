@@ -676,13 +676,15 @@ pure `planHostStaleDtachReap` policy:
 6. Kill path is `killProcessTree` (SIGTERM → grace → SIGKILL) on **selected
    pids only** — no unbounded `kill -9` of unknown processes.
 
-**Health field** (cheap last-sweep counters; never a `/proc` scan on this path):
+**Health field** (cheap last-sweep gauges plus process-lifetime
+`totalHostStaleDtachReaped` and `killFailedTotal`; never a `/proc` scan on this path):
 `hostStaleDtachReaper` on `GET /api/health`.
 
 Key counters: `lastHostStaleDtachReaped`, `lastReapedAlways`,
 `lastReapedUnderPressure`, `skippedLiveAttached`, `skippedUnderBound`,
 `skippedRateLimited`, `totalHostStaleDtachReaped`, `lastDtachCount`,
-`lastUnderPressure`, `dryRun`.
+`lastUnderPressure`, `dryRun`, plus cumulative `killFailedTotal` with
+`lastKillFailureAt` / `lastKillFailurePid` (issue #3314; never a pid list).
 
 **Operator knobs** (see [environment-variables.md](./environment-variables.md)):
 
@@ -708,7 +710,10 @@ Key counters: `lastHostStaleDtachReaped`, `lastReapedAlways`,
 4. `missing_socket_aged` always selects even under the soft bound (#2384).
    `skippedUnderBound` only rises for future pressure-gated classes; if
    `lastEligibleCount` is high but `lastHostStaleDtachReaped` stays 0, check
-   `skippedRateLimited` / `skippedLiveAttached` / dry-run first.
+   `killFailedTotal` / `lastKillFailurePid` as well as `skippedRateLimited` /
+   `skippedLiveAttached` / dry-run first. A missing-socket-aged master that
+   resists SIGKILL is re-selected every sweep and does not move
+   `totalHostStaleDtachReaped`.
 5. If `skippedLiveAttached` is high, do **not** kill those pids — they are still
    backend live sessions; use the session reaper / task terminal path instead.
 6. For a safe observation pass before kills: set

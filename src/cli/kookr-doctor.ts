@@ -1410,7 +1410,7 @@ async function checkHostStaleDtach(
       recommendedAction:
         'Inspect GET /api/health hostStaleDtachReaper (lastHostStaleDtachReaped / ' +
         'lastReapedAlways / lastReapedUnderPressure / skippedLiveAttached / ' +
-        'skippedUnderBound) and staleProcesses.dtach; the bounded host-stale reaper ' +
+        'skippedUnderBound / killFailedTotal / lastKillFailurePid) and staleProcesses.dtach; the bounded host-stale reaper ' +
         '(#2356 / #2384) always reclaims missing-socket aged masters (rate-limited; ' +
         'set KOOKR_HOST_STALE_DTACH_REAP_DRY_RUN=1 to observe). ' +
         'Enable KOOKR_RESOURCE_WATCHDOG=1 for briefed auto-investigation. ' +

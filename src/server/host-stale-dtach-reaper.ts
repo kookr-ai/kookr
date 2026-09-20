@@ -15,7 +15,10 @@
  *  - Dry-run mode logs would-reap pids without signalling.
  *  - Kill path uses `killProcessTree` (TERM → grace → KILL) only on selected
  *    pids; never unbounded `kill -9` of unknown processes.
- *  - Health counters are last-sweep in-memory only (#1553).
+ *  - Health last-sweep gauges plus process-lifetime
+ *    `totalHostStaleDtachReaped` and `killFailedTotal` (issues #1553, #3314).
+ *    The kill-failure total must survive across sweeps so a master that
+ *    resists SIGKILL is visible on `/api/health`.
  */
 import { existsSync } from 'node:fs';
 
@@ -110,6 +113,20 @@ export interface HostStaleDtachReaperHealthSnapshot {
   /** Last-sweep always-select vs pressure-gated reaps (issue #2384). */
   lastReapedAlways: number;
   lastReapedUnderPressure: number;
+  /**
+   * Cumulative count of `killProcessTree` failures (issue #3314) — incremented
+   * once per rejected kill attempt, so a sweep that fails several candidates
+   * adds more than one. A missing-socket-aged master that resists SIGKILL is
+   * re-selected and re-fails every sweep while `totalHostStaleDtachReaped`
+   * stays flat, so without this counter the miss is invisible except in
+   * server logs. Mirrors session-reaper `killSessionFailedTotal` (#3155).
+   * Health never publishes the per-sweep pid list (cardinality).
+   */
+  killFailedTotal: number;
+  /** ISO timestamp of the most recent kill failure, or null if none yet. */
+  lastKillFailureAt: string | null;
+  /** Pid of the most recent kill failure, or null if none yet. */
+  lastKillFailurePid: number | null;
 }
 
 function formatAge(ageMs: number | null): string {
@@ -213,6 +230,9 @@ export class HostStaleDtachReaperService {
   private lastReapedAlways = 0;
   private lastReapedUnderPressure = 0;
   private lastDryRun = false;
+  private killFailedTotal = 0;
+  private lastKillFailureAt: string | null = null;
+  private lastKillFailurePid: number | null = null;
 
   constructor(private readonly deps: HostStaleDtachReaperDeps) {}
 
@@ -235,6 +255,9 @@ export class HostStaleDtachReaperService {
       lastEligibleCount: this.lastEligibleCount,
       lastReapedAlways: this.lastReapedAlways,
       lastReapedUnderPressure: this.lastReapedUnderPressure,
+      killFailedTotal: this.killFailedTotal,
+      lastKillFailureAt: this.lastKillFailureAt,
+      lastKillFailurePid: this.lastKillFailurePid,
     };
   }
 
@@ -321,7 +344,14 @@ export class HostStaleDtachReaperService {
             `(${entry.reason})`,
         );
       } catch (err) {
+        // Issue #3314: count the failure so a missing-socket-aged master that
+        // resists SIGKILL is a visible health signal instead of a silent
+        // re-fail every sweep. Keep the error log so a single failure stays
+        // traceable; the loop still continues remaining candidates.
         failedPids.push(candidate.pid);
+        this.killFailedTotal += 1;
+        this.lastKillFailureAt = new Date(now).toISOString();
+        this.lastKillFailurePid = candidate.pid;
         logger.error(
           `[host-stale-dtach-reaper] failed to reap pid=${candidate.pid}: ` +
             (err instanceof Error ? err.message : String(err)),

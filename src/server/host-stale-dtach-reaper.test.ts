@@ -227,12 +227,13 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
     expect(service.getHealthSnapshot().dryRun).toBe(true);
   });
 
-  it('continues past a kill failure', async () => {
+  it('continues past a kill failure and counts it on health (issue #3314)', async () => {
     const reap = vi
       .fn()
       .mockRejectedValueOnce(new Error('EPERM'))
       .mockResolvedValueOnce(undefined);
     const error = vi.fn();
+    const now = Date.UTC(2026, 8, 20, 12, 0, 0);
     const processes = manyStale(DEFAULT_DTACH_PRESSURE_SOFT_BOUND);
     const service = new HostStaleDtachReaperService({
       listLiveSessionIds: () => new Set(),
@@ -240,14 +241,100 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
       socketExists: () => false,
       reap,
       getConfig: () => baseConfig({ maxReapsPerSweep: 2 }),
+      now: () => now,
       logger: { log: vi.fn(), warn: vi.fn(), error },
+    });
+
+    const before = service.getHealthSnapshot();
+    expect(before.killFailedTotal).toBe(0);
+    expect(before.lastKillFailureAt).toBeNull();
+    expect(before.lastKillFailurePid).toBeNull();
+
+    const result = await service.runSweep();
+    // Sweep stays fail-open: the second candidate still reaps after the first
+    // killProcessTree throw. Health records the miss as a scalar, never the
+    // per-sweep pid list (cardinality).
+    expect(result.reaped.map((r) => r.pid)).toEqual([2001]);
+    expect(result.failedPids).toEqual([2000]);
+    expect(error).toHaveBeenCalledOnce();
+    expect(reap).toHaveBeenCalledTimes(2);
+
+    const health = service.getHealthSnapshot();
+    expect(health.totalHostStaleDtachReaped).toBe(1);
+    expect(health.killFailedTotal).toBe(1);
+    expect(health.lastKillFailurePid).toBe(2000);
+    expect(health.lastKillFailureAt).toBe(new Date(now).toISOString());
+    expect(health).not.toHaveProperty('failedPids');
+  });
+
+  it('accumulates killFailedTotal across sweeps while a master keeps resisting kill (issue #3314)', async () => {
+    const reap = vi.fn().mockRejectedValue(new Error('EPERM'));
+    const processes = manyStale(5);
+    const service = new HostStaleDtachReaperService({
+      listLiveSessionIds: () => new Set(),
+      listProcesses: () => processes,
+      socketExists: () => false,
+      reap,
+      getConfig: () => baseConfig({ maxReapsPerSweep: 1 }),
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await service.runSweep();
+    await service.runSweep();
+
+    const health = service.getHealthSnapshot();
+    expect(health.killFailedTotal).toBe(2);
+    expect(health.totalHostStaleDtachReaped).toBe(0);
+    expect(health.lastKillFailurePid).toBe(2000);
+    expect(typeof health.lastKillFailureAt).toBe('string');
+  });
+
+  it('adds two kill failures in one mixed sweep and records the last failed pid (issue #3314)', async () => {
+    const reap = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EPERM'))
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('ESRCH'));
+    const processes = manyStale(DEFAULT_DTACH_PRESSURE_SOFT_BOUND);
+    const service = new HostStaleDtachReaperService({
+      listLiveSessionIds: () => new Set(),
+      listProcesses: () => processes,
+      socketExists: () => false,
+      reap,
+      getConfig: () => baseConfig({ maxReapsPerSweep: 3 }),
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
 
     const result = await service.runSweep();
     expect(result.reaped.map((r) => r.pid)).toEqual([2001]);
-    expect(result.failedPids).toEqual([2000]);
-    expect(error).toHaveBeenCalledOnce();
-    expect(service.getHealthSnapshot().totalHostStaleDtachReaped).toBe(1);
+    expect(result.failedPids).toEqual([2000, 2002]);
+    expect(reap).toHaveBeenCalledTimes(3);
+
+    const health = service.getHealthSnapshot();
+    expect(health.killFailedTotal).toBe(2);
+    expect(health.totalHostStaleDtachReaped).toBe(1);
+    // Last failure wins; health never publishes the full failed-pid list.
+    expect(health.lastKillFailurePid).toBe(2002);
+    expect(health).not.toHaveProperty('failedPids');
+  });
+
+  it('does not increment killFailedTotal in dry-run (issue #3314)', async () => {
+    const reap = vi.fn().mockRejectedValue(new Error('EPERM'));
+    const processes = manyStale(DEFAULT_DTACH_PRESSURE_SOFT_BOUND);
+    const service = new HostStaleDtachReaperService({
+      listLiveSessionIds: () => new Set(),
+      listProcesses: () => processes,
+      socketExists: () => false,
+      reap,
+      getConfig: () => baseConfig({ dryRun: true, maxReapsPerSweep: 2 }),
+      logger: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    });
+
+    await service.runSweep();
+    expect(reap).not.toHaveBeenCalled();
+    expect(service.getHealthSnapshot().killFailedTotal).toBe(0);
+    expect(service.getHealthSnapshot().lastKillFailurePid).toBeNull();
+    expect(service.getHealthSnapshot().lastKillFailureAt).toBeNull();
   });
 
   it('is a no-op when disabled', async () => {
