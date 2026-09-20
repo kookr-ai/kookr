@@ -36,7 +36,10 @@ function excerpt(prompt: string, max = 80): string {
  * Presentational + local view state only (open toggle + filter text). The fetch
  * lives in `useRecentPrompts`; selecting a row emits `onSelect(prompt)` — the same
  * "fill the field, don't submit" effect as a sample-prompt chip. Renders nothing
- * when there is no history, so there is no dead affordance (R8/R10).
+ * when there is no history, so there is no dead affordance (R8/R10). Toggle and
+ * row buttons prevent mousedown default so a parent that dismisses on blur
+ * (Quick Launch) does not close when Safari leaves `relatedTarget` null; the
+ * filter input is left alone so it can take focus.
  */
 export function RecentPromptsPicker({ entries, currentCwd, onSelect }: Props) {
   const [open, setOpen] = useState(false);
@@ -57,6 +60,7 @@ export function RecentPromptsPicker({ entries, currentCwd, onSelect }: Props) {
         className="recent-prompts-toggle"
         aria-expanded={open}
         aria-controls={PANEL_ID}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
       >
         {open ? '▾' : '▸'} Recent prompts ({entries.length})
@@ -86,6 +90,7 @@ export function RecentPromptsPicker({ entries, currentCwd, onSelect }: Props) {
                       type="button"
                       className="recent-prompts-item"
                       title={entry.prompt}
+                      onMouseDown={(e) => e.preventDefault()}
                       onClick={() => {
                         onSelect(entry.prompt, { cwdMatch: entry.cwdMatch, rank: i });
                         setOpen(false);

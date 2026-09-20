@@ -91,13 +91,13 @@ describe('QuickLaunch recent-prompt recall (#3334)', () => {
     });
   }
 
-  test('hides the picker when there is no history (and a failed fetch is the same empty list)', async () => {
+  test('no recall control when there is no history', async () => {
     render();
     await flush();
     expect(container.querySelector('.recent-prompts')).toBeNull();
   });
 
-  test('shows the existing picker when at least one recent manual prompt is available', async () => {
+  test('shows the existing picker once the working directory has resolved', async () => {
     recentEntries.push({
       prompt: RECALLED,
       cwd: CWD,
@@ -111,7 +111,8 @@ describe('QuickLaunch recent-prompt recall (#3334)', () => {
     expect(toggle).not.toBeNull();
     expect(toggle?.textContent).toContain('Recent prompts');
     expect(toggle?.textContent).toContain('(1)');
-    expect(hookCalls.some((call) => call.enabled)).toBe(true);
+    expect(hookCalls.some((call) => !call.enabled && call.cwd === '')).toBe(true);
+    expect(hookCalls.some((call) => call.enabled && call.cwd === CWD)).toBe(true);
   });
 
   test('selecting a row copies the prompt into the input and does not launch or close', async () => {
@@ -162,10 +163,42 @@ describe('QuickLaunch recent-prompt recall (#3334)', () => {
     act(() => container.querySelector<HTMLButtonElement>('.recent-prompts-toggle')?.click());
     act(() => container.querySelector<HTMLButtonElement>('.recent-prompts-item')?.click());
 
+    expect(container.querySelector<HTMLInputElement>('input.quick-launch-input')?.value).toBe(RECALLED);
     expect(container.querySelector('.quick-launch-cwd')?.textContent).toBe(cwdBefore);
     expect(container.querySelector<HTMLSelectElement>('.agent-type-select select')?.value).toBe(agentBefore);
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="Reasoning effort"]')?.value).toBe(effortBefore);
     expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')?.value).toBe(modelBefore);
     expect(sent).toEqual([]);
+    expect(closed).toBe(0);
+  });
+
+  test('Safari-style mousedown on Recent prompts does not close the bar', async () => {
+    recentEntries.push({
+      prompt: RECALLED,
+      cwd: CWD,
+      at: Date.now(),
+      cwdMatch: true,
+    });
+    render();
+    await flush();
+
+    const input = container.querySelector<HTMLInputElement>('input.quick-launch-input');
+    const toggle = container.querySelector<HTMLButtonElement>('.recent-prompts-toggle');
+    expect(toggle).not.toBeNull();
+    act(() => input?.focus());
+
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
+    act(() => {
+      toggle!.dispatchEvent(mouseDown);
+      toggle!.click();
+    });
+    expect(mouseDown.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(closed).toBe(0);
+    expect(container.querySelector('.quick-launch-bar')).not.toBeNull();
+    expect(container.querySelector('.recent-prompts-panel')).not.toBeNull();
   });
 });
