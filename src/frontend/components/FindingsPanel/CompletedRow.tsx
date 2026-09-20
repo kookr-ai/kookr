@@ -51,9 +51,11 @@ function nextFeedback(
 
 function sameFeedback(
   a: TaskCompletionFeedback | undefined,
-  b: TaskCompletionFeedback,
+  b: TaskCompletionFeedback | undefined,
 ): boolean {
-  return a?.rating === b.rating
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  return a.rating === b.rating
     && (a.note ?? '') === (b.note ?? '')
     && a.downReason === b.downReason;
 }
@@ -77,6 +79,21 @@ function CompletedRowRatingControl({
   const feedback = local ?? persisted;
   const feedbackRef = useRef(feedback);
   feedbackRef.current = feedback;
+
+  // Adopt a snapshot that caught up with our last send, or an external
+  // change from another client. Keep an unsent thumbs-down draft.
+  useEffect(() => {
+    const unsentDown = local?.rating === 'down' && !sameFeedback(sentRef.current, local);
+    if (unsentDown) return;
+    if (sameFeedback(sentRef.current, persisted) && local && sameFeedback(local, persisted)) {
+      setLocal(undefined);
+      return;
+    }
+    if (persisted && !sameFeedback(sentRef.current, persisted) && !sameFeedback(local, persisted)) {
+      sentRef.current = persisted;
+      setLocal(undefined);
+    }
+  }, [persisted, local]);
   // Unrated rows keep thumbs visible (there is no pill to reopen). Rated rows
   // keep the pill mounted and expand the editor beside it.
   const showEditor = editorOpen || feedback === undefined;
@@ -88,6 +105,17 @@ function CompletedRowRatingControl({
     sentRef.current = next;
     return true;
   }
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+
+  // Keyboard collapse unmounts the row without a mousedown-outside. Persist
+  // a thumbs-down draft so it is not discarded with the DOM.
+  useEffect(() => {
+    return () => {
+      const draft = feedbackRef.current;
+      if (draft?.rating === 'down') persistRef.current(draft);
+    };
+  }, []);
 
   function closeEditor(opts: { persistDraft?: boolean } = {}) {
     const persistDraft = opts.persistDraft !== false;

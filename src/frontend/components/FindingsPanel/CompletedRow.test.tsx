@@ -278,6 +278,25 @@ describe('CompletedRow completion-rating pill', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  test('unmounting a thumbs-down draft persists it (keyboard collapse)', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent());
+    root = rendered;
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!.click();
+    });
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      rendered.unmount();
+    });
+    root = null;
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+    });
+  });
+
   test('a row pending deletion does not offer late rating', () => {
     const { root: rendered, send } = renderRow(
       container,
