@@ -23,7 +23,7 @@ export type LaunchOutcome = 'success' | 'failure';
 export interface LaunchOutcomeSample {
   agentType: string;
   outcome: LaunchOutcome;
-  /** Optional short failure class for operators (e.g. `handshake_timeout`, `paste_readiness_timeout`). */
+  /** Optional short failure class for operators (e.g. `handshake_timeout`). */
   reason?: string;
 }
 

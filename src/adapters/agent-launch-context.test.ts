@@ -662,7 +662,10 @@ describe('deliverInitialPromptToSession', () => {
       launchOutcomeMetrics: metrics,
     });
 
-    expect(metrics.snapshot().totalAttempts).toBe(0);
+    expect(metrics.snapshot()).toEqual(expect.objectContaining({
+      totalAttempts: 0,
+      byAgentType: [],
+    }));
     expect(backend.getWrittenText('s-ready-metrics')).toContain('go');
   });
 });
@@ -1084,7 +1087,10 @@ describe('waitForReady needs paste-mode AND a painted composer (#2977)', () => {
       }),
     ).rejects.toBeInstanceOf(PromptDeliveryBlockedError);
     expect(writeSeqSpy).not.toHaveBeenCalled();
-    expect(metrics.snapshot().totalAttempts).toBe(0);
+    expect(metrics.snapshot()).toEqual(expect.objectContaining({
+      totalAttempts: 0,
+      byAgentType: [],
+    }));
   });
 
   test('onBlocked runs while the dialog is up, then paste waits for the composer (#3295)', async () => {
