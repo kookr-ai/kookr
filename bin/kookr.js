@@ -337,26 +337,30 @@ function readPackageVersion() {
 
 async function runMaintenanceCommand(argv) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = join(here, '..', 'dist', 'cli', 'kookr-maintenance.js');
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-maintenance.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-maintenance.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    console.error('[kookr] Build output not found at ' + entry);
-    console.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    console.error('[kookr] maintenance module not found at ' + entry);
+    console.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(entry);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runMaintenanceCli(argv);
 }
 
 async function runLessonCommand(argv, { env = process.env, out = console, err = console } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = join(here, '..', 'dist', 'cli', 'kookr-lesson.js');
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-lesson.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-lesson.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    err.error('[kookr] Build output not found at ' + entry);
-    err.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    err.error('[kookr] lesson module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runLessonCli(argv, { env, out, err });
 }
 
@@ -392,14 +396,16 @@ async function runReflectCommand(argv, { env = process.env, out = console, err =
 
 async function runEmissionCommand(argv, { env = process.env, out = console, err = console } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = join(here, '..', 'dist', 'cli', 'kookr-emission.js');
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-emission.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-emission.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    err.error('[kookr] Build output not found at ' + entry);
-    err.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    err.error('[kookr] emission module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runEmissionCli(argv, { env, out, err });
 }
 
@@ -435,26 +441,30 @@ async function runQueueFeederCommand(argv, { env = process.env, out = console, e
 
 async function runRetroVerifyCommand(argv, { env = process.env, out = console, err = console } = {}) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = join(here, '..', 'dist', 'cli', 'kookr-retro-verify.js');
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-retro-verify.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-retro-verify.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    err.error('[kookr] Build output not found at ' + entry);
-    err.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    err.error('[kookr] retro-verify module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exitCode = 1;
     return;
   }
-  const mod = await import(pathToFileURL(entry).href);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runRetroVerifyCli(argv, { env, out, err });
 }
 
 async function runCommandOutcomeCommand(argv) {
   const here = dirname(fileURLToPath(import.meta.url));
-  const entry = join(here, '..', 'dist', 'cli', 'kookr-command-outcome.js');
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-command-outcome.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-command-outcome.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
   if (!existsSync(entry)) {
-    console.error('[kookr] Build output not found at ' + entry);
-    console.error('[kookr] Run `pnpm build:server` (or `npm run build`) first.');
+    console.error('[kookr] command-outcome module not found at ' + entry);
+    console.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
     process.exit(1);
   }
-  const mod = await import(entry);
+  const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runCommandOutcomeCli(argv);
 }
 
