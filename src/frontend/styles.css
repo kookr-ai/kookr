@@ -5048,10 +5048,12 @@ a.playbook-empty-docs-link:visited:hover {
 .outcome-finding-task {
   color: var(--text-muted);
 }
-/* Live-task "Open task" affordance (issue #2783 Outcome Scoreboard,
-   issue #3331 Cost Comparison): a text button that reads as a link so
-   historical rows (plain muted text) stay visibly non-actionable. */
+/* Live-task "Open task" affordance (issue #2783 Outcome Scoreboard
+   findings, issue #3345 scoreboard audit rows, issue #3331 Cost
+   Comparison): a text button that reads as a link so historical rows
+   (plain muted text) stay visibly non-actionable. */
 .outcome-finding-open,
+.outcome-task-open,
 .cost-task-open {
   /* inline-flex + min-height keeps the click/tap target at the 24px WCAG 2.5.8
      minimum even though the row text is 11px; vertical padding stays 0 so the
@@ -5070,10 +5072,12 @@ a.playbook-empty-docs-link:visited:hover {
   text-underline-offset: 2px;
 }
 .outcome-finding-open:hover,
+.outcome-task-open:hover,
 .cost-task-open:hover {
   color: var(--text-bright);
 }
 .outcome-finding-open:focus-visible,
+.outcome-task-open:focus-visible,
 .cost-task-open:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
@@ -5111,6 +5115,15 @@ a.playbook-empty-docs-link:visited:hover {
 }
 .outcome-task-label {
   font-weight: 700;
+  color: var(--text-bright);
+}
+/* After .outcome-task-label so the live-row link color wins over the
+   default bold-bright label (same specificity, later rule). Hover is
+   restated at this specificity so it still beats the resting blue. */
+.outcome-task-label.outcome-task-open {
+  color: var(--blue);
+}
+.outcome-task-label.outcome-task-open:hover {
   color: var(--text-bright);
 }
 .outcome-ledger-meta {
