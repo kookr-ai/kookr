@@ -269,7 +269,21 @@ export function OutcomeLedgerPanel({
                   />
                 )}
                 <Metric label="tokens" value={formatTokens(data.summary.totalInputTokens + data.summary.totalOutputTokens)} detail={`${formatTokens(data.summary.totalInputTokens)} in / ${formatTokens(data.summary.totalOutputTokens)} out`} />
-                <Metric label="feedback" value={formatRate(data.summary.thumbsUpRate)} detail={`${pct(data.summary.feedbackCoverage)} coverage`} delta={comparisonDelta(data.comparison, 'thumbsUpRate')} timeWindow={data.window.value} />
+                <Metric
+                  label="feedback"
+                  value={formatFeedbackHeadline(
+                    data.summary.thumbsUp,
+                    data.summary.thumbsDown,
+                    data.summary.thumbsUpRate,
+                  )}
+                  detail={formatFeedbackDetail(
+                    data.summary.thumbsUp,
+                    data.summary.thumbsDown,
+                    data.summary.feedbackCoverage,
+                  )}
+                  delta={comparisonDelta(data.comparison, 'thumbsUpRate')}
+                  timeWindow={data.window.value}
+                />
                 <Metric label="verified" value={pct(data.quality.verificationCoverage)} detail={`${data.quality.verificationKnownCompletedTasks}/${data.summary.completedTaskCount}`} delta={comparisonDelta(data.comparison, 'verificationCoverage')} timeWindow={data.window.value} />
                 {/*
                   Close-out coverage (#2755): the share of completed tasks that
@@ -639,6 +653,40 @@ function readinessLabel(readiness: OutcomeLedgerResponse['readiness']): string {
 
 function formatRate(value: number | null): string {
   return value == null ? 'unknown' : `${Math.round(value * 100)}%`;
+}
+
+/**
+ * Headline for the Scoreboard feedback tile.
+ *
+ * A thumbs-up *rate* from one vote looks the same as a rate from fifty. When
+ * there are no votes at all, refuse to show a percentage — including a
+ * transported 100% — so an empty sample cannot masquerade as a strong signal.
+ */
+function formatFeedbackHeadline(
+  thumbsUp: number,
+  thumbsDown: number,
+  thumbsUpRate: number | null,
+): string {
+  if (thumbsUp + thumbsDown === 0) return 'unknown';
+  return formatRate(thumbsUpRate);
+}
+
+/**
+ * Sample-size sub-label for the Scoreboard feedback tile.
+ *
+ * Pair the headline rate with the absolute up/down split and n so a "100%"
+ * cannot hide a 1-vote sample — the same discipline Cost Comparison already
+ * applies. Zero votes → `n=0` and no thumbs glyphs (nothing to split);
+ * coverage stays so the share of tasks with any vote is still visible.
+ */
+function formatFeedbackDetail(
+  thumbsUp: number,
+  thumbsDown: number,
+  coverage: number | null,
+): string {
+  const n = thumbsUp + thumbsDown;
+  const sample = n === 0 ? 'n=0' : `👍 ${thumbsUp} / 👎 ${thumbsDown} · n=${n}`;
+  return `${sample} · ${pct(coverage)} coverage`;
 }
 
 function pct(value: number | null): string {
