@@ -1,9 +1,15 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { OperationalAlertSink, bindOperationalAlertSink } from './operational-alert-sink.js';
+import {
+  OperationalAlertSink,
+  bindOperationalAlertSink,
+  DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES,
+  DEFAULT_OPERATIONAL_ALERT_SINK_ROTATED_GENERATIONS,
+  OPERATIONAL_ALERTS_FILE_NAME,
+} from './operational-alert-sink.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
 type AlertMessage = Extract<ServerMessage, { type: 'alert' }>;
@@ -28,6 +34,14 @@ function deadManRecovered(): AlertMessage {
     severity: 'info',
     operationalAlert: { key: 'schedule:dead_man', metric: 'schedule_starvation', state: 'recovered' },
   };
+}
+
+function parseJsonl(raw: string): unknown[] {
+  return raw
+    .trim()
+    .split('\n')
+    .filter((line) => line.length > 0)
+    .map((line) => JSON.parse(line));
 }
 
 function providerHealthFired(): AlertMessage {
@@ -173,7 +187,7 @@ describe('OperationalAlertSink', () => {
     const result = record(deadManFired());
     expect(result).toBeUndefined();
 
-    // Wait until the swallowed promise settles (mkdir + append on the
+    // Wait until the swallowed promise settles (rotate + append on the
     // threadpool). Assert on parsed content, not just line count — an empty
     // file would still split to a length-1 array.
     const filePath = join(dir, 'operational-alerts.jsonl');
@@ -184,5 +198,120 @@ describe('OperationalAlertSink', () => {
     const lines = readFileSync(filePath, 'utf-8').trim().split('\n');
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!).key).toBe('schedule:dead_man');
+  });
+
+  test('exports conservative default rotation thresholds', () => {
+    expect(DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES).toBe(16 * 1024 * 1024);
+    expect(DEFAULT_OPERATIONAL_ALERT_SINK_ROTATED_GENERATIONS).toBe(2);
+  });
+
+  test('an append extends the live file rather than rewriting the corpus', async () => {
+    const filePath = join(dir, OPERATIONAL_ALERTS_FILE_NAME);
+    const seedRows = Array.from({ length: 20 }, (_, i) =>
+      JSON.stringify({
+        ts: `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+        state: 'fired',
+        key: `seed:${i}`,
+        metric: 'seed',
+        summary: `seed row ${i}`,
+      }),
+    );
+    const seed = `${seedRows.join('\n')}\n`;
+    writeFileSync(filePath, seed);
+
+    const sink = new OperationalAlertSink({
+      kookrDir: dir,
+      now: () => new Date('2026-07-31T00:00:00.000Z'),
+      maxBytes: 1024 * 1024,
+    });
+    expect(await sink.append(deadManFired())).toBe(true);
+
+    const content = readFileSync(filePath, 'utf-8');
+    expect(content.startsWith(seed)).toBe(true);
+    const lines = content.trim().split('\n');
+    expect(lines).toHaveLength(21);
+    expect(JSON.parse(lines[20]!).key).toBe('schedule:dead_man');
+  });
+});
+
+describe('OperationalAlertSink rotation (issue #3311)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'operational-alert-sink-rotate-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('writing past the cap produces a rotated .1 generation and a bounded active file', async () => {
+    let seq = 0;
+    const sink = new OperationalAlertSink({
+      kookrDir: dir,
+      now: () => new Date(`2026-07-31T00:00:${String(seq).padStart(2, '0')}.000Z`),
+      maxBytes: 80,
+      rotatedGenerations: 2,
+    });
+
+    expect(await sink.append(deadManFired())).toBe(true);
+    seq += 1;
+    expect(await sink.append(deadManRecovered())).toBe(true);
+    seq += 1;
+    expect(await sink.append(providerHealthFired())).toBe(true);
+
+    const activePath = join(dir, OPERATIONAL_ALERTS_FILE_NAME);
+    const activeRaw = readFileSync(activePath, 'utf-8');
+    const rotated1 = readFileSync(`${activePath}.1`, 'utf-8');
+    const rotated2 = readFileSync(`${activePath}.2`, 'utf-8');
+
+    const activeRows = parseJsonl(activeRaw);
+    const rotated1Rows = parseJsonl(rotated1);
+    const rotated2Rows = parseJsonl(rotated2);
+    expect(activeRows).toHaveLength(1);
+    expect(rotated1Rows).toHaveLength(1);
+    expect(rotated2Rows).toHaveLength(1);
+    expect(activeRows[0]).toMatchObject({
+      key: 'provider:codex-cli',
+      state: 'fired',
+    });
+    expect(rotated1Rows[0]).toMatchObject({ key: 'schedule:dead_man', state: 'recovered' });
+    expect(rotated2Rows[0]).toMatchObject({ key: 'schedule:dead_man', state: 'fired' });
+    expect(existsSync(`${activePath}.3`)).toBe(false);
+
+    const activeBytes = Buffer.byteLength(activeRaw);
+    expect(activeBytes).toBe(Buffer.byteLength(`${JSON.stringify(activeRows[0])}\n`));
+    expect(activeBytes).not.toBe(Buffer.byteLength(rotated1));
+    expect(activeBytes).toBe(statSync(activePath).size);
+  });
+
+  test('serialized concurrent appends do not drop rows when rotation fires', async () => {
+    const sink = new OperationalAlertSink({
+      kookrDir: dir,
+      maxBytes: 80,
+      rotatedGenerations: 2,
+    });
+
+    const results = await Promise.all([
+      sink.append(deadManFired()),
+      sink.append(deadManRecovered()),
+      sink.append(providerHealthFired()),
+    ]);
+    expect(results).toEqual([true, true, true]);
+
+    const activePath = join(dir, OPERATIONAL_ALERTS_FILE_NAME);
+    const rows = [
+      ...parseJsonl(readFileSync(activePath, 'utf-8')),
+      ...parseJsonl(readFileSync(`${activePath}.1`, 'utf-8')),
+      ...parseJsonl(readFileSync(`${activePath}.2`, 'utf-8')),
+    ];
+    expect(rows).toHaveLength(3);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ key: 'schedule:dead_man', state: 'fired' }),
+        expect.objectContaining({ key: 'schedule:dead_man', state: 'recovered' }),
+        expect.objectContaining({ key: 'provider:codex-cli', state: 'fired' }),
+      ]),
+    );
   });
 });
