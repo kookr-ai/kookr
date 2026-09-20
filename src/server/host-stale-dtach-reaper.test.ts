@@ -233,13 +233,11 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
       .mockRejectedValueOnce(new Error('EPERM'))
       .mockResolvedValueOnce(undefined);
     const error = vi.fn();
-    const now = Date.UTC(2026, 8, 20, 12, 0, 0);
-    // Pin start times to the frozen `now` so wall-clock Date.now() after this
-    // fixture instant cannot make the masters look younger than minAge.
-    const processes = manyStale(DEFAULT_DTACH_PRESSURE_SOFT_BOUND).map((p) => ({
-      ...p,
-      startTimeMs: now - DEFAULT_DTACH_ORPHAN_MIN_AGE_MS - 5_000,
-    }));
+    // Must share the wall clock that `snap()` uses for startTimeMs. A frozen
+    // historical `Date.UTC(...)` makes every candidate look younger than
+    // minAge once real time passes that instant, so the sweep reaps nothing.
+    const now = Date.now();
+    const processes = manyStale(DEFAULT_DTACH_PRESSURE_SOFT_BOUND);
     const service = new HostStaleDtachReaperService({
       listLiveSessionIds: () => new Set(),
       listProcesses: () => processes,
