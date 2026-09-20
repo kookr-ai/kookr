@@ -15,6 +15,10 @@ import { createKookrStore, useKookrStore } from './store/useStore.js';
 import { __resetViewerSessionForTests } from './viewer-session.js';
 import type { AgentState } from '../shared/protocol.js';
 
+const { findingsPanelProps } = vi.hoisted(() => ({
+  findingsPanelProps: { current: null as { expandCompletedNonce?: number } | null },
+}));
+
 vi.mock('./hooks/useWebSocket.js', () => ({
   useWebSocket: () => ({ send: () => true }),
 }));
@@ -48,7 +52,10 @@ vi.mock('./components/DetailPanel.js', () => ({
 }));
 
 vi.mock('./components/FindingsPanel.js', () => ({
-  FindingsPanel: () => React.createElement('div', { 'data-testid': 'findings-panel' }),
+  FindingsPanel: (props: { expandCompletedNonce?: number }) => {
+    findingsPanelProps.current = props;
+    return React.createElement('div', { 'data-testid': 'findings-panel' });
+  },
 }));
 
 function syncGlobalStore() {
@@ -176,5 +183,36 @@ describe('App completed-task 24h chip wiring (issue #2618)', () => {
 
     expect(container.querySelector('[data-testid="completed-24h-chip"]')).toBeNull();
     expect(container.textContent).not.toContain('completed /');
+  });
+
+  test('clicking the visible chip bumps the Completed-rail expand nonce (issue #3333)', async () => {
+    const now = Date.now();
+    useKookrStore.setState({
+      agents: [
+        makeAgent({
+          agentId: 'done-1', taskId: 't1', taskStatus: 'completed',
+          finishedAt: new Date(now - 60 * 60 * 1000).toISOString(),
+        }),
+      ],
+      agentsHydrated: true,
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+
+    const before = findingsPanelProps.current?.expandCompletedNonce ?? 0;
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="completed-24h-chip"]');
+    expect(chip?.tagName).toBe('BUTTON');
+
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await flush();
+
+    expect(findingsPanelProps.current?.expandCompletedNonce).toBe(before + 1);
   });
 });

@@ -151,6 +151,13 @@ interface Props {
    * when the caller doesn't thread the user's custom bindings through.
    */
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Nonce bumped by the status-bar 24h completed chip (issue #3333). Each
+   * increase expands the Completed rail (if it was collapsed) and scrolls it
+   * into view. Unchanged values, including the default 0, are ignored so a
+   * count refresh never pops the section open.
+   */
+  expandCompletedNonce?: number;
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -184,6 +191,7 @@ export function FindingsPanel({
   onSchedulePlaybook,
   onLaunch,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
+  expandCompletedNonce = 0,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const archivedAgents = useKookrStore((s) => s.archivedAgents);
@@ -257,6 +265,20 @@ export function FindingsPanel({
   // Load older history results are visible without a second click.
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
+  const completedSectionRef = useRef<HTMLDivElement>(null);
+  const lastExpandCompletedNonceRef = useRef(0);
+  // Status-bar 24h chip click: expand on the nonce bump, then scroll after
+  // paint so the header (and newly revealed rows) land in view. Count-only
+  // re-renders leave the nonce unchanged and do not run this path.
+  useEffect(() => {
+    if (!expandCompletedNonce || expandCompletedNonce <= lastExpandCompletedNonceRef.current) return;
+    lastExpandCompletedNonceRef.current = expandCompletedNonce;
+    expandCompleted();
+    const timer = window.setTimeout(() => {
+      completedSectionRef.current?.scrollIntoView?.({ block: 'nearest' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [expandCompletedNonce, expandCompleted]);
   const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -622,7 +644,7 @@ export function FindingsPanel({
             </div>
           )}
           {showCompletedSection && (
-            <div className="completed-section">
+            <div className="completed-section" ref={completedSectionRef}>
               <div className="completed-section-header-row">
                 <SectionToggleButton
                   collapsed={completedCollapsed}
