@@ -730,8 +730,8 @@ describe('OverviewEmptyState', () => {
       recent?.click();
     });
     expect(onLaunchPlaybooks).toHaveBeenCalledTimes(2);
-    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(1, undefined);
-    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(2, undefined);
+    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(1, 'gone.md');
+    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(2, 'review.md');
     expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('gone');
     expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('review');
   });
@@ -749,7 +749,7 @@ describe('OverviewEmptyState', () => {
     expect(onLaunchPlaybooks).toHaveBeenCalledWith('deploy.md');
   });
 
-  test('does not preselect a same-id playbook from a different source cwd', () => {
+  test('passes the playbook id even when the catalog entry is a different source cwd', () => {
     seedPinnedPlaybooks(['/project::deploy.md']);
     useKookrStore.setState({
       playbooks: [samplePlaybook({ sourceCwd: '/other' })],
@@ -761,7 +761,7 @@ describe('OverviewEmptyState', () => {
     act(() => {
       chip?.click();
     });
-    expect(onLaunchPlaybooks).toHaveBeenCalledWith(undefined);
+    expect(onLaunchPlaybooks).toHaveBeenCalledWith('deploy.md');
   });
 
   test('recent playbooks stay visible after tasks exist and leave first-run links alone', () => {

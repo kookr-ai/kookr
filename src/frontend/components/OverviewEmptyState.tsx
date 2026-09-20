@@ -12,7 +12,6 @@ import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
 import {
   PlaybookUsageTracker,
-  matchesUsageKey,
   resolveRecentPlaybookLabel,
   usageKeyPlaybookId,
   usageKeysOverlap,
@@ -41,26 +40,13 @@ export const OVERVIEW_PINNED_PLAYBOOK_LIMIT = 3;
  *
  * Chips store usage keys (`sourceCwd::id`, or a legacy bare id), not the
  * display label — a rename must not select a different catalog entry that
- * happens to share the old name.
- *
- * - Catalog match → that playbook's id.
- * - Catalog still empty → peel the id from the usage key so Launch can
- *   resolve after it fetches (playbooks are listed only when Launch opens).
- *   A loaded-empty catalog takes the same path.
- * - Catalog loaded without a matching resource → undefined, so Launch
- *   still opens the Playbooks tab without a preselect and does not submit.
+ * happens to share the old name. Always pass the id so Launch can resolve
+ * after its catalog fetch; PlaybookBrowser already stays on the list (and
+ * does not submit) when that id is absent.
  */
-function resolveOverviewChipPlaybookId(
-  usageKey: string,
-  playbooks: readonly { id: string; sourceCwd: string }[],
-): string | undefined {
-  const match = playbooks.find((pb) => matchesUsageKey(usageKey, pb.id, pb.sourceCwd));
-  if (match) return match.id;
-  if (playbooks.length === 0) {
-    const id = usageKeyPlaybookId(usageKey);
-    return id.length > 0 ? id : undefined;
-  }
-  return undefined;
+function resolveOverviewChipPlaybookId(usageKey: string): string | undefined {
+  const id = usageKeyPlaybookId(usageKey);
+  return id.length > 0 ? id : undefined;
 }
 
 /** Recently finished tasks shown on the overview; the rail keeps the rest. */
@@ -178,10 +164,9 @@ interface Props {
   onLaunch: () => void;
   /**
    * Opens Launch on the Playbooks tab (pinned and recent chips).
-   * Called with the catalog playbook id when a matching entry exists, or with
-   * the usage-key id when the catalog has not loaded yet. Called with
-   * `undefined` when the catalog is loaded and the entry is gone — Launch
-   * still opens the Playbooks tab and does not submit.
+   * Called with the chip's stable playbook id. Launch preselects when that
+   * catalog entry exists; a missing entry still opens the Playbooks tab and
+   * does not submit.
    */
   onLaunchPlaybooks?: (playbookId?: string) => void;
   /** Opens the existing Schedules dialog (first-run CTA or next-scheduled row). */
@@ -256,7 +241,7 @@ export function OverviewEmptyState({
       label: resolveRecentPlaybookLabel(key, playbooks),
     }));
   const handlePlaybookChipClick = (usageKey: string) => {
-    onLaunchPlaybooks?.(resolveOverviewChipPlaybookId(usageKey, playbooks));
+    onLaunchPlaybooks?.(resolveOverviewChipPlaybookId(usageKey));
   };
 
   return (
