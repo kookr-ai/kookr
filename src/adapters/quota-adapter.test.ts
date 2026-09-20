@@ -129,6 +129,7 @@ describe('QuotaAdapter', () => {
     expect(changed).toBe(false);
     expect(adapter.getState()).toBe('backoff');
     expect(adapter.getLastError()).toBe('Invalid JSON response');
+    expect(adapter.getCurrentIntervalMs()).toBe(240_000); // doubled from 120s
   });
 
   test('poll handles null quota windows gracefully', async () => {
@@ -373,6 +374,26 @@ describe('QuotaAdapter', () => {
     expect(changed).toBe(false);
     expect(adapter.getState()).toBe('backoff');
     expect(adapter.getLastError()).toContain('503');
+    expect(adapter.getCurrentIntervalMs()).toBe(240_000); // doubled from 120s
+  });
+
+  test('unexpected response shape triggers backoff and doubles the poll interval', async () => {
+    mockReadFile.mockResolvedValue(JSON.stringify({
+      claudeAiOauth: { accessToken: 'test-token' },
+    }));
+
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => 'not-an-object',
+    }));
+
+    const changed = await adapter.poll();
+
+    expect(changed).toBe(false);
+    expect(adapter.getState()).toBe('backoff');
+    expect(adapter.getLastError()).toBe('Unexpected response shape');
+    expect(adapter.getCurrentIntervalMs()).toBe(240_000); // doubled from 120s
   });
 
   test('poll passes an AbortSignal to fetch', async () => {
