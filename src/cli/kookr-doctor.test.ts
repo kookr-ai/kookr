@@ -2518,6 +2518,33 @@ describe('kookr doctor --json', () => {
     expect(check?.recommendedAction).toContain('/srv/tester-home/.kookr');
     // Advisory only: a widened directory mode never fails the report.
     expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('exits non-zero under --strict when the data dir mode is widened', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli(['--json', '--strict'], {
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40755 },
+      out: { log: (m: string) => logs.push(m), error: () => {} },
+    });
+
+    expect(code).toBe(1);
+    const body = JSON.parse(logs.join('\n')) as {
+      ok: boolean;
+      checks: Array<{ id: string; status: string }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.checks.find((c) => c.id === 'runtime.data-dir-mode')?.status).toBe('warn');
+    expect(body.checks.find((c) => c.id === 'runtime.settings-mode')?.status).toBe('ok');
   });
 
   it('WARNs on runtime.data-dir-mode for group-only search (0750)', async () => {
