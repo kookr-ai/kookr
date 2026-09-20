@@ -302,15 +302,16 @@ interface RunDoctorDeps {
   access?: (path: string, mode?: number) => Promise<void>;
   now?: () => Date;
   /**
-   * Optional override for reading the settings.json POSIX mode (issue #2494).
-   * Defaults to `fs.stat`. Tests inject a fixture so the host `~/.kookr` never
-   * leaks into hermetic unit runs.
+   * Optional override for reading POSIX mode of settings.json and the
+   * port-derived data directory (issues #2494, #3303). Defaults to `fs.stat`.
+   * Tests inject a fixture so the host `~/.kookr` never leaks into hermetic
+   * unit runs.
    */
   statFile?: (path: string) => Promise<{ mode: number }>;
   /**
-   * Optional platform override for the settings-mode check (issue #2494).
-   * Defaults to `os.platform()`. POSIX mode bits are only meaningful on
-   * linux/darwin, so the check skips elsewhere.
+   * Optional platform override for the settings-mode and data-dir-mode checks
+   * (issues #2494, #3303). Defaults to `os.platform()`. POSIX mode bits are
+   * only meaningful on linux/darwin, so both checks skip elsewhere.
    */
   platform?: NodeJS.Platform;
   /**
@@ -405,6 +406,7 @@ Without --json, prints a human-readable table of each check (status, summary,
 recommended action) covering runtime tools, gh auth, kb, agent binaries,
 github.scanner-backoff (advisory warn when state-fetch rate-limit backoff is active),
 runtime.settings-mode (advisory warn when settings.json is not owner-only 0600),
+runtime.data-dir-mode (advisory warn when the port-derived data dir is not owner-only 0700),
 ops.http-latency (advisory warn when GET /api/ready exceeds 500ms or GET /api/health exceeds 2s, or either times out / 5xx),
 ops.systemd-unit (Linux only; advisory warn when the kookr.service user unit is not active),
 ops.resource-watchdog (advisory warn when continuous host-pressure monitoring is off or samples are stale),
@@ -551,12 +553,11 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkNodePty(deps.loadNodePty ?? (() => import('node-pty'))));
   checks.push(await checkPersistence(env, accessFn));
   const hostPlatform = deps.platform ?? platform();
-  const settingsModeCheck = await checkSettingsFileMode(
-    env,
-    deps.statFile ?? ((path: string) => stat(path)),
-    hostPlatform,
-  );
+  const statFn = deps.statFile ?? ((path: string) => stat(path));
+  const settingsModeCheck = await checkSettingsFileMode(env, statFn, hostPlatform);
   if (settingsModeCheck) checks.push(settingsModeCheck);
+  const dataDirModeCheck = await checkDataDirMode(env, statFn, hostPlatform);
+  if (dataDirModeCheck) checks.push(dataDirModeCheck);
   const systemdUnitCheck = await checkSystemdUnit(run, hostPlatform);
   if (systemdUnitCheck) checks.push(systemdUnitCheck);
   checks.push(await checkGhAuth(run));
@@ -2007,6 +2008,80 @@ async function checkSettingsFileMode(
     'Settings file mode',
     'runtime',
     `${settingsPath} is owner-only (${formatMode(permBits)})${ambiguousCaveat}`,
+    false,
+  );
+}
+
+/**
+ * Advisory runtime check (issue #3303): WARN when the port-derived data
+ * directory is group/other-accessible instead of owner-only 0700.
+ *
+ * The live data dir holds the remote-command audit journal and other at-rest
+ * task state. `kookr doctor` already warns when settings.json is not 0600, but
+ * a 0755 parent still lets any local account walk into those files. This check
+ * stats the same directory the server uses (`start.ts`: `~/.kookr` on 4800,
+ * `~/.kookr-<port>` otherwise) via {@link resolveKookrDataDir} — not the
+ * doctor-only `KOOKR_DIR`-first {@link resolveDoctorKookrDataDir}, which the
+ * server ignores and would report a false OK on the wrong tree.
+ *
+ * - `mode & 0o077 !== 0` → WARN (recommend `chmod 700`)
+ * - owner-only (0700 / 0500 / …) → OK
+ * - Missing directory → skip (return null): the server creates the dir lazily
+ *   at startup, so a fresh host has no data dir yet.
+ * - Non-POSIX platforms (not linux/darwin) or an unreadable stat → skip:
+ *   Windows mode bits are not POSIX, so the check would be meaningless there.
+ *
+ * When `KOOKR_PORT=auto`, the resolved `~/.kookr` may not be the auto-launched
+ * instance's real data dir (see {@link autoPortAmbiguous}). Rather than
+ * silently report a possibly-wrong tree, the check appends a caveat so a false
+ * OK is never mistaken for a confirmed one; set `KOOKR_PORT` to the live
+ * instance's numeric port to target it precisely.
+ *
+ * Never a required fail; use `kookr doctor --strict` to exit non-zero on WARN.
+ */
+async function checkDataDirMode(
+  env: NodeJS.ProcessEnv,
+  statFn: (path: string) => Promise<{ mode: number }>,
+  hostPlatform: NodeJS.Platform,
+): Promise<DoctorCheck | null> {
+  if (hostPlatform !== 'linux' && hostPlatform !== 'darwin') return null;
+
+  const dataDir = resolveKookrDataDir(env);
+  const ambiguousCaveat = autoPortAmbiguous(env)
+    ? ` (KOOKR_PORT=auto: this default ~/.kookr path may not be the auto-launched instance's data dir — ` +
+      `set KOOKR_PORT to the live instance's numeric port to target it precisely)`
+    : '';
+
+  let mode: number;
+  try {
+    ({ mode } = await statFn(dataDir));
+  } catch {
+    // Missing directory (ENOENT) or an unreadable stat → advisory skip.
+    return null;
+  }
+
+  const permBits = mode & 0o777;
+  if ((permBits & 0o077) !== 0) {
+    return {
+      id: 'runtime.data-dir-mode',
+      label: 'Data dir mode',
+      category: 'runtime',
+      status: 'warn',
+      required: false,
+      summary: `${dataDir} is ${formatMode(permBits)} (group/other-accessible), not owner-only 0700`,
+      detail:
+        'The data directory holds the remote-command audit journal and other at-rest task state. ' +
+        `Group/other search bits let any local account walk into it. Mode is ${formatMode(permBits)}.` +
+        ambiguousCaveat,
+      recommendedAction: `Run \`chmod 700 ${dataDir}\` to restore owner-only permissions.`,
+    };
+  }
+
+  return okCheck(
+    'runtime.data-dir-mode',
+    'Data dir mode',
+    'runtime',
+    `${dataDir} is owner-only (${formatMode(permBits)})${ambiguousCaveat}`,
     false,
   );
 }
