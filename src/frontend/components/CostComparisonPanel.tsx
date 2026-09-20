@@ -123,11 +123,11 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
     return { primary: data.notes.slice(0, 3), rest: data.notes.slice(3) };
   }, [data]);
 
-  // Client-side CSV export of the currently displayed per-playbook and per-task
-  // rows (#2422) — no new server route. Serialises the same `data` the tables
-  // render from and labels it with `dataContext` (the query that produced that
-  // data), so window/agent/search in the file always match the rows even when an
-  // export races an in-flight refetch.
+  // Client-side CSV export of the loaded per-playbook and per-task payload
+  // (#2422) — no new server route. Serialises `data` in server order (not the
+  // in-panel per-task sort) and labels it with `dataContext` (the query that
+  // produced that data), so window/agent/search in the file always match the
+  // rows even when an export races an in-flight refetch.
   function handleExportCsv(): void {
     if (!data || !dataContext) return;
     const csv = buildCostComparisonCsv(data, dataContext);
@@ -410,7 +410,104 @@ function UnboundCoverageCaveat({ u }: { u: UnboundCodexAggregate }): React.React
   );
 }
 
+type PerTaskSortKey = 'cost' | 'duration' | 'started';
+type SortDir = 'asc' | 'desc';
+
+function sortValue(row: PerTaskRow, key: PerTaskSortKey): number | null {
+  switch (key) {
+    case 'cost':
+      return row.estimatedCostUsd;
+    case 'duration':
+      return row.durationMs;
+    case 'started': {
+      const started = Date.parse(row.startedAt);
+      return Number.isFinite(started) ? started : null;
+    }
+  }
+}
+
+/**
+ * Client-side reorder of the per-task table (#3299). Null/unparseable keys
+ * always sort last so "most expensive / longest / newest" still answers the
+ * operator question without unpriced rows jumping to the top. Equal keys keep
+ * their server-order relative positions (stable via original index).
+ */
+function sortPerTaskRows(rows: PerTaskRow[], key: PerTaskSortKey, dir: SortDir): PerTaskRow[] {
+  const sign = dir === 'asc' ? 1 : -1;
+  return rows
+    .map((row, index) => ({ row, index }))
+    .sort((a, b) => {
+      const av = sortValue(a.row, key);
+      const bv = sortValue(b.row, key);
+      if (av == null && bv == null) return a.index - b.index;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      const cmp = av - bv;
+      if (cmp !== 0) return cmp * sign;
+      return a.index - b.index;
+    })
+    .map((entry) => entry.row);
+}
+
+function PerTaskSortHeader({
+  label,
+  accessibleName,
+  column,
+  sortKey,
+  sortDir,
+  onSort,
+}: {
+  label: string;
+  accessibleName: string;
+  column: PerTaskSortKey;
+  sortKey: PerTaskSortKey | null;
+  sortDir: SortDir;
+  onSort: (key: PerTaskSortKey) => void;
+}): React.ReactElement {
+  const active = sortKey === column;
+  const ariaSort = active ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none';
+  return (
+    <th aria-sort={ariaSort}>
+      <button
+        type="button"
+        className="cost-sort-btn"
+        onClick={() => onSort(column)}
+      >
+        {label === accessibleName ? (
+          label
+        ) : (
+          <>
+            <span aria-hidden="true">{label}</span>
+            <span className="sr-only">{accessibleName}</span>
+          </>
+        )}
+        {active && <span aria-hidden="true">{sortDir === 'asc' ? ' ▲' : ' ▼'}</span>}
+      </button>
+    </th>
+  );
+}
+
 function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
+  // Default is the server's order. First click on a column sorts descending
+  // (most expensive / longest / newest first); a second click on the same
+  // column flips to ascending.
+  const [sortKey, setSortKey] = useState<PerTaskSortKey | null>(null);
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  function toggleSort(key: PerTaskSortKey): void {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
+      return;
+    }
+    setSortKey(key);
+    setSortDir('desc');
+  }
+
+  const visibleRows = useMemo(
+    () => (sortKey == null ? rows : sortPerTaskRows(rows, sortKey, sortDir)),
+    [rows, sortKey, sortDir],
+  );
+
   return (
     <section className="cost-per-task">
       <h3>Tasks ({rows.length})</h3>
@@ -422,18 +519,18 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
             <thead>
               <tr>
                 <th>Task</th>
-                <th>Started</th>
+                <PerTaskSortHeader label="Started" accessibleName="Started" column="started" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <th>Agent</th>
                 <th>Model</th>
                 <th>Playbook</th>
-                <th>Dur</th>
-                <th>Cost</th>
+                <PerTaskSortHeader label="Dur" accessibleName="Duration" column="duration" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
+                <PerTaskSortHeader label="Cost" accessibleName="Cost" column="cost" sortKey={sortKey} sortDir={sortDir} onSort={toggleSort} />
                 <th><span aria-hidden="true">👍</span><span className="sr-only">Feedback</span></th>
                 <th>Quality</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(r => (
+              {visibleRows.map(r => (
                 <tr key={r.taskId} className={`cost-row dq-${r.dataQuality}`}>
                   <td>{r.taskName ?? r.taskId}</td>
                   <td>{new Date(r.startedAt).toLocaleString()}</td>
@@ -594,7 +691,8 @@ interface CsvExportContext {
  *
  * Two labelled sections separated by a blank line: "Per playbook" mirrors the
  * headline table (per-agent average + n, cost ratio, thumbs-up ratio); "Per
- * task" mirrors the task table and adds its stable task IDs for reference.
+ * task" uses the same columns as the task table (plus stable task IDs) but
+ * keeps the server's row order — an in-panel sort does not rearrange the file.
  * A short preamble records the window, agent filter, and search that produced
  * the exported rows, so the file is self-describing even during a refetch.
  *
