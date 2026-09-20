@@ -85,3 +85,27 @@ describe('unattended recovery runbook paste-readiness timeout (issue #3310)', ()
     expect(doc).not.toMatch(/health\.promptAck/);
   });
 });
+
+/**
+ * Drift guard for issue #3308: GET /api/health always sets top-level
+ * `status: "ok"`, so a Discord operator can report the instance healthy
+ * while `terminalBackend.status=degraded` (`session-gone`) is already
+ * in the same payload. The runbook must name that pairing.
+ */
+describe('unattended recovery runbook terminalBackend degraded while health ok (issue #3308)', () => {
+  const doc = readFileSync(runbookPath, 'utf-8');
+
+  test('names terminalBackend.status=degraded as a Lucy-visible symptom while health.status stays ok', () => {
+    expect(doc).toContain('terminalBackend.status=degraded');
+    expect(doc).toMatch(/Lucy/i);
+    expect(doc).toMatch(/health\.status[`']?\s+stays [`'`]?ok[`'`]?/i);
+  });
+
+  test('prints terminalBackend.status and lastError.kind using stable kind names', () => {
+    expect(doc).toContain('lastError.kind');
+    expect(doc).toContain('terminalBackend.status');
+    expect(doc).toContain('session-gone');
+    expect(doc).toContain('session-attach-failed');
+    expect(doc).toContain('write-timed-out');
+  });
+});
