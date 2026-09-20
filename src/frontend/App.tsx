@@ -1238,13 +1238,12 @@ export function App() {
     ? findingWaitStartedAt(oldestWaitingFinding)
     : undefined;
   const selectOldestWaitingFinding = useCallback(() => {
-    const agent = oldestFindingWaitAgent(findings);
-    if (!agent) return;
+    if (!oldestWaitingFinding) return;
     // Switch to the findings list first. On mobile, selecting a different
     // agent still follows the existing rule and opens the Task pane.
     setMobileTab('findings');
-    selectAgent(agent.agentId, agent.taskId);
-  }, [findings, selectAgent]);
+    selectAgent(oldestWaitingFinding.agentId, oldestWaitingFinding.taskId);
+  }, [oldestWaitingFinding, selectAgent]);
   // Position the top-bar queue indicator names ("Triaging X of N"), reused by
   // its focus action so the label and the click target stay in lockstep.
   const currentFindingIndex = activeFindingIndex(

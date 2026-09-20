@@ -30,6 +30,27 @@ async function flush() {
   });
 }
 
+function stubOutcomeLedger(totalKnownCostUsd: number) {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes('outcome-ledger')) {
+      return {
+        ok: true,
+        json: async () => ({
+          schemaVersion: 'outcome-ledger.v1',
+          generatedAt: new Date().toISOString(),
+          window: { value: '24h', start: null, end: new Date().toISOString() },
+          scope: { kind: 'all' },
+          readiness: 'ready',
+          summary: { totalKnownCostUsd },
+          quality: { costCoverage: 1 },
+        }),
+      };
+    }
+    return { ok: false, json: async () => ({}) };
+  }));
+}
+
 describe('StatusBar oldest finding wait (issue #2588)', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -146,6 +167,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     const onSelectOldestFinding = vi.fn();
     const onExpandCompleted = vi.fn();
     const onOpenCostComparison = vi.fn();
+    stubOutcomeLedger(12.3);
 
     await act(async () => {
       root.render(
@@ -162,6 +184,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
       );
     });
     await flush();
+    await flush();
 
     const completedChip = container.querySelector<HTMLButtonElement>('[data-testid="completed-24h-chip"]');
     expect(completedChip?.tagName).toBe('BUTTON');
@@ -169,6 +192,14 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
       completedChip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(onExpandCompleted).toHaveBeenCalledOnce();
+    expect(onSelectOldestFinding).not.toHaveBeenCalled();
+
+    const costChip = container.querySelector<HTMLButtonElement>('[data-testid="cost-24h-chip"]');
+    expect(costChip?.tagName).toBe('BUTTON');
+    await act(async () => {
+      costChip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenCostComparison).toHaveBeenCalledOnce();
     expect(onSelectOldestFinding).not.toHaveBeenCalled();
   });
 

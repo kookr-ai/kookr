@@ -165,7 +165,7 @@ describe('App oldest-finding-wait chip wiring (issue #3343)', () => {
 
     const chip = container.querySelector<HTMLButtonElement>('[data-testid="oldest-finding-wait-chip"]');
     expect(chip?.tagName).toBe('BUTTON');
-    expect(chip?.textContent).toContain('oldest');
+    expect(chip?.textContent).toBe('oldest 12m');
 
     await act(async () => {
       chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
