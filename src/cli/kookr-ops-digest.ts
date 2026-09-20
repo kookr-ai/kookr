@@ -7,7 +7,9 @@
  * `digest` fetches GET /api/ready + GET /api/health and prints ≤20 lines by default:
  * ready status plus the top unattended failure signals (with field paths).
  * Issue #2637 also warns on overdue/never-fired hourly timers, hook-ingestion
- * p95 > 10s, and any fail-closed paused schedule. If health has no
+ * p95 > 10s, and any fail-closed paused schedule. Issue #3309 warns when
+ * `terminalBackend.status` is `degraded`/`error` (sampling `lastError.kind`
+ * only) or when `boot.status` is `dirty`. If health has no
  * `timerHealth` object, digest does a 2s GET of /api/diagnostics/timer-health.
  * Exit: 0 when ready, 1 when ready fails. Does not mutate server state.
  *
@@ -83,7 +85,8 @@ Usage:
 digest: GET /api/ready and GET /api/health, then print ready status plus the
 top unattended failure signals (pressureWhileDisabled, blocked watchdog recovery,
 phantomActive, hung residual, helper-LLM pause, overdue/never-fired hourly timers, hook-ingestion
-p95, fail-closed paused schedules, pipeline starvation, ineffective emergency prune, disk, safeMode) with
+p95, fail-closed paused schedules, pipeline starvation, ineffective emergency prune, disk, safeMode,
+degraded/error terminal backend, dirty crash restart) with
 field paths. Defaults to up to five warnings and at most twenty lines.
 
 When the server is unreachable, digest auto-degrades to the last-good
@@ -201,6 +204,16 @@ export interface OpsDigestSnapshot {
      * `null` when the server does not project a `systemdNotifier` block.
      */
     systemdNotifierArming: SystemdNotifierArming | null;
+    /**
+     * Terminal-backend health status from `/api/health.terminalBackend`, or
+     * `null` when the block is absent. Digest warns on `degraded` / `error`.
+     */
+    terminalBackendStatus: 'ok' | 'degraded' | 'error' | null;
+    /**
+     * Previous-process exit classification from `/api/health.boot`, or `null`
+     * when the block is absent. Digest warns only on `dirty` (crash restart).
+     */
+    bootStatus: 'clean' | 'dirty' | 'unknown' | null;
   };
   serverStartedAt: string | null;
   sha: string | null;
@@ -521,7 +534,8 @@ function parseReadyBody(body: unknown): {
 
 /**
  * Collect the unattended-ops warning set from a health body. Order is
- * severity-ish (safeMode → pressure → blocked recovery → phantom → hung → helper-LLM pause →
+ * severity-ish (safeMode → pressure → blocked recovery → dirty boot →
+ * degraded/error terminal backend → phantom → hung → helper-LLM pause →
  * overdue/never-fired hourly timers → hook-ingestion p95 → fail-closed
  * paused schedules → starvation → systemd → ineffective emergency prune → disk).
  * Returns at most MAX_WARNINGS unless `opts.allWarnings` is true.
@@ -652,6 +666,57 @@ export function collectOpsDigestWarnings(
       path,
       summary: `${path}=${value} — recovery task could not launch because throttle state could not be saved`,
       value,
+    });
+  }
+
+  // Dirty crash restart (issue #3309). `/api/health.boot.status=dirty` means
+  // the previous process left its marker at `running` (crash / OOM / SIGKILL)
+  // rather than writing a clean shutdown. `unknown` is a first boot or a
+  // wiped marker — not a crash — so it stays quiet.
+  const boot = asRecord(h.boot);
+  const bootStatusRaw = typeof boot?.status === 'string' ? boot.status : null;
+  const bootStatus: 'clean' | 'dirty' | 'unknown' | null =
+    bootStatusRaw === 'clean' || bootStatusRaw === 'dirty' || bootStatusRaw === 'unknown'
+      ? bootStatusRaw
+      : null;
+  if (bootStatus === 'dirty') {
+    const reason = typeof boot?.reason === 'string' && boot.reason.length > 0 ? boot.reason : null;
+    const dirtyStreak = finiteNumber(boot?.dirtyStreak);
+    const streak = dirtyStreak !== null ? Math.floor(dirtyStreak) : null;
+    const bits = ['boot.status=dirty'];
+    if (reason) bits.push(`reason=${reason}`);
+    if (streak !== null) bits.push(`dirtyStreak=${streak}`);
+    warnings.push({
+      path: 'boot.status',
+      summary: bits.join(' '),
+      value: { status: 'dirty', reason, dirtyStreak: streak },
+    });
+  }
+
+  // Terminal backend transport (issue #3309). Health already publishes
+  // `degraded` / `error` when dtach is wedged; digest must page Lucy with
+  // `lastError.kind` only — never session ids or pane text. Quiet on `ok`.
+  const terminalBackend = asRecord(h.terminalBackend);
+  const terminalBackendStatusRaw =
+    typeof terminalBackend?.status === 'string' ? terminalBackend.status : null;
+  const terminalBackendStatus: 'ok' | 'degraded' | 'error' | null =
+    terminalBackendStatusRaw === 'ok'
+    || terminalBackendStatusRaw === 'degraded'
+    || terminalBackendStatusRaw === 'error'
+      ? terminalBackendStatusRaw
+      : null;
+  if (terminalBackendStatus === 'degraded' || terminalBackendStatus === 'error') {
+    const lastError = asRecord(terminalBackend?.lastError);
+    const lastErrorKind =
+      typeof lastError?.kind === 'string' && lastError.kind.length > 0
+        ? lastError.kind
+        : null;
+    warnings.push({
+      path: 'terminalBackend.status',
+      summary: lastErrorKind
+        ? `terminalBackend.status=${terminalBackendStatus} lastError.kind=${lastErrorKind}`
+        : `terminalBackend.status=${terminalBackendStatus}`,
+      value: { status: terminalBackendStatus, lastErrorKind },
     });
   }
 
@@ -962,6 +1027,8 @@ export function collectOpsDigestWarnings(
       ),
       timerHealthOverdue,
       systemdNotifierArming,
+      terminalBackendStatus,
+      bootStatus,
     },
     serverStartedAt,
     sha,

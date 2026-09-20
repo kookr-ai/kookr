@@ -150,12 +150,19 @@ const HEALTH_ALL_WARNINGS = {
     emergencyPruneReclaimedZeroWhileCritical: true,
     consecutiveEmergencyPrunesReclaimedZeroWhileCritical: 1,
   },
+  boot: { status: 'dirty', reason: 'unclean_exit', dirtyStreak: 2 },
+  terminalBackend: {
+    status: 'degraded',
+    lastError: { kind: 'session-gone', id: 'sess-all-warnings-should-not-leak' },
+  },
 };
 const ALL_WARNING_PATHS = [
   'safeMode.engaged',
   'projectAutomation.pausedProjectIds',
   'resourceWatchdog.pressureWhileDisabled',
   'resourceWatchdog.lastDecision',
+  'boot.status',
+  'terminalBackend.status',
   'capacity.phantomActive',
   'capacity.byClass.hungSuspect',
   'helperLlm.paused',
@@ -260,10 +267,129 @@ describe('collectOpsDigestWarnings', () => {
       resourceWatchdog: { enabled: true, pressureWhileDisabled: false },
       capacity: { phantomActive: 0, byClass: { hungSuspect: 0 } },
       safeMode: { engaged: false },
+      terminalBackend: { status: 'ok', lastError: null },
+      boot: { status: 'clean', reason: 'clean_shutdown', dirtyStreak: 0 },
     });
     expect(warnings).toEqual([]);
     expect(signals.pressureWhileDisabled).toBe(false);
     expect(signals.phantomActive).toBe(0);
+    expect(signals.terminalBackendStatus).toBe('ok');
+    expect(signals.bootStatus).toBe('clean');
+  });
+
+  it('warns when the terminal backend is degraded and samples lastError.kind only (issue #3309)', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      terminalBackend: {
+        status: 'degraded',
+        lastError: {
+          kind: 'session-gone',
+          id: 'sess-abc-should-not-leak',
+          paneText: 'dtach attach failed with secret=tok-live',
+        },
+      },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('terminalBackend.status');
+    expect(warnings[0]?.summary).toBe(
+      'terminalBackend.status=degraded lastError.kind=session-gone',
+    );
+    expect(warnings[0]?.value).toEqual({
+      status: 'degraded',
+      lastErrorKind: 'session-gone',
+    });
+    expect(signals.terminalBackendStatus).toBe('degraded');
+    expect(JSON.stringify(warnings[0])).not.toMatch(/sess-abc|paneText|tok-live|secret=/);
+  });
+
+  it('warns when the terminal backend is in error without a lastError kind (issue #3309)', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      terminalBackend: { status: 'error', lastError: null },
+    });
+    expect(warnings).toEqual([{
+      path: 'terminalBackend.status',
+      summary: 'terminalBackend.status=error',
+      value: { status: 'error', lastErrorKind: null },
+    }]);
+  });
+
+  it('does not leak a string lastError from a last-good snapshot (issue #3309)', () => {
+    const { warnings } = collectOpsDigestWarnings({
+      terminalBackend: {
+        status: 'degraded',
+        lastError: 'connect failed: Authorization: Bearer tok-abc123xyz',
+      },
+    });
+    expect(warnings[0]?.summary).toBe('terminalBackend.status=degraded');
+    expect(warnings[0]?.value).toEqual({ status: 'degraded', lastErrorKind: null });
+    expect(JSON.stringify(warnings[0])).not.toMatch(/Bearer|tok-abc123xyz/i);
+  });
+
+  it('stays quiet when the terminal backend is ok even if lastError is sticky (issue #3309)', () => {
+    expect(collectOpsDigestWarnings({
+      terminalBackend: {
+        status: 'ok',
+        lastError: { kind: 'session-recovery-repaired', id: 'sess-repaired' },
+      },
+    }).warnings).toEqual([]);
+  });
+
+  it('warns when boot marks a dirty crash restart and includes the streak (issue #3309)', () => {
+    const { warnings, signals } = collectOpsDigestWarnings({
+      boot: {
+        status: 'dirty',
+        reason: 'unclean_exit',
+        previousStartedAt: '2026-09-01T00:00:00.000Z',
+        previousShutdownAt: null,
+        previousSignal: null,
+        dirtyStreak: 3,
+      },
+    });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]?.path).toBe('boot.status');
+    expect(warnings[0]?.summary).toBe(
+      'boot.status=dirty reason=unclean_exit dirtyStreak=3',
+    );
+    expect(warnings[0]?.value).toEqual({
+      status: 'dirty',
+      reason: 'unclean_exit',
+      dirtyStreak: 3,
+    });
+    expect(signals.bootStatus).toBe('dirty');
+  });
+
+  it('stays quiet for a clean or unknown boot (issue #3309)', () => {
+    expect(collectOpsDigestWarnings({
+      boot: { status: 'clean', reason: 'clean_shutdown', dirtyStreak: 0 },
+    }).warnings).toEqual([]);
+    expect(collectOpsDigestWarnings({
+      boot: { status: 'unknown', reason: 'no_prior_marker', dirtyStreak: 0 },
+    }).warnings).toEqual([]);
+  });
+
+  it('stays quiet when the terminal backend is absent or has an unrecognized status (issue #3309)', () => {
+    expect(collectOpsDigestWarnings({}).warnings).toEqual([]);
+    expect(collectOpsDigestWarnings({
+      terminalBackend: { status: 'starting', lastError: { kind: 'session-gone', id: 'sess-x' } },
+    }).warnings).toEqual([]);
+  });
+
+  it('ranks a dirty boot and degraded terminal backend above occupancy warnings (issue #3309)', () => {
+    const collected = collectOpsDigestWarnings({
+      ...HEALTH_WITH_WARNINGS,
+      boot: { status: 'dirty', reason: 'unclean_exit', dirtyStreak: 1 },
+      terminalBackend: {
+        status: 'degraded',
+        lastError: { kind: 'session-gone', id: 'sess-x' },
+      },
+    });
+    expect(collected.warnings.map((w) => w.path)).toEqual([
+      'resourceWatchdog.pressureWhileDisabled',
+      'boot.status',
+      'terminalBackend.status',
+      'capacity.phantomActive',
+      'capacity.byClass.hungSuspect',
+    ]);
+    expect(JSON.stringify(collected.warnings)).not.toContain('sess-x');
   });
 
   it('warns once when persistence blocks a watchdog recovery spawn without exposing errors', () => {
@@ -1504,7 +1630,7 @@ describe('ops digest --all-warnings', () => {
         }),
       });
       const output = c.logs.join('\n');
-      expect(output).toContain('warnings (14):');
+      expect(output).toContain('warnings (16):');
       expect(output).not.toContain('(truncated)');
       for (const path of ALL_WARNING_PATHS) expect(output).toContain(path);
       expect(output.split('\n').findIndex(line => line.includes('dataDirectory.diskFreePercent'))).toBeGreaterThanOrEqual(20);
