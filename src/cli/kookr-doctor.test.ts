@@ -47,6 +47,7 @@ const DOCUMENTED_DOCTOR_CHECK_IDS = [
   'runtime.node-pty',
   'runtime.persistence',
   'runtime.settings-mode',
+  'runtime.data-dir-mode',
   'ops.systemd-unit',
   'github.gh-auth',
   'github.scanner-backoff',
@@ -95,7 +96,8 @@ const hermeticOps = {
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
   // Stub node-pty so hermetic runs never load the real compiled binding (issue #3068).
   loadNodePty: async () => ({ spawn: () => {} }) as unknown,
-  // Owner-only 0600 so the settings-mode check is deterministic and hermetic.
+  // Owner-only 0600 so settings-mode and data-dir-mode checks are deterministic
+  // and hermetic (group/other bits are clear on both a file and a directory).
   statFile: async () => ({ mode: 0o600 }),
   platform: 'linux' as NodeJS.Platform,
 };
@@ -2373,7 +2375,9 @@ describe('kookr doctor --json', () => {
       },
     });
 
-    expect(paths).toEqual(['/etc/kookr/custom-settings.json']);
+    expect(paths.filter((p) => p.endsWith('settings.json'))).toEqual([
+      '/etc/kookr/custom-settings.json',
+    ]);
     expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toMatchObject({
       status: 'ok',
       summary: expect.stringContaining('/etc/kookr/custom-settings.json'),
@@ -2465,6 +2469,246 @@ describe('kookr doctor --json', () => {
     } else {
       // Off POSIX the default os.platform() gate skips the check entirely.
       expect(check).toBeUndefined();
+    }
+  });
+
+  // --- runtime.data-dir-mode (issue #3303) -------------------------------------
+  it('reports runtime.data-dir-mode ok when the port-derived data dir is owner-only 0700', async () => {
+    const run = commandRunner(happyFixtures());
+    const paths: string[] = [];
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) => {
+        paths.push(path);
+        return { mode: path.endsWith('settings.json') ? 0o100600 : 0o40700 };
+      },
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.data-dir-mode');
+    expect(check).toMatchObject({ status: 'ok', required: false, category: 'runtime' });
+    expect(check?.summary).toContain('owner-only');
+    expect(check?.summary).toContain('0700');
+    expect(paths).toContain('/srv/tester-home/.kookr');
+  });
+
+  it('WARNs on runtime.data-dir-mode when the data dir is world-searchable 0755', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40755 },
+    });
+
+    const check = report.checks.find((c) => c.id === 'runtime.data-dir-mode');
+    expect(check).toMatchObject({ status: 'warn', required: false, category: 'runtime' });
+    expect(check?.summary).toContain('0755');
+    expect(check?.summary).toContain('group/other-accessible');
+    expect(check?.detail).toContain('audit journal');
+    expect(check?.recommendedAction).toContain('chmod 700');
+    expect(check?.recommendedAction).toContain('/srv/tester-home/.kookr');
+    // Advisory only: a widened directory mode never fails the report.
+    expect(report.ok).toBe(true);
+    expect(report.status).toBe('warn');
+  });
+
+  it('exits non-zero under --strict when the data dir mode is widened', async () => {
+    const run = commandRunner(happyFixtures());
+    const logs: string[] = [];
+
+    const code = await runDoctorCli(['--json', '--strict'], {
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      now: () => new Date('2026-06-21T07:30:00.000Z'),
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40755 },
+      out: { log: (m: string) => logs.push(m), error: () => {} },
+    });
+
+    expect(code).toBe(1);
+    const body = JSON.parse(logs.join('\n')) as {
+      ok: boolean;
+      checks: Array<{ id: string; status: string }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.checks.find((c) => c.id === 'runtime.data-dir-mode')?.status).toBe('warn');
+    expect(body.checks.find((c) => c.id === 'runtime.settings-mode')?.status).toBe('ok');
+  });
+
+  it('WARNs on runtime.data-dir-mode for group-only search (0750)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'darwin',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40750 },
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.data-dir-mode')).toMatchObject({
+      status: 'warn',
+      summary: expect.stringContaining('0750'),
+    });
+  });
+
+  it('skips runtime.data-dir-mode when the data dir is missing (ENOENT)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) => {
+        if (path.endsWith('settings.json')) return { mode: 0o100600 };
+        const err = new Error('no such file') as NodeJS.ErrnoException;
+        err.code = 'ENOENT';
+        throw err;
+      },
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.data-dir-mode')).toBeUndefined();
+    expect(report.checks.find((c) => c.id === 'runtime.settings-mode')).toMatchObject({
+      status: 'ok',
+    });
+  });
+
+  it('skips runtime.data-dir-mode off POSIX (Windows mode bits are not comparable)', async () => {
+    const run = commandRunner(happyFixtures());
+    let dataDirStatCalls = 0;
+
+    const report = await buildDoctorJsonReport({
+      env: { ...opsOkEnv, HOME: '/srv/tester-home' },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'win32',
+      statFile: async (path: string) => {
+        if (!path.endsWith('settings.json')) dataDirStatCalls += 1;
+        return { mode: 0o40755 };
+      },
+    });
+
+    expect(report.checks.find((c) => c.id === 'runtime.data-dir-mode')).toBeUndefined();
+    expect(dataDirStatCalls).toBe(0);
+  });
+
+  it('stats the port-derived data dir, not KOOKR_DIR (issue #3303)', async () => {
+    const run = commandRunner(happyFixtures());
+    const paths: string[] = [];
+
+    const report = await buildDoctorJsonReport({
+      env: {
+        ...opsOkEnv,
+        HOME: '/srv/tester-home',
+        KOOKR_DIR: '/tmp/wrong-kookr-tree',
+        KOOKR_PORT: '4801',
+      },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) => {
+        paths.push(path);
+        return { mode: path.endsWith('settings.json') ? 0o100600 : 0o40700 };
+      },
+    });
+
+    expect(paths).toContain('/srv/tester-home/.kookr-4801');
+    expect(paths).not.toContain('/tmp/wrong-kookr-tree');
+    expect(paths).not.toContain('/srv/tester-home/.kookr');
+    expect(report.checks.find((c) => c.id === 'runtime.data-dir-mode')).toMatchObject({
+      status: 'ok',
+      summary: expect.stringContaining('/srv/tester-home/.kookr-4801'),
+    });
+  });
+
+  it('flags the KOOKR_PORT=auto default-path ambiguity in runtime.data-dir-mode (issue #3303)', async () => {
+    const run = commandRunner(happyFixtures());
+
+    const ambiguous = await buildDoctorJsonReport({
+      env: {
+        KOOKR_RESOURCE_WATCHDOG: '1',
+        KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24',
+        KOOKR_PORT: 'auto',
+        HOME: '/srv/tester-home',
+      },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40700 },
+    });
+    const ambiguousCheck = ambiguous.checks.find((c) => c.id === 'runtime.data-dir-mode');
+    expect(ambiguousCheck).toMatchObject({ status: 'ok' });
+    expect(ambiguousCheck?.summary).toContain('KOOKR_PORT=auto');
+    expect(ambiguousCheck?.summary).toContain('target it precisely');
+    expect(ambiguousCheck?.summary).toContain('/srv/tester-home/.kookr');
+
+    const explicit = await buildDoctorJsonReport({
+      env: {
+        KOOKR_RESOURCE_WATCHDOG: '1',
+        KOOKR_MAINTENANCE_PRUNE_INTERVAL_HOURS: '24',
+        KOOKR_PORT: '4801',
+        HOME: '/srv/tester-home',
+      },
+      commandRunner: run,
+      access: async () => {},
+      ...hermeticOps,
+      platform: 'linux',
+      statFile: async (path: string) =>
+        path.endsWith('settings.json') ? { mode: 0o100600 } : { mode: 0o40700 },
+    });
+    const explicitCheck = explicit.checks.find((c) => c.id === 'runtime.data-dir-mode');
+    expect(explicitCheck?.summary).toContain('/srv/tester-home/.kookr-4801');
+    expect(explicitCheck?.summary).not.toContain('KOOKR_PORT=auto');
+  });
+
+  it('exercises the default fs.stat / os.platform wiring against a real data dir (issue #3303)', async () => {
+    const run = commandRunner(happyFixtures());
+    const home = mkdtempSync(join(tmpdir(), 'kookr-doctor-datadir-home-'));
+    const dataDir = join(home, '.kookr');
+    mkdirSync(dataDir);
+    chmodSync(dataDir, 0o700);
+
+    try {
+      const report = await buildDoctorJsonReport({
+        env: { ...opsOkEnv, HOME: home },
+        commandRunner: run,
+        access: async () => {},
+        ...hermeticOps,
+        // Exercise the real default wiring — no statFile / platform injection.
+        statFile: undefined,
+        platform: undefined,
+      });
+
+      const check = report.checks.find((c) => c.id === 'runtime.data-dir-mode');
+      if (process.platform === 'linux' || process.platform === 'darwin') {
+        expect(check).toMatchObject({ status: 'ok', required: false });
+        expect(check?.summary).toContain(dataDir);
+        expect(check?.summary).toContain('0700');
+      } else {
+        expect(check).toBeUndefined();
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
     }
   });
 
