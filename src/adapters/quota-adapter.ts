@@ -11,14 +11,14 @@ export type PollerState = 'idle' | 'polling' | 'healthy' | 'backoff' | 'auth_fai
 const CREDENTIALS_PATH = join(homedir(), '.claude', '.credentials.json');
 
 /** Cap for the operator-visible lastError on GET /api/health (issue #3312). */
-const QUOTA_POLLER_LAST_ERROR_MAX_CHARS = 500;
+export const QUOTA_POLLER_LAST_ERROR_MAX_CHARS = 500;
 
 /**
  * Secret-free quota-poller projection for GET `/api/health` (issue #3312).
  *
  * Distinguishes a poller that is healthy from one that is backing off,
  * auth-failed, or disabled — health previously only showed utilization from
- * the last *successful* snapshot, so a hours-long auth failure looked the
+ * the last *successful* snapshot, so an hours-long auth failure looked the
  * same as "never polled."
  */
 export interface QuotaPollerHealthSnapshot {
@@ -37,6 +37,7 @@ export function sanitizeQuotaPollerLastError(message: string | null): string | n
   if (message === null) return null;
   let out = message.split(CREDENTIALS_PATH).join('<credentials>');
   const home = homedir();
+  // Skip a one-character home (e.g. "/") so we do not rewrite every slash.
   if (home.length > 1) {
     out = out.split(home).join('~');
   }

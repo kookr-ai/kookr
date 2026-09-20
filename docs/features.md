@@ -278,7 +278,7 @@ Kookr surfaces Claude API usage against Anthropic's 5-hour and 7-day windows so 
 
 | ID | Feature | Description |
 |----|---------|-------------|
-| F14.1 | **Quota poller** | `quota-adapter.ts` authenticates via OAuth and polls the usage endpoint, exposing a `QuotaStatus` snapshot. |
+| F14.1 | **Quota poller** | `quota-adapter.ts` authenticates via OAuth and polls the usage endpoint, exposing a `QuotaStatus` snapshot plus a secret-free `quotaPoller` liveness block on `GET /api/health` (`state`, `lastError`, `currentIntervalMs`, `consecutiveFailures`; issue #3312). |
 | F14.2 | **Status broadcast** | The server sends `quotaStatus` on connect and on change; the TopBar renders the remaining budget. |
 
 ### F15: Self-Diagnostics

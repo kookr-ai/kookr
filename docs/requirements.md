@@ -1510,6 +1510,24 @@ The system SHALL publish the operational-alert JSONL sink's in-memory writabilit
 
 **Evidence:** `src/server/operational-alert-sink.ts` (`status()`), `src/server/index.ts` (sink wiring), `src/server/routes/diagnostics-routes.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
 
+### R6.18: Publish Quota-Poller Liveness on GET /api/health [#3312] — SHALL — `done`
+
+The system SHALL publish a secret-free quota-poller liveness block on
+`GET /api/health` so `auth_failed`, `backoff`, and `disabled` are
+distinguishable from `healthy` without treating the last successful
+utilization snapshot as poller health.
+
+**Acceptance criteria:**
+- `GET /api/health` includes `quotaPoller` `{ state, lastError, currentIntervalMs, consecutiveFailures }` when the adapter is wired
+- `auth_failed`, `backoff`, and `disabled` are distinguishable from `healthy`
+- `lastError` contains no access tokens or credential paths
+- The block is omitted when the adapter is not wired
+- The health path never polls Anthropic
+
+**Dependencies:** R6.8.
+
+**Evidence:** `src/adapters/quota-adapter.ts` (`getHealthSnapshot`), `src/server/index.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/routes/diagnostics-routes.test.ts`, `docs/reference/api.md`.
+
 ---
 
 ## R7: Non-functional Requirements
@@ -2065,6 +2083,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R6.15 | #3112 | SHALL | done | fatal-error-counters, processFatal health projection |
 | R6.16 | #3247 | SHALL | done | resource-watchdog reclaim-before-spawn and lastSyncReclaim health |
 | R6.17 | #3315 | SHALL | done | operationalAlertSink writability on GET /api/health |
+| R6.18 | #3312 | SHALL | done | quotaPoller liveness on GET /api/health |
 | R7.1 | CLAUDE.md | SHALL | done | tsconfig, types |
 | R7.2 | CLAUDE.md | SHALL | done | Vitest test suite (count maintained via CI) |
 | R7.3 | ADR-007 | SHALL | done | hook-parser, hook-watcher |

@@ -90,11 +90,12 @@ reason-specific troubleshooting (issue #2895).
 When the Anthropic quota adapter is wired, `GET /api/health` includes a
 `quotaPoller` block `{ state, lastError, currentIntervalMs, consecutiveFailures }`
 so `auth_failed`, `backoff`, and `disabled` are distinguishable from `healthy`
-(issue #3312). Utilization still comes from the last successful snapshot
-(`orchestrationPause.defaultAgentQuota`); this block is the poller's own
-liveness. `lastError` is secret-free (no access tokens or credential paths).
-Omitted when the adapter is not wired. Cheap in-memory read; never polls
-Anthropic on this path.
+(issue #3312). `state` is `idle` | `polling` | `healthy` | `backoff` |
+`auth_failed` | `disabled`. Utilization still comes from the last successful
+snapshot (`orchestrationPause.defaultAgentQuota`); this block is the poller's
+own liveness. `lastError` is secret-free (no access tokens or credential
+paths) and capped at 500 characters. Omitted when the adapter is not wired.
+Cheap in-memory read; never polls Anthropic on this path.
 
 When the post-resume refill actuator is wired, `GET /api/health` includes the
 optional `postResumeRefill` block (issue #2797). It reports the last paused→live

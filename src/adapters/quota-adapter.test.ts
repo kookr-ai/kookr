@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   QuotaAdapter,
+  QUOTA_POLLER_LAST_ERROR_MAX_CHARS,
   readQuotaFetchTimeoutMs,
   sanitizeQuotaPollerLastError,
 } from './quota-adapter.js';
@@ -617,10 +618,23 @@ describe('QuotaAdapter', () => {
       const token = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
       const raw = `Bearer ${token} at ${credentialsPath}`;
       const sanitized = sanitizeQuotaPollerLastError(raw);
-      expect(sanitized).not.toBeNull();
+      expect(sanitized).toContain('[REDACTED]');
+      expect(sanitized).toContain('<credentials>');
       expect(sanitized).not.toContain(token);
       expect(sanitized).not.toContain(credentialsPath);
       expect(sanitized).not.toContain(homedir());
+    });
+
+    test('sanitizeQuotaPollerLastError returns null for null or empty input', () => {
+      expect(sanitizeQuotaPollerLastError(null)).toBeNull();
+      expect(sanitizeQuotaPollerLastError('   ')).toBeNull();
+    });
+
+    test('sanitizeQuotaPollerLastError caps lastError at 500 characters', () => {
+      const sanitized = sanitizeQuotaPollerLastError('x'.repeat(600));
+      expect(sanitized).not.toBeNull();
+      expect(sanitized!.length).toBe(QUOTA_POLLER_LAST_ERROR_MAX_CHARS);
+      expect(sanitized!.endsWith('...')).toBe(true);
     });
   });
 });
