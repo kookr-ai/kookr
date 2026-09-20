@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -199,6 +199,39 @@ describe('OperationalAlertSink', () => {
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!).key).toBe('schedule:dead_man');
   });
+
+  test.runIf(process.platform !== 'win32')(
+    'persists operational-alerts.jsonl owner-only (mode 0o600) after the first append',
+    async () => {
+      const sink = new OperationalAlertSink({ kookrDir: dir });
+      const filePath = join(dir, OPERATIONAL_ALERTS_FILE_NAME);
+
+      expect(await sink.append(deadManFired())).toBe(true);
+      expect(statSync(filePath).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  test.runIf(process.platform !== 'win32')(
+    'append still succeeds when chmod is a no-op on an already owner-only file',
+    async () => {
+      const filePath = join(dir, OPERATIONAL_ALERTS_FILE_NAME);
+      writeFileSync(filePath, '', { mode: 0o600 });
+      chmodSync(filePath, 0o600);
+      expect(statSync(filePath).mode & 0o777).toBe(0o600);
+
+      const sink = new OperationalAlertSink({
+        kookrDir: dir,
+        now: () => new Date('2026-07-31T00:00:00.000Z'),
+      });
+
+      expect(await sink.append(deadManFired())).toBe(true);
+      expect(sink.status()).toEqual({ configured: true, writable: true });
+      expect(statSync(filePath).mode & 0o777).toBe(0o600);
+      const lines = readFileSync(filePath, 'utf-8').trim().split('\n');
+      expect(lines).toHaveLength(1);
+      expect(JSON.parse(lines[0]!).key).toBe('schedule:dead_man');
+    },
+  );
 
   test('exports conservative default rotation thresholds', () => {
     expect(DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES).toBe(16 * 1024 * 1024);
