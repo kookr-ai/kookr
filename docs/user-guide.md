@@ -306,7 +306,7 @@ The panel has three sections:
 |---|---|
 | **Per playbook** | One row per playbook that has at least one matching run in the window (tasks with no playbook are grouped as `<no-playbook>`). Each side shows Claude's and Codex's average estimated cost among priced tasks only — `n` is that priced count, not all runs. A cost ratio names the more expensive side. Thumbs-up rates use rated tasks only, with their own sample size. |
 | **Aggregate** | Totals across every matching task in the window — playbook runs and one-off work (grouped as `<no-playbook>`) together. The heading labels this a **weak signal** because mixing those into one average is not a fair Claude-vs-Codex comparison. Cards show task count, total estimated dollars, token volume, duration percentiles, and thumbs-up rate. |
-| **Tasks** | One row per matching Kookr task, newest first: name, start time, agent, model, playbook, duration, estimated cost, feedback, and a quality badge. |
+| **Tasks** | One row per matching Kookr task, newest first: name, start time, agent, model, playbook, duration, estimated cost, feedback, and a quality badge. If that task is still on the dashboard, the name is a button that opens it and closes Cost Comparison. Historical rows stay plain text. |
 
 A playbook cell with `n=0` has no priced runs for that agent in the window — the average is a dash, not $0. Cost ratio `Claude 2.50×` means Claude's average is two and a half times Codex's among priced tasks. Thumbs-up rates use only rated tasks; unrated tasks are not negative votes. A 100% rate with `n=1` is one vote, not a strong comparison.
 

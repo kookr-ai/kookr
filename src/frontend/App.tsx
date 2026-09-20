@@ -1205,6 +1205,14 @@ export function App() {
     selectAgent(agentId, taskId);
     closeOperations();
   }, [liveAgentByTaskId, selectAgent, closeOperations]);
+  // Open the live task behind a Cost Comparison per-task row (issue #3331).
+  // Same taskId→agent resolution as openOutcomeTask; the overlay close itself
+  // lives in CostComparisonPanel so the terminal is visible after the click.
+  const openCostComparisonTask = useCallback((taskId: string) => {
+    const agentId = liveAgentByTaskId.get(taskId);
+    if (!agentId) return;
+    selectAgent(agentId, taskId);
+  }, [liveAgentByTaskId, selectAgent]);
   const {
     filteredAgents,
     pending,
@@ -1880,7 +1888,11 @@ export function App() {
       )}
       {activeModal === 'costComparison' && (
         <Suspense fallback={null}>
-          <CostComparisonPanel onClose={closeModal} />
+          <CostComparisonPanel
+            onClose={closeModal}
+            liveTaskIds={liveTaskIds}
+            onOpenTask={openCostComparisonTask}
+          />
         </Suspense>
       )}
       {activeModal === 'settings' && (

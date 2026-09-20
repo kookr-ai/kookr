@@ -30,10 +30,26 @@ import {
  * inline, rest collapsed).
  *
  * The panel is read-only telemetry. It does not write back to the server.
+ * A live per-task name can open that dashboard task (issue #3331) using the
+ * host's existing selection path — still no API or archive fetch.
  */
 
 interface Props {
   onClose: () => void;
+  /**
+   * Task IDs that have a live dashboard agent right now (issue #3331). A row
+   * whose `taskId` is in this set gets an active "Open task" name; every other
+   * row — historical spend, or a task with no live agent — stays plain text.
+   * Defaults to empty, so with no wiring no name is openable. Membership is
+   * keyed on `taskId`, never a display label.
+   */
+  liveTaskIds?: ReadonlySet<string>;
+  /**
+   * Select the live task behind a per-task row. Only ever called with a
+   * `taskId` that is in {@link liveTaskIds}. The panel also closes itself so
+   * the terminal is visible after a successful open.
+   */
+  onOpenTask?: (taskId: string) => void;
 }
 
 const WINDOW_OPTIONS: { value: TimeWindow; label: string }[] = [
@@ -43,7 +59,7 @@ const WINDOW_OPTIONS: { value: TimeWindow; label: string }[] = [
   { value: 'all', label: 'all' },
 ];
 
-export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
+export function CostComparisonPanel({ onClose, liveTaskIds, onOpenTask }: Props): React.ReactElement {
   // Initialize from persisted prefs (issue #3283) so a chosen window/agent
   // survives close-and-reopen; a missing or malformed stored value falls back
   // to the defaults. Read once at mount via the state initializer. Search is
@@ -230,7 +246,12 @@ export function CostComparisonPanel({ onClose }: Props): React.ReactElement {
           <>
             <PerPlaybookSection rows={data.perPlaybook} />
             <AggregateSection aggregate={data.aggregate} />
-            <PerTaskSection rows={data.perTask} />
+            <PerTaskSection
+              rows={data.perTask}
+              liveTaskIds={liveTaskIds}
+              onOpenTask={onOpenTask}
+              onClose={onClose}
+            />
           </>
         )}
       </div>
@@ -487,7 +508,17 @@ function PerTaskSortHeader({
   );
 }
 
-function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
+function PerTaskSection({
+  rows,
+  liveTaskIds,
+  onOpenTask,
+  onClose,
+}: {
+  rows: PerTaskRow[];
+  liveTaskIds?: ReadonlySet<string>;
+  onOpenTask?: (taskId: string) => void;
+  onClose: () => void;
+}): React.ReactElement {
   // Default is the server's order. First click on a column sorts descending
   // (most expensive / longest / newest first); a second click on the same
   // column flips to ascending.
@@ -532,7 +563,14 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
             <tbody>
               {visibleRows.map(r => (
                 <tr key={r.taskId} className={`cost-row dq-${r.dataQuality}`}>
-                  <td>{r.taskName ?? r.taskId}</td>
+                  <td>
+                    <PerTaskNameCell
+                      row={r}
+                      canOpen={Boolean(onOpenTask) && (liveTaskIds?.has(r.taskId) ?? false)}
+                      onOpen={onOpenTask}
+                      onClose={onClose}
+                    />
+                  </td>
                   <td>{new Date(r.startedAt).toLocaleString()}</td>
                   <td>{r.agent === 'claude-code' ? 'Claude' : 'Codex'}</td>
                   <td>{r.model ?? '—'}</td>
@@ -558,6 +596,39 @@ function PerTaskSection({ rows }: { rows: PerTaskRow[] }): React.ReactElement {
       )}
     </section>
   );
+}
+
+function PerTaskNameCell({
+  row,
+  canOpen,
+  onOpen,
+  onClose,
+}: {
+  row: PerTaskRow;
+  canOpen: boolean;
+  onOpen?: (taskId: string) => void;
+  onClose: () => void;
+}): React.ReactElement {
+  const label = row.taskName ?? row.taskId;
+  if (canOpen && onOpen) {
+    // Live task: a real button so click, keyboard, and screen reader all open
+    // the same taskId — never the display label a historical row could share.
+    return (
+      <button
+        type="button"
+        className="cost-task-open"
+        onClick={() => {
+          onOpen(row.taskId);
+          onClose();
+        }}
+        aria-label={`Open task ${label}`}
+      >
+        {label}
+      </button>
+    );
+  }
+  // Historical or unmatched row: still readable, but plainly not actionable.
+  return <>{label}</>;
 }
 
 function QualityBadge({ row }: { row: PerTaskRow }): React.ReactElement {

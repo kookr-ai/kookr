@@ -34,12 +34,12 @@ function makeResponse(overrides: Partial<CostComparisonResponse> = {}): CostComp
   };
 }
 
-function mount() {
+function mount(props: Omit<React.ComponentProps<typeof CostComparisonPanel>, 'onClose'> = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
   act(() => {
     root = createRoot(container);
-    root.render(React.createElement(CostComparisonPanel, { onClose }));
+    root.render(React.createElement(CostComparisonPanel, { onClose, ...props }));
   });
   return container;
 }
@@ -236,6 +236,87 @@ describe('CostComparisonPanel', () => {
     expect(rows.map(row => row[0])).toEqual(['Fix <b>login</b>', 'Fix logout']);
     expect(rows[0].slice(1)).toEqual(rows[1].slice(1));
     expect(table.querySelector('b')).toBeNull();
+    // With no live snapshot, names stay dead text — not buttons (issue #3331).
+    expect(table.querySelector('button.cost-task-open')).toBeNull();
+  });
+
+  test('a live per-task row opens that task and closes the overlay (issue #3331)', async () => {
+    // Two named rows, only `live-task` is still on the dashboard. The live name
+    // must be a real button keyed on taskId (never the display label), and a
+    // click must both select that task and close Cost Comparison so the
+    // terminal is visible.
+    const onOpenTask = vi.fn();
+    mockFetchSequential([{
+      body: makeResponse({ perTask: [
+        taskRow({ taskId: 'live-task', taskName: 'Expensive live task' }),
+        taskRow({ taskId: 'historical-task', taskName: 'Old spend' }),
+      ] }),
+    }]);
+    const el = mount({ liveTaskIds: new Set(['live-task']), onOpenTask });
+    await flush();
+
+    const openButton = el.querySelector<HTMLButtonElement>('button.cost-task-open');
+    expect(openButton).toBeTruthy();
+    expect(openButton?.getAttribute('aria-label')).toBe('Open task Expensive live task');
+    expect(el.querySelectorAll('button.cost-task-open').length).toBe(1);
+
+    act(() => {
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith('live-task');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test('a per-task row whose taskId is not in the live snapshot stays non-clickable text (issue #3331)', async () => {
+    const onOpenTask = vi.fn();
+    mockFetchSequential([{
+      body: makeResponse({ perTask: [
+        taskRow({ taskId: 'live-task', taskName: 'Expensive live task' }),
+        taskRow({ taskId: 'historical-task', taskName: 'Old spend' }),
+      ] }),
+    }]);
+    const el = mount({ liveTaskIds: new Set(['live-task']), onOpenTask });
+    await flush();
+
+    const nameCells = Array.from(el.querySelectorAll('.cost-per-task-table tbody tr td:first-child'));
+    const historical = nameCells.find((cell) => cell.textContent === 'Old spend');
+    expect(historical).toBeTruthy();
+    expect(historical?.querySelector('button')).toBeNull();
+    expect(historical?.textContent).toBe('Old spend');
+    expect(onOpenTask).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('without onOpenTask wiring, no per-task name is openable (issue #3331)', async () => {
+    mockFetchSequential([{
+      body: makeResponse({ perTask: [
+        taskRow({ taskId: 'live-task', taskName: 'Expensive live task' }),
+      ] }),
+    }]);
+    const el = mount({ liveTaskIds: new Set(['live-task']) });
+    await flush();
+
+    expect(el.querySelector('button.cost-task-open')).toBeNull();
+    expect(el.querySelector('.cost-per-task-table tbody td')?.textContent).toBe('Expensive live task');
+  });
+
+  test('with a handler but no live-id set, no per-task name is openable (issue #3331)', async () => {
+    // Documented default: onOpenTask wired but liveTaskIds omitted treats every
+    // row as not-live (`liveTaskIds?.has(...) ?? false`), so nothing is openable
+    // rather than everything.
+    const onOpenTask = vi.fn();
+    mockFetchSequential([{
+      body: makeResponse({ perTask: [
+        taskRow({ taskId: 'live-task', taskName: 'Expensive live task' }),
+      ] }),
+    }]);
+    const el = mount({ onOpenTask });
+    await flush();
+
+    expect(el.querySelector('button.cost-task-open')).toBeNull();
+    expect(onOpenTask).not.toHaveBeenCalled();
+    expect(el.querySelector('.cost-per-task-table tbody td')?.textContent).toBe('Expensive live task');
   });
 
   test('falls back to IDs for unnamed and legacy rows, including incomplete costs', async () => {
