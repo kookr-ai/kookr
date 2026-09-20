@@ -146,6 +146,10 @@ function response(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function flaggedTask(overrides: Record<string, unknown> = {}) {
+  return { ...response().tasks[0], ...overrides };
+}
+
 function mount(props: React.ComponentProps<typeof OutcomeLedgerPanel> = {}) {
   container = document.createElement('div');
   document.body.appendChild(container);
@@ -362,6 +366,105 @@ describe('OutcomeLedgerPanel', () => {
     expect(el.querySelector('button.outcome-finding-open')).toBeNull();
     expect(onOpenTask).not.toHaveBeenCalled();
     expect(el.textContent).toContain('Cancelled after prompt');
+  });
+
+  test('a live audit-row task opens that task by taskId, not label (issue #3345)', async () => {
+    // Two flagged rows share a display name. Only `live-id` is still on the
+    // dashboard, so only that row is a button, and the click must pass the
+    // live taskId — never the shared label a historical row could collide on.
+    const onOpenTask = vi.fn();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      tasks: [
+        flaggedTask({ taskId: 'live-id', label: 'Shared name', flags: ['zero_cost'] }),
+        flaggedTask({ taskId: 'hist-id', label: 'Shared name', flags: ['missing_cost'] }),
+      ],
+    }))));
+    const el = mount({ liveTaskIds: new Set(['live-id']), onOpenTask });
+
+    await flush();
+
+    const labels = Array.from(el.querySelectorAll('.outcome-task-label'));
+    expect(labels.map((node) => node.textContent)).toEqual(['Shared name', 'Shared name']);
+    expect(labels.map((node) => node.tagName)).toEqual(['BUTTON', 'SPAN']);
+
+    const openButton = el.querySelector<HTMLButtonElement>('button.outcome-task-open');
+    expect(openButton).toBeTruthy();
+    expect(openButton?.getAttribute('aria-label')).toBe('Open task Shared name');
+    expect(el.querySelectorAll('button.outcome-task-open').length).toBe(1);
+
+    act(() => {
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).toHaveBeenCalledTimes(1);
+    expect(onOpenTask).toHaveBeenCalledWith('live-id');
+  });
+
+  test('a historical or unmatched audit row stays readable, non-actionable text (issue #3345)', async () => {
+    const onOpenTask = vi.fn();
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      tasks: [
+        flaggedTask({ taskId: 'live-id', label: 'Live flagged', flags: ['zero_cost'] }),
+        flaggedTask({ taskId: 'hist-id', label: 'Historical flagged', flags: ['missing_cost'] }),
+      ],
+    }))));
+    const el = mount({ liveTaskIds: new Set(['live-id']), onOpenTask });
+
+    await flush();
+
+    const labels = Array.from(el.querySelectorAll('.outcome-task-label'));
+    const historical = labels.find((cell) => cell.textContent === 'Historical flagged');
+    expect(historical).toBeTruthy();
+    expect(historical?.tagName).toBe('SPAN');
+    expect(labels.filter((cell) => cell.tagName === 'BUTTON')).toHaveLength(1);
+    expect(el.textContent).toContain('Historical flagged');
+    expect(onOpenTask).not.toHaveBeenCalled();
+  });
+
+  test('without onOpenTask wiring, no audit row is openable (issue #3345)', async () => {
+    const el = mount({ liveTaskIds: new Set(['task-1']) });
+
+    await flush();
+
+    expect(el.querySelector('button.outcome-task-open')).toBeNull();
+    expect(el.querySelector('.outcome-task-label')?.tagName).toBe('SPAN');
+    expect(el.textContent).toContain('Cancelled after prompt');
+  });
+
+  test('with a handler but no live-id set, no audit row is openable (issue #3345)', async () => {
+    const onOpenTask = vi.fn();
+    const el = mount({ onOpenTask });
+
+    await flush();
+
+    expect(el.querySelector('button.outcome-task-open')).toBeNull();
+    expect(onOpenTask).not.toHaveBeenCalled();
+    expect(el.querySelector('.outcome-task-label')?.tagName).toBe('SPAN');
+  });
+
+  test('opening a live audit row does not change finding-row open behavior (issue #3345)', async () => {
+    // Default fixture: task-1 is both a finding and a flagged audit row.
+    // Each control must stay independent and still select by its own taskId.
+    const onOpenTask = vi.fn();
+    const el = mount({ liveTaskIds: new Set(['task-1']), onOpenTask });
+
+    await flush();
+
+    const findingButton = el.querySelector<HTMLButtonElement>('button.outcome-finding-open');
+    const auditButton = el.querySelector<HTMLButtonElement>('button.outcome-task-open');
+    expect(findingButton).toBeTruthy();
+    expect(auditButton).toBeTruthy();
+    expect(el.querySelectorAll('button.outcome-finding-open').length).toBe(1);
+
+    act(() => {
+      findingButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).toHaveBeenNthCalledWith(1, 'task-1');
+
+    act(() => {
+      auditButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenTask).toHaveBeenNthCalledWith(2, 'task-1');
+    expect(onOpenTask).toHaveBeenCalledTimes(2);
   });
 
   test('renders the per-finding metric:value only when value is non-null', async () => {

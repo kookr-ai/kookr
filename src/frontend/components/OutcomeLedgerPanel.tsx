@@ -92,18 +92,19 @@ interface OutcomeLedgerPanelProps {
    */
   projects?: OutcomeLedgerProjectOption[];
   /**
-   * Task IDs that have a live dashboard agent right now (issue #2783). A finding
-   * whose `taskId` is in this set gets an active "Open task" affordance; every
-   * other finding — historical rows, or a task with no live agent — stays a
-   * plain, readable label. Defaults to empty, so with no wiring no finding is
-   * openable. Membership is keyed on the finding `taskId`, never a display
-   * label, so a matching name can never open the wrong task.
+   * Task IDs that have a live dashboard agent right now (issues #2783, #3345).
+   * A finding or flagged audit row whose `taskId` is in this set gets an
+   * active "Open task" affordance; every other row — historical, or a task
+   * with no live agent — stays a plain, readable label. Defaults to empty, so
+   * with no wiring nothing is openable. Membership is keyed on `taskId`,
+   * never a display label, so a matching name can never open the wrong task.
    */
   liveTaskIds?: ReadonlySet<string>;
   /**
-   * Select the live task behind a finding, reusing the dashboard's existing
-   * selection path. Only ever called with a `taskId` that is in
-   * {@link liveTaskIds}, so it never has to guess a task from a display label.
+   * Select the live task behind a finding or flagged audit row, reusing the
+   * dashboard's existing selection path. Only ever called with a `taskId`
+   * that is in {@link liveTaskIds}, so it never has to guess a task from a
+   * display label.
    */
   onOpenTask?: (taskId: string) => void;
 }
@@ -326,7 +327,14 @@ export function OutcomeLedgerPanel({
               {visibleTasks.length > 0 && (
                 <div className="outcome-task-audit">
                   <div className="outcome-task-audit-title">Rows to inspect first</div>
-                  {visibleTasks.map((task) => <TaskAuditRow key={task.taskId} task={task} />)}
+                  {visibleTasks.map((task) => (
+                    <TaskAuditRow
+                      key={task.taskId}
+                      task={task}
+                      canOpen={Boolean(onOpenTask) && (liveTaskIds?.has(task.taskId) ?? false)}
+                      onOpen={onOpenTask}
+                    />
+                  ))}
                 </div>
               )}
               <div className="outcome-ledger-meta">
@@ -636,10 +644,34 @@ function FindingRow({
   );
 }
 
-function TaskAuditRow({ task }: { task: OutcomeLedgerTaskRow }): React.ReactElement {
+function TaskAuditRow({
+  task,
+  canOpen,
+  onOpen,
+}: {
+  task: OutcomeLedgerTaskRow;
+  canOpen: boolean;
+  onOpen?: (taskId: string) => void;
+}): React.ReactElement {
   return (
     <div className="outcome-task-row">
-      <span className="outcome-task-label">{task.label}</span>
+      {canOpen && onOpen ? (
+        // Live task: a real button so the same action is reachable by click,
+        // keyboard, and screen reader. It selects by task.taskId, never the
+        // display label, so a shared name can't open the wrong task.
+        <button
+          type="button"
+          className="outcome-task-label outcome-task-open"
+          onClick={() => onOpen(task.taskId)}
+          aria-label={`Open task ${task.label}`}
+        >
+          {task.label}
+        </button>
+      ) : (
+        // Historical or unmatched audit row: still readable, but plainly not
+        // actionable — no button, so nothing to activate and nothing to select.
+        <span className="outcome-task-label">{task.label}</span>
+      )}
       <span>{task.flags.join(', ')}</span>
     </div>
   );
