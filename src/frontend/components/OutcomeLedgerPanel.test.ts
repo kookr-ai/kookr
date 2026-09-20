@@ -249,6 +249,56 @@ describe('OutcomeLedgerPanel', () => {
     expect(digests?.querySelector('strong')?.textContent).toBe('unknown');
   });
 
+  test('feedback tile shows thumbs-down count and sample size alongside the rate (issue #3298)', async () => {
+    // Distinct split so a rate-only render (80% with no n=) cannot pass, and so
+    // a swapped up/down cannot hide behind the same total.
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      summary: {
+        ...response().summary,
+        thumbsUp: 12,
+        thumbsDown: 3,
+        thumbsUpRate: 12 / 15,
+        feedbackCoverage: 0.5,
+      },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    const feedback = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'feedback',
+    );
+    expect(feedback).toBeTruthy();
+    expect(feedback?.querySelector('strong')?.textContent).toBe('80%');
+    expect(feedback?.querySelector('.outcome-metric-detail')?.textContent)
+      .toBe('👍 12 / 👎 3 · n=15 · 50% coverage');
+  });
+
+  test('feedback tile with zero votes shows unknown, not a 100% rate (issue #3298)', async () => {
+    // A transported 100% rate with n=0 would otherwise look like a strong
+    // signal. The tile must refuse to headline a rate when there are no votes.
+    vi.mocked(fetch).mockImplementation(() => Promise.resolve(fetchResponse(response({
+      summary: {
+        ...response().summary,
+        thumbsUp: 0,
+        thumbsDown: 0,
+        thumbsUpRate: 1,
+        feedbackCoverage: null,
+      },
+    }))));
+    const el = mount();
+
+    await flush();
+
+    const feedback = Array.from(el.querySelectorAll('.outcome-metric')).find(
+      (metric) => metric.querySelector('.outcome-metric-label')?.textContent === 'feedback',
+    );
+    expect(feedback?.querySelector('strong')?.textContent).toBe('unknown');
+    expect(feedback?.textContent).not.toContain('NaN');
+    expect(feedback?.querySelector('.outcome-metric-detail')?.textContent)
+      .toBe('n=0 · unknown coverage');
+  });
+
   test('a finding whose task is live opens that task by taskId, not label (issue #2783)', async () => {
     // Default fixture: task-1 ("Cancelled after prompt") and task-2 ("Missing
     // usage"). Only task-1 is live, so only its row is actionable, and it must
