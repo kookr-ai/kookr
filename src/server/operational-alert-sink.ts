@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { appendJsonlWithRotation } from '../core/jsonl-rotation.js';
+import { enforceOwnerOnlyFile } from '../shared/owner-only-mode.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
 type AlertMessage = Extract<ServerMessage, { type: 'alert' }>;
@@ -65,7 +66,10 @@ export interface OperationalAlertSinkRecord {
  * would push the active file past {@link DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES}
  * renames it to `.1` and starts a new active file. The rotator appends; it
  * never rewrites the live file in place, so an interrupted write cannot
- * clobber prior rows (issue #3311).
+ * clobber prior rows (issue #3311). After a successful append the active file
+ * is tightened to owner-only mode `0o600` so incident summaries are not group-
+ * or world-readable on a shared host (issue #3307). Mode repair is best-effort
+ * and never fails the write.
  */
 export class OperationalAlertSink {
   private readonly filePath: string | null;
@@ -133,19 +137,11 @@ export class OperationalAlertSink {
 
     const line = `${JSON.stringify(row)}\n`;
     const filePath = this.filePath;
-    // Do not pass `fileMode` into the rotator: its post-append chmod throws
-    // and would fail a durable write on exotic filesystems. Owner-only repair
-    // is a separate idea on this sink; rotation must stay a true append.
     const run = this.appendQueue
       .catch(() => {
         /* keep the queue alive after an earlier write failure */
       })
-      .then(() =>
-        appendJsonlWithRotation(filePath, line, {
-          maxBytes: this.maxBytes,
-          rotatedGenerations: this.rotatedGenerations,
-        }),
-      );
+      .then(() => this.writeRotated(filePath, line));
     this.appendQueue = run;
 
     try {
@@ -159,6 +155,19 @@ export class OperationalAlertSink {
       this.logger.error(`[operational-alert-sink] append failed: ${message}`);
       return false;
     }
+  }
+
+  private async writeRotated(filePath: string, line: string): Promise<void> {
+    // Do not pass `fileMode` into the rotator: its post-append chmod throws
+    // and would fail a durable write on exotic filesystems. Owner-only repair
+    // of the active file stays best-effort (issue #3307), using the same helper
+    // as collaboration-audit.jsonl. Tightening retained `.N` generations after
+    // rename is optional and out of scope here.
+    await appendJsonlWithRotation(filePath, line, {
+      maxBytes: this.maxBytes,
+      rotatedGenerations: this.rotatedGenerations,
+    });
+    enforceOwnerOnlyFile(filePath);
   }
 }
 
