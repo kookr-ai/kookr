@@ -182,10 +182,7 @@ export class QuotaAdapter {
             this.currentIntervalMs = Math.max(retrySeconds * 1000, this.currentIntervalMs);
           }
         } else {
-          this.currentIntervalMs = Math.min(
-            this.currentIntervalMs * 2,
-            this.maxBackoffMs,
-          );
+          this.doublePollInterval();
         }
         this.state = 'backoff';
         this.lastError = `Rate limited (429). Next retry in ${Math.round(this.currentIntervalMs / 1000)}s`;
@@ -197,10 +194,7 @@ export class QuotaAdapter {
     } catch (err) {
       this.consecutiveFailures++;
       this.consecutiveSuccesses = 0;
-      this.currentIntervalMs = Math.min(
-        this.currentIntervalMs * 2,
-        this.maxBackoffMs,
-      );
+      this.doublePollInterval();
       this.state = 'backoff';
       this.lastError = `Network error: ${err instanceof Error ? err.message : String(err)}. Next retry in ${Math.round(this.currentIntervalMs / 1000)}s`;
       console.warn(`[quota] ${this.lastError}`);
@@ -212,6 +206,7 @@ export class QuotaAdapter {
     if (!response.ok) {
       this.consecutiveFailures++;
       this.consecutiveSuccesses = 0;
+      this.doublePollInterval();
       this.state = 'backoff';
       this.lastError = `HTTP ${response.status}`;
       console.warn(`[quota] Unexpected response: ${response.status}`);
@@ -223,6 +218,8 @@ export class QuotaAdapter {
       body = await response.json();
     } catch {
       this.consecutiveFailures++;
+      this.consecutiveSuccesses = 0;
+      this.doublePollInterval();
       this.state = 'backoff';
       this.lastError = 'Invalid JSON response';
       console.warn('[quota] Invalid JSON in usage response');
@@ -232,6 +229,8 @@ export class QuotaAdapter {
     // Schema validation: expect an object with five_hour and/or seven_day
     if (!body || typeof body !== 'object') {
       this.consecutiveFailures++;
+      this.consecutiveSuccesses = 0;
+      this.doublePollInterval();
       this.state = 'backoff';
       this.lastError = 'Unexpected response shape';
       console.warn('[quota] Unexpected response shape');
@@ -274,14 +273,19 @@ export class QuotaAdapter {
   private handleAuthFailure(message: string): false {
     this.consecutiveFailures++;
     this.consecutiveSuccesses = 0;
-    this.currentIntervalMs = Math.min(
-      this.currentIntervalMs * 2,
-      this.maxBackoffMs,
-    );
+    this.doublePollInterval();
     this.state = 'auth_failed';
     this.lastError = message;
     console.warn(`[quota] ${this.lastError}`);
     return false;
+  }
+
+  /** Double the poll interval, capped at {@link maxBackoffMs} (30 minutes). */
+  private doublePollInterval(): void {
+    this.currentIntervalMs = Math.min(
+      this.currentIntervalMs * 2,
+      this.maxBackoffMs,
+    );
   }
 
   private async readChangedAccessToken(): Promise<string | null> {
