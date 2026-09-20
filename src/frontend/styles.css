@@ -14829,6 +14829,28 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-weight: 500;
   opacity: 0.65;
 }
+.cost-sort-btn {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  font-weight: inherit;
+  padding: 0;
+  text-align: inherit;
+  width: 100%;
+}
+.cost-sort-btn:hover,
+.cost-sort-btn:focus-visible {
+  text-decoration: underline;
+}
+.cost-table th:has(.cost-sort-btn:hover),
+.cost-table th:has(.cost-sort-btn:focus-visible),
+.cost-table th[aria-sort="ascending"],
+.cost-table th[aria-sort="descending"] {
+  opacity: 1;
+}
 .cost-row.dq-codex-parse-error  td,
 .cost-row.dq-unknown-pricing    td,
 .cost-row.dq-codex-rollout-not-found td,

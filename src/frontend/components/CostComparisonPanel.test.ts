@@ -230,7 +230,7 @@ describe('CostComparisonPanel', () => {
     await flush();
     const table = el.querySelector('.cost-per-task-table')!;
     expect(Array.from(table.querySelectorAll('th'), cell => cell.textContent))
-      .toEqual(['Task', 'Started', 'Agent', 'Model', 'Playbook', 'Dur', 'Cost', '👍Feedback', 'Quality']);
+      .toEqual(['Task', 'Started', 'Agent', 'Model', 'Playbook', 'DurDuration', 'Cost', '👍Feedback', 'Quality']);
     const rows = Array.from(table.querySelectorAll('tbody tr'), row =>
       Array.from(row.querySelectorAll('td'), cell => cell.textContent));
     expect(rows.map(row => row[0])).toEqual(['Fix <b>login</b>', 'Fix logout']);
@@ -251,6 +251,135 @@ describe('CostComparisonPanel', () => {
     expect(Array.from(el.querySelectorAll('.cost-per-task-table tbody tr'), row => row.querySelector('td')?.textContent))
       .toEqual(['unnamed-task', 'legacy-task']);
     expect(el.textContent).not.toContain('Never display this prompt');
+  });
+
+  function perTaskNames(el: HTMLElement): string[] {
+    return Array.from(el.querySelectorAll('.cost-per-task-table tbody tr'), (row) =>
+      row.querySelector('td')?.textContent ?? '',
+    );
+  }
+
+  function perTaskSortButton(el: HTMLElement, label: string): HTMLButtonElement {
+    const button = Array.from(el.querySelectorAll('.cost-per-task-table thead button'))
+      .find((btn) => (btn.textContent ?? '').includes(label));
+    if (!button) throw new Error(`sort button "${label}" not found`);
+    return button as HTMLButtonElement;
+  }
+
+  function perTaskAriaSort(el: HTMLElement, label: string): string | null {
+    const th = Array.from(el.querySelectorAll('.cost-per-task-table thead th'))
+      .find((header) => (header.textContent ?? '').includes(label));
+    return th?.getAttribute('aria-sort') ?? null;
+  }
+
+  test('clicking Cost reorders per-task rows by cost and toggles desc/asc (issue #3299)', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        perTask: [
+          // startedAt is deliberately inverse of cost so a Cost sort cannot
+          // pass by accidentally sorting on start time.
+          taskRow({ taskId: 'cheap', taskName: 'cheap', estimatedCostUsd: 0.10, durationMs: 90_000, startedAt: '2026-05-08T12:00:00Z' }),
+          taskRow({ taskId: 'pricey', taskName: 'pricey', estimatedCostUsd: 2.50, durationMs: 30_000, startedAt: '2026-05-08T10:00:00Z' }),
+          taskRow({ taskId: 'mid', taskName: 'mid', estimatedCostUsd: 0.80, durationMs: 60_000, startedAt: '2026-05-08T11:00:00Z' }),
+        ],
+      }),
+    }]);
+    const el = mount();
+    await flush();
+    expect(perTaskNames(el)).toEqual(['cheap', 'pricey', 'mid']);
+    expect(perTaskAriaSort(el, 'Cost')).toBe('none');
+    expect(perTaskAriaSort(el, 'Dur')).toBe('none');
+    expect(perTaskAriaSort(el, 'Started')).toBe('none');
+
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['pricey', 'mid', 'cheap']);
+    expect(perTaskAriaSort(el, 'Cost')).toBe('descending');
+    expect(perTaskAriaSort(el, 'Dur')).toBe('none');
+
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['cheap', 'mid', 'pricey']);
+    expect(perTaskAriaSort(el, 'Cost')).toBe('ascending');
+  });
+
+  test('clicking Dur and Started sort those columns, leaving equal keys in server order', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        perTask: [
+          taskRow({ taskId: 'a', taskName: 'alpha', estimatedCostUsd: 1, durationMs: 90_000, startedAt: '2026-05-08T10:00:00Z' }),
+          taskRow({ taskId: 'b', taskName: 'bravo', estimatedCostUsd: 1, durationMs: 30_000, startedAt: '2026-05-08T12:00:00Z' }),
+          taskRow({ taskId: 'c', taskName: 'charlie', estimatedCostUsd: 1, durationMs: 60_000, startedAt: '2026-05-08T11:00:00Z' }),
+        ],
+      }),
+    }]);
+    const el = mount();
+    await flush();
+
+    act(() => perTaskSortButton(el, 'Dur').click());
+    expect(perTaskNames(el)).toEqual(['alpha', 'charlie', 'bravo']);
+    expect(perTaskAriaSort(el, 'Dur')).toBe('descending');
+    expect(perTaskAriaSort(el, 'Cost')).toBe('none');
+
+    act(() => perTaskSortButton(el, 'Started').click());
+    expect(perTaskNames(el)).toEqual(['bravo', 'charlie', 'alpha']);
+    expect(perTaskAriaSort(el, 'Started')).toBe('descending');
+    expect(perTaskAriaSort(el, 'Dur')).toBe('none');
+
+    act(() => perTaskSortButton(el, 'Started').click());
+    expect(perTaskNames(el)).toEqual(['alpha', 'charlie', 'bravo']);
+    expect(perTaskAriaSort(el, 'Started')).toBe('ascending');
+
+    // Equal costs keep the original relative order (stable sort).
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['alpha', 'bravo', 'charlie']);
+  });
+
+  test('unpriced costs and missing durations sort last in either direction', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        perTask: [
+          taskRow({ taskId: 'n', taskName: 'none', estimatedCostUsd: null, durationMs: null, startedAt: 'not-a-date' }),
+          taskRow({ taskId: 'hi', taskName: 'high', estimatedCostUsd: 2, durationMs: 80_000, startedAt: '2026-05-08T12:00:00Z' }),
+          taskRow({ taskId: 'lo', taskName: 'low', estimatedCostUsd: 0, durationMs: 20_000, startedAt: '2026-05-08T10:00:00Z' }),
+        ],
+      }),
+    }]);
+    const el = mount();
+    await flush();
+
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['high', 'low', 'none']);
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['low', 'high', 'none']);
+
+    act(() => perTaskSortButton(el, 'Dur').click());
+    expect(perTaskNames(el)).toEqual(['high', 'low', 'none']);
+    act(() => perTaskSortButton(el, 'Dur').click());
+    expect(perTaskNames(el)).toEqual(['low', 'high', 'none']);
+
+    act(() => perTaskSortButton(el, 'Started').click());
+    expect(perTaskNames(el)).toEqual(['high', 'low', 'none']);
+    act(() => perTaskSortButton(el, 'Started').click());
+    expect(perTaskNames(el)).toEqual(['low', 'high', 'none']);
+  });
+
+  test('CSV export stays in server order after the table is sorted (issue #3299)', async () => {
+    mockFetchSequential([{
+      body: makeResponse({
+        perTask: [
+          taskRow({ taskId: 'a', taskName: 'alpha', estimatedCostUsd: 0.10 }),
+          taskRow({ taskId: 'b', taskName: 'bravo', estimatedCostUsd: 2.50 }),
+        ],
+      }),
+    }]);
+    const el = mount();
+    await flush();
+    act(() => perTaskSortButton(el, 'Cost').click());
+    expect(perTaskNames(el)).toEqual(['bravo', 'alpha']);
+
+    const { lines } = await clickExportAndRead(el);
+    const perTaskIdx = lines.indexOf('Per task');
+    expect(lines[perTaskIdx + 2]).toContain('alpha,a,');
+    expect(lines[perTaskIdx + 3]).toContain('bravo,b,');
   });
 
   test('renders the "—" cost cell with a dataQuality tooltip when cost is null', async () => {
