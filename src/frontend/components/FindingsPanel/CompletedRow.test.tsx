@@ -125,13 +125,24 @@ describe('CompletedRow completion-rating pill', () => {
     act(() => {
       pill!.click();
     });
-    // Opening the editor is a rating action, not row selection.
+    // Opening the editor is a rating action, not row selection, and must not
+    // send until the operator actually picks a new rating. The pill stays
+    // mounted so keyboard focus is not dumped to the document.
     expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(pill!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-testid="completed-row-rating"]')).toBe(pill);
     const down = container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]');
     expect(down).not.toBeNull();
     act(() => {
       down!.click();
     });
+    // Down stays a draft until the editor commits so my_prompt can ride along.
+    expect(send).not.toHaveBeenCalled();
+    act(() => {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(send).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledWith({
       type: 'setTaskFeedback',
       taskId: 'task-1',
@@ -145,18 +156,15 @@ describe('CompletedRow completion-rating pill', () => {
     act(() => {
       container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!.click();
     });
-    expect(send).toHaveBeenCalledWith({
-      type: 'setTaskFeedback',
-      taskId: 'task-1',
-      feedback: { rating: 'down' },
-    });
+    expect(send).not.toHaveBeenCalled();
     const checkbox = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
       .find((input) => input.closest('label')?.textContent?.includes('My prompt was unclear'));
     expect(checkbox).toBeDefined();
     act(() => {
       checkbox!.click();
     });
-    expect(send).toHaveBeenLastCalledWith({
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
       type: 'setTaskFeedback',
       taskId: 'task-1',
       feedback: { rating: 'down', downReason: 'my_prompt' },
@@ -199,6 +207,7 @@ describe('CompletedRow completion-rating pill', () => {
       makeAgent({ taskStatus: 'cancelled' }),
     );
     root = rendered;
+    expect(container.querySelector('.completed-row')).not.toBeNull();
     expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
     expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
     expect(send).not.toHaveBeenCalled();
@@ -212,6 +221,31 @@ describe('CompletedRow completion-rating pill', () => {
     root = rendered;
     const pill = container.querySelector('[data-testid="completed-row-rating"]');
     expect(pill?.tagName).toBe('SPAN');
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    act(() => {
+      (pill as HTMLElement).click();
+    });
+    expect(container.querySelector('[aria-label="Thumbs down"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    // Display-only: the click still selects the row, as it did before #3330.
+    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
+  });
+
+  test('terminated rows do not offer late rating', () => {
+    root = renderRow(container, makeAgent({ taskStatus: 'terminated' })).root;
+    expect(container.querySelector('.completed-row')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
+    expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
+  });
+
+  test('a terminated row that already has feedback keeps a display-only pill', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ taskStatus: 'terminated', completionFeedback: { rating: 'up' } }),
+    );
+    root = rendered;
+    const pill = container.querySelector('[data-testid="completed-row-rating"]');
+    expect(pill?.tagName).toBe('SPAN');
     act(() => {
       (pill as HTMLElement).click();
     });
@@ -219,15 +253,41 @@ describe('CompletedRow completion-rating pill', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
-  test('terminated rows do not offer late rating', () => {
-    root = renderRow(container, makeAgent({ taskStatus: 'terminated' })).root;
-    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
-    expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
-  });
-
   test('archive-only completed rows cannot send a late rating', () => {
     const { root: rendered, send } = renderRow(container, makeAgent(), { live: false });
     root = rendered;
+    expect(container.querySelector('.completed-row')).not.toBeNull();
+    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('a rated archive-only row keeps a display-only pill', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ completionFeedback: { rating: 'down' } }),
+      { live: false },
+    );
+    root = rendered;
+    const pill = container.querySelector('[data-testid="completed-row-rating"]');
+    expect(pill?.tagName).toBe('SPAN');
+    expect(pill?.textContent).toBe('👎');
+    act(() => {
+      (pill as HTMLElement).click();
+    });
+    expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('a row pending deletion does not offer late rating', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ completionFeedback: { rating: 'up' } }),
+      { pendingDeletion: true },
+    );
+    root = rendered;
+    expect(container.querySelector('.completed-row')).not.toBeNull();
+    const pill = container.querySelector('[data-testid="completed-row-rating"]');
+    expect(pill?.tagName).toBe('SPAN');
     expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
     expect(send).not.toHaveBeenCalled();
   });

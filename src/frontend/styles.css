@@ -7860,9 +7860,9 @@ button.completed-row-rating:focus-visible {
 .completed-row-rating--up { background: rgba(52, 211, 153, 0.14); }
 .completed-row-rating--down { background: rgba(248, 113, 113, 0.14); }
 .completed-row-rating-wrap {
-  position: relative;
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 .completed-row-rating-editor {

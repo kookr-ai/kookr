@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
-import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
-import type { TaskCompletionFeedback } from '../../../shared/contracts/task.js';
+import type { AgentState, ClientMessage, TaskCompletionFeedback } from '../../../shared/protocol.js';
 import { track } from '../../telemetry.js';
+import { MY_PROMPT_DOWN_REASON_LABEL } from '../CompleteDialogFooter.js';
 import {
   formatDuration,
   formatTokenUsage,
@@ -21,9 +21,6 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
-
-/** Same copy as CompleteDialogFooter — keep the late-rate checkbox identical. */
-const MY_PROMPT_DOWN_REASON_LABEL = 'My prompt was unclear (skips structural-fix proposals)';
 
 function ratingCopy(feedback: TaskCompletionFeedback): { emoji: string; title: string } {
   const emoji = feedback.rating === 'up' ? '👍' : '👎';
@@ -68,25 +65,53 @@ function CompletedRowRatingControl({
 }: {
   taskId: string;
   persisted: TaskCompletionFeedback | undefined;
-  send: (msg: ClientMessage) => void;
+  send: (msg: ClientMessage) => boolean | void;
 }): JSX.Element {
   const [local, setLocal] = useState<TaskCompletionFeedback | undefined>(undefined);
   const [editorOpen, setEditorOpen] = useState(persisted === undefined);
   const wrapRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLButtonElement>(null);
+  const firstThumbRef = useRef<HTMLButtonElement>(null);
+  const moveFocusIntoEditor = useRef(false);
+  const sentRef = useRef<TaskCompletionFeedback | undefined>(persisted);
   const feedback = local ?? persisted;
+  const feedbackRef = useRef(feedback);
+  feedbackRef.current = feedback;
+  // Unrated rows keep thumbs visible (there is no pill to reopen). Rated rows
+  // keep the pill mounted and expand the editor beside it.
   const showEditor = editorOpen || feedback === undefined;
 
+  function persist(next: TaskCompletionFeedback): boolean {
+    if (sameFeedback(sentRef.current, next)) return true;
+    const accepted = send({ type: 'setTaskFeedback', taskId, feedback: next });
+    if (accepted === false) return false;
+    sentRef.current = next;
+    return true;
+  }
+
+  function closeEditor(opts: { persistDraft?: boolean } = {}) {
+    const persistDraft = opts.persistDraft !== false;
+    const draft = feedbackRef.current;
+    // Thumbs-down stays a local draft until the editor commits so my_prompt
+    // can ride on the first setTaskFeedback (down amends auto-spawn reflect).
+    if (persistDraft && draft?.rating === 'down' && !persist(draft)) return;
+    setEditorOpen(false);
+    queueMicrotask(() => pillRef.current?.focus());
+  }
+
   useEffect(() => {
+    // Unrated editors have no overlay to dismiss — skip outside-click / Escape
+    // until a draft rating exists.
     if (!editorOpen || feedback === undefined) return;
     function onDoc(e: MouseEvent) {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
-        setEditorOpen(false);
+        closeEditor();
       }
     }
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        setEditorOpen(false);
+        closeEditor();
       }
     }
     document.addEventListener('mousedown', onDoc);
@@ -97,15 +122,25 @@ function CompletedRowRatingControl({
     };
   }, [editorOpen, feedback]);
 
-  function submit(next: TaskCompletionFeedback) {
+  useEffect(() => {
+    if (!showEditor || !moveFocusIntoEditor.current) return;
+    moveFocusIntoEditor.current = false;
+    firstThumbRef.current?.focus();
+  }, [showEditor]);
+
+  function submit(next: TaskCompletionFeedback, opts: { persistNow?: boolean } = {}) {
+    // Unlike the complete dialog, late rating cannot clear — setTaskFeedback
+    // always requires a rating. Clicking the active thumb is a no-op.
     if (sameFeedback(feedback, next)) return;
+    const persistNow = opts.persistNow ?? next.rating === 'up';
+    if (persistNow && !persist(next)) return;
     setLocal(next);
-    send({ type: 'setTaskFeedback', taskId, feedback: next });
-    if (next.rating === 'up') setEditorOpen(false);
+    feedbackRef.current = next;
+    if (next.rating === 'up') closeEditor({ persistDraft: false });
   }
 
   const pill = feedback ? ratingCopy(feedback) : null;
-  const pillLabel = pill ? `${pill.title}. Click to change.` : '';
+  const pillLabel = pill ? `${pill.title}. Change rating.` : '';
 
   return (
     <div
@@ -113,16 +148,23 @@ function CompletedRowRatingControl({
       ref={wrapRef}
       onClick={(e) => e.stopPropagation()}
     >
-      {feedback && pill && !showEditor && (
+      {pill && feedback && (
         <button
+          ref={pillRef}
           type="button"
           className={`completed-row-rating completed-row-rating--${feedback.rating}`}
           title={pillLabel}
           aria-label={pillLabel}
-          aria-haspopup="true"
-          aria-expanded={false}
+          aria-expanded={showEditor}
           data-testid="completed-row-rating"
-          onClick={() => setEditorOpen(true)}
+          onClick={() => {
+            if (showEditor) {
+              closeEditor();
+              return;
+            }
+            moveFocusIntoEditor.current = true;
+            setEditorOpen(true);
+          }}
         >
           {pill.emoji}
         </button>
@@ -135,6 +177,7 @@ function CompletedRowRatingControl({
           data-testid="completed-row-rate-editor"
         >
           <button
+            ref={firstThumbRef}
             type="button"
             className={`btn-thumb ${feedback?.rating === 'up' ? 'btn-thumb-active' : ''}`}
             onClick={() => submit(nextFeedback(feedback, 'up'))}
@@ -161,7 +204,7 @@ function CompletedRowRatingControl({
                   const next: TaskCompletionFeedback = { rating: 'down' };
                   if (feedback.note) next.note = feedback.note;
                   if (e.target.checked) next.downReason = 'my_prompt';
-                  submit(next);
+                  submit(next, { persistNow: true });
                 }}
               />
               <span>{MY_PROMPT_DOWN_REASON_LABEL}</span>
