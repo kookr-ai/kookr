@@ -1,9 +1,23 @@
-import { appendFile, mkdir } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
+import { appendJsonlWithRotation } from '../core/jsonl-rotation.js';
 import type { ServerMessage } from '../shared/contracts/messages.js';
 
 type AlertMessage = Extract<ServerMessage, { type: 'alert' }>;
+
+/** File name of the append-only operational-alert log under the data dir. */
+export const OPERATIONAL_ALERTS_FILE_NAME = 'operational-alerts.jsonl';
+
+/**
+ * Rotate `operational-alerts.jsonl` before an append would exceed this size.
+ * Same 16 MiB cap as the other JSONL sinks (`audit.jsonl`, resource-watchdog
+ * audit, collaboration-audit). Without rotation this incident log grew without
+ * bound and could itself contribute to the disk-critical state it records
+ * (issue #3311).
+ */
+export const DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES = 16 * 1024 * 1024;
+/** Rotated generations retained by default (keeps `.1` and `.2`). */
+export const DEFAULT_OPERATIONAL_ALERT_SINK_ROTATED_GENERATIONS = 2;
 
 export interface OperationalAlertSinkFailure {
   ts: string;
@@ -46,12 +60,25 @@ export interface OperationalAlertSinkRecord {
  * `ResourceStatusService.recordOperationalAlert`. A write failure never throws
  * to the caller and is never silent: it is error-logged and surfaced on
  * {@link status} so a frozen sink is distinguishable from a quiet day.
+ *
+ * Writes are size-capped via {@link appendJsonlWithRotation}: an append that
+ * would push the active file past {@link DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES}
+ * renames it to `.1` and starts a new active file. The rotator appends; it
+ * never rewrites the live file in place, so an interrupted write cannot
+ * clobber prior rows (issue #3311).
  */
 export class OperationalAlertSink {
   private readonly filePath: string | null;
   private readonly now: () => Date;
   private readonly logger: Pick<typeof console, 'error'>;
+  private readonly maxBytes: number;
+  private readonly rotatedGenerations: number;
   private lastFailure: OperationalAlertSinkFailure | undefined;
+  /**
+   * Serialize appends within this process so two writers cannot race on the
+   * rotation helper's stat/rotate/append sequence (its intra-process contract).
+   */
+  private appendQueue: Promise<void> = Promise.resolve();
 
   constructor(
     opts: {
@@ -59,12 +86,19 @@ export class OperationalAlertSink {
       filePath?: string | null;
       now?: () => Date;
       logger?: Pick<typeof console, 'error'>;
+      /** Override the rotation size cap (tests / specialized sinks). */
+      maxBytes?: number;
+      /** Override the retained rotated generations (tests / specialized sinks). */
+      rotatedGenerations?: number;
     } = {},
   ) {
     this.filePath =
-      opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, 'operational-alerts.jsonl') : null);
+      opts.filePath ?? (opts.kookrDir ? join(opts.kookrDir, OPERATIONAL_ALERTS_FILE_NAME) : null);
     this.now = opts.now ?? (() => new Date());
     this.logger = opts.logger ?? console;
+    this.maxBytes = opts.maxBytes ?? DEFAULT_OPERATIONAL_ALERT_SINK_MAX_BYTES;
+    this.rotatedGenerations =
+      opts.rotatedGenerations ?? DEFAULT_OPERATIONAL_ALERT_SINK_ROTATED_GENERATIONS;
   }
 
   status(): OperationalAlertSinkStatus {
@@ -97,9 +131,25 @@ export class OperationalAlertSink {
       ...(alert.details ? { details: alert.details } : {}),
     };
 
+    const line = `${JSON.stringify(row)}\n`;
+    const filePath = this.filePath;
+    // Do not pass `fileMode` into the rotator: its post-append chmod throws
+    // and would fail a durable write on exotic filesystems. Owner-only repair
+    // is a separate idea on this sink; rotation must stay a true append.
+    const run = this.appendQueue
+      .catch(() => {
+        /* keep the queue alive after an earlier write failure */
+      })
+      .then(() =>
+        appendJsonlWithRotation(filePath, line, {
+          maxBytes: this.maxBytes,
+          rotatedGenerations: this.rotatedGenerations,
+        }),
+      );
+    this.appendQueue = run;
+
     try {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      await appendFile(this.filePath, `${JSON.stringify(row)}\n`, 'utf-8');
+      await run;
       this.lastFailure = undefined;
       return true;
     } catch (err) {
