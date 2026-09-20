@@ -266,6 +266,11 @@ export function FindingsPanel({
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
   const completedSectionRef = useRef<HTMLDivElement>(null);
+  // Seed at 0, not the current nonce. DetailPanel's share nonce seeds from
+  // the prop so a remount does not re-open the modal. This path is the
+  // opposite: on mobile, App switches to the findings tab (remounting this
+  // panel) and bumps the nonce in the same click, so a remount with nonce > 0
+  // must still expand and scroll.
   const lastExpandCompletedNonceRef = useRef(0);
   // Status-bar 24h chip click: expand on the nonce bump, then scroll after
   // paint so the header (and newly revealed rows) land in view. Count-only

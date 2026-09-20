@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 /**
- * App wiring for the 24-hour completed-task chip (issue #2618). StatusBar
- * tests inject a number; this file checks that live agents with finishedAt
- * actually produce that number.
+ * App wiring for the 24-hour completed-task chip (issues #2618, #3333).
+ * StatusBar tests inject a number; this file checks that live agents with
+ * finishedAt actually produce that number, and that clicking the visible
+ * chip bumps the FindingsPanel expand nonce.
  */
 
 import React from 'react';

@@ -386,7 +386,9 @@ export function App() {
   // watches it to expand the Completed rail and scroll it into view; the
   // chip itself stays a no-op in isolated StatusBar tests that omit the
   // opener. Count refreshes do not bump this, so the section stays collapsed
-  // until the operator actually clicks.
+  // until the operator actually clicks. Switch to the findings tab first
+  // because on mobile the Task tab unmounts FindingsPanel — without that,
+  // the nonce bump would land on a missing rail.
   const [expandCompletedNonce, setExpandCompletedNonce] = useState(0);
   const expandCompletedRail = useCallback(() => {
     setMobileTab('findings');
