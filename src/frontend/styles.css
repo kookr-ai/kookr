@@ -9034,7 +9034,8 @@ button.completed-row-rating:focus-visible {
 }
 
 button.time-to-unblock-pill,
-button.live-friction-pill {
+button.live-friction-pill,
+button.cost-24h-pill {
   cursor: pointer;
   font-family: inherit;
   line-height: inherit;
@@ -9042,12 +9043,14 @@ button.live-friction-pill {
 }
 
 button.time-to-unblock-pill:hover,
-button.live-friction-pill:hover {
+button.live-friction-pill:hover,
+button.cost-24h-pill:hover {
   background: rgba(148, 163, 184, 0.26);
 }
 
 button.time-to-unblock-pill:focus-visible,
-button.live-friction-pill:focus-visible {
+button.live-friction-pill:focus-visible,
+button.cost-24h-pill:focus-visible {
   outline: 1px solid var(--text-secondary);
   outline-offset: 1px;
 }

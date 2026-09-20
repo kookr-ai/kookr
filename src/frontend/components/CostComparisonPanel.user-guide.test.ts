@@ -22,6 +22,11 @@ describe('user-guide Cost Comparison section', () => {
     expect(section).toMatch(/command palette/i);
   });
 
+  test('documents the status-bar 24h spend chip as a second open path', () => {
+    expect(section).toMatch(/status bar/i);
+    expect(section).toMatch(/24-hour spend/i);
+  });
+
   test('does not claim a top-bar $ icon', () => {
     expect(section).not.toMatch(/\$\s*icon/i);
     expect(section).not.toMatch(/top-bar/i);
