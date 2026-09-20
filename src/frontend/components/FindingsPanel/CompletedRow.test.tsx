@@ -31,19 +31,29 @@ function makeAgent(overrides: Partial<AgentState> = {}): AgentState {
   } as AgentState;
 }
 
-function renderRow(container: HTMLElement, agent: AgentState): Root {
+function renderRow(
+  container: HTMLElement,
+  agent: AgentState,
+  opts: {
+    send?: ReturnType<typeof vi.fn>;
+    pendingDeletion?: boolean;
+    live?: boolean;
+  } = {},
+): { root: Root; send: ReturnType<typeof vi.fn> } {
+  const send = opts.send ?? vi.fn();
+  useKookrStore.setState({ agents: opts.live === false ? [] : [agent] });
   const root = createRoot(container);
   act(() => {
     root.render(
       <CompletedRow
         agent={agent}
         selected={false}
-        send={vi.fn()}
-        pendingDeletion={false}
+        send={send}
+        pendingDeletion={opts.pendingDeletion === true}
       />,
     );
   });
-  return root;
+  return { root, send };
 }
 
 describe('CompletedRow completion-rating pill', () => {
@@ -75,29 +85,82 @@ describe('CompletedRow completion-rating pill', () => {
 
   test('shows a 👍 pill for an up rating', () => {
     const feedback: TaskCompletionFeedback = { rating: 'up' };
-    root = renderRow(container, makeAgent({ completionFeedback: feedback }));
+    root = renderRow(container, makeAgent({ completionFeedback: feedback })).root;
     const pill = container.querySelector('[data-testid="completed-row-rating"]');
     expect(pill).not.toBeNull();
     expect(pill?.textContent).toBe('👍');
     expect(pill?.className).toContain('completed-row-rating--up');
-    expect(pill?.getAttribute('title')).toBe('Rated good');
-    expect(pill?.tagName).toBe('SPAN');
+    expect(pill?.getAttribute('title')).toContain('Rated good');
+    // Live completed rows can reopen the rating control (issue #3330).
+    expect(pill?.tagName).toBe('BUTTON');
   });
 
-  test('clicking the pill falls through to row selection, not a rating flow', () => {
-    root = renderRow(container, makeAgent({ completionFeedback: { rating: 'up' } }));
-    const pill = container.querySelector<HTMLElement>('[data-testid="completed-row-rating"]');
+  test('skip-then-rate: an unrated completed row sends setTaskFeedback without relaunching complete', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent());
+    root = rendered;
+    expect(container.querySelector('[data-testid="completed-row-rating"]')).toBeNull();
+    const up = container.querySelector<HTMLButtonElement>('[aria-label="Thumbs up"]');
+    expect(up).not.toBeNull();
+    expect(container.querySelector('.confirm-dialog')).toBeNull();
+    act(() => {
+      up!.click();
+    });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'up' },
+    });
+  });
+
+  test('already-rated edit: the pill re-opens thumbs so the operator can change the rating', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ completionFeedback: { rating: 'up' } }),
+    );
+    root = rendered;
+    const pill = container.querySelector<HTMLButtonElement>('[data-testid="completed-row-rating"]');
     expect(pill).not.toBeNull();
     expect(useKookrStore.getState().selectedAgentId).toBeNull();
     act(() => {
       pill!.click();
     });
-    // Display-only: the pill has no handler of its own, so the click bubbles to
-    // the row and selects it — it never opens a rating editor. The completion
-    // dialog / rating capture lives elsewhere and leaves no trace here.
-    expect(useKookrStore.getState().selectedAgentId).toBe('agent-1');
-    expect(useKookrStore.getState().selectedTaskId).toBe('task-1');
-    expect(container.querySelector('.complete-feedback-note')).toBeNull();
+    // Opening the editor is a rating action, not row selection.
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    const down = container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]');
+    expect(down).not.toBeNull();
+    act(() => {
+      down!.click();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+    });
+  });
+
+  test('thumbs-down offers the same my_prompt reason as the complete dialog', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent());
+    root = rendered;
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!.click();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+    });
+    const checkbox = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'))
+      .find((input) => input.closest('label')?.textContent?.includes('My prompt was unclear'));
+    expect(checkbox).toBeDefined();
+    act(() => {
+      checkbox!.click();
+    });
+    expect(send).toHaveBeenLastCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down', downReason: 'my_prompt' },
+    });
   });
 
   test('shows a 👎 pill with the note and down-reason in the tooltip', () => {
@@ -106,13 +169,13 @@ describe('CompletedRow completion-rating pill', () => {
       note: 'Missed the <edge> case',
       downReason: 'agent_behavior',
     };
-    root = renderRow(container, makeAgent({ completionFeedback: feedback }));
+    root = renderRow(container, makeAgent({ completionFeedback: feedback })).root;
     const pill = container.querySelector('[data-testid="completed-row-rating"]');
     expect(pill).not.toBeNull();
     expect(pill?.textContent).toBe('👎');
     expect(pill?.className).toContain('completed-row-rating--down');
     // The note rides in the title attribute (a tooltip text sink) verbatim...
-    expect(pill?.getAttribute('title')).toBe('Rated bad: Missed the <edge> case — Agent behavior');
+    expect(pill?.getAttribute('title')).toContain('Rated bad: Missed the <edge> case — Agent behavior');
     // ...as inert data, never parsed as markup: the angle brackets spawn no
     // phantom element and the pill's only content is the emoji. This guards
     // against a future switch to dangerouslySetInnerHTML.
@@ -123,17 +186,49 @@ describe('CompletedRow completion-rating pill', () => {
 
   test('maps the my_prompt down-reason to a readable tooltip label', () => {
     const feedback: TaskCompletionFeedback = { rating: 'down', downReason: 'my_prompt' };
-    root = renderRow(container, makeAgent({ completionFeedback: feedback }));
+    root = renderRow(container, makeAgent({ completionFeedback: feedback })).root;
     const pill = container.querySelector('[data-testid="completed-row-rating"]');
     expect(pill?.textContent).toBe('👎');
     // No free-text note, so only the mapped down-reason label rides in the tooltip.
-    expect(pill?.getAttribute('title')).toBe('Rated bad: My prompt was unclear');
+    expect(pill?.getAttribute('title')).toContain('Rated bad: My prompt was unclear');
   });
 
-  test('renders nothing new when there is no rating', () => {
-    root = renderRow(container, makeAgent());
-    expect(container.querySelector('[data-testid="completed-row-rating"]')).toBeNull();
-    // The row itself still renders.
-    expect(container.querySelector('.completed-row')).not.toBeNull();
+  test('cancelled rows stay display-only and do not grow a late-rate control', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ taskStatus: 'cancelled' }),
+    );
+    root = rendered;
+    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
+    expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('a cancelled row that already has feedback keeps a display-only pill', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ taskStatus: 'cancelled', completionFeedback: { rating: 'up' } }),
+    );
+    root = rendered;
+    const pill = container.querySelector('[data-testid="completed-row-rating"]');
+    expect(pill?.tagName).toBe('SPAN');
+    act(() => {
+      (pill as HTMLElement).click();
+    });
+    expect(container.querySelector('[aria-label="Thumbs down"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('terminated rows do not offer late rating', () => {
+    root = renderRow(container, makeAgent({ taskStatus: 'terminated' })).root;
+    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
+    expect(container.querySelector('[data-testid="completed-row-rate-editor"]')).toBeNull();
+  });
+
+  test('archive-only completed rows cannot send a late rating', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent(), { live: false });
+    root = rendered;
+    expect(container.querySelector('[aria-label="Thumbs up"]')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
   });
 });

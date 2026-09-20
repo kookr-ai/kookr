@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import type { AgentState, ClientMessage } from '../../../shared/protocol.js';
+import type { TaskCompletionFeedback } from '../../../shared/contracts/task.js';
 import { track } from '../../telemetry.js';
 import {
   formatDuration,
@@ -20,6 +21,157 @@ import { PriorityBadge } from './PriorityBadge.js';
 import { SpeakTaskSummaryControl } from './SpeakTaskSummaryControl.js';
 import { SchedulePlaybookButton } from './SchedulePlaybookButton.js';
 import { RalphLoopBadge } from './RalphLoopBadge.js';
+
+/** Same copy as CompleteDialogFooter — keep the late-rate checkbox identical. */
+const MY_PROMPT_DOWN_REASON_LABEL = 'My prompt was unclear (skips structural-fix proposals)';
+
+function ratingCopy(feedback: TaskCompletionFeedback): { emoji: string; title: string } {
+  const emoji = feedback.rating === 'up' ? '👍' : '👎';
+  const ratingWord = feedback.rating === 'up' ? 'Rated good' : 'Rated bad';
+  const downReasonLabel =
+    feedback.downReason === 'agent_behavior'
+      ? 'Agent behavior'
+      : feedback.downReason === 'my_prompt'
+        ? 'My prompt was unclear'
+        : undefined;
+  const ratingNoteParts = [feedback.note, downReasonLabel].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  );
+  const title =
+    ratingNoteParts.length > 0 ? `${ratingWord}: ${ratingNoteParts.join(' — ')}` : ratingWord;
+  return { emoji, title };
+}
+
+function nextFeedback(
+  current: TaskCompletionFeedback | undefined,
+  rating: 'up' | 'down',
+): TaskCompletionFeedback {
+  const next: TaskCompletionFeedback = { rating };
+  if (current?.note) next.note = current.note;
+  if (rating === 'down' && current?.downReason) next.downReason = current.downReason;
+  return next;
+}
+
+function sameFeedback(
+  a: TaskCompletionFeedback | undefined,
+  b: TaskCompletionFeedback,
+): boolean {
+  return a?.rating === b.rating
+    && (a.note ?? '') === (b.note ?? '')
+    && a.downReason === b.downReason;
+}
+
+function CompletedRowRatingControl({
+  taskId,
+  persisted,
+  send,
+}: {
+  taskId: string;
+  persisted: TaskCompletionFeedback | undefined;
+  send: (msg: ClientMessage) => void;
+}): JSX.Element {
+  const [local, setLocal] = useState<TaskCompletionFeedback | undefined>(undefined);
+  const [editorOpen, setEditorOpen] = useState(persisted === undefined);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const feedback = local ?? persisted;
+  const showEditor = editorOpen || feedback === undefined;
+
+  useEffect(() => {
+    if (!editorOpen || feedback === undefined) return;
+    function onDoc(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) {
+        setEditorOpen(false);
+      }
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setEditorOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [editorOpen, feedback]);
+
+  function submit(next: TaskCompletionFeedback) {
+    if (sameFeedback(feedback, next)) return;
+    setLocal(next);
+    send({ type: 'setTaskFeedback', taskId, feedback: next });
+    if (next.rating === 'up') setEditorOpen(false);
+  }
+
+  const pill = feedback ? ratingCopy(feedback) : null;
+  const pillLabel = pill ? `${pill.title}. Click to change.` : '';
+
+  return (
+    <div
+      className="completed-row-rating-wrap"
+      ref={wrapRef}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {feedback && pill && !showEditor && (
+        <button
+          type="button"
+          className={`completed-row-rating completed-row-rating--${feedback.rating}`}
+          title={pillLabel}
+          aria-label={pillLabel}
+          aria-haspopup="true"
+          aria-expanded={false}
+          data-testid="completed-row-rating"
+          onClick={() => setEditorOpen(true)}
+        >
+          {pill.emoji}
+        </button>
+      )}
+      {showEditor && (
+        <div
+          className="completed-row-rating-editor"
+          role="group"
+          aria-label={feedback ? 'Change task rating' : 'Rate this task'}
+          data-testid="completed-row-rate-editor"
+        >
+          <button
+            type="button"
+            className={`btn-thumb ${feedback?.rating === 'up' ? 'btn-thumb-active' : ''}`}
+            onClick={() => submit(nextFeedback(feedback, 'up'))}
+            aria-pressed={feedback?.rating === 'up'}
+            aria-label="Thumbs up"
+          >
+            👍
+          </button>
+          <button
+            type="button"
+            className={`btn-thumb ${feedback?.rating === 'down' ? 'btn-thumb-active' : ''}`}
+            onClick={() => submit(nextFeedback(feedback, 'down'))}
+            aria-pressed={feedback?.rating === 'down'}
+            aria-label="Thumbs down"
+          >
+            👎
+          </button>
+          {feedback?.rating === 'down' && (
+            <label className="complete-feedback-checkbox">
+              <input
+                type="checkbox"
+                checked={feedback.downReason === 'my_prompt'}
+                onChange={(e) => {
+                  const next: TaskCompletionFeedback = { rating: 'down' };
+                  if (feedback.note) next.note = feedback.note;
+                  if (e.target.checked) next.downReason = 'my_prompt';
+                  submit(next);
+                }}
+              />
+              <span>{MY_PROMPT_DOWN_REASON_LABEL}</span>
+            </label>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDeleteTask, onSchedulePlaybook }: {
   agent: AgentState;
@@ -61,25 +213,16 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
     ? `${terminalLabel} ${finishedAt}${finishedAgo ? ` (${finishedAgo})` : ''}`
     : terminalLabel;
 
-  // The operator's completion rating (issue #3097). Captured in
-  // CompleteDialogFooter and persisted on the DTO but never surfaced until now;
-  // render it as a display-only pill so rated tasks are reviewable. Clicking it
-  // just selects the row (no onClick of its own) — it never re-opens the rating
-  // flow.
+  // Completion rating (issues #3097 / #3330). Live completed rows can set or
+  // change it here via setTaskFeedback; cancelled/terminated and archive-only
+  // rows stay display-only when a rating already exists.
   const feedback = agent.completionFeedback;
-  const ratingEmoji = feedback?.rating === 'up' ? '👍' : '👎';
-  const ratingWord = feedback?.rating === 'up' ? 'Rated good' : 'Rated bad';
-  const downReasonLabel =
-    feedback?.downReason === 'agent_behavior'
-      ? 'Agent behavior'
-      : feedback?.downReason === 'my_prompt'
-        ? 'My prompt was unclear'
-        : undefined;
-  const ratingNoteParts = [feedback?.note, downReasonLabel].filter(
-    (part): part is string => typeof part === 'string' && part.length > 0,
+  const canRate = Boolean(
+    agent.taskId
+    && isLiveTask
+    && !pendingDeletion
+    && agent.taskStatus === 'completed',
   );
-  const ratingTitle =
-    ratingNoteParts.length > 0 ? `${ratingWord}: ${ratingNoteParts.join(' — ')}` : ratingWord;
 
   function selectCompletedAgent() {
     if (pendingDeletion) return;
@@ -118,14 +261,21 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
             {agent.tokenUsage && agent.startedAt ? ' · ' : ''}
             {formatDuration(agent.startedAt, agent.finishedAt)}
           </span>
-          {feedback && (
+          {canRate && agent.taskId && (
+            <CompletedRowRatingControl
+              taskId={agent.taskId}
+              persisted={feedback}
+              send={send}
+            />
+          )}
+          {!canRate && feedback && (
             <span
               className={`completed-row-rating completed-row-rating--${feedback.rating}`}
-              title={ratingTitle}
-              aria-label={ratingTitle}
+              title={ratingCopy(feedback).title}
+              aria-label={ratingCopy(feedback).title}
               data-testid="completed-row-rating"
             >
-              {ratingEmoji}
+              {ratingCopy(feedback).emoji}
             </span>
           )}
           <span className="completed-row-finished" title={finishedTitle} aria-label={finishedTitle}>

@@ -7847,8 +7847,37 @@ label.task-share-row {
   cursor: default;
   background: var(--surface-2, rgba(127, 127, 127, 0.12));
 }
+button.completed-row-rating {
+  font: inherit;
+  color: inherit;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+button.completed-row-rating:hover,
+button.completed-row-rating:focus-visible {
+  border-color: var(--border);
+}
 .completed-row-rating--up { background: rgba(52, 211, 153, 0.14); }
 .completed-row-rating--down { background: rgba(248, 113, 113, 0.14); }
+.completed-row-rating-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.completed-row-rating-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.completed-row-rating-editor .btn-thumb {
+  font-size: 12px;
+  padding: 1px 6px;
+}
+.completed-row-rating-editor .complete-feedback-checkbox {
+  font-size: 10px;
+}
 .completed-row-pending-delete {
   flex-shrink: 0;
   color: var(--amber);
