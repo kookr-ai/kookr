@@ -87,6 +87,15 @@ in-memory informational projection: it is omitted when unwired and never
 changes top-level health or readiness. See the unattended-recovery runbook for
 reason-specific troubleshooting (issue #2895).
 
+When the Anthropic quota adapter is wired, `GET /api/health` includes a
+`quotaPoller` block `{ state, lastError, currentIntervalMs, consecutiveFailures }`
+so `auth_failed`, `backoff`, and `disabled` are distinguishable from `healthy`
+(issue #3312). Utilization still comes from the last successful snapshot
+(`orchestrationPause.defaultAgentQuota`); this block is the poller's own
+liveness. `lastError` is secret-free (no access tokens or credential paths).
+Omitted when the adapter is not wired. Cheap in-memory read; never polls
+Anthropic on this path.
+
 When the post-resume refill actuator is wired, `GET /api/health` includes the
 optional `postResumeRefill` block (issue #2797). It reports the last paused→live
 transition's evaluation: lifecycle `state` (`not_started`/`evaluated`),

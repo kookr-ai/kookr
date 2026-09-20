@@ -1,5 +1,11 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { QuotaAdapter, readQuotaFetchTimeoutMs } from './quota-adapter.js';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
+import {
+  QuotaAdapter,
+  readQuotaFetchTimeoutMs,
+  sanitizeQuotaPollerLastError,
+} from './quota-adapter.js';
 
 // Mock fetch and fs
 vi.mock('node:fs/promises', () => ({
@@ -29,6 +35,12 @@ describe('QuotaAdapter', () => {
     expect(adapter.getState()).toBe('idle');
     expect(adapter.getLatest()).toBeNull();
     expect(adapter.getLastError()).toBeNull();
+    expect(adapter.getHealthSnapshot()).toEqual({
+      state: 'idle',
+      lastError: null,
+      currentIntervalMs: 120_000,
+      consecutiveFailures: 0,
+    });
   });
 
   test('poll succeeds with valid response', async () => {
@@ -522,6 +534,93 @@ describe('QuotaAdapter', () => {
       expect(live).toBeNull();
       // Stale display snapshot remains available for the dashboard.
       expect(adapter.getLatest()?.fiveHour?.utilization).toBe(50);
+    });
+  });
+
+  describe('getHealthSnapshot (issue #3312)', () => {
+    const credentialsPath = join(homedir(), '.claude', '.credentials.json');
+
+    test('auth_failed, backoff, and disabled are distinguishable from healthy', async () => {
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'test-token' },
+      }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          five_hour: { utilization: 10, resets_at: '2026-01-01T00:00:00Z' },
+        }),
+      }));
+      await adapter.poll();
+      expect(adapter.getHealthSnapshot()).toMatchObject({
+        state: 'healthy',
+        lastError: null,
+        consecutiveFailures: 0,
+      });
+
+      const backoff = new QuotaAdapter(120_000);
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'test-token' },
+      }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Headers(),
+      }));
+      await backoff.poll();
+      expect(backoff.getHealthSnapshot()).toMatchObject({
+        state: 'backoff',
+        consecutiveFailures: 1,
+        currentIntervalMs: 240_000,
+      });
+      expect(backoff.getHealthSnapshot().lastError).toContain('Rate limited');
+
+      const authFailed = new QuotaAdapter(120_000);
+      mockReadFile.mockResolvedValue(JSON.stringify({
+        claudeAiOauth: { accessToken: 'expired-token' },
+      }));
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401 }));
+      await authFailed.poll();
+      expect(authFailed.getHealthSnapshot()).toMatchObject({
+        state: 'auth_failed',
+        consecutiveFailures: 1,
+      });
+
+      const disabled = new QuotaAdapter(120_000);
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
+      await disabled.poll();
+      expect(disabled.getHealthSnapshot()).toMatchObject({
+        state: 'disabled',
+        consecutiveFailures: 0,
+      });
+    });
+
+    test('strips the credentials path from lastError so health stays secret-free', async () => {
+      mockReadFile.mockRejectedValue(
+        new Error(`ENOENT: no such file or directory, open '${credentialsPath}'`),
+      );
+
+      await adapter.poll();
+      const snap = adapter.getHealthSnapshot();
+      const serialized = JSON.stringify(snap);
+
+      expect(snap.state).toBe('disabled');
+      expect(snap.lastError).toContain('Cannot read credentials');
+      expect(snap.lastError).not.toContain(credentialsPath);
+      expect(serialized).not.toContain(credentialsPath);
+      expect(serialized).not.toContain(homedir());
+      // Raw diagnostic still keeps the path for local logs.
+      expect(adapter.getLastError()).toContain(credentialsPath);
+    });
+
+    test('sanitizeQuotaPollerLastError redacts tokens and credential paths', () => {
+      const token = 'sk-ant-api03-abcdefghijklmnopqrstuvwxyz';
+      const raw = `Bearer ${token} at ${credentialsPath}`;
+      const sanitized = sanitizeQuotaPollerLastError(raw);
+      expect(sanitized).not.toBeNull();
+      expect(sanitized).not.toContain(token);
+      expect(sanitized).not.toContain(credentialsPath);
+      expect(sanitized).not.toContain(homedir());
     });
   });
 });

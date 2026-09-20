@@ -1870,6 +1870,92 @@ describe('diagnostics routes', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // GET /api/health — quota poller state (issue #3312)
+  // ---------------------------------------------------------------------------
+  describe('GET /api/health quotaPoller block (issue #3312)', () => {
+    test('omits the block when the adapter is not wired', async () => {
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+      }).request('/api/health')).json() as { quotaPoller?: unknown };
+
+      expect(body).not.toHaveProperty('quotaPoller');
+    });
+
+    test('projects poller state next to the quota sample when the adapter is wired', async () => {
+      const getQuotaPollerHealth = vi.fn(() => ({
+        state: 'auth_failed' as const,
+        lastError: 'OAuth token expired',
+        currentIntervalMs: 240_000,
+        consecutiveFailures: 3,
+      }));
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getQuotaPollerHealth,
+      }).request('/api/health')).json() as {
+        quotaPoller?: {
+          state: string;
+          lastError: string | null;
+          currentIntervalMs: number;
+          consecutiveFailures: number;
+        };
+      };
+
+      expect(body.quotaPoller).toEqual({
+        state: 'auth_failed',
+        lastError: 'OAuth token expired',
+        currentIntervalMs: 240_000,
+        consecutiveFailures: 3,
+      });
+      expect(getQuotaPollerHealth).toHaveBeenCalledTimes(1);
+    });
+
+    test.each(['auth_failed', 'backoff', 'disabled'] as const)(
+      'distinguishes %s from healthy',
+      async (state) => {
+        const body = await (await mkApp({
+          taskStore: new TaskStore(),
+          queue: new AttentionQueue(),
+          buildInfo: {} as never,
+          getQuotaPollerHealth: () => ({
+            state,
+            lastError: `${state} diagnostic`,
+            currentIntervalMs: 120_000,
+            consecutiveFailures: 1,
+          }),
+        }).request('/api/health')).json() as { quotaPoller?: { state: string } };
+
+        expect(body.quotaPoller?.state).toBe(state);
+        expect(body.quotaPoller?.state).not.toBe('healthy');
+      },
+    );
+
+    test('does not leak access tokens or credential paths through the block', async () => {
+      const credentialsPath = join(tmpdir(), '.claude', '.credentials.json');
+      const token = 'sk-ant-api03-this-must-not-appear';
+      const body = await (await mkApp({
+        taskStore: new TaskStore(),
+        queue: new AttentionQueue(),
+        buildInfo: {} as never,
+        getQuotaPollerHealth: () => ({
+          state: 'disabled',
+          lastError: 'Cannot read credentials: ENOENT <credentials>',
+          currentIntervalMs: 120_000,
+          consecutiveFailures: 0,
+        }),
+      }).request('/api/health')).json();
+      const serialized = JSON.stringify(body.quotaPoller);
+
+      expect(serialized).not.toContain(credentialsPath);
+      expect(serialized).not.toContain(token);
+      expect(serialized).not.toContain('accessToken');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // GET /api/health — last-good snapshot mirror (issue #2495)
   // ---------------------------------------------------------------------------
   describe('GET /api/health last-good snapshot mirror (issue #2495)', () => {
