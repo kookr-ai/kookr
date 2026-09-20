@@ -50,6 +50,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Discord silent after a real edge | `$KOOKR_DIR/ops-status.json` | Read durable card (no secrets); fix webhook later — [offline card](./offline-recovery-card.md) §6 |
 | After restart, hourly safety-net last-fired stamps are empty | `GET /api/health.timerHealth` (`neverFired` / `overdue`) or `GET /api/diagnostics/timer-health` `lastFiredAt` | Expected for ~60s until the deferred startup fire; do not page until `overdue` — [hourly-timer boot window](#7-hourly-timer-boot-window). After HTTP goes dark, read the same four fields from last-good health. |
 | Health body may be stale or partially collected, not live | `controlPlane.collectionStatus` (`ok`/`degraded`/`unavailable`), `controlPlane.source` (`live`/`last-good`/`unavailable`), `lastGoodAgeMs`, `timedOutComponents`/`erroredComponents` | `source == "last-good"` ⇒ a preserved on-disk snapshot served after the cold-cache assembly missed `HEALTH_ASSEMBLY_DEADLINE_MS` (counts intact but stale by `lastGoodAgeMs`); `degraded` with `source == "live"` ⇒ a named component read timed out/failed but the gauges are current; `unavailable` omits counts — never a fabricated zero. Read-only signal, never a restart (issue #2798). |
+| Agents fail to attach, or a session has vanished, while the Discord operator (Lucy) still reports the instance healthy | `terminalBackend.status=degraded` with `lastError.kind` (e.g. `session-gone`) while top-level `health.status` stays `ok` | Do **not** treat `health.status` as a terminal-backend verdict; print `terminalBackend.status` and `lastError.kind` — [terminal backend degraded](#9-terminal-backend-degraded-while-health-ok) |
 
 Stable field names only — avoid inventing aliases. When a block is **omitted**
 from `/api/health`, treat it as disabled / unavailable for that build or env.
@@ -877,6 +878,47 @@ not proof of delivery.
 
 ---
 
+## 9. Terminal backend degraded while health ok
+
+**Symptom (issue #3308).** Agents can fail to attach to their terminal
+sessions, or a session can vanish, while a Discord-only operator still
+reports the instance healthy. The *terminal backend* is the dtach-backed
+session runner those agents attach to. Top-level health stays green on
+this endpoint by design — that field is not a terminal-backend verdict.
+
+Lucy (the Discord-facing operator agent) only sees what health’s top-level
+`status` implies unless the runbook names the nested block. Read
+`terminalBackend.status=degraded` and `lastError.kind` (for example
+`session-gone`) while `health.status` stays `ok`. Prefer `GET /api/ready`
+over health HTTP 200; ready still treats the terminal check as ready
+unless the backend is `error` (`manifest-corrupt` / `dtach-unavailable`).
+`degraded` is informational on both endpoints.
+
+**Health fields:**
+
+```bash
+curl -fsS "$KOOKR_API_BASE_URL/api/health" \
+  | python3 -c '
+import json, sys
+h = json.load(sys.stdin)
+tb = h.get("terminalBackend") or {}
+err = tb.get("lastError") or {}
+print("health.status", h.get("status"), "(stays ok when terminalBackend is degraded)")
+print("terminalBackend.status", tb.get("status"))
+print("lastError.kind", err.get("kind"))
+'
+```
+
+**First action.** If `terminalBackend.status` is `degraded`, diagnose
+`lastError.kind` (`session-attach-failed` / `session-gone` /
+`write-timed-out`). Do **not** clear the incident because
+`health.status` is `ok`. Launch-abandoned counters on the same block
+(`launchAbandonedRecoveredCount` / `launchAbandonedRecoveryFailureCount`)
+are a different class — see
+[host-stale dtach](#6-host-stale-dtach-vs-taskstore--session-reaper).
+
+---
+
 ## Related
 
 | Doc | Use when |
@@ -892,7 +934,7 @@ No webhook URLs, tokens, or private paths belong in this runbook. Keep edits
 tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 `hungSuspectTtlReclaim`, `prodSmokeTick`, `resourceWatchdog`,
 `hostStaleDtachReaper`, `staleProcesses`, `sessionReaper`,
-`schedules.schedulesPausedByFailure`,
+`schedules.schedulesPausedByFailure`, `terminalBackend.status`,
 `data_directory_disk_critical`) and the timer-health last-fired surface
 (`GET /api/health.timerHealth` counts plus `GET /api/diagnostics/timer-health`
 `lastFiredAt` / `overdue`). Per-session launch outcomes use
