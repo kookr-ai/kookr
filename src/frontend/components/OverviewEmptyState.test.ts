@@ -589,6 +589,10 @@ describe('OverviewEmptyState', () => {
       chips[0].click();
     });
     expect(onLaunchPlaybooks).toHaveBeenCalledTimes(1);
+    // Preselect by stable playbook id, never the display label or usage key.
+    expect(onLaunchPlaybooks).toHaveBeenCalledWith('deploy.md');
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('Deploy to prod');
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('/project::deploy.md');
   });
 
   test('shows up to three pinned playbooks and hides overflow', () => {
@@ -699,9 +703,65 @@ describe('OverviewEmptyState', () => {
     expect(chips[0].dataset.playbookKey).toBe('/project::deploy.md');
 
     act(() => {
-      chips[1].click();
+      chips[0].click();
     });
     expect(onLaunchPlaybooks).toHaveBeenCalledTimes(1);
+    expect(onLaunchPlaybooks).toHaveBeenCalledWith('deploy.md');
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('Deploy to prod');
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('/project::deploy.md');
+  });
+
+  test('missing catalog chip calls onLaunchPlaybooks without a preselect id', () => {
+    seedPinnedPlaybooks(['/project::gone.md']);
+    seedRecentPlaybooks(['/project::review.md']);
+    useKookrStore.setState({ playbooks: [samplePlaybook()] });
+    const onLaunchPlaybooks = vi.fn();
+    render({ onLaunchPlaybooks });
+
+    const pinned = container.querySelector<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]');
+    const recent = container.querySelector<HTMLButtonElement>('[data-testid="overview-recent-playbook"]');
+    expect(pinned?.textContent).toBe('gone');
+    expect(recent?.textContent).toBe('review');
+
+    act(() => {
+      pinned?.click();
+    });
+    act(() => {
+      recent?.click();
+    });
+    expect(onLaunchPlaybooks).toHaveBeenCalledTimes(2);
+    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(1, undefined);
+    expect(onLaunchPlaybooks).toHaveBeenNthCalledWith(2, undefined);
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('gone');
+    expect(onLaunchPlaybooks).not.toHaveBeenCalledWith('review');
+  });
+
+  test('passes the playbook id when the catalog has not loaded yet', () => {
+    seedRecentPlaybooks(['/project::deploy.md']);
+    useKookrStore.setState({ playbooks: [] });
+    const onLaunchPlaybooks = vi.fn();
+    render({ onLaunchPlaybooks });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="overview-recent-playbook"]');
+    act(() => {
+      chip?.click();
+    });
+    expect(onLaunchPlaybooks).toHaveBeenCalledWith('deploy.md');
+  });
+
+  test('does not preselect a same-id playbook from a different source cwd', () => {
+    seedPinnedPlaybooks(['/project::deploy.md']);
+    useKookrStore.setState({
+      playbooks: [samplePlaybook({ sourceCwd: '/other' })],
+    });
+    const onLaunchPlaybooks = vi.fn();
+    render({ onLaunchPlaybooks });
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="overview-pinned-playbook"]');
+    act(() => {
+      chip?.click();
+    });
+    expect(onLaunchPlaybooks).toHaveBeenCalledWith(undefined);
   });
 
   test('recent playbooks stay visible after tasks exist and leave first-run links alone', () => {

@@ -121,7 +121,7 @@ interface Props {
   defaultAgentType?: AgentType;
   /** Original task id retained across editable relaunch fields. */
   relaunchParentTaskId?: string;
-  /** When set, auto-switch to playbooks tab and pre-select this playbook for relaunch. */
+  /** When set, auto-switch to playbooks tab and pre-select this playbook (relaunch or overview chip). */
   relaunchPlaybookId?: string;
   /** Parameter values to pre-fill when relaunching a playbook task. */
   relaunchParameterValues?: Record<string, string>;
