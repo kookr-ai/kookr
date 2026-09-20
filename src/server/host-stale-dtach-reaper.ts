@@ -15,9 +15,10 @@
  *  - Dry-run mode logs would-reap pids without signalling.
  *  - Kill path uses `killProcessTree` (TERM → grace → KILL) only on selected
  *    pids; never unbounded `kill -9` of unknown processes.
- *  - Health counters are last-sweep in-memory only (#1553), except the
- *    cumulative kill-failure total (issue #3314) which must survive across
- *    sweeps so a master that resists SIGKILL is visible on `/api/health`.
+ *  - Health last-sweep gauges plus process-lifetime
+ *    `totalHostStaleDtachReaped` and `killFailedTotal` (issues #1553, #3314).
+ *    The kill-failure total must survive across sweeps so a master that
+ *    resists SIGKILL is visible on `/api/health`.
  */
 import { existsSync } from 'node:fs';
 

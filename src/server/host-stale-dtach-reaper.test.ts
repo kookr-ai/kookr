@@ -289,7 +289,7 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
     expect(typeof health.lastKillFailureAt).toBe('string');
   });
 
-  it('records the pid that failed, not a later successful reap, as lastKillFailurePid (issue #3314)', async () => {
+  it('adds two kill failures in one mixed sweep and records the last failed pid (issue #3314)', async () => {
     const reap = vi
       .fn()
       .mockRejectedValueOnce(new Error('EPERM'))
@@ -334,6 +334,7 @@ describe('HostStaleDtachReaperService (issue #2356)', () => {
     expect(reap).not.toHaveBeenCalled();
     expect(service.getHealthSnapshot().killFailedTotal).toBe(0);
     expect(service.getHealthSnapshot().lastKillFailurePid).toBeNull();
+    expect(service.getHealthSnapshot().lastKillFailureAt).toBeNull();
   });
 
   it('is a no-op when disabled', async () => {
