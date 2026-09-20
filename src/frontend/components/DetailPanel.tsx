@@ -88,8 +88,8 @@ interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
-  /** Opens Launch on the Playbooks tab (overview recent-playbook chips). */
-  onLaunchPlaybooks?: () => void;
+  /** Opens Launch on the Playbooks tab (overview pinned/recent chips). */
+  onLaunchPlaybooks?: (playbookId?: string) => void;
   /** Opens the existing Schedules dialog from the overview next-run row. */
   onOpenSchedules?: () => void;
   /** Opens Diagnostics from the first-run empty-state "Check setup" control. */

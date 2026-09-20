@@ -38,11 +38,17 @@ vi.mock('./telemetry.js', () => ({
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({
-  DetailPanel: (props: { onRequestComplete: () => void; onLaunchPlaybooks?: () => void; onOpenSchedules?: () => void }) => React.createElement(
+  DetailPanel: (props: {
+    onRequestComplete: () => void;
+    onLaunchPlaybooks?: (playbookId?: string) => void;
+    onOpenSchedules?: () => void;
+  }) => React.createElement(
     'div',
     { 'data-testid': 'detail-panel' },
     React.createElement('button', { 'data-testid': 'mock-complete-button', onClick: props.onRequestComplete }, 'Complete'),
-    React.createElement('button', { 'data-testid': 'mock-launch-playbooks', onClick: props.onLaunchPlaybooks }, 'Recent playbook'),
+    React.createElement('button', { 'data-testid': 'mock-launch-playbooks', onClick: () => props.onLaunchPlaybooks?.() }, 'Recent playbook'),
+    React.createElement('button', { 'data-testid': 'mock-launch-playbook-chip', onClick: () => props.onLaunchPlaybooks?.('deploy.md') }, 'Pinned playbook'),
+    React.createElement('button', { 'data-testid': 'mock-launch-missing-playbook', onClick: () => props.onLaunchPlaybooks?.('gone.md') }, 'Missing playbook'),
     React.createElement('button', { 'data-testid': 'mock-open-schedules', onClick: props.onOpenSchedules }, 'Next scheduled'),
   ),
 }));
@@ -1179,6 +1185,91 @@ describe('App operations modal shortcuts', () => {
     });
     await waitForElement(container, '#launch-task-dialog-title');
     expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+    // No playbook id was passed — stay on the catalog list, do not submit.
+    expect(container.querySelector('.playbook-detail-header')).toBeNull();
+    expect(container.querySelector('button[type="submit"]')).toBeNull();
+  });
+
+  test('overview playbook chip preselects that catalog entry in Launch and does not submit', async () => {
+    useKookrStore.setState({
+      serverCwd: '/tmp/kookr',
+      playbooks: [{
+        id: 'deploy.md',
+        name: 'Deploy to prod',
+        description: 'Ship it',
+        parameters: [],
+        checklist: [],
+        tags: [],
+        body: 'Deploy.',
+        sourceCwd: '/project',
+        scope: 'project',
+      }],
+      playbooksLoading: false,
+      playbooksLastFetchedAt: Date.now(),
+      playbooksLastFetchedCwd: '/tmp/kookr',
+      hostCapabilities: {},
+      availableAgentTypes: [],
+      defaultAgentType: 'claude-code',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const chip = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-playbook-chip"]');
+    await act(async () => {
+      chip.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+    const header = await waitForElement(container, '.playbook-detail-header');
+    expect(header.textContent).toContain('Deploy to prod');
+    expect(websocketMock.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'launchPlaybook' }));
+
+    // A later Playbooks open with no chip id must not keep the previous preselect.
+    const recent = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-playbooks"]');
+    await act(async () => {
+      recent.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+    expect(container.querySelector('.playbook-detail-header')).toBeNull();
+  });
+
+  test('a missing catalog playbook id still opens Playbooks and does not submit', async () => {
+    useKookrStore.setState({
+      serverCwd: '/tmp/kookr',
+      playbooks: [{
+        id: 'deploy.md',
+        name: 'Deploy to prod',
+        description: 'Ship it',
+        parameters: [],
+        checklist: [],
+        tags: [],
+        body: 'Deploy.',
+        sourceCwd: '/project',
+        scope: 'project',
+      }],
+      playbooksLoading: false,
+      playbooksLastFetchedAt: Date.now(),
+      playbooksLastFetchedCwd: '/tmp/kookr',
+      hostCapabilities: {},
+      availableAgentTypes: [],
+      defaultAgentType: 'claude-code',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const chip = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-missing-playbook"]');
+    await act(async () => {
+      chip.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Playbooks');
+    expect(container.querySelector('.playbook-detail-header')).toBeNull();
+    expect(websocketMock.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'launchPlaybook' }));
   });
 
   test('overview next-schedule callback opens the existing Schedules dialog', async () => {

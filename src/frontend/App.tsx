@@ -422,6 +422,9 @@ export function App() {
   const [launchProjectContext, setLaunchProjectContext] = useState<ProjectSummary | null>(null);
   const [launchProjectCwd, setLaunchProjectCwd] = useState<string | null>(null);
   const [launchInitialTab, setLaunchInitialTab] = useState<LaunchInitialTab | null>(null);
+  // Overview pinned/recent chips pass a catalog playbook id so Launch can
+  // reuse relaunch preselect without faking a full relaunchTask.
+  const [launchPlaybookId, setLaunchPlaybookId] = useState<string | undefined>(undefined);
   // Bumped by palette opens so an already-mounted LaunchTaskDialog remounts
   // onto the requested tab instead of ignoring the new initialTab prop.
   const [launchDialogGeneration, setLaunchDialogGeneration] = useState(0);
@@ -663,9 +666,17 @@ export function App() {
   // Open launch dialog when relaunchTask is set
   useEffect(() => {
     if (relaunchTask) {
+      setLaunchPlaybookId(undefined);
       openModal('launch');
     }
   }, [relaunchTask, openModal]);
+
+  // Chip preselect lives in App state, not the dialog. Leaving Launch (another
+  // modal, or close without handleCloseLaunch) must drop it so a later blank
+  // open cannot inherit the last chip's playbook.
+  useEffect(() => {
+    if (activeModal !== 'launch') setLaunchPlaybookId(undefined);
+  }, [activeModal]);
 
   // First-run onboarding tour: opens once per browser when localStorage has
   // no current onboarding seen key. Idempotent on subsequent reloads.
@@ -825,7 +836,14 @@ export function App() {
     setLaunchProjectContext(null);
     setLaunchProjectCwd(null);
     setLaunchInitialTab(null);
+    setLaunchPlaybookId(undefined);
     clearRelaunchTask();
+  }
+
+  function openBlankLaunch(method: string) {
+    setLaunchPlaybookId(undefined);
+    track({ type: 'launch_dialog_opened', method });
+    openModal('launch');
   }
 
   const handleLaunchManualTask = useCallback(() => {
@@ -833,6 +851,7 @@ export function App() {
       setLaunchProjectContext(selectedProjectSummary);
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('manual');
+      setLaunchPlaybookId(undefined);
       track({ type: 'launch_dialog_opened', method: 'project_drawer_manual' });
       openModal('launch');
     }
@@ -843,15 +862,17 @@ export function App() {
       setLaunchProjectContext(selectedProjectSummary);
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('playbooks');
+      setLaunchPlaybookId(undefined);
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
       openModal('launch');
     }
   }, [selectedProjectSummary, agents, openModal]);
 
-  const openLaunchFromPalette = useCallback((tab: LaunchInitialTab, method: string) => {
+  const openLaunchFromPalette = useCallback((tab: LaunchInitialTab, method: string, playbookId?: string) => {
     setLaunchProjectContext(null);
     setLaunchProjectCwd(null);
     setLaunchInitialTab(tab);
+    setLaunchPlaybookId(playbookId);
     clearRelaunchTask();
     setLaunchDialogGeneration((generation) => generation + 1);
     track({ type: 'launch_dialog_opened', method });
@@ -868,6 +889,7 @@ export function App() {
     setLaunchProjectContext(projectSummary);
     setLaunchProjectCwd(deriveLaunchProjectCwd(agents, projectSummary) ?? '');
     setLaunchInitialTab('manual');
+    setLaunchPlaybookId(undefined);
     clearRelaunchTask();
     setLaunchDialogGeneration((generation) => generation + 1);
     track({ type: 'launch_dialog_opened', method: 'command_palette_project' });
@@ -1341,7 +1363,7 @@ export function App() {
         openModal('schedules');
       }}
       shortcutBindings={shortcutBindings}
-      onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'findings_empty' }); openModal('launch'); }}
+      onLaunch={() => openBlankLaunch('findings_empty')}
     />
   );
 
@@ -1349,8 +1371,8 @@ export function App() {
     <DetailPanel
       agent={selectedAgent}
       send={send}
-      onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'empty_panel' }); openModal('launch'); }}
-      onLaunchPlaybooks={() => openLaunchFromPalette('playbooks', 'overview_recent_playbook')}
+      onLaunch={() => openBlankLaunch('empty_panel')}
+      onLaunchPlaybooks={(playbookId) => openLaunchFromPalette('playbooks', 'overview_recent_playbook', playbookId)}
       onOpenSchedules={() => openModal('schedules')}
       onCheckSetup={() => setShowOperations(true)}
       onRequestComplete={() => {
@@ -1533,7 +1555,7 @@ export function App() {
           if (target) selectAgent(target.agentId, target.taskId);
         }}
         compact={isMobileViewport}
-        onLaunch={() => { track({ type: 'launch_dialog_opened', method: 'button' }); openModal('launch'); }}
+        onLaunch={() => openBlankLaunch('button')}
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
         scheduleHintActive={scheduleHintActive}
@@ -1638,10 +1660,7 @@ export function App() {
                   type="button"
                   className="mobile-action-btn mobile-action-btn-primary"
                   data-testid="mobile-action-launch"
-                  onClick={() => {
-                    track({ type: 'launch_dialog_opened', method: 'mobile_action' });
-                    openModal('launch');
-                  }}
+                  onClick={() => openBlankLaunch('mobile_action')}
                 >
                   Launch
                 </button>
@@ -1912,7 +1931,7 @@ export function App() {
             defaultCriteria={relaunchTask?.criteria}
             defaultAgentType={relaunchTask?.agentType}
             relaunchParentTaskId={relaunchTask?.sourceTaskId}
-            relaunchPlaybookId={relaunchTask?.playbookId}
+            relaunchPlaybookId={relaunchTask ? relaunchTask.playbookId : launchPlaybookId}
             relaunchParameterValues={relaunchTask?.playbookParameterValues}
             relaunchPlaybookSource={relaunchTask?.playbookSource}
             projectContext={launchProjectContext ?? undefined}

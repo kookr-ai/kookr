@@ -13,6 +13,7 @@ import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
 import {
   PlaybookUsageTracker,
   resolveRecentPlaybookLabel,
+  usageKeyPlaybookId,
   usageKeysOverlap,
 } from '../store/playbook-usage.js';
 import { compareCompletedAgents } from '../agent-buckets.js';
@@ -33,6 +34,20 @@ export const OVERVIEW_RECENT_PLAYBOOK_LIMIT = 3;
 
 /** Pinned playbooks shown on the overview; Launch still lists the full pin set. */
 export const OVERVIEW_PINNED_PLAYBOOK_LIMIT = 3;
+
+/**
+ * Stable playbook id to preselect in Launch from an overview chip.
+ *
+ * Chips store usage keys (`sourceCwd::id`, or a legacy bare id), not the
+ * display label — a rename must not select a different catalog entry that
+ * happens to share the old name. Always pass the id so Launch can resolve
+ * after its catalog fetch; PlaybookBrowser already stays on the list (and
+ * does not submit) when that id is absent.
+ */
+function resolveOverviewChipPlaybookId(usageKey: string): string | undefined {
+  const id = usageKeyPlaybookId(usageKey);
+  return id.length > 0 ? id : undefined;
+}
 
 /** Recently finished tasks shown on the overview; the rail keeps the rest. */
 export const OVERVIEW_RECENT_COMPLETED_LIMIT = 3;
@@ -147,8 +162,13 @@ interface Props {
    */
   completed: AgentState[];
   onLaunch: () => void;
-  /** Opens Launch on the Playbooks tab (pinned and recent chips). */
-  onLaunchPlaybooks?: () => void;
+  /**
+   * Opens Launch on the Playbooks tab (pinned and recent chips).
+   * Called with the chip's stable playbook id. Launch preselects when that
+   * catalog entry exists; a missing entry still opens the Playbooks tab and
+   * does not submit.
+   */
+  onLaunchPlaybooks?: (playbookId?: string) => void;
   /** Opens the existing Schedules dialog (first-run CTA or next-scheduled row). */
   onOpenSchedules?: () => void;
   /**
@@ -220,6 +240,9 @@ export function OverviewEmptyState({
       key,
       label: resolveRecentPlaybookLabel(key, playbooks),
     }));
+  const handlePlaybookChipClick = (usageKey: string) => {
+    onLaunchPlaybooks?.(resolveOverviewChipPlaybookId(usageKey));
+  };
 
   return (
     <div className="overview-empty" data-testid="overview-empty-state">
@@ -416,7 +439,7 @@ export function OverviewEmptyState({
                   className="btn-secondary overview-recent-playbook"
                   data-testid="overview-pinned-playbook"
                   data-playbook-key={playbook.key}
-                  onClick={() => onLaunchPlaybooks?.()}
+                  onClick={() => handlePlaybookChipClick(playbook.key)}
                 >
                   {playbook.label}
                 </button>
@@ -436,7 +459,7 @@ export function OverviewEmptyState({
                   className="btn-secondary overview-recent-playbook"
                   data-testid="overview-recent-playbook"
                   data-playbook-key={playbook.key}
-                  onClick={() => onLaunchPlaybooks?.()}
+                  onClick={() => handlePlaybookChipClick(playbook.key)}
                 >
                   {playbook.label}
                 </button>
