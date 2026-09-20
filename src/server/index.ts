@@ -1744,8 +1744,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
 
-  // Per-agent launch success/failure counters (issue #1808) — shared by the
-  // launch service (writers) and diagnostics routes (readers).
+  // Per-agent launch success/failure counters (issue #1808) — launch service
+  // records one outcome per launch; the paste-readiness wait (issue #3310)
+  // notes a reason on the same instance; diagnostics routes snapshot it.
   const launchOutcomeMetrics = new LaunchOutcomeMetrics();
   bindLaunchOutcomeMetrics(launchOutcomeMetrics);
 

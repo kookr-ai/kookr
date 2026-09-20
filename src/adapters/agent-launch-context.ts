@@ -17,7 +17,7 @@ import {
 import { DEFAULT_AGENT_TERM } from './session-term-env.js';
 import {
   PASTE_READINESS_TIMEOUT_REASON,
-  recordBoundLaunchOutcome,
+  noteBoundLaunchOutcomeReason,
   type LaunchOutcomeMetrics,
 } from '../core/launch-outcome-metrics.js';
 
@@ -462,14 +462,15 @@ export interface DeliverInitialPromptOptions {
    */
   sleep?: (ms: number) => Promise<void>;
   /**
-   * Agent type for a paste-readiness timeout sample (issue #3310). Required
-   * to record on `GET /api/diagnostics/launch-outcomes`; omitted calls still
-   * fail-open and warn, they just skip the metric.
+   * Agent type for a paste-readiness timeout note (issue #3310). Required
+   * to stamp `lastFailureReason` on `GET /api/diagnostics/launch-outcomes`;
+   * omitted calls still fail-open and warn, they just skip the metric.
    */
   agentType?: string;
   /**
    * Optional metrics sink. Tests inject a local instance. Production leaves
-   * this unset so the wait records through the process bind wired at boot.
+   * this unset so the wait notes the reason through the process bind wired
+   * at boot.
    */
   launchOutcomeMetrics?: LaunchOutcomeMetrics;
 }
@@ -602,6 +603,35 @@ export function stripTerminalControls(text: string): string {
 }
 
 /**
+ * Thrown when a Claude startup dialog is still blocking at the end of the
+ * paste-readiness wait. Delivery must fail closed here: Enter on "No, exit"
+ * kills the session (issue #3295).
+ */
+export class PromptDeliveryBlockedError extends Error {
+  readonly code = 'startup_ui_blocked';
+
+  constructor(sessionId: SessionId) {
+    super(
+      `Agent startup UI is still blocking session ${sessionId} — ` +
+        `not delivering the prompt onto it`,
+    );
+    this.name = 'PromptDeliveryBlockedError';
+  }
+}
+
+function notePasteReadinessTimeout(
+  options: Pick<DeliverInitialPromptOptions, 'agentType' | 'launchOutcomeMetrics'>,
+): void {
+  const agentType = options.agentType?.trim();
+  if (!agentType) return;
+  if (options.launchOutcomeMetrics) {
+    options.launchOutcomeMetrics.noteFailureReason(agentType, PASTE_READINESS_TIMEOUT_REASON);
+    return;
+  }
+  noteBoundLaunchOutcomeReason(agentType, PASTE_READINESS_TIMEOUT_REASON);
+}
+
+/**
  * Wait until the session is ready to receive a bracketed paste. Readiness
  * needs BOTH signals, then a settle cushion:
  *
@@ -623,40 +653,12 @@ export function stripTerminalControls(text: string): string {
  * is still true. Delivering Enter onto Claude's "No, exit" trust dialog
  * kills the session (issue #3295); that path must fail closed.
  *
- * The timeout is also recorded as a launch-outcome failure with reason
- * {@link PASTE_READINESS_TIMEOUT_REASON} (issue #3310) so a night of
- * silent prompt-loss is visible on `GET /api/diagnostics/launch-outcomes`.
- * That sample does not fail the launch; fail-open delivery continues.
+ * The timeout also stamps launch-outcome {@link PASTE_READINESS_TIMEOUT_REASON}
+ * (issue #3310) so overnight prompt-loss is visible on
+ * `GET /api/diagnostics/launch-outcomes`. That note does not count as a
+ * second launch sample; launch-service still records the real success or
+ * failure for the launch.
  */
-export class PromptDeliveryBlockedError extends Error {
-  readonly code = 'startup_ui_blocked';
-
-  constructor(sessionId: SessionId) {
-    super(
-      `Agent startup UI is still blocking session ${sessionId} — ` +
-        `not delivering the prompt onto it`,
-    );
-    this.name = 'PromptDeliveryBlockedError';
-  }
-}
-
-function recordPasteReadinessTimeout(
-  options: Pick<DeliverInitialPromptOptions, 'agentType' | 'launchOutcomeMetrics'>,
-): void {
-  const agentType = options.agentType?.trim();
-  if (!agentType) return;
-  const sample = {
-    agentType,
-    outcome: 'failure' as const,
-    reason: PASTE_READINESS_TIMEOUT_REASON,
-  };
-  if (options.launchOutcomeMetrics) {
-    options.launchOutcomeMetrics.record(sample);
-    return;
-  }
-  recordBoundLaunchOutcome(sample);
-}
-
 async function waitForPasteReady(
   backend: TerminalBackend,
   sessionId: SessionId,
@@ -697,7 +699,7 @@ async function waitForPasteReady(
     `[agent-launch] paste-readiness wait timed out for ${sessionId} after ${options.readyTimeoutMs}ms; `
     + 'delivering anyway (prompt loss is possible — see #2977)',
   );
-  recordPasteReadinessTimeout(options);
+  notePasteReadinessTimeout(options);
 }
 
 /** Split a prompt byte string into ARG_MAX-safe terminal-write chunks. */

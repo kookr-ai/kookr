@@ -74,3 +74,14 @@ describe('unattended recovery runbook assumed-submitted prompt-ack (issue #3255)
     expect(doc).not.toMatch(/promptAckDrought|promptDeliveryGauge|fleetPromptAck/);
   });
 });
+
+describe('unattended recovery runbook paste-readiness timeout (issue #3310)', () => {
+  const doc = readFileSync(runbookPath, 'utf-8');
+
+  test('names paste_readiness_timeout on launch-outcomes, not health', () => {
+    expect(doc).toContain('paste_readiness_timeout');
+    expect(doc).toContain('GET /api/diagnostics/launch-outcomes');
+    expect(doc).not.toMatch(/GET \/api\/health[^.\n]*promptAck/);
+    expect(doc).not.toMatch(/health\.promptAck/);
+  });
+});

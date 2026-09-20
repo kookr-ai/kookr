@@ -73,6 +73,25 @@ export class LaunchOutcomeMetrics {
     }
   }
 
+  /**
+   * Stamp `lastFailureReason` without counting an attempt.
+   *
+   * Paste-readiness timeouts fail-open: launch-service still records the
+   * real success/failure for that launch (#1808, one sample). The timeout
+   * only classifies why overnight prompt-loss may have happened.
+   */
+  noteFailureReason(agentType: string, reason: string): void {
+    const normalized = normalizeAgentType(agentType);
+    const trimmedReason = reason.trim();
+    if (!normalized || !trimmedReason) return;
+    let bucket = this.byAgent.get(normalized);
+    if (!bucket) {
+      bucket = { successes: 0, failures: 0 };
+      this.byAgent.set(normalized, bucket);
+    }
+    bucket.lastFailureReason = trimmedReason.slice(0, 200);
+  }
+
   snapshot(): LaunchOutcomeMetricsSnapshot {
     const byAgentType: LaunchOutcomeAgentMetric[] = [...this.byAgent.entries()]
       .map(([agentType, bucket]) => {
@@ -121,8 +140,8 @@ export function bindLaunchOutcomeMetrics(metrics: LaunchOutcomeMetrics | undefin
   boundLaunchOutcomeMetrics = metrics;
 }
 
-export function recordBoundLaunchOutcome(sample: LaunchOutcomeSample): void {
-  boundLaunchOutcomeMetrics?.record(sample);
+export function noteBoundLaunchOutcomeReason(agentType: string, reason: string): void {
+  boundLaunchOutcomeMetrics?.noteFailureReason(agentType, reason);
 }
 
 export function emptyLaunchOutcomeMetricsSnapshot(): LaunchOutcomeMetricsSnapshot {
@@ -138,9 +157,6 @@ export function emptyLaunchOutcomeMetricsSnapshot(): LaunchOutcomeMetricsSnapsho
 /** Classify a launch error for the optional `reason` field (best-effort). */
 export function classifyLaunchFailureReason(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  if (/paste-readiness wait timed out/i.test(message)) {
-    return PASTE_READINESS_TIMEOUT_REASON;
-  }
   if (/did not acknowledge the initial prompt|Initial prompt submission was not confirmed/i.test(message)) {
     return 'handshake_timeout';
   }

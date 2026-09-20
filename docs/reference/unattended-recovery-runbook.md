@@ -37,6 +37,7 @@ curl -sS -o /tmp/kookr-health.json -w 'health HTTP %{http_code}\n' \
 | Active cap full; little free capacity while agents look idle | `capacity.byClass.hungSuspect` | Read `hungSuspectTtlReclaim`; wait TTL or cancel dead tasks — [hung residual](#3-hung-residual) |
 | Active cap full; many completion_ready holds, oldest FAA age large | `capacity.byClass.finishedAwaitingAck` | Read `finishedAwaitingAckTtlReclaim` skip reasons (#2084); Discord may page `faa:residual` (#2077) — [hung residual](#3-hung-residual) (FAA sibling) |
 | Agent looks busy after launch but may never have gotten the prompt | per-session `sessions[].promptDelivery` on `GET /api/tasks` (`status: assumed-submitted`) — **not** a `/api/health` gauge | Inspect the pane; relaunch if no work landed. Do **not** treat as confirmed delivery — [prompt-ack](#8-assumed-submitted-prompt-ack) |
+| Composer never looked ready; prompt was pasted anyway | `GET /api/diagnostics/launch-outcomes` → `byAgentType[].lastFailureReason === "paste_readiness_timeout"` — **not** a `/api/health` field | Inspect the pane. Fail-open delivery may have lost the brief even when `promptDelivery` is `confirmed` |
 | Three or more schedules stay fail-closed paused; Discord pages `schedules:paused:residual` (re-raises with rising urgency by age) | `schedules.schedulesPausedByFailure` | Diagnose each loop, then batch-recover with `kookr schedule enable --held-by cascade` — **do not auto-resume** — [fail-closed schedule pauses](#3a-fail-closed-schedule-pauses) |
 | Fleet cascade parked everything but the merge watchdog kept firing (or self-re-armed) | member of `BOOTSTRAP_CRITICAL_SCHEDULE_*` in `critical-schedule-rearm.ts` | Expected — the recovery floor; general fleet still needs manual re-enable — [bootstrap-safe recovery tier](#3b-bootstrap-safe-recovery-tier-issue-2530) |
 | Free capacity and an empty queue, but no visible recovery scout | `postRecoveryQueueFill` | Check lifecycle state, freshness, then the stable row reason — [post-recovery queue fill](#3c-post-recovery-queue-fill-issue-2895) |
@@ -896,4 +897,7 @@ tied to stable health field names (`safeMode`, `capacity.byClass.hungSuspect`,
 (`GET /api/health.timerHealth` counts plus `GET /api/diagnostics/timer-health`
 `lastFiredAt` / `overdue`). Per-session launch outcomes use
 `sessions[].promptDelivery` on `GET /api/tasks` — there is no process-wide
-health field for missing prompt acknowledgements.
+health field for missing prompt acknowledgements. Paste-readiness timeouts
+(composer never painted before the paste) are a different overnight miss:
+they stamp `paste_readiness_timeout` on `GET /api/diagnostics/launch-outcomes`
+and do not fail the launch.

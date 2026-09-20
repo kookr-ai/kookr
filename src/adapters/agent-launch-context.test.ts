@@ -4,12 +4,12 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { TaskStore } from '../core/tasks.js';
 import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
-import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   LaunchOutcomeMetrics,
   PASTE_READINESS_TIMEOUT_REASON,
   bindLaunchOutcomeMetrics,
 } from '../core/launch-outcome-metrics.js';
+import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   buildAgentLaunchContext,
   resolveGitCommonDirBounded,
@@ -49,6 +49,10 @@ function concatPayloads(payloads: Uint8Array[]): Uint8Array {
   }
   return out;
 }
+
+afterEach(() => {
+  bindLaunchOutcomeMetrics(undefined);
+});
 
 describe('agent-launch-context', () => {
   const tempDirs: string[] = [];
@@ -540,35 +544,47 @@ describe('deliverInitialPromptToSession', () => {
     expect(backend.getWrittenText('s-timeout')).toBe('\x1b[200~timeout submit\x1b[201~\r');
   });
 
-  test('paste-readiness timeout records paste_readiness_timeout and still delivers (#3310)', async () => {
+  test('paste-readiness timeout notes paste_readiness_timeout and still delivers (#3310)', async () => {
     const backend = new FakeTerminalBackend();
     await backend.createSession('s-timeout-metrics', 'claude');
     const metrics = new LaunchOutcomeMetrics();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sleep = vi.fn(async (_ms: number) => {});
 
-    await deliverInitialPromptToSession(backend, 's-timeout-metrics', 'timeout submit', {
-      bracketedPaste: true,
-      waitForReady: true,
-      readyTimeoutMs: 25,
-      readyPollMs: 10,
-      submitDelayMs: 0,
-      sleep,
-      agentType: 'claude-code',
-      launchOutcomeMetrics: metrics,
-    });
+    try {
+      await deliverInitialPromptToSession(backend, 's-timeout-metrics', 'timeout submit', {
+        bracketedPaste: true,
+        waitForReady: true,
+        readyTimeoutMs: 25,
+        readyPollMs: 10,
+        submitDelayMs: 0,
+        sleep,
+        agentType: 'claude-code',
+        launchOutcomeMetrics: metrics,
+      });
 
-    expect(backend.getWrittenText('s-timeout-metrics')).toBe('\x1b[200~timeout submit\x1b[201~\r');
-    expect(metrics.snapshot().byAgentType[0]).toEqual({
-      agentType: 'claude-code',
-      attempts: 1,
-      successes: 0,
-      failures: 1,
-      failureRate: 1,
-      lastFailureReason: PASTE_READINESS_TIMEOUT_REASON,
-    });
-    expect(warn.mock.calls.flat().join('\n')).toMatch(/paste-readiness wait timed out/);
-    warn.mockRestore();
+      expect(backend.getWrittenText('s-timeout-metrics')).toBe('\x1b[200~timeout submit\x1b[201~\r');
+      expect(metrics.snapshot().byAgentType[0]).toEqual({
+        agentType: 'claude-code',
+        attempts: 0,
+        successes: 0,
+        failures: 0,
+        failureRate: 0,
+        lastFailureReason: PASTE_READINESS_TIMEOUT_REASON,
+      });
+      metrics.record({ agentType: 'claude-code', outcome: 'success' });
+      expect(metrics.snapshot().byAgentType[0]).toEqual({
+        agentType: 'claude-code',
+        attempts: 1,
+        successes: 1,
+        failures: 0,
+        failureRate: 0,
+        lastFailureReason: PASTE_READINESS_TIMEOUT_REASON,
+      });
+      expect(warn.mock.calls.flat().join('\n')).toMatch(/paste-readiness wait timed out/);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('paste-readiness timeout records through the process bind when no sink is injected (#3310)', async () => {
@@ -605,22 +621,25 @@ describe('deliverInitialPromptToSession', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sleep = vi.fn(async (_ms: number) => {});
 
-    await deliverInitialPromptToSession(backend, 's-timeout-no-type', 'timeout submit', {
-      bracketedPaste: true,
-      waitForReady: true,
-      readyTimeoutMs: 25,
-      readyPollMs: 10,
-      submitDelayMs: 0,
-      sleep,
-      launchOutcomeMetrics: metrics,
-    });
+    try {
+      await deliverInitialPromptToSession(backend, 's-timeout-no-type', 'timeout submit', {
+        bracketedPaste: true,
+        waitForReady: true,
+        readyTimeoutMs: 25,
+        readyPollMs: 10,
+        submitDelayMs: 0,
+        sleep,
+        launchOutcomeMetrics: metrics,
+      });
 
-    expect(backend.getWrittenText('s-timeout-no-type')).toBe('\x1b[200~timeout submit\x1b[201~\r');
-    expect(metrics.snapshot()).toEqual(expect.objectContaining({
-      totalAttempts: 0,
-      byAgentType: [],
-    }));
-    warn.mockRestore();
+      expect(backend.getWrittenText('s-timeout-no-type')).toBe('\x1b[200~timeout submit\x1b[201~\r');
+      expect(metrics.snapshot()).toEqual(expect.objectContaining({
+        totalAttempts: 0,
+        byAgentType: [],
+      }));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   test('a ready paste wait does not record paste_readiness_timeout (#3310)', async () => {

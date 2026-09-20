@@ -5,7 +5,7 @@ import {
   bindLaunchOutcomeMetrics,
   classifyLaunchFailureReason,
   emptyLaunchOutcomeMetricsSnapshot,
-  recordBoundLaunchOutcome,
+  noteBoundLaunchOutcomeReason,
 } from './launch-outcome-metrics.js';
 
 afterEach(() => {
@@ -86,52 +86,37 @@ describe('classifyLaunchFailureReason', () => {
     ).toBe('agent_boot_timeout');
     expect(classifyLaunchFailureReason(new Error('Grok authentication expired'))).toBe('launch_refused');
     expect(classifyLaunchFailureReason(new Error('disk full'))).toBe('launch_error');
-    expect(
-      classifyLaunchFailureReason(
-        new Error('[agent-launch] paste-readiness wait timed out for s1 after 8000ms; delivering anyway'),
-      ),
-    ).toBe(PASTE_READINESS_TIMEOUT_REASON);
   });
 });
 
-describe('paste_readiness_timeout launch-outcome samples (issue #3310)', () => {
-  it('snapshots the reason so GET /api/diagnostics/launch-outcomes can show it', () => {
+describe('paste_readiness_timeout launch-outcome notes (issue #3310)', () => {
+  it('stamps lastFailureReason without counting a second launch attempt', () => {
     const metrics = new LaunchOutcomeMetrics();
-    metrics.record({
-      agentType: 'claude-code',
-      outcome: 'failure',
-      reason: PASTE_READINESS_TIMEOUT_REASON,
-    });
+    metrics.noteFailureReason('claude-code', PASTE_READINESS_TIMEOUT_REASON);
+    metrics.record({ agentType: 'claude-code', outcome: 'success' });
     expect(metrics.snapshot().byAgentType[0]).toEqual({
       agentType: 'claude-code',
       attempts: 1,
-      successes: 0,
-      failures: 1,
-      failureRate: 1,
+      successes: 1,
+      failures: 0,
+      failureRate: 0,
       lastFailureReason: 'paste_readiness_timeout',
     });
   });
 
-  it('records through the process bind used by the paste-readiness wait', () => {
+  it('notes through the process bind used by the paste-readiness wait', () => {
     const metrics = new LaunchOutcomeMetrics();
     bindLaunchOutcomeMetrics(metrics);
-    recordBoundLaunchOutcome({
-      agentType: 'claude-code',
-      outcome: 'failure',
-      reason: PASTE_READINESS_TIMEOUT_REASON,
-    });
+    noteBoundLaunchOutcomeReason('claude-code', PASTE_READINESS_TIMEOUT_REASON);
     expect(metrics.snapshot().byAgentType[0]?.lastFailureReason).toBe(
       PASTE_READINESS_TIMEOUT_REASON,
     );
+    expect(metrics.snapshot().totalAttempts).toBe(0);
   });
 
   it('is a no-op when nothing is bound', () => {
     expect(() =>
-      recordBoundLaunchOutcome({
-        agentType: 'claude-code',
-        outcome: 'failure',
-        reason: PASTE_READINESS_TIMEOUT_REASON,
-      }),
+      noteBoundLaunchOutcomeReason('claude-code', PASTE_READINESS_TIMEOUT_REASON),
     ).not.toThrow();
   });
 });
