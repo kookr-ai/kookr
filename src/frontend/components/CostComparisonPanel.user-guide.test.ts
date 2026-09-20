@@ -27,6 +27,12 @@ describe('user-guide Cost Comparison section', () => {
     expect(section).toMatch(/24-hour spend/i);
   });
 
+  test('documents that a live Tasks-row name opens the dashboard task (issue #3331)', () => {
+    expect(section).toMatch(/name is a button/i);
+    expect(section).toMatch(/closes Cost Comparison/i);
+    expect(section).toMatch(/Historical rows stay plain text/i);
+  });
+
   test('does not claim a top-bar $ icon', () => {
     expect(section).not.toMatch(/\$\s*icon/i);
     expect(section).not.toMatch(/top-bar/i);

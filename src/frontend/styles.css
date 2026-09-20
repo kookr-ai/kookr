@@ -5048,9 +5048,11 @@ a.playbook-empty-docs-link:visited:hover {
 .outcome-finding-task {
   color: var(--text-muted);
 }
-/* Live-task "Open task" affordance (issue #2783): a text button that reads as a
-   link so historical rows (plain muted text) stay visibly non-actionable. */
-.outcome-finding-open {
+/* Live-task "Open task" affordance (issue #2783 Outcome Scoreboard,
+   issue #3331 Cost Comparison): a text button that reads as a link so
+   historical rows (plain muted text) stay visibly non-actionable. */
+.outcome-finding-open,
+.cost-task-open {
   /* inline-flex + min-height keeps the click/tap target at the 24px WCAG 2.5.8
      minimum even though the row text is 11px; vertical padding stays 0 so the
      label still aligns to the top of the grid row alongside the other cells. */
@@ -5067,10 +5069,12 @@ a.playbook-empty-docs-link:visited:hover {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.outcome-finding-open:hover {
+.outcome-finding-open:hover,
+.cost-task-open:hover {
   color: var(--text-bright);
 }
-.outcome-finding-open:focus-visible {
+.outcome-finding-open:focus-visible,
+.cost-task-open:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
   border-radius: 3px;
