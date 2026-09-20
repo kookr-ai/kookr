@@ -1,5 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
-import { agentProviderPresentation, anomalyTypeLabel, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { agentProviderPresentation, anomalyTypeLabel, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitAgent, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -128,6 +128,71 @@ describe('finding wait age', () => {
 
     expect(oldestFindingWaitStartedAt([newer, older])).toBe('2026-06-11T18:10:00Z');
     expect(oldestFindingWaitStartedAt([])).toBeUndefined();
+    expect(oldestFindingWaitAgent([newer, older])?.agentId).toBe('older');
+    expect(oldestFindingWaitAgent([])).toBeUndefined();
+  });
+
+  test('keeps the first finding when two waits share a timestamp', () => {
+    const first = {
+      agentId: 'first',
+      events: [],
+      anomaly: {
+        agentId: 'first',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'tied wait',
+        detectedAt: new Date('2026-06-11T18:10:00Z'),
+      },
+    } satisfies AgentState;
+    const second = {
+      agentId: 'second',
+      events: [],
+      anomaly: {
+        agentId: 'second',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'tied wait',
+        detectedAt: new Date('2026-06-11T18:10:00Z'),
+      },
+    } satisfies AgentState;
+
+    expect(oldestFindingWaitAgent([first, second])?.agentId).toBe('first');
+  });
+
+  test('does not pick a completed or healthy row', () => {
+    const healthy = {
+      agentId: 'healthy',
+      events: [],
+      anomaly: null,
+    } satisfies AgentState;
+    const completed = {
+      agentId: 'completed',
+      events: [],
+      taskStatus: 'completed',
+      anomaly: {
+        agentId: 'completed',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'stale leftover',
+        detectedAt: new Date('2026-06-11T17:00:00Z'),
+      },
+    } satisfies AgentState;
+    const live = {
+      agentId: 'live',
+      events: [],
+      anomaly: {
+        agentId: 'live',
+        type: 'needs_input',
+        severity: 'warning',
+        explanation: 'live wait',
+        detectedAt: new Date('2026-06-11T18:50:00Z'),
+      },
+    } satisfies AgentState;
+
+    expect(oldestFindingWaitAgent([completed, healthy, live])?.agentId).toBe('live');
+    expect(oldestFindingWaitStartedAt([completed, healthy, live])).toEqual(
+      new Date('2026-06-11T18:50:00Z'),
+    );
   });
 
   test('formats a live oldest wait and keeps sub-two-minute findings visible', () => {

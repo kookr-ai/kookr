@@ -115,6 +115,12 @@ interface Props {
    * (issue #3333). Optional so isolated StatusBar tests need no App wiring.
    */
   onExpandCompleted?: () => void;
+  /**
+   * Select the oldest unanswered finding when the oldest-wait chip is
+   * clicked (issue #3343). Optional so isolated StatusBar tests keep
+   * today's non-interactive status span.
+   */
+  onSelectOldestFinding?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -454,6 +460,7 @@ export function StatusBar({
   onOpenDiagnostics,
   onOpenCostComparison,
   onExpandCompleted,
+  onSelectOldestFinding,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -659,14 +666,27 @@ export function StatusBar({
           )
         )}
         {oldestWaitLabel && (
-          <span
-            className="oldest-finding-wait-pill"
-            data-testid="oldest-finding-wait-chip"
-            role="status"
-            title="Age of the oldest unanswered finding — live wait, not the historical median"
-          >
-            oldest {oldestWaitLabel}
-          </span>
+          onSelectOldestFinding ? (
+            <button
+              type="button"
+              className="oldest-finding-wait-pill"
+              data-testid="oldest-finding-wait-chip"
+              title="Age of the oldest unanswered finding — live wait, not the historical median"
+              aria-label={`oldest ${oldestWaitLabel}. Select oldest unanswered finding`}
+              onClick={onSelectOldestFinding}
+            >
+              oldest {oldestWaitLabel}
+            </button>
+          ) : (
+            <span
+              className="oldest-finding-wait-pill"
+              data-testid="oldest-finding-wait-chip"
+              role="status"
+              title="Age of the oldest unanswered finding — live wait, not the historical median"
+            >
+              oldest {oldestWaitLabel}
+            </span>
+          )
         )}
         {showUnblockChip && (
           onOpenDiagnostics ? (

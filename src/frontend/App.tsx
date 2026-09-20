@@ -86,7 +86,7 @@ import {
   isDebugTimelineEnabled,
 } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
-import { findingTypeLabel, oldestFindingWaitStartedAt } from './presentation.js';
+import { findingTypeLabel, findingWaitStartedAt, oldestFindingWaitAgent } from './presentation.js';
 import { activeModalReducer } from './app-modal-reducer.js';
 import type { ActiveModal } from './app-modal-reducer.js';
 import { useCompletionConfirmation } from './hooks/useCompletionConfirmation.js';
@@ -1230,10 +1230,21 @@ export function App() {
     () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
     [agents, coordinator, projectPriorityRanks],
   );
-  const oldestFindingWait = useMemo(
-    () => oldestFindingWaitStartedAt(findings),
+  const oldestWaitingFinding = useMemo(
+    () => oldestFindingWaitAgent(findings),
     [findings],
   );
+  const oldestFindingWait = oldestWaitingFinding
+    ? findingWaitStartedAt(oldestWaitingFinding)
+    : undefined;
+  const selectOldestWaitingFinding = useCallback(() => {
+    const agent = oldestFindingWaitAgent(findings);
+    if (!agent) return;
+    // Switch to the findings list first. On mobile, selecting a different
+    // agent still follows the existing rule and opens the Task pane.
+    setMobileTab('findings');
+    selectAgent(agent.agentId, agent.taskId);
+  }, [findings, selectAgent]);
   // Position the top-bar queue indicator names ("Triaging X of N"), reused by
   // its focus action so the label and the click target stay in lockstep.
   const currentFindingIndex = activeFindingIndex(
@@ -1729,6 +1740,7 @@ export function App() {
         onOpenDiagnostics={openDiagnostics}
         onOpenCostComparison={() => openModal('costComparison')}
         onExpandCompleted={expandCompletedRail}
+        onSelectOldestFinding={oldestWaitingFinding ? selectOldestWaitingFinding : undefined}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}

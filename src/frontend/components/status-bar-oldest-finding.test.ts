@@ -98,7 +98,98 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     await flush();
 
     expect(container.textContent).toContain('oldest 12m');
-    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).not.toBeNull();
+    const chip = container.querySelector('[data-testid="oldest-finding-wait-chip"]');
+    expect(chip).not.toBeNull();
+    expect(chip?.tagName).toBe('SPAN');
+    expect(chip?.getAttribute('role')).toBe('status');
+  });
+
+  test('clicking the visible chip calls the oldest-finding selector (issue #3343)', async () => {
+    const onSelectOldestFinding = vi.fn();
+    const onExpandCompleted = vi.fn();
+    const onOpenCostComparison = vi.fn();
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 2,
+          total: 3,
+          completedLast24h: 3,
+          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+          onShowShortcuts: vi.fn(),
+          onSelectOldestFinding,
+          onExpandCompleted,
+          onOpenCostComparison,
+        }),
+      );
+    });
+    await flush();
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="oldest-finding-wait-chip"]');
+    expect(chip?.tagName).toBe('BUTTON');
+    expect(chip?.getAttribute('role')).not.toBe('status');
+    expect(chip?.textContent).toBe('oldest 12m');
+    expect(chip?.getAttribute('aria-label')).toBe(
+      'oldest 12m. Select oldest unanswered finding',
+    );
+
+    await act(async () => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onSelectOldestFinding).toHaveBeenCalledOnce();
+    expect(onExpandCompleted).not.toHaveBeenCalled();
+    expect(onOpenCostComparison).not.toHaveBeenCalled();
+  });
+
+  test('keeps completed-count and 24h cost click-throughs when the oldest-wait chip is also wired', async () => {
+    const onSelectOldestFinding = vi.fn();
+    const onExpandCompleted = vi.fn();
+    const onOpenCostComparison = vi.fn();
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 1,
+          total: 2,
+          completedLast24h: 3,
+          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+          onShowShortcuts: vi.fn(),
+          onSelectOldestFinding,
+          onExpandCompleted,
+          onOpenCostComparison,
+        }),
+      );
+    });
+    await flush();
+
+    const completedChip = container.querySelector<HTMLButtonElement>('[data-testid="completed-24h-chip"]');
+    expect(completedChip?.tagName).toBe('BUTTON');
+    await act(async () => {
+      completedChip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onExpandCompleted).toHaveBeenCalledOnce();
+    expect(onSelectOldestFinding).not.toHaveBeenCalled();
+  });
+
+  test('does not invent a clickable chip when the oldest wait is hidden', async () => {
+    const onSelectOldestFinding = vi.fn();
+
+    await act(async () => {
+      root.render(
+        React.createElement(StatusBar, {
+          findings: 0,
+          total: 2,
+          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+          onShowShortcuts: vi.fn(),
+          onSelectOldestFinding,
+        }),
+      );
+    });
+    await flush();
+
+    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).toBeNull();
+    expect(onSelectOldestFinding).not.toHaveBeenCalled();
   });
 
   test('keeps the historical median-unblock chip next to the live oldest wait', async () => {
