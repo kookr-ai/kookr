@@ -107,6 +107,49 @@ describe('buildStartupRecoveryHealthSummary (issue #2351)', () => {
       skipped: 3,
       failed: 1,
       crashLoopSkips: 2,
+      unverified: 0,
+      repaired: 0,
+      generatedAt: '2026-08-12T12:00:00.000Z',
+    });
+  });
+
+  it('projects post-restart unverified and repaired counts (issue #3316)', () => {
+    const summary: StartupRecoverySummary = {
+      relaunched: [],
+      skipped: [],
+      failed: [],
+      postRestartRecovery: {
+        restartEpoch: 1_700_000_000_000,
+        verified: [
+          {
+            sessionId: 'wedged',
+            classification: 'recovered-unverified',
+            restartEpoch: 1_700_000_000_000,
+            repairAttempts: 2,
+            identityVerified: false,
+            masterPid: -1,
+            agentPid: null,
+            livenessObserved: false,
+            elapsedMs: 40,
+            failureReason: 'no-liveness-after-repair',
+          },
+        ],
+        errors: [],
+        live: 0,
+        idle: 0,
+        repaired: 3,
+        unverified: 1,
+      },
+    };
+    expect(
+      buildStartupRecoveryHealthSummary(summary, '2026-08-12T12:00:00.000Z'),
+    ).toEqual({
+      relaunched: 0,
+      skipped: 0,
+      failed: 0,
+      crashLoopSkips: 0,
+      unverified: 1,
+      repaired: 3,
       generatedAt: '2026-08-12T12:00:00.000Z',
     });
   });
