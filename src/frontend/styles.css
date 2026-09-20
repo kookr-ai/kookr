@@ -9053,7 +9053,8 @@ button.completed-row-rating:focus-visible {
 button.time-to-unblock-pill,
 button.live-friction-pill,
 button.cost-24h-pill,
-button.completed-24h-pill {
+button.completed-24h-pill,
+button.oldest-finding-wait-pill {
   cursor: pointer;
   font-family: inherit;
   line-height: inherit;
@@ -9063,14 +9064,16 @@ button.completed-24h-pill {
 button.time-to-unblock-pill:hover,
 button.live-friction-pill:hover,
 button.cost-24h-pill:hover,
-button.completed-24h-pill:hover {
+button.completed-24h-pill:hover,
+button.oldest-finding-wait-pill:hover {
   background: rgba(148, 163, 184, 0.26);
 }
 
 button.time-to-unblock-pill:focus-visible,
 button.live-friction-pill:focus-visible,
 button.cost-24h-pill:focus-visible,
-button.completed-24h-pill:focus-visible {
+button.completed-24h-pill:focus-visible,
+button.oldest-finding-wait-pill:focus-visible {
   outline: 1px solid var(--text-secondary);
   outline-offset: 1px;
 }

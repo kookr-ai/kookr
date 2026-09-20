@@ -550,26 +550,42 @@ export function findingWaitStartedAt(agent: AgentState): Date | string | undefin
 }
 
 /**
- * Earliest live finding wait among the same agents the status bar counts.
- * Uses {@link findingWaitStartedAt} so completion-ready signals keep the
- * original raise time instead of a restamped anomaly clock.
+ * Live finding that has been waiting the longest among `agents`.
+ *
+ * The status-bar chip shows this wait; clicking it should land on this
+ * same agent. Skips completed and healthy rows, and when two waits share
+ * a timestamp keeps the first in the given order.
  */
-export function oldestFindingWaitStartedAt(
+export function oldestFindingWaitAgent(
   agents: readonly AgentState[],
-): Date | string | undefined {
-  let oldest: Date | string | undefined;
+): AgentState | undefined {
+  let oldest: AgentState | undefined;
   let oldestMs = Number.POSITIVE_INFINITY;
   for (const agent of agents) {
+    if (agent.taskStatus !== undefined && isTerminalStatus(agent.taskStatus)) continue;
+    if (agent.anomaly == null) continue;
     const started = findingWaitStartedAt(agent);
     if (started === undefined) continue;
     const ms = new Date(started).getTime();
     if (!Number.isFinite(ms)) continue;
     if (ms < oldestMs) {
       oldestMs = ms;
-      oldest = started;
+      oldest = agent;
     }
   }
   return oldest;
+}
+
+/**
+ * Earliest live finding wait among the same agents the status bar counts.
+ * Uses {@link oldestFindingWaitAgent} so the chip timestamp and the click
+ * target stay the same finding.
+ */
+export function oldestFindingWaitStartedAt(
+  agents: readonly AgentState[],
+): Date | string | undefined {
+  const oldest = oldestFindingWaitAgent(agents);
+  return oldest ? findingWaitStartedAt(oldest) : undefined;
 }
 
 /**
