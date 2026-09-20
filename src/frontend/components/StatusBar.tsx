@@ -110,6 +110,11 @@ interface Props {
    * Optional so isolated StatusBar tests need no App wiring.
    */
   onOpenCostComparison?: () => void;
+  /**
+   * Expand the sidebar Completed rail when the 24h completed chip is clicked
+   * (issue #3333). Optional so isolated StatusBar tests need no App wiring.
+   */
+  onExpandCompleted?: () => void;
   reflectionSuggestion?: {
     sessionLabel: string;
     summary: string;
@@ -448,6 +453,7 @@ export function StatusBar({
   onOpenLiveFriction,
   onOpenDiagnostics,
   onOpenCostComparison,
+  onExpandCompleted,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
@@ -597,14 +603,27 @@ export function StatusBar({
         {zoneLabel && <span className="focus-zone-pill">{zoneLabel}</span>}
         <span>{total} task{total !== 1 ? 's' : ''} · {findings} finding{findings !== 1 ? 's' : ''}</span>
         {showCompletedChip && (
-          <span
-            className="completed-24h-pill"
-            data-testid="completed-24h-chip"
-            role="status"
-            title={formatCompletedInWindowChipTitle(completedLast24h)}
-          >
-            {formatCompletedInWindowChipLabel(completedLast24h)}
-          </span>
+          onExpandCompleted ? (
+            <button
+              type="button"
+              className="completed-24h-pill"
+              data-testid="completed-24h-chip"
+              title={formatCompletedInWindowChipTitle(completedLast24h)}
+              aria-label={`${formatCompletedInWindowChipLabel(completedLast24h)}. Show completed tasks`}
+              onClick={onExpandCompleted}
+            >
+              {formatCompletedInWindowChipLabel(completedLast24h)}
+            </button>
+          ) : (
+            <span
+              className="completed-24h-pill"
+              data-testid="completed-24h-chip"
+              role="status"
+              title={formatCompletedInWindowChipTitle(completedLast24h)}
+            >
+              {formatCompletedInWindowChipLabel(completedLast24h)}
+            </span>
+          )
         )}
         {showLaunchedChip && (
           <span

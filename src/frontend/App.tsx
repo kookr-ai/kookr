@@ -382,6 +382,19 @@ export function App() {
   // DetailPanel watches it to open the per-task TaskShareModal for the selected
   // task; the modal's own state lives there alongside the header Share button.
   const [shareTaskRequest, setShareTaskRequest] = useState(0);
+  // Nonce bumped by the status-bar 24h completed chip (#3333). FindingsPanel
+  // watches it to expand the Completed rail and scroll it into view; the
+  // chip itself stays a no-op in isolated StatusBar tests that omit the
+  // opener. Count refreshes do not bump this, so the section stays collapsed
+  // until the operator actually clicks. Switch to the findings tab first
+  // because on mobile the Task tab unmounts FindingsPanel — without that,
+  // the nonce bump would land on a missing rail.
+  const [expandCompletedNonce, setExpandCompletedNonce] = useState(0);
+  const consumedExpandNonceRef = useRef(0);
+  const expandCompletedRail = useCallback(() => {
+    setMobileTab('findings');
+    setExpandCompletedNonce((n) => n + 1);
+  }, []);
   // Non-modal surfaces that legitimately co-exist with a modal and with each
   // other, so they keep their own state instead of joining `activeModal`: the
   // diagnostics popover, the inline coordinator-findings pane, and the command
@@ -1364,6 +1377,8 @@ export function App() {
       }}
       shortcutBindings={shortcutBindings}
       onLaunch={() => openBlankLaunch('findings_empty')}
+      expandCompletedNonce={expandCompletedNonce}
+      consumedExpandNonceRef={consumedExpandNonceRef}
     />
   );
 
@@ -1705,6 +1720,7 @@ export function App() {
         onOpenLiveFriction={openLiveFrictionDiagnostics}
         onOpenDiagnostics={openDiagnostics}
         onOpenCostComparison={() => openModal('costComparison')}
+        onExpandCompleted={expandCompletedRail}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}

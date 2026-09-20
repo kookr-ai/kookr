@@ -151,6 +151,20 @@ interface Props {
    * when the caller doesn't thread the user's custom bindings through.
    */
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Nonce bumped by the status-bar 24h completed chip (issue #3333). Each
+   * increase expands the Completed rail (if it was collapsed) and scrolls it
+   * into view. Unchanged values, including the default 0, are ignored so a
+   * count refresh never pops the section open.
+   */
+  expandCompletedNonce?: number;
+  /**
+   * App-owned high-water for {@link expandCompletedNonce}. Survives this
+   * panel's mobile-tab remount (App stays mounted) but resets when App itself
+   * remounts (error-boundary recovery). Isolated tests may omit it; they get
+   * a per-instance ref.
+   */
+  consumedExpandNonceRef?: { current: number };
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -184,6 +198,8 @@ export function FindingsPanel({
   onSchedulePlaybook,
   onLaunch,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
+  expandCompletedNonce = 0,
+  consumedExpandNonceRef,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const archivedAgents = useKookrStore((s) => s.archivedAgents);
@@ -257,6 +273,24 @@ export function FindingsPanel({
   // Load older history results are visible without a second click.
   useAutoExpandOnItemGain(pending.length, expandPending);
   useAutoExpandOnItemGain(scopedArchived.length, expandCompleted);
+  const completedSectionRef = useRef<HTMLDivElement>(null);
+  const fallbackConsumedExpandNonceRef = useRef(0);
+  const consumedNonceRef = consumedExpandNonceRef ?? fallbackConsumedExpandNonceRef;
+  // Status-bar 24h chip click: expand immediately, then scroll after paint.
+  // Mark the nonce handled only when the timer fires so React StrictMode's
+  // effect replay (cleanup cancels the first timer) still scrolls. The
+  // high-water lives on App's ref so a FindingsPanel remount (mobile tabs)
+  // does not replay the last click, while an App remount (error recovery)
+  // starts clean. Count-only re-renders leave the nonce unchanged.
+  useEffect(() => {
+    if (!expandCompletedNonce || expandCompletedNonce <= consumedNonceRef.current) return;
+    expandCompleted();
+    const timer = window.setTimeout(() => {
+      consumedNonceRef.current = expandCompletedNonce;
+      completedSectionRef.current?.scrollIntoView?.({ block: 'nearest' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [expandCompletedNonce, expandCompleted, consumedNonceRef]);
   const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -622,7 +656,7 @@ export function FindingsPanel({
             </div>
           )}
           {showCompletedSection && (
-            <div className="completed-section">
+            <div className="completed-section" ref={completedSectionRef}>
               <div className="completed-section-header-row">
                 <SectionToggleButton
                   collapsed={completedCollapsed}
