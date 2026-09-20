@@ -80,19 +80,17 @@ function CompletedRowRatingControl({
   const feedbackRef = useRef(feedback);
   feedbackRef.current = feedback;
 
-  // Adopt a snapshot that caught up with our last send, or an external
-  // change from another client. Keep an unsent thumbs-down draft.
+  // Drop the optimistic copy only when the snapshot matches it. A stale
+  // persisted rating must not overwrite a pending local send.
   useEffect(() => {
-    const unsentDown = local?.rating === 'down' && !sameFeedback(sentRef.current, local);
-    if (unsentDown) return;
-    if (sameFeedback(sentRef.current, persisted) && local && sameFeedback(local, persisted)) {
-      setLocal(undefined);
+    if (local) {
+      if (sameFeedback(local, persisted)) {
+        sentRef.current = persisted;
+        setLocal(undefined);
+      }
       return;
     }
-    if (persisted && !sameFeedback(sentRef.current, persisted) && !sameFeedback(local, persisted)) {
-      sentRef.current = persisted;
-      setLocal(undefined);
-    }
+    sentRef.current = persisted;
   }, [persisted, local]);
   // Unrated rows keep thumbs visible (there is no pill to reopen). Rated rows
   // keep the pill mounted and expand the editor beside it.
@@ -175,6 +173,12 @@ function CompletedRowRatingControl({
       className="completed-row-rating-wrap"
       ref={wrapRef}
       onClick={(e) => e.stopPropagation()}
+      onBlur={(e) => {
+        const next = e.relatedTarget;
+        if (next instanceof Node && wrapRef.current?.contains(next)) return;
+        const draft = feedbackRef.current;
+        if (draft?.rating === 'down') persist(draft);
+      }}
     >
       {pill && feedback && (
         <button

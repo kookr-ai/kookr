@@ -278,6 +278,48 @@ describe('CompletedRow completion-rating pill', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  test('tabbing out of a thumbs-down editor persists the draft', () => {
+    const { root: rendered, send } = renderRow(container, makeAgent());
+    root = rendered;
+    const down = container.querySelector<HTMLButtonElement>('[aria-label="Thumbs down"]')!;
+    act(() => {
+      down.focus();
+      down.click();
+    });
+    expect(send).not.toHaveBeenCalled();
+    const outside = document.createElement('button');
+    document.body.appendChild(outside);
+    act(() => {
+      outside.focus();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'down' },
+    });
+    outside.remove();
+  });
+
+  test('an optimistic up rating is not reverted by a stale down snapshot', () => {
+    const { root: rendered, send } = renderRow(
+      container,
+      makeAgent({ completionFeedback: { rating: 'down' } }),
+    );
+    root = rendered;
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[data-testid="completed-row-rating"]')!.click();
+    });
+    act(() => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Thumbs up"]')!.click();
+    });
+    expect(send).toHaveBeenCalledWith({
+      type: 'setTaskFeedback',
+      taskId: 'task-1',
+      feedback: { rating: 'up' },
+    });
+    expect(container.querySelector('[data-testid="completed-row-rating"]')?.textContent).toBe('👍');
+  });
+
   test('unmounting a thumbs-down draft persists it (keyboard collapse)', () => {
     const { root: rendered, send } = renderRow(container, makeAgent());
     root = rendered;
