@@ -111,8 +111,8 @@
     "yaml": "^2.9.1"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.125.0",
-    "@google/genai": "^2.22.0",
+    "@anthropic-ai/sdk": "^0.127.0",
+    "@google/genai": "^2.23.0",
     "@hono/node-server": "^2.1.1",
     "@types/ws": "^8.18.1",
     "@xterm/addon-fit": "^0.11.0",
@@ -121,15 +121,15 @@
     "@xterm/addon-webgl": "^0.19.0",
     "@xterm/xterm": "^6.0.0",
     "better-sqlite3": "^13.0.3",
-    "cron-parser": "^5.10.0",
+    "cron-parser": "^5.10.1",
     "groq-sdk": "^1.6.0",
-    "hono": "4.13.7",
+    "hono": "4.13.8",
     "node-pty": "^1.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "web-push": "^3.6.7",
     "ws": "^8.21.3",
-    "zod": "^4.6.2",
+    "zod": "^4.6.5",
     "zustand": "^5.0.15"
   }
 }
