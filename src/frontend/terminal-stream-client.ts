@@ -74,6 +74,19 @@ interface Attempt {
   lastProgress: number | null;
 }
 
+/**
+ * Browser `binaryType=arraybuffer` yields ArrayBuffer. Node `ws` and some
+ * host wrappers yield Uint8Array/Buffer. Reject Blob/string here so the
+ * ordered receive path stays synchronous.
+ */
+export function asTerminalOutputBytes(data: unknown): Uint8Array | null {
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  return null;
+}
+
 /** A connection owns credit; the retained xterm instance owns source continuity. */
 export function createTerminalStreamClient(options: StreamClientOptions) {
   const budget = options.retryBudget ?? { attempts: [] };
@@ -273,16 +286,19 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       receiveControl(attempt, control);
       return;
     }
-    if (!(data instanceof ArrayBuffer) || !attempt.generation || (attempt.wireState !== 'seed' && attempt.wireState !== 'live')) {
+    const bytes = asTerminalOutputBytes(data);
+    if (!bytes || !attempt.generation || (attempt.wireState !== 'seed' && attempt.wireState !== 'live')) {
       fail(attempt, 'incompatible', 'output before negotiated seed'); return;
     }
-    const bytes = new Uint8Array(data);
+    if (bytes.byteLength === 0) return;
     const source = attempt.source;
     attempt.source = null;
-    if (bytes.byteLength === 0 || bytes.byteLength > TERMINAL_FRAME_BYTES
-      || bytes.byteLength > TERMINAL_CREDIT_BYTES - (attempt.received - attempt.acknowledged)
-      || (attempt.wireState === 'live' && (!source || source.end - source.start !== bytes.byteLength))) {
-      fail(attempt, 'incompatible', 'invalid terminal output frame'); return;
+    if (bytes.byteLength > TERMINAL_FRAME_BYTES
+      || bytes.byteLength > TERMINAL_CREDIT_BYTES - (attempt.received - attempt.acknowledged)) {
+      fail(attempt, 'lagged', 'invalid terminal output frame'); return;
+    }
+    if (attempt.wireState === 'live' && (!source || source.end - source.start !== bytes.byteLength)) {
+      fail(attempt, 'continuity-unavailable', 'source position gap'); return;
     }
     attempt.received += bytes.byteLength;
     attempt.metrics.received(bytes.byteLength);
@@ -324,10 +340,25 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       helloTimer: null, seedTimer: null, ackTimer: null, metricsTimer: null, healthySince: null, lastProgress: null,
     };
     active = attempt;
-    attempt.helloTimer = setTimeout(() => fail(attempt, 'incompatible', 'terminal hello timed out'), 2000);
+    attempt.helloTimer = setTimeout(() => {
+      // A negotiated v2 socket that never hellos is a transient attach failure.
+      // Reload cannot fix it — the page and server already agree on v2.
+      // Only a missing/wrong subprotocol is the partial-deploy case the RFC
+      // asked to surface as "reload to pick up the new client."
+      if (socket.protocol === TERMINAL_V2_PROTOCOL) {
+        fail(attempt, 'unavailable', 'terminal hello timed out');
+        scheduleRetry();
+      } else {
+        fail(attempt, 'incompatible', 'terminal hello timed out');
+      }
+    }, 2000);
     socket.onopen = () => {
       if (active !== attempt) return;
-      if (socket.protocol !== TERMINAL_V2_PROTOCOL) { fail(attempt, 'incompatible', 'terminal protocol unavailable'); return; }
+      // Some browsers/proxies omit the subprotocol echo. Still wait for hello:
+      // a v2 hello is the application proof. A foreign protocol is not.
+      if (socket.protocol && socket.protocol !== TERMINAL_V2_PROTOCOL) {
+        fail(attempt, 'incompatible', 'terminal protocol unavailable'); return;
+      }
       metrics.opened();
     };
     socket.onmessage = (event) => receive(attempt, event.data);

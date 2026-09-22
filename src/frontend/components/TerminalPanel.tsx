@@ -789,7 +789,12 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     const inputDelivery = inputDeliveryBySessionRef.current.get(tmuxName) ?? { uncertain: false };
     const controller = createTerminalStreamClient({
       writer, continuity, retryBudget: retryBudgetRef.current, inputDelivery,
-      createSocket: () => new WebSocket(url, TERMINAL_V2_PROTOCOL),
+      createSocket: () => {
+        const ws = new WebSocket(url, TERMINAL_V2_PROTOCOL);
+        // Set before the handshake completes so the first PTY frame is not a Blob.
+        ws.binaryType = 'arraybuffer';
+        return ws;
+      },
       getSize: () => {
         const fitted = getValidatedResize(terminal.cols, terminal.rows)
           ?? fitAddonRef.current?.proposeDimensions()
@@ -962,19 +967,28 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
             : streamState.kind === 'seeding' ? 'Preparing terminal — input paused…'
               : streamState.kind === 'lagged' ? 'Terminal view fell behind. Only this view was disconnected.'
                 : streamState.kind === 'continuity-unavailable' ? 'Some output could not be recovered. Start a new view to continue.'
-                  : streamState.kind === 'incompatible' ? 'Terminal protocol changed. Reload Kookr.'
+                  : streamState.kind === 'incompatible'
+                    ? (streamState.reason === 'terminal protocol unavailable' || streamState.reason === 'terminal hello timed out'
+                      ? 'This page cannot speak the live terminal protocol. Reload the page, or start a new view.'
+                      : 'The terminal view lost sync. Start a new view — reloading the page usually will not help.')
                     : streamState.kind === 'access-denied' ? 'Terminal access denied.'
                       : streamState.kind === 'ended' ? 'Session ended.'
                         : streamState.kind === 'suspended' ? 'Terminal view paused while this tab is hidden.'
                           : streamState.kind === 'unavailable' && streamState.reason === 'current terminal screen unavailable'
                             ? 'Current terminal screen unavailable. Preview only; input is paused.'
                             : 'Terminal connection unavailable.'}
-          {(streamState.kind === 'lagged' || streamState.kind === 'continuity-unavailable' || streamState.kind === 'unavailable') && (
+          {(streamState.kind === 'lagged' || streamState.kind === 'continuity-unavailable'
+            || streamState.kind === 'unavailable' || streamState.kind === 'incompatible') && (
             <button type="button" onClick={() => {
-              controllerRef.current?.retry(streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor);
+              controllerRef.current?.retry(
+                streamState.kind === 'continuity-unavailable'
+                || streamState.kind === 'incompatible'
+                || !continuityRef.current.cursor,
+              );
               terminalRef.current?.focus();
             }}>
-              {streamState.kind === 'continuity-unavailable' || !continuityRef.current.cursor ? 'Start a new view' : 'Reconnect terminal'}
+              {streamState.kind === 'continuity-unavailable' || streamState.kind === 'incompatible'
+                || !continuityRef.current.cursor ? 'Start a new view' : 'Reconnect terminal'}
             </button>
           )}
           {streamState.kind === 'incompatible' && <button type="button" onClick={() => window.location.reload()}>Reload Kookr</button>}
