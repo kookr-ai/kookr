@@ -161,17 +161,29 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
       kind: 'unavailable', reason: 'terminal hello timed out',
     }));
+    vi.advanceTimersByTime(1000);
+    expect(h.sockets).toHaveLength(2);
     h.client.stop(); h.writer.dispose();
   });
 
-  test('a missing hello without a v2 subprotocol echo still asks for reload', () => {
+  test('a foreign subprotocol on open is incompatible', () => {
+    const h = harness();
+    h.socket.protocol = 'kookr-terminal.v1';
+    h.socket.onopen?.();
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'incompatible', reason: 'terminal protocol unavailable',
+    }));
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('a missing hello with an empty subprotocol echo is retryable like negotiated v2', () => {
     vi.useFakeTimers();
     const h = harness();
     h.socket.protocol = '';
     h.socket.onopen?.();
     vi.advanceTimersByTime(2000);
     expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
-      kind: 'incompatible', reason: 'terminal hello timed out',
+      kind: 'unavailable', reason: 'terminal hello timed out',
     }));
     h.client.stop(); h.writer.dispose();
   });

@@ -991,7 +991,9 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
                 || !continuityRef.current.cursor ? 'Start a new view' : 'Reconnect terminal'}
             </button>
           )}
-          {streamState.kind === 'incompatible' && <button type="button" onClick={() => window.location.reload()}>Reload Kookr</button>}
+          {streamState.kind === 'incompatible'
+            && (streamState.reason === 'terminal protocol unavailable' || streamState.reason === 'terminal hello timed out')
+            && <button type="button" onClick={() => window.location.reload()}>Reload Kookr</button>}
         </div>
       )}
       {!tmuxName && <div className="terminal-attach-pending terminal-attach-notice" role="status">Select an agent to view its terminal.</div>}

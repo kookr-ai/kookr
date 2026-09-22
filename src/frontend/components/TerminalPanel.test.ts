@@ -343,8 +343,9 @@ describe('TerminalPanel', () => {
     })));
     const ws = mocks.webSocketInstances[0];
     act(() => { ws.onopen?.(); ws.onclose?.({ code: 4409 }); });
+    expect(container.textContent).toContain('The terminal view lost sync. Start a new view — reloading the page usually will not help.');
     expect(container.textContent).toContain('Start a new view');
-    expect(container.textContent).toContain('Reload Kookr');
+    expect(container.textContent).not.toContain('Reload Kookr');
     expect(container.textContent).not.toContain('Terminal protocol changed. Reload Kookr.');
     const retry = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Start a new view');
     expect(retry).toBeTruthy();

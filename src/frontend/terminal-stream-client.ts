@@ -79,7 +79,7 @@ interface Attempt {
  * host wrappers yield Uint8Array/Buffer. Reject Blob/string here so the
  * ordered receive path stays synchronous.
  */
-export function asTerminalOutputBytes(data: unknown): Uint8Array | null {
+function asTerminalOutputBytes(data: unknown): Uint8Array | null {
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
   if (ArrayBuffer.isView(data)) {
     return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
@@ -341,15 +341,16 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     };
     active = attempt;
     attempt.helloTimer = setTimeout(() => {
+      if (active !== attempt) return;
       // A negotiated v2 socket that never hellos is a transient attach failure.
       // Reload cannot fix it — the page and server already agree on v2.
-      // Only a missing/wrong subprotocol is the partial-deploy case the RFC
-      // asked to surface as "reload to pick up the new client."
-      if (socket.protocol === TERMINAL_V2_PROTOCOL) {
+      // Only a foreign subprotocol is the partial-deploy case the RFC asked
+      // to surface as "reload to pick up the new client."
+      if (socket.protocol && socket.protocol !== TERMINAL_V2_PROTOCOL) {
+        fail(attempt, 'incompatible', 'terminal hello timed out');
+      } else {
         fail(attempt, 'unavailable', 'terminal hello timed out');
         scheduleRetry();
-      } else {
-        fail(attempt, 'incompatible', 'terminal hello timed out');
       }
     }, 2000);
     socket.onopen = () => {
