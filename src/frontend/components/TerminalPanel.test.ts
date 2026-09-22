@@ -337,6 +337,22 @@ describe('TerminalPanel', () => {
     vi.unstubAllGlobals();
   });
 
+  test('an incompatible attach offers a new view instead of trapping on reload', () => {
+    act(() => root.render(React.createElement(TerminalPanel, {
+      tmuxName: 'kookr-grok', visible: true, agentType: 'grok-build',
+    })));
+    const ws = mocks.webSocketInstances[0];
+    act(() => { ws.onopen?.(); ws.onclose?.({ code: 4409 }); });
+    expect(container.textContent).toContain('The terminal view lost sync. Start a new view — reloading the page usually will not help.');
+    expect(container.textContent).toContain('Start a new view');
+    expect(container.textContent).not.toContain('Reload Kookr');
+    expect(container.textContent).not.toContain('Terminal protocol changed. Reload Kookr.');
+    const retry = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Start a new view');
+    expect(retry).toBeTruthy();
+    act(() => retry!.click());
+    expect(mocks.webSocketInstances.length).toBeGreaterThan(1);
+  });
+
   test('pins Grok attach geometry to 200 cols even when xterm is still 80', () => {
     mocks.fitProposeDimensions = () => null;
     act(() => root.render(React.createElement(TerminalPanel, {

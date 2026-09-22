@@ -273,8 +273,10 @@ input. Do not use an unescaped text prefix that can steal a pasted command.
 Existing connections without v2 retain the current wire format during rollout.
 The client must also receive a schema-validated v2 hello within two seconds of
 socket open before sending v2 controls or input. A subprotocol echo alone is
-insufficient. On timeout/mismatch, close and show an incompatible-version/reload
-message; do not silently retry typed input on a legacy socket. A new server
+insufficient. On missing or wrong WebSocket subprotocol (partial deploy), close
+and show an incompatible-version/reload message; do not silently retry typed
+input on a legacy socket. A hello timeout on an already-negotiated v2 socket is
+a recoverable attach failure (auto-retry or new-view), not a reload trap. A new server
 continues to support old clients. Keep v1 until one released rollback version
 also supports v2 and active-client diagnostics show no legacy clients during a
 seven-day window; removal is a separate reviewed change, not an indefinite fork.
@@ -443,7 +445,9 @@ an automatic reconnect/replay/overflow loop. A terminal gap is not a gap in the
 structured transcript or a change to agent lifecycle state.
 
 Connection states are negotiating, seeding, live, suspended, lagged,
-incompatible, access-denied, and ended. Only a positive session-exit/gone signal
+incompatible, access-denied, ended, unavailable, and continuity-unavailable.
+Unavailable is an automatic-retry attach failure. Continuity-unavailable is an
+explicit new-view gap. Only a positive session-exit/gone signal
 means ended. Transient disconnects and child restarts allow at most three
 automatic attempts in thirty seconds, tracked across socket generations. A
 hello does not reset this budget; thirty seconds of successful live progress

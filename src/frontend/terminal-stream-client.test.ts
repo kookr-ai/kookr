@@ -141,6 +141,91 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
+  test('still attaches when the browser omits the subprotocol echo but hello is v2', () => {
+    const h = harness();
+    h.socket.protocol = '';
+    h.hello();
+    h.begin();
+    h.end(0);
+    h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'live' }));
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('a missing hello on a negotiated v2 socket is retryable, not a reload trap', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.socket.onopen?.();
+    vi.advanceTimersByTime(2000);
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'unavailable', reason: 'terminal hello timed out',
+    }));
+    vi.advanceTimersByTime(1000);
+    expect(h.sockets).toHaveLength(2);
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('a foreign subprotocol on open is incompatible', () => {
+    const h = harness();
+    h.socket.protocol = 'kookr-terminal.v1';
+    h.socket.onopen?.();
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'incompatible', reason: 'terminal protocol unavailable',
+    }));
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('a missing hello with an empty subprotocol echo is retryable like negotiated v2', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.socket.protocol = '';
+    h.socket.onopen?.();
+    vi.advanceTimersByTime(2000);
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'unavailable', reason: 'terminal hello timed out',
+    }));
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('accepts Uint8Array binary frames the way some WebSocket hosts deliver them', () => {
+    const h = harness();
+    h.hello(); h.begin();
+    h.socket.onmessage?.({ data: new TextEncoder().encode('seed') });
+    h.end(4); h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    expect(h.terminal.write).toHaveBeenCalled();
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('keeps an absolute Grok seed interactive when live source frames follow a null cursor', () => {
+    const h = harness();
+    h.hello(); h.begin();
+    h.data('seed');
+    h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: false, approximate: true });
+    h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    h.control({ type: 'attach_timing', protocolVersion: 2, attachId: 'a', strategy: 'absolute-display-only',
+      seedCacheHit: false, recoveryUsed: false, totalMs: 1, resizeWaitMs: 0, captureMs: 0, reconstructMs: 1,
+      replayBytes: 4, earlySeedBytes: 0, historyAvailable: false, attachSeed: 'absolute' });
+    h.control({ type: 'source', epoch: 'e', start: 8_626_682, end: 8_626_686, geometryRevision: 1, cols: 200, rows: 50 });
+    h.data('live');
+    h.settle();
+    expect(h.onState).toHaveBeenLastCalledWith({ kind: 'live', approximate: true });
+    expect(h.client.isEstablished()).toBe(true);
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('a live frame without a source marker is a recoverable view gap, not a reload trap', () => {
+    const h = harness();
+    h.hello(); h.begin(); h.end(0); h.settle();
+    h.data('orphan');
+    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({
+      kind: 'continuity-unavailable', reason: 'source position gap',
+    }));
+    h.client.stop(); h.writer.dispose();
+  });
+
   test('ACKs parsed bytes, but keeps input gated until every seed chunk is parsed', () => {
     const h = harness();
     h.hello(); h.begin(); h.data('first'); h.data('last'); h.end(9);
