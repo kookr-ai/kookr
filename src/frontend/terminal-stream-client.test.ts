@@ -323,9 +323,10 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
-  test('recovers after the retry window expires without a page reload', () => {
+  test.each([false, true])('recovers after the retry window expires (suspended during cooldown: %s)', (suspendDuringCooldown) => {
     vi.useFakeTimers();
-    const h = harness();
+    const doc = new EventTarget() as Document;
+    const h = harness(undefined, doc);
     for (let i = 0; i < 3; i++) {
       const socket = h.sockets.at(-1)!;
       h.hello(socket);
@@ -333,6 +334,13 @@ describe('NFR-TERM-001: terminal streaming client', () => {
       vi.advanceTimersByTime(1000 * (i + 1));
     }
     expect(h.sockets).toHaveLength(3);
+    if (suspendDuringCooldown) {
+      Object.defineProperty(doc, 'hidden', { value: true, configurable: true });
+      doc.dispatchEvent(new Event('visibilitychange'));
+      Object.defineProperty(doc, 'hidden', { value: false, configurable: true });
+      doc.dispatchEvent(new Event('visibilitychange'));
+      expect(h.sockets).toHaveLength(3);
+    }
     vi.advanceTimersByTime(24_000);
     expect(h.sockets).toHaveLength(4);
     const recovered = h.sockets[3];

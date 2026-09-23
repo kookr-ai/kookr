@@ -1093,8 +1093,8 @@ indices and transport acknowledgements.
   replay invalidates the epoch; changed dimensions invalidate geometry continuity.
 - Exact resume requires the same epoch and geometry, with all missing bytes
   retained. Missing continuity is disclosed, never repaired by content overlap.
-- Display-only seeds (no resume cursor and no retained history, including
-  absolute-TUI reconstruct) reconnect as an explicit new view (`acceptGap`)
+- Display-only seeds (no resume cursor, including reconstructed screens and
+  truncated rings with older history available) reconnect as an explicit new view (`acceptGap`)
   instead of stalling on "parser continuity unavailable".
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively

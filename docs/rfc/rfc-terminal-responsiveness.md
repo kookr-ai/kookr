@@ -452,7 +452,9 @@ means ended. Transient disconnects and child restarts allow at most three
 automatic attempts in thirty seconds, tracked across socket generations. A
 hello does not reset this budget; thirty seconds of successful live progress
 does. A known lag close stops automatic retries immediately. If its close reason
-is lost, the cross-generation budget still prevents an infinite loop. Show
+is lost, the rolling budget limits reconnect frequency to three attempts in
+thirty seconds. Transient recovery resumes automatically when capacity returns
+while visible. Intentional pane or tab suspension does not consume this budget. Show
 delivery-unknown when a disconnect interrupts input; never replay it automatically.
 
 ### Phase 3: Reduce competing browser work
