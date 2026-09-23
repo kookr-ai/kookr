@@ -10,8 +10,8 @@ export interface TerminalContinuity {
   cursor: TerminalResumeCursor | null;
   hadView: boolean;
   /**
-   * Last seed could not certify a resume cursor (absolute-TUI reconstruct,
-   * or any display-only seed with no history). Reconnect as a new view
+   * Last seed could not certify a resume cursor (reconstructed screen or
+   * truncated ring, even when older history is available). Reconnect as a new view
    * instead of blocking on "parser continuity unavailable".
    */
   resumeUnavailable?: boolean;
@@ -47,6 +47,7 @@ interface StreamClientOptions {
   document?: Pick<Document, 'hidden' | 'addEventListener' | 'removeEventListener'>;
 }
 interface Attempt {
+  startedAt: number;
   socket: TerminalSocket;
   writer: TerminalWriteSession;
   metrics: ReturnType<typeof createTerminalAttachMetrics>;
@@ -124,6 +125,12 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
   function retire(attempt: Attempt, reason: 'superseded' | 'disconnected') {
     if (active !== attempt || attempt.retiring) return;
     attempt.retiring = true;
+    // Hiding a pane or tab is not a connection failure. Do not let ordinary
+    // navigation exhaust the outage budget shared across controller instances.
+    if (reason === 'superseded') {
+      const index = budget.attempts.indexOf(attempt.startedAt);
+      if (index !== -1) budget.attempts.splice(index, 1);
+    }
     // Socket enqueueing is not an agent-delivery receipt. Keep the warning
     // through output reconnection until the user checks the agent and dismisses it.
     if (reason === 'disconnected' && attempt.sentInput) inputDelivery.uncertain = true;
@@ -153,8 +160,13 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     if (stopped || suspended) return;
     const now = performance.now();
     budget.attempts = budget.attempts.filter((time) => now - time < 30_000);
-    if (budget.attempts.length >= 3) { state({ kind: 'unavailable', reason: 'automatic retry limit reached' }); return; }
-    retryTimer = setTimeout(() => { retryTimer = null; connect(false); }, 1000 * Math.max(1, budget.attempts.length));
+    const exhausted = budget.attempts.length >= 3;
+    if (exhausted) state({ kind: 'unavailable', reason: 'automatic retry limit reached' });
+    // Keep the rate limit, but wake when its oldest attempt expires. A server
+    // outage must not leave a healthy page permanently disconnected.
+    const delay = exhausted ? Math.max(1, 30_000 - (now - budget.attempts[0]))
+      : 1000 * Math.max(1, budget.attempts.length);
+    retryTimer = setTimeout(() => { retryTimer = null; connect(false); }, delay);
   }
   function close(attempt: Attempt, code?: number) {
     if (active !== attempt) return;
@@ -231,7 +243,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
           const size = options.getSize();
           options.continuity.cursor = control.cursor?.cols === size.cols && control.cursor.rows === size.rows ? control.cursor : null;
           options.continuity.hadView = true;
-          options.continuity.resumeUnavailable = !control.cursor && !control.historyAvailable;
+          options.continuity.resumeUnavailable = !control.cursor;
           attempt.ready = !control.screenUnavailable;
           state(control.screenUnavailable
             ? { kind: 'unavailable', reason: 'current terminal screen unavailable' }
@@ -313,7 +325,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     }
     const now = performance.now();
     budget.attempts = budget.attempts.filter((time) => now - time < 30_000);
-    if (budget.attempts.length >= 3) { state({ kind: 'unavailable', reason: 'automatic retry limit reached' }); return; }
+    if (budget.attempts.length >= 3) { scheduleRetry(); return; }
     budget.attempts.push(now);
     state({ kind: 'negotiating' });
     let socket: TerminalSocket;
@@ -334,6 +346,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       state({ kind: 'continuity-unavailable', reason: 'parser geometry changed' }); return;
     }
     const attempt: Attempt = {
+      startedAt: now,
       socket, writer: options.writer.begin(false), metrics, metadata, generation: null, attachId,
       wireState: 'waiting', transaction: null, source: null, expectedSource: null, requestedCursor,
       attachedSize: null, ready: false, retiring: false, sentInput: false, processed: 0, received: 0, acknowledged: 0,

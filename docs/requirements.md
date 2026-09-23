@@ -1093,8 +1093,8 @@ indices and transport acknowledgements.
   replay invalidates the epoch; changed dimensions invalidate geometry continuity.
 - Exact resume requires the same epoch and geometry, with all missing bytes
   retained. Missing continuity is disclosed, never repaired by content overlap.
-- Display-only seeds (no resume cursor and no retained history, including
-  absolute-TUI reconstruct) reconnect as an explicit new view (`acceptGap`)
+- Display-only seeds (no resume cursor, including reconstructed screens and
+  truncated rings with older history available) reconnect as an explicit new view (`acceptGap`)
   instead of stalling on "parser continuity unavailable".
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively
@@ -1134,6 +1134,14 @@ handshakes release the parent's connection reservation when the socket closes.
 An older asynchronous persistence write must never overwrite a newer synchronous
 snapshot. Shutdown stops ring producers, drains old writes, and completes the
 final flush before any caller's drain promise resolves.
+
+Returning to a visible tab SHALL reconnect a usable approximate terminal view
+without a page reload, including a truncated ring whose older history remains
+available. Such a view opens a fresh seed and retains the approximation warning;
+it does not claim exact parser continuity. Intentional pane and tab suspension
+SHALL NOT consume the transport failure retry budget. After three attempts in
+thirty seconds, transient transport recovery SHALL wait for budget capacity and
+retry automatically while visible. Recovery SHALL NOT replay agent input.
 
 **Dependencies:** FR-TERM-001.
 **Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).
