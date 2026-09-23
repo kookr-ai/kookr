@@ -16,7 +16,7 @@ class Socket implements SocketLike {
   close = vi.fn();
 }
 
-function harness(continuity: TerminalContinuity = { cursor: null, hadView: false }) {
+function harness(continuity: TerminalContinuity = { cursor: null, hadView: false }, doc?: Document) {
   const tasks: Array<() => void> = [];
   const parses: Array<() => void> = [];
   const terminal = { reset: vi.fn(), write: vi.fn((_data: Uint8Array, callback: () => void) => parses.push(callback)) };
@@ -25,7 +25,7 @@ function harness(continuity: TerminalContinuity = { cursor: null, hadView: false
   const onState = vi.fn();
   const size = { cols: 80, rows: 24 };
   const client = createTerminalStreamClient({
-    writer, continuity, getSize: () => ({ cols: size.cols, rows: size.rows }),
+    writer, continuity, document: doc, getSize: () => ({ cols: size.cols, rows: size.rows }),
     createSocket: () => { const socket = new Socket(); sockets.push(socket); return socket; },
     onState, getMetadata: () => ({}), onTelemetry: vi.fn(), requestFrame: (cb) => { cb(); return 1; },
     cancelFrame: vi.fn(),
@@ -100,7 +100,7 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
-  test('keeps an approximate initial view interactive without certifying later resume', () => {
+  test('reopens a truncated ring as a new view even when older history is available', () => {
     const h = harness(); h.hello(); h.begin(); h.data('suffix');
     h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true });
     h.settle();
@@ -111,9 +111,7 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     expect(h.continuity.cursor).toBeNull();
     h.socket.onclose?.({ code: TERMINAL_CLOSE.lagged });
     h.client.retry();
-    expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'continuity-unavailable' }));
-    expect(h.sockets).toHaveLength(1);
-    h.client.retry(true);
+    expect(h.sockets).toHaveLength(2);
     h.hello(h.sockets[1]);
     const attach = h.sockets[1].send.mock.calls.map(([frame]) => JSON.parse(frame)).find((frame) => frame.type === 'attach');
     expect(attach).toMatchObject({ acceptGap: true });
@@ -298,6 +296,54 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     expect(h.sockets).toHaveLength(3);
     expect(h.onState).toHaveBeenLastCalledWith(expect.objectContaining({ kind: 'unavailable' }));
     h.client.stop(); h.writer.dispose();
+  });
+
+  test.each([true, false])('tab switches do not consume the outage budget (exact cursor: %s)', (exact) => {
+    vi.useFakeTimers();
+    const doc = new EventTarget() as Document;
+    const h = harness(undefined, doc);
+    for (let i = 0; i < 5; i++) {
+      const socket = h.sockets[i];
+      expect(socket).toBeDefined();
+      h.hello(socket);
+      h.control({ type: 'seed-begin', transaction: 't', mode: i > 0 && exact ? 'resume' : 'replace' }, socket);
+      h.control({ type: 'seed-end', transaction: 't', cursor: exact
+        ? { epoch: 'e', position: 0, geometryRevision: 1, cols: 80, rows: 24 } : null,
+      historyAvailable: true, approximate: !exact }, socket);
+      h.settle();
+      expect(h.client.sendInput('x')).toBe(true);
+      Object.defineProperty(doc, 'hidden', { value: true, configurable: true });
+      doc.dispatchEvent(new Event('visibilitychange'));
+      expect(h.client.sendInput('hidden')).toBe(false);
+      Object.defineProperty(doc, 'hidden', { value: false, configurable: true });
+      doc.dispatchEvent(new Event('visibilitychange'));
+      // The replacement connection must never replay earlier input.
+      expect(h.sockets[i + 1].send).not.toHaveBeenCalled();
+    }
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('recovers after the retry window expires without a page reload', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    for (let i = 0; i < 3; i++) {
+      const socket = h.sockets.at(-1)!;
+      h.hello(socket);
+      socket.onclose?.({ code: 1006 });
+      vi.advanceTimersByTime(1000 * (i + 1));
+    }
+    expect(h.sockets).toHaveLength(3);
+    vi.advanceTimersByTime(24_000);
+    expect(h.sockets).toHaveLength(4);
+    const recovered = h.sockets[3];
+    h.hello(recovered);
+    h.control({ type: 'seed-begin', transaction: 't', mode: 'replace' }, recovered);
+    h.control({ type: 'seed-end', transaction: 't', cursor: null, historyAvailable: true, approximate: true }, recovered);
+    h.settle();
+    expect(h.client.sendInput('after recovery')).toBe(true);
+    h.client.stop(); h.writer.dispose();
+    vi.advanceTimersByTime(60_000);
+    expect(h.sockets).toHaveLength(4);
   });
 
   test('a failed ACK send cannot recurse during retirement', () => {

@@ -1135,6 +1135,14 @@ An older asynchronous persistence write must never overwrite a newer synchronous
 snapshot. Shutdown stops ring producers, drains old writes, and completes the
 final flush before any caller's drain promise resolves.
 
+Returning to a visible tab SHALL reconnect a usable approximate terminal view
+without a page reload, including a truncated ring whose older history remains
+available. Such a view opens a fresh seed and retains the approximation warning;
+it does not claim exact parser continuity. Intentional pane and tab suspension
+SHALL NOT consume the transport failure retry budget. After three attempts in
+thirty seconds, transient transport recovery SHALL wait for budget capacity and
+retry automatically while visible. Recovery SHALL NOT replay agent input.
+
 **Dependencies:** FR-TERM-001.
 **Design:** [Approved terminal responsiveness RFC](rfc/rfc-terminal-responsiveness.md).
 **Qualification:** Implementation and Linux fault tests exist, but the mixed-load

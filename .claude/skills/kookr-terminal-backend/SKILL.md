@@ -53,6 +53,12 @@ functional tests, not native transport measurements.
   without proving that the original prefix survived; carry origin completeness
   separately. Show unavailable recovery explicitly; do not inject Ctrl+L or
   secretly resize an agent to manufacture a redraw.
+- History availability does not prove parser continuity. A viewport seed from a
+  truncated ring can advertise older history and still have no resume cursor.
+  Reopen that already approximate view with a fresh seed after tab suspension.
+  Test repeated hide/show cycles as well as network failures: intentional
+  suspension must not spend the outage retry budget, and exhaustion must schedule
+  recovery when the rolling window expires.
 - Keep scrolling local to xterm. Preserve fractional wheel movement, selection,
   and the viewed history until eviction makes preservation impossible. Hidden
   panes must not schedule input, fit work, or stale scroll callbacks.
