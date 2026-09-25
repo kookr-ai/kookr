@@ -1114,7 +1114,11 @@ separately from asynchronous write enqueueing for up to twenty active producers.
 
 **Acceptance criteria:** The approved RFC defines the negotiated consumption-credit
 protocol, safe source-cursor recovery, isolated input and socket ownership, Linux
-and macOS qualification, and mixed-load tests. A same-revision v2 attach failure
+and macOS qualification, and mixed-load tests. Browser transport setup SHALL have
+its own ten-second deadline. The two-second protocol hello deadline SHALL start
+only after the WebSocket opens, so a slow HTTP upgrade can complete. A connection
+that never opens SHALL close and retry within the existing retry budget; retiring
+an attempt SHALL cancel both deadlines. A same-revision v2 attach failure
 (hello timeout on an already-negotiated socket, live output without a source
 marker, or a binary host that yields `Uint8Array` instead of `ArrayBuffer`)
 SHALL remain a recoverable view error: auto-retry or an explicit new-view

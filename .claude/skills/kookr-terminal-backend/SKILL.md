@@ -39,6 +39,11 @@ functional tests, not native transport measurements.
 - Protocol v2 is explicitly negotiated. Browser credit acknowledges bytes only
   after xterm parses them; socket receipt is not consumption. Keep the legacy
   protocol until migration usage has actually been measured.
+- Distinguish a connection that never opens from one that opens but receives no
+  protocol hello. Telemetry with `selectionToOpenMs: null` points to the first
+  stage. Keep its ten-second setup deadline separate from the two-second hello
+  deadline, which starts on `open`. Reproduce slow setup by delaying the actual
+  HTTP upgrade; delaying frames on an already open socket tests a different path.
 - Source epochs and absolute positions belong to backend output, independently
   of ring indices. Append before publishing, and return owned atomic capture
   snapshots. A relay stream gap invalidates its cursor immediately, even if no

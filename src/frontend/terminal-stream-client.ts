@@ -6,6 +6,11 @@ import type { TerminalSourceRange } from '../shared/terminal-stream.js';
 import { createTerminalAttachMetrics } from './terminal-attach-metrics.js';
 import type { createTerminalWriter, TerminalWriteSession } from './terminal-writer.js';
 
+// Transport setup can include browser throttling, DNS, TLS, and proxy work.
+// Give it ten seconds; the two-second protocol deadline starts after open.
+const CONNECT_TIMEOUT_MS = 10_000;
+const HELLO_TIMEOUT_MS = 2000;
+
 export interface TerminalContinuity {
   cursor: TerminalResumeCursor | null;
   hadView: boolean;
@@ -67,6 +72,7 @@ interface Attempt {
   processed: number;
   received: number;
   acknowledged: number;
+  connectTimer: ReturnType<typeof setTimeout> | null;
   helloTimer: ReturnType<typeof setTimeout> | null;
   seedTimer: ReturnType<typeof setTimeout> | null;
   ackTimer: ReturnType<typeof setTimeout> | null;
@@ -141,7 +147,7 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
     if (options.writer.hasInFlight || attempt.wireState === 'seed'
       || (attempt.wireState === 'live' && !attempt.ready)) options.continuity.cursor = null;
     attempt.writer.retire();
-    for (const timer of [attempt.helloTimer, attempt.seedTimer, attempt.ackTimer, attempt.metricsTimer]) {
+    for (const timer of [attempt.connectTimer, attempt.helloTimer, attempt.seedTimer, attempt.ackTimer, attempt.metricsTimer]) {
       if (timer !== null) clearTimeout(timer);
     }
     attempt.metrics.dispose(reason);
@@ -350,30 +356,31 @@ export function createTerminalStreamClient(options: StreamClientOptions) {
       socket, writer: options.writer.begin(false), metrics, metadata, generation: null, attachId,
       wireState: 'waiting', transaction: null, source: null, expectedSource: null, requestedCursor,
       attachedSize: null, ready: false, retiring: false, sentInput: false, processed: 0, received: 0, acknowledged: 0,
-      helloTimer: null, seedTimer: null, ackTimer: null, metricsTimer: null, healthySince: null, lastProgress: null,
+      connectTimer: null, helloTimer: null, seedTimer: null, ackTimer: null, metricsTimer: null, healthySince: null, lastProgress: null,
     };
     active = attempt;
-    attempt.helloTimer = setTimeout(() => {
+    attempt.connectTimer = setTimeout(() => {
       if (active !== attempt) return;
-      // A negotiated v2 socket that never hellos is a transient attach failure.
-      // Reload cannot fix it — the page and server already agree on v2.
-      // Only a foreign subprotocol is the partial-deploy case the RFC asked
-      // to surface as "reload to pick up the new client."
-      if (socket.protocol && socket.protocol !== TERMINAL_V2_PROTOCOL) {
-        fail(attempt, 'incompatible', 'terminal hello timed out');
-      } else {
-        fail(attempt, 'unavailable', 'terminal hello timed out');
-        scheduleRetry();
-      }
-    }, 2000);
+      fail(attempt, 'unavailable', 'terminal connection timed out');
+      scheduleRetry();
+    }, CONNECT_TIMEOUT_MS);
     socket.onopen = () => {
       if (active !== attempt) return;
+      if (attempt.connectTimer !== null) clearTimeout(attempt.connectTimer);
+      attempt.connectTimer = null;
       // Some browsers/proxies omit the subprotocol echo. Still wait for hello:
       // a v2 hello is the application proof. A foreign protocol is not.
       if (socket.protocol && socket.protocol !== TERMINAL_V2_PROTOCOL) {
         fail(attempt, 'incompatible', 'terminal protocol unavailable'); return;
       }
       metrics.opened();
+      // Only an established socket can receive the protocol hello. Starting
+      // this clock at construction repeatedly cancels healthy slow upgrades.
+      attempt.helloTimer = setTimeout(() => {
+        if (active !== attempt) return;
+        fail(attempt, 'unavailable', 'terminal hello timed out');
+        scheduleRetry();
+      }, HELLO_TIMEOUT_MS);
     };
     socket.onmessage = (event) => receive(attempt, event.data);
     socket.onclose = (event) => close(attempt, event?.code);

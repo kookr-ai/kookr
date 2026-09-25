@@ -151,6 +151,53 @@ describe('NFR-TERM-001: terminal streaming client', () => {
     h.client.stop(); h.writer.dispose();
   });
 
+  test('allows a slow transport handshake before starting the hello deadline', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.socket.readyState = 0;
+    vi.advanceTimersByTime(3000);
+    expect(h.socket.close).not.toHaveBeenCalled();
+    expect(h.sockets).toHaveLength(1);
+    expect(h.client.sendInput('before open')).toBe(false);
+
+    h.socket.readyState = 1;
+    h.socket.onopen?.();
+    vi.advanceTimersByTime(1999);
+    h.control({ type: 'hello', version: 2, creditBytes: 131072, frameBytes: 8192 });
+    h.begin(); h.data('ready'); h.end(5); h.settle();
+    vi.advanceTimersByTime(10_000);
+    expect(h.client.isEstablished()).toBe(true);
+    expect(h.sockets).toHaveLength(1);
+    expect(h.client.sendInput('after open')).toBe(true);
+    h.client.stop(); h.writer.dispose();
+  });
+
+  test('bounds a transport that never opens and retries without replaying input', () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.socket.readyState = 0;
+    expect(h.client.sendInput('not queued')).toBe(false);
+    vi.advanceTimersByTime(9999);
+    expect(h.socket.close).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(h.socket.close).toHaveBeenCalledOnce();
+    expect(h.onState).toHaveBeenLastCalledWith({ kind: 'unavailable', reason: 'terminal connection timed out' });
+    vi.advanceTimersByTime(1000);
+    expect(h.sockets).toHaveLength(2);
+    const recovered = h.sockets[1];
+    h.hello(recovered);
+    h.control({ type: 'seed-begin', transaction: 't', mode: 'replace' }, recovered);
+    h.control({ type: 'seed-end', transaction: 't', cursor: null,
+      historyAvailable: false, approximate: true }, recovered);
+    h.settle();
+    expect(h.client.isEstablished()).toBe(true);
+    expect(recovered.send.mock.calls.map(([frame]) => JSON.parse(frame)))
+      .toEqual([expect.objectContaining({ type: 'attach' })]);
+    h.client.stop(); h.writer.dispose();
+    vi.advanceTimersByTime(60_000);
+    expect(h.sockets).toHaveLength(2);
+  });
+
   test('a missing hello on a negotiated v2 socket is retryable, not a reload trap', () => {
     vi.useFakeTimers();
     const h = harness();
