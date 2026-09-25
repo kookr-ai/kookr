@@ -8,8 +8,8 @@
  * (activeSTTInputId) enforces that only one button records at a time.
  */
 
-import React, { useEffect, useLayoutEffect } from 'react';
-import { useSTT, type STTState } from '../hooks/useSTT.js';
+import React, { useEffect, useId, useLayoutEffect } from 'react';
+import { useSTT, type STTState, type UseSTTResult } from '../hooks/useSTT.js';
 import { useKookrStore } from '../store/useStore.js';
 import { isSTTLanguage } from '../store/stt-language.js';
 import { track } from '../telemetry.js';
@@ -43,13 +43,24 @@ const STATE_TITLES: Record<Exclude<STTState, 'idle'>, string> = {
   error: '',
 };
 
+const AUDIO_SIGNAL_LABELS: Record<UseSTTResult['audioSignal']['status'], string> = {
+  waiting: 'Waiting for audio',
+  receiving: 'Sound detected',
+  quiet: 'No sound detected',
+  weak: 'Low input',
+  interrupted: 'No audio received',
+  clipping: 'Input too loud',
+};
+const METER_BAR_SCALES = [0.45, 0.65, 0.85, 1, 0.85, 0.65, 0.45];
+
 export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBinding }: Props) {
+  const signalId = useId();
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const activeSTTInputId = useKookrStore((s) => s.activeSTTInputId);
   const setActiveSTTInput = useKookrStore((s) => s.setActiveSTTInput);
   const language = useKookrStore((s) => s.sttLanguage);
   const setLanguage = useKookrStore((s) => s.setSTTLanguage);
-  const { state, transcript, error, degraded, retrying, elapsed, start, stop, retryHealth } = useSTT(sttUrl, language, onTranscript);
+  const { state, transcript, error, degraded, retrying, elapsed, audioSignal, start, stop, retryHealth } = useSTT(sttUrl, language, onTranscript);
 
   const otherRecording = activeSTTInputId !== null && activeSTTInputId !== inputId;
 
@@ -115,12 +126,18 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
           disabled={disabled || otherRecording || state === 'starting' || state === 'processing' || retrying}
           title={title}
           aria-label={title}
+          aria-describedby={state === 'recording' ? signalId : undefined}
         >
           {degraded ? (
             <span className="voice-icon error" aria-hidden="true">&#9888;</span>
           ) : state === 'recording' ? (
             <>
               <span className="voice-icon recording" aria-hidden="true">&#9632;</span>
+              <span className={`voice-meter ${audioSignal.status}`} aria-hidden="true">
+                {METER_BAR_SCALES.map((scale, index) => (
+                  <span key={index} className="voice-meter-bar" style={{ height: `${Math.max(2, audioSignal.level * 18 * scale)}px` }} />
+                ))}
+              </span>
               <span className="voice-elapsed">{formatElapsed(elapsed)}</span>
             </>
           ) : state === 'starting' || state === 'processing' ? (
@@ -146,6 +163,11 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
           <option value="en" lang="en">English</option>
         </select>
       </span>
+      {state === 'recording' && (
+        <span id={signalId} className={`voice-signal ${audioSignal.status}`}>
+          {AUDIO_SIGNAL_LABELS[audioSignal.status]}
+        </span>
+      )}
       {busy && (
         <span className="voice-preview" role="status" aria-live="polite" aria-atomic="true" tabIndex={0}>
           {transcript || (state === 'processing' ? 'Finishing dictation...' : 'Listening...')}

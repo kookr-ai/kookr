@@ -2036,6 +2036,11 @@ the resulting text automatically.
   sends or launches after reviewing the draft.
 - Closing the input or switching task cancels microphone capture and its
   WebSocket, and late responses cannot change another task's draft.
+- During recording, a compact microphone meter SHALL show the level of the
+  captured audio beside the stop control. Silent audio and interrupted capture
+  SHALL flatten the meter; text SHALL distinguish the two without treating a
+  natural pause as a microphone fault. Stopping or cancelling SHALL remove the
+  meter and release its monitoring resources.
 
 **Evidence:** `src/frontend/components/VoiceInputButton.tsx`,
 `src/frontend/hooks/useSTT.ts`, `stt/src/server.js`,

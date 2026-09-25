@@ -341,6 +341,11 @@ Changing tasks or closing the input cancels that recording so its text cannot
 land in another task. This uses the existing local Whisper service and works
 independently of the selected coding agent.
 
+While recording, a small meter beside the stop button follows the captured
+microphone level. It falls flat during silence or a capture interruption, with
+text distinguishing quiet input from missing audio. This helps the operator
+notice gaps while speaking without treating every natural pause as a fault.
+
 ## What Kookr Does NOT Do (explicit non-goals)
 
 | Non-goal | Reason |

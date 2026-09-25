@@ -54,7 +54,14 @@ class FakeSTTWebSocket {
 
 const PROCESSING_TIMEOUT_MS = 15_000;
 
+let captureProcessor: {
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+  onaudioprocess: ((event: { inputBuffer: { getChannelData: () => Float32Array } }) => void) | null;
+};
+
 function installAudioCaptureStubs(): void {
+  captureProcessor = { connect: vi.fn(), disconnect: vi.fn(), onaudioprocess: null };
   vi.stubGlobal('WebSocket', FakeSTTWebSocket);
   Object.defineProperty(globalThis.navigator, 'mediaDevices', {
     configurable: true,
@@ -68,11 +75,7 @@ function installAudioCaptureStubs(): void {
       destination: {},
       close: vi.fn().mockResolvedValue(undefined),
       createMediaStreamSource: () => ({ connect: vi.fn() }),
-      createScriptProcessor: () => ({
-        connect: vi.fn(),
-        disconnect: vi.fn(),
-        onaudioprocess: null,
-      }),
+      createScriptProcessor: () => captureProcessor,
     };
   }));
 }
@@ -162,6 +165,68 @@ describe('VoiceInputButton STT health gating', () => {
   function deliver(ws: FakeSTTWebSocket, message: unknown): void {
     act(() => ws.onmessage?.({ data: JSON.stringify(message) }));
   }
+
+  function capture(samples: Float32Array, milliseconds = 100): void {
+    act(() => {
+      captureProcessor.onaudioprocess?.({ inputBuffer: { getChannelData: () => samples } });
+      vi.advanceTimersByTime(milliseconds);
+    });
+  }
+
+  test('meter follows captured audio, distinguishes silence from missing frames, and recovers', async () => {
+    vi.useFakeTimers();
+    const button = await renderButton();
+    expect(container.querySelector('.voice-meter')).toBeNull();
+    await click(button);
+    const bars = () => Array.from(container.querySelectorAll<HTMLElement>('.voice-meter-bar'));
+    const heights = () => bars().map(bar => Number.parseFloat(bar.style.height));
+    expect(bars()).toHaveLength(7);
+
+    capture(new Float32Array(4096).fill(0.1));
+    expect(Math.max(...heights())).toBeGreaterThan(10);
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Sound detected');
+    const liveHeights = heights();
+    capture(new Float32Array(4096).fill(0.003));
+    expect(Math.max(...heights())).toBeLessThan(Math.max(...liveHeights));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Low input');
+
+    for (let i = 0; i < 8; i++) capture(new Float32Array(4096));
+    expect(heights().every(height => height === 2)).toBe(true);
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('No sound detected');
+    expect(button.title).toContain('Recording');
+
+    capture(new Float32Array(4096).fill(0.2));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Sound detected');
+    act(() => vi.advanceTimersByTime(800));
+    expect(heights().every(height => height === 2)).toBe(true);
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('No audio received');
+
+    capture(new Float32Array(4096).fill(1));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Input too loud');
+    capture(new Float32Array(4096).fill(0.1));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Sound detected');
+    await click(button);
+    expect(container.querySelector('.voice-meter')).toBeNull();
+    expect(container.querySelector('.voice-signal')).toBeNull();
+  });
+
+  test('meter cannot retain or revive levels from a cancelled recording', async () => {
+    vi.useFakeTimers();
+    const button = await renderButton();
+    await click(button);
+    capture(new Float32Array(4096).fill(0.3));
+    const oldCallback = captureProcessor.onaudioprocess;
+    act(() => root.render(null));
+    expect(vi.getTimerCount()).toBe(0);
+    const nextButton = await renderButton();
+    await click(nextButton);
+    act(() => {
+      oldCallback?.({ inputBuffer: { getChannelData: () => new Float32Array(4096).fill(1) } });
+      vi.advanceTimersByTime(100);
+    });
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Waiting for audio');
+    expect(Array.from(container.querySelectorAll<HTMLElement>('.voice-meter-bar')).every(bar => bar.style.height === '2px')).toBe(true);
+  });
 
   function typeDraft(input: HTMLInputElement | HTMLTextAreaElement, text: string): void {
     act(() => {
