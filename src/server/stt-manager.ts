@@ -482,6 +482,7 @@ async function hashSTTBuildInputs(sttDir: string): Promise<string> {
     'docker-compose.yml',
     'docker-compose.gpu.yml',
     'package.json',
+    'package-lock.json',
     'src',
   ]) {
     await addPathToHash(hash, sttDir, relativePath);
