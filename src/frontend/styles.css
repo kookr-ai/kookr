@@ -8768,19 +8768,20 @@ button.completed-row-rating:focus-visible {
   border: 1px solid var(--border-dim);
   border-radius: 4px;
   background: var(--bg);
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 11px;
 }
 .voice-language:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .voice-language:disabled { opacity: 0.5; }
 .voice-preview {
-  color: var(--text-muted);
+  color: var(--text);
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
   max-height: 4.2em;
   overflow: auto;
 }
+.voice-preview:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .voice-error { color: #f87171; font-size: 11px; line-height: 1.4; }
 
 .btn-voice {

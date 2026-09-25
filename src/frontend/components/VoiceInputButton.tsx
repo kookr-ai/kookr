@@ -147,7 +147,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
         </select>
       </span>
       {busy && (
-        <span className="voice-preview" role="status" aria-live="polite" aria-atomic="true">
+        <span className="voice-preview" role="status" aria-live="polite" aria-atomic="true" tabIndex={0}>
           {transcript || (state === 'processing' ? 'Finishing dictation...' : 'Listening...')}
         </span>
       )}

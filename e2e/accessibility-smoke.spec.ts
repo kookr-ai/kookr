@@ -139,7 +139,7 @@ test.describe('Accessibility smoke scans', () => {
 
     await expectNoA11yViolations(page, 'diagnostics dialog', '[role="dialog"]');
 
-    const lastFocusable = dialog.getByRole('button', { name: /Finding Evidence/i });
+    const lastFocusable = dialog.getByRole('button', { name: /Circuit Breakers/i });
     await page.keyboard.press('Shift+Tab');
     await expect(lastFocusable).toBeFocused();
     await page.keyboard.press('Tab');

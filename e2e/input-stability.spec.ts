@@ -175,7 +175,9 @@ test.describe('Input stability — no auto-send on state changes', () => {
     await page.locator('.response-row textarea').fill('Message for finding');
     await expect(page.locator('.response-row textarea')).toHaveValue('Message for finding');
 
-    // Switch to healthy agent via its row
+    // Selecting the finding also selects its project; show both projects before
+    // switching to the other agent, whose row is otherwise filtered out.
+    await page.getByRole('button', { name: /^All Projects/ }).click();
     await page.locator('.healthy-row').click();
 
     // Input cleared — stale text not sent to wrong agent
