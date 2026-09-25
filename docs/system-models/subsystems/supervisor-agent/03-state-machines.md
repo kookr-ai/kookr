@@ -34,6 +34,7 @@ stateDiagram-v2
 | Healthy -> Anomalous | `Monitor.applyWatchdogVerdict()` | Watchdog can enqueue `needs_input`, `permission_blocked`, `stale_agent`, or `hook_disconnected` |
 | Healthy -> Anomalous | `BudgetChecker` via lifecycle timers | Emits `budget_exceeded` when task spend crosses its configured threshold |
 | Anomalous -> Healthy | `processEvents()` with no anomaly, or non-actionable watchdog verdict with successful pane capture | Removes or purges queue entries when no event-derived anomaly remains |
+| Stale/disconnected -> Healthy | `Monitor.recordProviderProgress()` after a validated live observation | Clears only stale/disconnected findings without appending event history or requiring pane capture; event-derived anomalies retain priority |
 | Anomalous -> Snoozed | `AttentionQueue.snooze()` | Moves stored anomaly from active entries to `snoozed` map; monitoring continues |
 | Snoozed -> Anomalous | `restoreExpiredSnoozes()` / `cancelSnooze()` | Restores the stored anomaly to active queue with `skipped: false` |
 | Any -> Unregistered | `Monitor.unregisterAgent()` | Deletes event window, event counters, outstanding subagent state, queued entries, and snoozes; late events are dropped via `stoppedAgents` |
@@ -53,6 +54,7 @@ stateDiagram-v2
 | Stop fires while background subagents are still running | `Monitor` suppresses `needs_input` while outstanding subagents exist, with TTL eviction for lost `SubagentStop` |
 | User responds to a `needs_input` finding | `markInputReceived()` injects a synthetic `input_received` event so the detector clears the finding before the next real hook event |
 | Stale watchdog finding becomes healthy | `applyWatchdogVerdict()` purges queue-only watchdog anomalies only when pane capture succeeded and no event-derived anomaly remains |
+| Actual provider output resumes | `recordProviderProgress()` clears stale/disconnected findings directly after observation-time and parent-session validation; permission and turn history remain unchanged |
 | Late hook event after explicit stop | Dropped by `stoppedAgents` guard so stopped sessions are not resurrected |
 
 ## Evidence

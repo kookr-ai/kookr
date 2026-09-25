@@ -90,6 +90,8 @@ export type AgentEvent = (
       sessionId: string;
       notificationType: string;
       message: string;
+      /** Provider observation time, only meaningful for provider_progress. */
+      observedAtMs?: number;
       cwd?: string;
     }
   | {
@@ -124,6 +126,8 @@ export type AgentEvent = (
       sessionId: string;
     }
 ) & {
+  /** Provider turn identity, retained for progress attribution. */
+  turnId?: string;
   /**
    * Monotonic sequence assigned by Monitor per supervised session. Used by the
    * browser to merge overlapping windowed snapshots without collapsing

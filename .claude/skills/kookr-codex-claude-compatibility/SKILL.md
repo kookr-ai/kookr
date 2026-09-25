@@ -96,6 +96,45 @@ selects `gpt-5.6-sol`, because Luna's advertised reasoning ceiling is `max`.
 
 ## Build and Deploy Workflow
 
+### Provider progress during long responses
+
+Long tool arguments can arrive from the provider for minutes before Codex
+records a completed call. Transcript growth alone therefore cannot distinguish
+that active response from a stalled provider. The fork reports nonempty text,
+reasoning, and tool-input deltas through `Notification(provider_progress)` before
+any consumer-specific early return, including when no tool-argument diff
+consumer exists.
+
+The payload uses the ordinary session/turn identity and adds `observed_at_ms`
+(Unix milliseconds when output arrived). Its message is fixed; model text,
+arguments, and reasoning are never copied into this notification. Delivery has
+one worker and one coalesced pending observation per sampling request, a
+ten-second interval, and a two-second deadline. Pending observations expire
+after ten seconds. Command handlers, including ones configured as asynchronous,
+remain under the worker's deadline and cancellation scope. Sampling completion
+and turn cancellation stop the worker. MCP handlers are skipped for this
+notification because remote work cannot reliably be cancelled when its local
+future is dropped. Hook lifecycle events are deliberately
+not persisted for this signal, because handler activity is not provider output.
+
+Kookr accepts progress only from the established parent session, with a valid
+turn identity. It preserves the observation timestamp and rejects replay,
+invalid or regressing timestamps, ended sessions and terminal tasks. A Stop
+hook may request continuation, and automatic turns may have no user-prompt
+hook, so those hooks do not determine whether later provider output is real.
+Old queued observations cannot advance the clock past a newer ordinary hook.
+Progress updates freshness without adding timeline entries or changing
+permission/tool state. Empty deltas, keepalives, timers and spinner bytes do
+not count. Global stale thresholds are unchanged.
+
+Regression coverage lives in the fork's `hooks/src/provider_progress_tests.rs`
+and `core/tests/suite/provider_progress.rs`, and Kookr's
+`src/server/provider-progress.test.ts`. The live harness is
+`node --import tsx scripts/verify-codex-provider-progress.mjs`; run its help for
+the binary/evidence options. It uses a controlled provider and a new managed
+session to check continuing output followed by silence. After deployment,
+always launch a **new** session: running Codex processes retain the old binary.
+
 ### Versioning rule for Kookr Codex builds
 
 Do not leave the fork at `0.0.0`, and do not hardcode the commit SHA in `Cargo.toml`.

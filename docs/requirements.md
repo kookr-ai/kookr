@@ -265,6 +265,22 @@ The system SHALL validate coordinator suppression agent types from the shared co
 
 ---
 
+### R2.15: Recognize Active Codex Provider Output [#3356] — SHALL — `done`
+
+The system SHALL distinguish an actively streaming Codex response from provider
+silence, including while a long custom tool call is still being generated.
+
+**Acceptance criteria:**
+- Nonempty provider text, reasoning and tool-input deltas keep the parent session fresh without waiting for transcript growth or a completed tool call, including automatic turns and Stop-hook continuations.
+- Freshness uses the original observation time. Expired, replayed, invalid, child and ended-session notifications do not renew it; a queued observation cannot move the clock past a newer ordinary hook.
+- Permission and turn state retain priority, and progress adds no activity timeline entries.
+- Empty deltas, transport keepalives and terminal animations do not prevent existing stale detection when provider output stops.
+- Notification delivery is throttled, bounded and cancelled with sampling; slow or failing handlers cannot block model sampling.
+
+**Evidence:** `src/server/provider-progress.test.ts`, `scripts/verify-codex-provider-progress.mjs`, and the producer/paired-runtime contract in `.claude/skills/kookr-codex-claude-compatibility/SKILL.md`.
+
+---
+
 ## R3: The Loop — Respond & Advance
 
 ### R3.1: View Blocked Agent's Context [F3.1] — SHALL — `done`
@@ -2025,6 +2041,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R2.12 | F2.11 | SHOULD | done | review-log-store, finding-evidence-review-service, diagnostics-routes |
 | R2.13 | F2.12 | SHOULD | done | detector-proposal-report, review-log-store, diagnostics-routes |
 | R2.14 | #1378 | SHALL | done | agent-types, suppression-store, coordinator-routes |
+| R2.15 | #3356 | SHALL | done | provider-progress tests, live streaming harness, Codex compatibility skill |
 | R3.1 | F3.1 | SHALL | done | AgentDetail, useStore |
 | R3.2 | F3.2 | SHALL | done | AgentDetail, ws, claude-code-adapter |
 | R3.3 | F3.3 | SHALL | done | attention-queue, loop.test |
