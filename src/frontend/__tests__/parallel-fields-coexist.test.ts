@@ -72,21 +72,6 @@ function parallelFieldsSnapshot(): SnapshotMessage {
   };
 }
 
-async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const started = Date.now();
-    const timer = setInterval(() => {
-      if (predicate()) {
-        clearInterval(timer);
-        resolve();
-      } else if (Date.now() - started > 2_000) {
-        clearInterval(timer);
-        reject(new Error(`timed out waiting for ${label}`));
-      }
-    }, 10);
-  });
-}
-
 function createFakeMediaStream(): MediaStream {
   return {
     getTracks: () => [{ stop: vi.fn() }],
@@ -97,6 +82,7 @@ function createFakeMediaStream(): MediaStream {
 class FakeSTTWebSocket {
   static readonly OPEN = 1;
   static openedUrls: string[] = [];
+  static instances: FakeSTTWebSocket[] = [];
 
   readyState = FakeSTTWebSocket.OPEN;
   onopen: (() => void) | null = null;
@@ -106,7 +92,7 @@ class FakeSTTWebSocket {
 
   constructor(readonly url: string) {
     FakeSTTWebSocket.openedUrls.push(url);
-    setTimeout(() => this.onopen?.(), 0);
+    FakeSTTWebSocket.instances.push(this);
   }
 
   send(data: string | ArrayBuffer): void {
@@ -114,16 +100,18 @@ class FakeSTTWebSocket {
     // below — not this mock — is the single source of truth for which path
     // (legacy sttUrl vs descriptor endpoint) the resolver actually chose.
     if (typeof data === 'string' && data.includes('"config"')) {
-      setTimeout(() => {
-        this.onmessage?.({
-          data: JSON.stringify({
-            type: 'progressive',
-            fixedText: 'bonjour',
-            activeText: 'hello',
-          }),
-        });
-      }, 0);
+      this.onmessage?.({
+        data: JSON.stringify({
+          type: 'progressive',
+          fixedText: 'bonjour',
+          activeText: 'hello',
+        }),
+      });
     }
+  }
+
+  finish(): void {
+    this.onmessage?.({ data: JSON.stringify({ type: 'transcription', text: 'bonjour hello', is_final: true }) });
   }
 
   close(): void {
@@ -168,6 +156,7 @@ describe('Phase 6 parallel-fields coexistence', () => {
     container = null;
     useKookrStore.setState({ sttUrl: '', speechCapabilities: null, activeSTTInputId: null });
     FakeSTTWebSocket.openedUrls = [];
+    FakeSTTWebSocket.instances = [];
     vi.unstubAllGlobals();
   });
 
@@ -221,12 +210,17 @@ describe('Phase 6 parallel-fields coexistence', () => {
       button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    await waitForCondition(() => draft === 'bonjour hello', 'parallel-fields STT draft text');
+    await act(async () => FakeSTTWebSocket.instances.at(-1)!.onopen?.());
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('bonjour hello');
+    expect(draft).toBe('');
+    await act(async () => button!.click());
+    await act(async () => FakeSTTWebSocket.instances.at(-1)!.finish());
+    expect(draft).toBe('bonjour hello');
     // Local STT functions with both fields present, and the legacy sttUrl
     // stays authoritative for the live connection. Descriptor-driven STT (the
     // legacy-stripped case) is covered by bilingual-stt-parity-ui.test.ts; the
     // descriptors still being retained is asserted by the first test above.
     expect(FakeSTTWebSocket.openedUrls).toEqual([LEGACY_STT_URL]);
-    expect(useKookrStore.getState().activeSTTInputId).toBe('parallel-fields-coexist');
+    expect(useKookrStore.getState().activeSTTInputId).toBeNull();
   });
 });

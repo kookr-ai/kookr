@@ -306,4 +306,73 @@ describe('SmartProgressiveStreamingHandler', () => {
       expect(result.fixedText).toContain('First sentence.');
     });
   });
+
+  describe('language hints', () => {
+    beforeEach(() => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: true });
+    });
+
+    test.each(['auto', 'fr', 'en'])('passes %s through both sliding-window requests', async (language) => {
+      const backend = {
+        name: 'mock',
+        transcribe: vi.fn()
+          .mockResolvedValueOnce({
+            text: 'Bonjour. La suite',
+            sentences: [
+              { text: 'Bonjour.', start: 0, end: 1 },
+              { text: 'La suite', start: 1, end: 3 },
+            ],
+          })
+          .mockResolvedValueOnce({ text: 'La suite', sentences: [] }),
+      };
+      const handler = new SmartProgressiveStreamingHandler(backend, {
+        maxWindowSize: 2,
+        sentenceBuffer: 1,
+      });
+
+      const result = await handler.transcribeIncremental(createTone(3), 0, { language });
+
+      expect(result.fixedText).toBe('Bonjour.');
+      expect(backend.transcribe).toHaveBeenCalledTimes(2);
+      for (const [audio, options] of backend.transcribe.mock.calls) {
+        expect(audio).toBeInstanceOf(Float32Array);
+        expect(options).toEqual({ language });
+      }
+      expect(backend.transcribe.mock.calls[1][0]).toHaveLength(16000 * 2);
+    });
+
+    test('forwards the selected language through finalization', async () => {
+      const backend = {
+        name: 'mock',
+        transcribe: vi.fn().mockResolvedValue({ text: 'Bonjour', sentences: [] }),
+      };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+
+      expect(await handler.finalize(createTone(1), 0, { language: 'fr' })).toBe('Bonjour');
+      expect(backend.transcribe.mock.calls[0][1]).toEqual({ language: 'fr' });
+    });
+
+    test('retranscribes unchanged audio when its language changes', async () => {
+      const backend = {
+        name: 'mock',
+        transcribe: vi.fn()
+          .mockResolvedValueOnce({ text: 'Hello', sentences: [] })
+          .mockResolvedValueOnce({ text: 'Bonjour', sentences: [] }),
+      };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+      const audio = createTone(2);
+      await handler.transcribeIncremental(audio, 0, { language: 'en' });
+      // Completed text from the old language must be replaced as well.
+      handler.fixedSentences = ['Earlier English sentence.'];
+      handler.fixedEndTime = 1;
+
+      const result = await handler.transcribeIncremental(audio, 0, { language: 'fr' });
+
+      expect(result.fixedText).toBe('');
+      expect(result.activeText).toBe('Bonjour');
+      expect(backend.transcribe).toHaveBeenCalledTimes(2);
+      expect(backend.transcribe.mock.calls[1][0]).toHaveLength(audio.length);
+      expect(backend.transcribe.mock.calls[1][1]).toEqual({ language: 'fr' });
+    });
+  });
 });

@@ -62,6 +62,26 @@ pnpm run doctor
 
 For operating-system install commands and first-agent walkthroughs, see [Getting Started](docs/getting-started.md).
 
+## Microphone dictation (optional)
+
+Kookr can transcribe your microphone locally into a task prompt or reply. Enable
+`KOOKR_STT=true` in `.env` and start Kookr; Docker runs the bundled Whisper
+service. No speech API key or separate desktop dictation app is required.
+
+Choose **Français**, **English**, or **Auto** beside a microphone button. Click
+the microphone to start, click again to stop, then review the text appended to
+your draft before pressing **Send** or **Launch**. Live recognition appears as
+a preview; it does not replace text you are typing or send a command. The
+language choice is remembered in that browser and applies to the other voice
+controls too.
+
+This works with the agents already available in Kookr because they receive
+ordinary text. Microphone permission is required; use localhost or HTTPS.
+Audio stays with your configured STT service (local for the bundled setup).
+Your agent provider receives the text only when you submit it. See
+[speech configuration](docs/reference/environment-variables.md#speech-io) for
+CPU/GPU selection, model overrides, and service addresses.
+
 ## First Agent
 
 In the dashboard, click **Launch**, choose a working directory, and enter a task prompt (the Manual tab offers a few sample prompts that fill the box without launching). Kookr starts the agent in a persistent `dtach` session — a small Unix tool, in the family of `screen` and `tmux`, that keeps the agent process alive independently of your browser or terminal — then streams that terminal and queues findings when the agent needs attention.

@@ -331,6 +331,16 @@ The task coordinator adds relationship-aware supervision on top of the main find
 
 ---
 
+### Local voice dictation
+
+When speech-to-text is enabled, microphone buttons in task launch, quick launch,
+completion criteria, and task replies accept Auto, Français, or English. Kookr
+shows recognition in a live preview, then appends the completed transcript to
+the existing draft. The operator reviews and submits the text explicitly.
+Changing tasks or closing the input cancels that recording so its text cannot
+land in another task. This uses the existing local Whisper service and works
+independently of the selected coding agent.
+
 ## What Kookr Does NOT Do (explicit non-goals)
 
 | Non-goal | Reason |

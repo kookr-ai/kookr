@@ -63,7 +63,7 @@ describe('normalizeConfigMessage', () => {
 
   test('falls back to defaults when no current value is supplied', () => {
     const out = normalizeConfigMessage({}, {});
-    expect(out).toEqual({ language: 'en', progressive: true });
+    expect(out).toEqual({ language: 'auto', progressive: true });
   });
 
   test('returns pure defaults for a non-object message', () => {
@@ -76,7 +76,20 @@ describe('normalizeConfigMessage', () => {
     }
   });
 
-  test('DEFAULT_SUPPORTED_LANGUAGES contains en', () => {
-    expect(DEFAULT_SUPPORTED_LANGUAGES).toContain('en');
+  test.each(['auto', 'fr', 'en'])('accepts %s with the default allowlist', (language) => {
+    expect(normalizeConfigMessage({ language }).language).toBe(language);
+    expect(DEFAULT_SUPPORTED_LANGUAGES).toContain(language);
+  });
+
+  test.each(['de', '', 'FR', null, {}, ['fr']])('rejects invalid or unsupported language %j', (language) => {
+    expect(normalizeConfigMessage({ language }, { currentLanguage: 'fr' }).language).toBe('auto');
+  });
+
+  test.each(['auto', 'fr'])('retains an explicit operator allowlist excluding %s', (language) => {
+    const out = normalizeConfigMessage({ language }, {
+      defaultLanguage: 'en',
+      supportedLanguages: ['en'],
+    });
+    expect(out.language).toBe('en');
   });
 });

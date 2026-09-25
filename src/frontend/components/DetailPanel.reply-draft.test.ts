@@ -147,19 +147,22 @@ describe('DetailPanel reply draft persistence', () => {
     );
   });
 
-  test('persists voice transcript drafts', async () => {
+  test('appends and persists voice transcripts without sending or replacing the existing draft', async () => {
     const agent = makeAgent('agent-1');
     useKookrStore.setState({ sttUrl: 'http://127.0.0.1:8010' });
-    renderDetailPanel(root, agent);
+    const send = vi.fn(() => true);
+    renderDetailPanel(root, agent, send);
     await act(async () => {});
+    act(() => setInputValue(responseInput(container), 'Typed draft'));
 
     act(() => {
       container.querySelector<HTMLButtonElement>('[data-testid="voice-input"]')!.click();
     });
 
-    expect(responseInput(container).value).toBe('voice reply');
+    expect(responseInput(container).value).toBe('Typed draft voice reply');
+    expect(send).not.toHaveBeenCalled();
     expect(localStorage.getItem(detailReplyDraftKey({ taskId: agent.taskId, agentId: agent.agentId })!)).toBe(
-      JSON.stringify({ input: 'voice reply' }),
+      JSON.stringify({ input: 'Typed draft voice reply' }),
     );
   });
 

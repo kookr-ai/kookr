@@ -47,6 +47,7 @@ import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { copyText, readClipboardText } from '../clipboard.js';
+import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -695,7 +696,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-description" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton inputId="launch-description" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
@@ -833,7 +834,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria(text)} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>

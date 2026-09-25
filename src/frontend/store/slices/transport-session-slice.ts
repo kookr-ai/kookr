@@ -1,5 +1,6 @@
 import type { AgentState, FocusZone, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
+import { loadSTTLanguage, saveSTTLanguage } from '../stt-language.js';
 import { mergeActivityAgent } from '../activity-history.js';
 import { firstReadyKookrSTTEndpoint } from '../../../shared/contracts/speech.js';
 import {
@@ -229,6 +230,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
     ttsUrl: '',
     speechCapabilities: null,
     activeSTTInputId: null,
+    sttLanguage: loadSTTLanguage(),
     totalSpendUsd: 0,
     maxActiveTasks: 0,
     bypassAllPermissions: false,
@@ -437,6 +439,11 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
 
     setActiveSTTInput: (id) => {
       set({ activeSTTInputId: id });
+    },
+
+    setSTTLanguage: (language) => {
+      saveSTTLanguage(language);
+      set({ sttLanguage: language });
     },
   };
 }

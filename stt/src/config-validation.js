@@ -9,8 +9,9 @@
  * FR-STT-010: Parakeet STT Backend
  */
 
-/** Languages the sidecar accepts by default (the Parakeet model is English). */
-export const DEFAULT_SUPPORTED_LANGUAGES = ['en'];
+/** Whisper detects the language unless the client selects a language hint. */
+export const DEFAULT_LANGUAGE = 'auto';
+export const DEFAULT_SUPPORTED_LANGUAGES = ['auto', 'fr', 'en'];
 
 /**
  * Normalize a client `config` message against trusted defaults.
@@ -32,7 +33,7 @@ export function normalizeConfigMessage(data, options = {}) {
   const {
     currentLanguage,
     currentProgressive,
-    defaultLanguage = 'en',
+    defaultLanguage = DEFAULT_LANGUAGE,
     defaultProgressive = true,
     supportedLanguages = DEFAULT_SUPPORTED_LANGUAGES,
   } = options;

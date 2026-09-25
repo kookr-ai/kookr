@@ -51,7 +51,7 @@ export class PartialTranscription {
  */
 export class SmartProgressiveStreamingHandler {
   /**
-   * @param {object} model - Transcription model with .transcribe(audio) method
+   * @param {import('./backends/types.js').TranscriptionBackend} model
    * @param {object} [options]
    * @param {number} [options.emissionInterval=0.5] - Seconds between updates
    * @param {number} [options.maxWindowSize=15.0] - Max window before sliding
@@ -80,6 +80,8 @@ export class SmartProgressiveStreamingHandler {
     this.lastTranscribedLength = 0;
     /** @type {PartialTranscription | null} Cached result for same-length shortcut */
     this.lastResult = null;
+    /** @type {string | null} Language used by the cached and fixed text. */
+    this.lastLanguage = null;
   }
 
   /**
@@ -98,9 +100,14 @@ export class SmartProgressiveStreamingHandler {
    *
    * @param {Float32Array} audio - Growing audio buffer at sampleRate
    * @param {number} [audioStartSample=0] - Absolute index of audio[0]
+   * @param {import('./backends/types.js').TranscriptionOptions} [options]
    * @returns {Promise<PartialTranscription>}
    */
-  async transcribeIncremental(audio, audioStartSample = 0) {
+  async transcribeIncremental(audio, audioStartSample = 0, { language = 'auto' } = {}) {
+    // A new language must reprocess even unchanged audio, including sentences
+    // fixed by an earlier pass. Keep this state local to the client handler.
+    if (this.lastLanguage !== null && this.lastLanguage !== language) this.reset();
+    this.lastLanguage = language;
     const currentLength = audio.length;
     // Absolute length of audio seen this session, including trimmed-off front.
     const absoluteLength = audioStartSample + currentLength;
@@ -146,7 +153,7 @@ export class SmartProgressiveStreamingHandler {
     }
 
     // Transcribe current window
-    let result = await this.model.transcribe(audioWindow);
+    let result = await this.model.transcribe(audioWindow, { language });
 
     // If window exceeds maxWindowSize, fix completed sentences
     if (
@@ -178,7 +185,7 @@ export class SmartProgressiveStreamingHandler {
           Math.floor(this.fixedEndTime * this.sampleRate) - audioStartSample,
         );
         const newAudioWindow = audio.slice(newWindowStartSamples);
-        result = await this.model.transcribe(newAudioWindow);
+        result = await this.model.transcribe(newAudioWindow, { language });
       }
     }
 
@@ -195,10 +202,11 @@ export class SmartProgressiveStreamingHandler {
    *
    * @param {Float32Array} audio - Complete audio buffer
    * @param {number} [audioStartSample=0] - Absolute index of audio[0]
+   * @param {import('./backends/types.js').TranscriptionOptions} [options]
    * @returns {Promise<string>} Final complete transcription text
    */
-  async finalize(audio, audioStartSample = 0) {
-    const result = await this.transcribeIncremental(audio, audioStartSample);
+  async finalize(audio, audioStartSample = 0, options = {}) {
+    const result = await this.transcribeIncremental(audio, audioStartSample, options);
 
     const parts = [];
     if (result.fixedText) parts.push(result.fixedText);
