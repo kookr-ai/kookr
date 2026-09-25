@@ -1,3 +1,4 @@
+import type { STTLanguage } from './stt-language.js';
 import type {
   AgentState,
   AnomalySeverity,
@@ -184,6 +185,7 @@ export interface TransportSessionSlice {
   ttsUrl: string;
   speechCapabilities: CollaborationCapabilities | null;
   activeSTTInputId: string | null;
+  sttLanguage: STTLanguage;
   totalSpendUsd: number;
   /**
    * Server-configured concurrency cap (settings.maxActiveTasks). 0 = unknown
@@ -293,6 +295,7 @@ export interface TransportSessionSlice {
   setTerminalOutput: (agentId: string, output: string) => void;
   setPlaybooksLoading: (loading: boolean) => void;
   setActiveSTTInput: (id: string | null) => void;
+  setSTTLanguage: (language: STTLanguage) => void;
 }
 
 export interface TriageNavigationSlice {

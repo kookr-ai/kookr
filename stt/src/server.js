@@ -1,14 +1,13 @@
 /**
- * STT WebSocket Server for AegisCore - Parakeet TDT 0.6B (Node.js)
- *
- * Uses parakeet.js with onnxruntime-node (CUDA) for server-side inference.
- * Replaces the Python/NeMo implementation for better transcription quality
- * by using the same model and algorithm as the original parakeet-v3-streaming.
+ * STT WebSocket server with progressive transcription through Whisper.
+ * Each connection selects its spoken language independently. 'auto' lets
+ * Whisper detect it; 'fr' and 'en' provide French and English hints.
+ * The optional Parakeet WASM backend does not use the language hint.
  *
  * WebSocket Protocol (same as Python server):
  *   Client -> Server:
  *     - Binary: 16-bit PCM audio at 16kHz
- *     - JSON: {"type": "config", "language": "en", "progressive": true}
+ *     - JSON: {"type": "config", "language": "auto", "progressive": true}
  *     - JSON: {"type": "stop"}
  *     - JSON: {"type": "clear"}
  *     - JSON: {"type": "ping"}
@@ -16,7 +15,7 @@
  *   Server -> Client:
  *     - JSON: {"type": "progressive", "fixedText": "...", "activeText": "...", "timestamp": 3.5}
  *     - JSON: {"type": "transcription", "text": "...", "is_final": false, "confidence": 0.9}
- *     - JSON: {"type": "config_ack", "language": "en", "progressive": true}
+ *     - JSON: {"type": "config_ack", "language": "auto", "progressive": true}
  *     - JSON: {"type": "cleared", "success": true}
  *     - JSON: {"type": "pong"}
  *
@@ -25,11 +24,16 @@
  */
 
 import { createServer } from 'node:http';
+import { pathToFileURL } from 'node:url';
 
 import { WebSocketServer } from 'ws';
 
 import { AudioBuffer, DEFAULT_MAX_BUFFER_SECONDS } from './audio-buffer.js';
-import { normalizeConfigMessage } from './config-validation.js';
+import {
+  normalizeConfigMessage,
+  DEFAULT_LANGUAGE as FALLBACK_LANGUAGE,
+  DEFAULT_SUPPORTED_LANGUAGES,
+} from './config-validation.js';
 import { loadVAD } from './vad.js';
 import {
   loadModel,
@@ -44,7 +48,6 @@ import { createHealthPayload } from './health.js';
 import { warmupTranscriptionBackend } from './warmup.js';
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
-const DEFAULT_LANGUAGE = process.env.DEFAULT_LANGUAGE || 'en';
 const PROGRESSIVE_INTERVAL = parseFloat(process.env.PROGRESSIVE_INTERVAL || '0.5');
 const MAX_WINDOW_SIZE = parseFloat(process.env.MAX_WINDOW_SIZE || '15.0');
 const SENTENCE_BUFFER = parseFloat(process.env.SENTENCE_BUFFER || '2.0');
@@ -78,10 +81,18 @@ const MAX_BUFFER_SECONDS = parsePositiveNumber(
 const MAX_BUFFER_SAMPLES = Math.round(MAX_BUFFER_SECONDS * SAMPLE_RATE);
 // Languages the sidecar will accept in a `config` message; anything else clamps
 // back to DEFAULT_LANGUAGE.
-const SUPPORTED_LANGUAGES = (process.env.STT_SUPPORTED_LANGUAGES || DEFAULT_LANGUAGE)
+const requestedDefaultLanguage = process.env.DEFAULT_LANGUAGE || FALLBACK_LANGUAGE;
+const configuredLanguages = process.env.STT_SUPPORTED_LANGUAGES
+  || [...DEFAULT_SUPPORTED_LANGUAGES, requestedDefaultLanguage].join(',');
+const SUPPORTED_LANGUAGES = configuredLanguages
   .split(',')
   .map((s) => s.trim())
   .filter(Boolean);
+// An operator's restricted allowlist also applies to connections that never
+// send config and to the fallback for invalid client input.
+const DEFAULT_LANGUAGE = SUPPORTED_LANGUAGES.includes(requestedDefaultLanguage)
+  ? requestedDefaultLanguage
+  : (SUPPORTED_LANGUAGES[0] || FALLBACK_LANGUAGE);
 const DEFAULT_PROGRESSIVE = true;
 const runtimeInfo = getRuntimeInfo();
 const transcriptionBackend = createTranscriptionBackend();
@@ -110,6 +121,7 @@ function handleConnection(ws, req) {
   let processing = false;
   let lastEmittedTranscription = '';
   let lastProcessedAudioSeconds = 0;
+  let lastProcessedLanguage = null;
 
   /**
    * Wait for any in-flight incremental transcription to finish.
@@ -144,14 +156,18 @@ function handleConnection(ws, req) {
 
       processing = true;
       lastProgressiveTime = now;
+      const transcriptionLanguage = language;
 
       try {
         const audio = audioBuffer.getAudio();
         const result = await streamingHandler.transcribeIncremental(
           audio,
           audioBuffer.trimmedSamples,
+          { language: transcriptionLanguage },
         );
         lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
+        lastProcessedLanguage = transcriptionLanguage;
+        if (transcriptionLanguage !== language) return;
 
         // Send progressive update
         if (progressiveEnabled && (result.fixedText || result.activeText)) {
@@ -179,7 +195,7 @@ function handleConnection(ws, req) {
               text: fullText,
               is_final: false,
               confidence: 0.9,
-              language,
+              language: transcriptionLanguage,
             }),
           );
         }
@@ -211,6 +227,7 @@ function handleConnection(ws, req) {
         defaultProgressive: DEFAULT_PROGRESSIVE,
         supportedLanguages: SUPPORTED_LANGUAGES,
       });
+      if (language !== normalized.language) lastEmittedTranscription = '';
       language = normalized.language;
       progressiveEnabled = normalized.progressive;
 
@@ -226,18 +243,21 @@ function handleConnection(ws, req) {
     } else if (msgType === 'stop') {
       // Final transcription
       if (audioBuffer.duration() > 0) {
+        let finalLanguage = language;
         try {
           if (processing) {
             await waitForProcessingDrain();
           }
+          finalLanguage = language;
 
           const audioSeconds = audioBuffer.duration();
-          const canFinalizeFromCache = shouldFinalizeFromCache({
-            lastEmittedTranscription,
-            audioSeconds,
-            lastProcessedAudioSeconds,
-            maxUnprocessedTailSeconds: 0.25,
-          });
+          const canFinalizeFromCache = lastProcessedLanguage === finalLanguage
+            && shouldFinalizeFromCache({
+              lastEmittedTranscription,
+              audioSeconds,
+              lastProcessedAudioSeconds,
+              maxUnprocessedTailSeconds: 0.25,
+            });
 
           if (canFinalizeFromCache) {
             ws.send(
@@ -246,7 +266,7 @@ function handleConnection(ws, req) {
                 text: lastEmittedTranscription,
                 is_final: true,
                 confidence: 0.9,
-                language,
+                language: finalLanguage,
               }),
             );
             streamingHandler.reset();
@@ -262,8 +282,10 @@ function handleConnection(ws, req) {
           const result = await streamingHandler.transcribeIncremental(
             audio,
             audioBuffer.trimmedSamples,
+            { language: finalLanguage },
           );
           lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
+          lastProcessedLanguage = finalLanguage;
 
           const fullText = [result.fixedText, result.activeText]
             .filter(Boolean)
@@ -292,7 +314,7 @@ function handleConnection(ws, req) {
               text: fullText,
               is_final: true,
               confidence: 0.9,
-              language,
+              language: finalLanguage,
             }),
           );
         } catch (err) {
@@ -305,10 +327,10 @@ function handleConnection(ws, req) {
           ws.send(
             JSON.stringify({
               type: 'transcription',
-              text: lastEmittedTranscription,
+              text: lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '',
               is_final: true,
               confidence: 0.9,
-              language,
+              language: finalLanguage,
             }),
           );
         }
@@ -343,7 +365,7 @@ function handleConnection(ws, req) {
 
 // --- HTTP + WebSocket Server ---
 
-const httpServer = createServer((req, res) => {
+export const httpServer = createServer((req, res) => {
   if (req.url === '/health' && req.method === 'GET') {
     const health = createHealthPayload({
       modelLoaded: isModelLoaded(),
@@ -361,7 +383,7 @@ const httpServer = createServer((req, res) => {
   res.end('Not Found');
 });
 
-const wss = new WebSocketServer({ server: httpServer, maxPayload: WS_MAX_PAYLOAD_BYTES });
+export const wss = new WebSocketServer({ server: httpServer, maxPayload: WS_MAX_PAYLOAD_BYTES });
 wss.on('connection', handleConnection);
 
 // --- Graceful Shutdown ---
@@ -392,15 +414,12 @@ function shutdown(signal) {
   }, 10000).unref();
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
-
 // --- Startup ---
 
 const WARMUP_TIMEOUT_MS = parseInt(process.env.STT_WARMUP_TIMEOUT_MS || '120000', 10);
 const WARMUP_RETRY_DELAY_MS = parseInt(process.env.STT_WARMUP_RETRY_DELAY_MS || '2000', 10);
 
-async function main() {
+export async function startServer() {
   console.log('Starting Parakeet STT WebSocket Server (Node.js)...');
   console.log(`Transcription backend: ${transcriptionBackend.name}`);
 
@@ -429,7 +448,13 @@ async function main() {
   });
 }
 
-main().catch((err) => {
-  console.error('Fatal startup error:', err);
-  process.exit(1);
-});
+// Importing the server for isolated WebSocket tests must not bind a fixed port
+// or register process-wide shutdown handlers.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  startServer().catch((err) => {
+    console.error('Fatal startup error:', err);
+    process.exit(1);
+  });
+}

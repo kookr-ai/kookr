@@ -33,6 +33,7 @@ import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.j
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
+import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -323,6 +324,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
             />
           </details>
         )}
+      </div>
+      <div className="quick-launch-draft input-with-voice">
         <input
           ref={inputRef}
           type="text"
@@ -339,7 +342,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         />
         {sttUrl && (
           <Suspense fallback={null}>
-            <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt(text)} shortcutBinding={sttShortcutBinding} />
+            <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
           </Suspense>
         )}
       </div>

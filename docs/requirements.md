@@ -2015,6 +2015,36 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 
 **Evidence:** `src/core/lesson-write-spool.ts`, `src/core/lesson-write-spool.test.ts` (`TS-LESSON-004`), `src/server/lesson-spool-service.ts`, `src/server/lesson-spool-service.test.ts` (`TS-LESSON-005`), `docs/reference/lesson-write-spool.md`.
 
+## R19: Local Voice Dictation
+
+### R19.1: Preserve the Spoken Language and Reviewable Draft — SHALL — `done`
+
+The dashboard SHALL let the operator dictate French or English into task
+prompts, completion criteria, quick launch, and replies without submitting
+the resulting text automatically.
+
+**Acceptance criteria:**
+
+- Auto, Français, and English are selectable and remembered per browser.
+- Each recording carries its language through the WebSocket service to every
+  Whisper inference, including progressive updates and finalization. Auto
+  omits the forced-language parameter. Concurrent clients do not share a
+  mutable language setting.
+- Progressive text appears as a preview. The completed transcript is appended
+  once to the current draft, preserving text typed before or during recording.
+- Microphone controls do not submit enclosing forms. The operator explicitly
+  sends or launches after reviewing the draft.
+- Closing the input or switching task cancels microphone capture and its
+  WebSocket, and late responses cannot change another task's draft.
+
+**Evidence:** `src/frontend/components/VoiceInputButton.tsx`,
+`src/frontend/hooks/useSTT.ts`, `stt/src/server.js`,
+`stt/src/backends/whisper-backend.js`, `stt/src/server-language.test.js`,
+`src/frontend/components/VoiceInputButton.test.tsx`,
+`src/frontend/components/DetailPanel.reply-draft.test.ts`,
+`src/frontend/__tests__/bilingual-stt-parity-ui.test.ts`, and
+`e2e/voice-dictation.spec.ts`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -2150,6 +2180,7 @@ The system SHALL bound automatic replay of a failing lesson and preserve a perma
 | R17.1 | #2903 | SHALL | done | umbrella-chain-advancer, github-umbrella-chain-client, workspace-context, server wiring |
 | R18.1 | #2901 | SHALL | done | lesson-write-runner, kb-spool-shim, lesson-spool-service |
 | R18.2 | #2875 | SHALL | done | lesson-write-spool, lesson-spool-service |
+| R19.1 | Local voice dictation | SHALL | done | VoiceInputButton, useSTT, STT WebSocket and Whisper backend |
 
 ---
 

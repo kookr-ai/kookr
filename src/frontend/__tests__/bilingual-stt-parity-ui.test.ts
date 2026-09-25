@@ -9,21 +9,6 @@ import { dispatchSnapshotMessageForClient } from '../hooks/useWebSocket.js';
 import { useKookrStore } from '../store/useStore.js';
 import { VoiceInputButton } from '../components/VoiceInputButton.js';
 
-async function waitForCondition(predicate: () => boolean, label: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
-    const started = Date.now();
-    const timer = setInterval(() => {
-      if (predicate()) {
-        clearInterval(timer);
-        resolve();
-      } else if (Date.now() - started > 2_000) {
-        clearInterval(timer);
-        reject(new Error(`timed out waiting for ${label}`));
-      }
-    }, 10);
-  });
-}
-
 function createFakeMediaStream(): MediaStream {
   return {
     getTracks: () => [{ stop: vi.fn() }],
@@ -34,6 +19,7 @@ function createFakeMediaStream(): MediaStream {
 class FakeSTTWebSocket {
   static readonly OPEN = 1;
   static openedUrls: string[] = [];
+  static instances: FakeSTTWebSocket[] = [];
 
   readyState = FakeSTTWebSocket.OPEN;
   onopen: (() => void) | null = null;
@@ -43,21 +29,23 @@ class FakeSTTWebSocket {
 
   constructor(readonly url: string) {
     FakeSTTWebSocket.openedUrls.push(url);
-    setTimeout(() => this.onopen?.(), 0);
+    FakeSTTWebSocket.instances.push(this);
   }
 
   send(data: string | ArrayBuffer): void {
     if (this.url === 'ws://descriptor-stt' && typeof data === 'string' && data.includes('"config"')) {
-      setTimeout(() => {
-        this.onmessage?.({
-          data: JSON.stringify({
-            type: 'progressive',
-            fixedText: 'bonjour',
-            activeText: 'hello',
-          }),
-        });
-      }, 0);
+      this.onmessage?.({
+        data: JSON.stringify({
+          type: 'progressive',
+          fixedText: 'bonjour',
+          activeText: 'hello',
+        }),
+      });
     }
+  }
+
+  finish(): void {
+    this.onmessage?.({ data: JSON.stringify({ type: 'transcription', text: 'bonjour hello', is_final: true }) });
   }
 
   close(): void {
@@ -107,6 +95,7 @@ describe('Phase 6 descriptor-only STT frontend parity', () => {
   it('drives VoiceInputButton/useSTT to draft text from SpeechCapability descriptors without legacy STT fields', async () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     FakeSTTWebSocket.openedUrls = [];
+    FakeSTTWebSocket.instances = [];
     installAudioCaptureStubs();
     dispatchSnapshotMessageForClient({
       type: 'snapshot',
@@ -154,8 +143,13 @@ describe('Phase 6 descriptor-only STT frontend parity', () => {
       button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    await waitForCondition(() => draft === 'bonjour hello', 'descriptor-only STT draft text');
+    await act(async () => FakeSTTWebSocket.instances.at(-1)!.onopen?.());
+    expect(container.querySelector('[role="status"]')?.textContent).toBe('bonjour hello');
+    expect(draft).toBe('');
+    await act(async () => button!.click());
+    await act(async () => FakeSTTWebSocket.instances.at(-1)!.finish());
+    expect(draft).toBe('bonjour hello');
     expect(FakeSTTWebSocket.openedUrls).toEqual(['ws://descriptor-stt']);
-    expect(useKookrStore.getState().activeSTTInputId).toBe('bilingual-parity');
+    expect(useKookrStore.getState().activeSTTInputId).toBeNull();
   });
 });

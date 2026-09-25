@@ -401,13 +401,34 @@ Speech-to-text and text-to-speech are a separate concern from the "LLM
 Provider" section above: they configure local voice models and are unaffected
 by `KOOKR_LLM_PROVIDER` or any LLM provider key.
 
-Bundled STT and TTS run via Docker Compose. The default STT config targets an NVIDIA GPU with the NVIDIA Container Toolkit; switch to the CPU-fallback values below (and remove the GPU device reservation in `stt/docker-compose.yml`) to run on CPU.
+Bundled STT and TTS run via Docker Compose. STT detects the Docker NVIDIA
+runtime and otherwise uses CPU; `KOOKR_STT_DEVICE` can override that choice.
+The dashboard offers Auto, Français, and English recognition. Its language
+choice is remembered per browser and sent with each recording. Auto lets
+Whisper detect the spoken language. Explicit language selection is useful for
+short utterances.
+
+An upgrade from the older English-only configuration also requires rebuilding
+the bundled WebSocket service. Restarting Kookr reuses a healthy running speech
+service, so it does not update that container. From the repository root, use
+the same model override as your current service:
+
+```bash
+WHISPER_MODEL=base docker compose -f stt/docker-compose.yml up -d --build --no-deps kookr-stt
+```
+
+Replace `base` if your service uses another model. This rebuilds the small
+WebSocket service while leaving the Whisper inference container running.
+For an external service, update its language support or select a language
+it accepts; the dashboard reports when the service rejects its selection.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_STT` | unset | `true` to enable | Starts bundled speech-to-text services when no `KOOKR_STT_URL` is provided. Routine process restart leaves containers running; free GPU with `pnpm prod:stop --with-sidecars`. |
 | `KOOKR_STT_URL` | unset | WebSocket URL | Uses an external speech-to-text service and skips bundled startup. |
 | `KOOKR_STT_PORT` | `8003` | Integer port | Port for the bundled speech-to-text service. Also injected into the STT child process. |
+| `STT_LANGUAGE` | `auto` | `auto` or a supported language code | Default recognition language for bundled-service clients that do not select a language. The dashboard sends its own selection for each recording. |
+| `STT_SUPPORTED_LANGUAGES` | `auto,en,fr` plus `STT_LANGUAGE` | Comma-separated recognition language codes | Optional operator allowlist for WebSocket configuration. An explicitly configured list replaces the default list; keep the languages your clients use. If it excludes STT_LANGUAGE, its first entry becomes the fallback language. |
 | `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run Whisper model downloads. |
 | `KOOKR_STT_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled STT stack. `auto` probes `docker info` for an nvidia runtime and resolves to `gpu` (CUDA Whisper image, `large-v3`, float16 + GPU device reservation) or `cpu` (CPU Whisper image, `base`, int8). Set explicitly to override the auto choice. |
 | `WHISPER_IMAGE` | per-device default | Container image reference | Override the Whisper sidecar image. Defaults: `fedirz/faster-whisper-server:latest-cuda` on GPU, `fedirz/faster-whisper-server:latest-cpu` on CPU. |

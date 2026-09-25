@@ -45,7 +45,7 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       WHISPER_TIMEOUT_MS: "30000"
       PORT: "8003"
-      DEFAULT_LANGUAGE: ${STT_LANGUAGE:-en}
+      DEFAULT_LANGUAGE: ${STT_LANGUAGE:-auto}
       PROGRESSIVE_INTERVAL: "0.5"
       MAX_WINDOW_SIZE: "15.0"
       SENTENCE_BUFFER: "2.0"
@@ -54,7 +54,8 @@ services:
       # audio-buffer window (seconds), and accepted config languages.
       STT_WS_MAX_PAYLOAD_BYTES: "1000000"
       STT_MAX_BUFFER_SECONDS: "300"
-      STT_SUPPORTED_LANGUAGES: ${STT_LANGUAGE:-en}
+      # Empty uses the server defaults (auto, fr, en, and DEFAULT_LANGUAGE).
+      STT_SUPPORTED_LANGUAGES: ${STT_SUPPORTED_LANGUAGES:-}
     depends_on:
       kookr-stt-whisper:
         condition: service_started

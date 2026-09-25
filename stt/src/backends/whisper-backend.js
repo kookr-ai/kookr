@@ -68,7 +68,7 @@ export function normalizeWhisperWords(whisperWords) {
 export const whisperBackend = {
   name: 'whisper',
 
-  async transcribe(audioWindow) {
+  async transcribe(audioWindow, { language = 'auto' } = {}) {
     const wavBuffer = float32ToWav(audioWindow);
 
     const formData = new FormData();
@@ -76,7 +76,8 @@ export const whisperBackend = {
     formData.append('model', WHISPER_MODEL);
     formData.append('response_format', 'verbose_json');
     formData.append('timestamp_granularities[]', 'word');
-    formData.append('language', 'en');
+    // Omitting the hint lets Whisper detect the spoken language itself.
+    if (language !== 'auto') formData.append('language', language);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), WHISPER_TIMEOUT_MS);

@@ -50,6 +50,7 @@ async function createSTTFixture(): Promise<string> {
   await writeFile(join(sttDir, 'docker-compose.yml'), 'services:\n  kookr-stt:\n    build: .\n');
   await writeFile(join(sttDir, 'docker-compose.gpu.yml'), 'services:\n  kookr-stt: {}\n');
   await writeFile(join(sttDir, 'package.json'), '{"name":"stt"}\n');
+  await writeFile(join(sttDir, 'package-lock.json'), '{"lockfileVersion":3}\n');
   await writeFile(join(sttDir, 'src', 'server.js'), 'console.log("stt")\n');
   return sttDir;
 }
@@ -232,7 +233,7 @@ describe('startSTT reuse + build stamp', () => {
     }
   });
 
-  it('skips docker rebuilds after the STT image inputs are already built', async () => {
+  it('reuses unchanged build inputs and rebuilds after a lockfile-only change', async () => {
     const sttDir = await createSTTFixture();
     try {
       // First start: no stamp → build; make health fail then... actually we need
@@ -298,6 +299,25 @@ describe('startSTT reuse + build stamp', () => {
       );
       expect(upCall).toBeDefined();
       expect(upCall![1] as string[]).not.toContain('--build');
+
+      // Dependency versions can change without changing package.json. The next
+      // cold start must rebuild the image from the new locked dependency tree.
+      await writeFile(join(sttDir, 'package-lock.json'), '{"lockfileVersion":3,"packages":{}}\n');
+      execFileMock.mockClear();
+      fetchCount = 0;
+      await startSTT({
+        sttDir,
+        port: 8003,
+        device: 'cpu',
+        whisperModel: 'base',
+        reuseAttempts: 1,
+        inspectWhisperModel: async () => null,
+      });
+      const rebuildCall = execFileMock.mock.calls.find(
+        (call) => Array.isArray(call[1]) && (call[1] as string[]).includes('up'),
+      );
+      expect(rebuildCall).toBeDefined();
+      expect(rebuildCall![1] as string[]).toContain('--build');
     } finally {
       await rm(sttDir, { recursive: true, force: true });
     }

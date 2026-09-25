@@ -1,5 +1,5 @@
 /**
- * useSTT — React hook for speech-to-text via an external aegiscore STT service.
+ * useSTT — React hook for speech-to-text via the configured Kookr STT service.
  *
  * Handles the full lifecycle: microphone capture, audio resampling to 16kHz PCM,
  * WebSocket streaming to the STT service, and progressive transcription updates.
@@ -11,9 +11,11 @@
  * This module is dynamically imported only when STT is enabled (KOOKR_STT_URL set).
  */
 
-import { useState, useRef, useCallback, useEffect, useSyncExternalStore } from 'react';
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 
-export type STTState = 'idle' | 'recording' | 'processing' | 'error';
+import type { STTLanguage } from '../store/stt-language.js';
+
+export type STTState = 'starting' | 'idle' | 'recording' | 'processing' | 'error';
 
 export interface UseSTTResult {
   state: STTState;
@@ -107,11 +109,13 @@ async function tryCreateWorkletNode(
   audioContext: AudioContext,
   source: MediaStreamAudioSourceNode,
   onChunk: (data: Float32Array) => void,
+  isCurrent: () => boolean,
 ): Promise<AudioWorkletNode | null> {
   if (!audioContext.audioWorklet) return null;
 
   try {
     await audioContext.audioWorklet.addModule('/pcm-processor.js');
+    if (!isCurrent()) return null;
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
     workletNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
       onChunk(e.data);
@@ -144,7 +148,8 @@ function createScriptProcessorFallback(
   return processor;
 }
 
-export function useSTT(sttUrl: string, onTranscript: (text: string) => void): UseSTTResult {
+/** Partial results stay in the preview; the callback receives each final result once. */
+export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (text: string) => void): UseSTTResult {
   const [state, setState] = useState<STTState>('idle');
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -152,6 +157,8 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
   const sttHealth = useSyncExternalStore(subscribeSTTHealth, getSTTHealthSnapshot, getSTTHealthSnapshot);
 
   const stateRef = useRef<STTState>('idle');
+  const sessionRef = useRef(0);
+  const mountedRef = useRef(false);
   const serviceErrorRef = useRef(false);
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -159,11 +166,70 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
   const audioNodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const startTimeRef = useRef(0);
-  const onTranscriptRef = useRef(onTranscript);
-  onTranscriptRef.current = onTranscript;
+
+  function setStateAndRef(next: STTState) {
+    stateRef.current = next;
+    setState(next);
+  }
+
+  function markSTTDegraded(message: string) {
+    serviceErrorRef.current = true;
+    setError(message);
+    setSTTHealth({ degraded: true, error: message });
+    setStateAndRef('error');
+  }
+
+  const releaseAudio = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    if (audioNodeRef.current) {
+      audioNodeRef.current.disconnect();
+      audioNodeRef.current = null;
+    }
+    if (contextRef.current) {
+      void contextRef.current.close();
+      contextRef.current = null;
+    }
+    if (streamRef.current) {
+      for (const track of streamRef.current.getTracks()) track.stop();
+      streamRef.current = null;
+    }
+  }, []);
+
+  const cleanup = useCallback(() => {
+    // Pending microphone/worklet requests and queued socket events belong only
+    // to the session that started them, even if this control starts again.
+    sessionRef.current += 1;
+    releaseAudio();
+    if (processingTimerRef.current) {
+      clearTimeout(processingTimerRef.current);
+      processingTimerRef.current = null;
+    }
+    const ws = wsRef.current;
+    wsRef.current = null;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      ws.close();
+    }
+  }, [releaseAudio]);
+
+  // Cancel before the next task's input is painted. Cancellation discards the
+  // pending result; stopping explicitly is what requests a final transcript.
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      cleanup();
+    };
+  }, [sttUrl, cleanup]);
 
   useEffect(() => {
+    setStateAndRef('idle');
     if (sttUrl === sttHealthUrl) return;
     sttHealthUrl = sttUrl;
     serviceErrorRef.current = false;
@@ -177,179 +243,129 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
     setStateAndRef('idle');
   }, [sttHealth.degraded]);
 
-  // Keep stateRef in sync
-  function setStateAndRef(s: STTState) {
-    stateRef.current = s;
-    setState(s);
-  }
-
-  function markSTTDegraded(message: string) {
-    serviceErrorRef.current = true;
-    setError(message);
-    setSTTHealth({ degraded: true, error: message });
-    setStateAndRef('error');
-  }
-
-  const cleanup = useCallback(() => {
-    if (timerRef.current) {
-      clearInterval(timerRef.current);
-      timerRef.current = null;
-    }
-    if (processingTimerRef.current) {
-      clearTimeout(processingTimerRef.current);
-      processingTimerRef.current = null;
-    }
-    if (audioNodeRef.current) {
-      audioNodeRef.current.disconnect();
-      audioNodeRef.current = null;
-    }
-    if (contextRef.current) {
-      void contextRef.current.close();
-      contextRef.current = null;
-    }
-    if (streamRef.current) {
-      for (const track of streamRef.current.getTracks()) {
-        track.stop();
-      }
-      streamRef.current = null;
-    }
-  }, []);
-
   const start = useCallback(async () => {
-    // Guard: don't start if already recording or processing
-    if (stateRef.current === 'recording' || stateRef.current === 'processing') return;
-
+    if (!mountedRef.current || !['idle', 'error'].includes(stateRef.current)) return;
+    cleanup();
+    const session = sessionRef.current;
+    const isCurrent = () => mountedRef.current && sessionRef.current === session;
+    setStateAndRef('starting');
     setError(null);
     serviceErrorRef.current = false;
     setSTTHealth({ degraded: false, error: null });
     setTranscript('');
     setElapsed(0);
 
-    // Request microphone
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({
         audio: { sampleRate: TARGET_SAMPLE_RATE, channelCount: 1, echoCancellation: true },
       });
     } catch (err) {
-      const msg = err instanceof DOMException && err.name === 'NotAllowedError'
+      if (!isCurrent()) return;
+      const message = err instanceof DOMException && err.name === 'NotAllowedError'
         ? 'Microphone permission denied'
         : 'Could not access microphone';
-      setError(msg);
+      setError(message);
       setStateAndRef('error');
+      cleanup();
+      return;
+    }
+    if (!isCurrent()) {
+      for (const track of stream.getTracks()) track.stop();
       return;
     }
     streamRef.current = stream;
 
-    // Open WebSocket to STT service
-    const ws = new WebSocket(sttUrl);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      // Send config message
-      ws.send(JSON.stringify({ type: 'config', language: 'en', progressive: true }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === 'progressive') {
-          const text = [msg.fixedText, msg.activeText].filter(Boolean).join(' ');
+    try {
+      const ws = new WebSocket(sttUrl);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        if (isCurrent()) ws.send(JSON.stringify({ type: 'config', language, progressive: true }));
+      };
+      ws.onmessage = (event) => {
+        if (!isCurrent()) return;
+        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string };
+        try {
+          msg = JSON.parse(event.data);
+        } catch {
+          return;
+        }
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'config_ack' && msg.language !== language) {
+          markSTTDegraded('Selected dictation language is unavailable. Update the STT service or choose another language.');
+          cleanup();
+        } else if (msg.type === 'progressive') {
+          const text = [msg.fixedText, msg.activeText].filter((part) => typeof part === 'string').join(' ');
           setTranscript(text);
-          onTranscriptRef.current(text);
-        } else if (msg.type === 'transcription' && msg.is_final) {
-          setTranscript(msg.text);
-          onTranscriptRef.current(msg.text);
+        } else if (msg.type === 'transcription' && msg.is_final === true && typeof msg.text === 'string') {
+          setTranscript('');
           setStateAndRef('idle');
           cleanup();
+          // Capture this recording's consumer instead of retargeting to a
+          // different input when props change while the service is processing.
+          if (msg.text.trim()) onTranscript(msg.text);
+        } else if (msg.type === 'transcription' && msg.is_final === false && typeof msg.text === 'string') {
+          setTranscript(msg.text);
+        } else if (msg.type === 'error') {
+          markSTTDegraded(typeof msg.error === 'string' ? msg.error : 'Transcription failed');
+          cleanup();
         }
-      } catch {
-        // Ignore malformed messages
-      }
-    };
-
-    ws.onerror = () => {
-      markSTTDegraded('STT service connection failed');
-      cleanup();
-    };
-
-    ws.onclose = () => {
-      // Use ref to check current state — closure would capture stale value
-      if (stateRef.current === 'recording') {
+      };
+      ws.onerror = () => {
+        if (!isCurrent()) return;
+        markSTTDegraded('STT service connection failed');
+        cleanup();
+      };
+      ws.onclose = () => {
+        if (!isCurrent()) return;
         markSTTDegraded('STT service disconnected');
         cleanup();
+      };
+
+      const actualSampleRate = stream.getAudioTracks()[0].getSettings().sampleRate ?? 48000;
+      const audioContext = new AudioContext({ sampleRate: actualSampleRate });
+      contextRef.current = audioContext;
+      const source = audioContext.createMediaStreamSource(stream);
+      const handleChunk = (inputData: Float32Array) => {
+        if (!isCurrent() || stateRef.current !== 'recording' || ws.readyState !== WebSocket.OPEN) return;
+        const pcm16 = resampleToInt16(inputData, audioContext.sampleRate);
+        ws.send(pcm16.buffer as ArrayBuffer);
+      };
+      const workletNode = await tryCreateWorkletNode(audioContext, source, handleChunk, isCurrent);
+      if (!isCurrent()) {
+        workletNode?.disconnect();
+        return;
       }
-    };
-
-    // Set up audio processing
-    const actualSampleRate = stream.getAudioTracks()[0].getSettings().sampleRate ?? 48000;
-    const audioContext = new AudioContext({ sampleRate: actualSampleRate });
-    contextRef.current = audioContext;
-    const source = audioContext.createMediaStreamSource(stream);
-
-    // Chunk handler — resample and send via WebSocket
-    const handleChunk = (inputData: Float32Array) => {
-      if (ws.readyState !== WebSocket.OPEN) return;
-      const pcm16 = resampleToInt16(inputData, audioContext.sampleRate);
-      ws.send(pcm16.buffer as ArrayBuffer);
-    };
-
-    // Prefer AudioWorkletNode (audio thread, never drops frames)
-    // Fall back to ScriptProcessorNode (main thread, drops under load)
-    const workletNode = await tryCreateWorkletNode(audioContext, source, handleChunk);
-    if (workletNode) {
-      audioNodeRef.current = workletNode;
-    } else {
-      audioNodeRef.current = createScriptProcessorFallback(audioContext, source, handleChunk);
+      audioNodeRef.current = workletNode ?? createScriptProcessorFallback(audioContext, source, handleChunk);
+      const startedAt = Date.now();
+      timerRef.current = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startedAt) / 1000));
+      }, 1000);
+      setStateAndRef('recording');
+    } catch {
+      if (!isCurrent()) return;
+      setError('Could not start voice input');
+      setStateAndRef('error');
+      cleanup();
     }
-
-    // Elapsed timer
-    startTimeRef.current = Date.now();
-    timerRef.current = setInterval(() => {
-      setElapsed(Math.floor((Date.now() - startTimeRef.current) / 1000));
-    }, 1000);
-
-    setStateAndRef('recording');
-  }, [sttUrl, cleanup]);
+  }, [sttUrl, language, onTranscript, cleanup]);
 
   const stop = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+    if (stateRef.current !== 'recording') return;
+    const ws = wsRef.current;
+    releaseAudio();
+    if (ws?.readyState === WebSocket.OPEN) {
       setStateAndRef('processing');
-      wsRef.current.send(JSON.stringify({ type: 'stop' }));
-      // Cleanup audio immediately, keep WS open for final transcription
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
-      if (audioNodeRef.current) {
-        audioNodeRef.current.disconnect();
-        audioNodeRef.current = null;
-      }
-      if (contextRef.current) {
-        void contextRef.current.close();
-        contextRef.current = null;
-      }
-      if (streamRef.current) {
-        for (const track of streamRef.current.getTracks()) {
-          track.stop();
-        }
-        streamRef.current = null;
-      }
-      // Processing timeout — if server never sends final transcription, recover
       processingTimerRef.current = setTimeout(() => {
-        if (stateRef.current === 'processing') {
-          markSTTDegraded('Transcription timed out');
-          if (wsRef.current) {
-            wsRef.current.close();
-            wsRef.current = null;
-          }
-        }
+        markSTTDegraded('Transcription timed out');
+        cleanup();
       }, PROCESSING_TIMEOUT_MS);
+      ws.send(JSON.stringify({ type: 'stop' }));
     } else {
       setStateAndRef('idle');
       cleanup();
     }
-  }, [cleanup]);
+  }, [releaseAudio, cleanup]);
 
   const retryHealth = useCallback(async () => {
     if (sttHealthSnapshot.retrying) return;
@@ -358,15 +374,17 @@ export function useSTT(sttUrl: string, onTranscript: (text: string) => void): Us
       const res = await fetch('/api/health/stt', { cache: 'no-store' });
       const body = await res.json().catch(() => ({})) as { status?: unknown };
       if (res.ok && body.status === 'ok') {
-        setError(null);
-        serviceErrorRef.current = false;
         setSTTHealth({ degraded: false, error: null });
-        setStateAndRef('idle');
+        if (mountedRef.current) {
+          setError(null);
+          serviceErrorRef.current = false;
+          setStateAndRef('idle');
+        }
         return;
       }
-      markSTTDegraded('STT service unavailable');
+      setSTTHealth({ degraded: true, error: 'STT service unavailable' });
     } catch {
-      markSTTDegraded('STT service unavailable');
+      setSTTHealth({ degraded: true, error: 'STT service unavailable' });
     } finally {
       setSTTHealth({ retrying: false });
     }

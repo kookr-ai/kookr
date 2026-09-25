@@ -32,6 +32,7 @@ import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode } from '../store/store-types.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
+import { appendDictation } from '../append-dictation.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
@@ -685,9 +686,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
     );
   }
 
-  function setReplyInput(nextInput: string) {
-    setInput(nextInput);
-    saveDetailReplyDraft(replyDraftScope, nextInput);
+  function setReplyInput(update: React.SetStateAction<string>) {
+    setInput((current) => {
+      const nextInput = typeof update === 'function' ? update(current) : update;
+      saveDetailReplyDraft(replyDraftScope, nextInput);
+      return nextInput;
+    });
   }
 
   function handleInputChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
@@ -1458,8 +1462,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
           {sttUrl && (
             <Suspense fallback={null}>
               <VoiceInputButton
+                key={`${agent.taskId ?? ''}:${agent.agentId}`}
                 inputId="response-input"
-                onTranscript={setReplyInput}
+                onTranscript={(text) => setReplyInput((current) => appendDictation(current, text))}
                 disabled={!agent}
                 shortcutBinding={shortcutBindings.stt_toggle}
               />

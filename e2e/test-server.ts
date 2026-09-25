@@ -105,8 +105,8 @@ async function main() {
     terminalBackend: terminal,
     useFakeTerminalBridge: true,
     claudeDir,
-    // Dummy STT URL so the mic button renders in the UI (no real STT service needed)
-    sttUrl: 'ws://localhost:9999',
+    // Default to a dummy endpoint; local audio checks may supply a real sidecar.
+    sttUrl: process.env.E2E_STT_URL ?? 'ws://localhost:9999',
     // Specs launch tasks into the fictional /test/project. Nothing is ever
     // spawned there (FakeTerminalBackend), so skip the RFC F12 cwd existence
     // check that would otherwise 400 every launch.
