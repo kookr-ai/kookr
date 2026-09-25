@@ -1,5 +1,6 @@
 import type { Monitor } from '../core/monitor.js';
 import type { AgentState } from '../shared/contracts/agent-state.js';
+import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { type HookIngestion, mintEventId } from './hook-ingestion.js';
 import type { Task, TaskStore } from '../core/tasks.js';
 import type { TokenTracker } from '../core/token-tracker.js';
@@ -521,6 +522,26 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
     // anomaly detection — V1 SHALL keep existing detection unless a record is
     // confidently classified as non-parent. See rfc §3.
     if (meta.parentage === 'child' || meta.parentage === 'foreign') return;
+
+    if (event.type === 'notification' && event.notificationType === 'provider_progress') {
+      // This is evidence of provider output, not a turn/input transition or a
+      // timeline entry. Keep the original observation time even after delivery
+      // delay; replay, unknown ownership and ended sessions fail closed.
+      const ownerTask = taskStore.findTaskBySession(tmuxName);
+      if (ownerTask && isTerminalStatus(ownerTask.status)) return;
+      const observedAt = event.observedAtMs;
+      if (observedAt === undefined || !watchdog.recordProviderProgress(tmuxName, event, meta)) return;
+      monitor.recordProviderProgress(tmuxName);
+      if (ownerTask) {
+        const session = ownerTask.sessions.find((candidate) => candidate.tmuxSession === tmuxName);
+        taskStore.updateSession(ownerTask.id, tmuxName, {
+          lastEventAt: Math.max(session?.lastEventAt ?? 0, observedAt),
+        });
+        publishTaskProjection(ownerTask.id);
+      }
+      broadcastSnapshot();
+      return;
+    }
 
     const pipelineEvent: AgentEvent = event.type === 'user_prompt' && !event.hookLineId
       ? { ...event, hookLineId: String(meta.sequence) }

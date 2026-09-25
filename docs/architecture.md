@@ -64,6 +64,16 @@ On each hook event, the supervisor:
 
 A separate 5-second liveness interval reconciles session state against the dtach backend (detecting dead sessions), but event monitoring is purely event-driven. The `SessionHealthService` composes that backend state with PTY/ring progress, hook freshness, transcript mtime, task turn state, browser bridge replay/live timing, and the server restart epoch. It publishes the same versioned projection to `AgentState.sessionHealth` and `GET /api/diagnostics/session-health`; `detectCoordinatedStall` adds one fleet-level root diagnostic when independent sessions stop advancing together.
 
+Codex also reports actual provider output while a response is still streaming.
+Its `Notification(provider_progress)` carries an observation timestamp and the
+session/turn identity, without model content. A dedicated pipeline path accepts
+only recent live observations for the established parent session and updates the
+watchdog clock with that original time. Session health reads the same clock.
+Progress does not enter the activity timeline or change permission, tool, or
+turn state; expired or reordered hooks, replay, child events and terminal spinner bytes
+cannot turn silence into provider activity. The source-maintenance Codex
+compatibility skill documents the producer's bounded delivery contract.
+
 **Ralph-loop startup probe:** `RalphLoopService.reconcileStartupLoops` runs once at server boot for each task whose `ralphLoop.status === 'running'`. It asks `terminalBackend.isAlive` per session with a 500 ms timeout. A confirmed live session preserves the loop. An unavailable isolated terminal host, including a timed-out host probe, also preserves the loop without claiming that liveness or prompt ownership was verified. Otherwise, a loop without a live session is marked `failed` with `exitReason: 'kookr_crash'` (except an intentionally parked launch). The probe catches dtach-master death but not an exited agent child whose master remains; the latter still goes through Replace. See `docs/rfc/rfc-ralph-loop-crash-restart-recovery.md`.
 
 **Startup replay:** On startup, after reconciliation identifies resumed sessions, hook files are replayed from offset 0 via `HookFileWatcher.watch(sessionId, { replayExisting: true })` to rebuild anomaly state from persisted hook history. This ensures anomalies (e.g., a permission block) are not lost across Kookr restarts. Each resumed session is also registered with the monitor via `monitor.registerAgent(sessionId)` before hook replay begins.

@@ -12,6 +12,7 @@ export class HookParseError extends Error {
 
 interface RawHookPayload {
   session_id: string;
+  turn_id?: string;
   transcript_path: string | null;
   cwd: string;
   hook_event_name: string;
@@ -38,6 +39,7 @@ interface RawHookPayload {
   permission_mode?: string;
   // Notification fields
   notification_type?: string;
+  observed_at_ms?: number;
   message?: string;
   // UserPromptSubmit fields
   prompt?: string;
@@ -133,6 +135,14 @@ function parseHookEventInner(raw: string): AgentEvent | null {
     throw new HookParseError(`Malformed JSON: ${raw.slice(0, 100)}`);
   }
 
+  const event = normalizeHookPayload(parsed);
+  if (event && typeof parsed.turn_id === 'string' && parsed.turn_id.length > 0 && parsed.turn_id.length <= 256) {
+    event.turnId = parsed.turn_id;
+  }
+  return event;
+}
+
+function normalizeHookPayload(parsed: RawHookPayload): AgentEvent | null {
   const hookName = parsed.hook_event_name;
   if (!KNOWN_HOOK_EVENTS.has(hookName)) {
     // Unknown hooks arrive when user's ~/.claude/settings.json has additional
@@ -220,6 +230,20 @@ function parseHookEventInner(raw: string): AgentEvent | null {
       };
 
     case 'Notification':
+      if (parsed.notification_type === 'provider_progress') {
+        // Invalid progress must never fall back to a generic notification,
+        // whose arrival would otherwise refresh the watchdog clock.
+        if (
+          typeof sessionId !== 'string' || sessionId.length === 0 || sessionId.length > 256
+          || typeof parsed.turn_id !== 'string' || parsed.turn_id.length === 0 || parsed.turn_id.length > 256
+          || typeof parsed.observed_at_ms !== 'number' || !Number.isSafeInteger(parsed.observed_at_ms)
+          || parsed.observed_at_ms <= 0 || parsed.observed_at_ms > 8_640_000_000_000_000
+        ) return null;
+        return {
+          type: 'notification', sessionId, notificationType: 'provider_progress',
+          message: 'Provider output is advancing', observedAtMs: parsed.observed_at_ms,
+        };
+      }
       return {
         type: 'notification',
         sessionId,

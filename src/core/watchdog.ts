@@ -1,4 +1,4 @@
-import type { AgentEvent, Anomaly } from './types.js';
+import type { AgentEvent, Anomaly, EventMeta } from './types.js';
 import { analyzeVisiblePaneLines, normalizeVisiblePaneLines, visibleLinesFromTerminalText } from '../shared/pane-semantics.js';
 import { ToolLatencyMetrics } from './tool-latency-metrics.js';
 
@@ -83,6 +83,8 @@ export interface AgentWatchdogState {
    * event, which proxies "MCP startup is done and the agent is doing real work".
    */
   mcpStartupAt: number;
+  /** SessionEnd is final even if a delayed progress handler arrives afterward. */
+  sessionEnded?: boolean;
   /**
    * Latest structured permission request still waiting for a response.
    * This is authoritative when present; pane classification is only a fallback.
@@ -242,6 +244,10 @@ export class Watchdog {
     const state = this.agents.get(agentId);
     if (!state) return;
 
+    // Progress uses its own observation clock and attribution gate. Direct
+    // hook-file probes do not have parentage metadata and must not renew it.
+    events = events.filter((event) => !(event.type === 'notification' && event.notificationType === 'provider_progress'));
+    if (events.length === 0) return;
     if (options.updateLastEventAt !== false) state.lastEventAt = now;
 
     // First agent-originated hook after registration (issue #2036). Operator
@@ -263,6 +269,11 @@ export class Watchdog {
     // threshold. `mcpStartupAt` is set on that notification and cleared by the first real
     // tool/stop/session_end event — all of which prove the agent has moved past startup.
     for (const event of events) {
+      if (event.type === 'session_start') {
+        state.sessionEnded = false;
+      } else if (event.type === 'session_end') {
+        state.sessionEnded = true;
+      }
       if (event.type === 'tool_use') {
         if (event.toolUseId) {
           state.unmatchedToolUses.set(event.toolUseId, {
@@ -308,6 +319,34 @@ export class Watchdog {
         state.pendingPermissionRequest = undefined;
       }
     }
+  }
+
+  /** Accept only live, recent observations attributed to the parent session. */
+  recordProviderProgress(
+    agentId: string,
+    event: Extract<AgentEvent, { type: 'notification' }>,
+    meta: EventMeta,
+    now = Date.now(),
+  ): boolean {
+    const state = this.agents.get(agentId);
+    const observedAt = event.observedAtMs;
+    if (
+      !state || state.sessionEnded || meta.origin === 'replay' || meta.parentage !== 'parent'
+      || event.notificationType !== 'provider_progress'
+      || typeof event.sessionId !== 'string' || event.sessionId.length === 0 || event.sessionId.length > 256
+      || event.sessionId !== meta.rawSessionId
+      || typeof event.turnId !== 'string' || event.turnId.length === 0 || event.turnId.length > 256
+      || observedAt === undefined || !Number.isSafeInteger(observedAt) || observedAt <= 0
+      || observedAt > now || now - observedAt >= this.config.staleThresholdMs
+      || observedAt <= state.lastEventAt
+    ) return false;
+    // A Stop hook can request more sampling in the same turn; automatic
+    // mailbox turns can skip UserPromptSubmit altogether. Neither boundary
+    // defines liveness. The producer records real deltas before delivery and
+    // cancels its worker before Stop, so monotonic observation time rejects
+    // old deliveries without blocking genuine continuation.
+    state.lastEventAt = observedAt;
+    return true;
   }
 
   /**

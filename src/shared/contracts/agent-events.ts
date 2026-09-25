@@ -73,6 +73,7 @@ export type AgentEvent = (
       sessionId: string;
       notificationType: string;
       message: string;
+      observedAtMs?: number;
       cwd?: string;
     }
   | {
@@ -96,5 +97,6 @@ export type AgentEvent = (
   | { type: 'error'; sessionId: string; message: string }
   | { type: 'input_received'; sessionId: string }
 ) & {
+  turnId?: string;
   eventSeq?: number;
 };

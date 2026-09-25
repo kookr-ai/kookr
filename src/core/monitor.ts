@@ -324,6 +324,16 @@ export class Monitor {
     }
   }
 
+  /** Fresh provider output clears a stale finding without changing turn history. */
+  recordProviderProgress(agentId: string): void {
+    if (this.stoppedAgents.has(agentId) || this.getEventAnomaly(agentId)) return;
+    this.watchdogVerdictStreak.delete(agentId);
+    const queued = this.attentionQueue.peek(agentId);
+    if (queued?.type !== 'stale_agent' && queued?.type !== 'hook_disconnected') return;
+    this.attentionQueue.purge(agentId);
+    this.findingEvidenceAuditor.observe(agentId, null, this.agentEvents.get(agentId) ?? []);
+  }
+
   /**
    * Register an agent with no events yet (e.g. just launched).
    * Clears any prior stopped state so relaunched agents work correctly.

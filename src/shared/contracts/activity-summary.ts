@@ -430,7 +430,7 @@ export function summarizeActivity(events: AgentEvent[]): ActivityItem[] {
         // Grok bypass sessions emit permission_prompt on auto-allowed tools.
         // Claude also emits it as a trailing companion to PermissionRequest.
         // Neither belongs in the activity log as its own row.
-        if (event.notificationType === 'permission_prompt') break;
+        if (event.notificationType === 'permission_prompt' || event.notificationType === 'provider_progress') break;
         flushTools();
         items.push({
           type: 'system_notice',
