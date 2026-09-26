@@ -64,6 +64,9 @@ test('French dictation preserves concurrent typing, appends once, and waits for 
 test('microphone meter follows browser audio, silence, and an ended capture track', async ({ page }) => {
   await speechService(page);
   await page.addInitScript(() => {
+    // This Chromium check must exercise AudioWorklet capture, rather than pass
+    // through the deprecated fallback when the worklet fails to load.
+    AudioContext.prototype.createScriptProcessor = () => { throw new Error('Expected AudioWorklet capture'); };
     // A controllable browser audio source exercises the real PCM worklet and
     // React UI without depending on the host's microphone or ambient noise.
     navigator.mediaDevices.getUserMedia = async () => {

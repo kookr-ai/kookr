@@ -164,7 +164,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
         </select>
       </span>
       {state === 'recording' && (
-        <span id={signalId} className={`voice-signal ${audioSignal.status}`}>
+        <span id={signalId} className={`voice-signal ${audioSignal.status}`} role="status" aria-live="polite" aria-atomic="true">
           {AUDIO_SIGNAL_LABELS[audioSignal.status]}
         </span>
       )}

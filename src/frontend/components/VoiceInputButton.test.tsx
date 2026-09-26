@@ -190,7 +190,10 @@ describe('VoiceInputButton STT health gating', () => {
     expect(Math.max(...heights())).toBeLessThan(Math.max(...liveHeights));
     expect(container.querySelector('.voice-signal')?.textContent).toBe('Low input');
 
-    for (let i = 0; i < 8; i++) capture(new Float32Array(4096));
+    capture(new Float32Array(4096));
+    expect(heights().every(height => height === 2)).toBe(true);
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Low input');
+    for (let i = 0; i < 7; i++) capture(new Float32Array(4096));
     expect(heights().every(height => height === 2)).toBe(true);
     expect(container.querySelector('.voice-signal')?.textContent).toBe('No sound detected');
     expect(button.title).toContain('Recording');
@@ -200,6 +203,11 @@ describe('VoiceInputButton STT health gating', () => {
     act(() => vi.advanceTimersByTime(800));
     expect(heights().every(height => height === 2)).toBe(true);
     expect(container.querySelector('.voice-signal')?.textContent).toBe('No audio received');
+    const status = container.querySelector('.voice-signal');
+    expect(status?.getAttribute('role')).toBe('status');
+    expect(status?.getAttribute('aria-live')).toBe('polite');
+    expect(status?.getAttribute('aria-atomic')).toBe('true');
+    expect(button.getAttribute('aria-describedby')).toBe(status?.id);
 
     capture(new Float32Array(4096).fill(1));
     expect(container.querySelector('.voice-signal')?.textContent).toBe('Input too loud');
@@ -208,6 +216,24 @@ describe('VoiceInputButton STT health gating', () => {
     await click(button);
     expect(container.querySelector('.voice-meter')).toBeNull();
     expect(container.querySelector('.voice-signal')).toBeNull();
+  });
+
+  test.each(['muted track', 'suspended context'])('meter clears immediately for a %s and recovers', async (interruption) => {
+    vi.useFakeTimers();
+    const button = await renderButton();
+    await click(button);
+    capture(new Float32Array(4096).fill(0.1));
+    const stream = await vi.mocked(navigator.mediaDevices.getUserMedia).mock.results[0].value as MediaStream;
+    const context = vi.mocked(AudioContext).mock.results[0].value as AudioContext;
+    const target = interruption === 'muted track' ? stream.getAudioTracks()[0] : context;
+    const property = interruption === 'muted track' ? 'muted' : 'state';
+    Object.defineProperty(target, property, { configurable: true, value: interruption === 'muted track' ? true : 'suspended' });
+    act(() => vi.advanceTimersByTime(100));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('No audio received');
+    expect(Array.from(container.querySelectorAll<HTMLElement>('.voice-meter-bar')).every(bar => bar.style.height === '2px')).toBe(true);
+    Object.defineProperty(target, property, { value: interruption === 'muted track' ? false : 'running' });
+    capture(new Float32Array(4096).fill(0.1));
+    expect(container.querySelector('.voice-signal')?.textContent).toBe('Sound detected');
   });
 
   test('meter cannot retain or revive levels from a cancelled recording', async () => {
@@ -369,10 +395,10 @@ describe('VoiceInputButton STT health gating', () => {
     const ws = FakeSTTWebSocket.instances[0];
     const queuedMessage = ws.onmessage;
     deliver(ws, { type: 'progressive', fixedText: 'Corrige', activeText: 'le problème' });
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('Corrige le problème');
+    expect(container.querySelector('.voice-preview[role="status"]')?.textContent).toBe('Corrige le problème');
     expect(onTranscript).not.toHaveBeenCalled();
     deliver(ws, { type: 'transcription', text: 'Corrige le problème de connexion', is_final: false });
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('Corrige le problème de connexion');
+    expect(container.querySelector('.voice-preview[role="status"]')?.textContent).toBe('Corrige le problème de connexion');
     expect(onTranscript).not.toHaveBeenCalled();
     await click(button);
     expect(stream.getTracks()[0].stop).toHaveBeenCalledTimes(1);
