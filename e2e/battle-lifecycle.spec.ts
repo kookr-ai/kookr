@@ -9,6 +9,7 @@ import {
   resetServer,
   launchViaUI,
   getLatestTmuxName,
+  getTmuxNameForPrompt,
   getTasks,
   injectSessionStart,
   injectStopEvent,
@@ -232,13 +233,13 @@ test.describe('Full integration scenarios', () => {
   test('complete multi-agent triage workflow', async ({ page, request }) => {
     // Launch 3 agents
     await launchViaUI(page, 'Auth fix', '/test/auth');
-    const tmux1 = await getLatestTmuxName(request);
+    const tmux1 = await getTmuxNameForPrompt(request, 'Auth fix');
 
     await launchViaUI(page, 'API refactor', '/test/api');
-    const tmux2 = await getLatestTmuxName(request);
+    const tmux2 = await getTmuxNameForPrompt(request, 'API refactor');
 
     await launchViaUI(page, 'UI polish', '/test/ui');
-    const tmux3 = await getLatestTmuxName(request);
+    const tmux3 = await getTmuxNameForPrompt(request, 'UI polish');
 
     await waitForAgentCount(page, 3);
 
@@ -251,13 +252,21 @@ test.describe('Full integration scenarios', () => {
     await injectPermissionEvent(request, tmux1);
     await injectStopEvent(request, tmux2);
     await injectToolUse(request, tmux3);
+    // Publish the seeded projects before navigation selects their drawers.
+    const summaries = await request.post('/api/test/broadcast-project-summaries');
+    expect(summaries.ok()).toBe(true);
 
     await expect(page.locator('.finding-card')).toHaveCount(2);
     await expect(page.locator('.healthy-row')).toHaveCount(1);
+    for (const project of ['auth', 'api']) {
+      await expect(page.getByTestId(`project-icon-local/${project}`)).toBeVisible();
+    }
 
     // Navigate to highest priority (permission)
     await page.keyboard.press('Alt+n');
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
 
     // Respond to permission agent
     await page.locator('.response-row textarea').fill('Approve the permission');
@@ -267,12 +276,14 @@ test.describe('Full integration scenarios', () => {
     // After advance, should be on needs_input agent
     await expect(page.locator('.sent-overlay')).not.toBeVisible({ timeout: 3000 });
 
-    // Respond to needs_input agent
-    await page.keyboard.press('Alt+n');
-    if (await page.locator('.response-row textarea').isVisible()) {
-      await page.locator('.response-row textarea').fill('Run the tests again');
-      await page.locator('[data-testid="send-next-button"]').click();
-    }
+    // Send & Next already selected the remaining finding; another navigation
+    // would deselect it instead of delivering the second reply.
+    await expect(page.locator('.finding-card.selected .finding-task')).toHaveText('API refactor');
+    await page.locator('.response-row textarea').fill('Run the tests again');
+    await page.getByTestId('send-next-button').click();
+    await page.getByTestId('project-icon-all').click();
+    await expect(page.locator('.finding-card')).toHaveCount(0);
+    await expect(page.locator('.healthy-row')).toHaveCount(3);
   });
 
   test('agent lifecycle: launch → anomaly → respond → healthy → complete', async ({ page, request }) => {
@@ -308,14 +319,18 @@ test.describe('Full integration scenarios', () => {
     await expect(page.locator('.healthy-row')).not.toBeVisible({ timeout: 5000 });
   });
 
-  test('rapid launch-and-triage: 4 agents in succession', async ({ page, request }) => {
-    const agents: string[] = [];
+  test('rapid launch-and-triage: 4 agents in succession', async ({ page, request }, testInfo) => {
+    // Four UI launches and four verified terminal deliveries include the normal
+    // sent overlays; keep room for that real work when other suites share the CPU.
+    testInfo.setTimeout(30_000);
+    const agents = new Map<string, string>();
 
     // Use mixed anomaly types and distinct prompt text to avoid finding grouping.
     for (let i = 0; i < 4; i++) {
-      await launchViaUI(page, `Rapid ${i}`, `/test/${i}`);
-      const tmux = await getLatestTmuxName(request);
-      agents.push(tmux);
+      const prompt = `Rapid ${i}`;
+      await launchViaUI(page, prompt, `/test/${i}`);
+      const tmux = await getTmuxNameForPrompt(request, prompt);
+      agents.set(prompt, tmux);
       await injectSessionStart(request, tmux);
       if (i % 2 === 0) {
         await injectStopEvent(request, tmux, `I need your help for rapid task ${i}.`);
@@ -325,16 +340,36 @@ test.describe('Full integration scenarios', () => {
       await expect(page.locator('.finding-card')).toHaveCount(i + 1, { timeout: 10000 });
     }
 
-    // Triage all via Ctrl+N → respond
+    const summaries = await request.post('/api/test/broadcast-project-summaries');
+    expect(summaries.ok()).toBe(true);
     for (let i = 0; i < 4; i++) {
-      await page.keyboard.press('Alt+n');
-      const input = page.locator('.response-row textarea');
-      if (await input.isVisible()) {
-        await input.fill(`Fix ${i}`);
-        await page.locator('[data-testid="send-next-button"]').click();
-        // Wait for overlay to clear
-        await page.waitForTimeout(300);
-      }
+      await expect(page.getByTestId(`project-icon-local/${i}`)).toBeVisible();
     }
+
+    // Navigate once, then let Send & Next advance. Navigating again between
+    // replies skips findings and can revisit an already-answered task.
+    await page.keyboard.press('Alt+n');
+    const answered = new Set<string>();
+    for (let i = 0; i < 4; i++) {
+      await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+      await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+      const selected = page.locator('.finding-card.selected .finding-task');
+      await expect(selected).toHaveText(/^Rapid [0-3]$/);
+      const prompt = (await selected.textContent())!;
+      expect(answered.has(prompt)).toBe(false);
+      const tmux = agents.get(prompt)!;
+      const reply = `Fix ${i}`;
+      await page.locator('.response-row textarea').fill(reply);
+      await page.getByTestId('send-next-button').click();
+      await expect.poll(async () => {
+        const response = await request.get(`/api/test/keys-received/${encodeURIComponent(tmux)}`);
+        const data = await response.json();
+        return data.keysReceived as string[];
+      }).toContain(reply);
+      answered.add(prompt);
+    }
+    expect(answered.size).toBe(4);
+    await page.getByTestId('project-icon-all').click();
+    await expect(page.locator('.finding-card')).toHaveCount(0);
   });
 });

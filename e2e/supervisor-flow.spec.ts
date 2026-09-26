@@ -166,28 +166,35 @@ test.describe('Supervisor flow — auto-advance', () => {
     // Launch two agents with anomalies
     const promptA = 'Skip Agent A';
     const promptB = 'Skip Agent B';
-    await launchViaUI(page, promptA, '/test/a');
+    await launchViaUI(page, promptA, '/test/project');
     const tmuxA = await getTmuxNameForPrompt(request, promptA);
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
-    await launchViaUI(page, promptB, '/test/b');
+    await launchViaUI(page, promptB, '/test/project');
     const tmuxB = await getTmuxNameForPrompt(request, promptB);
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 
     await expect(page.locator('.finding-card')).toHaveCount(2);
+    const summaries = await request.post('/api/test/broadcast-project-summaries');
+    expect(summaries.ok()).toBe(true);
+    await expect(page.getByTestId('project-icon-local/project')).toBeVisible();
 
-    // Select first finding
+    // The drawer and terminal share the response controls' layout. Let both
+    // mount before clicking Skip so the button does not move during the click.
     await page.keyboard.press('Alt+n');
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     const firstSelected = await page.locator('.finding-card.selected .finding-task').textContent();
+    expect(firstSelected).toMatch(/^Skip Agent [AB]$/);
 
     // Skip it via detail panel
     await page.locator('.response-row .btn-secondary:has-text("Skip")').click();
 
-    // Selection should advance — the selected finding should now be different
-    const nextSelected = await page.locator('.finding-card.selected .finding-task').textContent();
-    expect(nextSelected).not.toBe(firstSelected);
+    // Selection should advance to the other finding.
+    const nextTask = firstSelected === promptA ? promptB : promptA;
+    await expect(page.locator('.finding-card.selected .finding-task')).toHaveText(nextTask);
   });
 
   test('snoozing a finding auto-advances to next finding', async ({ page, request }) => {
