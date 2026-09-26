@@ -442,7 +442,7 @@ export async function evaluateSTTReuseOnce(
       inspectedModel = inspected;
     }
   } catch {
-    // Inspect unavailable → docs-only for model config changes; health-only reuse.
+    // Inspect unavailable: rely on health and any configuration fingerprint checked above.
     inspectSkipped = true;
   }
 
