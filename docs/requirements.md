@@ -1243,6 +1243,7 @@ The system SHOULD reduce repeated metadata and long prompt noise when a develope
 **Acceptance criteria:**
 - The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
+- On mobile, the project drawer remains available on the Findings tab; the Task tab uses the full content width for the selected task and terminal
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
 - Task display text and hover text prioritize the user-authored prompt over Kookr-injected launch guidance so repeated worktree preambles do not look like duplicate user prompts
 - Tooltip portals do not retain hidden long prompt text after dismissal
