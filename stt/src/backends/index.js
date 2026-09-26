@@ -1,5 +1,6 @@
 import { wasmBackend } from './wasm-backend.js';
 import { whisperBackend } from './whisper-backend.js';
+import { qwenBackend } from './qwen-backend.js';
 import { STT_BACKEND_FLAG, STT_WASM_FALLBACK_FLAG } from './feature-flags.js';
 
 /**
@@ -13,6 +14,8 @@ export function createTranscriptionBackend() {
     (process.env[STT_WASM_FALLBACK_FLAG.envVar] ?? STT_WASM_FALLBACK_FLAG.defaultValue) === 'true';
 
   switch (backend) {
+    case 'qwen':
+      return qwenBackend;
     case 'whisper':
       return whisperBackend;
     case 'wasm':
@@ -31,4 +34,4 @@ export function createTranscriptionBackend() {
   }
 }
 
-export { wasmBackend, whisperBackend };
+export { wasmBackend, whisperBackend, qwenBackend };

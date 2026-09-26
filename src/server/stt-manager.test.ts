@@ -17,12 +17,15 @@ import {
   parseSTTDevice,
   parseSTTHealthTimeoutMs,
   resolveDevice,
+  resolveSTTComposeIdentity,
   startSTT,
 } from './stt-manager.js';
 
 beforeEach(() => {
   vi.stubEnv('KOOKR_STT_DEVICE', '');
   vi.stubEnv('WHISPER_MODEL', '');
+  vi.stubEnv('KOOKR_STT_BACKEND', '');
+  vi.stubEnv('QWEN_ASR_MODEL', '');
   execFileMock.mockReset();
   execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, '', '');
@@ -111,7 +114,62 @@ describe('resolveDevice', () => {
   });
 });
 
+describe('bundled model selection', () => {
+  it('defaults to Qwen 0.6B on GPU even with an old Whisper model override', async () => {
+    const identity = await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu', whisperModel: 'base' });
+    expect(identity.backend).toBe('qwen');
+    expect(identity.model).toBe('Qwen/Qwen3-ASR-0.6B');
+    expect(identity.composeFlags).toEqual(['-f', '/repo/stt/docker-compose.yml', '-f', '/repo/stt/docker-compose.gpu.yml', '-f', '/repo/stt/docker-compose.qwen.yml']);
+  });
+
+  it('selects 1.7B by configuration and retains explicit GPU Whisper', async () => {
+    vi.stubEnv('QWEN_ASR_MODEL', 'Qwen/Qwen3-ASR-1.7B');
+    expect((await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu' })).model).toBe('Qwen/Qwen3-ASR-1.7B');
+    vi.stubEnv('KOOKR_STT_BACKEND', 'whisper');
+    const legacy = await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu', whisperModel: 'base' });
+    expect(legacy.backend).toBe('whisper');
+    expect(legacy.model).toBe('base');
+    expect(legacy.composeFlags).not.toContain('/repo/stt/docker-compose.qwen.yml');
+  });
+
+  it('keeps CPU Whisper and rejects an explicit Qwen request without GPU', async () => {
+    const cpu = await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'cpu' });
+    expect(cpu.backend).toBe('whisper');
+    expect(cpu.model).toBe('base');
+    vi.stubEnv('KOOKR_STT_BACKEND', 'qwen');
+    await expect(resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'cpu' })).rejects.toThrow(/requires.*GPU/);
+  });
+
+  it('rejects unknown model/backend choices before changing containers', async () => {
+    vi.stubEnv('QWEN_ASR_MODEL', 'Qwen/missing');
+    await expect(resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu' })).rejects.toThrow(/QWEN_ASR_MODEL/);
+    vi.stubEnv('KOOKR_STT_BACKEND', 'qewn');
+    await expect(resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu' })).rejects.toThrow(/KOOKR_STT_BACKEND/);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+});
+
 describe('evaluateSTTReuseOnce (R11)', () => {
+  it('requires the selected Qwen model to be loaded on CUDA', async () => {
+    const inspect = vi.fn(async () => null);
+    const model = 'Qwen/Qwen3-ASR-0.6B';
+    for (const health of [
+      { backend: 'whisper' },
+      { backend: 'qwen', model_name: model, model_loaded: false, device: 'cuda' },
+      { backend: 'qwen', model_name: 'Qwen/Qwen3-ASR-1.7B', model_loaded: true, device: 'cuda' },
+      { backend: 'qwen', model_name: model, model_loaded: true, device: 'cpu' },
+    ]) {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'ok', ...health })));
+      expect(await evaluateSTTReuseOnce(8003, model, inspect, 'qwen')).toEqual({ ok: false, reason: 'identity-mismatch' });
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({
+      status: 'ok', backend: 'qwen', model_name: model, model_loaded: true, device: 'cuda',
+    })));
+    expect((await evaluateSTTReuseOnce(8003, model, inspect, 'qwen')).ok).toBe(true);
+    expect(inspect).not.toHaveBeenCalled();
+    expect(await evaluateSTTReuseOnce(8003, model, inspect, 'qwen', 'changed-glossary'))
+      .toEqual({ ok: false, reason: 'identity-mismatch' });
+  });
   it('accepts live Whisper health shape without model_loaded or model_name match', async () => {
     // Live prod shape: model_loaded:false, model_name is Parakeet version, backend:whisper
     const result = await evaluateSTTReuseOnce(8003, 'large-v3', async () => null);
@@ -159,6 +217,33 @@ describe('evaluateSTTReuseOnce (R11)', () => {
 });
 
 describe('startSTT reuse + build stamp', () => {
+  it('migrates GPU Whisper to Qwen, reuses Qwen, and applies glossary changes', async () => {
+    const sttDir = await createSTTFixture();
+    let health: Record<string, unknown> = { status: 'ok', backend: 'whisper' };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(health)));
+    execFileMock.mockImplementation((_cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }, cb: Function) => {
+      if (args.includes('up')) health = {
+        status: 'ok', backend: 'qwen', model_name: opts.env.QWEN_ASR_MODEL,
+        model_loaded: true, device: 'cuda', config_id: opts.env.STT_CONFIG_ID,
+      };
+      cb(null, '', '');
+    });
+    const config = { sttDir, device: 'gpu' as const, reuseAttempts: 1 };
+    try {
+      const first = await startSTT(config);
+      expect(first.transcription).toEqual({ url: 'http://127.0.0.1:8010', model: 'Qwen/Qwen3-ASR-0.6B' });
+      expect(execFileMock.mock.calls.filter((call) => call[1].includes('up'))).toHaveLength(1);
+      execFileMock.mockClear();
+      await startSTT(config);
+      expect(execFileMock).not.toHaveBeenCalled();
+      vi.stubEnv('STT_VOCABULARY', '');
+      await startSTT(config);
+      expect(execFileMock.mock.calls.filter((call) => call[1].includes('up'))).toHaveLength(1);
+      expect(health.config_id).toBe((await resolveSTTComposeIdentity(config)).configId);
+    } finally {
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
   it('healthy reuse path invokes zero docker commands', async () => {
     const manager = await startSTT({
       sttDir: '/repo/stt',
@@ -324,6 +409,7 @@ describe('startSTT reuse + build stamp', () => {
   });
 
   it('uses GPU compose overlay for cold start and stop', async () => {
+    vi.stubEnv('KOOKR_STT_BACKEND', 'whisper');
     let fetchCount = 0;
     vi.stubGlobal(
       'fetch',

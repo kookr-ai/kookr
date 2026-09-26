@@ -45,6 +45,7 @@ interface WarmupLogger {
 }
 
 interface VoiceWarmupOpts {
+  model?: string;
   whisperUrl: string;
   timeoutMs: number;
   audit: AuditWriter;
@@ -70,6 +71,7 @@ async function warmupWhisper(opts: WarmupRunOpts): Promise<void> {
   try {
     await transcribeVoice(SILENT_OGG_OPUS, {
       whisperUrl: opts.whisperUrl,
+      model: opts.model,
       timeoutMs: opts.timeoutMs,
       filename: WARMUP_FILENAME,
       signal: opts.signal,

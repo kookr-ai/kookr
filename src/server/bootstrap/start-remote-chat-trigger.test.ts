@@ -3,6 +3,25 @@ import { describe, expect, test, vi } from 'vitest';
 import { startRemoteChatTrigger, type TelegramTriggerModule } from './start-remote-chat-trigger.js';
 
 describe('startRemoteChatTrigger', () => {
+  test.each([
+    ['http://127.0.0.1:8010', 'Qwen/Qwen3-ASR-0.6B'],
+    ['http://localhost:8010/', 'Qwen/Qwen3-ASR-0.6B'],
+    ['http://localhost:9010', undefined],
+  ])('selects the bundled model only at its own endpoint: %s', async (url, expectedModel) => {
+    const startTelegramTrigger = vi.fn(async () => ({ stop: vi.fn() }));
+    await startRemoteChatTrigger({
+      host: 'localhost', port: 4801, kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(), llmClient: null,
+      sttTranscription: { url: 'http://127.0.0.1:8010', model: 'Qwen/Qwen3-ASR-0.6B' },
+      env: {
+        KOOKR_TELEGRAM_BOT_TOKEN: 'test', KOOKR_TELEGRAM_ALLOWED_USERS: '1',
+        KOOKR_REMOTE_CHAT_PROJECTS: '/repo', KOOKR_STT_WHISPER_URL: url,
+      },
+      loadTelegramModule: async () => ({ startTelegramTrigger, probeWhisperReachability: async () => ({ ok: true, modelCount: 1 }) }),
+      log: vi.fn(), warn: vi.fn(),
+    });
+    expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({ transcriptionModel: expectedModel }));
+  });
   test('returns no handle when Telegram is disabled', async () => {
     const logs: string[] = [];
     const loadTelegramModule = vi.fn<() => Promise<TelegramTriggerModule>>();

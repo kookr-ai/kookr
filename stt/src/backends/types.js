@@ -22,11 +22,12 @@
 
 /**
  * Backend interface consumed by SmartProgressiveStreamingHandler.
- * Whisper honors the language hint; the optional WASM backend does not pass
+ * Qwen and Whisper honor the language hint; the optional WASM backend does not pass
  * the hint to its model and keeps its existing transcription behavior.
  * @typedef {Object} TranscriptionBackend
  * @property {string} name - Backend name.
  * @property {(audioWindow: Float32Array, options?: TranscriptionOptions) => Promise<{text: string, sentences: Array<{text: string, start: number, end: number}>}>} transcribe
+ * @property {() => Promise<{ready: boolean, modelName: string, device: string, runtimeBackend: string, configId?: string}>} [getHealth] - Probe an upstream model instead of reporting the unused local WASM model.
  */
 
 export {};

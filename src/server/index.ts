@@ -347,6 +347,8 @@ export interface KookrConfig {
   terminalInstanceDir?: string;
   /** Optional STT service WebSocket URL (e.g. ws://localhost:8003). Enables speech-to-text when set. */
   sttUrl?: string;
+  /** Selected bundled HTTP model; forwarded only to Telegram using that endpoint. */
+  sttTranscription?: { url: string; model: string };
   /** Optional TTS service HTTP URL (e.g. http://localhost:8004). Advertised as a Phase 6 speech capability when set. */
   ttsUrl?: string;
   /** Pocket TTS voice. Defaults to the bundled Matilda voice. */
@@ -3874,6 +3876,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   console.log(formatPayloadDietLogLine(getPayloadDietStats()));
 
   const remoteChatTrigger = await startRemoteChatTrigger({
+    sttTranscription: config.sttTranscription,
     host,
     port,
     kookrDir,

@@ -65,8 +65,10 @@ For operating-system install commands and first-agent walkthroughs, see [Getting
 ## Microphone dictation (optional)
 
 Kookr can transcribe your microphone locally into a task prompt or reply. Enable
-`KOOKR_STT=true` in `.env` and start Kookr; Docker runs the bundled Whisper
-service. No speech API key or separate desktop dictation app is required.
+`KOOKR_STT=true` in `.env` and start Kookr. Docker runs Qwen3-ASR 0.6B on an
+NVIDIA GPU, or Whisper on CPU. No speech API key or separate desktop dictation
+app is required. See [recognition models and vocabulary](docs/reference/speech-recognition.md)
+to select Qwen 1.7B, keep Whisper, or customize technical terms.
 
 Choose **Français**, **English**, or **Auto** beside a microphone button. Click
 the microphone to start, click again to stop, then review the text appended to

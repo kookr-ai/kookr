@@ -1,12 +1,12 @@
 /**
- * Telegram audio transcription via the local faster-whisper-server sidecar.
+ * Telegram audio transcription via the local Whisper or Qwen HTTP sidecar.
  *
- * The server (image: fedirz/faster-whisper-server, port 8010) exposes an
+ * The selected server (port 8010) exposes an
  * OpenAI-compatible HTTP endpoint at POST /v1/audio/transcriptions. We POST
  * Telegram audio bytes as a multipart form (`file=<audio>`, `model=<configured
- * faster-whisper model>`) and read the JSON `{ text }` reply.
+ * model>`) and read the JSON `{ text }` reply.
  *
- * Faster-whisper accepts Telegram voice, uploaded audio, and MP4 video-note
+ * Both services accept Telegram voice, uploaded audio, and MP4 video-note
  * containers directly — no client-side conversion is needed. See issues #574
  * and #585.
  */
@@ -31,8 +31,8 @@ export interface TranscribeOpts {
   /** Optional external cancellation signal, used by integration shutdown. */
   signal?: AbortSignal;
   /**
-   * faster-whisper-server model name. Defaults to WHISPER_MODEL when set, then
-   * `base`, matching the bundled CPU/explicit-prod default.
+   * Model selected by bundled startup. External services default to
+   * WHISPER_MODEL when set, then `base` for compatibility.
    */
   model?: string;
 }

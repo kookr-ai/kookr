@@ -77,6 +77,8 @@ export interface StartTelegramTriggerDeps {
    * See issues #574, #585 and `transcribe.ts`.
    */
   whisperUrl?: string;
+  /** Actual model selected by the bundled service, including Qwen on GPU. */
+  transcriptionModel?: string;
   /**
    * Test seam — overrides the transcription function. Production wiring
    * uses the default `transcribeVoice` from `./transcribe.ts`.
@@ -280,6 +282,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   const warmup = deps.whisperUrl && !deps.transcribeVoice
     ? startVoiceWarmup({
       whisperUrl: deps.whisperUrl,
+      model: deps.transcriptionModel,
       timeoutMs: TRANSCRIBE_TIMEOUT_MS,
       audit,
       logger: console,
@@ -405,6 +408,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         const transcribe = deps.transcribeVoice ?? defaultTranscribeVoice;
         text = await transcribe(audioBytes, {
           whisperUrl: deps.whisperUrl,
+          model: deps.transcriptionModel,
           timeoutMs: remaining(),
           filename: filenameFromFilePath(file.file_path, audio.fallbackFilename),
           mimeType: audio.mimeType,

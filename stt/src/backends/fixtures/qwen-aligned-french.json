@@ -1,0 +1,258 @@
+{
+  "provenance": {
+    "description": "Unedited text and forced-alignment output from local Qwen3-ASR 0.6B inference on two public FLEURS French test clips. Tests concatenate responses with explicit time offsets; these are not a recording or an accuracy benchmark.",
+    "captured": "2026-09-26",
+    "model": "Qwen/Qwen3-ASR-0.6B",
+    "model_revision": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
+    "aligner_revision": "c7cbfc2048c462b0d63a45797104fc9db3ad62b7",
+    "source_file": "qwen-Qwen3-ASR-0.6B-align.jsonl",
+    "source_sha256": "f341480203135945065f0d7109f69e7c60d21b0d0039b28ab5a44c5f55aed348",
+    "dataset": "https://huggingface.co/datasets/google/fleurs"
+  },
+  "clips": [
+    {
+      "id": "fleurs-fr-506",
+      "duration": 7.32,
+      "response": {
+        "language": "French",
+        "text": "Cette découverte permet également de mieux comprendre l'évolution des plumes chez les oiseaux.",
+        "time_stamps": {
+          "items": [
+            {
+              "text": "Cette",
+              "start_time": 1.92,
+              "end_time": 2.24
+            },
+            {
+              "text": "découverte",
+              "start_time": 2.24,
+              "end_time": 2.72
+            },
+            {
+              "text": "permet",
+              "start_time": 2.72,
+              "end_time": 2.96
+            },
+            {
+              "text": "également",
+              "start_time": 2.96,
+              "end_time": 3.44
+            },
+            {
+              "text": "de",
+              "start_time": 3.44,
+              "end_time": 3.52
+            },
+            {
+              "text": "mieux",
+              "start_time": 3.52,
+              "end_time": 3.68
+            },
+            {
+              "text": "comprendre",
+              "start_time": 3.68,
+              "end_time": 4.16
+            },
+            {
+              "text": "l'évolution",
+              "start_time": 4.16,
+              "end_time": 4.64
+            },
+            {
+              "text": "des",
+              "start_time": 4.64,
+              "end_time": 4.72
+            },
+            {
+              "text": "plumes",
+              "start_time": 4.72,
+              "end_time": 5.04
+            },
+            {
+              "text": "chez",
+              "start_time": 5.04,
+              "end_time": 5.2
+            },
+            {
+              "text": "les",
+              "start_time": 5.2,
+              "end_time": 5.36
+            },
+            {
+              "text": "oiseaux",
+              "start_time": 5.36,
+              "end_time": 5.68
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "fleurs-fr-67",
+      "duration": 11.34,
+      "response": {
+        "language": "French",
+        "text": "À l'autre bout du spectre, se transforme en un individu méconnaissable obsistant. Qu'il, elle, doit changer tout ce que le groupe a créé jusqu'alors et faire les choses à sa manière.",
+        "time_stamps": {
+          "items": [
+            {
+              "text": "À",
+              "start_time": 0.88,
+              "end_time": 0.96
+            },
+            {
+              "text": "l'autre",
+              "start_time": 0.96,
+              "end_time": 1.2
+            },
+            {
+              "text": "bout",
+              "start_time": 1.2,
+              "end_time": 1.36
+            },
+            {
+              "text": "du",
+              "start_time": 1.36,
+              "end_time": 1.44
+            },
+            {
+              "text": "spectre",
+              "start_time": 1.44,
+              "end_time": 1.92
+            },
+            {
+              "text": "se",
+              "start_time": 2.24,
+              "end_time": 2.4
+            },
+            {
+              "text": "transforme",
+              "start_time": 2.4,
+              "end_time": 3.04
+            },
+            {
+              "text": "en",
+              "start_time": 3.04,
+              "end_time": 3.04
+            },
+            {
+              "text": "un",
+              "start_time": 3.2,
+              "end_time": 3.36
+            },
+            {
+              "text": "individu",
+              "start_time": 3.36,
+              "end_time": 3.68
+            },
+            {
+              "text": "méconnaissable",
+              "start_time": 3.68,
+              "end_time": 4.48
+            },
+            {
+              "text": "obsistant",
+              "start_time": 4.48,
+              "end_time": 4.96
+            },
+            {
+              "text": "Qu'il",
+              "start_time": 5.12,
+              "end_time": 5.36
+            },
+            {
+              "text": "elle",
+              "start_time": 5.68,
+              "end_time": 5.68
+            },
+            {
+              "text": "doit",
+              "start_time": 6.24,
+              "end_time": 6.4
+            },
+            {
+              "text": "changer",
+              "start_time": 6.4,
+              "end_time": 6.88
+            },
+            {
+              "text": "tout",
+              "start_time": 6.96,
+              "end_time": 7.04
+            },
+            {
+              "text": "ce",
+              "start_time": 7.04,
+              "end_time": 7.2
+            },
+            {
+              "text": "que",
+              "start_time": 7.2,
+              "end_time": 7.36
+            },
+            {
+              "text": "le",
+              "start_time": 7.36,
+              "end_time": 7.44
+            },
+            {
+              "text": "groupe",
+              "start_time": 7.44,
+              "end_time": 7.52
+            },
+            {
+              "text": "a",
+              "start_time": 7.76,
+              "end_time": 7.84
+            },
+            {
+              "text": "créé",
+              "start_time": 8.08,
+              "end_time": 8.16
+            },
+            {
+              "text": "jusqu'alors",
+              "start_time": 8.32,
+              "end_time": 8.96
+            },
+            {
+              "text": "et",
+              "start_time": 9.12,
+              "end_time": 9.12
+            },
+            {
+              "text": "faire",
+              "start_time": 9.28,
+              "end_time": 9.44
+            },
+            {
+              "text": "les",
+              "start_time": 9.52,
+              "end_time": 9.6
+            },
+            {
+              "text": "choses",
+              "start_time": 9.6,
+              "end_time": 10.0
+            },
+            {
+              "text": "à",
+              "start_time": 10.0,
+              "end_time": 10.0
+            },
+            {
+              "text": "sa",
+              "start_time": 10.0,
+              "end_time": 10.24
+            },
+            {
+              "text": "manière",
+              "start_time": 10.24,
+              "end_time": 10.56
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

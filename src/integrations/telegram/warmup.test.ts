@@ -75,13 +75,14 @@ function extractMultipartFile(body: Buffer, filename: string): Buffer {
 }
 
 describe('Telegram voice warmup', () => {
-  it('POSTs the bundled fixture to whisper and records success timing', async () => {
+  it('POSTs the bundled fixture with the selected model and records success timing', async () => {
     const fake = await startFakeWhisper();
     const audit = vi.fn();
     const logger = { log: vi.fn(), warn: vi.fn() };
     try {
       startVoiceWarmup({
         whisperUrl: fake.baseUrl,
+        model: 'Qwen/Qwen3-ASR-0.6B',
         timeoutMs: 1000,
         audit,
         logger,
@@ -94,6 +95,7 @@ describe('Telegram voice warmup', () => {
       expect(req.url).toBe('/v1/audio/transcriptions');
       expect(req.contentType).toMatch(/^multipart\/form-data; boundary=/);
       expect(req.body.toString('binary')).toContain('filename="kookr-warmup.ogg"');
+      expect(req.body.toString('binary')).toContain('Qwen/Qwen3-ASR-0.6B');
       const file = extractMultipartFile(req.body, 'kookr-warmup.ogg');
       expect(file.length).toBe(1773);
       expect(file.subarray(0, 4).toString('ascii')).toBe('OggS');

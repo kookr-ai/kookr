@@ -5,7 +5,7 @@ export const STT_BACKEND_FLAG = Object.freeze({
   key: 'ops.stt_backend',
   envVar: 'STT_BACKEND',
   defaultValue: 'whisper',
-  allowedValues: ['whisper', 'wasm'],
+  allowedValues: ['whisper', 'qwen', 'wasm'],
 });
 
 export const STT_WASM_FALLBACK_FLAG = Object.freeze({

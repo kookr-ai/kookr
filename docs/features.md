@@ -338,7 +338,7 @@ completion criteria, and task replies accept Auto, Français, or English. Kookr
 shows recognition in a live preview, then appends the completed transcript to
 the existing draft. The operator reviews and submits the text explicitly.
 Changing tasks or closing the input cancels that recording so its text cannot
-land in another task. This uses the existing local Whisper service and works
+land in another task. This uses local Qwen recognition on GPU or Whisper on CPU and works
 independently of the selected coding agent.
 
 While recording, a small meter beside the stop button follows the captured
