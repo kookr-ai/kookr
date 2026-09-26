@@ -67,10 +67,47 @@ at most one running and two queued inference jobs; additional requests receive
 HTTP 429. Qwen finalization has a two-minute total deadline, including any
 in-flight recognition; the browser allows five additional seconds for delivery.
 An expired connection is closed, so late results cannot affect a new recording.
+For recordings of at least half a second, finalization includes the last short
+audio block. It reuses a cached transcript only when that cache covers the exact
+received audio position. A failed inference leaves the last successful cache
+intact. If finalization fails, the service reports incomplete text instead of
+claiming success.
+
+The recognition buffer holds at most five minutes of audio; already finalized
+sentences remain as text when older audio is trimmed. If recognition cannot
+finalize that audio before trimming overtakes it, the service reports
+`audio_window_exhausted` and preserves the available text as incomplete.
+This is a processing-backlog limit, not a universal five-minute recording
+limit. Cancelling a browser recording rejects late results. With Qwen, it also
+aborts the Node HTTP request. An inference already executing in Python continues
+occupying its bounded GPU slot until it finishes.
+
 Requests use automatic language detection unless French or English
 is explicitly selected. Recordings are decoded in temporary storage and
 removed after decoding. The inference service does not archive audio. Collection
 by the Node speech service and Telegram integration is described below.
+
+## Recovering interrupted dictation
+
+After a timeout, disconnect, or closed input, reopen the same input to recover
+the last non-empty provisional text. The card is labeled **Incomplete
+dictation** and shows its capture time. **Restore** appends to the existing
+typed draft, **Copy** retains the recovery, and **Discard** removes it. None
+of these actions submits a task. Restore or discard it before recording again
+or launching this draft.
+
+Recoveries belong to the original draft, working context and prompt/criteria/
+reply field. Another task or field cannot restore them. Quick launch keeps
+copy/discard controls available if the original task or directory is no longer
+selected, including when that task disappears. A successful final
+delivery consumes only that recording's recovery, and repeated final events
+cannot insert it twice. A recording that recognized nothing creates no text.
+
+Browser storage retains up to twelve recoveries, each capped at 100,000
+characters, for 24 hours. The card labels truncation. When storage fails, the
+open tab keeps a fallback and warns that reloading may lose it; copy the text
+before leaving. This saves text only and does not enable microphone archival.
+It cannot recover a past recording or preview that was never retained.
 
 ## Local evaluation corpus
 
