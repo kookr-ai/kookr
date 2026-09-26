@@ -45,7 +45,8 @@ test.describe('Onboarding tour', () => {
     await expect(page.locator('[data-testid="onboarding-overlay"]')).toBeVisible();
     await expect(page.locator('.onboarding-tour')).toBeVisible();
     await expect(page.locator('.onboarding-tour h3')).toHaveText('Welcome to Kookr');
-    const demo = page.getByRole('link', { name: 'Watch the 2-minute demo' });
+    const demo = page.getByTestId('onboarding-overlay')
+      .getByRole('link', { name: 'Watch the 2-minute demo', exact: true });
     await expect(demo).toHaveAttribute('href', 'https://youtu.be/DHZrO8T_6Xg');
     await expect(demo).toHaveAttribute('target', '_blank');
     await expect(demo).toHaveAttribute('rel', 'noopener noreferrer');
