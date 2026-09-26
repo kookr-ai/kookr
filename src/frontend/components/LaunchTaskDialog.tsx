@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -47,7 +47,8 @@ import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { copyText, readClipboardText } from '../clipboard.js';
-import { discardDictationRecoveries, createDictationId, hasPendingDictation } from '../store/dictation-recovery.js';
+import { discardDictationRecoveries, createDictationId, hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
+import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -195,6 +196,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       || trackedProjectPaths[0]?.path
       || serverCwd
     );
+  const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
   const [dictationId, setDictationId] = useState(() => initialDraft?.dictationId ?? createDictationId());
   const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
@@ -202,6 +204,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const dictationScope = isRelaunch ? ['relaunch', relaunchParentTaskId, defaultPrompt, defaultCriteria, defaultCwd] : ['draft', dictationId];
   const dictationOwnerPrefix = `[${JSON.stringify(dictationScope)},`;
   const dictationContext = JSON.stringify([dictationScope, cwd, projectContext?.project]);
+  const hiddenRecoveries = listDictationRecoveries(dictationOwnerPrefix).filter(entry =>
+    entry.owner !== `${dictationContext}:prompt` && entry.owner !== `${dictationContext}:criteria`,
+  );
   const [promptDictationPending, setPromptDictationPending] = useState(false);
   const [criteriaDictationPending, setCriteriaDictationPending] = useState(false);
   const dictationPending = promptDictationPending || criteriaDictationPending || hasPendingDictation(dictationOwnerPrefix);
@@ -640,7 +645,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
         {tab === 'manual' ? (
           <form onSubmit={handleSubmit}>
-            {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching. If you changed directory, return to the original directory to resolve it.</p>}
+            {hiddenRecoveries.map(recovery => (
+              <OtherContextDictationRecovery
+                key={recovery.id}
+                recovery={recovery}
+                fieldLabel={recovery.owner.endsWith(':criteria') ? 'criteria' : 'prompt'}
+                onChange={refreshRecoveries}
+                inputRef={recovery.owner.endsWith(':criteria') ? criteriaRef : promptRef}
+              />
+            ))}
+            {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching.</p>}
             {draftRestored && (
               <div className="draft-restored-banner" role="status">
                 <span>Restored your last draft</span>

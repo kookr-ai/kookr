@@ -107,7 +107,13 @@ test('disconnect recovery remains available and switching launch directory isola
   disconnect();
   await expect(page.locator('.voice-recovery')).toBeVisible();
   await cwd.fill('/tmp/different-dictation-owner');
-  await expect(page.locator('.voice-recovery')).toHaveCount(0);
+  await expect(page.locator('.voice-hidden-recovery')).toContainText('Ces mots restent incomplets.');
+  await expect(page.getByRole('group', { name: 'Incomplete dictation for prompt', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restore to prompt', exact: true })).toHaveCount(0);
+  await page.locator('.voice-hidden-recovery').getByRole('button', { name: 'Copy', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe('Ces mots restent incomplets.');
   await cwd.fill(originalCwd);
+  await expect(page.locator('.voice-hidden-recovery')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restore to prompt', exact: true })).toBeVisible();
   await expect(page.locator('.voice-recovery')).toContainText('Ces mots restent incomplets.');
 });

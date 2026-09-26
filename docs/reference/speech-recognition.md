@@ -97,9 +97,9 @@ of these actions submits a task. Restore or discard it before recording again
 or launching this draft.
 
 Recoveries belong to the original draft, working context and prompt/criteria/
-reply field. Another task or field cannot restore them. Quick launch keeps
-copy/discard controls available if the original task or directory is no longer
-selected, including when that task disappears. A successful final
+reply field. Another task or field cannot restore them. Both launchers keep
+copy/discard controls available if the original task, project or directory is
+no longer selected, including when that task disappears. A successful final
 delivery consumes only that recording's recovery, and repeated final events
 cannot insert it twice. A recording that recognized nothing creates no text.
 

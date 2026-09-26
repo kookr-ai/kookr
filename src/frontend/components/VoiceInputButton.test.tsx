@@ -14,7 +14,7 @@ import { VoiceInputButton } from './VoiceInputButton.js';
 import { QuickLaunch } from './QuickLaunch.js';
 import { LaunchTaskDialog } from './LaunchTaskDialog.js';
 import { DetailPanel } from './DetailPanel.js';
-import type { AgentState } from '../../shared/protocol.js';
+import type { AgentState, ProjectSummary } from '../../shared/protocol.js';
 
 vi.mock('../telemetry.js', () => ({
   track: vi.fn(),
@@ -381,10 +381,11 @@ describe('VoiceInputButton STT health gating', () => {
     expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
     const originalCwd = cwd().value;
     typeDraft(cwd(), '/other-context');
-    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(container.querySelector('.voice-hidden-recovery')).not.toBeNull();
+    expect(container.querySelector('.voice-recovery:not(.voice-hidden-recovery)')).toBeNull();
     submit();
     expect(send).not.toHaveBeenCalled();
-    expect(container.querySelector('.voice-launch-pending')?.textContent).toContain('original directory');
+    expect(container.querySelector('.voice-hidden-recovery')?.textContent).toContain('original task, project or directory');
     typeDraft(cwd(), originalCwd);
     expect(container.querySelector('.voice-recovery')?.textContent).toContain('Unfinished criteria');
     await click(container.querySelector('.voice-recovery-actions button')!);
@@ -447,7 +448,7 @@ describe('VoiceInputButton STT health gating', () => {
     act(() => root.render(null));
     await act(async () => root.render(dialog()));
     typeDraft(container.querySelector('#launch-task-cwd')!, '/new-context');
-    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(container.querySelector('.voice-hidden-recovery')).not.toBeNull();
     await click(container.querySelector('[aria-label="Discard restored draft"]')!);
     expect(JSON.parse(localStorage.getItem(DICTATION_RECOVERY_KEY)!)).toEqual([]);
     expect(container.querySelector('.voice-launch-pending')).toBeNull();
@@ -490,13 +491,83 @@ describe('VoiceInputButton STT health gating', () => {
     deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'critères incomplets' });
     act(() => root.render(null));
     await act(async () => root.render(dialog('/another')));
-    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(container.querySelector('.voice-hidden-recovery')).not.toBeNull();
+    expect(container.querySelector('.voice-recovery:not(.voice-hidden-recovery)')).toBeNull();
     act(() => root.render(null));
     await act(async () => root.render(dialog('/original')));
     expect(container.querySelector('.voice-recovery')?.getAttribute('aria-label')).toBe('Incomplete dictation for criteria');
     await click(container.querySelector('.voice-recovery-actions button')!);
     expect(container.querySelector<HTMLTextAreaElement>('.input-with-voice textarea')?.value).toBe('');
     expect(container.querySelector<HTMLInputElement>('.input-with-voice input')?.value).toBe('critères incomplets');
+  });
+
+  const recoveryProject: ProjectSummary = {
+    project: 'project-a', displayName: 'Project A', color: 0, localPath: '/tmp/work',
+    activeAgents: 0, findingCount: 0, todayPrCount: 0, weekPrCount: 0,
+    openContributionAttempts: 0, recentTasks: [], tracked: true,
+  };
+
+  test.each(['prompt', 'criteria'] as const)('keeps partial-only project %s accessible when reopened from the general launcher', async (field) => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    const dialog = (project?: ProjectSummary) => <LaunchTaskDialog send={send} onClose={vi.fn()} projectContext={project} projectCwd={project?.localPath} initialTab="manual" />;
+    await act(async () => root.render(dialog(recoveryProject)));
+    await click(container.querySelectorAll<HTMLButtonElement>('.btn-voice')[field === 'prompt' ? 0 : 1]);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: `Project ${field} words` });
+    act(() => root.render(null));
+    await act(async () => root.render(dialog()));
+    expect(container.querySelector('[aria-label="Discard restored draft"]')).toBeNull();
+    const hidden = container.querySelector('.voice-hidden-recovery')!;
+    expect(hidden.getAttribute('aria-label')).toContain(field);
+    expect(hidden.textContent).toContain(`Project ${field} words`);
+    expect(hidden.querySelector('time')?.getAttribute('datetime')).toBeTruthy();
+    expect(hidden.textContent).not.toContain('Restore to');
+    const prompt = () => container.querySelector<HTMLTextAreaElement>('#launch-task-description')!;
+    expect(prompt().value).toBe('');
+    typeDraft(prompt(), 'Typed after reopening');
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    await click(Array.from(hidden.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy')!);
+    expect(copy).toHaveBeenCalledExactlyOnceWith(`Project ${field} words`);
+    expect(container.querySelector('.voice-hidden-recovery')).not.toBeNull();
+    expect(prompt().value).toBe('Typed after reopening');
+    act(() => root.render(null));
+    await act(async () => root.render(dialog(recoveryProject)));
+    expect(container.querySelector('.voice-hidden-recovery')).toBeNull();
+    expect(container.querySelector('.voice-recovery')?.getAttribute('aria-label')).toBe(`Incomplete dictation for ${field}`);
+    act(() => root.render(null));
+    await act(async () => root.render(dialog()));
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-hidden-recovery button')).find(item => item.textContent === 'Discard')!);
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(container.querySelector('.voice-launch-pending')).toBeNull();
+    expect(prompt().value).toBe('Typed after reopening');
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+    expect(JSON.parse(localStorage.getItem(DICTATION_RECOVERY_KEY)!)).toEqual([]);
+  });
+
+  test('requires explicit resolution of both fields when changing projects', async () => {
+    seedDraftSurfaces();
+    const dialog = (project: ProjectSummary) => <LaunchTaskDialog send={vi.fn(() => true)} onClose={vi.fn()} projectContext={project} projectCwd={project.localPath} initialTab="manual" />;
+    await act(async () => root.render(dialog(recoveryProject)));
+    await click(container.querySelectorAll<HTMLButtonElement>('.btn-voice')[0]);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Original prompt words' });
+    deliver(FakeSTTWebSocket.instances[0], { type: 'transcription', is_final: true, text: '' });
+    await click(container.querySelectorAll<HTMLButtonElement>('.btn-voice')[1]);
+    deliver(FakeSTTWebSocket.instances[1], { type: 'progressive', activeText: 'Original criteria words' });
+    act(() => root.render(null));
+    await act(async () => root.render(dialog({ ...recoveryProject, project: 'project-b', displayName: 'Project B' })));
+    expect(container.querySelectorAll('.voice-hidden-recovery')).toHaveLength(2);
+    expect(container.querySelector('.voice-recovery:not(.voice-hidden-recovery)')).toBeNull();
+    typeDraft(container.querySelector('#launch-task-description')!, 'Different project draft');
+    const discardFirst = () => Array.from(container.querySelector('.voice-hidden-recovery')!.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Discard')!;
+    await click(discardFirst());
+    expect(container.querySelectorAll('.voice-hidden-recovery')).toHaveLength(1);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    await click(discardFirst());
+    expect(container.querySelectorAll('.voice-hidden-recovery')).toHaveLength(0);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
   });
 
   test('keeps recovery in the same tab if local storage fails, including reopening the launch form', async () => {

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -34,8 +34,8 @@ import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
 import { loadQuickLaunchDictationId, renewQuickLaunchDictationId } from '../store/quick-launch-dictation-id.js';
-import { DICTATION_RECOVERY_TTL_MS, discardDictationRecovery, hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
-import { copyText } from '../clipboard.js';
+import { hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
+import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -50,7 +50,7 @@ interface Props {
 
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [dictationId] = useState(loadQuickLaunchDictationId);
-  const [recoveryNotice, setRecoveryNotice] = useState<{ id: string; message: string } | null>(null);
+  const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
   const [capturePending, setCapturePending] = useState(false);
   const dictationOwnerPrefix = `quick:${dictationId}:`;
   const dictationPending = capturePending || hasPendingDictation(dictationOwnerPrefix);
@@ -63,12 +63,6 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
   const dictationOwner = `${dictationOwnerPrefix}${selectedAgentId}:${cwd}`;
   const hiddenRecoveries = listDictationRecoveries(dictationOwnerPrefix).filter(entry => entry.owner !== dictationOwner);
-  const nextHiddenExpiry = Math.min(...hiddenRecoveries.map(entry => entry.capturedAt + DICTATION_RECOVERY_TTL_MS));
-  useEffect(() => {
-    if (!Number.isFinite(nextHiddenExpiry)) return;
-    const timer = setTimeout(() => setRecoveryNotice({ id: '', message: '' }), Math.max(0, nextHiddenExpiry - Date.now()));
-    return () => clearTimeout(timer);
-  }, [nextHiddenExpiry]);
   // Same preflight the Launch dialog uses: it advertises whether a grok-build
   // launch would be refused and refreshes the rotation cursor on mount, so the
   // round-robin preview here stays honest (skips Grok when unusable) and does
@@ -364,29 +358,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         )}
       </div>
       {hiddenRecoveries.map(recovery => (
-        <div key={recovery.id} className="voice-recovery voice-hidden-recovery" role="group" aria-label="Incomplete dictation from another context">
-          <span className="voice-recovery-label">Incomplete dictation from another context</span>
-          <span>Captured <time dateTime={new Date(recovery.capturedAt).toISOString()}>{new Date(recovery.capturedAt).toLocaleString()}</time>. Expires after 24 hours.</span>
-          <span className="voice-preview" tabIndex={0}>{recovery.text}</span>
-          <span>The original task or directory is no longer selected. Copy the words to keep them, or discard them before launching.</span>
-          {recovery.truncated && <span>Only the first 100,000 characters were retained.</span>}
-          {!recovery.persisted && <span>Browser storage is unavailable. Copy the text before reloading.</span>}
-          <span className="voice-recovery-actions">
-            <button type="button" onMouseDown={event => event.preventDefault()} onClick={event => {
-              const button = event.currentTarget;
-              void copyText(recovery.text).then(
-                () => setRecoveryNotice({ id: recovery.id, message: 'Copied' }),
-                () => setRecoveryNotice({ id: recovery.id, message: 'Copy failed. Select the text to copy it manually.' }),
-              ).finally(() => { if (button.isConnected) button.focus(); });
-            }}>Copy</button>
-            <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => {
-              discardDictationRecovery(recovery.owner, recovery.id);
-              setRecoveryNotice({ id: recovery.id, message: '' });
-              inputRef.current?.focus();
-            }}>Discard</button>
-          </span>
-          {recoveryNotice?.id === recovery.id && recoveryNotice.message && <span role="status">{recoveryNotice.message}</span>}
-        </div>
+        <OtherContextDictationRecovery key={recovery.id} recovery={recovery} onChange={refreshRecoveries} inputRef={inputRef} />
       ))}
       {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching.</p>}
       <RecentPromptsPicker
