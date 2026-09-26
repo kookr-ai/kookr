@@ -1464,6 +1464,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
               <VoiceInputButton
                 key={`${agent.taskId ?? ''}:${agent.agentId}`}
                 inputId="response-input"
+                recoveryKey={`reply:${agent.taskId ?? agent.agentId}:${agent.agentId}`}
+                recoveryLabel="reply"
+                onRecoveryResolved={() => inputRef.current?.focus()}
                 onTranscript={(text) => setReplyInput((current) => appendDictation(current, text))}
                 disabled={!agent}
                 shortcutBinding={shortcutBindings.stt_toggle}

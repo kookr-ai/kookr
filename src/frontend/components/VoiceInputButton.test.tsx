@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
+import { DICTATION_RECOVERY_KEY, loadDictationRecovery } from '../store/dictation-recovery.js';
+import { clearLaunchTaskDialogDraft } from '../store/launch-task-dialog-draft.js';
 import { appendDictation } from '../append-dictation.js';
 import { VoiceInputButton } from './VoiceInputButton.js';
 import { QuickLaunch } from './QuickLaunch.js';
@@ -172,6 +174,308 @@ describe('VoiceInputButton STT health gating', () => {
       vi.advanceTimersByTime(milliseconds);
     });
   }
+
+  test('keeps timed-out partial text visible and recoverable after unmount', async () => {
+    vi.useFakeTimers();
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Texte provisoire conservé' });
+    await click(button);
+    act(() => vi.advanceTimersByTime(PROCESSING_TIMEOUT_MS));
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Texte provisoire conservé');
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Incomplete dictation');
+    act(() => root.render(null));
+    await act(async () => root.render(<VoiceInputButton inputId="voice-test-0" onTranscript={onTranscript} />));
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Texte provisoire conservé');
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  test.each([15_000, 125_000])('retains provisional words when the %s ms deadline expires and rejects late finals', async (timeout) => {
+    vi.useFakeTimers();
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    deliver(ws, { type: 'config_ack', language: 'auto', ...(timeout === 125_000 ? { finalization_timeout_ms: timeout } : {}) });
+    deliver(ws, { type: 'progressive', fixedText: 'Début', activeText: 'suite' });
+    const queued = ws.onmessage;
+    await click(button);
+    act(() => vi.advanceTimersByTime(timeout - 1));
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    act(() => vi.advanceTimersByTime(1));
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Début suite');
+    act(() => queued?.({ data: JSON.stringify({ type: 'transcription', is_final: true, text: 'Too late' }) }));
+    expect(onTranscript).not.toHaveBeenCalled();
+    expect(loadDictationRecovery('voice-test-0')?.text).toBe('Début suite');
+  });
+
+  test('restores once by appending to current typing, copies without consuming, and never submits', async () => {
+    const onSubmit = vi.fn();
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    function DraftForm() {
+      const [draft, setDraft] = React.useState('Typed');
+      return <form onSubmit={onSubmit}>
+        <input value={draft} onChange={event => setDraft(event.target.value)} />
+        <VoiceInputButton inputId="append-recovery" recoveryLabel="prompt" onTranscript={text => setDraft(current => appendDictation(current, text))} />
+      </form>;
+    }
+    await act(async () => root.render(<DraftForm />));
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'incomplete words' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    typeDraft(container.querySelector('input')!, 'Edited typing');
+    const actions = container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button');
+    await click(actions[1]);
+    expect(copy).toHaveBeenCalledExactlyOnceWith('incomplete words');
+    expect(container.querySelector('.voice-recovery')).not.toBeNull();
+    act(() => { actions[0].click(); actions[0].click(); });
+    expect(container.querySelector('input')?.value).toBe('Edited typing incomplete words');
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(loadDictationRecovery('append-recovery')).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  test('copies incomplete speech with the shared fallback when the Clipboard API is unavailable', async () => {
+    seedDraftSurfaces();
+    const onClose = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+    const copy = vi.fn(() => true);
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: copy });
+    await act(async () => root.render(<QuickLaunch send={vi.fn(() => true)} onClose={onClose} />));
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Words to copy' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    const copyButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button')).find(item => item.textContent === 'Copy')!;
+    await click(copyButton);
+    expect(copy).toHaveBeenCalledExactlyOnceWith('copy');
+    expect(document.activeElement).toBe(copyButton);
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Copied');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  test('requires explicit discard or restore before a second recording, even after health retry', async () => {
+    const button = await renderButton();
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'first recording' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'ok' }))));
+    await click(button);
+    expect(button.disabled).toBe(true);
+    await click(button);
+    expect(FakeSTTWebSocket.instances).toHaveLength(1);
+    const discard = Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button')).find(item => item.textContent === 'Discard')!;
+    await click(discard);
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(FakeSTTWebSocket.instances).toHaveLength(2);
+    deliver(FakeSTTWebSocket.instances[1], { type: 'progressive', activeText: 'Second provisional' });
+    expect(loadDictationRecovery('voice-test-0')?.text).toBe('Second provisional');
+    deliver(FakeSTTWebSocket.instances[1], { type: 'transcription', is_final: true, text: 'Second final' });
+    expect(loadDictationRecovery('voice-test-0')).toBeNull();
+    act(() => root.render(null));
+    await renderButton();
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+  });
+
+  test('keeps an earlier nonempty partial if the service sends an empty final', async () => {
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'last known words' });
+    deliver(FakeSTTWebSocket.instances[0], { type: 'transcription', is_final: true, text: '  ' });
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('last known words');
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  test('preserves the service failure payload as incomplete text without treating it as a final result', async () => {
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'earlier words' });
+    deliver(FakeSTTWebSocket.instances[0], { type: 'error', error: 'Finalization failed', partial_text: 'earlier words and last known words' });
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('earlier words and last known words');
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
+  test('keeps QuickLaunch recovery through reopening and requires resolution before launching', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const renderQuick = async () => act(async () => root.render(<QuickLaunch send={send} onClose={vi.fn()} />));
+    await renderQuick();
+    const input = () => container.querySelector<HTMLInputElement>('.quick-launch-input')!;
+    typeDraft(input(), 'Launch the typed task');
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'unfinished prior speech' });
+    act(() => root.render(null));
+    await renderQuick();
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('unfinished prior speech');
+    typeDraft(input(), 'Launch a typed task');
+    act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(send).not.toHaveBeenCalled();
+    expect(input().value).toBe('Launch a typed task');
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button')).find(item => item.textContent === 'Discard')!);
+    expect(document.activeElement).toBe(input());
+    act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(send).toHaveBeenCalledTimes(1);
+    act(() => root.render(null));
+    await renderQuick();
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+  });
+
+  test.each(['new task', 'relaunch'] as const)('requires resolution of active and hidden criteria dictation before submitting a %s', async (mode) => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const dialog = () => <LaunchTaskDialog send={send} onClose={vi.fn()} {...(mode === 'relaunch' ? { defaultPrompt: 'Parent task', defaultCwd: '/tmp/work', relaunchParentTaskId: 'original-parent' } : {})} />;
+    await act(async () => root.render(dialog()));
+    const prompt = () => container.querySelector<HTMLTextAreaElement>('#launch-task-description')!;
+    const cwd = () => container.querySelector<HTMLInputElement>('#launch-task-cwd')!;
+    const submit = () => act(() => container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    typeDraft(prompt(), 'Typed task stays');
+    await click(container.querySelectorAll<HTMLButtonElement>('.btn-voice')[1]);
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    expect(container.querySelector('.voice-launch-pending')?.textContent).toContain('Finish dictation');
+    submit();
+    expect(send).not.toHaveBeenCalled();
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Unfinished criteria' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
+    const originalCwd = cwd().value;
+    typeDraft(cwd(), '/other-context');
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    submit();
+    expect(send).not.toHaveBeenCalled();
+    expect(container.querySelector('.voice-launch-pending')?.textContent).toContain('original directory');
+    typeDraft(cwd(), originalCwd);
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Unfinished criteria');
+    await click(container.querySelector('.voice-recovery-actions button')!);
+    const criteria = container.querySelector<HTMLInputElement>('.input-with-voice input')!;
+    expect(document.activeElement).toBe(criteria);
+    expect(criteria.value).toBe('Unfinished criteria');
+    expect(prompt().value).toBe('Typed task stays');
+    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(false);
+    expect(container.querySelector('.voice-launch-pending')).toBeNull();
+    submit();
+    expect(send).toHaveBeenCalledTimes(1);
+    act(() => root.render(null));
+    await act(async () => root.render(dialog()));
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+  });
+
+  test('blocks a submit in the same event turn as microphone startup before React rerenders', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    await act(async () => root.render(<LaunchTaskDialog send={send} onClose={vi.fn()} />));
+    typeDraft(container.querySelector('#launch-task-description')!, 'Typed task');
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.btn-voice')!.click();
+      container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    });
+    expect(send).not.toHaveBeenCalled();
+    expect(container.querySelector('.voice-launch-pending')?.textContent).toContain('Finish dictation');
+  });
+
+  test('thirteen explicitly resolved QuickLaunch drafts do not exhaust recovery capacity', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    for (let index = 0; index < 13; index += 1) {
+      await act(async () => root.render(<QuickLaunch send={send} onClose={vi.fn()} />));
+      const input = () => container.querySelector<HTMLInputElement>('.quick-launch-input')!;
+      typeDraft(input(), `Task ${index}`);
+      await click(container.querySelector('.btn-voice')!);
+      expect(FakeSTTWebSocket.instances).toHaveLength(index + 1);
+      deliver(FakeSTTWebSocket.instances[index], { type: 'progressive', activeText: `Partial ${index}` });
+      act(() => root.render(null));
+      await act(async () => root.render(<QuickLaunch send={send} onClose={vi.fn()} />));
+      typeDraft(input(), `Task ${index}`);
+      act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      expect(send).toHaveBeenCalledTimes(index);
+      await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button')).find(item => item.textContent === 'Discard')!);
+      act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+      expect(send).toHaveBeenCalledTimes(index + 1);
+      act(() => root.render(null));
+    }
+    expect(JSON.parse(localStorage.getItem(DICTATION_RECOVERY_KEY)!)).toEqual([]);
+  });
+
+  test('explicit whole-draft discard removes partials in a previously selected directory', async () => {
+    seedDraftSurfaces();
+    const dialog = () => <LaunchTaskDialog send={vi.fn(() => true)} onClose={vi.fn()} />;
+    await act(async () => root.render(dialog()));
+    typeDraft(container.querySelector('#launch-task-description')!, 'Typed draft');
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Old directory partial' });
+    act(() => root.render(null));
+    await act(async () => root.render(dialog()));
+    typeDraft(container.querySelector('#launch-task-cwd')!, '/new-context');
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    await click(container.querySelector('[aria-label="Discard restored draft"]')!);
+    expect(JSON.parse(localStorage.getItem(DICTATION_RECOVERY_KEY)!)).toEqual([]);
+    expect(container.querySelector('.voice-launch-pending')).toBeNull();
+  });
+
+  test('does not offer recovery for empty recognition', async () => {
+    const button = await renderButton();
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: ' ' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    expect(loadDictationRecovery('voice-test-0')).toBeNull();
+  });
+
+  test('retains an empty launch form identity across closing and reopening with partial-only dictation', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const renderDialog = async () => act(async () => root.render(<LaunchTaskDialog send={send} onClose={vi.fn()} />));
+    await renderDialog();
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'dictated before typing' });
+    act(() => root.render(null));
+    await renderDialog();
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('dictated before typing');
+    const prompt = container.querySelector<HTMLTextAreaElement>('.input-with-voice textarea')!;
+    expect(prompt.value).toBe('');
+    typeDraft(prompt, 'Typed after reopening');
+    await click(container.querySelector('.voice-recovery-actions button')!);
+    expect(prompt.value).toBe('Typed after reopening dictated before typing');
+    expect(document.activeElement).toBe(prompt);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test('keeps launch criteria recovery separate from the prompt and another working directory', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const dialog = (cwd: string) => <LaunchTaskDialog send={send} onClose={vi.fn()} projectCwd={cwd} />;
+    await act(async () => root.render(dialog('/original')));
+    await click(container.querySelectorAll<HTMLButtonElement>('.btn-voice')[1]);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'critères incomplets' });
+    act(() => root.render(null));
+    await act(async () => root.render(dialog('/another')));
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    act(() => root.render(null));
+    await act(async () => root.render(dialog('/original')));
+    expect(container.querySelector('.voice-recovery')?.getAttribute('aria-label')).toBe('Incomplete dictation for criteria');
+    await click(container.querySelector('.voice-recovery-actions button')!);
+    expect(container.querySelector<HTMLTextAreaElement>('.input-with-voice textarea')?.value).toBe('');
+    expect(container.querySelector<HTMLInputElement>('.input-with-voice input')?.value).toBe('critères incomplets');
+  });
+
+  test('keeps recovery in the same tab if local storage fails, including reopening the launch form', async () => {
+    seedDraftSurfaces();
+    const storage = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('Quota'); });
+    const dialog = () => <LaunchTaskDialog send={vi.fn(() => true)} onClose={vi.fn()} />;
+    await act(async () => root.render(dialog()));
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Words retained in this tab' });
+    act(() => root.render(null));
+    await act(async () => root.render(dialog()));
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Words retained in this tab');
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Browser storage is unavailable');
+    storage.mockRestore();
+    await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.voice-recovery-actions button')).find(item => item.textContent === 'Discard')!);
+    clearLaunchTaskDialogDraft();
+  });
 
   test('meter follows captured audio, distinguishes silence from missing frames, and recovers', async () => {
     vi.useFakeTimers();
@@ -345,6 +649,28 @@ describe('VoiceInputButton STT health gating', () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  test('offers interrupted reply speech only when returning to its original task', async () => {
+    seedDraftSurfaces();
+    const send = vi.fn(() => true);
+    const agent = (id: string): AgentState => ({
+      agentId: id, taskId: `task-${id}`, taskName: id, events: [], anomaly: null,
+      cwd: '/tmp/work', startedAt: '2026-09-25T10:00:00.000Z', taskStatus: 'inProgress',
+    });
+    const panel = (id: string) => <DetailPanel agent={agent(id)} send={send} onLaunch={vi.fn()} onRequestComplete={vi.fn()} />;
+    await act(async () => root.render(panel('original')));
+    typeDraft(container.querySelector('.response-row textarea')!, 'Original typed reply');
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Unfinished original reply' });
+    await act(async () => root.render(panel('different')));
+    expect(container.querySelector('.voice-recovery')).toBeNull();
+    typeDraft(container.querySelector('.response-row textarea')!, 'Other task');
+    await act(async () => root.render(panel('original')));
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Unfinished original reply');
+    await click(container.querySelector('.voice-recovery-actions button')!);
+    expect(container.querySelector<HTMLTextAreaElement>('.response-row textarea')?.value).toBe('Original typed reply Unfinished original reply');
+    expect(send).not.toHaveBeenCalled();
+  });
+
   test.each(['auto', 'fr', 'en'] as const)('sends the selected %s language in the session config', async (language) => {
     useKookrStore.getState().setSTTLanguage(language);
     const button = await renderButton();
@@ -498,6 +824,71 @@ describe('VoiceInputButton STT health gating', () => {
     await act(async () => { vi.advanceTimersByTime(125_000); });
     expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
     expect(button.title).toContain('Transcription timed out');
+  });
+
+  function installWorkletCapture() {
+    const port = { onmessage: null as ((event: { data: unknown }) => void) | null, postMessage: vi.fn() };
+    const disconnect = vi.fn();
+    vi.stubGlobal('AudioContext', vi.fn().mockImplementation(function () {
+      return {
+        sampleRate: 16_000, destination: {}, close: vi.fn().mockResolvedValue(undefined),
+        createMediaStreamSource: () => ({ connect: vi.fn() }),
+        audioWorklet: { addModule: vi.fn().mockResolvedValue(undefined) },
+      };
+    }));
+    vi.stubGlobal('AudioWorkletNode', vi.fn().mockImplementation(function () {
+      return { port, connect: vi.fn(), disconnect };
+    }));
+    return { port, disconnect };
+  }
+
+  test('drains trailing worklet samples before sending stop once and starts the final deadline after the drain', async () => {
+    vi.useFakeTimers();
+    const { port, disconnect } = installWorkletCapture();
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    await click(button);
+    await click(button);
+    expect(port.postMessage).toHaveBeenCalledExactlyOnceWith({ type: 'flush' });
+    expect(ws.send).not.toHaveBeenCalled();
+    expect(disconnect).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(900);
+      port.onmessage?.({ data: new Float32Array([0.25, -0.25, 0.5]) });
+      port.onmessage?.({ data: { type: 'flushed' } });
+      port.onmessage?.({ data: { type: 'flushed' } });
+    });
+    expect(ws.send).toHaveBeenCalledTimes(2);
+    expect(Array.from(new Int16Array(ws.send.mock.calls[0][0]))).toEqual([8192, -8192, 16384]);
+    expect(ws.send.mock.calls[1][0]).toBe(JSON.stringify({ type: 'stop' }));
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    act(() => vi.advanceTimersByTime(14_999));
+    expect(ws.readyState).toBe(FakeSTTWebSocket.OPEN);
+    deliver(ws, { type: 'transcription', is_final: true, text: 'All captured words' });
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('All captured words');
+  });
+
+  test('fails truthfully when worklet flushing hangs and rejects stale flush messages after unmount', async () => {
+    vi.useFakeTimers();
+    const { port } = installWorkletCapture();
+    const button = await renderButton();
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    deliver(ws, { type: 'progressive', activeText: 'Recoverable beginning' });
+    await click(button);
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(container.querySelector('.voice-error')?.textContent).toContain('Microphone audio could not be finalized');
+    expect(container.querySelector('.voice-recovery')?.textContent).toContain('Recoverable beginning');
+    expect(ws.send).not.toHaveBeenCalledWith(JSON.stringify({ type: 'stop' }));
+    expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
+    act(() => root.render(null));
+    act(() => {
+      port.onmessage?.({ data: new Float32Array([0.5]) });
+      port.onmessage?.({ data: { type: 'flushed' } });
+    });
+    expect(ws.send).not.toHaveBeenCalled();
   });
 
   test('releases a microphone acquired after its control has unmounted', async () => {

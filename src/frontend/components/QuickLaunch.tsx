@@ -33,6 +33,8 @@ import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.j
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
+import { loadQuickLaunchDictationId, renewQuickLaunchDictationId } from '../store/quick-launch-dictation-id.js';
+import { hasPendingDictation } from '../store/dictation-recovery.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -46,6 +48,10 @@ interface Props {
 }
 
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
+  const [dictationId] = useState(loadQuickLaunchDictationId);
+  const [capturePending, setCapturePending] = useState(false);
+  const dictationOwnerPrefix = `quick:${dictationId}:`;
+  const dictationPending = capturePending || hasPendingDictation(dictationOwnerPrefix);
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -210,7 +216,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
-    if (!trimmed || !cwd || grokAuthBlocksLaunch) return;
+    if (!trimmed || !cwd || grokAuthBlocksLaunch || dictationPending || hasPendingDictation(dictationOwnerPrefix)) return;
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
@@ -232,6 +238,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       } catch {
         // Browser storage is best-effort; the launch was already dispatched.
       }
+      renewQuickLaunchDictationId();
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
@@ -342,10 +349,11 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         />
         {sttUrl && (
           <Suspense fallback={null}>
-            <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+            <VoiceInputButton key={`quick:${dictationId}:${selectedAgentId}:${cwd}`} recoveryKey={`quick:${dictationId}:${selectedAgentId}:${cwd}`} recoveryLabel="quick launch prompt" onPendingChange={setCapturePending} onRecoveryResolved={() => inputRef.current?.focus()} inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
           </Suspense>
         )}
       </div>
+      {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching. If you changed context, return to the original task to resolve it.</p>}
       <RecentPromptsPicker
         entries={recentPrompts}
         currentCwd={cwd}
@@ -374,7 +382,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           taskName={activeDuplicate.taskName ?? undefined}
           onOpenExisting={openExistingDuplicate}
           onLaunchAnyway={() => submitLaunch(true)}
-          launchAnywayDisabled={grokAuthBlocksLaunch}
+          launchAnywayDisabled={grokAuthBlocksLaunch || dictationPending}
         />
       )}
     </div>
