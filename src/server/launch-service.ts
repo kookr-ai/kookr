@@ -1,4 +1,5 @@
 import { stat } from 'node:fs/promises';
+import { expandConfiguredCwd } from './cwd-paths.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
 import type { LaunchOpts, LaunchResult as SharedLaunchResult } from '../shared/contracts/launch.js';
 import type { DeliveryAuthorization, TaskDispositionReason, TaskLaunchIntent } from '../shared/contracts/task.js';
@@ -1056,14 +1057,18 @@ async function validateDuplicateCandidate(
  * function reserves the key, delegates to `launchTaskCore` for the entire
  * existing launch pipeline (validation, dedup, concurrency, adapter launch),
  * and finalizes or releases the reservation based on the outcome. Every
- * existing caller that never sets `idempotencyKey` is byte-for-byte
- * unaffected — the wrapper is skipped entirely.
+ * caller that never sets `idempotencyKey` skips the ledger wrapper entirely.
  */
 export async function launchTask(
   deps: LaunchServiceDeps,
   opts: LaunchOpts,
   serverOpts: LaunchTaskServerOptions = {},
 ): Promise<LaunchResult> {
+  // Clipboard path controls accept ~/; expand it once so validation, dedup,
+  // stored task state, and the adapter all use the same concrete directory.
+  if (opts.cwd.startsWith('~/')) {
+    opts = { ...opts, cwd: expandConfiguredCwd(opts.cwd) };
+  }
   if (opts.idempotencyKey === undefined || !deps.idempotencyLedger) {
     return launchTaskCore(deps, opts, serverOpts);
   }

@@ -864,8 +864,9 @@ The system SHOULD let the operator fill the Launch dialog's or Quick Launch bar'
 - Quick Launch keeps the clipboard control inside the bar; clicking fills the directory without submitting or closing, including during a delayed clipboard read
 - A pasted Quick Launch path takes precedence over pending or subsequent inherited-directory updates
 - Shape check only (`/` or `~/` after trim); no filesystem access
+- On submission, the server expands `~/` before directory validation and uses that concrete path for launch and stored task state
 
-**Evidence:** `src/frontend/clipboard.ts` (shared reader and path shape check), `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`. Tests: `src/frontend/components/LaunchTaskDialog.paste.test.ts`, `src/frontend/components/QuickLaunch.clipboard.test.ts`, `e2e/quick-launch-clipboard.spec.ts`.
+**Evidence:** `src/frontend/clipboard.ts` (shared reader and path shape check), `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/server/launch-service.ts` (home-relative path expansion). Tests: `src/frontend/components/LaunchTaskDialog.paste.test.ts`, `src/frontend/components/QuickLaunch.clipboard.test.ts`, `src/server/launch-service.test.ts`, `e2e/quick-launch-clipboard.spec.ts`.
 
 ### R4b.12: Required Launch Dependency Admission [F4.12, F10.5] — SHALL — `done`
 
