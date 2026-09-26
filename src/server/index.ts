@@ -253,7 +253,8 @@ import { type OssSourceWatcherFs } from './oss-source-watcher.js';
 import { migrateLegacyProtectedWorktree } from '../adapters/worktree-marker.js';
 import { cleanupReconciledTaskWorktrees } from '../adapters/git-worktree.js';
 import { createContributionWorkspaceServices } from './bootstrap/create-contribution-workspace-services.js';
-import { createAgentRuntime } from './bootstrap/create-agent-runtime.js';
+import { createAgentRuntime, type AgentRuntimeDeps } from './bootstrap/create-agent-runtime.js';
+import type { CodexRolloutScanner } from '../adapters/codex-rollout-scanner.js';
 import { createCoreStores } from './bootstrap/create-core-stores.js';
 import { createSessionLivenessProbe } from './session-liveness-probe.js';
 import { createGitHubRuntime } from './bootstrap/create-github-runtime.js';
@@ -384,6 +385,10 @@ export interface KookrConfig {
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   /** Test seam for capturing preflight log lines. */
   preflightLogger?: PreflightLogger;
+  /** Fake-server fixtures for agent availability. Production probes installed binaries. */
+  agentPreflight?: Pick<AgentRuntimeDeps, 'claudeProbeExec' | 'codexProbeExec' | 'grokInstalledState'>;
+  /** Test-owned rollout scanner so browser tests do not read the operator's sessions. */
+  costComparisonScanner?: Pick<CodexRolloutScanner, 'scan' | 'bindTasks'>;
   /** Test seam for OSS source fs.watch wiring. */
   ossSourceWatcherFs?: Partial<OssSourceWatcherFs>;
   /** Test seam for OSS source watcher debounce. Defaults to 250 ms. */
@@ -775,6 +780,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   }
 
   const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
+    ...config.agentPreflight,
     terminalBackend,
     terminalInputWriter: terminalInputCoordinator,
     taskStore,
@@ -2676,6 +2682,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // holder the getter closes over. Absent (unconfigured) ⇒ health omits the block.
   let signalDeliveryServiceHolder: SignalDeliveryService | undefined;
   const app = createRoutes({
+    costComparisonScanner: config.costComparisonScanner,
     environmentBlockerRegistry,
     pipelineStarvation,
     inventPriorityHealth,
@@ -4071,6 +4078,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     projectConfigStore,
     projectSidebarStore,
     circuitBreakerRegistry,
+    spawnRateLimiter,
     remoteLaunchBroker,
     controllerLeaseManager: remoteRelayRuntime?.controllerLeaseManager ?? null,
     remoteInputAdapter: remoteRelayRuntime?.remoteInputAdapter ?? null,

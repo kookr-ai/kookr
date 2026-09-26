@@ -20,6 +20,7 @@ import type { RemoteLaunchBroker } from '../remote/launch-broker.js';
 import type { ControllerLeaseManager } from '../remote/controller-lease.js';
 import type { RemoteInputAdapter } from './remote-input-adapter.js';
 import type { ActivityLedger } from '../core/activity-ledger.js';
+import type { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
 
 /** Full server surface for tests and local helpers. */
 export interface KookrServerInternal {
@@ -40,6 +41,7 @@ export interface KookrServerInternal {
   projectConfigStore: ProjectConfigStore;
   projectSidebarStore: ProjectSidebarStore;
   circuitBreakerRegistry: CircuitBreakerRegistry;
+  spawnRateLimiter: SpawnRateLimiter;
   remoteLaunchBroker?: RemoteLaunchBroker;
   controllerLeaseManager?: ControllerLeaseManager | null;
   remoteInputAdapter?: RemoteInputAdapter | null;

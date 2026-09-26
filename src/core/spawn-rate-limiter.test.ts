@@ -25,6 +25,22 @@ describe('spawnBudgetKey', () => {
 });
 
 describe('SpawnRateLimiter', () => {
+  it('clears every launch source between test cases without changing its limits', () => {
+    const { limiter } = makeLimiter({ limit: 1 });
+    const keys = ['websocket', 'api', spawnBudgetKey('api', 'test-actor')];
+    for (const key of keys) {
+      expect(limiter.tryAcquire(key).allowed).toBe(true);
+      expect(limiter.tryAcquire(key).allowed).toBe(false);
+    }
+
+    limiter.clear();
+
+    for (const key of keys) {
+      expect(limiter.tryAcquire(key)).toMatchObject({ allowed: true, count: 0, limit: 1 });
+      expect(limiter.tryAcquire(key)).toMatchObject({ allowed: false, count: 1, limit: 1 });
+    }
+  });
+
   it('allows up to the limit and rejects the next attempt', () => {
     const { limiter } = makeLimiter({ limit: 3 });
     expect(limiter.tryAcquire('api').allowed).toBe(true);

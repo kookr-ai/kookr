@@ -232,6 +232,8 @@ export interface CostComparisonRouteDeps {
   serverCwd: string;
   tokenTracker?: TokenTracker;
   tasksFile?: string;
+  /** Isolated rollout source for test servers; production uses its cached scanner. */
+  costComparisonScanner?: Pick<import('../../adapters/codex-rollout-scanner.js').CodexRolloutScanner, 'scan' | 'bindTasks'>;
 }
 
 /** Narrower deps for the read-only /api/outcome-ledger scoreboard route. */
@@ -808,6 +810,7 @@ export interface RouteDeps {
   ralphCycler?: RalphCycler;
   /** Token tracker — used by ralph routes to read cumulative cost. */
   tokenTracker?: TokenTracker;
+  costComparisonScanner?: CostComparisonRouteDeps['costComparisonScanner'];
   /**
    * Path to the live `~/.kookr/tasks.json`. Used by the cost-comparison route
    * to read sibling `tasks.json.daily.*` and `tasks.json.predelete.*` snapshots

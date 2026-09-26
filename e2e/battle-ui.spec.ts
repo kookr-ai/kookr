@@ -206,7 +206,7 @@ test.describe('Launch dialog', () => {
 
   test('dialog closes on cancel button', async ({ page }) => {
     await page.locator('.btn-launch').click();
-    await page.locator('.dialog .btn-secondary').click();
+    await page.getByRole('dialog', { name: 'Launch New Task' }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('.dialog')).not.toBeVisible();
   });
 
@@ -440,6 +440,11 @@ test.describe('Rename task', () => {
     const tmuxName = await getLatestTmuxName(request);
     await injectSessionStart(request, tmuxName);
     await injectStopEvent(request, tmuxName);
+
+    // Select the project first so its asynchronously loaded drawer cannot
+    // move the finding between the two clicks that start a rename.
+    await page.getByTestId('project-icon-local/project').click();
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
 
     // Select the finding to show detail panel
     await page.locator('.finding-card').click();

@@ -88,8 +88,11 @@ test.describe('Stop agent', () => {
     page.on('dialog', (dialog) => dialog.accept());
     await page.locator('[data-testid="action-cancel"]').click();
 
-    // Should still have one finding
+    // Selecting the cancelled task also filters to its project. Show the
+    // remaining project's finding before checking that it survived.
+    await page.getByTestId('project-icon-all').click();
     await expect(page.locator('.finding-card')).toHaveCount(1, { timeout: 10000 });
+    await expect(page.locator('.finding-card')).toContainText('Keep me');
   });
 });
 

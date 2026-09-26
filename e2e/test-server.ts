@@ -9,6 +9,7 @@ import { createKookrServerInternal } from '../src/server/index.js';
 import type { KookrServerInternal } from '../src/server/server-test-helpers.js';
 import { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import { FakeTerminalBridge } from '../src/server/fake-terminal-bridge.js';
+import { CodexRolloutScanner } from '../src/adapters/codex-rollout-scanner.js';
 import type { Playbook } from '../src/core/playbook.js';
 import { createRelayServer, type RelayServerHandle } from '../relay/server.js';
 
@@ -61,7 +62,8 @@ async function main() {
             ? firstArg.id
             : null;
       if (!tmuxName) return;
-      terminal.emit(tmuxName, '\x1b[?2004hClaudeCode\n❯ ');
+      // Production waits for both paste mode and the painted composer footer.
+      terminal.emit(tmuxName, '\x1b[?2004hClaude Code\n❯ \n? for shortcuts');
     }) as typeof terminal.createSession;
   }
 
@@ -105,6 +107,36 @@ async function main() {
     terminalBackend: terminal,
     useFakeTerminalBridge: true,
     claudeDir,
+    // FakeTerminalBackend never runs these commands. Fixed preflight results
+    // keep the agent picker independent of the operator's installed binaries.
+    agentBin: '/e2e/claude',
+    codexBin: '/e2e/codex',
+    grokBin: '/e2e/grok',
+    agentPreflight: {
+      claudeProbeExec: async () => ({ stdout: 'claude 1.0.0\n', stderr: '' }),
+      codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
+      grokInstalledState: {
+        kind: 'ok',
+        version: '1.0.0',
+        buildId: 'e2e-fixture',
+        identity: {
+          configured: '/e2e/grok',
+          launcherPath: '/e2e/grok',
+          canonicalPath: '/e2e/grok',
+          sha256: '0'.repeat(64),
+          sizeBytes: 0,
+          mode: 0o755,
+          uid: 0,
+          gid: 0,
+        },
+        qualification: {
+          status: 'tested',
+          reason: 'Fake terminal backend fixture',
+          evidenceBuildId: 'e2e-fixture',
+        },
+      },
+    },
+    costComparisonScanner: new CodexRolloutScanner({ codexHome: join(tempDir, 'codex-sessions') }),
     // Default to a dummy endpoint; local audio checks may supply a real sidecar.
     sttUrl: process.env.E2E_STT_URL ?? 'ws://localhost:9999',
     // Specs launch tasks into the fictional /test/project. Nothing is ever
@@ -450,6 +482,7 @@ async function main() {
 
     // Clear task store
     server.taskStore.loadTasks([]);
+    server.spawnRateLimiter.clear();
 
     // Clear OSS/project stores so project sidebar tests do not inherit state
     // from earlier tests sharing the same worker-scoped server.

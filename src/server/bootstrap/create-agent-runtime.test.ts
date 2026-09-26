@@ -82,6 +82,25 @@ describe('createAgentRuntime — grok-build registration policy', () => {
     expect(runtime.agentPreflight['grok-build']?.status).toBe('ok');
   });
 
+  test('registers all fake agents without requiring installed agent executables', async () => {
+    const claudeProbeExec = vi.fn(async () => ({ stdout: 'claude 1.0.0\n', stderr: '' }));
+    const codexProbeExec = vi.fn(async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }));
+    const runtime = await createAgentRuntime(baseDeps({
+      agentBin: '/missing/e2e-claude',
+      codexBin: '/missing/e2e-codex',
+      grokBin: '/missing/e2e-grok',
+      claudeProbeExec,
+      codexProbeExec,
+      grokEnv: {},
+      grokInstalledState: grokTestedState(),
+    }));
+
+    expect(runtime.adapterRegistry.getTypes()).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+    expect(Object.values(runtime.agentPreflight).map((preflight) => preflight.status)).toEqual(['ok', 'ok', 'ok']);
+    expect(claudeProbeExec).toHaveBeenCalledWith('/missing/e2e-claude', ['--version'], expect.any(Object));
+    expect(codexProbeExec).toHaveBeenCalledWith('/missing/e2e-codex', ['--version'], expect.any(Object));
+  });
+
   test('skips registration with a warning when the default grok binary is absent', async () => {
     const enoent = async () => {
       const e = new Error('spawn grok ENOENT') as NodeJS.ErrnoException;

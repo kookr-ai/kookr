@@ -174,7 +174,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.dialog .btn-primary')).toBeDisabled();
 
     // Cancel closes dialog
-    await page.locator('.dialog .btn-secondary').click();
+    await page.getByRole('dialog', { name: 'Launch New Task' }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('.dialog')).not.toBeVisible();
   });
 
