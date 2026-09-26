@@ -46,3 +46,9 @@ export async function readClipboardText(): Promise<string | null> {
     return null;
   }
 }
+
+/** Recognize a copied absolute directory path without accessing the filesystem. */
+export function looksLikeAbsoluteClipboardPath(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith('/') || trimmed.startsWith('~/');
+}

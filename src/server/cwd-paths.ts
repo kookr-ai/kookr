@@ -1,5 +1,5 @@
 /**
- * Expand portable CWD spellings used in playbook metadata into concrete paths.
+ * Expand portable CWD spellings into concrete paths for server-side use.
  * This is intentionally narrow: it supports the forms documented in bundled
  * playbooks without turning CWD fields into a general shell expansion surface.
  */

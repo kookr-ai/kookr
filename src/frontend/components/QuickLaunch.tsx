@@ -37,6 +37,7 @@ import { loadQuickLaunchDictationId, renewQuickLaunchDictationId } from '../stor
 import { hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
 import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
+import { looksLikeAbsoluteClipboardPath, readClipboardText } from '../clipboard.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -59,6 +60,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const preserveFailedDraftRef = useRef(false);
   const hasManualAgentChoiceRef = useRef(false);
+  const hasManualCwdRef = useRef(false);
   const submitAttemptRef = useRef(0);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
   const dictationOwner = `${dictationOwnerPrefix}${selectedAgentId}:${cwd}`;
@@ -110,7 +112,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
-    if (preserveFailedDraftRef.current) return;
+    if (preserveFailedDraftRef.current || hasManualCwdRef.current) return;
     let active = true;
 
     async function resolveCwd() {
@@ -122,13 +124,13 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           const task = tasks.find((t) =>
             t.sessions.some((s) => s.tmuxSession === selectedAgentId)
           );
-          if (task && active && !preserveFailedDraftRef.current) {
+          if (task && active && !preserveFailedDraftRef.current && !hasManualCwdRef.current) {
             setCwd(task.cwd);
             return;
           }
         } catch { /* ignore */ }
       }
-      if (active && !preserveFailedDraftRef.current) {
+      if (active && !preserveFailedDraftRef.current && !hasManualCwdRef.current) {
         setCwd(recentPaths.getAll()[0] ?? serverCwd);
       }
     }
@@ -261,6 +263,26 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     submitLaunch(false);
   }
 
+  async function handlePasteCwdFromClipboard() {
+    // Keep focus inside the bar before awaiting permission: Safari can blur
+    // the prompt without focusing the clicked button, which would close it.
+    inputRef.current?.focus();
+    const text = await readClipboardText();
+    const trimmed = text?.trim() ?? '';
+    if (!trimmed) {
+      useKookrStore.getState().handleAlert('', 'Nothing to paste — the clipboard is empty or access was denied.', 'info');
+      return;
+    }
+    // Match the dialog: a copied pwd may include a following shell prompt.
+    const candidate = trimmed.split(/\r?\n/, 1)[0]?.trim() ?? '';
+    if (!looksLikeAbsoluteClipboardPath(candidate)) {
+      useKookrStore.getState().handleAlert('', 'Clipboard is not a path — copy an absolute path (starts with / or ~/) and try again.', 'info');
+      return;
+    }
+    hasManualCwdRef.current = true;
+    setCwd(candidate);
+  }
+
   function handleAgentTypeChange(next: AgentTypeSelectorValue) {
     if (!next) return;
     hasManualAgentChoiceRef.current = true;
@@ -312,6 +334,18 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     <div className="quick-launch-bar" onBlur={handleBlur} onKeyDown={handleKeyDown}>
       <div className="quick-launch-row">
         <span className="quick-launch-cwd" title={cwd}>{cwd}</span>
+        <button
+          type="button"
+          className="link-button cwd-clipboard-button"
+          // Safari does not focus clicked buttons. Preserve in-bar focus until
+          // mouse-up so blur-to-close cannot unmount this control before click.
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={handlePasteCwdFromClipboard}
+          title="Fill working directory from a copied absolute path"
+          aria-label="Use clipboard path"
+        >
+          Use clipboard path
+        </button>
         <AgentTypeSelector
           value={agentType}
           onChange={handleAgentTypeChange}

@@ -2,8 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, mkdir, rm, symlink, writeFile, readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
 import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
@@ -3823,6 +3823,39 @@ describe('launchTask cwd validation (RFC F12)', () => {
       const result = await launchTask(deps, { prompt: 'go', cwd: dir });
       expect(result.task.cwd).toBe(dir);
       expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledOnce();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('expands a clipboard home-relative path before validation, storage, and adapter launch', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-home-test-'));
+    try {
+      const clipboardPath = `~/${relative(homedir(), dir)}`;
+      const options = { prompt: 'review clipboard directory', cwd: clipboardPath };
+      const result = await launchTask(deps, options);
+      expect(realpathSync(result.task.cwd)).toBe(realpathSync(dir));
+      expect(result.task.cwd).not.toMatch(/^~/);
+      expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+        result.task.id, expect.any(String), result.task.cwd, undefined, expect.any(Object),
+      );
+      expect(options.cwd).toBe(clipboardPath);
+      const duplicate = await launchTask(deps, { ...options, cwd: dir });
+      expect(duplicate.task.id).toBe(result.task.id);
+      expect(duplicate.duplicate).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('still rejects a missing directory after expanding a clipboard home-relative path', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kookr-cwd-home-test-'));
+    try {
+      const clipboardPath = `~/${relative(homedir(), join(dir, 'missing'))}`;
+      await expect(launchTask(deps, { prompt: 'go', cwd: clipboardPath }))
+        .rejects.toThrow(CwdValidationError);
+      expect(store.listTasks()).toHaveLength(0);
+      expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

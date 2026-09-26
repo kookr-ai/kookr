@@ -712,18 +712,18 @@ The system SHOULD allow re-launching a previous task, pre-filling the launch dia
 The system SHOULD provide a minimal quick-launch mode that inherits the path from the currently selected agent.
 
 **Acceptance criteria:**
-- Keyboard shortcut (e.g., `Ctrl+L`) opens a prompt-only input bar (not the full dialog)
-- Path is inherited from the currently selected agent's working directory
+- Keyboard shortcut (`Alt+L`, or `Cmd+Ctrl+L` on macOS by default) opens the compact launch bar
+- Path initially inherits the selected agent's working directory; an explicit clipboard path overrides it (R4b.11)
 - If no agent is selected, falls back to Kookr's CWD (R4b.1)
 - Enter submits, Escape cancels
-- Launched task uses the inherited path and entered prompt
+- Launched task uses the current working directory and entered prompt
 - If the immediate WebSocket send fails, the input stays open with its exact prompt, path, agent, effort, and model selections intact and shows the existing connection error
 - Retrying after the sender recovers dispatches the same launch payload and closes Quick Launch exactly once
 - Failed sends do not update recent-path ordering or remembered launch selections
 
 **Rationale:** When running multiple agents in the same repo, the path is always the same. Removing the dialog entirely for this case cuts launch time to a single keystroke + prompt.
 
-**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling), `src/frontend/components/QuickLaunch.toast.test.ts` (failed-send state retention and successful retry).
+**Evidence:** `src/frontend/components/QuickLaunch.tsx` (compact launch bar with an optional clipboard directory override; initial CWD resolves from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (quick-launch shortcut opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling), `src/frontend/components/QuickLaunch.toast.test.ts` (failed-send state retention and successful retry).
 
 ### R4b.5: Telegram Agent Selection — SHOULD — `done`
 
@@ -853,17 +853,20 @@ The system SHALL remember the last effort and model pins sent from dashboard Lau
 
 ### R4b.11: Fill Launch Working Directory from Clipboard Path [F4.1] — SHOULD — `done`
 
-The system SHOULD let the operator fill the Launch dialog's working directory from a copied path that starts with `/` or `~/`, without reading the clipboard until they click.
+The system SHOULD let the operator fill the Launch dialog's or Quick Launch bar's working directory from a copied path that starts with `/` or `~/`, without reading the clipboard until they click.
 
 **Acceptance criteria:**
 - Clicking "Use clipboard path" with clipboard `/tmp/demo-repo` or `~/git/demo` (leading/trailing whitespace allowed) sets Working directory to that trimmed path
 - A multi-line clipboard uses the first line when that line is a path
 - Clicking with a paragraph of prose does not change cwd and explains that the clipboard is not a path
 - Empty or denied clipboard does not throw; cwd is unchanged (same fail-closed behavior as the prompt paste chip)
-- Opening the dialog does not read the clipboard
+- Opening either launch surface does not read the clipboard
+- Quick Launch keeps the clipboard control inside the bar; clicking fills the directory without submitting or closing, including during a delayed clipboard read
+- A pasted Quick Launch path takes precedence over pending or subsequent inherited-directory updates
 - Shape check only (`/` or `~/` after trim); no filesystem access
+- On submission, the server expands `~/` before directory validation and uses that concrete path for launch and stored task state
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (`looksLikeAbsoluteClipboardPath`, `handlePasteCwdFromClipboard`), `src/frontend/components/LaunchTaskDialog.paste.test.ts`.
+**Evidence:** `src/frontend/clipboard.ts` (shared reader and path shape check), `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`, `src/server/launch-service.ts` (home-relative path expansion). Tests: `src/frontend/components/LaunchTaskDialog.paste.test.ts`, `src/frontend/components/QuickLaunch.clipboard.test.ts`, `src/server/launch-service.test.ts`, `e2e/quick-launch-clipboard.spec.ts`.
 
 ### R4b.12: Required Launch Dependency Admission [F4.12, F10.5] — SHALL — `done`
 

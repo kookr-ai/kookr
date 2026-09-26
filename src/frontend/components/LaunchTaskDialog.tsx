@@ -46,7 +46,8 @@ import {
 import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
-import { copyText, readClipboardText } from '../clipboard.js';
+import { copyText, readClipboardText, looksLikeAbsoluteClipboardPath } from '../clipboard.js';
+export { looksLikeAbsoluteClipboardPath } from '../clipboard.js';
 import { discardDictationRecoveries, createDictationId, hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
 import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
@@ -81,16 +82,6 @@ export const SAMPLE_LAUNCH_PROMPTS = [
     prompt: 'Explain git status and the last few commits',
   },
 ] as const;
-
-/**
- * True when clipboard text looks like an absolute path we can drop into
- * Working directory: after trim, it starts with `/` or `~/`. Shape check
- * only — does not touch the filesystem (issue #2748).
- */
-export function looksLikeAbsoluteClipboardPath(text: string): boolean {
-  const trimmed = text.trim();
-  return trimmed.startsWith('/') || trimmed.startsWith('~/');
-}
 
 type Tab = 'manual' | 'playbooks';
 
