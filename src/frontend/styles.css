@@ -8790,6 +8790,12 @@ button.completed-row-rating:focus-visible {
   overflow: auto;
 }
 .voice-preview:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.voice-recovery { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--amber); border-radius: 6px; color: var(--text-secondary); font-size: 11px; overflow-wrap: anywhere; }
+.voice-launch-pending { color: var(--amber); font-size: 12px; line-height: 1.4; }
+.voice-recovery-label { color: var(--amber); font-weight: 600; }
+.voice-recovery-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.voice-recovery-actions button { color: var(--text); background: var(--bg); border: 1px solid var(--border-dim); border-radius: 4px; padding: 4px 8px; cursor: pointer; }
+.voice-recovery-actions button:focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
 .voice-error { color: #f87171; font-size: 11px; line-height: 1.4; }
 
 .btn-voice {
@@ -8840,6 +8846,7 @@ button.completed-row-rating:focus-visible {
 .input-with-voice .voice-input-controls { grid-column: 2; grid-row: 1; }
 .input-with-voice .voice-preview,
 .input-with-voice .voice-signal,
+.input-with-voice .voice-recovery,
 .input-with-voice .voice-error { grid-column: 1 / -1; }
 .input-with-voice textarea,
 .input-with-voice input {

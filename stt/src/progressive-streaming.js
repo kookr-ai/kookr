@@ -72,6 +72,7 @@ export class SmartProgressiveStreamingHandler {
 
   /** Reset state for a new streaming session. */
   reset() {
+    this.generation = (this.generation ?? 0) + 1;
     /** @type {string[]} Completed sentences that won't change */
     this.fixedSentences = [];
     /** @type {number} End time of last fixed sentence (seconds) */
@@ -103,11 +104,17 @@ export class SmartProgressiveStreamingHandler {
    * @param {import('./backends/types.js').TranscriptionOptions} [options]
    * @returns {Promise<PartialTranscription>}
    */
-  async transcribeIncremental(audio, audioStartSample = 0, { language = 'auto' } = {}) {
+  async transcribeIncremental(audio, audioStartSample = 0, { language = 'auto', signal } = {}) {
     // A new language must reprocess even unchanged audio, including sentences
     // fixed by an earlier pass. Keep this state local to the client handler.
     if (this.lastLanguage !== null && this.lastLanguage !== language) this.reset();
     this.lastLanguage = language;
+    const generation = this.generation;
+    const assertCurrent = () => {
+      signal?.throwIfAborted();
+      if (generation !== this.generation) throw new DOMException('Recording was cleared', 'AbortError');
+    };
+    assertCurrent();
     const currentLength = audio.length;
     // Absolute length of audio seen this session, including trimmed-off front.
     const absoluteLength = audioStartSample + currentLength;
@@ -128,7 +135,18 @@ export class SmartProgressiveStreamingHandler {
       return this.lastResult;
     }
 
-    this.lastTranscribedLength = absoluteLength;
+    // Never invent timestamps for audio that has already fallen out of the
+    // rolling buffer. The server can preserve the preview as incomplete text.
+    if (audioStartSample > Math.floor(this.fixedEndTime * this.sampleRate)) {
+      const error = new Error('Transcription could not keep up with this recording. The saved text is incomplete.');
+      error.code = 'audio_window_exhausted';
+      throw error;
+    }
+
+    // Publish all state together only after both inference passes succeed.
+    // A failed pass must not make older text look current on the next retry.
+    const fixedSentences = [...this.fixedSentences];
+    let fixedEndTime = this.fixedEndTime;
 
     // Extract window from last fixed sentence endpoint to end of audio.
     // fixedEndTime is absolute; rebase it into the (possibly trimmed) buffer.
@@ -142,7 +160,13 @@ export class SmartProgressiveStreamingHandler {
     // VAD pre-filter: skip transcription if no speech detected.
     // Prevents Whisper hallucinations on silent/near-silent audio.
     const vad = await detectSpeech(audioWindow);
+    assertCurrent();
     if (!vad.hasSpeech) {
+      // Release a verified silent region, but retain half a second of overlap:
+      // VAD examines whole frames and can leave an unfinished frame at the end.
+      // Speech starting there must still be available on the next update.
+      this.fixedEndTime = Math.max(this.fixedEndTime, absoluteLength / this.sampleRate - 0.5);
+      this.lastTranscribedLength = absoluteLength;
       this.lastResult = new PartialTranscription(
         this.fixedSentences.join(' '),
         '',
@@ -153,7 +177,9 @@ export class SmartProgressiveStreamingHandler {
     }
 
     // Transcribe current window
-    let result = await this.model.transcribe(audioWindow, { language });
+    const options = signal ? { language, signal } : { language };
+    let result = await this.model.transcribe(audioWindow, options);
+    assertCurrent();
 
     // If window exceeds maxWindowSize, fix completed sentences
     if (
@@ -176,23 +202,27 @@ export class SmartProgressiveStreamingHandler {
       }
 
       if (newFixedSentences.length > 0) {
-        this.fixedSentences.push(...newFixedSentences);
-        this.fixedEndTime = newFixedEndTime;
+        fixedSentences.push(...newFixedSentences);
+        fixedEndTime = newFixedEndTime;
 
         // Re-transcribe from new fixed point for fresh active text
         const newWindowStartSamples = Math.max(
           0,
-          Math.floor(this.fixedEndTime * this.sampleRate) - audioStartSample,
+          Math.floor(fixedEndTime * this.sampleRate) - audioStartSample,
         );
         const newAudioWindow = audio.slice(newWindowStartSamples);
-        result = await this.model.transcribe(newAudioWindow, { language });
+        result = await this.model.transcribe(newAudioWindow, options);
+        assertCurrent();
       }
     }
 
-    const fixedText = this.fixedSentences.join(' ');
+    const fixedText = fixedSentences.join(' ');
     const activeText = result.text ? result.text.trim() : '';
     const timestamp = absoluteLength / this.sampleRate;
 
+    this.fixedSentences = fixedSentences;
+    this.fixedEndTime = fixedEndTime;
+    this.lastTranscribedLength = absoluteLength;
     this.lastResult = new PartialTranscription(fixedText, activeText, timestamp, false);
     return this.lastResult;
   }

@@ -13,7 +13,7 @@ export const qwenBackend = {
   name: 'qwen',
   modelName: QWEN_ASR_MODEL,
 
-  async transcribe(audioWindow, { language = 'auto' } = {}) {
+  async transcribe(audioWindow, { language = 'auto', signal } = {}) {
     const formData = new FormData();
     formData.append('file', new Blob([float32ToWav(audioWindow)], { type: 'audio/wav' }), 'audio.wav');
     formData.append('model', QWEN_ASR_MODEL);
@@ -25,7 +25,8 @@ export const qwenBackend = {
     const timeout = setTimeout(() => controller.abort(), QWEN_ASR_TIMEOUT_MS);
     try {
       const response = await fetch(`${QWEN_ASR_URL}/v1/audio/transcriptions`, {
-        method: 'POST', body: formData, signal: controller.signal,
+        method: 'POST', body: formData,
+        signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
       });
       if (!response.ok) throw new Error(`Qwen ASR API error: ${response.status} ${response.statusText}`);
       const data = await response.json();

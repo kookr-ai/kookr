@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -47,6 +47,8 @@ import { useLaunchTaskCwds } from '../hooks/useLaunchTaskCwds.js';
 import { useRecentPrompts } from '../hooks/useRecentPrompts.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { copyText, readClipboardText } from '../clipboard.js';
+import { discardDictationRecoveries, createDictationId, hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
+import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -194,9 +196,20 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       || trackedProjectPaths[0]?.path
       || serverCwd
     );
+  const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
+  const [dictationId, setDictationId] = useState(() => initialDraft?.dictationId ?? createDictationId());
   const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
+  const dictationScope = isRelaunch ? ['relaunch', relaunchParentTaskId, defaultPrompt, defaultCriteria, defaultCwd] : ['draft', dictationId];
+  const dictationOwnerPrefix = `[${JSON.stringify(dictationScope)},`;
+  const dictationContext = JSON.stringify([dictationScope, cwd, projectContext?.project]);
+  const hiddenRecoveries = listDictationRecoveries(dictationOwnerPrefix).filter(entry =>
+    entry.owner !== `${dictationContext}:prompt` && entry.owner !== `${dictationContext}:criteria`,
+  );
+  const [promptDictationPending, setPromptDictationPending] = useState(false);
+  const [criteriaDictationPending, setCriteriaDictationPending] = useState(false);
+  const dictationPending = promptDictationPending || criteriaDictationPending || hasPendingDictation(dictationOwnerPrefix);
   const [showDropdown, setShowDropdown] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(-1);
   const initialTab: Tab = relaunchPlaybookId
@@ -250,6 +263,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const dialogRef = useRef<HTMLDivElement>(null);
   const playbooksTabRef = useRef<HTMLButtonElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const criteriaRef = useRef<HTMLInputElement>(null);
   const cwdRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLUListElement>(null);
   const openedAtRef = useRef(Date.now());
@@ -266,8 +280,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   useEffect(() => {
     if (isRelaunch) return;
     if (submittedRef.current) return;
-    saveLaunchTaskDialogDraft({ prompt, cwd, criteria });
-  }, [prompt, cwd, criteria, isRelaunch]);
+    saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
+  }, [prompt, cwd, criteria, isRelaunch, dictationId, sttUrl]);
 
   useEffect(() => {
     if (initialHadDraft) {
@@ -341,11 +355,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     [duplicateCandidates, cwd],
   );
   const showBusyDirectoryBanner = busyDirectoryTasks.length > 0 && !activeDuplicate;
-  const canSubmitLaunch = Boolean(prompt.trim() && cwd.trim() && !submitting && !grokAuthBlocksLaunch);
+  const canSubmitLaunch = Boolean(prompt.trim() && cwd.trim() && !submitting && !grokAuthBlocksLaunch && !dictationPending);
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
-    if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch) return;
+    if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch || dictationPending || hasPendingDictation(dictationOwnerPrefix)) return;
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, {
       prompt: trimmed,
       cwd: cwd.trim(),
@@ -516,7 +530,9 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   });
 
   function discardDraft() {
+    discardDictationRecoveries(dictationOwnerPrefix);
     clearLaunchTaskDialogDraft();
+    setDictationId(createDictationId());
     setPrompt('');
     setCriteria('');
     setDraftRestored(false);
@@ -629,6 +645,16 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
         {tab === 'manual' ? (
           <form onSubmit={handleSubmit}>
+            {hiddenRecoveries.map(recovery => (
+              <OtherContextDictationRecovery
+                key={recovery.id}
+                recovery={recovery}
+                fieldLabel={recovery.owner.endsWith(':criteria') ? 'criteria' : 'prompt'}
+                onChange={refreshRecoveries}
+                inputRef={recovery.owner.endsWith(':criteria') ? criteriaRef : promptRef}
+              />
+            ))}
+            {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching.</p>}
             {draftRestored && (
               <div className="draft-restored-banner" role="status">
                 <span>Restored your last draft</span>
@@ -696,7 +722,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-description" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton key={`${dictationContext}:prompt`} recoveryKey={`${dictationContext}:prompt`} recoveryLabel="prompt" onPendingChange={setPromptDictationPending} onRecoveryResolved={() => promptRef.current?.focus()} inputId="launch-description" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
@@ -828,13 +854,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               <div className="input-with-voice">
                 <input
                   type="text"
+                  ref={criteriaRef}
                   value={criteria}
                   onChange={(e) => setCriteria(e.target.value)}
                   placeholder="e.g. Tests pass and PR created"
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton inputId="launch-criteria" onTranscript={(text) => setCriteria((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton key={`${dictationContext}:criteria`} recoveryKey={`${dictationContext}:criteria`} recoveryLabel="criteria" onPendingChange={setCriteriaDictationPending} onRecoveryResolved={() => criteriaRef.current?.focus()} inputId="launch-criteria" onTranscript={(text) => setCriteria((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
@@ -857,7 +884,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
               <button
                 type="submit"
                 className="btn-primary"
-                disabled={!prompt.trim() || !cwd.trim() || submitting || grokAuthBlocksLaunch || Boolean(activeDuplicate)}
+                disabled={!canSubmitLaunch || Boolean(activeDuplicate)}
                 aria-describedby={[
                   noAgentCliDetected ? CLI_INSTALL_BANNER_ID : null,
                   showGrokAuthBanner ? GROK_AUTH_BANNER_ID : null,

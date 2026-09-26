@@ -821,6 +821,16 @@ model and the Qwen service applies their shared vocabulary hint. See
 [local speech recognition](reference/speech-recognition.md) for configuration
 and the readiness contract.
 
+The browser saves non-empty provisional text in bounded local recovery storage,
+owned by a draft identity and field. Closing a dialog cancels capture while
+retaining its recovery. Restoring explicitly appends to that input. The audio
+worklet drains its pending samples before sending stop; cancellation and late
+responses cannot deliver to a different draft. The Node service tracks audio
+positions from the recording's start, including audio removed from the rolling
+buffer. It commits recognition cache updates only after successful inference.
+Finalization failures return incomplete preview
+text as an error, never as a successful final transcript.
+
 An optional corpus writer saves audio and final automatic predictions locally.
 The browser service captures the complete incoming PCM stream separately from
 its sliding recognition window; Telegram retains the original uploaded bytes.

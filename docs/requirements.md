@@ -2099,6 +2099,43 @@ usage. Collection SHALL be disabled by default.
 `stt/src/server-corpus.test.js`, `src/integrations/telegram/transcribe.test.ts`,
 and `src/server/stt-manager.test.ts`.
 
+### R19.4: Recover Interrupted Dictation [#3366] — SHALL — `done`
+
+The dashboard SHALL preserve non-empty provisional dictation as explicitly
+incomplete text when recognition times out, disconnects, or its input closes.
+Recovery SHALL belong to the original draft and field, never submit a task,
+and preserve text already typed by the operator.
+
+**Acceptance criteria:**
+
+- Save provisional text before a failure or unmount can hide it. Bound local
+  storage, record capture time, and expire old recoveries. Retain a session
+  fallback when browser storage is unavailable and explain that limitation.
+- Reopening the matching input offers explicit restore, copy, and discard.
+  Restore appends once; copy leaves the recovery available. Another task,
+  field, or launch context cannot consume it.
+- Starting another recording cannot silently replace unresolved recovery.
+  Empty recognition creates no recovery; successful final delivery removes
+  only the recovery belonging to that recording. Late events cannot deliver
+  or resurrect text after cancellation or completion.
+- A finalization failure remains an error with recoverable partial text. It
+  cannot masquerade as a complete final transcript. The service reuses cached
+  text only when all received audio has been processed successfully.
+- When the bounded recognition window cannot retain unprocessed audio, report
+  that loss explicitly. Saving completed sentences as stable text must preserve prior text
+  across the five-minute rolling-buffer boundary.
+- Verification includes delayed/hung inference and real browser streaming at
+  recording pace for at least ten minutes, with identifiable speech near the
+  start, middle, and end. Report observed latency and limits separately from
+  recognition inaccuracies. Audio archival remains an independent opt-in.
+
+**Evidence:** `src/frontend/store/dictation-recovery.test.ts`,
+`src/frontend/components/VoiceInputButton.test.tsx`,
+`src/frontend/hooks/pcm-processor.test.ts`,
+`e2e/voice-dictation-recovery.spec.ts`, `stt/src/server-finalization.test.js`,
+`stt/src/server-overflow.test.js`, and
+`docs/reports/3366-dictation-reliability.md`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -2237,6 +2274,7 @@ and `src/server/stt-manager.test.ts`.
 | R19.1 | Local voice dictation | SHALL | done | VoiceInputButton, useSTT, STT WebSocket and Whisper backend |
 | R19.2 | Local Qwen recognition on GPU | SHALL | done | STT manager, Qwen HTTP service and backend, Telegram transcription |
 | R19.3 | Local transcription corpus | SHALL | done | Shared corpus writer, browser and Telegram capture, STT manager |
+| R19.4 | #3366 | SHALL | done | Dictation recovery store, VoiceInputButton, PCM drain, STT finalization |
 
 ---
 

@@ -18,6 +18,7 @@
  * so they must not store a client's language as mutable backend state.
  * @typedef {Object} TranscriptionOptions
  * @property {string} [language='auto'] - Spoken language code, or 'auto' to detect it.
+ * @property {AbortSignal} [signal] - Cancel a request when its recording is retired.
  */
 
 /**

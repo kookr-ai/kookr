@@ -91,20 +91,28 @@ afterEach(async () => {
 });
 
 test('saves full original PCM once with final text despite rolling-window trimming', async () => {
-  transcribe.mockResolvedValueOnce({ text: 'Provisional preview.', sentences: [] });
+  vi.stubEnv('STT_MAX_BUFFER_SECONDS', '2');
+  vi.stubEnv('MAX_WINDOW_SIZE', '1');
+  vi.stubEnv('SENTENCE_BUFFER', '0.5');
+  transcribe
+    .mockResolvedValueOnce({ text: 'Bonjour. Provisional preview.', sentences: [
+      { text: 'Bonjour.', start: 0, end: 1 }, { text: 'Provisional preview.', start: 1, end: 2 },
+    ] })
+    .mockResolvedValueOnce({ text: 'Provisional preview.', sentences: [] })
+    .mockResolvedValueOnce({ text: 'Kookr.', sentences: [], recognition: { vocabulary: 'Kookr' } });
   await start();
   const ws = await connect();
   const audio = Buffer.alloc(16000 * 3 * 2);
   for (let n = 0; n < audio.length / 2; n++) audio.writeInt16LE((n % 64000) - 32000, n * 2);
   const partial = next(ws, (f) => f.type === 'progressive');
-  ws.send(audio.subarray(0, 32000));
+  ws.send(audio.subarray(0, 64000));
   expect((await partial).activeText).toBe('Provisional preview.');
   expect(await records()).toEqual([]);
-  ws.send(audio.subarray(32000));
+  ws.send(audio.subarray(64000));
   const final = await control(ws, { type: 'stop' }, (f) => f.is_final);
   ws.send(JSON.stringify({ type: 'stop' }));
   await control(ws, { type: 'ping' }, (f) => f.type === 'pong');
-  expect(final.text).toBe('Bonjour Kookr.');
+  expect(final.text).toBe('Bonjour. Kookr.');
   const saved = await records();
   expect(saved).toHaveLength(1);
   expect(saved[0].record.metadata).toMatchObject({
@@ -178,7 +186,7 @@ test('inference failure is distinguished from a successful empty prediction', as
   await start();
   const ws = await connect();
   ws.send(Buffer.alloc(32000));
-  await control(ws, { type: 'stop' }, (f) => f.is_final);
+  await control(ws, { type: 'stop' }, (f) => f.type === 'error');
   const saved = await records();
   expect(saved).toHaveLength(1);
   expect(saved[0].record.metadata).toMatchObject({ status: 'error', errorCode: 'inference_failed' });

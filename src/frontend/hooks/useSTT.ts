@@ -14,6 +14,10 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 
 import type { STTLanguage } from '../store/stt-language.js';
+import {
+  beginDictationRecovery, discardDictationRecovery, loadDictationRecovery, releaseDictationReservation,
+  saveDictationPartial, DICTATION_RECOVERY_TTL_MS, type DictationRecovery,
+} from '../store/dictation-recovery.js';
 
 export type STTState = 'starting' | 'idle' | 'recording' | 'processing' | 'error';
 
@@ -25,6 +29,9 @@ interface AudioSignal {
 
 export interface UseSTTResult {
   state: STTState;
+  recovery: DictationRecovery | null;
+  restoreRecovery: () => void;
+  discardRecovery: () => void;
   /** Progressive transcription text (fixed + active) */
   transcript: string;
   /** Error message if state === 'error' */
@@ -47,6 +54,7 @@ export interface UseSTTResult {
 
 const TARGET_SAMPLE_RATE = 16000;
 const PROCESSING_TIMEOUT_MS = 15_000;
+const AUDIO_FLUSH_TIMEOUT_MS = 1_000;
 // Qwen advertises its two-minute finalization cap plus transport grace.
 // Older services keep the shorter default; never accept an unbounded wait.
 const MAX_NEGOTIATED_PROCESSING_TIMEOUT_MS = 125_000;
@@ -142,6 +150,7 @@ async function tryCreateWorkletNode(
   source: MediaStreamAudioSourceNode,
   onChunk: (data: Float32Array) => void,
   isCurrent: () => boolean,
+  onFlushed: () => void,
 ): Promise<AudioWorkletNode | null> {
   if (!audioContext.audioWorklet) return null;
 
@@ -149,8 +158,10 @@ async function tryCreateWorkletNode(
     await audioContext.audioWorklet.addModule('/pcm-processor.js');
     if (!isCurrent()) return null;
     const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
-    workletNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
-      onChunk(e.data);
+    workletNode.port.onmessage = (e: MessageEvent<Float32Array | { type: 'flushed' }>) => {
+      if (!isCurrent()) return;
+      if (e.data instanceof Float32Array) onChunk(e.data);
+      else if (e.data?.type === 'flushed') onFlushed();
     };
     source.connect(workletNode);
     // AudioWorkletNode doesn't need to connect to destination to receive data
@@ -180,8 +191,10 @@ function createScriptProcessorFallback(
   return processor;
 }
 
-/** Partial results stay in the preview; the callback receives each final result once. */
-export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (text: string) => void): UseSTTResult {
+/** The callback receives each final result once, or partial text explicitly restored by the user. */
+export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (text: string) => void, recoveryOwner: string): UseSTTResult {
+  const [recovery, setRecovery] = useState(() => loadDictationRecovery(recoveryOwner));
+  const recordingDraftRef = useRef<DictationRecovery | null>(null);
   const [state, setState] = useState<STTState>('idle');
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -198,6 +211,8 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
   const contextRef = useRef<AudioContext | null>(null);
   const audioNodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const flushAudioRef = useRef<(() => void) | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const processingTimeoutRef = useRef(PROCESSING_TIMEOUT_MS);
 
@@ -237,7 +252,13 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
     // Pending microphone/worklet requests and queued socket events belong only
     // to the session that started them, even if this control starts again.
     sessionRef.current += 1;
+    const draft = recordingDraftRef.current;
+    recordingDraftRef.current = null;
+    if (draft) releaseDictationReservation(draft.id);
     processingTimeoutRef.current = PROCESSING_TIMEOUT_MS;
+    flushAudioRef.current = null;
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = null;
     releaseAudio();
     if (processingTimerRef.current) {
       clearTimeout(processingTimerRef.current);
@@ -254,15 +275,18 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
     }
   }, [releaseAudio]);
 
-  // Cancel before the next task's input is painted. Cancellation discards the
-  // pending result; stopping explicitly is what requests a final transcript.
+  // Cancel before another input is painted. Partials were already saved; a
+  // late final result cannot be delivered to the next input's consumer.
   useLayoutEffect(() => {
     mountedRef.current = true;
+    setStateAndRef('idle');
+    setTranscript('');
+    setRecovery(loadDictationRecovery(recoveryOwner));
     return () => {
       mountedRef.current = false;
       cleanup();
     };
-  }, [sttUrl, cleanup]);
+  }, [sttUrl, recoveryOwner, cleanup]);
 
   useEffect(() => {
     setStateAndRef('idle');
@@ -282,6 +306,19 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
   const start = useCallback(async () => {
     if (!mountedRef.current || !['idle', 'error'].includes(stateRef.current)) return;
     cleanup();
+    const draft = beginDictationRecovery(recoveryOwner);
+    if (!draft) {
+      setRecovery(loadDictationRecovery(recoveryOwner));
+      setError('Restore or discard unfinished dictation before recording again. Recovery storage holds at most 12 recordings for 24 hours.');
+      setStateAndRef('error');
+      return;
+    }
+    recordingDraftRef.current = draft;
+    const savePartial = (text: string) => {
+      setTranscript(text);
+      const saved = saveDictationPartial(draft, text);
+      if (saved) setRecovery(saved);
+    };
     const session = sessionRef.current;
     const isCurrent = () => mountedRef.current && sessionRef.current === session;
     setStateAndRef('starting');
@@ -320,7 +357,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       };
       ws.onmessage = (event) => {
         if (!isCurrent()) return;
-        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string; finalization_timeout_ms?: unknown };
+        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string; partial_text?: unknown; finalization_timeout_ms?: unknown };
         try {
           msg = JSON.parse(event.data);
         } catch {
@@ -339,17 +376,22 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
           }
         } else if (msg.type === 'progressive') {
           const text = [msg.fixedText, msg.activeText].filter((part) => typeof part === 'string').join(' ');
-          setTranscript(text);
+          savePartial(text);
         } else if (msg.type === 'transcription' && msg.is_final === true && typeof msg.text === 'string') {
           setTranscript('');
+          if (msg.text.trim()) {
+            discardDictationRecovery(draft.owner, draft.id);
+            setRecovery(null);
+          }
           setStateAndRef('idle');
           cleanup();
           // Capture this recording's consumer instead of retargeting to a
           // different input when props change while the service is processing.
           if (msg.text.trim()) onTranscript(msg.text);
         } else if (msg.type === 'transcription' && msg.is_final === false && typeof msg.text === 'string') {
-          setTranscript(msg.text);
+          savePartial(msg.text);
         } else if (msg.type === 'error') {
+          if (typeof msg.partial_text === 'string' && msg.partial_text.trim()) savePartial(msg.partial_text);
           markSTTDegraded(typeof msg.error === 'string' ? msg.error : 'Transcription failed');
           cleanup();
         }
@@ -373,7 +415,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       let lastChunkAt: number | null = null;
       let quietSince: number | null = null;
       const handleChunk = (inputData: Float32Array) => {
-        if (!isCurrent() || stateRef.current !== 'recording' || inputData.length === 0) return;
+        if (!isCurrent() || (stateRef.current !== 'recording' && !flushAudioRef.current) || inputData.length === 0) return;
         latestSignal = measureAudioSignal(inputData);
         lastChunkAt = performance.now();
         quietSince = latestSignal.status === 'quiet' ? quietSince ?? lastChunkAt : null;
@@ -381,7 +423,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
         const pcm16 = resampleToInt16(inputData, audioContext.sampleRate);
         ws.send(pcm16.buffer as ArrayBuffer);
       };
-      const workletNode = await tryCreateWorkletNode(audioContext, source, handleChunk, isCurrent);
+      const workletNode = await tryCreateWorkletNode(audioContext, source, handleChunk, isCurrent, () => flushAudioRef.current?.());
       if (!isCurrent()) {
         workletNode?.disconnect();
         return;
@@ -412,24 +454,79 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       setStateAndRef('error');
       cleanup();
     }
-  }, [sttUrl, language, onTranscript, cleanup]);
+  }, [sttUrl, language, onTranscript, recoveryOwner, cleanup]);
 
   const stop = useCallback(() => {
     if (stateRef.current !== 'recording') return;
     const ws = wsRef.current;
-    releaseAudio();
-    if (ws?.readyState === WebSocket.OPEN) {
-      setStateAndRef('processing');
-      processingTimerRef.current = setTimeout(() => {
-        markSTTDegraded('Transcription timed out');
+    const session = sessionRef.current;
+    const isCurrent = () => mountedRef.current && sessionRef.current === session;
+    // Enter processing immediately so a second click cannot request stop twice.
+    setStateAndRef('processing');
+    const finishCapture = () => {
+      if (!isCurrent()) return;
+      flushAudioRef.current = null;
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+      releaseAudio();
+      if (ws?.readyState === WebSocket.OPEN) {
+        processingTimerRef.current = setTimeout(() => {
+          markSTTDegraded('Transcription timed out');
+          cleanup();
+        }, processingTimeoutRef.current);
+        ws.send(JSON.stringify({ type: 'stop' }));
+      } else {
+        markSTTDegraded('STT service disconnected');
         cleanup();
-      }, processingTimeoutRef.current);
-      ws.send(JSON.stringify({ type: 'stop' }));
+      }
+    };
+    const node = audioNodeRef.current;
+    if (node && 'port' in node) {
+      flushAudioRef.current = finishCapture;
+      flushTimerRef.current = setTimeout(() => {
+        if (!isCurrent()) return;
+        setError('Microphone audio could not be finalized. Any recovered text is incomplete.');
+        setStateAndRef('error');
+        cleanup();
+      }, AUDIO_FLUSH_TIMEOUT_MS);
+      try {
+        node.port.postMessage({ type: 'flush' });
+      } catch {
+        setError('Microphone audio could not be finalized. Any recovered text is incomplete.');
+        setStateAndRef('error');
+        cleanup();
+      }
     } else {
-      setStateAndRef('idle');
-      cleanup();
+      finishCapture();
     }
   }, [releaseAudio, cleanup]);
+
+  useEffect(() => {
+    if (!recovery) return;
+    const timer = setTimeout(() => {
+      discardDictationRecovery(recovery.owner, recovery.id);
+      setRecovery(null);
+    }, Math.max(0, recovery.capturedAt + DICTATION_RECOVERY_TTL_MS - Date.now()));
+    return () => clearTimeout(timer);
+  }, [recovery]);
+
+  const discardRecovery = useCallback(() => {
+    const current = loadDictationRecovery(recoveryOwner);
+    if (!current || !['idle', 'error'].includes(stateRef.current)) return;
+    discardDictationRecovery(current.owner, current.id);
+    setRecovery(null);
+    setTranscript('');
+  }, [recoveryOwner]);
+
+  const restoreRecovery = useCallback(() => {
+    const current = loadDictationRecovery(recoveryOwner);
+    if (!current || !['idle', 'error'].includes(stateRef.current)) return;
+    // Consume synchronously before notifying the input: repeated clicks cannot append twice.
+    discardDictationRecovery(current.owner, current.id);
+    setRecovery(null);
+    setTranscript('');
+    onTranscript(current.text);
+  }, [recoveryOwner, onTranscript]);
 
   const retryHealth = useCallback(async () => {
     if (sttHealthSnapshot.retrying) return;
@@ -456,6 +553,9 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
 
   return {
     state,
+    recovery,
+    restoreRecovery,
+    discardRecovery,
     transcript,
     error: sttHealth.degraded ? sttHealth.error : error,
     degraded: sttHealth.degraded,

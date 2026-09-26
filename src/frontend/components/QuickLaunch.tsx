@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -33,6 +33,9 @@ import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.j
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
+import { loadQuickLaunchDictationId, renewQuickLaunchDictationId } from '../store/quick-launch-dictation-id.js';
+import { hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
+import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -46,6 +49,11 @@ interface Props {
 }
 
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
+  const [dictationId] = useState(loadQuickLaunchDictationId);
+  const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
+  const [capturePending, setCapturePending] = useState(false);
+  const dictationOwnerPrefix = `quick:${dictationId}:`;
+  const dictationPending = capturePending || hasPendingDictation(dictationOwnerPrefix);
   const [prompt, setPrompt] = useState('');
   const [cwd, setCwd] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
@@ -53,6 +61,8 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const hasManualAgentChoiceRef = useRef(false);
   const submitAttemptRef = useRef(0);
   const { selectedAgentId, serverCwd, sttUrl, activeSTTInputId, agents, availableAgentTypes, defaultAgentType, roundRobinIndex } = useKookrStore();
+  const dictationOwner = `${dictationOwnerPrefix}${selectedAgentId}:${cwd}`;
+  const hiddenRecoveries = listDictationRecoveries(dictationOwnerPrefix).filter(entry => entry.owner !== dictationOwner);
   // Same preflight the Launch dialog uses: it advertises whether a grok-build
   // launch would be refused and refreshes the rotation cursor on mount, so the
   // round-robin preview here stays honest (skips Grok when unusable) and does
@@ -210,7 +220,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
 
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
-    if (!trimmed || !cwd || grokAuthBlocksLaunch) return;
+    if (!trimmed || !cwd || grokAuthBlocksLaunch || dictationPending || hasPendingDictation(dictationOwnerPrefix)) return;
     if (!keepAsDuplicate && findActiveLaunchDuplicate(duplicateCandidates, { prompt: trimmed, cwd, agentType })) {
       return;
     }
@@ -232,6 +242,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       } catch {
         // Browser storage is best-effort; the launch was already dispatched.
       }
+      renewQuickLaunchDictationId();
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
@@ -342,10 +353,14 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         />
         {sttUrl && (
           <Suspense fallback={null}>
-            <VoiceInputButton inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+            <VoiceInputButton key={dictationOwner} recoveryKey={dictationOwner} recoveryLabel="quick launch prompt" onPendingChange={setCapturePending} onRecoveryResolved={() => inputRef.current?.focus()} inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
           </Suspense>
         )}
       </div>
+      {hiddenRecoveries.map(recovery => (
+        <OtherContextDictationRecovery key={recovery.id} recovery={recovery} onChange={refreshRecoveries} inputRef={inputRef} />
+      ))}
+      {dictationPending && <p className="voice-launch-pending" role="status">Finish dictation, then restore or discard incomplete text before launching.</p>}
       <RecentPromptsPicker
         entries={recentPrompts}
         currentCwd={cwd}
@@ -374,7 +389,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
           taskName={activeDuplicate.taskName ?? undefined}
           onOpenExisting={openExistingDuplicate}
           onLaunchAnyway={() => submitLaunch(true)}
-          launchAnywayDisabled={grokAuthBlocksLaunch}
+          launchAnywayDisabled={grokAuthBlocksLaunch || dictationPending}
         />
       )}
     </div>

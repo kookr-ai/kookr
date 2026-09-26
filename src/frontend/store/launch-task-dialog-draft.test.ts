@@ -11,6 +11,7 @@ const KEY = LAUNCH_TASK_DIALOG_DRAFT_KEY;
 
 describe('launch-task-dialog-draft', () => {
   beforeEach(() => {
+    clearLaunchTaskDialogDraft();
     localStorage.clear();
   });
 

@@ -103,6 +103,17 @@ describe('SmartProgressiveStreamingHandler', () => {
   });
 
   describe('VAD guard — speech audio allowed', () => {
+    test('verified silence advances the release point across a rolling buffer', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: false });
+      const backend = { transcribe: vi.fn() };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+      await handler.transcribeIncremental(createSilence(3));
+      expect(handler.fixedEndTime).toBe(2.5);
+      await handler.transcribeIncremental(createSilence(3.5), 16000 * 2.5);
+      expect(handler.fixedEndTime).toBe(5.5);
+      expect(backend.transcribe).not.toHaveBeenCalled();
+    });
+
     test('speech audio passes VAD and reaches backend', async () => {
       vi.mocked(detectSpeech).mockResolvedValue({
         maxProb: 0.95, speechRatio: 0.8, hasSpeech: true,
@@ -218,6 +229,7 @@ describe('SmartProgressiveStreamingHandler', () => {
 
       // Physical length identical but 16000 samples trimmed off the front, so
       // absolute length grew (48000 > 32000) → must transcribe, not freeze.
+      handler.fixedEndTime = 1; // Only finalized audio may leave the buffer.
       await handler.transcribeIncremental(audio, 16000);
       expect(callCount).toBe(2);
     });
@@ -246,7 +258,7 @@ describe('SmartProgressiveStreamingHandler', () => {
       expect(received.length).toBe(32000 - 8000);
     });
 
-    test('window start clamps to 0 when the trim passes the fixed point', async () => {
+    test('window start rejects a gap when the trim passes the fixed point', async () => {
       vi.mocked(detectSpeech).mockResolvedValue({
         maxProb: 0.9, speechRatio: 0.8, hasSpeech: true,
       });
@@ -265,13 +277,64 @@ describe('SmartProgressiveStreamingHandler', () => {
 
       const audio = createTone(2); // 32000 physical samples
 
-      // 16000 trimmed > 8000 fixed → clamp to 0, whole buffer transcribed.
-      await handler.transcribeIncremental(audio, 16000);
-      expect(received.length).toBe(32000);
+      // This gap cannot be safely reconciled with the partial text. Report it
+      // rather than silently dropping the missing half second.
+      await expect(handler.transcribeIncremental(audio, 16000))
+        .rejects.toMatchObject({ code: 'audio_window_exhausted' });
+      expect(received).toBeNull();
     });
   });
 
   describe('window sliding', () => {
+    test('retries the same audio after a failed newer inference instead of returning an older cache', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: true });
+      const backend = { transcribe: vi.fn()
+        .mockResolvedValueOnce({ text: 'Start', sentences: [] })
+        .mockRejectedValueOnce(new Error('temporary failure'))
+        .mockResolvedValueOnce({ text: 'Start and end', sentences: [] }) };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+      await handler.transcribeIncremental(createTone(1));
+      await expect(handler.transcribeIncremental(createTone(2))).rejects.toThrow('temporary failure');
+      expect(await handler.finalize(createTone(2))).toBe('Start and end');
+      expect(backend.transcribe).toHaveBeenCalledTimes(3);
+    });
+
+    test('a failed second pass cannot fix sentences that were never delivered', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: true });
+      const backend = { transcribe: vi.fn()
+        .mockResolvedValueOnce({ text: 'Start. End', sentences: [
+          { text: 'Start.', start: 0, end: 1 }, { text: 'End', start: 1, end: 3 },
+        ] })
+        .mockRejectedValueOnce(new Error('second pass failed')) };
+      const handler = new SmartProgressiveStreamingHandler(backend, { maxWindowSize: 2, sentenceBuffer: 1 });
+      await expect(handler.transcribeIncremental(createTone(3))).rejects.toThrow('second pass failed');
+      expect(handler.fixedSentences).toEqual([]);
+      expect(handler.fixedEndTime).toBe(0);
+      expect(handler.lastTranscribedLength).toBe(0);
+    });
+
+    test('reset invalidates a late result before it can change the new recording', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: true });
+      let complete;
+      const backend = { transcribe: vi.fn(() => new Promise((resolve) => { complete = resolve; })) };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+      const pending = handler.transcribeIncremental(createTone(1));
+      await vi.waitFor(() => expect(complete).toBeTypeOf('function'));
+      handler.reset();
+      complete({ text: 'Old recording', sentences: [] });
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(handler.lastResult).toBeNull();
+    });
+
+    test('reports unrecoverable audio when trimming passes the unfixed sentence boundary', async () => {
+      vi.mocked(detectSpeech).mockResolvedValue({ hasSpeech: true });
+      const backend = { transcribe: vi.fn().mockResolvedValue({ text: 'Only the tail', sentences: [] }) };
+      const handler = new SmartProgressiveStreamingHandler(backend);
+      await expect(handler.transcribeIncremental(createTone(2), 16000))
+        .rejects.toMatchObject({ code: 'audio_window_exhausted' });
+      expect(backend.transcribe).not.toHaveBeenCalled();
+    });
+
     test('fixes sentences when window exceeds maxWindowSize', async () => {
       vi.mocked(detectSpeech).mockResolvedValue({
         maxProb: 0.9, speechRatio: 0.8, hasSpeech: true,

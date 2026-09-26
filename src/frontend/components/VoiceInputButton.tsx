@@ -8,16 +8,23 @@
  * (activeSTTInputId) enforces that only one button records at a time.
  */
 
-import React, { useEffect, useId, useLayoutEffect } from 'react';
+import React, { useEffect, useId, useLayoutEffect, useState } from 'react';
 import { useSTT, type STTState, type UseSTTResult } from '../hooks/useSTT.js';
 import { useKookrStore } from '../store/useStore.js';
 import { isSTTLanguage } from '../store/stt-language.js';
 import { track } from '../telemetry.js';
+import { copyText } from '../clipboard.js';
 import { formatShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
 interface Props {
   inputId: string;
+  /** Stable draft/task identity, separate from the DOM shortcut input ID. */
+  recoveryKey?: string;
+  recoveryLabel?: string;
   onTranscript: (text: string) => void;
+  /** Keep launch controls aware of capture and unresolved partial text. */
+  onPendingChange?: (pending: boolean) => void;
+  onRecoveryResolved?: () => void;
   disabled?: boolean;
   shortcutBinding?: ShortcutBinding;
 }
@@ -53,16 +60,24 @@ const AUDIO_SIGNAL_LABELS: Record<UseSTTResult['audioSignal']['status'], string>
 };
 const METER_BAR_SCALES = [0.45, 0.65, 0.85, 1, 0.85, 0.65, 0.45];
 
-export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBinding }: Props) {
+export function VoiceInputButton({ inputId, recoveryKey = inputId, recoveryLabel = 'this input', onTranscript, onPendingChange, onRecoveryResolved, disabled, shortcutBinding }: Props) {
   const signalId = useId();
+  const [copyStatus, setCopyStatus] = useState('');
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const activeSTTInputId = useKookrStore((s) => s.activeSTTInputId);
   const setActiveSTTInput = useKookrStore((s) => s.setActiveSTTInput);
   const language = useKookrStore((s) => s.sttLanguage);
   const setLanguage = useKookrStore((s) => s.setSTTLanguage);
-  const { state, transcript, error, degraded, retrying, elapsed, audioSignal, start, stop, retryHealth } = useSTT(sttUrl, language, onTranscript);
+  const { state, transcript, error, degraded, retrying, elapsed, audioSignal, start, stop, retryHealth, recovery, restoreRecovery, discardRecovery } = useSTT(sttUrl, language, onTranscript, recoveryKey);
+
+  const busy = state === 'starting' || state === 'recording' || state === 'processing';
+  useLayoutEffect(() => {
+    onPendingChange?.(busy || Boolean(recovery));
+    return () => onPendingChange?.(false);
+  }, [busy, recovery, onPendingChange]);
 
   const otherRecording = activeSTTInputId !== null && activeSTTInputId !== inputId;
+  useEffect(() => setCopyStatus(''), [recovery?.id]);
 
   // Keep store in sync with hook state
   useEffect(() => {
@@ -95,7 +110,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
     if (state === 'recording') {
       track({ type: 'shortcut_used', key: 'mic_button', action: 'stt_stop', context: inputId });
       stop();
-    } else if (state === 'idle' || state === 'error') {
+    } else if ((state === 'idle' || state === 'error') && !recovery) {
       track({ type: 'shortcut_used', key: 'mic_button', action: 'stt_start', context: inputId });
       setActiveSTTInput(inputId);
       void start();
@@ -111,9 +126,10 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
     ? retrying
       ? 'Checking speech-to-text health...'
       : `Speech-to-text unavailable${error ? `: ${error}` : ''}. Click to retry.`
-    : state === 'error' && error ? error : stateTitle(state, shortcutBinding);
+    : state === 'error' && error ? error
+      : recovery && (state === 'idle' || state === 'error') ? 'Restore or discard incomplete dictation before recording again'
+        : stateTitle(state, shortcutBinding);
   const classState = degraded ? 'error' : state;
-  const busy = state === 'starting' || state === 'recording' || state === 'processing';
 
   return (
     <span className="voice-input">
@@ -123,7 +139,7 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
           className={`btn-voice ${classState}`}
           onClick={handleClick}
           onMouseDown={handleMouseDown}
-          disabled={disabled || otherRecording || state === 'starting' || state === 'processing' || retrying}
+          disabled={disabled || otherRecording || state === 'starting' || state === 'processing' || retrying || Boolean(recovery && !busy && !degraded)}
           title={title}
           aria-label={title}
           aria-describedby={state === 'recording' ? signalId : undefined}
@@ -171,6 +187,28 @@ export function VoiceInputButton({ inputId, onTranscript, disabled, shortcutBind
       {busy && (
         <span className="voice-preview" role="status" aria-live="polite" aria-atomic="true" tabIndex={0}>
           {transcript || (state === 'processing' ? 'Finishing dictation...' : 'Listening...')}
+        </span>
+      )}
+      {!busy && recovery && (
+        <span className="voice-recovery" role="group" aria-label={`Incomplete dictation for ${recoveryLabel}`}>
+          <span className="voice-recovery-label">Incomplete dictation — {recoveryLabel}</span>
+          <span>Captured <time dateTime={new Date(recovery.capturedAt).toISOString()}>{new Date(recovery.capturedAt).toLocaleString()}</time>. Expires after 24 hours.</span>
+          <span className="voice-preview" tabIndex={0}>{recovery.text}</span>
+          {recovery.truncated && <span>Only the first 100,000 characters were retained.</span>}
+          {!recovery.persisted && <span role="status">Browser storage is unavailable. Keep this tab open or copy the text before reloading.</span>}
+          <span className="voice-recovery-actions">
+            <button type="button" onMouseDown={handleMouseDown} disabled={disabled} onClick={() => { restoreRecovery(); onRecoveryResolved?.(); }}>Restore to {recoveryLabel}</button>
+            <button type="button" onMouseDown={handleMouseDown} onClick={(event) => {
+              const button = event.currentTarget;
+              void copyText(recovery.text).then(
+                () => setCopyStatus('Copied'),
+                () => setCopyStatus('Copy failed. Select the text to copy it manually.'),
+              ).finally(() => { if (button.isConnected) button.focus(); });
+            }}>Copy</button>
+            <button type="button" onMouseDown={handleMouseDown} onClick={() => { discardRecovery(); onRecoveryResolved?.(); }}>Discard</button>
+          </span>
+          {copyStatus && <span role="status">{copyStatus}</span>}
+          <span>Restore appends these unverified words. Restore or discard before recording again.</span>
         </span>
       )}
       {error && <span className="voice-error" role="alert">{error}</span>}

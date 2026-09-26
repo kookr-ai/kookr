@@ -6,6 +6,8 @@ export interface LaunchTaskDialogDraft {
   prompt: string;
   cwd: string;
   criteria: string;
+  /** Persists the identity of an empty form while provisional speech is recoverable. */
+  dictationId?: string;
   /**
    * Set when the draft was optimistically submitted: the dialog closes before
    * the server confirms the launch (RFC F12), so the draft is kept rather
@@ -17,7 +19,10 @@ export interface LaunchTaskDialogDraft {
   submittedAt?: number;
 }
 
+let fallbackDraft: LaunchTaskDialogDraft | null | undefined;
+
 export function loadLaunchTaskDialogDraft(): LaunchTaskDialogDraft | null {
+  if (fallbackDraft !== undefined) return fallbackDraft;
   try {
     const raw = localStorage.getItem(LAUNCH_TASK_DIALOG_DRAFT_KEY);
     if (!raw) return null;
@@ -28,6 +33,7 @@ export function loadLaunchTaskDialogDraft(): LaunchTaskDialogDraft | null {
       prompt: typeof p.prompt === 'string' ? p.prompt : '',
       cwd: typeof p.cwd === 'string' ? p.cwd : '',
       criteria: typeof p.criteria === 'string' ? p.criteria : '',
+      ...(typeof p.dictationId === 'string' ? { dictationId: p.dictationId } : {}),
       ...(typeof p.submittedAt === 'number' ? { submittedAt: p.submittedAt } : {}),
     };
   } catch {
@@ -49,8 +55,9 @@ export function markLaunchTaskDialogDraftSubmitted(now: number = Date.now()): vo
       LAUNCH_TASK_DIALOG_DRAFT_KEY,
       JSON.stringify({ ...draft, submittedAt: now }),
     );
+    fallbackDraft = undefined;
   } catch {
-    // Quota exceeded / private browsing — silently ignore.
+    fallbackDraft = { ...draft, submittedAt: now };
   }
 }
 
@@ -78,27 +85,29 @@ export function loadLaunchTaskDialogDraftForOpen(
 }
 
 /**
- * Persist a draft. If both prompt and criteria are empty/whitespace, this
- * actively REMOVES any existing stored draft (i.e. save is not additive).
- * cwd alone does not count: it is auto-populated from recentPaths on open
- * and would otherwise cause every dialog-open to persist a zombie draft.
+ * Persist typed content and the form's dictation identity. An identity keeps a
+ * small empty-form marker so speech recorded before typing returns to the same
+ * form after closing or reloading. Without an identity or typed content, remove
+ * the draft: the automatically populated working directory alone is not a draft.
  */
 export function saveLaunchTaskDialogDraft(draft: LaunchTaskDialogDraft): void {
-  if (!draft.prompt.trim() && !draft.criteria.trim()) {
+  if (!draft.prompt.trim() && !draft.criteria.trim() && !draft.dictationId) {
     clearLaunchTaskDialogDraft();
     return;
   }
   try {
     localStorage.setItem(LAUNCH_TASK_DIALOG_DRAFT_KEY, JSON.stringify(draft));
+    fallbackDraft = undefined;
   } catch {
-    // Quota exceeded / private browsing — silently ignore.
+    fallbackDraft = draft;
   }
 }
 
 export function clearLaunchTaskDialogDraft(): void {
   try {
     localStorage.removeItem(LAUNCH_TASK_DIALOG_DRAFT_KEY);
+    fallbackDraft = undefined;
   } catch {
-    // Ignore.
+    fallbackDraft = null;
   }
 }

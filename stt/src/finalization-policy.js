@@ -8,7 +8,6 @@
  * @param {string} params.lastEmittedTranscription
  * @param {number} params.audioSeconds
  * @param {number} params.lastProcessedAudioSeconds
- * @param {number} [params.maxUnprocessedTailSeconds=0.25]
  * @returns {boolean}
  */
 export function shouldFinalizeFromCache(params) {
@@ -16,14 +15,13 @@ export function shouldFinalizeFromCache(params) {
     lastEmittedTranscription,
     audioSeconds,
     lastProcessedAudioSeconds,
-    maxUnprocessedTailSeconds = 0.25,
   } = params;
 
   if (!lastEmittedTranscription || lastEmittedTranscription.trim().length === 0) {
     return false;
   }
 
-  const unprocessedTailSeconds = Math.max(0, audioSeconds - lastProcessedAudioSeconds);
-  return unprocessedTailSeconds < maxUnprocessedTailSeconds;
+  // Even a short unprocessed tail can contain the final word. Both positions
+  // are session-relative, including samples trimmed from the rolling buffer.
+  return audioSeconds === lastProcessedAudioSeconds;
 }
-

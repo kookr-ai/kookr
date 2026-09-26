@@ -341,6 +341,12 @@ Changing tasks or closing the input cancels that recording so its text cannot
 land in another task. This uses local Qwen recognition on GPU or Whisper on CPU and works
 independently of the selected coding agent.
 
+If recognition fails or the input closes, non-empty provisional text remains
+available as an incomplete dictation in the matching input. Restore appends it
+to existing text; copy and discard are separate actions. Recoveries expire
+after 24 hours. The browser stores text only, with an in-tab fallback when
+storage is unavailable; another recording cannot silently replace it.
+
 Operators can enable a local audio/transcription corpus for later evaluation.
 It retains completed browser recordings and Telegram audio with the automatic
 text, recognition settings and outcome. Collection is off by default; enabling
