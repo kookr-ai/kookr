@@ -1,0 +1,16 @@
+# Add last, and only when recording was explicitly enabled. The manager creates
+# and validates this private host directory before Docker can bind-mount it.
+services:
+  kookr-stt:
+    # Browser and Telegram recordings share owner-only files on the host.
+    user: "${KOOKR_STT_CORPUS_UID:?}:${KOOKR_STT_CORPUS_GID:?}"
+    environment:
+      KOOKR_STT_CORPUS: "true"
+      KOOKR_STT_CORPUS_DIR: /corpus
+      STT_CORPUS_CONFIG_ID: ${STT_CORPUS_CONFIG_ID:?}
+    volumes:
+      - type: bind
+        source: ${KOOKR_STT_CORPUS_HOST_DIR:?}
+        target: /corpus
+        bind:
+          create_host_path: false

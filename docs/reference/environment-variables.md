@@ -424,6 +424,12 @@ vocabulary hints, resource requirements and migration from GPU Whisper.
 | `KOOKR_STT_BACKEND` | `auto` | `auto`, `qwen`, `whisper` | Selects Qwen on GPU and Whisper on CPU in auto mode. Explicit Qwen requires a GPU. See [speech recognition](speech-recognition.md). |
 | `QWEN_ASR_MODEL` | `Qwen/Qwen3-ASR-0.6B` | `Qwen/Qwen3-ASR-0.6B`, `Qwen/Qwen3-ASR-1.7B` | Qwen model selected at startup; the same aligner is used for both sizes. Ignored when Whisper is selected. |
 | `STT_VOCABULARY` | Short Kookr/development glossary | Text, at most 2,000 characters | Qwen recognition hint shared by browser and Telegram. Empty disables it. See [default vocabulary](speech-recognition.md#model-and-vocabulary). |
+| `KOOKR_STT_CORPUS` | unset (off) | Exactly `true` to enable | Retains original audio and automatic transcription pairs locally for browser dictation and Telegram user recordings. Restart to apply. See [corpus format and limits](speech-recognition.md#local-evaluation-corpus). |
+| `KOOKR_STT_CORPUS_DIR` | `~/.kookr/stt-corpus` | Absolute directory path | Host corpus directory; existing directories must be owned by the process user with mode 0700. Disabling collection retains existing entries. |
+| `KOOKR_STT_CORPUS_HOST_DIR` | supplied internally | Absolute host path | Internal Compose bind source derived from KOOKR_STT_CORPUS_DIR. Operators configure the latter. |
+| `KOOKR_STT_CORPUS_UID` | supplied internally | Host user ID | Internal Compose value: runs the recording Node container as the same user as Telegram. |
+| `KOOKR_STT_CORPUS_GID` | supplied internally | Host group ID | Internal Compose group paired with KOOKR_STT_CORPUS_UID. |
+| `STT_CORPUS_CONFIG_ID` | supplied internally | Configuration fingerprint | Internal host identity exposed by Node health so a restart detects corpus enable, disable and directory changes. |
 | `WHISPER_IMAGE` | per-device default | Container image reference | Override the Whisper sidecar image. Defaults: `fedirz/faster-whisper-server:latest-cuda` on GPU, `fedirz/faster-whisper-server:latest-cpu` on CPU. |
 | `WHISPER_MODEL` | per-device default | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Override the model only when Whisper is selected. Defaults: `large-v3` on GPU (~3 GB first-run download), `base` on CPU (~150 MB). |
 | `WHISPER_DEVICE` | per-device default | `cuda` or `cpu` | Override the Whisper inference device. Defaults: `cuda` on GPU, `cpu` on CPU. |

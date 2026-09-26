@@ -2072,6 +2072,33 @@ machines SHALL retain the existing Whisper backend.
 
 **Evidence:** `src/server/stt-manager.test.ts`, `stt/src/`, `stt/qwen/`.
 
+### R19.3: Opt-in Local Transcription Corpus — SHALL — `done`
+
+When explicitly enabled by the operator, Kookr SHALL retain local audio and
+automatic transcription pairs so recognition can later be evaluated on actual
+usage. Collection SHALL be disabled by default.
+
+**Acceptance criteria:**
+
+- Browser dictation stores the complete received audio and the final emitted
+  transcript once per completed recording, including empty results. Telegram
+  stores the original audio bytes and returned transcript. Inference failures
+  are marked separately; cancellation, warmup, and intermediate windows are excluded.
+- Each entry records its source, time, language hint, configured model, available
+  reported recognition settings, audio hash and outcome. Automatic text is
+  distinguished from a human reference, initially absent.
+- One environment flag enables collection, with a configurable local directory.
+  Restarting applies enable, disable and directory changes to both client paths.
+- Entries are published atomically with private filesystem permissions. Pending
+  writes and recording sizes are bounded; low disk space pauses capture without
+  deleting existing recordings or failing transcription.
+- Disabling collection performs no corpus writes and retains existing data.
+  No corpus retrieval endpoint or external upload is added.
+
+**Evidence:** `stt/src/transcription-corpus.test.js`,
+`stt/src/server-corpus.test.js`, `src/integrations/telegram/transcribe.test.ts`,
+and `src/server/stt-manager.test.ts`.
+
 ## Summary Matrix
 
 | Req | Feature | Priority | Status | Module(s) |
@@ -2209,6 +2236,7 @@ machines SHALL retain the existing Whisper backend.
 | R18.2 | #2875 | SHALL | done | lesson-write-spool, lesson-spool-service |
 | R19.1 | Local voice dictation | SHALL | done | VoiceInputButton, useSTT, STT WebSocket and Whisper backend |
 | R19.2 | Local Qwen recognition on GPU | SHALL | done | STT manager, Qwen HTTP service and backend, Telegram transcription |
+| R19.3 | Local transcription corpus | SHALL | done | Shared corpus writer, browser and Telegram capture, STT manager |
 
 ---
 

@@ -67,6 +67,7 @@ export function normalizeWhisperWords(whisperWords) {
 /** @type {TranscriptionBackend} */
 export const whisperBackend = {
   name: 'whisper',
+  modelName: WHISPER_MODEL,
 
   async transcribe(audioWindow, { language = 'auto' } = {}) {
     const wavBuffer = float32ToWav(audioWindow);

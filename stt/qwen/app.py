@@ -11,7 +11,7 @@ from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
 from audio import InvalidAudio, MAX_UPLOAD_BYTES, decode_audio
-from runtime import Settings, load_runtime
+from runtime import ALIGNER, ALIGNER_REVISION, MODELS, Settings, load_runtime
 
 LOG = logging.getLogger("qwen-asr")
 LANGUAGES = {None: None, "": None, "auto": None, "fr": "French", "en": "English"}
@@ -136,6 +136,16 @@ def create_app(settings=None, runtime_factory=load_runtime, decoder=decode_audio
         except Exception as error:
             LOG.exception("Qwen transcription failed")
             raise HTTPException(503, "Qwen transcription failed; retry when the GPU is available") from error
-        return {**result, "model": settings.model}
+        # Report the settings used for this request so saved recordings can be
+        # compared later without guessing which model or vocabulary was active.
+        recognition = {
+            "backend": "qwen", "model": settings.model,
+            "modelRevision": MODELS[settings.model],
+            "aligner": ALIGNER if "word" in granularities else None,
+            "alignerRevision": ALIGNER_REVISION if "word" in granularities else None,
+            "vocabulary": context, "languageHint": language or "auto",
+            "dtype": "bfloat16", "attention": "sdpa", "maxNewTokens": 512,
+        }
+        return {**result, "model": settings.model, "recognition": recognition}
 
     return app

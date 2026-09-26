@@ -341,6 +341,12 @@ Changing tasks or closing the input cancels that recording so its text cannot
 land in another task. This uses local Qwen recognition on GPU or Whisper on CPU and works
 independently of the selected coding agent.
 
+Operators can enable a local audio/transcription corpus for later evaluation.
+It retains completed browser recordings and Telegram audio with the automatic
+text, recognition settings and outcome. Collection is off by default; enabling
+it does not create human reference transcripts. See the
+[corpus configuration and format](reference/speech-recognition.md#local-evaluation-corpus).
+
 While recording, a small meter beside the stop button follows the captured
 microphone level. It falls flat during silence or a capture interruption, with
 text distinguishing quiet input from missing audio. This helps the operator

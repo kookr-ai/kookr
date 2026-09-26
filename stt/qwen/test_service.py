@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from app import create_app
 from audio import InvalidAudio, decode_audio
-from runtime import DEFAULT_VOCABULARY, QwenRuntime, Settings
+from runtime import ALIGNER, ALIGNER_REVISION, DEFAULT_VOCABULARY, MODELS, QwenRuntime, Settings
 
 
 class FakeRuntime:
@@ -74,6 +74,22 @@ class HttpTests(unittest.TestCase):
         self.assertEqual([call["language"] for call in self.runtime.calls], ["French", "English", None])
         self.assertEqual([call["context"] for call in self.runtime.calls], [DEFAULT_VOCABULARY, "Other terminology", ""])
 
+    def test_recognition_reports_the_actual_request_options_and_model_revision(self):
+        response = self.post(**{"language": "fr", "prompt": "Specific vocabulary", "timestamp_granularities[]": "word"})
+        self.assertEqual(response.json()["recognition"], {
+            "backend": "qwen", "model": Settings.model,
+            "modelRevision": MODELS[Settings.model],
+            "aligner": ALIGNER, "alignerRevision": ALIGNER_REVISION,
+            "vocabulary": "Specific vocabulary", "languageHint": "fr",
+            "dtype": "bfloat16", "attention": "sdpa", "maxNewTokens": 512,
+        })
+        recognition = self.post(language="auto", prompt="").json()["recognition"]
+        self.assertEqual(recognition["vocabulary"], "")
+        self.assertEqual(recognition["languageHint"], "auto")
+        self.assertIsNone(recognition["aligner"])
+        self.assertIsNone(recognition["alignerRevision"])
+        self.assertEqual(self.post().json()["recognition"]["vocabulary"], DEFAULT_VOCABULARY)
+
     def test_rejects_wrong_model_and_invalid_options_before_inference(self):
         for fields in [
             {"model": "base"}, {"model": "Qwen/Qwen3-ASR-1.7B"}, {"language": "xx"},
@@ -97,6 +113,7 @@ class HttpTests(unittest.TestCase):
         with TestClient(create_app(settings, lambda _: self.runtime, fake_decoder)) as client:
             response = client.post("/v1/audio/transcriptions", files={"file": b"audio"}, data={"model": settings.model})
         self.assertEqual(response.json()["model"], settings.model)
+        self.assertEqual(response.json()["recognition"]["modelRevision"], MODELS[settings.model])
         self.assertEqual(self.runtime.calls[-1]["context"], "")
 
     def test_decode_failure_does_not_leak_internal_details(self):
