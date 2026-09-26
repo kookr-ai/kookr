@@ -15,6 +15,77 @@ describe('discovery + track actions', () => {
     vi.unstubAllGlobals();
   });
 
+  test('first available project automatically opens the sidebar after an empty summary', () => {
+    const store = createKookrStore();
+    store.getState().handleProjectSummaries([]);
+    expect(store.getState().projectSidebarVisible).toBe(false);
+
+    store.getState().handleProjectSummaries([{
+      project: 'github.com/a/repo', displayName: 'a/repo', color: 1,
+      activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0,
+      openContributionAttempts: 0, recentTasks: [],
+    }]);
+
+    expect(store.getState().projectSidebarVisible).toBe(true);
+  });
+
+  test.each(['identical', 'changed', 'empty'] as const)(
+    'manually hidden sidebar stays hidden after %s summaries',
+    (update) => {
+      const project = {
+        project: 'github.com/a/repo', displayName: 'a/repo', color: 1,
+        activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0,
+        openContributionAttempts: 0, recentTasks: [],
+      };
+      const store = createKookrStore();
+      store.getState().handleProjectSummaries([project]);
+      store.getState().toggleProjectSidebar();
+      expect(store.getState().projectSidebarVisible).toBe(false);
+
+      const projects = update === 'empty' ? []
+        : update === 'changed' ? [{ ...project, findingCount: 1 }]
+          : [project];
+      store.getState().handleProjectSummaries(projects);
+
+      expect(store.getState().projectSidebarVisible).toBe(false);
+      store.getState().toggleProjectSidebar();
+      expect(store.getState().projectSidebarVisible).toBe(true);
+    },
+  );
+
+  test.each([false, true])('server hydration respects manual collapse: %s', async (collapse) => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        version: 1, ordered: [], pinned: [], hidden: [],
+        catalog: {
+          'github.com/a/repo': {
+            project: 'github.com/a/repo', displayName: 'a/repo', color: 1,
+            lastSeenAt: '2026-05-09T00:00:00.000Z',
+          },
+        },
+      }),
+    });
+    const store = createKookrStore();
+    const hydration = store.getState().hydrateProjectSidebarFromServer();
+    if (collapse) {
+      // Live summaries can arrive while the persisted catalog is still loading.
+      store.getState().handleProjectSummaries([{
+        project: 'github.com/a/repo', displayName: 'a/repo', color: 1,
+        activeAgents: 1, findingCount: 0, todayPrCount: 0, weekPrCount: 0,
+        openContributionAttempts: 0, recentTasks: [],
+      }]);
+      store.getState().toggleProjectSidebar();
+    }
+    expect(store.getState().projectSidebarVisible).toBe(false);
+
+    await hydration;
+
+    expect(store.getState().projectSidebarServerHydrated).toBe(true);
+    expect(store.getState().projectSidebarRows).toHaveLength(1);
+    expect(store.getState().projectSidebarVisible).toBe(!collapse);
+  });
+
   test('fetchDiscoveryStatus stores snapshot from server', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

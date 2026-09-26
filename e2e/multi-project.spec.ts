@@ -264,13 +264,16 @@ test.describe('Multi-Project Tracking', () => {
 
     await broadcastProjectSummaries(request);
     await expect(page.locator('[data-testid="project-sidebar"]')).toBeVisible({ timeout: 5000 });
-    // The sidebar shell can render before the seeded summaries. Wait for both
-    // rows so a setup update cannot reopen the sidebar after the shortcut.
+    // Both seeded projects are available before exercising visibility.
     await expect(page.getByTestId('project-icon-github.com/org/a')).toBeVisible();
     await expect(page.getByTestId('project-icon-github.com/org/b')).toBeVisible();
 
     // Alt+P should hide sidebar
     await page.keyboard.press('Alt+P');
+    await expect(page.locator('[data-testid="project-sidebar"]')).not.toBeVisible();
+
+    // A background summary refresh must respect the user's collapsed sidebar.
+    await broadcastProjectSummaries(request);
     await expect(page.locator('[data-testid="project-sidebar"]')).not.toBeVisible();
 
     // Alt+P again should show it
