@@ -935,6 +935,50 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).toContain('+1 more in Completed');
   });
 
+  describe('completed session costs', () => {
+    const usage = (costUsd?: number): AgentState['tokenUsage'] => ({
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      ...(costUsd === undefined ? {} : { costUsd }),
+    });
+
+    test.each([
+      [12.34, '$12.34'],
+      [0.0042, '$0.0042'],
+    ])('shows the session total %s beside the finish time', (costUsd, expected) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-06-20T10:12:00.000Z'));
+      render({ completed: [makeCompletedAgent('priced', 'Priced task', {
+        startedAt: '2026-06-20T09:00:00.000Z',
+        tokenUsage: usage(costUsd),
+      })] });
+
+      const row = container.querySelector('.overview-completed-row');
+      expect(row?.querySelector('[data-testid="overview-completed-cost"]')?.textContent).toBe(expected);
+      expect(row?.querySelector('.overview-completed-meta')?.textContent).toBe(`12m ago · ${expected}`);
+      expect(row?.textContent).not.toContain('/h');
+    });
+
+    test.each([undefined, usage(), usage(0)])('hides unpriced and zero-cost totals (%j)', (tokenUsage) => {
+      render({ completed: [makeCompletedAgent('unpriced', 'Unpriced task', { tokenUsage })] });
+
+      const row = container.querySelector('.overview-completed-row');
+      expect(row?.querySelector('[data-testid="overview-completed-cost"]')).toBeNull();
+      expect(row?.textContent).not.toContain('$');
+    });
+
+    test('shows a known total even without a finish time', () => {
+      render({ completed: [makeCompletedAgent('priced', 'Priced task', {
+        finishedAt: undefined,
+        tokenUsage: usage(3.5),
+      })] });
+
+      expect(container.querySelector('.overview-completed-meta')?.textContent).toBe('$3.50');
+    });
+  });
+
   test('does not show an overflow line when exactly three completed tasks exist', () => {
     render({
       completed: [
