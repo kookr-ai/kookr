@@ -134,13 +134,44 @@ function handleConnection(ws, req) {
   let processing = false;
   let processingTask = Promise.resolve();
   let finalizing = false;
+  let stopped = false;
+  let generation = 0;
+  let controller = new AbortController();
   let lastEmittedTranscription = '';
   let lastProcessedAudioSeconds = 0;
   let lastProcessedLanguage = null;
 
+  function resetRecording() {
+    generation += 1;
+    controller.abort();
+    controller = new AbortController();
+    capture.discard();
+    streamingHandler.reset();
+    audioBuffer.clear();
+    lastProgressiveTime = 0;
+    lastEmittedTranscription = '';
+    lastProcessedAudioSeconds = 0;
+    lastProcessedLanguage = null;
+    processing = false;
+    processingTask = Promise.resolve();
+    finalizing = false;
+  }
+
+  function failRecording(error, code) {
+    const partialText = lastProcessedLanguage === language ? lastEmittedTranscription : '';
+    capture.finish(partialText, language, 'error', code);
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'error', error: error.message, code, partial_text: partialText }));
+    }
+    resetRecording();
+    stopped = true;
+    ws.close(1011, code);
+  }
+
   ws.on('message', async (message, isBinary) => {
     if (isBinary) {
       if (finalizing || ws.readyState !== WebSocket.OPEN) return;
+      stopped = false;
       // Audio data - add to buffer
       const duration = audioBuffer.addChunk(message);
       capture.append(message);
@@ -158,17 +189,20 @@ function handleConnection(ws, req) {
       processing = true;
       lastProgressiveTime = now;
       const transcriptionLanguage = language;
+      const recordingGeneration = generation;
+      const signal = controller.signal;
 
       processingTask = (async () => {
         try {
           const audio = audioBuffer.getAudio();
+          const audioStartSample = audioBuffer.trimmedSamples;
           const result = await streamingHandler.transcribeIncremental(
             audio,
-            audioBuffer.trimmedSamples,
-            { language: transcriptionLanguage },
+            audioStartSample,
+            { language: transcriptionLanguage, signal },
           );
-          if (ws.readyState !== WebSocket.OPEN) return;
-          lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
+          if (recordingGeneration !== generation || ws.readyState !== WebSocket.OPEN) return;
+          lastProcessedAudioSeconds = (audioStartSample + audio.length) / SAMPLE_RATE;
           lastProcessedLanguage = transcriptionLanguage;
           if (transcriptionLanguage !== language) return;
 
@@ -190,8 +224,8 @@ function handleConnection(ws, req) {
           const fullText = [result.fixedText, result.activeText]
             .filter(Boolean)
             .join(' ');
+          lastEmittedTranscription = fullText;
           if (fullText && !progressiveEnabled) {
-            lastEmittedTranscription = fullText;
             ws.send(
               JSON.stringify({
                 type: 'transcription',
@@ -203,9 +237,11 @@ function handleConnection(ws, req) {
             );
           }
         } catch (err) {
-          console.error('Transcription error:', err.message);
+          if (recordingGeneration !== generation || signal.aborted) return;
+          if (err.code === 'audio_window_exhausted') failRecording(err, err.code);
+          else console.error('Transcription error:', err.message);
         } finally {
-          processing = false;
+          if (recordingGeneration === generation) processing = false;
         }
       })();
       await processingTask;
@@ -247,143 +283,70 @@ function handleConnection(ws, req) {
         }),
       );
     } else if (msgType === 'stop') {
-      if (finalizing || ws.readyState !== WebSocket.OPEN) return;
+      if (finalizing || stopped || ws.readyState !== WebSocket.OPEN) return;
       finalizing = true;
+      const recordingGeneration = generation;
+      const signal = controller.signal;
       const deadlineError = new Error('Transcription timed out. Please try again.');
       let deadlineTimer;
+      let onAbort;
+      const cancelled = new Promise((_resolve, reject) => {
+        onAbort = () => reject(signal.reason);
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
       const deadline = transcriptionBackend.name === 'qwen'
         ? new Promise((_resolve, reject) => {
           deadlineTimer = setTimeout(() => reject(deadlineError), QWEN_FINALIZATION_TIMEOUT_MS);
         })
         : null;
-      const beforeDeadline = (operation) => deadline ? Promise.race([operation, deadline]) : operation;
+      const beforeDeadline = (operation) => Promise.race([operation, cancelled, ...(deadline ? [deadline] : [])]);
       try {
-        // Final transcription
-        if (audioBuffer.duration() > 0) {
-          let finalLanguage = language;
-          try {
-            if (processing) {
-              await beforeDeadline(processingTask);
-            }
-            if (ws.readyState !== WebSocket.OPEN) return;
-            finalLanguage = language;
-
-            const audioSeconds = audioBuffer.duration();
-            const canFinalizeFromCache = lastProcessedLanguage === finalLanguage
-              && shouldFinalizeFromCache({
-                lastEmittedTranscription,
-                audioSeconds,
-                lastProcessedAudioSeconds,
-                maxUnprocessedTailSeconds: 0.25,
-              });
-
-            if (canFinalizeFromCache) {
-              capture.finish(lastEmittedTranscription, finalLanguage);
-              ws.send(
-                JSON.stringify({
-                  type: 'transcription',
-                  text: lastEmittedTranscription,
-                  is_final: true,
-                  confidence: 0.9,
-                  language: finalLanguage,
-                }),
-              );
-              streamingHandler.reset();
-              audioBuffer.clear();
-              lastProgressiveTime = 0;
-              lastEmittedTranscription = '';
-              lastProcessedAudioSeconds = 0;
-              processing = false;
-              return;
-            }
-
-            const audio = audioBuffer.getAudio();
-            const result = await beforeDeadline(streamingHandler.transcribeIncremental(
-              audio,
-              audioBuffer.trimmedSamples,
-              { language: finalLanguage },
-            ));
-            if (ws.readyState !== WebSocket.OPEN) return;
-            lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
-            lastProcessedLanguage = finalLanguage;
-
-            const fullText = [result.fixedText, result.activeText]
-              .filter(Boolean)
-              .join(' ');
-            if (fullText) {
-              lastEmittedTranscription = fullText;
-            }
-
-            if (progressiveEnabled && fullText) {
-              ws.send(
-                JSON.stringify({
-                  type: 'progressive',
-                  fixedText: fullText,
-                  activeText: '',
-                  timestamp: Math.round(result.timestamp * 100) / 100,
-                  isFinal: true,
-                }),
-              );
-            }
-
-            // Always emit a final frame so clients can terminate requests
-            // even when decoding yields empty text.
-            capture.finish(fullText, finalLanguage);
-            ws.send(
-              JSON.stringify({
-                type: 'transcription',
-                text: fullText,
-                is_final: true,
-                confidence: 0.9,
-                language: finalLanguage,
-              }),
-            );
-          } catch (err) {
-            if (err === deadlineError) {
-              capture.finish(null, finalLanguage, 'error', 'finalization_timeout');
-              // The old inference may still settle. Retire this connection so
-              // it can never mutate the handler of another recording.
-              ws.send(JSON.stringify({ type: 'error', error: deadlineError.message }));
-              ws.close(1011, deadlineError.message);
-              return;
-            }
-            const errMessage = err instanceof Error ? err.message : String(err);
-            const errStack = err instanceof Error ? err.stack : '';
-            console.error('Final transcription error:', errMessage);
-            if (errStack) {
-              console.error(errStack);
-            }
-            const fallbackText = lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '';
-            capture.finish(fallbackText, finalLanguage, 'error', 'inference_failed');
-            ws.send(
-              JSON.stringify({
-                type: 'transcription',
-                text: fallbackText,
-                is_final: true,
-                confidence: 0.9,
-                language: finalLanguage,
-              }),
-            );
-          }
+        if (processing) await beforeDeadline(processingTask);
+        if (recordingGeneration !== generation || ws.readyState !== WebSocket.OPEN) return;
+        const finalLanguage = language;
+        const audio = audioBuffer.getAudio();
+        const audioStartSample = audioBuffer.trimmedSamples;
+        const audioSeconds = (audioStartSample + audio.length) / SAMPLE_RATE;
+        const canFinalizeFromCache = lastProcessedLanguage === finalLanguage
+          && shouldFinalizeFromCache({ lastEmittedTranscription, audioSeconds, lastProcessedAudioSeconds });
+        let fullText = lastEmittedTranscription;
+        if (!canFinalizeFromCache) {
+          const result = await beforeDeadline(streamingHandler.transcribeIncremental(
+            audio, audioStartSample, { language: finalLanguage, signal },
+          ));
+          if (recordingGeneration !== generation || ws.readyState !== WebSocket.OPEN) return;
+          fullText = [result.fixedText, result.activeText].filter(Boolean).join(' ');
         }
-
-        // Reset for next recording session
-        streamingHandler.reset();
-        audioBuffer.clear();
-        lastProgressiveTime = 0;
-        lastEmittedTranscription = '';
-        lastProcessedAudioSeconds = 0;
+        if (progressiveEnabled && fullText) {
+          ws.send(JSON.stringify({
+            type: 'progressive', fixedText: fullText, activeText: '',
+            timestamp: Math.round(audioSeconds * 100) / 100, isFinal: true,
+          }));
+        }
+        // Empty recognition also terminates the request. Errors never pretend
+        // that a partial preview is a complete, successful transcription.
+        capture.finish(fullText, finalLanguage);
+        ws.send(JSON.stringify({
+          type: 'transcription', text: fullText, is_final: true,
+          confidence: 0.9, language: finalLanguage,
+        }));
+        signal.removeEventListener('abort', onAbort);
+        resetRecording();
+        stopped = true;
+      } catch (err) {
+        if (recordingGeneration !== generation || signal.aborted) return;
+        const code = err === deadlineError ? 'finalization_timeout'
+          : err.code === 'audio_window_exhausted' ? err.code : 'inference_failed';
+        console.error('Final transcription error:', err.message);
+        failRecording(err, code);
       } finally {
         clearTimeout(deadlineTimer);
-        finalizing = false;
+        signal.removeEventListener('abort', onAbort);
+        if (recordingGeneration === generation) finalizing = false;
       }
     } else if (msgType === 'clear') {
-      capture.discard();
-      streamingHandler.reset();
-      audioBuffer.clear();
-      lastProgressiveTime = 0;
-      lastEmittedTranscription = '';
-      lastProcessedAudioSeconds = 0;
+      resetRecording();
+      stopped = false;
       ws.send(JSON.stringify({ type: 'cleared', success: true }));
     } else if (msgType === 'ping') {
       ws.send(JSON.stringify({ type: 'pong' }));
@@ -391,7 +354,7 @@ function handleConnection(ws, req) {
   });
 
   ws.on('close', () => {
-    capture.discard();
+    resetRecording();
     console.log(`Client disconnected: ${clientAddr}`);
   });
 

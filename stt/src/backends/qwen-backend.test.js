@@ -100,6 +100,18 @@ describe('Qwen backend', () => {
     await expect(qwenBackend.transcribe(new Float32Array(16000))).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  test('cancels an upstream request when its recording is cleared', async () => {
+    vi.stubEnv('QWEN_ASR_TIMEOUT_MS', '60000');
+    vi.stubGlobal('fetch', vi.fn((_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+    })));
+    const { qwenBackend } = await import('./qwen-backend.js');
+    const controller = new AbortController();
+    const pending = qwenBackend.transcribe(new Float32Array(16000), { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   test('slides a window over fifteen seconds and finalizes without dropping or duplicating saved text', async () => {
     // Concatenate actual model responses, offsetting only the second clip's times.
     // This verifies streaming mechanics, not the model's accuracy on stitched audio.
