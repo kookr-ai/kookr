@@ -1,4 +1,5 @@
 import { groupWordsIntoSentences } from '../sentence-grouper.js';
+import { resolveVocabulary } from '../vocabulary.cjs';
 
 const WHISPER_URL = process.env.WHISPER_URL || 'http://kookr-stt-whisper:8010';
 const WHISPER_TIMEOUT_MS = parseInt(process.env.WHISPER_TIMEOUT_MS || '5000', 10);
@@ -77,6 +78,8 @@ export const whisperBackend = {
     formData.append('model', WHISPER_MODEL);
     formData.append('response_format', 'verbose_json');
     formData.append('timestamp_granularities[]', 'word');
+    const vocabulary = resolveVocabulary();
+    if (vocabulary !== undefined) formData.append('prompt', vocabulary);
     // Omitting the hint lets Whisper detect the spoken language itself.
     if (language !== 'auto') formData.append('language', language);
 

@@ -10,6 +10,11 @@ rolling speech buffer, or finalization. These checks establish whether captured
 speech reaches its original input; recognition accuracy needs a separate,
 listened-to reference.
 
+For vocabulary changes, replay the same audio with and without the hint through
+both partial and final requests, keeping the language setting fixed. A hint can
+correct a technical name yet introduce repeated or unspoken text elsewhere.
+Check output content as well as hint delivery before enabling a new default.
+
 1. Read `docs/reference/speech-recognition.md`, the relevant `R19` requirements,
    `useSTT`, the PCM worklet, and the Node STT lifecycle. Check the actual service
    health and model identity. Never infer browser delivery from an HTTP 200.

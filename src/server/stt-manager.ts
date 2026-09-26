@@ -25,6 +25,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { hasDockerRuntime } from './docker-runtime.js';
 import { ensureCorpusDirectory, getCorpusConfig } from '../../stt/src/transcription-corpus.cjs';
+import { resolveVocabulary } from '../../stt/src/vocabulary.cjs';
 
 const execFileAsync = promisify(execFile);
 export const DEFAULT_STT_STARTUP_TIMEOUT_MS = 600_000;
@@ -255,14 +256,12 @@ export async function resolveSTTComposeIdentity(opts: {
   if (backend === 'qwen' && !['Qwen/Qwen3-ASR-0.6B', 'Qwen/Qwen3-ASR-1.7B'].includes(model)) {
     throw new Error('QWEN_ASR_MODEL must be Qwen/Qwen3-ASR-0.6B or Qwen/Qwen3-ASR-1.7B');
   }
-  if (backend === 'qwen' && (process.env.STT_VOCABULARY?.length ?? 0) > 2000) {
-    throw new Error('STT_VOCABULARY must contain at most 2000 characters');
-  }
+  const vocabulary = resolveVocabulary(process.env, { useDefault: backend === 'qwen' }) ?? '';
   // Distinguish an absent glossary override (service default) from an empty
   // one (disabled), so warm restarts apply configuration changes too.
-  const configId = backend === 'qwen' ? createHash('sha256').update(JSON.stringify({
-    model, vocabulary: process.env.STT_VOCABULARY ?? null,
-  })).digest('hex') : undefined;
+  const configId = createHash('sha256').update(JSON.stringify({
+    model, vocabulary, vocabularyOverride: process.env.STT_VOCABULARY ?? null,
+  })).digest('hex');
   const image = process.env.WHISPER_IMAGE ?? defaults.image;
   const whisperDevice = process.env.WHISPER_DEVICE ?? defaults.device;
   const computeType = process.env.WHISPER_COMPUTE_TYPE ?? defaults.computeType;
@@ -288,7 +287,8 @@ export async function resolveSTTComposeIdentity(opts: {
     KOOKR_STT_PORT: String(port),
     WHISPER_IMAGE: image,
     WHISPER_MODEL: selectedWhisperModel,
-    ...(backend === 'qwen' ? { QWEN_ASR_MODEL: model, STT_CONFIG_ID: configId } : {}),
+    STT_CONFIG_ID: configId,
+    ...(backend === 'qwen' ? { QWEN_ASR_MODEL: model } : {}),
     WHISPER_DEVICE: whisperDevice,
     WHISPER_COMPUTE_TYPE: computeType,
     ...(corpus.enabled ? {
@@ -362,8 +362,9 @@ async function tryReuseSTT(opts: {
 /**
  * Check whether the running service matches the requested backend.
  * Whisper uses status/backend and optional Docker model inspection because
- * its health endpoint can report unused Parakeet metadata. Qwen requires
- * the selected model loaded on CUDA and the expected configuration ID.
+ * its health endpoint can report unused Parakeet metadata. Both backends
+ * check the vocabulary configuration ID. Qwen additionally requires the
+ * selected model loaded on CUDA.
  */
 export async function evaluateSTTReuseOnce(
   port: number,
@@ -408,6 +409,11 @@ export async function evaluateSTTReuseOnce(
     return { ok: false, reason: 'identity-mismatch' };
   }
 
+  // Both backends must apply glossary changes before a warm restart can reuse them.
+  if (expectedConfigId !== undefined && health.config_id !== expectedConfigId) {
+    return { ok: false, reason: 'identity-mismatch' };
+  }
+
   // Old services omit corpus health and are reusable only when capture is off.
   // Check this for both backends: enabling, disabling, or relocating capture
   // must recreate the Node service even when its recognition model is unchanged.
@@ -417,7 +423,7 @@ export async function evaluateSTTReuseOnce(
 
   if (expectedBackend === 'qwen') {
     if (backend !== 'qwen' || health.model_name !== expectedModel || health.model_loaded !== true
-      || health.device !== 'cuda' || (expectedConfigId !== undefined && health.config_id !== expectedConfigId)) {
+      || health.device !== 'cuda') {
       return { ok: false, reason: 'identity-mismatch' };
     }
     return { ok: true, status, backend, inspectedModel: expectedModel, inspectSkipped: false };

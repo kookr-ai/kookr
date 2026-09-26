@@ -2058,15 +2058,19 @@ machines SHALL retain the existing Whisper backend.
 
 **Acceptance criteria:**
 
-- Browser dictation and Telegram audio use the selected model. Qwen applies
-  one configurable vocabulary hint, including Kookr, to both paths; an empty
-  hint disables it. There is no semantic rewriting after recognition.
+- Browser dictation and Telegram audio use the selected model. Whisper and
+  Qwen accept the same configurable vocabulary override across both paths and
+  progressive finalization. The hint is limited to two thousand Unicode code
+  points; an explicit empty hint disables it. With no local override, Whisper
+  stays unhinted and Qwen clients preserve the inference service's configured
+  default, which includes Kookr. There is no semantic rewriting after recognition.
 - Qwen supports automatic language detection and French/English hints.
 - Aligned timestamps retain the transcript's punctuation so recordings longer
   than fifteen seconds can stabilize sentences and advance the audio window.
   Unmatched text is preserved without guessing a sentence's timing.
 - Health reports the actual model and GPU readiness. Switching backend or
-  Qwen model prevents reuse of a service with the previous identity.
+  Qwen model prevents reuse of a service with the previous identity. Changing
+  the vocabulary prevents reuse for either bundled backend.
 - Inference concurrency and uploaded audio are bounded. Unsupported or corrupt
   audio produces an error; it does not get reported as a successful transcript.
 

@@ -44,6 +44,9 @@ services:
       WHISPER_URL: http://kookr-stt-whisper:8010
       WHISPER_MODEL: ${WHISPER_MODEL:-base}
       WHISPER_TIMEOUT_MS: "30000"
+      STT_CONFIG_ID: ${STT_CONFIG_ID:-}
+      # Pass through only when defined; null preserves absent versus empty.
+      STT_VOCABULARY:
       PORT: "8003"
       DEFAULT_LANGUAGE: ${STT_LANGUAGE:-auto}
       PROGRESSIVE_INTERVAL: "0.5"

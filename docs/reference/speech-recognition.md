@@ -21,21 +21,29 @@ Whisper, including existing `WHISPER_MODEL` overrides. In the default `auto`
 backend mode, a GPU selects Qwen even if an old `WHISPER_MODEL=base` remains
 in the environment. `KOOKR_STT_DEVICE=cpu` retains CPU Whisper.
 
-Qwen receives this short vocabulary hint by default:
+Qwen uses a short vocabulary hint containing Kookr and common development
+terms. Its canonical default is in
+[`stt/qwen/vocabulary.json`](../../stt/qwen/vocabulary.json).
+Whisper stays unhinted by default. Set `STT_VOCABULARY` to supply a vocabulary
+override to either backend (maximum 2,000 Unicode code points), or set it to
+an empty string to disable the hint. Browser and Telegram requests use the
+same setting, including progressive updates and finalization. Validate Whisper
+hints with representative recordings before enabling them: they can improve
+names but also introduce repeated or unrelated words. They are not a guaranteed
+spelling dictionary. There is no language-model rewriting after transcription.
 
-```text
-Kookr, Codex, Claude Code, worktree, Git, TypeScript, pnpm, WebSocket, JSON.
-```
-
-Set `STT_VOCABULARY` to replace it (maximum 2,000 characters), or set it to
-an empty string to disable the hint. The Qwen service applies it to browser
-and Telegram requests. It guides recognition; it is not a guaranteed spelling
-dictionary. There is no language-model rewriting after transcription.
+Both clients send explicit overrides as the multipart `prompt` field and omit
+it when no local override is set, so an external Qwen service keeps its own
+configured default. Explicit overrides, including an empty string, are sent
+to either service. For external browser dictation, configure
+`STT_VOCABULARY` on its Node speech service; Telegram reads the Kookr process's
+setting.
 
 After the implementation is merged, apply configuration to the operator's
 production instance with `pnpm prod:update`.
 Bundled startup checks the active backend, model and vocabulary configuration
-before reusing running Qwen containers. Model weights remain cached between
+before reusing running Whisper or Qwen containers. Older Whisper services
+without a vocabulary fingerprint are recreated once. Model weights remain cached between
 restarts. The first boot downloads about 3.7 GB total for the 0.6B recognizer
 and its aligner, or 6.5 GB total for 1.7B and the same aligner.
 

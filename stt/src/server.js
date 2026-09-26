@@ -383,6 +383,7 @@ export const httpServer = createServer(async (req, res) => {
       transcriptionBackend,
       backendHealth,
     });
+    if (transcriptionBackend.name === 'whisper') health.config_id = process.env.STT_CONFIG_ID || '';
     health.corpus = {
       enabled: transcriptionCorpus.enabled,
       configId: process.env.STT_CORPUS_CONFIG_ID || transcriptionCorpus.configId,

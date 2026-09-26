@@ -12,6 +12,7 @@
  */
 
 import { TelegramApiError } from './api-client.js';
+import { resolveVocabulary } from '../../../stt/src/vocabulary.cjs';
 import {
   createTranscriptionCorpus, getCorpusConfig,
   type CorpusRecord, type TranscriptionCorpus,
@@ -163,6 +164,9 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   const filename = opts.filename ?? 'voice.oga';
   const mimeType = opts.mimeType ?? 'audio/ogg';
   const model = opts.model ?? process.env.WHISPER_MODEL ?? DEFAULT_MODEL_NAME;
+  // Resolve lazily because application startup loads .env after these imports.
+  // Omitted hints preserve the inference service's existing behavior.
+  const vocabulary = resolveVocabulary();
   const captureStore = opts.capture ? getCaptureStore() : undefined;
   const startedAt = new Date().toISOString();
   const startedMs = performance.now();
@@ -179,6 +183,7 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   // still sniffs the bytes, but the MIME hint keeps multipart metadata honest.
   form.append('file', new Blob([new Uint8Array(audioBytes)], { type: mimeType }), filename);
   form.append('model', model);
+  if (vocabulary !== undefined) form.append('prompt', vocabulary);
 
   const controller = new AbortController();
   const abortFromOuter = () => controller.abort();
