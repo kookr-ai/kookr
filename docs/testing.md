@@ -95,6 +95,25 @@ The HTML report is not uploaded by CI by default (it is large and noisy on routi
 
 ### Capturing a Playwright trace on a local E2E failure
 
+Build the complete application before running the browser suite so both the
+frontend bundle and build metadata are current:
+
+```bash
+pnpm build
+pnpm exec playwright test
+```
+
+Each browser worker reuses a fake-agent server. Its reset endpoint clears launch
+budgets as well as tasks; the configured launch limits still apply within each
+test. Agent availability comes from explicit preflight fixtures, and cost
+comparison reads a temporary rollout directory rather than the operator's
+session history. Test endpoints that broadcast snapshots use the production
+projection so task names and project identities survive updates.
+
+The prompt-delivery fixture paints both bracketed-paste mode and the composer
+footer before accepting input. Keep that fixture aligned with the production
+readiness check; a generic startup banner does not mean the input reader is ready.
+
 CI captures a trace via `trace: 'on-first-retry'`, but locally `retries` is `0` (`playwright.config.ts`), so that path never fires and a failing spec produces no trace. Opt in with the `KOOKR_E2E_TRACE` env var to retain a trace (and screenshots) on any local failure:
 
 ```bash
