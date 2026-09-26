@@ -144,7 +144,7 @@ describe('Phase 6 descriptor-only STT frontend parity', () => {
     });
 
     await act(async () => FakeSTTWebSocket.instances.at(-1)!.onopen?.());
-    expect(container.querySelector('[role="status"]')?.textContent).toBe('bonjour hello');
+    expect(container.querySelector('.voice-preview[role="status"]')?.textContent).toBe('bonjour hello');
     expect(draft).toBe('');
     await act(async () => button!.click());
     await act(async () => FakeSTTWebSocket.instances.at(-1)!.finish());
