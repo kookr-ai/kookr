@@ -22,7 +22,9 @@ import {
   startSTT,
 } from './stt-manager.js';
 
-beforeEach(() => {
+let whisperConfigId: string | undefined;
+
+beforeEach(async () => {
   vi.stubEnv('KOOKR_STT_DEVICE', '');
   vi.stubEnv('WHISPER_MODEL', '');
   vi.stubEnv('KOOKR_STT_BACKEND', '');
@@ -30,6 +32,8 @@ beforeEach(() => {
   vi.stubEnv('KOOKR_STT_CORPUS', '');
   vi.stubEnv('KOOKR_STT_CORPUS_DIR', '');
   vi.stubEnv('STT_CORPUS_CONFIG_ID', '');
+  vi.stubEnv('STT_VOCABULARY', undefined);
+  whisperConfigId = (await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'cpu' })).configId;
   execFileMock.mockReset();
   execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, '', '');
@@ -37,7 +41,7 @@ beforeEach(() => {
   vi.stubGlobal(
     'fetch',
     vi.fn(async () =>
-      new Response(JSON.stringify({ status: 'ok', backend: 'whisper', model_loaded: false, model_name: 'parakeet-tdt-0.6b-v3' }), {
+      new Response(JSON.stringify({ status: 'ok', backend: 'whisper', config_id: whisperConfigId, model_loaded: false, model_name: 'parakeet-tdt-0.6b-v3' }), {
         status: 200,
         headers: { 'content-type': 'application/json' },
       }),
@@ -119,6 +123,24 @@ describe('resolveDevice', () => {
 });
 
 describe('bundled model selection', () => {
+  it.each(['cpu', 'gpu'] as const)('validates and fingerprints vocabulary on %s', async (device) => {
+    const config = { sttDir: '/repo/stt', device };
+    const defaults = await resolveSTTComposeIdentity(config);
+    expect(defaults.env.STT_VOCABULARY).toBeUndefined();
+    expect(defaults.env.STT_CONFIG_ID).toBe(defaults.configId);
+    vi.stubEnv('STT_VOCABULARY', '');
+    const disabled = await resolveSTTComposeIdentity(config);
+    expect(disabled.env.STT_VOCABULARY).toBe('');
+    expect(disabled.configId).not.toBe(defaults.configId);
+    vi.stubEnv('STT_VOCABULARY', '😀'.repeat(2000));
+    const custom = await resolveSTTComposeIdentity(config);
+    expect(custom.env.STT_VOCABULARY).toBe('😀'.repeat(2000));
+    expect(custom.configId).not.toBe(disabled.configId);
+    vi.stubEnv('STT_VOCABULARY', '😀'.repeat(2001));
+    await expect(resolveSTTComposeIdentity(config)).rejects.toThrow('at most 2000 characters');
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
   it('defaults to Qwen 0.6B on GPU even with an old Whisper model override', async () => {
     const identity = await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu', whisperModel: 'base' });
     expect(identity.backend).toBe('qwen');
@@ -331,11 +353,11 @@ describe('transcription corpus deployment', () => {
     vi.stubEnv('KOOKR_STT_CORPUS_DIR', directory);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let health: Record<string, unknown> = {
-      status: 'ok', backend: 'whisper', corpus: { enabled: true, configId: getCorpusConfig(process.env).configId },
+      status: 'ok', backend: 'whisper', config_id: whisperConfigId, corpus: { enabled: true, configId: getCorpusConfig(process.env).configId },
     };
     vi.stubGlobal('fetch', vi.fn(async () => Response.json(health)));
     execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
-      if (args.includes('up')) health = { status: 'ok', backend: 'whisper', corpus: { enabled: false } };
+      if (args.includes('up')) health = { status: 'ok', backend: 'whisper', config_id: whisperConfigId, corpus: { enabled: false } };
       cb(null, '', '');
     });
     try {
@@ -405,6 +427,33 @@ describe('transcription corpus deployment', () => {
 });
 
 describe('startSTT reuse + build stamp', () => {
+  it('recreates legacy Whisper once and applies glossary changes on warm restarts', async () => {
+    const sttDir = await createSTTFixture();
+    let health: Record<string, unknown> = { status: 'ok', backend: 'whisper' };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(health)));
+    execFileMock.mockImplementation((_cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }, cb: Function) => {
+      if (args.includes('up')) health = { status: 'ok', backend: 'whisper', config_id: opts.env.STT_CONFIG_ID };
+      cb(null, '', '');
+    });
+    const config = { sttDir, device: 'cpu' as const, reuseAttempts: 1, inspectWhisperModel: async () => null };
+    try {
+      for (const vocabulary of [undefined, 'Kookr, Codex.', '', undefined]) {
+        vi.stubEnv('STT_VOCABULARY', vocabulary);
+        execFileMock.mockClear();
+        await startSTT(config);
+        const up = execFileMock.mock.calls.filter((call) => call[1].includes('up'));
+        expect(up).toHaveLength(1);
+        expect(up[0][2].env.STT_VOCABULARY).toBe(vocabulary);
+        expect(health.config_id).toBe((await resolveSTTComposeIdentity(config)).configId);
+        execFileMock.mockClear();
+        await startSTT(config);
+        expect(execFileMock).not.toHaveBeenCalled();
+      }
+    } finally {
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
   it('migrates GPU Whisper to Qwen, reuses Qwen, and applies glossary changes', async () => {
     const sttDir = await createSTTFixture();
     let health: Record<string, unknown> = { status: 'ok', backend: 'whisper' };
@@ -448,6 +497,7 @@ describe('startSTT reuse + build stamp', () => {
   });
 
   it('does not require model_loaded true or model_name === WHISPER_MODEL for reuse', async () => {
+    whisperConfigId = (await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'cpu', whisperModel: 'large-v3' })).configId;
     vi.stubGlobal(
       'fetch',
       vi.fn(async () =>
@@ -457,6 +507,7 @@ describe('startSTT reuse + build stamp', () => {
             model_loaded: false,
             model_name: 'parakeet-tdt-0.6b-v3',
             backend: 'whisper',
+            config_id: whisperConfigId,
           }),
           { status: 200 },
         ),
@@ -521,7 +572,7 @@ describe('startSTT reuse + build stamp', () => {
             throw new Error('not up yet');
           }
           return new Response(
-            JSON.stringify({ status: 'ok', backend: 'whisper' }),
+            JSON.stringify({ status: 'ok', backend: 'whisper', config_id: whisperConfigId }),
             { status: 200 },
           );
         }),
@@ -552,7 +603,7 @@ describe('startSTT reuse + build stamp', () => {
           fetchCount += 1;
           if (fetchCount <= 1) throw new Error('not up');
           return new Response(
-            JSON.stringify({ status: 'ok', backend: 'whisper' }),
+            JSON.stringify({ status: 'ok', backend: 'whisper', config_id: whisperConfigId }),
             { status: 200 },
           );
         }),
@@ -611,13 +662,14 @@ describe('startSTT reuse + build stamp', () => {
 
   it('uses GPU compose overlay for cold start and stop', async () => {
     vi.stubEnv('KOOKR_STT_BACKEND', 'whisper');
+    whisperConfigId = (await resolveSTTComposeIdentity({ sttDir: '/repo/stt', device: 'gpu', whisperModel: 'large-v3' })).configId;
     let fetchCount = 0;
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => {
         fetchCount += 1;
         if (fetchCount <= 1) throw new Error('down');
-        return new Response(JSON.stringify({ status: 'ok', backend: 'whisper' }), { status: 200 });
+        return new Response(JSON.stringify({ status: 'ok', backend: 'whisper', config_id: whisperConfigId }), { status: 200 });
       }),
     );
 

@@ -235,11 +235,10 @@ sidecars without `docker compose down` / cold model load.
 | Stop Node and leave sidecars running | `pnpm prod:stop` (prints a GPU hint) |
 | Stop Node **and** free GPU / remove speech containers | `pnpm prod:stop --with-sidecars` |
 
-**Config changes that require a hard speech recycle** (model, device, image, ports):
-run `pnpm prod:stop --with-sidecars`, then start again. Health-only reuse does
-not always re-verify the Whisper model when `docker inspect` is unavailable;
-prefer stop-with-sidecars after changing `WHISPER_MODEL` / `KOOKR_STT_DEVICE` /
-compose inputs.
+Bundled STT startup detects changes to the selected backend, model, or vocabulary
+and applies them when Kookr restarts. Device, image, and port changes are not
+fully covered by the reuse fingerprint. After changing those Compose inputs,
+run `pnpm prod:stop --with-sidecars`, then start again.
 
 **External URL mode** (`KOOKR_STT_URL` / `KOOKR_TTS_URL`): Kookr does not own
 those containers. `prod:stop --with-sidecars` skips compose down for stacks that

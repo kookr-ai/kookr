@@ -1,7 +1,9 @@
 """Load the selected recognizer and aligner once before accepting dictation."""
 
+import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 MODELS = {
     "Qwen/Qwen3-ASR-0.6B": "5eb144179a02acc5e5ba31e748d22b0cf3e303b0",
@@ -9,7 +11,9 @@ MODELS = {
 }
 ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
 ALIGNER_REVISION = "c7cbfc2048c462b0d63a45797104fc9db3ad62b7"
-DEFAULT_VOCABULARY = "Kookr, Codex, Claude Code, worktree, Git, TypeScript, pnpm, WebSocket, JSON."
+_VOCABULARY = json.loads(Path(__file__).with_name("vocabulary.json").read_text(encoding="utf-8"))
+DEFAULT_VOCABULARY = _VOCABULARY["defaultVocabulary"]
+MAX_VOCABULARY_CHARACTERS = _VOCABULARY["maxCharacters"]
 
 
 @dataclass(frozen=True)
@@ -20,8 +24,8 @@ class Settings:
     def __post_init__(self):
         if self.model not in MODELS:
             raise ValueError("QWEN_ASR_MODEL must be Qwen/Qwen3-ASR-0.6B or Qwen/Qwen3-ASR-1.7B")
-        if len(self.vocabulary) > 2000:
-            raise ValueError("STT_VOCABULARY must contain at most 2000 characters")
+        if len(self.vocabulary) > MAX_VOCABULARY_CHARACTERS:
+            raise ValueError(f"STT_VOCABULARY must contain at most {MAX_VOCABULARY_CHARACTERS} characters")
 
     @classmethod
     def from_env(cls):

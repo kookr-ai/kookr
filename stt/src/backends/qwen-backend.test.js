@@ -61,6 +61,7 @@ describe('Qwen backend', () => {
     vi.stubEnv('QWEN_ASR_URL', 'http://qwen.test:8010');
     vi.stubEnv('QWEN_ASR_MODEL', 'Qwen/Qwen3-ASR-0.6B');
     vi.stubEnv('QWEN_ASR_TIMEOUT_MS', '20');
+    vi.stubEnv('STT_VOCABULARY', undefined);
   });
 
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
@@ -77,10 +78,29 @@ describe('Qwen backend', () => {
       expect(options.body.get('model')).toBe('Qwen/Qwen3-ASR-1.7B');
       expect(options.body.get('response_format')).toBe('verbose_json');
       expect(options.body.get('timestamp_granularities[]')).toBe('word');
+      expect(options.body.has('prompt')).toBe(false);
       const wav = Buffer.from(await options.body.get('file').arrayBuffer());
       expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
       expect(wav.readUInt32LE(24)).toBe(16000);
     }
+  });
+
+  test.each(['', 'Kookr, personnalisé.', '😀'.repeat(2000)])('forwards only explicit glossary overrides (%#)', async (vocabulary) => {
+    vi.stubEnv('STT_VOCABULARY', vocabulary);
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ text: 'Kookr.' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const { qwenBackend } = await import('./qwen-backend.js');
+    await qwenBackend.transcribe(new Float32Array(16000));
+    expect(fetchMock.mock.calls[0][1].body.get('prompt')).toBe(vocabulary);
+  });
+
+  test('rejects oversized vocabulary before contacting the Qwen service', async () => {
+    vi.stubEnv('STT_VOCABULARY', '😀'.repeat(2001));
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const { qwenBackend } = await import('./qwen-backend.js');
+    await expect(qwenBackend.transcribe(new Float32Array(16000))).rejects.toThrow('at most 2000 characters');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   test('reports upstream HTTP failures and malformed successful responses', async () => {

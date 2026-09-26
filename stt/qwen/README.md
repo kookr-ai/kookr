@@ -14,7 +14,7 @@ Hugging Face cache when needed.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `QWEN_ASR_MODEL` | `Qwen/Qwen3-ASR-0.6B` | Select this model or `Qwen/Qwen3-ASR-1.7B`. |
-| `STT_VOCABULARY` | `Kookr, Codex, Claude Code, worktree, Git, TypeScript, pnpm, WebSocket, JSON.` | Context supplied to every request. An explicit empty value disables the context. |
+| `STT_VOCABULARY` | Shared glossary in [`vocabulary.json`](vocabulary.json) | Context supplied to every request, at most 2,000 Unicode code points. An explicit empty value disables the context. |
 | `STT_CONFIG_ID` | Empty | Opaque configuration fingerprint supplied by Kookr so it can detect an outdated running service. |
 | `HF_HOME` | `/root/.cache/huggingface` in Docker | Persistent cache for the pinned recognizer and aligner snapshots. |
 
@@ -43,7 +43,7 @@ the loaded model.
 | `file` | Required audio upload; WAV, OGG, MP3, MP4/M4A, WebM, FLAC, and AAC are decoded through ffmpeg. |
 | `model` | Optional; when supplied, it must match the loaded model's full identifier. |
 | `language` | Omit or use `auto` for detection; `fr` and `en` force French and English. |
-| `prompt` | Optional request context, replacing `STT_VOCABULARY`; at most 2,000 characters. |
+| `prompt` | Optional request context, replacing `STT_VOCABULARY`; at most 2,000 Unicode code points. Omitted uses the service default; empty disables the hint. |
 | `response_format` | `json` or `verbose_json`. |
 | `timestamp_granularities[]` | Set to `word` to request alignment. Other granularities are rejected. |
 

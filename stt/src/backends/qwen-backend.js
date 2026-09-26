@@ -1,5 +1,6 @@
 import { float32ToWav } from './whisper-backend.js';
 import { sentencesFromQwenAlignment } from './qwen-sentences.js';
+import { resolveVocabulary } from '../vocabulary.cjs';
 
 const QWEN_ASR_URL = process.env.QWEN_ASR_URL || 'http://kookr-stt-whisper:8010';
 const QWEN_ASR_MODEL = process.env.QWEN_ASR_MODEL || 'Qwen/Qwen3-ASR-0.6B';
@@ -20,6 +21,8 @@ export const qwenBackend = {
     formData.append('response_format', 'verbose_json');
     formData.append('timestamp_granularities[]', 'word');
     if (language !== 'auto') formData.append('language', language);
+    const vocabulary = resolveVocabulary();
+    if (vocabulary !== undefined) formData.append('prompt', vocabulary);
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), QWEN_ASR_TIMEOUT_MS);

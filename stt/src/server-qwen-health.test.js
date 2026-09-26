@@ -65,6 +65,16 @@ test('reports the actual upstream model, CUDA runtime and managed configuration'
   });
 });
 
+test('reports the managed Whisper glossary fingerprint without querying Qwen', async () => {
+  vi.stubEnv('STT_BACKEND', 'whisper');
+  vi.stubEnv('STT_CONFIG_ID', 'whisper-glossary-fingerprint');
+  const response = await fetch(await start());
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    status: 'ok', backend: 'whisper', config_id: 'whisper-glossary-fingerprint',
+  });
+});
+
 test.each([
   ['different model', { model_name: 'Qwen/Qwen3-ASR-1.7B' }, 200],
   ['unloaded model', { model_loaded: false }, 200],

@@ -84,6 +84,7 @@ describe.each(['whisper', 'qwen'])('WebSocket language configuration reaches %s'
     vi.stubEnv('PORT', '0');
     vi.stubEnv('DEFAULT_LANGUAGE', '');
     vi.stubEnv('STT_SUPPORTED_LANGUAGES', '');
+    vi.stubEnv('STT_VOCABULARY', undefined);
     // Keep the second audio chunk for the stop handler's final inference.
     vi.stubEnv('PROGRESSIVE_INTERVAL', '60');
   });
@@ -115,7 +116,12 @@ describe.each(['whisper', 'qwen'])('WebSocket language configuration reaches %s'
     return ws;
   }
 
-  test.each(['auto', 'fr', 'en'])('uses %s for progressive and final multipart requests', async (language) => {
+  test.each([
+    ['auto', 'omitted', undefined],
+    ['fr', 'empty', ''],
+    ['en', 'custom', 'Kookr, Codex, café.'],
+  ])('uses %s language and %s vocabulary for progressive and stop-triggered uploads', async (language, _label, vocabulary) => {
+    vi.stubEnv('STT_VOCABULARY', vocabulary);
     await start();
     const ws = await connect();
     expect(await configure(ws, language)).toMatchObject({ language, progressive: true });
@@ -127,15 +133,19 @@ describe.each(['whisper', 'qwen'])('WebSocket language configuration reaches %s'
     expect(await stop(ws)).toMatchObject({ language, text: `Speech in ${language}` });
 
     expect(requests).toHaveLength(2);
-    for (const { method, url, multipart } of requests) {
+    for (const [index, { method, url, multipart }] of requests.entries()) {
       expect(method).toBe('POST');
       expect(url).toBe('/v1/audio/transcriptions');
       expect(multipart.get('language')).toBe(language === 'auto' ? null : language);
+      expect(multipart.has('prompt')).toBe(vocabulary !== undefined);
+      expect(multipart.get('prompt')).toBe(vocabulary ?? null);
       expect(multipart.get('response_format')).toBe('verbose_json');
       expect(multipart.get('timestamp_granularities[]')).toBe('word');
       const wav = Buffer.from(await multipart.get('file').arrayBuffer());
       expect(wav.toString('ascii', 0, 4)).toBe('RIFF');
       expect(wav.readUInt32LE(24)).toBe(16000);
+      // Stop must upload the extra half-second, not reuse the progressive result.
+      expect(wav.length).toBe(44 + 16000 * (index === 0 ? 1 : 1.5) * 2);
     }
   });
 

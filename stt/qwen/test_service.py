@@ -65,6 +65,18 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(response.json()["words"], [])
         self.assertEqual(self.runtime.calls, [{"language": None, "context": DEFAULT_VOCABULARY, "timestamps": False}])
 
+    def test_unicode_vocabulary_limit_counts_characters_not_utf16_units(self):
+        self.assertEqual(self.post(prompt="😀" * 2000).status_code, 200)
+        self.assertEqual(self.runtime.calls[-1]["context"], "😀" * 2000)
+        self.assertEqual(self.post(prompt="😀" * 2001).status_code, 400)
+
+    def test_service_override_applies_when_client_omits_prompt(self):
+        settings = Settings(vocabulary="Service-specific terminology")
+        with TestClient(create_app(settings, lambda _: self.runtime, fake_decoder)) as client:
+            response = client.post("/v1/audio/transcriptions", files={"file": b"audio"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.runtime.calls[-1]["context"], settings.vocabulary)
+
     def test_browser_word_timestamps_and_request_scoped_language(self):
         response = self.post(**{"model": Settings.model, "language": "fr", "response_format": "verbose_json", "timestamp_granularities[]": "word"})
         self.assertEqual(response.status_code, 200)
@@ -275,6 +287,9 @@ class RuntimeTests(unittest.TestCase):
             Settings(model="Whisper")
         with self.assertRaises(ValueError):
             Settings(vocabulary="x" * 2001)
+        self.assertEqual(Settings(vocabulary="😀" * 2000).vocabulary, "😀" * 2000)
+        with self.assertRaises(ValueError):
+            Settings(vocabulary="😀" * 2001)
         with patch.dict("os.environ", {"STT_VOCABULARY": "", "QWEN_ASR_MODEL": "Qwen/Qwen3-ASR-1.7B"}):
             self.assertEqual(Settings.from_env(), Settings(model="Qwen/Qwen3-ASR-1.7B", vocabulary=""))
 

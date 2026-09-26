@@ -13,7 +13,7 @@ RUN pip install --no-cache-dir torch==2.14.0+cu130 --index-url https://download.
 # Triton compiles its CUDA driver helper at startup, including the SDPA path.
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
-COPY app.py audio.py runtime.py ./
+COPY app.py audio.py runtime.py vocabulary.json ./
 EXPOSE 8010
 HEALTHCHECK --interval=15s --timeout=5s --start-period=600s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health', timeout=3)"

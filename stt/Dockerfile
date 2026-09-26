@@ -11,6 +11,7 @@ RUN npm ci --omit=dev
 
 # Copy application code and models
 COPY src/ ./src/
+COPY qwen/vocabulary.json ./qwen/vocabulary.json
 COPY models/ ./models/
 
 EXPOSE 8003

@@ -76,11 +76,13 @@ describe('transcribeVoice — wire shape', () => {
   let originalWhisperModel: string | undefined;
 
   beforeEach(async () => {
+    vi.stubEnv('STT_VOCABULARY', undefined);
     originalWhisperModel = process.env.WHISPER_MODEL;
     delete process.env.WHISPER_MODEL;
     fake = await startFakeWhisper();
   });
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (originalWhisperModel === undefined) {
       delete process.env.WHISPER_MODEL;
     } else {
@@ -105,6 +107,28 @@ describe('transcribeVoice — wire shape', () => {
     expect(body).toMatch(/Content-Type: audio\/ogg/i);
     expect(body).toMatch(/\sname="model"\r?\n\r?\nbase\r?\n/);
     expect(body).toContain('FAKE-OGG-PAYLOAD-1234567890');
+    expect(body).not.toContain('name="prompt"');
+  });
+
+  it('leaves the glossary to an external Qwen service when no local override exists', async () => {
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, model: 'Qwen/Qwen3-ASR-0.6B' });
+    expect(fake.captured[0].body.toString('utf8')).not.toContain('name="prompt"');
+  });
+
+  it.each(['base', 'Qwen/Qwen3-ASR-0.6B'])('applies lazy overrides and explicit disabling to %s', async (model) => {
+    for (const vocabulary of ['Kookr, générique.', '', '😀'.repeat(2000)]) {
+      vi.stubEnv('STT_VOCABULARY', vocabulary);
+      await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, model });
+      expect(fake.captured.at(-1)!.body.toString('utf8'))
+        .toContain(`name="prompt"\r\n\r\n${vocabulary}\r\n`);
+    }
+  });
+
+  it.each(['base', 'Qwen/Qwen3-ASR-0.6B'])('rejects overlong Unicode hints before uploading to %s', async (model) => {
+    vi.stubEnv('STT_VOCABULARY', '😀'.repeat(2001));
+    await expect(transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, model }))
+      .rejects.toThrow('at most 2000 characters');
+    expect(fake.captured).toHaveLength(0);
   });
 
   it('uses an explicit faster-whisper model override', async () => {

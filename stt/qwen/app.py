@@ -11,7 +11,7 @@ from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
 from audio import InvalidAudio, MAX_UPLOAD_BYTES, decode_audio
-from runtime import ALIGNER, ALIGNER_REVISION, MODELS, Settings, load_runtime
+from runtime import ALIGNER, ALIGNER_REVISION, MAX_VOCABULARY_CHARACTERS, MODELS, Settings, load_runtime
 
 LOG = logging.getLogger("qwen-asr")
 LANGUAGES = {None: None, "": None, "auto": None, "fr": "French", "en": "English"}
@@ -102,8 +102,8 @@ def create_app(settings=None, runtime_factory=load_runtime, decoder=decode_audio
             if any(value != "word" for value in granularities):
                 raise HTTPException(400, "Only word timestamps are supported")
             context = form.get("prompt", settings.vocabulary)
-            if not isinstance(context, str) or len(context) > 2000:
-                raise HTTPException(400, "Prompt must contain at most 2000 characters")
+            if not isinstance(context, str) or len(context) > MAX_VOCABULARY_CHARACTERS:
+                raise HTTPException(400, f"Prompt must contain at most {MAX_VOCABULARY_CHARACTERS} characters")
             if len(pending) >= MAX_JOBS:
                 raise HTTPException(429, "Qwen inference queue is full", headers={"Retry-After": "1"})
             content = await file.read()
