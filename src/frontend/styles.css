@@ -8758,9 +8758,17 @@ button.completed-row-rating:focus-visible {
   flex-direction: column;
   gap: 4px;
   flex-shrink: 0;
-  max-width: 170px;
+  max-width: 200px;
 }
 .voice-input-controls { display: inline-flex; align-items: center; gap: 4px; }
+.voice-meter { display: inline-flex; align-items: center; gap: 2px; height: 18px; width: 33px; color: var(--teal); }
+.voice-meter-bar { width: 3px; border-radius: 2px; background: currentColor; }
+.voice-signal { color: var(--teal); font-size: 10px; line-height: 1.4; }
+.voice-meter.waiting, .voice-signal.waiting { color: var(--text-secondary); }
+.voice-meter.quiet, .voice-signal.quiet,
+.voice-meter.weak, .voice-signal.weak { color: var(--amber); }
+.voice-meter.interrupted, .voice-signal.interrupted,
+.voice-meter.clipping, .voice-signal.clipping { color: var(--red); }
 .voice-language {
   width: 84px;
   min-width: 0;
@@ -8804,7 +8812,6 @@ button.completed-row-rating:focus-visible {
 .btn-voice.recording {
   border-color: #f87171;
   color: #f87171;
-  animation: stt-pulse 1.5s ease-in-out infinite;
 }
 .btn-voice.processing {
   border-color: var(--teal);
@@ -8832,6 +8839,7 @@ button.completed-row-rating:focus-visible {
 .input-with-voice > .voice-input { display: contents; }
 .input-with-voice .voice-input-controls { grid-column: 2; grid-row: 1; }
 .input-with-voice .voice-preview,
+.input-with-voice .voice-signal,
 .input-with-voice .voice-error { grid-column: 1 / -1; }
 .input-with-voice textarea,
 .input-with-voice input {
@@ -8846,11 +8854,6 @@ button.completed-row-rating:focus-visible {
   .input-with-voice { grid-template-columns: minmax(0, 1fr); }
   .input-with-voice .voice-input-controls { grid-column: 1; grid-row: 2; }
   .response-row > textarea { flex-basis: 100%; }
-}
-
-@keyframes stt-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.6; }
 }
 
 /* Speak-finding button. Card placement keeps the control next to the finding

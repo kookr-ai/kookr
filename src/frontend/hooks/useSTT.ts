@@ -17,6 +17,12 @@ import type { STTLanguage } from '../store/stt-language.js';
 
 export type STTState = 'starting' | 'idle' | 'recording' | 'processing' | 'error';
 
+interface AudioSignal {
+  /** Normalized input level, from silence (zero) to full scale (one). */
+  level: number;
+  status: 'waiting' | 'receiving' | 'quiet' | 'weak' | 'interrupted' | 'clipping';
+}
+
 export interface UseSTTResult {
   state: STTState;
   /** Progressive transcription text (fixed + active) */
@@ -29,6 +35,8 @@ export interface UseSTTResult {
   retrying: boolean;
   /** Elapsed recording time in seconds */
   elapsed: number;
+  /** Microphone input, measured before transport to the transcription service. */
+  audioSignal: AudioSignal;
   /** Start recording and streaming to STT service */
   start: () => Promise<void>;
   /** Stop recording and receive final transcription */
@@ -39,6 +47,27 @@ export interface UseSTTResult {
 
 const TARGET_SAMPLE_RATE = 16000;
 const PROCESSING_TIMEOUT_MS = 15_000;
+const AUDIO_METER_INTERVAL_MS = 100;
+// Allow nearly three 4096-sample chunks at 16 kHz before declaring capture stale.
+const AUDIO_STALE_MS = 750;
+// Flatten immediately on silence, but let short pauses pass without changing the label.
+const AUDIO_QUIET_LABEL_DELAY_MS = 600;
+const EMPTY_AUDIO_SIGNAL: AudioSignal = { level: 0, status: 'waiting' };
+
+function measureAudioSignal(input: Float32Array): AudioSignal {
+  let energy = 0;
+  let peak = 0;
+  for (const sample of input) {
+    energy += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+  }
+  const rms = Math.sqrt(energy / Math.max(1, input.length));
+  const decibels = 20 * Math.log10(Math.max(rms, 1e-6));
+  // The meter displays the sixty decibels below digital full scale, not room loudness.
+  const level = Math.min(1, Math.max(0, (decibels + 60) / 60));
+  const status = peak >= 0.99 ? 'clipping' : decibels <= -60 ? 'quiet' : decibels < -40 ? 'weak' : 'receiving';
+  return { level, status };
+}
 
 interface STTHealthSnapshot {
   degraded: boolean;
@@ -154,6 +183,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
   const [transcript, setTranscript] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const [audioSignal, setAudioSignal] = useState<AudioSignal>(EMPTY_AUDIO_SIGNAL);
   const sttHealth = useSyncExternalStore(subscribeSTTHealth, getSTTHealthSnapshot, getSTTHealthSnapshot);
 
   const stateRef = useRef<STTState>('idle');
@@ -180,6 +210,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
   }
 
   const releaseAudio = useCallback(() => {
+    if (mountedRef.current) setAudioSignal(EMPTY_AUDIO_SIGNAL);
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
@@ -326,8 +357,15 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       const audioContext = new AudioContext({ sampleRate: actualSampleRate });
       contextRef.current = audioContext;
       const source = audioContext.createMediaStreamSource(stream);
+      let latestSignal = EMPTY_AUDIO_SIGNAL;
+      let lastChunkAt: number | null = null;
+      let quietSince: number | null = null;
       const handleChunk = (inputData: Float32Array) => {
-        if (!isCurrent() || stateRef.current !== 'recording' || ws.readyState !== WebSocket.OPEN) return;
+        if (!isCurrent() || stateRef.current !== 'recording' || inputData.length === 0) return;
+        latestSignal = measureAudioSignal(inputData);
+        lastChunkAt = performance.now();
+        quietSince = latestSignal.status === 'quiet' ? quietSince ?? lastChunkAt : null;
+        if (ws.readyState !== WebSocket.OPEN) return;
         const pcm16 = resampleToInt16(inputData, audioContext.sampleRate);
         ws.send(pcm16.buffer as ArrayBuffer);
       };
@@ -338,9 +376,23 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       }
       audioNodeRef.current = workletNode ?? createScriptProcessorFallback(audioContext, source, handleChunk);
       const startedAt = Date.now();
+      const captureStartedAt = performance.now();
       timerRef.current = setInterval(() => {
+        if (!isCurrent() || stateRef.current !== 'recording') return;
         setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-      }, 1000);
+        const now = performance.now();
+        const track = stream.getAudioTracks()[0];
+        const interrupted = track.muted || track.readyState === 'ended'
+          || audioContext.state === 'suspended' || audioContext.state === 'closed'
+          || now - (lastChunkAt ?? captureStartedAt) >= AUDIO_STALE_MS;
+        setAudioSignal((previous) => {
+          let next = interrupted ? { level: 0, status: 'interrupted' as const } : latestSignal;
+          if (!interrupted && quietSince !== null && now - quietSince < AUDIO_QUIET_LABEL_DELAY_MS) {
+            next = { level: 0, status: previous.status === 'interrupted' ? 'waiting' : previous.status };
+          }
+          return next.level === previous.level && next.status === previous.status ? previous : next;
+        });
+      }, AUDIO_METER_INTERVAL_MS);
       setStateAndRef('recording');
     } catch {
       if (!isCurrent()) return;
@@ -397,6 +449,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
     degraded: sttHealth.degraded,
     retrying: sttHealth.retrying,
     elapsed,
+    audioSignal,
     start,
     stop,
     retryHealth,
