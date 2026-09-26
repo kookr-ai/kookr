@@ -63,7 +63,7 @@ async function main() {
             ? firstArg.id
             : null;
       if (!tmuxName) return;
-      // Production waits for both paste mode and the painted composer footer.
+      // Production waits for paste mode to be enabled and the footer to be rendered.
       terminal.emit(tmuxName, '\x1b[?2004hClaude Code\n❯ \n? for shortcuts');
     }) as typeof terminal.createSession;
   }
@@ -147,8 +147,8 @@ async function main() {
   });
 
   function broadcastTestSnapshot(): void {
-    // Match dashboard projection after fixture mutations so names, project
-    // identities, and task status do not disappear until the next server tick.
+    // Use the dashboard's metadata enrichment so fixture updates preserve task
+    // names, project identities, and task status between server ticks.
     server.broadcastToAll({
       type: 'snapshot',
       agents: getSnapshotAgentsForClient({ monitor: server.monitor }),

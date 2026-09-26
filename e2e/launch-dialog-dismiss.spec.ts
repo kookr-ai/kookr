@@ -66,7 +66,7 @@ test.describe('Launch dialog dismiss safety', () => {
       JSON.parse(window.localStorage.getItem(key)!).dictationId
     ), DRAFT_KEY);
 
-    // Discard clears typed content and starts a fresh dictation recovery scope.
+    // Discard clears typed content and creates a new dictation recovery identifier.
     await page.locator('.draft-restored-banner .link-button').click();
     await expect(page.locator('.draft-restored-banner')).not.toBeVisible();
     await expect(page.locator('.dialog textarea')).toHaveValue('');
