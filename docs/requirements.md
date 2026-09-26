@@ -853,17 +853,19 @@ The system SHALL remember the last effort and model pins sent from dashboard Lau
 
 ### R4b.11: Fill Launch Working Directory from Clipboard Path [F4.1] — SHOULD — `done`
 
-The system SHOULD let the operator fill the Launch dialog's working directory from a copied path that starts with `/` or `~/`, without reading the clipboard until they click.
+The system SHOULD let the operator fill the Launch dialog's or Quick Launch bar's working directory from a copied path that starts with `/` or `~/`, without reading the clipboard until they click.
 
 **Acceptance criteria:**
 - Clicking "Use clipboard path" with clipboard `/tmp/demo-repo` or `~/git/demo` (leading/trailing whitespace allowed) sets Working directory to that trimmed path
 - A multi-line clipboard uses the first line when that line is a path
 - Clicking with a paragraph of prose does not change cwd and explains that the clipboard is not a path
 - Empty or denied clipboard does not throw; cwd is unchanged (same fail-closed behavior as the prompt paste chip)
-- Opening the dialog does not read the clipboard
+- Opening either launch surface does not read the clipboard
+- Quick Launch keeps the clipboard control inside the bar; clicking fills the directory without submitting or closing, including during a delayed clipboard read
+- A pasted Quick Launch path takes precedence over pending or subsequent inherited-directory updates
 - Shape check only (`/` or `~/` after trim); no filesystem access
 
-**Evidence:** `src/frontend/components/LaunchTaskDialog.tsx` (`looksLikeAbsoluteClipboardPath`, `handlePasteCwdFromClipboard`), `src/frontend/components/LaunchTaskDialog.paste.test.ts`.
+**Evidence:** `src/frontend/clipboard.ts` (shared reader and path shape check), `src/frontend/components/LaunchTaskDialog.tsx`, `src/frontend/components/QuickLaunch.tsx`. Tests: `src/frontend/components/LaunchTaskDialog.paste.test.ts`, `src/frontend/components/QuickLaunch.clipboard.test.ts`, `e2e/quick-launch-clipboard.spec.ts`.
 
 ### R4b.12: Required Launch Dependency Admission [F4.12, F10.5] — SHALL — `done`
 
