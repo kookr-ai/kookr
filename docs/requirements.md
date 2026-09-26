@@ -712,18 +712,18 @@ The system SHOULD allow re-launching a previous task, pre-filling the launch dia
 The system SHOULD provide a minimal quick-launch mode that inherits the path from the currently selected agent.
 
 **Acceptance criteria:**
-- Keyboard shortcut (e.g., `Ctrl+L`) opens a prompt-only input bar (not the full dialog)
-- Path is inherited from the currently selected agent's working directory
+- Keyboard shortcut (`Alt+L`, or `Cmd+Ctrl+L` on macOS by default) opens the compact launch bar
+- Path initially inherits the selected agent's working directory; an explicit clipboard path overrides it (R4b.11)
 - If no agent is selected, falls back to Kookr's CWD (R4b.1)
 - Enter submits, Escape cancels
-- Launched task uses the inherited path and entered prompt
+- Launched task uses the current working directory and entered prompt
 - If the immediate WebSocket send fails, the input stays open with its exact prompt, path, agent, effort, and model selections intact and shows the existing connection error
 - Retrying after the sender recovers dispatches the same launch payload and closes Quick Launch exactly once
 - Failed sends do not update recent-path ordering or remembered launch selections
 
 **Rationale:** When running multiple agents in the same repo, the path is always the same. Removing the dialog entirely for this case cuts launch time to a single keystroke + prompt.
 
-**Evidence:** `src/frontend/components/QuickLaunch.tsx` (prompt-only input bar, resolves CWD from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (Ctrl+L opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling), `src/frontend/components/QuickLaunch.toast.test.ts` (failed-send state retention and successful retry).
+**Evidence:** `src/frontend/components/QuickLaunch.tsx` (compact launch bar with an optional clipboard directory override; initial CWD resolves from selected agent → recent paths → serverCwd), `src/frontend/App.tsx` (quick-launch shortcut opens QuickLaunch, TopBar button opens full LaunchTaskDialog), `src/frontend/styles.css` (quick-launch-bar styling), `src/frontend/components/QuickLaunch.toast.test.ts` (failed-send state retention and successful retry).
 
 ### R4b.5: Telegram Agent Selection — SHOULD — `done`
 

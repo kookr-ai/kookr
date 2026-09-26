@@ -337,6 +337,9 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         <button
           type="button"
           className="link-button cwd-clipboard-button"
+          // Safari does not focus clicked buttons. Preserve in-bar focus until
+          // mouse-up so blur-to-close cannot unmount this control before click.
+          onMouseDown={(event) => event.preventDefault()}
           onClick={handlePasteCwdFromClipboard}
           title="Fill working directory from a copied absolute path"
           aria-label="Use clipboard path"

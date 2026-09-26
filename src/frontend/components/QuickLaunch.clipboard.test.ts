@@ -109,15 +109,22 @@ describe('Quick Launch clipboard directory', () => {
     expect(cwd()).toBe('/tmp/pasted');
   });
 
-  test('Safari-style blur before the click does not close during a delayed read', async () => {
+  test('Safari-style mouse-down keeps the bar open until click and a delayed read finish', async () => {
     let resolveRead!: (text: string) => void;
     readText.mockReturnValue(new Promise(resolve => { resolveRead = resolve; }));
     await render();
     const input = container.querySelector<HTMLInputElement>('.quick-launch-input')!;
+    const paste = button();
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true });
     act(() => {
-      input.blur();
-      button().click();
+      paste.dispatchEvent(mouseDown);
+      // Model Safari's default blur only if the component allows it.
+      if (!mouseDown.defaultPrevented) input.blur();
     });
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 5)); });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
+    act(() => paste.click());
     await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 5)); });
     expect(onClose).not.toHaveBeenCalled();
     await act(async () => resolveRead('~/delayed'));

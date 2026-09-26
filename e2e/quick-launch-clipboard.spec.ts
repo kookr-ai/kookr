@@ -16,7 +16,8 @@ for (const width of [1280, 390]) {
     });
     await page.goto('/');
     await expect(page.locator('.health-dot-connected')).toBeVisible();
-    await page.keyboard.press('Control+l');
+    const isMac = await page.evaluate(() => /Mac/i.test(navigator.platform));
+    await page.keyboard.press(isMac ? 'Control+Meta+l' : 'Alt+l');
     const bar = page.locator('.quick-launch-bar');
     await expect(bar).toBeVisible();
     const prompt = bar.getByPlaceholder('Task prompt...', { exact: false });
