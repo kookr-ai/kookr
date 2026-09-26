@@ -191,29 +191,35 @@ test.describe('Supervisor flow — auto-advance', () => {
   });
 
   test('snoozing a finding auto-advances to next finding', async ({ page, request }) => {
-    await launchViaUI(page, 'Snooze Agent A', '/test/a');
-    const tmuxA = await getLatestTmuxName(request);
+    await launchViaUI(page, 'Snooze Agent A', '/test/project');
+    const tmuxA = await getTmuxNameForPrompt(request, 'Snooze Agent A');
     await injectSessionStart(request, tmuxA);
     await injectStopEvent(request, tmuxA);
 
-    await launchViaUI(page, 'Snooze Agent B', '/test/b');
-    const tmuxB = await getLatestTmuxName(request);
+    await launchViaUI(page, 'Snooze Agent B', '/test/project');
+    const tmuxB = await getTmuxNameForPrompt(request, 'Snooze Agent B');
     await injectSessionStart(request, tmuxB);
     await injectStopEvent(request, tmuxB);
 
     await expect(page.locator('.finding-card')).toHaveCount(2);
+    // Keep both findings in one project and wait for its drawer and terminal
+    // before interacting with the response buttons that share their layout.
+    await expect(page.getByTestId('project-icon-local/project')).toBeVisible();
 
     // Select first finding
     await page.keyboard.press('Alt+n');
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     const firstSelected = await page.locator('.finding-card.selected .finding-task').textContent();
+    expect(firstSelected).toMatch(/^Snooze Agent [AB]$/);
 
     // Snooze it — click "Snooze" then select "5m" from dialog
     await page.locator('.response-row .btn-secondary:has-text("Snooze")').click();
     await page.locator('.snooze-dialog-btn:has-text("5m")').click();
 
     // Selection should advance to the remaining finding
-    const nextSelected = await page.locator('.finding-card.selected .finding-task').textContent();
-    expect(nextSelected).not.toBe(firstSelected);
+    const remainingTask = firstSelected === 'Snooze Agent A' ? 'Snooze Agent B' : 'Snooze Agent A';
+    await expect(page.locator('.finding-card.selected .finding-task')).toHaveText(remainingTask);
   });
 });
 
