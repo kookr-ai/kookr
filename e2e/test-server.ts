@@ -9,6 +9,7 @@ import { createKookrServerInternal } from '../src/server/index.js';
 import type { KookrServerInternal } from '../src/server/server-test-helpers.js';
 import { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import { FakeTerminalBridge } from '../src/server/fake-terminal-bridge.js';
+import { getProjectSummaries, getSnapshotAgentsForClient } from '../src/server/use-cases/get-snapshot.js';
 import { CodexRolloutScanner } from '../src/adapters/codex-rollout-scanner.js';
 import type { Playbook } from '../src/core/playbook.js';
 import { createRelayServer, type RelayServerHandle } from '../relay/server.js';
@@ -145,6 +146,16 @@ async function main() {
     validateLaunchCwd: async () => {},
   });
 
+  function broadcastTestSnapshot(): void {
+    // Match dashboard projection after fixture mutations so names, project
+    // identities, and task status do not disappear until the next server tick.
+    server.broadcastToAll({
+      type: 'snapshot',
+      agents: getSnapshotAgentsForClient({ monitor: server.monitor }),
+      serverCwd: '/home/user/projects',
+    });
+  }
+
   if (process.env.E2E_PROMPT_SUBMIT_AUTO_HOOK === '1') {
     const originalWrite = terminal.write.bind(terminal);
     const confirmed = new Set<string>();
@@ -239,8 +250,7 @@ async function main() {
     const taskId = c.req.param('taskId');
     try {
       server.taskStore.completeTask(taskId);
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);
@@ -252,8 +262,7 @@ async function main() {
     const taskId = c.req.param('taskId');
     try {
       server.taskStore.cancelTask(taskId);
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);
@@ -277,9 +286,7 @@ async function main() {
   server.app.post('/api/test/set-project-id', async (c) => {
     const { taskId, projectId } = await c.req.json();
     server.taskStore.setProjectId(taskId, projectId);
-    // Broadcast updated snapshot so frontend sees the projectId
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -291,8 +298,7 @@ async function main() {
       return c.json({ error: `invalid agentType: ${String(agentType)}` }, 400);
     }
     server.taskStore.setAgentType(taskId, agentType);
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -323,8 +329,7 @@ async function main() {
     };
     task.updatedAt = new Date();
 
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true, ralphLoop: task.ralphLoop });
   });
 
@@ -379,13 +384,11 @@ async function main() {
 
   // Broadcast project summaries (for project tracking tests)
   server.app.post('/api/test/broadcast-project-summaries', async (c) => {
-    const { computeProjectSummaries } = await import('../src/core/project-summary.js');
     const { LedgerAnalytics } = await import('../src/core/ledger-analytics.js');
-    const agents = server.monitor.getSnapshot();
-    const summaries = computeProjectSummaries({
-      agents,
+    const summaries = getProjectSummaries({
+      monitor: server.monitor,
       ledgerAnalytics: new LedgerAnalytics(server.ossAttemptStore),
-      configStore: server.projectConfigStore,
+      projectConfigStore: server.projectConfigStore,
     });
     server.broadcastToAll({ type: 'projectSummaries', projects: summaries });
     return c.json({ ok: true, count: summaries.length });
@@ -447,8 +450,7 @@ async function main() {
     const ok = server.queue.backdateAnomaly(agentId, detectedAt);
     if (!ok) return c.json({ error: `No active anomaly for ${agentId}` }, 404);
     // Broadcast updated snapshot so frontend sees the new detectedAt
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -464,8 +466,7 @@ async function main() {
       }
     }
     task.updatedAt = createdAt;
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/repo' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -509,7 +510,7 @@ async function main() {
     rmSync(join(tempDir, 'coordinator-suppressions.json'), { force: true });
     rmSync(join(tempDir, 'coordinator-feedback.jsonl'), { force: true });
 
-    server.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     server.broadcastToAll({ type: 'projectSummaries', projects: [] });
 
     return c.json({ ok: true });
@@ -596,8 +597,7 @@ async function main() {
       server.taskStore.loadTasks(allTasks, lifetimeSpendUsd);
     }
     // Broadcast updated snapshot so frontend sees the new spend
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -608,8 +608,7 @@ async function main() {
     try {
       server.taskStore.setCompletionDigest(taskId, digest);
       // Broadcast updated snapshot
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);
