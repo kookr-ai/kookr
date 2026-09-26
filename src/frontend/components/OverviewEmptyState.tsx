@@ -369,12 +369,18 @@ export function OverviewEmptyState({
               {recentCompleted.map((agent) => {
                 const name = agent.taskName ?? agent.agentId;
                 const finishedAgo = formatRelativeTimeAgo(agent.finishedAt);
+                const costUsd = agent.tokenUsage?.costUsd;
+                const cost = costUsd !== undefined && costUsd > 0 ? formatCost(costUsd) : undefined;
                 const canRelaunch = Boolean(agent.taskId);
                 return (
                   <li key={agent.agentId} className="overview-completed-row">
                     <span className="overview-completed-name">{name}</span>
-                    {finishedAgo && (
-                      <span className="overview-completed-meta">{finishedAgo}</span>
+                    {(finishedAgo || cost) && (
+                      <span className="overview-completed-meta">
+                        {finishedAgo}
+                        {finishedAgo && cost && ' · '}
+                        {cost && <span data-testid="overview-completed-cost">{cost}</span>}
+                      </span>
                     )}
                     <CompletedRowEvidence digest={agent.completionDigest} taskName={name} />
                     <span className="overview-completed-actions">
