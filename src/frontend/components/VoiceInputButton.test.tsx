@@ -324,6 +324,44 @@ describe('VoiceInputButton STT health gating', () => {
     expect(container.querySelector('.voice-recovery')).toBeNull();
   });
 
+  test('keeps QuickLaunch speech accessible when its original selected task disappears', async () => {
+    seedDraftSurfaces();
+    const original: AgentState = {
+      agentId: 'removed-agent', taskId: 'removed-task', taskName: 'Original task', events: [], anomaly: null,
+      cwd: '/tmp/work', startedAt: '2026-09-25T10:00:00.000Z', taskStatus: 'inProgress',
+    };
+    useKookrStore.setState({ agents: [original], selectedAgentId: original.agentId, selectedTaskId: original.taskId });
+    const send = vi.fn(() => true);
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: copy } });
+    await act(async () => root.render(<QuickLaunch send={send} onClose={vi.fn()} />));
+    const input = () => container.querySelector<HTMLInputElement>('.quick-launch-input')!;
+    typeDraft(input(), 'Typed task survives');
+    await click(container.querySelector('.btn-voice')!);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'progressive', activeText: 'Words from the removed task' });
+    act(() => FakeSTTWebSocket.instances[0].close());
+    await act(async () => useKookrStore.getState().handleSnapshot([]));
+    expect(useKookrStore.getState().selectedAgentId).toBeNull();
+    const hidden = container.querySelector('.voice-hidden-recovery')!;
+    expect(hidden?.textContent).toContain('Words from the removed task');
+    expect(hidden?.textContent).toContain('Incomplete dictation from another context');
+    expect(hidden.querySelector('time')?.getAttribute('datetime')).toBeTruthy();
+    expect(hidden.textContent).not.toContain('Restore to');
+    act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(send).not.toHaveBeenCalled();
+    await click(Array.from(hidden.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Copy')!);
+    expect(copy).toHaveBeenCalledExactlyOnceWith('Words from the removed task');
+    expect(container.querySelector('.voice-hidden-recovery')).not.toBeNull();
+    expect(input().value).toBe('Typed task survives');
+    await click(Array.from(hidden.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Discard')!);
+    expect(container.querySelector('.voice-hidden-recovery')).toBeNull();
+    expect(container.querySelector('.voice-launch-pending')).toBeNull();
+    expect(document.activeElement).toBe(input());
+    act(() => input().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(localStorage.getItem(DICTATION_RECOVERY_KEY)!)).toEqual([]);
+  });
+
   test.each(['new task', 'relaunch'] as const)('requires resolution of active and hidden criteria dictation before submitting a %s', async (mode) => {
     seedDraftSurfaces();
     const send = vi.fn(() => true);

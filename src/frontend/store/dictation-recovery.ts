@@ -60,6 +60,11 @@ export function loadDictationRecovery(owner: string): DictationRecovery | null {
   return read().find(entry => entry.owner === owner && entry.text.trim()) ?? null;
 }
 
+/** Other-context drafts may be copied or discarded, but never restored into this input. */
+export function listDictationRecoveries(ownerPrefix: string): DictationRecovery[] {
+  return read().filter(entry => entry.owner.startsWith(ownerPrefix) && entry.text.trim());
+}
+
 /** Submission must resolve every recording belonging to a draft, including a previous directory. */
 export function hasPendingDictation(ownerPrefix: string): boolean {
   return read().some(entry => entry.owner.startsWith(ownerPrefix));
