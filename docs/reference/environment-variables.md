@@ -303,7 +303,7 @@ set.
 | `KOOKR_REMOTE_CHAT_DASHBOARD_URL` | unset | HTTP or HTTPS origin, e.g. `https://kookr.example.com` | Overrides the dashboard URL used in Telegram spawn confirmations, permission block alerts, and task outcome notifications. Set this when Telegram links must open from a phone. When unset, Kookr derives a local URL from `KOOKR_HOST`/`KOOKR_PORT` and warns if the server binds `0.0.0.0` because the fallback becomes `http://localhost:<port>`. |
 | `KOOKR_REMOTE_CHAT_DISABLED` | unset | `1` to disable | Panic switch for the Telegram remote-chat integration. Takes precedence over the bot token. |
 | `KOOKR_TELEGRAM_API_URL` | Telegram API default (`https://api.telegram.org`) | HTTP or HTTPS URL | Overrides the Telegram Bot API base URL for bot methods and file CDN downloads. Used by tests and local fakes. Rejected at client construction / config preflight when the host is a cloud-metadata hostname, a link-local address, or the URL embeds credentials. Loopback and private-LAN hosts remain allowed for fake servers and intentional bot-API proxies. |
-| `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local faster-whisper-server (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
+| `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local Whisper or Qwen service (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
 ## Outbound Finding Webhook
 
@@ -405,34 +405,27 @@ Bundled STT and TTS run via Docker Compose. STT detects the Docker NVIDIA
 runtime and otherwise uses CPU; `KOOKR_STT_DEVICE` can override that choice.
 The dashboard offers Auto, Français, and English recognition. Its language
 choice is remembered per browser and sent with each recording. Auto lets
-Whisper detect the spoken language. Explicit language selection is useful for
+the recognizer detect the spoken language. Explicit language selection is useful for
 short utterances.
 
-An upgrade from the older English-only configuration also requires rebuilding
-the bundled WebSocket service. Restarting Kookr reuses a healthy running speech
-service, so it does not update that container. From the repository root, use
-the same model override as your current service:
-
-```bash
-WHISPER_MODEL=base docker compose -f stt/docker-compose.yml up -d --build --no-deps kookr-stt
-```
-
-Replace `base` if your service uses another model. This rebuilds the small
-WebSocket service while leaving the Whisper inference container running.
-For an external service, update its language support or select a language
-it accepts; the dashboard reports when the service rejects its selection.
+See [local speech recognition](speech-recognition.md) for model selection,
+vocabulary hints, resource requirements and migration from GPU Whisper.
 
 | Variable | Default | Accepted values | Effect |
 | --- | --- | --- | --- |
 | `KOOKR_STT` | unset | `true` to enable | Starts bundled speech-to-text services when no `KOOKR_STT_URL` is provided. Routine process restart leaves containers running; free GPU with `pnpm prod:stop --with-sidecars`. |
 | `KOOKR_STT_URL` | unset | WebSocket URL | Uses an external speech-to-text service and skips bundled startup. |
 | `KOOKR_STT_PORT` | `8003` | Integer port | Port for the bundled speech-to-text service. Also injected into the STT child process. |
+| `KOOKR_STT_WHISPER_PORT` | `8010` | Integer port | Loopback HTTP port of the bundled inference service, including Qwen. If changed, update `KOOKR_STT_WHISPER_URL` for Telegram to match. The legacy name is retained for compatibility. |
 | `STT_LANGUAGE` | `auto` | `auto` or a supported language code | Default recognition language for bundled-service clients that do not select a language. The dashboard sends its own selection for each recording. |
 | `STT_SUPPORTED_LANGUAGES` | `auto,en,fr` plus `STT_LANGUAGE` | Comma-separated recognition language codes | Optional operator allowlist for WebSocket configuration. An explicitly configured list replaces the default list; keep the languages your clients use. If it excludes STT_LANGUAGE, its first entry becomes the fallback language. |
-| `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run Whisper model downloads. |
-| `KOOKR_STT_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled STT stack. `auto` probes `docker info` for an nvidia runtime and resolves to `gpu` (CUDA Whisper image, `large-v3`, float16 + GPU device reservation) or `cpu` (CPU Whisper image, `base`, int8). Set explicitly to override the auto choice. |
+| `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run model downloads or Qwen image builds. |
+| `KOOKR_STT_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled STT stack. `auto` probes `docker info` for an nvidia runtime and resolves to `gpu` (Qwen3-ASR 0.6B plus forced aligner by default) or `cpu` (CPU Whisper image, `base`, int8). Set explicitly to override the auto choice. |
+| `KOOKR_STT_BACKEND` | `auto` | `auto`, `qwen`, `whisper` | Selects Qwen on GPU and Whisper on CPU in auto mode. Explicit Qwen requires a GPU. See [speech recognition](speech-recognition.md). |
+| `QWEN_ASR_MODEL` | `Qwen/Qwen3-ASR-0.6B` | `Qwen/Qwen3-ASR-0.6B`, `Qwen/Qwen3-ASR-1.7B` | Qwen model selected at startup; the same aligner is used for both sizes. Ignored when Whisper is selected. |
+| `STT_VOCABULARY` | Short Kookr/development glossary | Text, at most 2,000 characters | Qwen recognition hint shared by browser and Telegram. Empty disables it. See [default vocabulary](speech-recognition.md#model-and-vocabulary). |
 | `WHISPER_IMAGE` | per-device default | Container image reference | Override the Whisper sidecar image. Defaults: `fedirz/faster-whisper-server:latest-cuda` on GPU, `fedirz/faster-whisper-server:latest-cpu` on CPU. |
-| `WHISPER_MODEL` | per-device default | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Override the Whisper model. Defaults: `large-v3` on GPU (~3 GB first-run download), `base` on CPU (~150 MB). |
+| `WHISPER_MODEL` | per-device default | Faster-Whisper model id (`tiny`, `base`, `small`, `medium`, `large-v3`, ...) | Override the model only when Whisper is selected. Defaults: `large-v3` on GPU (~3 GB first-run download), `base` on CPU (~150 MB). |
 | `WHISPER_DEVICE` | per-device default | `cuda` or `cpu` | Override the Whisper inference device. Defaults: `cuda` on GPU, `cpu` on CPU. |
 | `WHISPER_COMPUTE_TYPE` | per-device default | `float16`, `int8`, `int8_float16`, ... | Override Whisper inference precision. Defaults: `float16` on GPU, `int8` on CPU. |
 | `KOOKR_TTS` | unset | `true` to enable | Starts bundled text-to-speech services when no `KOOKR_TTS_URL` is provided. |

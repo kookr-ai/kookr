@@ -16,6 +16,7 @@ export interface TelegramTriggerModule {
     launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
     llmClient: LlmClient | null;
     whisperUrl?: string;
+    transcriptionModel?: string;
     lifecycleSignal?: AbortSignal;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
@@ -25,6 +26,7 @@ export interface TelegramTriggerModule {
 }
 
 export interface RemoteChatTriggerDeps {
+  sttTranscription?: { url: string; model: string };
   host: string;
   port: number;
   kookrDir: string;
@@ -65,6 +67,17 @@ function parseAllowedProjects(value: string | undefined): Array<{ name: string; 
 
 function localDashboardBaseUrl(host: string, port: number): string {
   return `http://${host === '0.0.0.0' ? 'localhost' : host}:${port}`;
+}
+
+/** Do not send the bundled model to an independently configured HTTP service. */
+function sameSpeechEndpoint(left: string | undefined, right: string): boolean {
+  if (!left) return false;
+  const normalize = (value: string): string => {
+    const url = new URL(value);
+    if (url.hostname === 'localhost') url.hostname = '127.0.0.1';
+    return url.href.replace(/\/+$/, '');
+  };
+  try { return normalize(left) === normalize(right); } catch { return false; }
 }
 
 function dashboardBaseUrl(env: Env, host: string, port: number, warn: (message: string) => void): string {
@@ -141,6 +154,8 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       launchTask: deps.launchTask,
       llmClient: deps.llmClient,
       whisperUrl: env.KOOKR_STT_WHISPER_URL,
+      transcriptionModel: deps.sttTranscription && sameSpeechEndpoint(env.KOOKR_STT_WHISPER_URL, deps.sttTranscription.url)
+        ? deps.sttTranscription.model : undefined,
       lifecycleSignal: deps.lifecycleSignal,
     });
 

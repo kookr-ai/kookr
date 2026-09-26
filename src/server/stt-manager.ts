@@ -31,8 +31,7 @@ const STT_BUILD_STAMP_FILE = '.kookr-stt-build.hash';
 const DEFAULT_REUSE_ATTEMPTS = 3;
 const DEFAULT_REUSE_BACKOFF_MS = 150;
 const WHISPER_CONTAINER_NAME = 'kookr-stt-whisper';
-/** Expected bundled backend identity on the Node STT health endpoint. */
-const EXPECTED_BUNDLED_BACKEND = 'whisper';
+export type STTBackend = 'whisper' | 'qwen';
 
 export type STTDevice = 'auto' | 'cpu' | 'gpu';
 export type ResolvedSTTDevice = 'cpu' | 'gpu';
@@ -43,8 +42,8 @@ export interface STTManagerConfig {
   /** Port to expose the STT service on the host (default: 8003) */
   port?: number;
   /**
-   * Whisper model. When omitted, the manager picks `base` for CPU and
-   * `large-v3` for GPU so first-run downloads stay reasonable.
+   * Whisper-only model override. GPU defaults to Qwen; explicit Whisper
+   * uses `base` on CPU or `large-v3` on GPU when this is omitted.
    */
   whisperModel?: string;
   /**
@@ -69,11 +68,15 @@ export interface STTManagerConfig {
 export interface STTManager {
   /** The STT WebSocket URL to pass to the frontend (e.g. ws://localhost:8003) */
   url: string;
+  /** Bundled HTTP endpoint identity, also used by Telegram. */
+  transcription?: { url: string; model: string };
   /** Stop the Docker containers (compose down) — failed-start / operator reclaim */
   stop(): Promise<void>;
 }
 
 export interface STTComposeIdentity {
+  backend: STTBackend;
+  configId?: string;
   composeFlags: string[];
   env: NodeJS.ProcessEnv;
   sttDir: string;
@@ -104,7 +107,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     whisperModel,
     device,
   });
-  const { composeFlags, env, resolvedDevice, model } = identity;
+  const { composeFlags, env, resolvedDevice, model, backend, configId } = identity;
 
   // --- Warm reuse path: multi-try health before any compose mutation ---
   const reuseResult = await tryReuseSTT({
@@ -113,6 +116,8 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     attempts: reuseAttempts,
     backoffMs: reuseBackoffMs,
     inspectWhisperModel,
+    backend,
+    configId,
   });
   if (reuseResult.ok) {
     console.log(
@@ -123,6 +128,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     );
     return {
       url: `ws://localhost:${port}`,
+      transcription: { url: `http://127.0.0.1:${env.KOOKR_STT_WHISPER_PORT || 8010}`, model },
       stop: () => stopSTT(composeFlags, env),
     };
   }
@@ -151,7 +157,9 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     ];
     await execFileAsync('docker', upArgs, {
       env,
-      timeout: 120_000,
+      // A first Qwen image build includes CUDA wheels; use the operator's
+      // startup budget rather than killing it after two minutes.
+      timeout: backend === 'qwen' ? startupTimeoutMs : 120_000,
     });
     if (buildPlan.build) {
       await writeSTTBuildStamp(sttDir, buildPlan.inputHash);
@@ -170,13 +178,13 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
 
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(healthUrl, { signal: AbortSignal.timeout(3000) });
-      if (res.ok) {
-        const health = (await res.json()) as { backend?: string };
-        console.log(`[stt] STT service is ready (backend: ${health.backend ?? 'unknown'}, reason=started)`);
+      const health = await evaluateSTTReuseOnce(port, model, inspectWhisperModel, backend, configId);
+      if (health.ok) {
+        console.log(`[stt] STT service is ready (backend: ${health.backend ?? 'unknown'}, model: ${model}, reason=started)`);
 
         return {
           url: `ws://localhost:${port}`,
+          transcription: { url: `http://127.0.0.1:${env.KOOKR_STT_WHISPER_PORT || 8010}`, model },
           stop: () => stopSTT(composeFlags, env),
         };
       }
@@ -209,8 +217,32 @@ export async function resolveSTTComposeIdentity(opts: {
   } = opts;
 
   const resolvedDevice = await resolveDevice(device);
+  const requestedBackend = process.env.KOOKR_STT_BACKEND?.trim() || 'auto';
+  if (!['auto', 'whisper', 'qwen'].includes(requestedBackend)) {
+    throw new Error('KOOKR_STT_BACKEND must be auto, whisper, or qwen');
+  }
+  const backend: STTBackend = requestedBackend === 'auto'
+    ? (resolvedDevice === 'gpu' ? 'qwen' : 'whisper')
+    : requestedBackend as STTBackend;
+  if (backend === 'qwen' && resolvedDevice !== 'gpu') {
+    throw new Error('Qwen speech recognition requires an NVIDIA GPU; use KOOKR_STT_DEVICE=gpu or select whisper');
+  }
   const defaults = deviceDefaults(resolvedDevice);
-  const model = whisperModel ?? process.env.WHISPER_MODEL ?? defaults.model;
+  const selectedWhisperModel = whisperModel || process.env.WHISPER_MODEL || defaults.model;
+  const model = backend === 'qwen'
+    ? (process.env.QWEN_ASR_MODEL?.trim() || 'Qwen/Qwen3-ASR-0.6B')
+    : selectedWhisperModel;
+  if (backend === 'qwen' && !['Qwen/Qwen3-ASR-0.6B', 'Qwen/Qwen3-ASR-1.7B'].includes(model)) {
+    throw new Error('QWEN_ASR_MODEL must be Qwen/Qwen3-ASR-0.6B or Qwen/Qwen3-ASR-1.7B');
+  }
+  if (backend === 'qwen' && (process.env.STT_VOCABULARY?.length ?? 0) > 2000) {
+    throw new Error('STT_VOCABULARY must contain at most 2000 characters');
+  }
+  // Distinguish an absent glossary override (service default) from an empty
+  // one (disabled), so warm restarts apply configuration changes too.
+  const configId = backend === 'qwen' ? createHash('sha256').update(JSON.stringify({
+    model, vocabulary: process.env.STT_VOCABULARY ?? null,
+  })).digest('hex') : undefined;
   const image = process.env.WHISPER_IMAGE ?? defaults.image;
   const whisperDevice = process.env.WHISPER_DEVICE ?? defaults.device;
   const computeType = process.env.WHISPER_COMPUTE_TYPE ?? defaults.computeType;
@@ -219,17 +251,19 @@ export async function resolveSTTComposeIdentity(opts: {
   const gpuOverlayPath = join(sttDir, 'docker-compose.gpu.yml');
   const composeFlags =
     resolvedDevice === 'gpu' ? ['-f', composePath, '-f', gpuOverlayPath] : ['-f', composePath];
+  if (backend === 'qwen') composeFlags.push('-f', join(sttDir, 'docker-compose.qwen.yml'));
 
   const env = {
     ...process.env,
     KOOKR_STT_PORT: String(port),
     WHISPER_IMAGE: image,
-    WHISPER_MODEL: model,
+    WHISPER_MODEL: selectedWhisperModel,
+    ...(backend === 'qwen' ? { QWEN_ASR_MODEL: model, STT_CONFIG_ID: configId } : {}),
     WHISPER_DEVICE: whisperDevice,
     WHISPER_COMPUTE_TYPE: computeType,
   };
 
-  return { composeFlags, env, sttDir, resolvedDevice, model, port };
+  return { composeFlags, env, sttDir, resolvedDevice, model, port, backend, configId };
 }
 
 /** Operator/failed-start teardown with the same compose flags as start. */
@@ -267,6 +301,8 @@ type ReuseOk = {
 type ReuseFail = { ok: false; reason: string };
 
 async function tryReuseSTT(opts: {
+  backend: STTBackend;
+  configId?: string;
   port: number;
   model: string;
   attempts: number;
@@ -275,7 +311,7 @@ async function tryReuseSTT(opts: {
 }): Promise<ReuseOk | ReuseFail> {
   let lastReason = 'missing';
   for (let i = 0; i < opts.attempts; i++) {
-    const result = await evaluateSTTReuseOnce(opts.port, opts.model, opts.inspectWhisperModel);
+    const result = await evaluateSTTReuseOnce(opts.port, opts.model, opts.inspectWhisperModel, opts.backend, opts.configId);
     if (result.ok) return result;
     lastReason = result.reason;
     if (i + 1 < opts.attempts) {
@@ -286,13 +322,17 @@ async function tryReuseSTT(opts: {
 }
 
 /**
- * R11 reuse predicate — exported for unit tests.
- * Does not require model_loaded or model_name === WHISPER_MODEL.
+ * Check whether the running service matches the requested backend.
+ * Whisper uses status/backend and optional Docker model inspection because
+ * its health endpoint can report unused Parakeet metadata. Qwen requires
+ * the selected model loaded on CUDA and the expected configuration ID.
  */
 export async function evaluateSTTReuseOnce(
   port: number,
   expectedModel: string,
   inspectWhisperModel: () => Promise<string | null> = () => inspectWhisperModelFromDocker(),
+  expectedBackend: STTBackend = 'whisper',
+  expectedConfigId?: string,
 ): Promise<ReuseOk | ReuseFail> {
   const healthUrl = `http://localhost:${port}/health`;
   let res: Response;
@@ -315,15 +355,26 @@ export async function evaluateSTTReuseOnce(
     return { ok: false, reason: 'unparseable' };
   }
 
-  const health = body as { status?: unknown; backend?: unknown };
+  const health = body as {
+    status?: unknown; backend?: unknown; model_name?: unknown;
+    model_loaded?: unknown; device?: unknown; config_id?: unknown;
+  };
   const status = typeof health.status === 'string' ? health.status : '';
   if (status !== 'ok') {
     return { ok: false, reason: 'identity-mismatch' };
   }
 
   const backend = typeof health.backend === 'string' ? health.backend : undefined;
-  if (backend !== undefined && backend !== EXPECTED_BUNDLED_BACKEND) {
+  if (backend !== undefined && backend !== expectedBackend) {
     return { ok: false, reason: 'identity-mismatch' };
+  }
+
+  if (expectedBackend === 'qwen') {
+    if (backend !== 'qwen' || health.model_name !== expectedModel || health.model_loaded !== true
+      || health.device !== 'cuda' || (expectedConfigId !== undefined && health.config_id !== expectedConfigId)) {
+      return { ok: false, reason: 'identity-mismatch' };
+    }
+    return { ok: true, status, backend, inspectedModel: expectedModel, inspectSkipped: false };
   }
 
   // Optional Whisper model identity via docker inspect (not health.model_name).
@@ -481,6 +532,8 @@ async function hashSTTBuildInputs(sttDir: string): Promise<string> {
     'Dockerfile',
     'docker-compose.yml',
     'docker-compose.gpu.yml',
+    'docker-compose.qwen.yml',
+    'qwen',
     'package.json',
     'package-lock.json',
     'src',
@@ -503,7 +556,7 @@ async function addPathToHash(
       const entries = await readdir(absolutePath);
       for (const entry of entries.sort()) {
         // Skip unit/integration tests and node_modules noise in the stamp.
-        if (entry === 'node_modules' || entry.endsWith('.test.js')) continue;
+        if (entry === 'node_modules' || entry === '__pycache__' || entry.endsWith('.test.js') || entry.startsWith('test_')) continue;
         await addPathToHash(hash, rootDir, join(relativePath, entry));
       }
       return;

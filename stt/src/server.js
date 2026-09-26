@@ -1,7 +1,7 @@
 /**
- * STT WebSocket server with progressive transcription through Whisper.
+ * STT WebSocket server with progressive transcription through Qwen or Whisper.
  * Each connection selects its spoken language independently. 'auto' lets
- * Whisper detect it; 'fr' and 'en' provide French and English hints.
+ * the model detect it; 'fr' and 'en' provide French and English hints.
  * The optional Parakeet WASM backend does not use the language hint.
  *
  * WebSocket Protocol (same as Python server):
@@ -26,7 +26,7 @@
 import { createServer } from 'node:http';
 import { pathToFileURL } from 'node:url';
 
-import { WebSocketServer } from 'ws';
+import { WebSocket, WebSocketServer } from 'ws';
 
 import { AudioBuffer, DEFAULT_MAX_BUFFER_SECONDS } from './audio-buffer.js';
 import {
@@ -53,6 +53,10 @@ const MAX_WINDOW_SIZE = parseFloat(process.env.MAX_WINDOW_SIZE || '15.0');
 const SENTENCE_BUFFER = parseFloat(process.env.SENTENCE_BUFFER || '2.0');
 const MIN_AUDIO_SECONDS = parseFloat(process.env.MIN_AUDIO_SECONDS || '0.5');
 const SAMPLE_RATE = 16000;
+// Qwen can need another pass after fixing a sentence. Bound the entire stop
+// operation, including any earlier pass still running, to two minutes.
+const QWEN_FINALIZATION_TIMEOUT_MS = 120_000;
+const QWEN_CLIENT_TIMEOUT_MS = QWEN_FINALIZATION_TIMEOUT_MS + 5_000;
 
 /**
  * Parse a positive-number env var, falling back to `fallback` when unset or
@@ -119,28 +123,15 @@ function handleConnection(ws, req) {
   let language = DEFAULT_LANGUAGE;
   let lastProgressiveTime = 0;
   let processing = false;
+  let processingTask = Promise.resolve();
+  let finalizing = false;
   let lastEmittedTranscription = '';
   let lastProcessedAudioSeconds = 0;
   let lastProcessedLanguage = null;
 
-  /**
-   * Wait for any in-flight incremental transcription to finish.
-   * Prevents stop-handler races where finalization happens before
-   * last progressive text is available.
-   *
-   * @param {number} timeoutMs
-   * @returns {Promise<void>}
-   */
-  async function waitForProcessingDrain(timeoutMs = 30000) {
-    const start = Date.now();
-    while (processing && Date.now() - start < timeoutMs) {
-      // Keep this short so stop remains responsive while waiting for model inference.
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  }
-
   ws.on('message', async (message, isBinary) => {
     if (isBinary) {
+      if (finalizing || ws.readyState !== WebSocket.OPEN) return;
       // Audio data - add to buffer
       const duration = audioBuffer.addChunk(message);
 
@@ -158,52 +149,56 @@ function handleConnection(ws, req) {
       lastProgressiveTime = now;
       const transcriptionLanguage = language;
 
-      try {
-        const audio = audioBuffer.getAudio();
-        const result = await streamingHandler.transcribeIncremental(
-          audio,
-          audioBuffer.trimmedSamples,
-          { language: transcriptionLanguage },
-        );
-        lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
-        lastProcessedLanguage = transcriptionLanguage;
-        if (transcriptionLanguage !== language) return;
-
-        // Send progressive update
-        if (progressiveEnabled && (result.fixedText || result.activeText)) {
-          ws.send(
-            JSON.stringify({
-              type: 'progressive',
-              fixedText: result.fixedText,
-              activeText: result.activeText,
-              timestamp: Math.round(result.timestamp * 100) / 100,
-            }),
+      processingTask = (async () => {
+        try {
+          const audio = audioBuffer.getAudio();
+          const result = await streamingHandler.transcribeIncremental(
+            audio,
+            audioBuffer.trimmedSamples,
+            { language: transcriptionLanguage },
           );
-        }
+          if (ws.readyState !== WebSocket.OPEN) return;
+          lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
+          lastProcessedLanguage = transcriptionLanguage;
+          if (transcriptionLanguage !== language) return;
 
-        // Send backward-compatible non-final transcription only when progressive
-        // mode is disabled. When progressive is enabled, emitting both message
-        // types causes duplicate rendering in some clients.
-        const fullText = [result.fixedText, result.activeText]
-          .filter(Boolean)
-          .join(' ');
-        if (fullText && !progressiveEnabled) {
-          lastEmittedTranscription = fullText;
-          ws.send(
-            JSON.stringify({
-              type: 'transcription',
-              text: fullText,
-              is_final: false,
-              confidence: 0.9,
-              language: transcriptionLanguage,
-            }),
-          );
+          // Send progressive update
+          if (progressiveEnabled && (result.fixedText || result.activeText)) {
+            ws.send(
+              JSON.stringify({
+                type: 'progressive',
+                fixedText: result.fixedText,
+                activeText: result.activeText,
+                timestamp: Math.round(result.timestamp * 100) / 100,
+              }),
+            );
+          }
+
+          // Send backward-compatible non-final transcription only when progressive
+          // mode is disabled. When progressive is enabled, emitting both message
+          // types causes duplicate rendering in some clients.
+          const fullText = [result.fixedText, result.activeText]
+            .filter(Boolean)
+            .join(' ');
+          if (fullText && !progressiveEnabled) {
+            lastEmittedTranscription = fullText;
+            ws.send(
+              JSON.stringify({
+                type: 'transcription',
+                text: fullText,
+                is_final: false,
+                confidence: 0.9,
+                language: transcriptionLanguage,
+              }),
+            );
+          }
+        } catch (err) {
+          console.error('Transcription error:', err.message);
+        } finally {
+          processing = false;
         }
-      } catch (err) {
-        console.error('Transcription error:', err.message);
-      } finally {
-        processing = false;
-      }
+      })();
+      await processingTask;
 
       return;
     }
@@ -236,112 +231,137 @@ function handleConnection(ws, req) {
       ws.send(
         JSON.stringify({
           type: 'config_ack',
+          ...(transcriptionBackend.name === 'qwen' ? { finalization_timeout_ms: QWEN_CLIENT_TIMEOUT_MS } : {}),
           language,
           progressive: progressiveEnabled,
         }),
       );
     } else if (msgType === 'stop') {
-      // Final transcription
-      if (audioBuffer.duration() > 0) {
-        let finalLanguage = language;
-        try {
-          if (processing) {
-            await waitForProcessingDrain();
-          }
-          finalLanguage = language;
+      if (finalizing || ws.readyState !== WebSocket.OPEN) return;
+      finalizing = true;
+      const deadlineError = new Error('Transcription timed out. Please try again.');
+      let deadlineTimer;
+      const deadline = transcriptionBackend.name === 'qwen'
+        ? new Promise((_resolve, reject) => {
+          deadlineTimer = setTimeout(() => reject(deadlineError), QWEN_FINALIZATION_TIMEOUT_MS);
+        })
+        : null;
+      const beforeDeadline = (operation) => deadline ? Promise.race([operation, deadline]) : operation;
+      try {
+        // Final transcription
+        if (audioBuffer.duration() > 0) {
+          let finalLanguage = language;
+          try {
+            if (processing) {
+              await beforeDeadline(processingTask);
+            }
+            if (ws.readyState !== WebSocket.OPEN) return;
+            finalLanguage = language;
 
-          const audioSeconds = audioBuffer.duration();
-          const canFinalizeFromCache = lastProcessedLanguage === finalLanguage
-            && shouldFinalizeFromCache({
-              lastEmittedTranscription,
-              audioSeconds,
-              lastProcessedAudioSeconds,
-              maxUnprocessedTailSeconds: 0.25,
-            });
+            const audioSeconds = audioBuffer.duration();
+            const canFinalizeFromCache = lastProcessedLanguage === finalLanguage
+              && shouldFinalizeFromCache({
+                lastEmittedTranscription,
+                audioSeconds,
+                lastProcessedAudioSeconds,
+                maxUnprocessedTailSeconds: 0.25,
+              });
 
-          if (canFinalizeFromCache) {
+            if (canFinalizeFromCache) {
+              ws.send(
+                JSON.stringify({
+                  type: 'transcription',
+                  text: lastEmittedTranscription,
+                  is_final: true,
+                  confidence: 0.9,
+                  language: finalLanguage,
+                }),
+              );
+              streamingHandler.reset();
+              audioBuffer.clear();
+              lastProgressiveTime = 0;
+              lastEmittedTranscription = '';
+              lastProcessedAudioSeconds = 0;
+              processing = false;
+              return;
+            }
+
+            const audio = audioBuffer.getAudio();
+            const result = await beforeDeadline(streamingHandler.transcribeIncremental(
+              audio,
+              audioBuffer.trimmedSamples,
+              { language: finalLanguage },
+            ));
+            if (ws.readyState !== WebSocket.OPEN) return;
+            lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
+            lastProcessedLanguage = finalLanguage;
+
+            const fullText = [result.fixedText, result.activeText]
+              .filter(Boolean)
+              .join(' ');
+            if (fullText) {
+              lastEmittedTranscription = fullText;
+            }
+
+            if (progressiveEnabled && fullText) {
+              ws.send(
+                JSON.stringify({
+                  type: 'progressive',
+                  fixedText: fullText,
+                  activeText: '',
+                  timestamp: Math.round(result.timestamp * 100) / 100,
+                  isFinal: true,
+                }),
+              );
+            }
+
+            // Always emit a final frame so clients can terminate requests
+            // even when decoding yields empty text.
             ws.send(
               JSON.stringify({
                 type: 'transcription',
-                text: lastEmittedTranscription,
+                text: fullText,
                 is_final: true,
                 confidence: 0.9,
                 language: finalLanguage,
               }),
             );
-            streamingHandler.reset();
-            audioBuffer.clear();
-            lastProgressiveTime = 0;
-            lastEmittedTranscription = '';
-            lastProcessedAudioSeconds = 0;
-            processing = false;
-            return;
-          }
-
-          const audio = audioBuffer.getAudio();
-          const result = await streamingHandler.transcribeIncremental(
-            audio,
-            audioBuffer.trimmedSamples,
-            { language: finalLanguage },
-          );
-          lastProcessedAudioSeconds = audio.length / SAMPLE_RATE;
-          lastProcessedLanguage = finalLanguage;
-
-          const fullText = [result.fixedText, result.activeText]
-            .filter(Boolean)
-            .join(' ');
-          if (fullText) {
-            lastEmittedTranscription = fullText;
-          }
-
-          if (progressiveEnabled && fullText) {
+          } catch (err) {
+            if (err === deadlineError) {
+              // The old inference may still settle. Retire this connection so
+              // it can never mutate the handler of another recording.
+              ws.send(JSON.stringify({ type: 'error', error: deadlineError.message }));
+              ws.close(1011, deadlineError.message);
+              return;
+            }
+            const errMessage = err instanceof Error ? err.message : String(err);
+            const errStack = err instanceof Error ? err.stack : '';
+            console.error('Final transcription error:', errMessage);
+            if (errStack) {
+              console.error(errStack);
+            }
             ws.send(
               JSON.stringify({
-                type: 'progressive',
-                fixedText: fullText,
-                activeText: '',
-                timestamp: Math.round(result.timestamp * 100) / 100,
-                isFinal: true,
+                type: 'transcription',
+                text: lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '',
+                is_final: true,
+                confidence: 0.9,
+                language: finalLanguage,
               }),
             );
           }
-
-          // Always emit a final frame so clients can terminate requests
-          // even when decoding yields empty text.
-          ws.send(
-            JSON.stringify({
-              type: 'transcription',
-              text: fullText,
-              is_final: true,
-              confidence: 0.9,
-              language: finalLanguage,
-            }),
-          );
-        } catch (err) {
-          const errMessage = err instanceof Error ? err.message : String(err);
-          const errStack = err instanceof Error ? err.stack : '';
-          console.error('Final transcription error:', errMessage);
-          if (errStack) {
-            console.error(errStack);
-          }
-          ws.send(
-            JSON.stringify({
-              type: 'transcription',
-              text: lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '',
-              is_final: true,
-              confidence: 0.9,
-              language: finalLanguage,
-            }),
-          );
         }
-      }
 
-      // Reset for next recording session
-      streamingHandler.reset();
-      audioBuffer.clear();
-      lastProgressiveTime = 0;
-      lastEmittedTranscription = '';
-      lastProcessedAudioSeconds = 0;
+        // Reset for next recording session
+        streamingHandler.reset();
+        audioBuffer.clear();
+        lastProgressiveTime = 0;
+        lastEmittedTranscription = '';
+        lastProcessedAudioSeconds = 0;
+      } finally {
+        clearTimeout(deadlineTimer);
+        finalizing = false;
+      }
     } else if (msgType === 'clear') {
       streamingHandler.reset();
       audioBuffer.clear();
@@ -365,16 +385,26 @@ function handleConnection(ws, req) {
 
 // --- HTTP + WebSocket Server ---
 
-export const httpServer = createServer((req, res) => {
+export const httpServer = createServer(async (req, res) => {
   if (req.url === '/health' && req.method === 'GET') {
+    let backendHealth;
+    if (transcriptionBackend.getHealth) {
+      try {
+        backendHealth = await transcriptionBackend.getHealth();
+      } catch {
+        // An unavailable upstream must not inherit the local WASM model's
+        // stale metadata or a successful warmup from earlier in the process.
+      }
+    }
     const health = createHealthPayload({
       modelLoaded: isModelLoaded(),
       modelName: getModelVersion(),
       runtimeInfo,
       transcriptionBackend,
+      backendHealth,
     });
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(health.status === 'ok' ? 200 : 503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(health));
     return;
   }
@@ -420,31 +450,34 @@ const WARMUP_TIMEOUT_MS = parseInt(process.env.STT_WARMUP_TIMEOUT_MS || '120000'
 const WARMUP_RETRY_DELAY_MS = parseInt(process.env.STT_WARMUP_RETRY_DELAY_MS || '2000', 10);
 
 export async function startServer() {
-  console.log('Starting Parakeet STT WebSocket Server (Node.js)...');
+  console.log('Starting STT WebSocket Server (Node.js)...');
   console.log(`Transcription backend: ${transcriptionBackend.name}`);
 
   if (transcriptionBackend.name === 'wasm') {
     // loadModel() already runs its own silence warmup (see model-loader.js).
     await loadModel();
   } else {
-    console.log('Skipping local Parakeet model load because whisper backend is active');
-    // The upstream sidecar lazy-loads on first request. Warm it up now so
-    // /health does not go green until the whole stack is hot.
-    await warmupTranscriptionBackend(transcriptionBackend, {
+    console.log(`Using upstream ${transcriptionBackend.name} model`);
+    // Exercise inference before accepting dictation. Whisper can lazy-load
+    // on this request; Qwen must already have loaded its model and aligner.
+    const warmup = await warmupTranscriptionBackend(transcriptionBackend, {
       timeoutMs: WARMUP_TIMEOUT_MS,
       retryDelayMs: WARMUP_RETRY_DELAY_MS,
     });
+    if (transcriptionBackend.name === 'qwen' && !warmup?.ok) {
+      throw new Error('Qwen ASR warmup failed; refusing to start an unavailable transcription service');
+    }
   }
 
   // Load Silero VAD (non-fatal — degrades gracefully if unavailable)
   await loadVAD();
 
   httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`Parakeet STT Server running on ws://0.0.0.0:${PORT}`);
+    console.log(`STT Server running on ws://0.0.0.0:${PORT}`);
     console.log(`Health check: http://0.0.0.0:${PORT}/health`);
-    console.log(
-      `Model: ${getModelVersion()}, Backend: ${runtimeInfo.backend}, Device: ${runtimeInfo.device}`,
-    );
+    if (transcriptionBackend.name === 'wasm') {
+      console.log(`Model: ${getModelVersion()}, Backend: ${runtimeInfo.backend}, Device: ${runtimeInfo.device}`);
+    }
   });
 }
 

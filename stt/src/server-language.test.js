@@ -15,7 +15,7 @@ vi.mock('./model-loader.js', () => ({
   getModelVersion: () => 'test',
   getRuntimeInfo: () => ({ backend: 'test', device: 'cpu' }),
 }));
-vi.mock('./warmup.js', () => ({ warmupTranscriptionBackend: vi.fn() }));
+vi.mock('./warmup.js', () => ({ warmupTranscriptionBackend: vi.fn().mockResolvedValue({ ok: true, attempts: 1 }) }));
 
 function nextMessage(ws, predicate) {
   return new Promise((resolve) => {
@@ -46,7 +46,7 @@ async function stop(ws) {
   return final;
 }
 
-describe('WebSocket language configuration reaches Whisper', () => {
+describe.each(['whisper', 'qwen'])('WebSocket language configuration reaches %s', (backend) => {
   let whisperServer;
   let stt;
   let requests;
@@ -78,7 +78,9 @@ describe('WebSocket language configuration reaches Whisper', () => {
     await once(whisperServer, 'listening');
     vi.stubEnv('WHISPER_URL', `http://127.0.0.1:${whisperServer.address().port}`);
     vi.stubEnv('WHISPER_TIMEOUT_MS', '3000');
-    vi.stubEnv('STT_BACKEND', 'whisper');
+    vi.stubEnv('QWEN_ASR_URL', `http://127.0.0.1:${whisperServer.address().port}`);
+    vi.stubEnv('QWEN_ASR_TIMEOUT_MS', '3000');
+    vi.stubEnv('STT_BACKEND', backend);
     vi.stubEnv('PORT', '0');
     vi.stubEnv('DEFAULT_LANGUAGE', '');
     vi.stubEnv('STT_SUPPORTED_LANGUAGES', '');
@@ -146,7 +148,8 @@ describe('WebSocket language configuration reaches Whisper', () => {
     expect(requests[0].multipart.has('language')).toBe(false);
   });
 
-  test('preserves a configured default outside the built-in language choices', async () => {
+  // The Qwen HTTP contract currently accepts only auto/fr/en hints.
+  test.runIf(backend === 'whisper')('preserves a configured default outside the built-in language choices', async () => {
     vi.stubEnv('DEFAULT_LANGUAGE', 'es');
     await start();
     const ws = await connect();

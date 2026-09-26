@@ -275,6 +275,7 @@ async function main(): Promise<void> {
     terminalInputCoordinator: terminalHost?.inputCoordinator,
     terminalInstanceDir: terminalBackend.getInstanceDir(),
     sttUrl,
+    sttTranscription: sttManager?.transcription,
     ttsUrl,
     ttsVoice: TTS_VOICE,
     speakFindingEnabled: SPEAK_FINDING_ENABLED,

@@ -1,0 +1,26 @@
+# Qwen GPU inference replaces the existing HTTP sidecar on port 8010.
+# Keep its legacy service name so browser and Telegram URLs do not change.
+# Layer AFTER docker-compose.yml and docker-compose.gpu.yml.
+services:
+  kookr-stt-whisper:
+    image: kookr-stt-qwen:local
+    build:
+      context: ./qwen
+      dockerfile: Dockerfile
+    environment:
+      - QWEN_ASR_MODEL=${QWEN_ASR_MODEL:-Qwen/Qwen3-ASR-0.6B}
+      - STT_CONFIG_ID=${STT_CONFIG_ID:-}
+      # An absent override uses the service default; an empty one disables it.
+      - STT_VOCABULARY
+    volumes:
+      - kookr_stt_qwen_cache:/root/.cache/huggingface
+
+  kookr-stt:
+    environment:
+      STT_BACKEND: qwen
+      QWEN_ASR_URL: http://kookr-stt-whisper:8010
+      QWEN_ASR_MODEL: ${QWEN_ASR_MODEL:-Qwen/Qwen3-ASR-0.6B}
+      STT_WARMUP_TIMEOUT_MS: "600000"
+
+volumes:
+  kookr_stt_qwen_cache:

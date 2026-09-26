@@ -2027,7 +2027,7 @@ the resulting text automatically.
 
 - Auto, Français, and English are selectable and remembered per browser.
 - Each recording carries its language through the WebSocket service to every
-  Whisper inference, including progressive updates and finalization. Auto
+  speech-model inference, including progressive updates and finalization. Auto
   omits the forced-language parameter. Concurrent clients do not share a
   mutable language setting.
 - Progressive text appears as a preview. The completed transcript is appended
@@ -2049,6 +2049,28 @@ the resulting text automatically.
 `src/frontend/components/DetailPanel.reply-draft.test.ts`,
 `src/frontend/__tests__/bilingual-stt-parity-ui.test.ts`, and
 `e2e/voice-dictation.spec.ts`.
+
+### R19.2: Local Qwen Recognition on GPU — SHALL — `done`
+
+Bundled speech recognition SHALL use Qwen3-ASR 0.6B on NVIDIA GPUs by
+default, with an operator option for Qwen3-ASR 1.7B or Whisper. CPU-only
+machines SHALL retain the existing Whisper backend.
+
+**Acceptance criteria:**
+
+- Browser dictation and Telegram audio use the selected model. Qwen applies
+  one configurable vocabulary hint, including Kookr, to both paths; an empty
+  hint disables it. There is no semantic rewriting after recognition.
+- Qwen supports automatic language detection and French/English hints.
+- Aligned timestamps retain the transcript's punctuation so recordings longer
+  than fifteen seconds can stabilize sentences and advance the audio window.
+  Unmatched text is preserved without guessing a sentence's timing.
+- Health reports the actual model and GPU readiness. Switching backend or
+  Qwen model prevents reuse of a service with the previous identity.
+- Inference concurrency and uploaded audio are bounded. Unsupported or corrupt
+  audio produces an error; it does not get reported as a successful transcript.
+
+**Evidence:** `src/server/stt-manager.test.ts`, `stt/src/`, `stt/qwen/`.
 
 ## Summary Matrix
 
@@ -2186,6 +2208,7 @@ the resulting text automatically.
 | R18.1 | #2901 | SHALL | done | lesson-write-runner, kb-spool-shim, lesson-spool-service |
 | R18.2 | #2875 | SHALL | done | lesson-write-spool, lesson-spool-service |
 | R19.1 | Local voice dictation | SHALL | done | VoiceInputButton, useSTT, STT WebSocket and Whisper backend |
+| R19.2 | Local Qwen recognition on GPU | SHALL | done | STT manager, Qwen HTTP service and backend, Telegram transcription |
 
 ---
 

@@ -438,6 +438,7 @@ describe('VoiceInputButton STT health gating', () => {
   });
 
   test('drops a pending final result when the task-scoped control is replaced', async () => {
+    vi.useFakeTimers();
     const firstTranscript = vi.fn();
     const secondTranscript = vi.fn();
     const stream = createFakeMediaStream();
@@ -446,7 +447,9 @@ describe('VoiceInputButton STT health gating', () => {
     await click(container.querySelector('button')!);
     const ws = FakeSTTWebSocket.instances[0];
     const queuedMessage = ws.onmessage;
+    deliver(ws, { type: 'config_ack', language: 'auto', finalization_timeout_ms: 125_000 });
     await click(container.querySelector('button')!);
+    await act(async () => { vi.advanceTimersByTime(31_000); });
     await act(async () => root.render(<VoiceInputButton key="task-2" inputId="response-input" onTranscript={secondTranscript} />));
     act(() => queuedMessage?.({ data: JSON.stringify({ type: 'transcription', text: 'Old task speech', is_final: true }) }));
     expect(firstTranscript).not.toHaveBeenCalled();
@@ -454,6 +457,47 @@ describe('VoiceInputButton STT health gating', () => {
     expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
     expect(stream.getTracks()[0].stop).toHaveBeenCalledTimes(1);
     expect(useKookrStore.getState().activeSTTInputId).toBeNull();
+  });
+
+  test('accepts a final Qwen result after the legacy timeout and before the negotiated deadline', async () => {
+    vi.useFakeTimers();
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    deliver(ws, { type: 'config_ack', language: 'auto', finalization_timeout_ms: 125_000 });
+    await click(button);
+    await act(async () => { vi.advanceTimersByTime(119_000); });
+    expect(ws.readyState).toBe(FakeSTTWebSocket.OPEN);
+    expect(button.className).toContain('processing');
+    deliver(ws, { type: 'transcription', text: 'Réponse finale.', is_final: true });
+    await act(async () => { vi.advanceTimersByTime(10_000); });
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Réponse finale.');
+    expect(button.className).toContain('idle');
+  });
+
+  test.each([undefined, -1, 1_000, 125_001, '125000', null, 30_000.5])('uses the bounded legacy fallback for invalid timeout %s', async (timeout) => {
+    vi.useFakeTimers();
+    const button = await renderButton();
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    deliver(ws, { type: 'config_ack', language: 'auto', finalization_timeout_ms: timeout });
+    await click(button);
+    await act(async () => { vi.advanceTimersByTime(PROCESSING_TIMEOUT_MS); });
+    expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
+    expect(button.title).toContain('Transcription timed out');
+  });
+
+  test('still ends a negotiated Qwen wait if no final response arrives', async () => {
+    vi.useFakeTimers();
+    const button = await renderButton();
+    await click(button);
+    const ws = FakeSTTWebSocket.instances[0];
+    deliver(ws, { type: 'config_ack', language: 'auto', finalization_timeout_ms: 125_000 });
+    await click(button);
+    await act(async () => { vi.advanceTimersByTime(125_000); });
+    expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
+    expect(button.title).toContain('Transcription timed out');
   });
 
   test('releases a microphone acquired after its control has unmounted', async () => {

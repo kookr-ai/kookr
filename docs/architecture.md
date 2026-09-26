@@ -481,7 +481,7 @@ kookr/
 │   │   ├── settings-side-effects.ts       # React to settings changes
 │   │   ├── hash-prompt.ts                 # Prompt hashing helper
 │   │   ├── prompt-file-paths.ts           # Per-agent prompt file resolution
-│   │   ├── stt-manager.ts                 # Docker lifecycle for bundled STT
+│   │   ├── stt-manager.ts                 # Docker lifecycle for bundled STT (Qwen GPU / Whisper CPU)
 │   │   └── tts-manager.ts                 # Docker lifecycle for bundled TTS
 │   │
 │   ├── core/                              # Domain logic, contracts, and lightweight local persistence/helpers
@@ -809,3 +809,14 @@ The dashboard also surfaces an amber warning banner whenever the last refresh ha
 | Process spawning patterns | aegiscore drivers | Adapt spawn + clean env + signal handling for dtach session creation via node-pty |
 | WebSocket frame pattern | openclaw gateway protocol | Simplified version (no RPC, just events) |
 | Skill file format | Claude Code `.claude/skills/` | Follow SKILL.md convention for anomaly patterns |
+
+### Local speech recognition
+
+The bundled STT manager selects Qwen3-ASR 0.6B on NVIDIA GPUs and Whisper
+on CPU. Qwen runs in a local Python HTTP sidecar behind the existing Node
+WebSocket service. A forced aligner supplies word times; the Node adapter
+recovers sentence boundaries from the full punctuated transcript so long
+dictation can advance its audio window. Browser and Telegram use the selected
+model and the Qwen service applies their shared vocabulary hint. See
+[local speech recognition](reference/speech-recognition.md) for configuration
+and the readiness contract.

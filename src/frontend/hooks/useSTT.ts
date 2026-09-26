@@ -47,6 +47,9 @@ export interface UseSTTResult {
 
 const TARGET_SAMPLE_RATE = 16000;
 const PROCESSING_TIMEOUT_MS = 15_000;
+// Qwen advertises its two-minute finalization cap plus transport grace.
+// Older services keep the shorter default; never accept an unbounded wait.
+const MAX_NEGOTIATED_PROCESSING_TIMEOUT_MS = 125_000;
 const AUDIO_METER_INTERVAL_MS = 100;
 // Allow nearly three 4096-sample chunks at 16 kHz before declaring capture stale.
 const AUDIO_STALE_MS = 750;
@@ -196,6 +199,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
   const audioNodeRef = useRef<AudioWorkletNode | ScriptProcessorNode | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const processingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const processingTimeoutRef = useRef(PROCESSING_TIMEOUT_MS);
 
   function setStateAndRef(next: STTState) {
     stateRef.current = next;
@@ -233,6 +237,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
     // Pending microphone/worklet requests and queued socket events belong only
     // to the session that started them, even if this control starts again.
     sessionRef.current += 1;
+    processingTimeoutRef.current = PROCESSING_TIMEOUT_MS;
     releaseAudio();
     if (processingTimerRef.current) {
       clearTimeout(processingTimerRef.current);
@@ -315,16 +320,23 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       };
       ws.onmessage = (event) => {
         if (!isCurrent()) return;
-        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string };
+        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string; finalization_timeout_ms?: unknown };
         try {
           msg = JSON.parse(event.data);
         } catch {
           return;
         }
         if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'config_ack' && msg.language !== language) {
-          markSTTDegraded('Selected dictation language is unavailable. Update the STT service or choose another language.');
-          cleanup();
+        if (msg.type === 'config_ack') {
+          if (msg.language !== language) {
+            markSTTDegraded('Selected dictation language is unavailable. Update the STT service or choose another language.');
+            cleanup();
+          } else {
+            const timeout = msg.finalization_timeout_ms;
+            processingTimeoutRef.current = typeof timeout === 'number' && Number.isInteger(timeout)
+              && timeout >= PROCESSING_TIMEOUT_MS && timeout <= MAX_NEGOTIATED_PROCESSING_TIMEOUT_MS
+              ? timeout : PROCESSING_TIMEOUT_MS;
+          }
         } else if (msg.type === 'progressive') {
           const text = [msg.fixedText, msg.activeText].filter((part) => typeof part === 'string').join(' ');
           setTranscript(text);
@@ -411,7 +423,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       processingTimerRef.current = setTimeout(() => {
         markSTTDegraded('Transcription timed out');
         cleanup();
-      }, PROCESSING_TIMEOUT_MS);
+      }, processingTimeoutRef.current);
       ws.send(JSON.stringify({ type: 'stop' }));
     } else {
       setStateAndRef('idle');
