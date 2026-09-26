@@ -100,9 +100,8 @@ interface Props {
    */
   onOpenLiveFriction?: () => void;
   /**
-   * Open Diagnostics when the overdue-timer pill or time-to-unblock chip
-   * is clicked (issues #2643, #3280). Optional so isolated StatusBar tests
-   * need no App wiring.
+   * Open Diagnostics from the overdue-timer, time-to-unblock, or launched-task
+   * chip. Optional so isolated StatusBar instances can show passive counts.
    */
   onOpenDiagnostics?: () => void;
   /**
@@ -633,14 +632,27 @@ export function StatusBar({
           )
         )}
         {showLaunchedChip && (
-          <span
-            className="launched-24h-pill"
-            data-testid="launched-24h-chip"
-            role="status"
-            title={formatLaunchedInWindowChipTitle(launchedLast24h)}
-          >
-            {formatLaunchedInWindowChipLabel(launchedLast24h)}
-          </span>
+          onOpenDiagnostics ? (
+            <button
+              type="button"
+              className="launched-24h-pill"
+              data-testid="launched-24h-chip"
+              title={formatLaunchedInWindowChipTitle(launchedLast24h)}
+              aria-label={`${formatLaunchedInWindowChipLabel(launchedLast24h)}. Open Outcome Scoreboard`}
+              onClick={onOpenDiagnostics}
+            >
+              {formatLaunchedInWindowChipLabel(launchedLast24h)}
+            </button>
+          ) : (
+            <span
+              className="launched-24h-pill"
+              data-testid="launched-24h-chip"
+              role="status"
+              title={formatLaunchedInWindowChipTitle(launchedLast24h)}
+            >
+              {formatLaunchedInWindowChipLabel(launchedLast24h)}
+            </span>
+          )
         )}
         {showCost24hChip && cost24h && (
           onOpenCostComparison ? (
