@@ -31,7 +31,7 @@ Choosing a tier:
 
 ## CWD expansion
 
-Playbook and schedule launches expand a narrow set of portable home spellings via `expandConfiguredCwd` ([`src/server/cwd-paths.ts`](../src/server/cwd-paths.ts)). Expansion runs during **catalog filtering**, **schedule validation**, and **playbook launch** only — not inside shell scripts or agent prompts.
+Playbook and schedule launches expand a narrow set of portable home spellings via `expandConfiguredCwd` ([`src/server/cwd-paths.ts`](../src/server/cwd-paths.ts)). Expansion runs during **catalog filtering**, **schedule validation**, and **playbook launch**. The shared task-launch boundary also expands paths beginning with `~/`, including clipboard paths from both launch surfaces, before directory validation. Expansion does not run inside shell scripts or agent prompts.
 
 Supported forms (when `HOME` is set):
 
