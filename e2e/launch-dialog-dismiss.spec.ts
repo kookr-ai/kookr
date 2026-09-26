@@ -62,12 +62,25 @@ test.describe('Launch dialog dismiss safety', () => {
     await expect(page.locator('.draft-restored-banner')).toBeVisible();
     await expect(page.locator('.draft-restored-banner')).toContainText('Restored your last draft');
     await expect(page.locator('.dialog textarea')).toHaveValue(TEXT);
+    const restoredDictationId = await page.evaluate((key) => (
+      JSON.parse(window.localStorage.getItem(key)!).dictationId
+    ), DRAFT_KEY);
 
-    // Click Discard draft → fields clear, banner disappears, draft removed.
+    // Discard clears typed content and creates a new dictation recovery identifier.
     await page.locator('.draft-restored-banner .link-button').click();
     await expect(page.locator('.draft-restored-banner')).not.toBeVisible();
     await expect(page.locator('.dialog textarea')).toHaveValue('');
-    expect(await page.evaluate((key) => window.localStorage.getItem(key), DRAFT_KEY)).toBeNull();
+    const emptyDraft = await page.evaluate((key) => (
+      JSON.parse(window.localStorage.getItem(key)!)
+    ), DRAFT_KEY);
+    expect(emptyDraft).toMatchObject({ prompt: '', criteria: '', dictationId: expect.any(String) });
+    expect(emptyDraft.dictationId).not.toBe(restoredDictationId);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.dialog')).not.toBeVisible();
+    await page.locator('.btn-launch').click();
+    await expect(page.locator('.dialog textarea')).toHaveValue('');
+    await expect(page.locator('.draft-restored-banner')).not.toBeVisible();
 
     // Cleanup
     await page.keyboard.press('Escape');

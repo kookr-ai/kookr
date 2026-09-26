@@ -35,7 +35,7 @@ export function registerCostComparisonRoutes(app: Hono, deps: CostComparisonRout
 
     // Codex side: scan + bind. The scanner is a per-route singleton so its
     // (path, mtime) cache survives across requests.
-    const scanner = costScannerSingleton;
+    const scanner = deps.costComparisonScanner ?? costScannerSingleton;
     // Union live + on-disk snapshots. The live store only holds currently-visible
     // tasks; everything swept lives in tasks.json.daily.* / tasks.json.predelete.*.
     // Without this union the panel renders structurally empty against any swept

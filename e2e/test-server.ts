@@ -9,6 +9,9 @@ import { createKookrServerInternal } from '../src/server/index.js';
 import type { KookrServerInternal } from '../src/server/server-test-helpers.js';
 import { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import { FakeTerminalBridge } from '../src/server/fake-terminal-bridge.js';
+import { getProjectSummaries, getSnapshotAgentsForClient } from '../src/server/use-cases/get-snapshot.js';
+import { CodexRolloutScanner } from '../src/adapters/codex-rollout-scanner.js';
+import { clearLastCompletedSweepForTests } from '../src/server/use-cases/cross-project-cleanup-sweep.js';
 import type { Playbook } from '../src/core/playbook.js';
 import { createRelayServer, type RelayServerHandle } from '../relay/server.js';
 
@@ -61,7 +64,8 @@ async function main() {
             ? firstArg.id
             : null;
       if (!tmuxName) return;
-      terminal.emit(tmuxName, '\x1b[?2004hClaudeCode\n❯ ');
+      // Production waits for paste mode to be enabled and the footer to be rendered.
+      terminal.emit(tmuxName, '\x1b[?2004hClaude Code\n❯ \n? for shortcuts');
     }) as typeof terminal.createSession;
   }
 
@@ -105,6 +109,36 @@ async function main() {
     terminalBackend: terminal,
     useFakeTerminalBridge: true,
     claudeDir,
+    // FakeTerminalBackend never runs these commands. Fixed preflight results
+    // keep the agent picker independent of the operator's installed binaries.
+    agentBin: '/e2e/claude',
+    codexBin: '/e2e/codex',
+    grokBin: '/e2e/grok',
+    agentPreflight: {
+      claudeProbeExec: async () => ({ stdout: 'claude 1.0.0\n', stderr: '' }),
+      codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
+      grokInstalledState: {
+        kind: 'ok',
+        version: '1.0.0',
+        buildId: 'e2e-fixture',
+        identity: {
+          configured: '/e2e/grok',
+          launcherPath: '/e2e/grok',
+          canonicalPath: '/e2e/grok',
+          sha256: '0'.repeat(64),
+          sizeBytes: 0,
+          mode: 0o755,
+          uid: 0,
+          gid: 0,
+        },
+        qualification: {
+          status: 'tested',
+          reason: 'Fake terminal backend fixture',
+          evidenceBuildId: 'e2e-fixture',
+        },
+      },
+    },
+    costComparisonScanner: new CodexRolloutScanner({ codexHome: join(tempDir, 'codex-sessions') }),
     // Default to a dummy endpoint; local audio checks may supply a real sidecar.
     sttUrl: process.env.E2E_STT_URL ?? 'ws://localhost:9999',
     // Specs launch tasks into the fictional /test/project. Nothing is ever
@@ -112,6 +146,16 @@ async function main() {
     // check that would otherwise 400 every launch.
     validateLaunchCwd: async () => {},
   });
+
+  function broadcastTestSnapshot(): void {
+    // Use the dashboard's metadata enrichment so fixture updates preserve task
+    // names, project identities, and task status between server ticks.
+    server.broadcastToAll({
+      type: 'snapshot',
+      agents: getSnapshotAgentsForClient({ monitor: server.monitor }),
+      serverCwd: '/home/user/projects',
+    });
+  }
 
   if (process.env.E2E_PROMPT_SUBMIT_AUTO_HOOK === '1') {
     const originalWrite = terminal.write.bind(terminal);
@@ -207,8 +251,7 @@ async function main() {
     const taskId = c.req.param('taskId');
     try {
       server.taskStore.completeTask(taskId);
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);
@@ -220,8 +263,7 @@ async function main() {
     const taskId = c.req.param('taskId');
     try {
       server.taskStore.cancelTask(taskId);
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);
@@ -245,9 +287,7 @@ async function main() {
   server.app.post('/api/test/set-project-id', async (c) => {
     const { taskId, projectId } = await c.req.json();
     server.taskStore.setProjectId(taskId, projectId);
-    // Broadcast updated snapshot so frontend sees the projectId
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -259,8 +299,7 @@ async function main() {
       return c.json({ error: `invalid agentType: ${String(agentType)}` }, 400);
     }
     server.taskStore.setAgentType(taskId, agentType);
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -291,8 +330,7 @@ async function main() {
     };
     task.updatedAt = new Date();
 
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true, ralphLoop: task.ralphLoop });
   });
 
@@ -347,13 +385,11 @@ async function main() {
 
   // Broadcast project summaries (for project tracking tests)
   server.app.post('/api/test/broadcast-project-summaries', async (c) => {
-    const { computeProjectSummaries } = await import('../src/core/project-summary.js');
     const { LedgerAnalytics } = await import('../src/core/ledger-analytics.js');
-    const agents = server.monitor.getSnapshot();
-    const summaries = computeProjectSummaries({
-      agents,
+    const summaries = getProjectSummaries({
+      monitor: server.monitor,
       ledgerAnalytics: new LedgerAnalytics(server.ossAttemptStore),
-      configStore: server.projectConfigStore,
+      projectConfigStore: server.projectConfigStore,
     });
     server.broadcastToAll({ type: 'projectSummaries', projects: summaries });
     return c.json({ ok: true, count: summaries.length });
@@ -415,8 +451,7 @@ async function main() {
     const ok = server.queue.backdateAnomaly(agentId, detectedAt);
     if (!ok) return c.json({ error: `No active anomaly for ${agentId}` }, 404);
     // Broadcast updated snapshot so frontend sees the new detectedAt
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -432,8 +467,7 @@ async function main() {
       }
     }
     task.updatedAt = createdAt;
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/repo' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -450,6 +484,8 @@ async function main() {
 
     // Clear task store
     server.taskStore.loadTasks([]);
+    server.spawnRateLimiter.clear();
+    clearLastCompletedSweepForTests();
 
     // Clear OSS/project stores so project sidebar tests do not inherit state
     // from earlier tests sharing the same worker-scoped server.
@@ -476,7 +512,7 @@ async function main() {
     rmSync(join(tempDir, 'coordinator-suppressions.json'), { force: true });
     rmSync(join(tempDir, 'coordinator-feedback.jsonl'), { force: true });
 
-    server.broadcastToAll({ type: 'snapshot', agents: [], serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     server.broadcastToAll({ type: 'projectSummaries', projects: [] });
 
     return c.json({ ok: true });
@@ -563,8 +599,7 @@ async function main() {
       server.taskStore.loadTasks(allTasks, lifetimeSpendUsd);
     }
     // Broadcast updated snapshot so frontend sees the new spend
-    const snapshot = server.monitor.getSnapshot();
-    server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+    broadcastTestSnapshot();
     return c.json({ ok: true });
   });
 
@@ -575,8 +610,7 @@ async function main() {
     try {
       server.taskStore.setCompletionDigest(taskId, digest);
       // Broadcast updated snapshot
-      const snapshot = server.monitor.getSnapshot();
-      server.broadcastToAll({ type: 'snapshot', agents: snapshot, serverCwd: '/home/user/projects' });
+      broadcastTestSnapshot();
       return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: String(err) }, 400);

@@ -148,12 +148,20 @@ test.describe('Terminal viewport budgets', () => {
     await seedTerminalBudgetTask(page, request);
 
     await expect(page.getByTestId('mobile-dashboard-tabs')).toBeVisible();
+    await expect(page.getByTestId(`project-icon-${PROJECT_ID}`)).toBeVisible();
     await page.locator('.finding-card').first().click();
     await expect(page.getByTestId('mobile-tab-task')).toHaveClass(/active/);
+    await expect(page.getByTestId('project-detail-drawer')).toHaveCount(0);
     await expect(page.getByTestId('mobile-quick-actions')).toHaveCount(0);
     await page.getByTestId('detail-panel').getByRole('button', { name: 'Terminal' }).click();
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
 
     await expectTerminalBudget(page, { width: 340, height: 80, cols: 40, rows: 5 }, 'mobile terminal');
+
+    await page.getByTestId('mobile-tab-findings').click();
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
+    await page.getByTestId('mobile-tab-task').click();
+    await expect(page.getByTestId('project-detail-drawer')).toHaveCount(0);
+    await expectTerminalBudget(page, { width: 340, height: 80, cols: 40, rows: 5 }, 'restored mobile terminal');
   });
 });

@@ -64,6 +64,11 @@ export class SpawnRateLimiter {
 
   constructor(private readonly deps: SpawnRateLimiterDeps) {}
 
+  /** Clear launch history so a reused test server can start a fresh test case. */
+  clear(): void {
+    this.buckets.clear();
+  }
+
   /**
    * Check the budget for `key` and, when allowed, record this creation
    * against it in the same synchronous step (no await may separate check from

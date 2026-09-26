@@ -15,9 +15,17 @@ async function launchViaUI(page: Page, prompt: string, cwd = '/test/project') {
 }
 
 async function taskByPrompt(request: APIRequestContext, prompt: string): Promise<{ id: string; prompt: string }> {
-  const res = await request.get('/api/tasks');
-  const tasks = await res.json() as Array<{ id: string; prompt: string }>;
-  const task = tasks.find((candidate) => candidate.prompt === prompt);
+  let task: { id: string; prompt: string } | undefined;
+  // Backdating requires a launched session, not just a newly persisted task.
+  await expect.poll(async () => {
+    const res = await request.get('/api/tasks');
+    const tasks = await res.json() as Array<{
+      id: string; prompt: string; status: string; sessions: unknown[];
+    }>;
+    task = tasks.find((candidate) => candidate.prompt === prompt
+      && candidate.status === 'inProgress' && candidate.sessions.length > 0);
+    return task?.id;
+  }).toBeTruthy();
   if (!task) throw new Error(`Task not found for prompt ${prompt}`);
   return task;
 }
@@ -31,7 +39,8 @@ test('task chip appears for stale task and suppression survives reload', async (
   await launchViaUI(page, 'Coordinator stale chip task');
   const task = await taskByPrompt(request, 'Coordinator stale chip task');
 
-  await request.post(`/api/test/backdate-session/${task.id}`, { data: { minutesAgo: 45 } });
+  const backdate = await request.post(`/api/test/backdate-session/${task.id}`, { data: { minutesAgo: 45 } });
+  expect(backdate.ok()).toBe(true);
   const chip = page.locator('[data-testid="coordinator-chip-stale"]');
   await expect(chip).toBeVisible();
   await expect(chip).toContainText('Nudge');

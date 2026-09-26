@@ -219,8 +219,11 @@ test.describe('Completion criteria', () => {
     await page.locator('.dialog .btn-primary').click();
     await expect(page.locator('.dialog')).not.toBeVisible();
 
-    const tasks = await getTasks(request);
-    expect(tasks[0].criteria).toBe('All tests pass');
+    // Closing the dialog submits the launch; task persistence follows asynchronously.
+    await expect.poll(async () => {
+      const tasks = await getTasks(request);
+      return tasks.find((task) => task.prompt === 'Build feature')?.criteria;
+    }).toBe('All tests pass');
   });
 });
 

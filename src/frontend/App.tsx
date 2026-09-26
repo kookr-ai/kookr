@@ -1643,7 +1643,7 @@ export function App() {
             </button>
           </div>
           <main id="main-content" tabIndex={-1} className="main main-mobile">
-            {projectDetailDrawer}
+            {mobileTab === 'findings' && projectDetailDrawer}
             {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
             {mobileTab === 'findings' ? findingsPanel : detailPanel}
           </main>

@@ -29,6 +29,8 @@ export interface AgentRuntimeDeps {
   settingsDir: string;
   serverPort: number;
   agentBin?: string;
+  /** Test seam: probe runner for the Claude Code binary preflight. */
+  claudeProbeExec?: ProbeExecRunner;
   codexBin?: string;
   /** Test seam: probe runner for the codex-cli binary preflight. */
   codexProbeExec?: ProbeExecRunner;
@@ -77,6 +79,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     writeFile: (path, content) => writeFile(path, content, 'utf-8'),
     serverPort: deps.serverPort,
     agentBin: deps.agentBin,
+    probeExec: deps.claudeProbeExec,
     bypassAllPermissions: deps.bypassAllPermissions,
     resolveDefaultEffort: () => deps.getAgentEffort?.()['claude-code'],
     // Issue #3295: mark the launch cwd trusted in ~/.claude.json so Claude

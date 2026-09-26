@@ -174,7 +174,7 @@ test.describe('Kookr E2E — nominal paths', () => {
     await expect(page.locator('.dialog .btn-primary')).toBeDisabled();
 
     // Cancel closes dialog
-    await page.locator('.dialog .btn-secondary').click();
+    await page.getByRole('dialog', { name: 'Launch New Task' }).getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(page.locator('.dialog')).not.toBeVisible();
   });
 
@@ -332,16 +332,23 @@ test.describe('Kookr E2E — nominal paths', () => {
   });
 
   test('rename task via double-click in detail panel heading', async ({ page, request }) => {
+    // Leave room for the heading beside its actions when selecting a task
+    // opens the project drawer as well as the findings and detail panels.
+    await page.setViewportSize({ width: 1600, height: 900 });
     await launchViaUI(page, 'Migrate database schema', '/test/project');
     const tmuxName = await getLatestTmuxName(request);
 
     await injectSessionStart(request, tmuxName);
     await injectStopEvent(request, tmuxName);
 
+    // Wait for project identity before selection so its drawer opens now.
+    await expect(page.getByTestId('project-icon-local/project')).toBeVisible();
     // Select the finding to show detail panel
     await page.locator('.finding-card').click();
+    await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
 
     // Double-click heading to rename
+    await expect(page.locator('.detail-header h2')).toBeVisible();
     await page.locator('.detail-header h2').dblclick();
     const headingEdit = page.locator('.detail-heading-edit');
     await expect(headingEdit).toBeVisible();
@@ -352,6 +359,8 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // Heading should reflect new name
     await expect(page.locator('.detail-header h2')).toContainText('DB Migration v3');
+    const tasks = await (await request.get('/api/tasks')).json() as Array<{ prompt: string; name?: string }>;
+    expect(tasks.find((task) => task.prompt === 'Migrate database schema')?.name).toBe('DB Migration v3');
   });
 
   // --- Keyboard shortcuts ---

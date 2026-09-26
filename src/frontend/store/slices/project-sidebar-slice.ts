@@ -27,6 +27,17 @@ function sidebarSnapshotFromStore(state: Pick<ProjectSidebarSlice, 'projectSideb
   };
 }
 
+// Open automatically when projects first become available. Subsequent passive
+// updates must preserve the user's choice to collapse the sidebar.
+function shouldRevealSidebar(
+  previous: Pick<ProjectSidebarSlice, 'projectSummaries' | 'projectSidebarRows'>,
+  hasRecoveryShell: boolean,
+): boolean {
+  return hasRecoveryShell
+    && previous.projectSummaries.length === 0
+    && previous.projectSidebarRows.length === 0;
+}
+
 function persistProjectSidebarSnapshot(snapshot: ProjectSidebarSnapshot): string | null {
   const error = saveProjectSidebarSnapshot(snapshot);
   return error?.message ?? null;
@@ -190,7 +201,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
           projectSidebarRows: derived.managerRows,
           projectSidebarServerHydrated: true,
           projectSidebarError: persistError,
-          ...(derived.hasRecoveryShell ? { projectSidebarVisible: true } : {}),
+          ...(shouldRevealSidebar(prev, derived.hasRecoveryShell) ? { projectSidebarVisible: true } : {}),
         });
 
         if (nextState === localState) {
@@ -221,7 +232,7 @@ export function createProjectSidebarSlice(set: StoreSet, get: StoreGet): Project
         projectSidebarCatalog: nextSnapshot.catalog,
         projectSidebarError: error,
         projectSummariesHydrated: true,
-        ...(derived.hasRecoveryShell ? { projectSidebarVisible: true } : {}),
+        ...(shouldRevealSidebar(prev, derived.hasRecoveryShell) ? { projectSidebarVisible: true } : {}),
       });
     },
 

@@ -271,6 +271,10 @@ upgrade using a subprotocol, selected by an explicit server handler. A negotiate
 envelopes; literal user text, including text resembling JSON controls, remains
 input. Do not use an unescaped text prefix that can steal a pasted command.
 Existing connections without v2 retain the current wire format during rollout.
+Browser transport setup has a separate ten-second deadline. Starting the hello
+clock while the socket is still connecting can repeatedly cancel slow upgrades
+before they have a chance to open. A setup timeout retries within the existing
+connection budget; retiring an attempt cancels both deadlines.
 The client must also receive a schema-validated v2 hello within two seconds of
 socket open before sending v2 controls or input. A subprotocol echo alone is
 insufficient. On missing or wrong WebSocket subprotocol (partial deploy), close

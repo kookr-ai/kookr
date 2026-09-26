@@ -93,6 +93,29 @@ xdg-open coverage/index.html   # or `open coverage/index.html` on macOS
 
 The HTML report is not uploaded by CI by default (it is large and noisy on routine runs).
 
+### Running the browser suite locally
+
+Build the complete application before running the browser suite so both the
+frontend bundle and build metadata are current:
+
+```bash
+pnpm build
+pnpm exec playwright test
+```
+
+Each browser worker reuses a fake-agent server. Its reset endpoint clears tasks,
+launch budgets, and the reference to the last completed worktree-cleanup run,
+so its report banner does not appear in later tests.
+The configured launch limits still apply within each test. Fixed availability
+checks replace checks for installed agent binaries.
+Cost comparison reads Codex session records from a temporary directory rather
+than the operator's history. Test snapshots use the same metadata enrichment as
+production, preserving task names and project identities.
+
+The prompt-delivery fixture enables bracketed-paste mode and renders the composer
+footer before accepting input. Keep that fixture aligned with the production
+readiness check; a generic startup banner does not mean the input reader is ready.
+
 ### Capturing a Playwright trace on a local E2E failure
 
 CI captures a trace via `trace: 'on-first-retry'`, but locally `retries` is `0` (`playwright.config.ts`), so that path never fires and a failing spec produces no trace. Opt in with the `KOOKR_E2E_TRACE` env var to retain a trace (and screenshots) on any local failure:

@@ -120,6 +120,11 @@ export function getLastCompletedSweepRunId(): string | null {
   return lastCompletedRunId;
 }
 
+/** Prevent a completed sweep's dashboard banner from leaking between browser tests. */
+export function clearLastCompletedSweepForTests(): void {
+  lastCompletedRunId = null;
+}
+
 /**
  * Union configStore and taskStore projects, deduped, deterministically ordered.
  * Exported for isolated testing.

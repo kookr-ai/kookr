@@ -1130,7 +1130,11 @@ separately from asynchronous write enqueueing for up to twenty active producers.
 
 **Acceptance criteria:** The approved RFC defines the negotiated consumption-credit
 protocol, safe source-cursor recovery, isolated input and socket ownership, Linux
-and macOS qualification, and mixed-load tests. A same-revision v2 attach failure
+and macOS qualification, and mixed-load tests. Browser transport setup SHALL have
+its own ten-second deadline. The two-second protocol hello deadline SHALL start
+only after the WebSocket opens, so a slow HTTP upgrade can complete. A connection
+that never opens SHALL close and retry within the existing retry budget; retiring
+an attempt SHALL cancel both deadlines. A same-revision v2 attach failure
 (hello timeout on an already-negotiated socket, live output without a source
 marker, or a binary host that yields `Uint8Array` instead of `ArrayBuffer`)
 SHALL remain a recoverable view error: auto-retry or an explicit new-view
@@ -1228,6 +1232,7 @@ The system SHOULD persist project sidebar ordering, pinned projects, hidden proj
 - Pinned projects are included in project summaries after restart even when no active agent currently references them
 - The frontend hydrates sidebar preferences from the backend and migrates existing browser-local sidebar preferences when the backend store is empty
 - Browser `localStorage` remains a fallback/cache rather than the source of truth after backend hydration
+- After the user hides the sidebar, subsequent project-summary and preference refreshes preserve that visibility choice
 - Project sidebar icons show active task load rather than PR contribution counts; stalled projects show healthy/active task counts; the all-projects icon shows aggregate active task load.
 
 **Evidence:** `src/core/project-sidebar-store.ts`, `src/server/routes/project-routes.ts` (`/api/projects/sidebar`), `src/frontend/store/slices/project-sidebar-slice.ts`, `src/core/project-sidebar-store.test.ts`, `src/core/project-summary.test.ts`, `src/server/index.test.ts`, `src/frontend/store/slices/project-sidebar-discovery.test.ts`.
@@ -1239,6 +1244,7 @@ The system SHOULD reduce repeated metadata and long prompt noise when a develope
 **Acceptance criteria:**
 - The selected task header keeps title, status, critical worktree health, age, and primary actions visible while moving provider, hooks, project, branch, cost, and token details into a details affordance
 - When a project and task are both selected on a wide viewport, the project drawer switches to a compact summary instead of showing full contribution history, settings, and recent tasks
+- On mobile, the project drawer remains available on the Findings tab; the Task tab uses the full content width for the selected task and terminal
 - Oversized launch prompts in the Activity pane render as a bounded preview with an explicit full-prompt expander
 - Task display text and hover text prioritize the user-authored prompt over Kookr-injected launch guidance so repeated worktree preambles do not look like duplicate user prompts
 - Tooltip portals do not retain hidden long prompt text after dismissal
