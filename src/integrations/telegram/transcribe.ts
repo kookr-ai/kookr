@@ -12,6 +12,10 @@
  */
 
 import { TelegramApiError } from './api-client.js';
+import {
+  createTranscriptionCorpus, getCorpusConfig,
+  type CorpusRecord, type TranscriptionCorpus,
+} from '../../../stt/src/transcription-corpus.cjs';
 
 const DEFAULT_MODEL_NAME = 'base';
 
@@ -35,6 +39,52 @@ export interface TranscribeOpts {
    * WHISPER_MODEL when set, then `base` for compatibility.
    */
   model?: string;
+  /** Present only for user recordings; warmup requests never populate the corpus. */
+  capture?: { durationSeconds?: number; kind?: string };
+}
+
+let corpus: TranscriptionCorpus | undefined;
+
+function getCaptureStore(): TranscriptionCorpus | undefined {
+  // The application loads .env after imports, so configuration must be lazy.
+  try {
+    const config = getCorpusConfig();
+    if (!config.enabled) return undefined;
+    if (corpus?.configId !== config.configId) corpus = createTranscriptionCorpus();
+    return corpus;
+  } catch {
+    // An invalid optional capture destination must not disable transcription.
+    return undefined;
+  }
+}
+
+function audioFormat(filename: string, mimeType: string): CorpusRecord['format'] {
+  const extension = filename.split('.').at(-1)?.toLowerCase();
+  if (extension === 'oga') return 'ogg';
+  if (extension && ['wav', 'ogg', 'mp3', 'mp4', 'm4a', 'webm', 'flac', 'aac'].includes(extension)) {
+    return extension as CorpusRecord['format'];
+  }
+  const mimeFormats: Record<string, CorpusRecord['format']> = {
+    'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'video/mp4': 'mp4',
+    'audio/wav': 'wav', 'audio/x-wav': 'wav', 'audio/webm': 'webm', 'video/webm': 'webm',
+    'audio/flac': 'flac', 'audio/aac': 'aac',
+  };
+  return mimeFormats[mimeType.toLowerCase().split(';')[0].trim()] ?? 'bin';
+}
+
+function recognitionMetadata(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const input = value as Record<string, unknown>;
+  const result: Record<string, unknown> = {};
+  // Accept only known model settings. An external service may include unrelated
+  // identifiers or private URLs elsewhere in its response.
+  for (const key of ['backend', 'model', 'modelRevision', 'aligner', 'alignerRevision', 'vocabulary', 'languageHint', 'dtype', 'attention']) {
+    if (typeof input[key] === 'string' || input[key] === null) result[key] = input[key];
+  }
+  if (typeof input.maxNewTokens === 'number' && Number.isFinite(input.maxNewTokens)) {
+    result.maxNewTokens = input.maxNewTokens;
+  }
+  return result;
 }
 
 export class TranscriptionError extends Error {
@@ -113,6 +163,14 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   const filename = opts.filename ?? 'voice.oga';
   const mimeType = opts.mimeType ?? 'audio/ogg';
   const model = opts.model ?? process.env.WHISPER_MODEL ?? DEFAULT_MODEL_NAME;
+  const captureStore = opts.capture ? getCaptureStore() : undefined;
+  const startedAt = new Date().toISOString();
+  const startedMs = performance.now();
+  let transcript: string | null = null;
+  let language = 'auto';
+  let reportedModel: string | null = null;
+  let recognition: Record<string, unknown> | null = null;
+  let errorCode: string | null = null;
 
   // Use the runtime-builtin FormData / Blob (Node 18+ ships them; the rest of
   // the codebase already relies on global fetch).
@@ -140,17 +198,24 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
       const body = await res.text().catch(() => '');
       throw new TranscriptionError(res.status, `whisper ${res.status}: ${body.slice(0, 200)}`);
     }
-    let json: { text?: unknown };
+    let json: { text?: unknown; language?: unknown; model?: unknown; recognition?: unknown };
     try {
-      json = (await res.json()) as { text?: unknown };
+      json = (await res.json()) as typeof json;
     } catch (err) {
       throw new TranscriptionError(res.status, `whisper returned non-JSON body: ${String(err)}`);
     }
     if (typeof json.text !== 'string') {
       throw new TranscriptionError(res.status, `whisper response missing "text" field`);
     }
-    return json.text.trim();
+    transcript = json.text.trim();
+    language = typeof json.language === 'string' ? json.language : 'auto';
+    reportedModel = typeof json.model === 'string' ? json.model : null;
+    recognition = recognitionMetadata(json.recognition);
+    return transcript;
   } catch (err) {
+    errorCode = err instanceof TranscriptionError
+      ? (err.status !== null && err.status >= 400 ? `http_${err.status}` : 'invalid_response')
+      : controller.signal.aborted ? 'timeout' : 'transport';
     if (err instanceof TranscriptionError) throw err;
     if (err instanceof Error && err.name === 'AbortError') {
       throw new TranscriptionError(null, `whisper request aborted after ${opts.timeoutMs ?? 30_000}ms`);
@@ -159,5 +224,27 @@ export async function transcribeVoice(audioBytes: Buffer, opts: TranscribeOpts):
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener('abort', abortFromOuter);
+    if (captureStore && !opts.signal?.aborted) {
+      const durationSeconds = opts.capture?.durationSeconds;
+      const kind = opts.capture?.kind;
+      try {
+        // The writer copies the buffer before returning and bounds its queue.
+        // Disk I/O runs separately, so it cannot delay Telegram's reply.
+        void captureStore.write({
+          audio: audioBytes, format: audioFormat(filename, mimeType),
+          metadata: {
+            source: 'telegram', transcript, status: errorCode === null ? 'success' : 'error',
+            model: { requested: model, reported: reportedModel, recognition }, language,
+            startedAt, elapsedMs: performance.now() - startedMs,
+            durationSeconds: typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) && durationSeconds >= 0
+              ? durationSeconds : null,
+            kind: kind && ['voice', 'audio', 'video_note', 'document'].includes(kind) ? kind : 'audio',
+            errorCode,
+          },
+        }).catch(() => {});
+      } catch {
+        // Corpus failures never replace the original transcription or error.
+      }
+    }
   }
 }

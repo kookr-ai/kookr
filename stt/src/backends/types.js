@@ -26,7 +26,8 @@
  * the hint to its model and keeps its existing transcription behavior.
  * @typedef {Object} TranscriptionBackend
  * @property {string} name - Backend name.
- * @property {(audioWindow: Float32Array, options?: TranscriptionOptions) => Promise<{text: string, sentences: Array<{text: string, start: number, end: number}>}>} transcribe
+ * @property {string} [modelName] - Configured model identifier for recording provenance.
+ * @property {(audioWindow: Float32Array, options?: TranscriptionOptions) => Promise<{text: string, sentences: Array<{text: string, start: number, end: number}>, recognition?: Record<string, unknown> | null}>} transcribe
  * @property {() => Promise<{ready: boolean, modelName: string, device: string, runtimeBackend: string, configId?: string}>} [getHealth] - Probe an upstream model instead of reporting the unused local WASM model.
  */
 

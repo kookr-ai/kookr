@@ -181,6 +181,13 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
  * like stale documentation.
  */
 export const DOCUMENTED_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
+  // Shared speech writer and Compose overlay live under stt/, outside the
+  // scanned app roots. Their actual configuration is covered by STT tests.
+  'KOOKR_STT_CORPUS',
+  'KOOKR_STT_CORPUS_DIR',
+  'KOOKR_STT_CORPUS_HOST_DIR',
+  'KOOKR_STT_CORPUS_UID',
+  'KOOKR_STT_CORPUS_GID',
   // Context-window hook advisories — read by the installed hook, not in-repo source.
   'KOOKR_CONTEXT_ADVISORY_DISABLED',
   'KOOKR_CONTEXT_ADVISORY_ENABLED',

@@ -708,9 +708,10 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
       voice: { file_id: 'voice-fid-1', duration: 4, file_size: oggBytes.length },
     })]);
 
-    const transcribeSpy = vi.fn(async (buf: Buffer) => {
+    const transcribeSpy = vi.fn(async (buf: Buffer, opts: TranscribeOpts) => {
       expect(Buffer.isBuffer(buf)).toBe(true);
       expect(buf.equals(oggBytes)).toBe(true);
+      expect(opts.capture).toEqual({ durationSeconds: 4, kind: 'voice' });
       return 'fix the sweep button';
     });
 
@@ -753,6 +754,7 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
       expect(buf.equals(mp3Bytes)).toBe(true);
       expect(opts.filename).toBe('uploaded-track.mp3');
       expect(opts.mimeType).toBe('audio/mpeg');
+      expect(opts.capture).toEqual({ durationSeconds: 8, kind: 'audio' });
       return 'fix the sweep button';
     });
 
@@ -784,6 +786,7 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
       expect(buf.equals(mp4Bytes)).toBe(true);
       expect(opts.filename).toBe('circle.mp4');
       expect(opts.mimeType).toBe('video/mp4');
+      expect(opts.capture).toEqual({ durationSeconds: 5, kind: 'video_note' });
       return 'fix the sweep button';
     });
 
@@ -818,6 +821,7 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
       expect(buf.equals(flacBytes)).toBe(true);
       expect(opts.filename).toBe('sample.flac');
       expect(opts.mimeType).toBe('audio/flac');
+      expect(opts.capture).toEqual({ durationSeconds: undefined, kind: 'document' });
       return 'fix the sweep button';
     });
 

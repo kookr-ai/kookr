@@ -12,6 +12,8 @@
   "files": [
     "bin",
     "dist",
+    "stt/src/transcription-corpus.cjs",
+    "stt/src/transcription-corpus.d.cts",
     "README.md",
     "CLAUDE.md",
     "LICENSE",

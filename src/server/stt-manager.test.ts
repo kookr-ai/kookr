@@ -1,6 +1,7 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import fs, { chmod, lstat, mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { getCorpusConfig } from '../../stt/src/transcription-corpus.cjs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { execFileMock } = vi.hoisted(() => ({
@@ -26,6 +27,9 @@ beforeEach(() => {
   vi.stubEnv('WHISPER_MODEL', '');
   vi.stubEnv('KOOKR_STT_BACKEND', '');
   vi.stubEnv('QWEN_ASR_MODEL', '');
+  vi.stubEnv('KOOKR_STT_CORPUS', '');
+  vi.stubEnv('KOOKR_STT_CORPUS_DIR', '');
+  vi.stubEnv('STT_CORPUS_CONFIG_ID', '');
   execFileMock.mockReset();
   execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
     cb(null, '', '');
@@ -216,6 +220,190 @@ describe('evaluateSTTReuseOnce (R11)', () => {
   });
 });
 
+describe('transcription corpus deployment', () => {
+  it.each(['cpu', 'gpu'] as const)('applies enable, directory change, and disable on %s warm restarts', async (device) => {
+    const sttDir = await createSTTFixture();
+    const firstDirectory = join(sttDir, 'corpus-one');
+    const secondDirectory = join(sttDir, 'corpus-two');
+    const backend = device === 'gpu' ? 'qwen' : 'whisper';
+    const model = device === 'gpu' ? 'Qwen/Qwen3-ASR-0.6B' : 'base';
+    let health: Record<string, unknown> = { status: 'ok', backend: 'whisper' };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(health)));
+    execFileMock.mockImplementation((_cmd: string, args: string[], opts: { env: NodeJS.ProcessEnv }, cb: Function) => {
+      if (args.includes('up')) health = {
+        status: 'ok', backend, model_name: model, model_loaded: true, device: 'cuda',
+        config_id: opts.env.STT_CONFIG_ID,
+        corpus: {
+          enabled: args.includes(join(sttDir, 'docker-compose.corpus.yml')),
+          configId: opts.env.STT_CORPUS_CONFIG_ID,
+        },
+      };
+      cb(null, '', '');
+    });
+    const config = { sttDir, device, reuseAttempts: 1, inspectWhisperModel: async () => null };
+    try {
+      vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+      vi.stubEnv('KOOKR_STT_CORPUS_DIR', firstDirectory);
+      await startSTT(config);
+      const firstUp = execFileMock.mock.calls.find((call) => call[1].includes('up'));
+      expect(firstUp).toBeDefined();
+      const flags = firstUp![1] as string[];
+      expect(flags.slice(flags.indexOf('up') - 2, flags.indexOf('up')))
+        .toEqual(['-f', join(sttDir, 'docker-compose.corpus.yml')]);
+      expect(firstUp![2].env).toMatchObject({
+        KOOKR_STT_CORPUS_HOST_DIR: firstDirectory,
+        KOOKR_STT_CORPUS_UID: String(process.getuid?.()),
+        KOOKR_STT_CORPUS_GID: String(process.getgid?.()),
+        STT_CORPUS_CONFIG_ID: getCorpusConfig(process.env).configId,
+      });
+      expect((await lstat(firstDirectory)).mode & 0o777).toBe(0o700);
+
+      execFileMock.mockClear();
+      await startSTT(config);
+      expect(execFileMock).not.toHaveBeenCalled();
+
+      vi.stubEnv('KOOKR_STT_CORPUS_DIR', secondDirectory);
+      await startSTT(config);
+      expect(execFileMock.mock.calls.filter((call) => call[1].includes('up'))).toHaveLength(1);
+      expect(health.corpus).toEqual({ enabled: true, configId: getCorpusConfig(process.env).configId });
+      expect((await lstat(secondDirectory)).mode & 0o777).toBe(0o700);
+
+      execFileMock.mockClear();
+      vi.stubEnv('KOOKR_STT_CORPUS', 'false');
+      await startSTT(config);
+      const disableUp = execFileMock.mock.calls.find((call) => call[1].includes('up'));
+      expect(disableUp).toBeDefined();
+      expect(disableUp![1]).not.toContain(join(sttDir, 'docker-compose.corpus.yml'));
+      expect(disableUp![2].env.KOOKR_STT_CORPUS_HOST_DIR).toBeUndefined();
+      expect(health.corpus).toMatchObject({ enabled: false });
+
+      execFileMock.mockClear();
+      await startSTT(config);
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not touch the configured corpus directory when disabled', async () => {
+    const sttDir = await createSTTFixture();
+    const directory = join(sttDir, 'unused-corpus');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', directory);
+    try {
+      await startSTT({ sttDir, device: 'cpu', reuseAttempts: 1, inspectWhisperModel: async () => null });
+      expect(execFileMock).not.toHaveBeenCalled();
+      await expect(lstat(directory)).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['public', 'symlink', 'file', 'relative'])('keeps recognition reusable when the corpus destination is %s', async (kind) => {
+    const sttDir = await createSTTFixture();
+    const directory = join(sttDir, 'unsafe-corpus');
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', kind === 'relative' ? 'relative-corpus' : directory);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      if (kind === 'public') {
+        await mkdir(directory, { mode: 0o700 });
+        await chmod(directory, 0o755);
+      } else if (kind === 'symlink') {
+        await symlink(sttDir, directory);
+      } else if (kind === 'file') {
+        await writeFile(directory, 'not a directory');
+      }
+      const manager = await startSTT({ sttDir, device: 'cpu', reuseAttempts: 1, inspectWhisperModel: async () => null });
+      expect(manager.url).toBe('ws://localhost:8003');
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith('[stt-corpus] corpus_capture_disabled');
+      expect(process.env.KOOKR_STT_CORPUS).toBe('true');
+    } finally {
+      warn.mockRestore();
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recreates a recording service without the mount when its destination becomes unsafe', async () => {
+    const sttDir = await createSTTFixture();
+    const directory = join(sttDir, 'unsafe-corpus');
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', directory);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let health: Record<string, unknown> = {
+      status: 'ok', backend: 'whisper', corpus: { enabled: true, configId: getCorpusConfig(process.env).configId },
+    };
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json(health)));
+    execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+      if (args.includes('up')) health = { status: 'ok', backend: 'whisper', corpus: { enabled: false } };
+      cb(null, '', '');
+    });
+    try {
+      await mkdir(directory, { mode: 0o700 });
+      await chmod(directory, 0o755);
+      const manager = await startSTT({ sttDir, device: 'cpu', reuseAttempts: 1, inspectWhisperModel: async () => null });
+      expect(manager.url).toBe('ws://localhost:8003');
+      const up = execFileMock.mock.calls.find((call) => call[1].includes('up'));
+      expect(up).toBeDefined();
+      expect(up![1]).not.toContain(join(sttDir, 'docker-compose.corpus.yml'));
+      expect(up![2].env.KOOKR_STT_CORPUS).toBe('false');
+      expect(up![2].env.KOOKR_STT_CORPUS_HOST_DIR).toBeUndefined();
+      expect(process.env.KOOKR_STT_CORPUS).toBe('true');
+      expect((await lstat(directory)).mode & 0o777).toBe(0o755);
+      expect(health.corpus).toEqual({ enabled: false });
+      expect(warn).toHaveBeenCalledWith('[stt-corpus] corpus_capture_disabled');
+    } finally {
+      warn.mockRestore();
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['EACCES', 'ENOSPC'])('keeps recognition reusable when corpus directory creation fails with %s', async (code) => {
+    const sttDir = await createSTTFixture();
+    const directory = join(sttDir, 'unavailable-corpus');
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', directory);
+    const mkdirFailure = vi.spyOn(fs, 'mkdir').mockRejectedValueOnce(Object.assign(new Error('sensitive path'), { code }));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const manager = await startSTT({ sttDir, device: 'cpu', reuseAttempts: 1, inspectWhisperModel: async () => null });
+      expect(manager.url).toBe('ws://localhost:8003');
+      expect(mkdirFailure).toHaveBeenCalledWith(directory, { recursive: true, mode: 0o700 });
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[stt-corpus] corpus_capture_disabled');
+      expect(process.env.KOOKR_STT_CORPUS).toBe('true');
+    } finally {
+      mkdirFailure.mockRestore();
+      warn.mockRestore();
+      await rm(sttDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not hide invalid model configuration when capture falls back off', async () => {
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', 'relative-corpus');
+    vi.stubEnv('QWEN_ASR_MODEL', 'Qwen/missing');
+    await expect(startSTT({ sttDir: '/repo/stt', device: 'gpu', reuseAttempts: 1 }))
+      .rejects.toThrow(/QWEN_ASR_MODEL/);
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
+  it('requires corpus identity in health when enabled and accepts missing legacy health only when disabled', async () => {
+    const expected = getCorpusConfig({ KOOKR_STT_CORPUS: 'true', KOOKR_STT_CORPUS_DIR: join(tmpdir(), 'corpus-health-test') });
+    for (const corpus of [undefined, { enabled: false }, { enabled: true, configId: 'wrong-directory' }]) {
+      vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'ok', backend: 'whisper', corpus })));
+      expect(await evaluateSTTReuseOnce(8003, 'base', async () => null, 'whisper', undefined, expected))
+        .toEqual({ ok: false, reason: 'corpus-mismatch' });
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'ok', backend: 'whisper', corpus: expected })));
+    expect((await evaluateSTTReuseOnce(8003, 'base', async () => null, 'whisper', undefined, expected)).ok).toBe(true);
+    expect(await evaluateSTTReuseOnce(8003, 'base', async () => null))
+      .toEqual({ ok: false, reason: 'corpus-mismatch' });
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ status: 'ok', backend: 'whisper' })));
+    expect((await evaluateSTTReuseOnce(8003, 'base', async () => null)).ok).toBe(true);
+  });
+});
+
 describe('startSTT reuse + build stamp', () => {
   it('migrates GPU Whisper to Qwen, reuses Qwen, and applies glossary changes', async () => {
     const sttDir = await createSTTFixture();
@@ -318,7 +506,7 @@ describe('startSTT reuse + build stamp', () => {
     }
   });
 
-  it('reuses unchanged build inputs and rebuilds after a lockfile-only change', async () => {
+  it('reuses unchanged build inputs and rebuilds after lockfile or corpus overlay changes', async () => {
     const sttDir = await createSTTFixture();
     try {
       // First start: no stamp → build; make health fail then... actually we need
@@ -403,6 +591,19 @@ describe('startSTT reuse + build stamp', () => {
       );
       expect(rebuildCall).toBeDefined();
       expect(rebuildCall![1] as string[]).toContain('--build');
+
+      await writeFile(join(sttDir, 'docker-compose.corpus.yml'), 'services:\n  kookr-stt: {}\n');
+      execFileMock.mockClear();
+      fetchCount = 0;
+      await startSTT({
+        sttDir,
+        device: 'cpu',
+        reuseAttempts: 1,
+        inspectWhisperModel: async () => null,
+      });
+      const overlayRebuild = execFileMock.mock.calls.find((call) => call[1].includes('up'));
+      expect(overlayRebuild).toBeDefined();
+      expect(overlayRebuild![1]).toContain('--build');
     } finally {
       await rm(sttDir, { recursive: true, force: true });
     }

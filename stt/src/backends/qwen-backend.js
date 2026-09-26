@@ -11,6 +11,7 @@ const SAMPLE_RATE = 16000;
 /** @type {import('./types.js').TranscriptionBackend} */
 export const qwenBackend = {
   name: 'qwen',
+  modelName: QWEN_ASR_MODEL,
 
   async transcribe(audioWindow, { language = 'auto' } = {}) {
     const formData = new FormData();
@@ -32,6 +33,7 @@ export const qwenBackend = {
       const text = data.text.trim();
       return {
         text,
+        recognition: data.recognition ?? null,
         sentences: sentencesFromQwenAlignment(text, data.words, audioWindow.length / SAMPLE_RATE),
       };
     } finally {

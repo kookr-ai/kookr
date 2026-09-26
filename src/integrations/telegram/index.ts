@@ -412,6 +412,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
           timeoutMs: remaining(),
           filename: filenameFromFilePath(file.file_path, audio.fallbackFilename),
           mimeType: audio.mimeType,
+          capture: { durationSeconds: audio.durationSec, kind: audio.source },
         });
         audit({
           kind: 'transcribed',

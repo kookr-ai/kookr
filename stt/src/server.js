@@ -46,6 +46,8 @@ import { createTranscriptionBackend } from './backends/index.js';
 import { shouldFinalizeFromCache } from './finalization-policy.js';
 import { createHealthPayload } from './health.js';
 import { warmupTranscriptionBackend } from './warmup.js';
+import { createTranscriptionCorpus } from './transcription-corpus.cjs';
+import { BrowserCorpusCapture } from './browser-corpus.js';
 
 const PORT = parseInt(process.env.PORT || '8003', 10);
 const PROGRESSIVE_INTERVAL = parseFloat(process.env.PROGRESSIVE_INTERVAL || '0.5');
@@ -100,6 +102,7 @@ const DEFAULT_LANGUAGE = SUPPORTED_LANGUAGES.includes(requestedDefaultLanguage)
 const DEFAULT_PROGRESSIVE = true;
 const runtimeInfo = getRuntimeInfo();
 const transcriptionBackend = createTranscriptionBackend();
+export const transcriptionCorpus = createTranscriptionCorpus();
 
 /**
  * Handle a WebSocket client connection with progressive streaming.
@@ -112,7 +115,13 @@ function handleConnection(ws, req) {
   console.log(`Client connected: ${clientAddr}`);
 
   const audioBuffer = new AudioBuffer(SAMPLE_RATE, MAX_BUFFER_SAMPLES);
-  const streamingHandler = new SmartProgressiveStreamingHandler(transcriptionBackend, {
+  const capture = new BrowserCorpusCapture(transcriptionCorpus, transcriptionBackend, {
+    kind: 'progressive', maxWindowSeconds: MAX_WINDOW_SIZE, sentenceBufferSeconds: SENTENCE_BUFFER,
+  });
+  const recordingBackend = transcriptionCorpus.enabled
+    ? { ...transcriptionBackend, transcribe: (audio, options) => capture.transcribe(audio, options) }
+    : transcriptionBackend;
+  const streamingHandler = new SmartProgressiveStreamingHandler(recordingBackend, {
     maxWindowSize: MAX_WINDOW_SIZE,
     sentenceBuffer: SENTENCE_BUFFER,
     sampleRate: SAMPLE_RATE,
@@ -134,6 +143,7 @@ function handleConnection(ws, req) {
       if (finalizing || ws.readyState !== WebSocket.OPEN) return;
       // Audio data - add to buffer
       const duration = audioBuffer.addChunk(message);
+      capture.append(message);
 
       // Throttle progressive updates
       const now = Date.now() / 1000;
@@ -268,6 +278,7 @@ function handleConnection(ws, req) {
               });
 
             if (canFinalizeFromCache) {
+              capture.finish(lastEmittedTranscription, finalLanguage);
               ws.send(
                 JSON.stringify({
                   type: 'transcription',
@@ -317,6 +328,7 @@ function handleConnection(ws, req) {
 
             // Always emit a final frame so clients can terminate requests
             // even when decoding yields empty text.
+            capture.finish(fullText, finalLanguage);
             ws.send(
               JSON.stringify({
                 type: 'transcription',
@@ -328,6 +340,7 @@ function handleConnection(ws, req) {
             );
           } catch (err) {
             if (err === deadlineError) {
+              capture.finish(null, finalLanguage, 'error', 'finalization_timeout');
               // The old inference may still settle. Retire this connection so
               // it can never mutate the handler of another recording.
               ws.send(JSON.stringify({ type: 'error', error: deadlineError.message }));
@@ -340,10 +353,12 @@ function handleConnection(ws, req) {
             if (errStack) {
               console.error(errStack);
             }
+            const fallbackText = lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '';
+            capture.finish(fallbackText, finalLanguage, 'error', 'inference_failed');
             ws.send(
               JSON.stringify({
                 type: 'transcription',
-                text: lastProcessedLanguage === finalLanguage ? lastEmittedTranscription : '',
+                text: fallbackText,
                 is_final: true,
                 confidence: 0.9,
                 language: finalLanguage,
@@ -363,6 +378,7 @@ function handleConnection(ws, req) {
         finalizing = false;
       }
     } else if (msgType === 'clear') {
+      capture.discard();
       streamingHandler.reset();
       audioBuffer.clear();
       lastProgressiveTime = 0;
@@ -375,6 +391,7 @@ function handleConnection(ws, req) {
   });
 
   ws.on('close', () => {
+    capture.discard();
     console.log(`Client disconnected: ${clientAddr}`);
   });
 
@@ -403,6 +420,11 @@ export const httpServer = createServer(async (req, res) => {
       transcriptionBackend,
       backendHealth,
     });
+    health.corpus = {
+      enabled: transcriptionCorpus.enabled,
+      configId: process.env.STT_CORPUS_CONFIG_ID || transcriptionCorpus.configId,
+      ...transcriptionCorpus.stats(),
+    };
 
     res.writeHead(health.status === 'ok' ? 200 : 503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(health));
@@ -431,7 +453,8 @@ function shutdown(signal) {
   }
 
   wss.close(() => {
-    httpServer.close(() => {
+    httpServer.close(async () => {
+      await transcriptionCorpus.flush();
       console.log('Server stopped');
       process.exit(0);
     });

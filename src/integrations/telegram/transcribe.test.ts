@@ -7,8 +7,12 @@
  * faster-whisper-server (issue #574).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import type { CorpusMetadata } from '../../../stt/src/transcription-corpus.cjs';
 import { transcribeVoice, TranscriptionError } from './transcribe.js';
 
 interface CapturedRequest {
@@ -183,6 +187,150 @@ describe('transcribeVoice — wire shape', () => {
     } finally {
       hanging.closeAllConnections?.();
       await new Promise<void>((resolve) => hanging.close(() => resolve()));
+    }
+  });
+});
+
+describe('transcribeVoice — optional recording corpus', () => {
+  let fake: FakeWhisper;
+  let temporary: string;
+  let directory: string;
+
+  async function records(): Promise<Array<{
+    path: string;
+    record: { audio: { filename: string }; metadata: CorpusMetadata; reference: unknown };
+  }>> {
+    const files = await readdir(directory, { recursive: true }).catch(() => []);
+    return Promise.all(files.filter((file) => file.endsWith('record.json')).map(async (file) => ({
+      path: join(directory, file), record: JSON.parse(await readFile(join(directory, file), 'utf8')),
+    })));
+  }
+
+  async function waitForRecords(count: number) {
+    return vi.waitFor(async () => {
+      const captured = await records();
+      expect(captured).toHaveLength(count);
+      return captured;
+    });
+  }
+
+  beforeEach(async () => {
+    temporary = await mkdtemp(join(tmpdir(), 'telegram-corpus-'));
+    directory = join(temporary, 'corpus');
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    vi.stubEnv('KOOKR_STT_CORPUS_DIR', directory);
+    fake = await startFakeWhisper();
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    await fake.stop();
+    await rm(temporary, { recursive: true, force: true });
+  });
+
+  it('preserves original audio, returned text, and actual reported settings without Telegram identifiers', async () => {
+    fake.setResponse(() => ({ status: 200, body: JSON.stringify({
+      text: '  Bonjour Kookr.  ', language: 'French', model: 'Qwen/Qwen3-ASR-0.6B',
+      recognition: {
+        backend: 'qwen', model: 'Qwen/Qwen3-ASR-0.6B', modelRevision: 'pinned-revision',
+        vocabulary: 'Kookr', languageHint: 'auto', maxNewTokens: 512,
+        debugUrl: 'https://private.invalid/token',
+      },
+    }) }));
+    expect(await transcribeVoice(FIXTURE_OGG, {
+      whisperUrl: fake.baseUrl, model: 'Qwen/Qwen3-ASR-0.6B', filename: 'private-filename.oga',
+      capture: { durationSeconds: 4, kind: 'voice' },
+    })).toBe('Bonjour Kookr.');
+    const [{ path, record }] = await waitForRecords(1);
+    expect(await readFile(join(dirname(path), record.audio.filename))).toEqual(FIXTURE_OGG);
+    expect(record.audio.filename).toBe('audio.ogg');
+    expect(record.reference).toBeNull();
+    expect(record.metadata).toMatchObject({
+      source: 'telegram', status: 'success', transcript: 'Bonjour Kookr.', language: 'French',
+      durationSeconds: 4, kind: 'voice', errorCode: null,
+      model: { requested: 'Qwen/Qwen3-ASR-0.6B', reported: 'Qwen/Qwen3-ASR-0.6B', recognition: {
+        backend: 'qwen', modelRevision: 'pinned-revision', vocabulary: 'Kookr', maxNewTokens: 512,
+      } },
+    });
+    expect(record.metadata.elapsedMs).toBeGreaterThanOrEqual(0);
+    expect(Number.isFinite(Date.parse(record.metadata.startedAt))).toBe(true);
+    expect(JSON.stringify(record)).not.toMatch(/private-filename|private\.invalid|127\.0\.0\.1|debugUrl/);
+  });
+
+  it('distinguishes silent success from failed recognition and retains both recordings', async () => {
+    fake.setResponse(() => ({ status: 200, body: JSON.stringify({ text: '   ' }) }));
+    expect(await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, capture: {} })).toBe('');
+    await waitForRecords(1);
+    fake.setResponse(() => ({ status: 503, body: 'secret token and https://private.invalid' }));
+    await expect(transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, capture: {} })).rejects.toThrow('whisper 503');
+    const captured = await waitForRecords(2);
+    expect(captured.map(({ record }) => record.metadata)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ transcript: '', status: 'success', errorCode: null }),
+      expect.objectContaining({ transcript: null, status: 'error', errorCode: 'http_503' }),
+    ]));
+    for (const { path, record } of captured) {
+      expect(await readFile(join(dirname(path), record.audio.filename))).toEqual(FIXTURE_OGG);
+      expect(JSON.stringify(record)).not.toContain('private.invalid');
+      expect(JSON.stringify(record)).not.toContain('secret token');
+    }
+  });
+
+  it('never captures warmup or disabled requests, and reads configuration after import', async () => {
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl });
+    vi.stubEnv('KOOKR_STT_CORPUS', 'false');
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, capture: {} });
+    vi.stubEnv('KOOKR_STT_CORPUS', 'true');
+    // This queued write also provides a barrier for any earlier accidental capture.
+    fake.setResponse(() => ({ status: 200, body: JSON.stringify({ text: 'captured after configuration' }) }));
+    await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, capture: {} });
+    await vi.waitFor(async () => {
+      const captured = await records();
+      expect(captured.some(({ record }) => record.metadata.transcript === 'captured after configuration')).toBe(true);
+      expect(captured).toHaveLength(1);
+    });
+  });
+
+  it('discards externally cancelled audio and uses MIME only when the extension is unknown', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(transcribeVoice(FIXTURE_OGG, {
+      whisperUrl: fake.baseUrl, signal: controller.signal, capture: {},
+    })).rejects.toBeInstanceOf(TranscriptionError);
+    await transcribeVoice(FIXTURE_OGG, {
+      whisperUrl: fake.baseUrl, filename: 'private.unknown', mimeType: 'audio/flac', capture: {},
+    });
+    const [{ record }] = await waitForRecords(1);
+    expect(record.audio.filename).toBe('audio.flac');
+    expect(record.metadata.status).toBe('success');
+  });
+
+  it('retains timed-out recordings with a fixed error code and no request URL', async () => {
+    const hanging = createServer((request) => request.resume());
+    await new Promise<void>((resolve) => hanging.listen(0, '127.0.0.1', resolve));
+    const address = hanging.address();
+    if (typeof address !== 'object' || !address) throw new Error('Missing test server address');
+    try {
+      await expect(transcribeVoice(FIXTURE_OGG, {
+        whisperUrl: `http://127.0.0.1:${address.port}`, timeoutMs: 50, capture: {},
+      })).rejects.toThrow('aborted after 50ms');
+      const [{ record }] = await waitForRecords(1);
+      expect(record.metadata).toMatchObject({ status: 'error', transcript: null, errorCode: 'timeout' });
+      expect(JSON.stringify(record)).not.toContain('127.0.0.1');
+    } finally {
+      hanging.closeAllConnections();
+      await new Promise<void>((resolve) => hanging.close(() => resolve()));
+    }
+  });
+
+  it('keeps transcription working when the capture directory cannot be written', async () => {
+    await writeFile(directory, 'a file cannot hold corpus records');
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(await transcribeVoice(FIXTURE_OGG, { whisperUrl: fake.baseUrl, capture: {} })).toBe('hello world');
+      await vi.waitFor(() => expect(warning).toHaveBeenCalledWith('[stt-corpus] corpus_write_failed'));
+      expect(await readFile(directory, 'utf8')).toBe('a file cannot hold corpus records');
+    } finally {
+      warning.mockRestore();
     }
   });
 });

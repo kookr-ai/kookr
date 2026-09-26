@@ -69,7 +69,86 @@ in-flight recognition; the browser allows five additional seconds for delivery.
 An expired connection is closed, so late results cannot affect a new recording.
 Requests use automatic language detection unless French or English
 is explicitly selected. Recordings are decoded in temporary storage and
-removed after decoding; this service does not archive microphone audio.
+removed after decoding. The inference service does not archive audio. Collection
+by the Node speech service and Telegram integration is described below.
+
+## Local evaluation corpus
+
+Enable collection in the operator's `.env`, then apply it with
+`pnpm prod:update` after the change is merged:
+
+```dotenv
+KOOKR_STT_CORPUS=true
+# Optional absolute host path; default is ~/.kookr/stt-corpus.
+# KOOKR_STT_CORPUS_DIR=/absolute/private/path/stt-corpus
+```
+
+This retains the original audio and the final automatic prediction during
+normal use. The corpus can later be replayed against another model, vocabulary
+hint or decoding configuration. It is local and off by default; no recordings
+are uploaded for training. With an external `KOOKR_STT_URL`, configure capture
+on that Node speech service separately: the main process cannot record a
+browser stream sent directly elsewhere. Telegram capture still runs locally.
+
+Each entry has this layout, under its UTC recording date:
+
+```text
+2026-09-26/<uuid>/audio.wav
+2026-09-26/<uuid>/record.json
+```
+
+Browser audio is mono 16-bit PCM at 16 kHz in a WAV container. It includes the
+whole received recording, even after recognition advances its audio window.
+Telegram retains the original container (including MP4 for video notes).
+The JSON contains `schemaVersion`, `id`, `recordedAt`, `audio` (filename, size
+and SHA-256), `metadata`, and `reference: null`.
+
+Metadata includes the source, start time, duration when known, elapsed time,
+language, model, final transcript and success/error status. Browser language is
+the selected hint; Telegram language is the service's reported language when
+available. Qwen also reports the exact model revision, applied vocabulary and
+decoding settings; unavailable provenance remains null. Browser predictions
+come from progressive recognition, while Telegram predictions are whole-file
+requests. Preserve that distinction when comparing latency or decoding modes.
+
+The automatic transcript is a prediction, **not a human reference**. Keep it
+unchanged when annotating examples. Measuring word error rates requires a
+separate reference verified by listening; later edits to a task's text are not
+automatically treated as corrections to the recording.
+
+Only finalized recordings are retained. Empty successful predictions and
+inference errors are represented separately so evaluation can include misses.
+Intermediate updates, startup warmups and cancelled/disconnected recordings
+are excluded. Browser recordings longer than five minutes are omitted as a
+whole; they are never paired with truncated audio. Capture also omits audio
+over 25 MiB, metadata over 256 KiB and writes beyond four queued/running records
+per process. These omissions mean the corpus is not a complete error-rate log
+for every attempted interaction.
+
+Entries publish atomically with directory mode 0700 and file mode 0600. The
+Node container runs as the host user so browser and Telegram entries share the
+same private directory. Capture pauses when a write would leave less than one
+GiB free. It never deletes old recordings automatically; monitor disk usage and
+archive or remove selected entries deliberately. Browser WAV files use about
+115 MB per hour of captured audio. Saving failures leave transcription working
+and log a fixed diagnostic code without the transcript. If the destination is
+invalid or unavailable at startup, capture is disabled for that process while
+recognition remains available. Correct the destination and restart to retry.
+
+Set `KOOKR_STT_CORPUS=false` and restart to stop collection. Existing entries
+remain. Browser health on port 8003 includes `corpus.enabled`, its configuration
+fingerprint, and per-process write/skip/failure counts; those counts exclude
+Telegram. Inspect local pairs directly, for example:
+
+```bash
+du -sh ~/.kookr/stt-corpus
+find ~/.kookr/stt-corpus -name record.json -print
+```
+
+Ignore `.pending-*` directories if inspecting during a write. Each completed
+UUID directory is self-contained and can be moved or copied for offline
+evaluation. Raw recordings can contain the same private information spoken
+into a task, so keep the corpus outside Git and preserve its private permissions.
 
 ## Verification and diagnosis
 

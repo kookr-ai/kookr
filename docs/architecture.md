@@ -820,3 +820,13 @@ dictation can advance its audio window. Browser and Telegram use the selected
 model and the Qwen service applies their shared vocabulary hint. See
 [local speech recognition](reference/speech-recognition.md) for configuration
 and the readiness contract.
+
+An optional corpus writer saves audio and final automatic predictions locally.
+The browser service captures the complete incoming PCM stream separately from
+its sliding recognition window; Telegram retains the original uploaded bytes.
+Both use one shared CommonJS storage module so the standalone STT service and
+the compiled TypeScript application publish the same versioned format. An
+opt-in Compose overlay mounts the host corpus directory into the Node service
+and runs it with the host user's UID/GID. Atomic directory publication pairs
+the audio with its metadata; bounded writes and a free-space reserve isolate
+collection failures from transcription. There is no corpus HTTP endpoint.

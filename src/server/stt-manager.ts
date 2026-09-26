@@ -24,6 +24,7 @@ import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { hasDockerRuntime } from './docker-runtime.js';
+import { ensureCorpusDirectory, getCorpusConfig } from '../../stt/src/transcription-corpus.cjs';
 
 const execFileAsync = promisify(execFile);
 export const DEFAULT_STT_STARTUP_TIMEOUT_MS = 600_000;
@@ -77,6 +78,7 @@ export interface STTManager {
 export interface STTComposeIdentity {
   backend: STTBackend;
   configId?: string;
+  corpus: ReturnType<typeof getCorpusConfig>;
   composeFlags: string[];
   env: NodeJS.ProcessEnv;
   sttDir: string;
@@ -101,13 +103,28 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     inspectWhisperModel = () => inspectWhisperModelFromDocker(),
   } = config;
 
+  // Corpus storage is optional. A bad path or full disk must not take speech
+  // recognition down, and an unsafe destination must never be mounted.
+  let disableCorpus = false;
+  try {
+    const requestedCorpus = getCorpusConfig(process.env);
+    if (requestedCorpus.enabled) {
+      if (!process.getuid || !process.getgid) throw new Error('corpus_host_identity_unavailable');
+      await ensureCorpusDirectory(requestedCorpus.directory);
+    }
+  } catch {
+    disableCorpus = true;
+    console.warn('[stt-corpus] corpus_capture_disabled');
+  }
+
   const identity = await resolveSTTComposeIdentity({
     sttDir,
     port,
     whisperModel,
     device,
+    disableCorpus,
   });
-  const { composeFlags, env, resolvedDevice, model, backend, configId } = identity;
+  const { composeFlags, env, resolvedDevice, model, backend, configId, corpus } = identity;
 
   // --- Warm reuse path: multi-try health before any compose mutation ---
   const reuseResult = await tryReuseSTT({
@@ -118,6 +135,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
     inspectWhisperModel,
     backend,
     configId,
+    corpus,
   });
   if (reuseResult.ok) {
     console.log(
@@ -178,7 +196,7 @@ export async function startSTT(config: STTManagerConfig): Promise<STTManager> {
 
   while (Date.now() < deadline) {
     try {
-      const health = await evaluateSTTReuseOnce(port, model, inspectWhisperModel, backend, configId);
+      const health = await evaluateSTTReuseOnce(port, model, inspectWhisperModel, backend, configId, corpus);
       if (health.ok) {
         console.log(`[stt] STT service is ready (backend: ${health.backend ?? 'unknown'}, model: ${model}, reason=started)`);
 
@@ -208,6 +226,8 @@ export async function resolveSTTComposeIdentity(opts: {
   port?: number;
   whisperModel?: string;
   device?: STTDevice;
+  /** Internal fallback when optional corpus configuration or storage is unavailable. */
+  disableCorpus?: boolean;
 }): Promise<STTComposeIdentity> {
   const {
     sttDir,
@@ -247,23 +267,39 @@ export async function resolveSTTComposeIdentity(opts: {
   const whisperDevice = process.env.WHISPER_DEVICE ?? defaults.device;
   const computeType = process.env.WHISPER_COMPUTE_TYPE ?? defaults.computeType;
 
+  const corpus = getCorpusConfig(opts.disableCorpus
+    ? { ...process.env, KOOKR_STT_CORPUS: 'false' }
+    : process.env);
+  const corpusUid = process.getuid?.();
+  const corpusGid = process.getgid?.();
+  if (corpus.enabled && (corpusUid === undefined || corpusGid === undefined)) {
+    throw new Error('Transcription corpus recording requires host user and group IDs');
+  }
   const composePath = join(sttDir, 'docker-compose.yml');
   const gpuOverlayPath = join(sttDir, 'docker-compose.gpu.yml');
   const composeFlags =
     resolvedDevice === 'gpu' ? ['-f', composePath, '-f', gpuOverlayPath] : ['-f', composePath];
   if (backend === 'qwen') composeFlags.push('-f', join(sttDir, 'docker-compose.qwen.yml'));
+  if (corpus.enabled) composeFlags.push('-f', join(sttDir, 'docker-compose.corpus.yml'));
 
   const env = {
     ...process.env,
+    ...(opts.disableCorpus ? { KOOKR_STT_CORPUS: 'false' } : {}),
     KOOKR_STT_PORT: String(port),
     WHISPER_IMAGE: image,
     WHISPER_MODEL: selectedWhisperModel,
     ...(backend === 'qwen' ? { QWEN_ASR_MODEL: model, STT_CONFIG_ID: configId } : {}),
     WHISPER_DEVICE: whisperDevice,
     WHISPER_COMPUTE_TYPE: computeType,
+    ...(corpus.enabled ? {
+      KOOKR_STT_CORPUS_HOST_DIR: corpus.directory,
+      KOOKR_STT_CORPUS_UID: String(corpusUid),
+      KOOKR_STT_CORPUS_GID: String(corpusGid),
+      STT_CORPUS_CONFIG_ID: corpus.configId,
+    } : {}),
   };
 
-  return { composeFlags, env, sttDir, resolvedDevice, model, port, backend, configId };
+  return { composeFlags, env, sttDir, resolvedDevice, model, port, backend, configId, corpus };
 }
 
 /** Operator/failed-start teardown with the same compose flags as start. */
@@ -299,10 +335,12 @@ type ReuseOk = {
   inspectSkipped: boolean;
 };
 type ReuseFail = { ok: false; reason: string };
+type CorpusIdentity = Pick<ReturnType<typeof getCorpusConfig>, 'enabled' | 'configId'>;
 
 async function tryReuseSTT(opts: {
   backend: STTBackend;
   configId?: string;
+  corpus: CorpusIdentity;
   port: number;
   model: string;
   attempts: number;
@@ -311,7 +349,7 @@ async function tryReuseSTT(opts: {
 }): Promise<ReuseOk | ReuseFail> {
   let lastReason = 'missing';
   for (let i = 0; i < opts.attempts; i++) {
-    const result = await evaluateSTTReuseOnce(opts.port, opts.model, opts.inspectWhisperModel, opts.backend, opts.configId);
+    const result = await evaluateSTTReuseOnce(opts.port, opts.model, opts.inspectWhisperModel, opts.backend, opts.configId, opts.corpus);
     if (result.ok) return result;
     lastReason = result.reason;
     if (i + 1 < opts.attempts) {
@@ -333,6 +371,7 @@ export async function evaluateSTTReuseOnce(
   inspectWhisperModel: () => Promise<string | null> = () => inspectWhisperModelFromDocker(),
   expectedBackend: STTBackend = 'whisper',
   expectedConfigId?: string,
+  expectedCorpus: CorpusIdentity = { enabled: false, configId: '' },
 ): Promise<ReuseOk | ReuseFail> {
   const healthUrl = `http://localhost:${port}/health`;
   let res: Response;
@@ -357,7 +396,7 @@ export async function evaluateSTTReuseOnce(
 
   const health = body as {
     status?: unknown; backend?: unknown; model_name?: unknown;
-    model_loaded?: unknown; device?: unknown; config_id?: unknown;
+    model_loaded?: unknown; device?: unknown; config_id?: unknown; corpus?: unknown;
   };
   const status = typeof health.status === 'string' ? health.status : '';
   if (status !== 'ok') {
@@ -367,6 +406,13 @@ export async function evaluateSTTReuseOnce(
   const backend = typeof health.backend === 'string' ? health.backend : undefined;
   if (backend !== undefined && backend !== expectedBackend) {
     return { ok: false, reason: 'identity-mismatch' };
+  }
+
+  // Old services omit corpus health and are reusable only when capture is off.
+  // Check this for both backends: enabling, disabling, or relocating capture
+  // must recreate the Node service even when its recognition model is unchanged.
+  if (!matchesCorpusIdentity(health.corpus, expectedCorpus)) {
+    return { ok: false, reason: 'corpus-mismatch' };
   }
 
   if (expectedBackend === 'qwen') {
@@ -401,6 +447,14 @@ export async function evaluateSTTReuseOnce(
     inspectedModel,
     inspectSkipped,
   };
+}
+
+function matchesCorpusIdentity(value: unknown, expected: CorpusIdentity): boolean {
+  if (value === undefined) return !expected.enabled;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = value as { enabled?: unknown; configId?: unknown };
+  return actual.enabled === expected.enabled
+    && (!expected.enabled || actual.configId === expected.configId);
 }
 
 /**
@@ -533,6 +587,7 @@ async function hashSTTBuildInputs(sttDir: string): Promise<string> {
     'docker-compose.yml',
     'docker-compose.gpu.yml',
     'docker-compose.qwen.yml',
+    'docker-compose.corpus.yml',
     'qwen',
     'package.json',
     'package-lock.json',
