@@ -11,6 +11,7 @@ import { FakeTerminalBackend } from '../src/adapters/fake-terminal-backend.js';
 import { FakeTerminalBridge } from '../src/server/fake-terminal-bridge.js';
 import { getProjectSummaries, getSnapshotAgentsForClient } from '../src/server/use-cases/get-snapshot.js';
 import { CodexRolloutScanner } from '../src/adapters/codex-rollout-scanner.js';
+import { clearLastCompletedSweepForTests } from '../src/server/use-cases/cross-project-cleanup-sweep.js';
 import type { Playbook } from '../src/core/playbook.js';
 import { createRelayServer, type RelayServerHandle } from '../relay/server.js';
 
@@ -484,6 +485,7 @@ async function main() {
     // Clear task store
     server.taskStore.loadTasks([]);
     server.spawnRateLimiter.clear();
+    clearLastCompletedSweepForTests();
 
     // Clear OSS/project stores so project sidebar tests do not inherit state
     // from earlier tests sharing the same worker-scoped server.

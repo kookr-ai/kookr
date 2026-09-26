@@ -1,6 +1,27 @@
 import { test, expect } from './fixtures.js';
 import { resetServer } from './battle-helpers.js';
 
+test('reset removes the previous sweep report from new browser sessions', async ({ page, request }) => {
+  await resetServer(request);
+  // This fictional tracked project has no worktree to remove.
+  const tracked = await request.post('/api/projects/track', { data: { repo: 'sweep/reset-isolation' } });
+  expect(tracked.ok()).toBe(true);
+  await page.goto('/');
+  await expect(page.locator('.health-dot-connected')).toBeVisible();
+  await page.getByTestId('command-trigger').click();
+  await page.getByTestId('command-palette-input').fill('sweep');
+  await page.locator('[data-testid="command-palette-action"][data-action-id="sweep"]').click();
+  await page.getByRole('dialog', { name: 'Sweep merged worktrees' }).getByRole('button', { name: 'Sweep', exact: true }).click();
+  await expect(page.locator('.toast-info')).toContainText('Swept 1 project(s) · skipped 1');
+
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'View last sweep report', exact: true })).toBeVisible();
+  await resetServer(request);
+  await page.reload();
+  await expect(page.locator('.health-dot-connected')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'View last sweep report', exact: true })).toHaveCount(0);
+});
+
 test('reset restores launch budgets while preserving the configured limit', async ({ request }) => {
   await resetServer(request);
   const settings = await (await request.get('/api/settings')).json();

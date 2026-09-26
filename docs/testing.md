@@ -103,9 +103,10 @@ pnpm build
 pnpm exec playwright test
 ```
 
-Each browser worker reuses a fake-agent server. Its reset endpoint clears launch
-budgets as well as tasks; the configured launch limits still apply within each
-test. Fixed availability checks replace checks for installed agent binaries.
+Each browser worker reuses a fake-agent server. Its reset endpoint clears tasks,
+launch budgets, and the completed-sweep pointer that adds a dashboard banner.
+The configured launch limits still apply within each test. Fixed availability
+checks replace checks for installed agent binaries.
 Cost comparison reads Codex session records from a temporary directory rather
 than the operator's history. Test snapshots use the same metadata enrichment as
 production, preserving task names and project identities.
