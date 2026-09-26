@@ -3,7 +3,8 @@
 /**
  * App wiring for the 24-hour launched-task chip (issue #2632). StatusBar
  * tests inject a number; this file checks that live agents with startedAt
- * actually produce that number, and that the completed chip is unchanged.
+ * actually produce that number, that the chip opens the Outcome Scoreboard's
+ * diagnostics popover, and that the completed chip is unchanged.
  */
 
 import React from 'react';
@@ -154,6 +155,41 @@ describe('App launched-task 24h chip wiring (issue #2632)', () => {
 
     const chip = container.querySelector('[data-testid="launched-24h-chip"]');
     expect(chip?.textContent).toBe('3 launched / 24h');
+  });
+
+  test('clicking the launched chip opens diagnostics with the Outcome Scoreboard', async () => {
+    // The navigation must work even when diagnostics requests are unavailable.
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 503,
+      json: async () => ({}),
+    } as Response)));
+    useKookrStore.setState({
+      agents: [makeAgent({ startedAt: new Date().toISOString() })],
+      agentsHydrated: true,
+      projectSummariesHydrated: true,
+      sttUrl: '',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+    await flush();
+
+    const chip = container.querySelector<HTMLButtonElement>('[data-testid="launched-24h-chip"]');
+    expect(chip?.tagName).toBe('BUTTON');
+    expect(chip?.getAttribute('aria-label')).toBe('1 launched / 24h. Open Outcome Scoreboard');
+    expect(container.querySelector('.operations-panel')).toBeNull();
+
+    await act(async () => {
+      chip!.click();
+    });
+    const deadline = Date.now() + 5_000;
+    while (!container.querySelector('.operations-panel') && Date.now() < deadline) {
+      await flush();
+    }
+    expect(container.querySelector('.operations-panel')).not.toBeNull();
+    expect(container.querySelector('.operations-panel')?.textContent).toContain('Outcome Scoreboard');
   });
 
   test('hides the chip when no live agent started in the window', async () => {

@@ -114,6 +114,8 @@ describe('StatusBar launched-task count (issue #2632)', () => {
 
     const chip = container.querySelector('[data-testid="launched-24h-chip"]');
     expect(chip).not.toBeNull();
+    expect(chip?.tagName).toBe('SPAN');
+    expect(chip?.getAttribute('role')).toBe('status');
     expect(chip?.textContent).toBe('3 launched / 24h');
     expect(chip?.getAttribute('title')).toBe(
       '3 tasks started in the last 24 hours. Lower bound — may miss tasks that launched and then aged out of the live list.',
