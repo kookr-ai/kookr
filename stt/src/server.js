@@ -111,6 +111,9 @@ export const transcriptionCorpus = createTranscriptionCorpus();
  * @param {import('http').IncomingMessage} req
  */
 function handleConnection(ws, req) {
+  // Retry transient credential setup on ordinary use; recognition never waits
+  // for corpus availability, and initialization shares its in-flight promise.
+  void transcriptionCorpus.api.initialize();
   const clientAddr = req.socket.remoteAddress;
   console.log(`Client connected: ${clientAddr}`);
 
@@ -440,6 +443,7 @@ const WARMUP_TIMEOUT_MS = parseInt(process.env.STT_WARMUP_TIMEOUT_MS || '120000'
 const WARMUP_RETRY_DELAY_MS = parseInt(process.env.STT_WARMUP_RETRY_DELAY_MS || '2000', 10);
 
 export async function startServer() {
+  await transcriptionCorpus.api.initialize();
   console.log('Starting STT WebSocket Server (Node.js)...');
   console.log(`Transcription backend: ${transcriptionBackend.name}`);
 

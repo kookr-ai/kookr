@@ -2168,6 +2168,10 @@ transcript. Launch SHALL remain usable when archival fails.
   immutable. Version annotations through the service owning the archive with
   bounded payloads, private permissions, validated identifiers and draft/field
   ownership. Idempotent retries cannot duplicate or retarget an annotation.
+- Authenticate every underlying corpus HTTP route with a private service
+  credential, including reads and deletion. Share it through the existing
+  private corpus directory so the bundled Docker transport works; never forward
+  the local credential to a remote speech service or include it in an export.
 - Retain ordered clip links, text before insertion and delivered text in the
   owning launch draft. Closing/reopening, reload, other drafts and concurrent
   tabs cannot mix ownership; late speech callbacks cannot change another field.

@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -74,6 +74,12 @@ export const test = base.extend<object, { corpus: CorpusService; corpusEnabled: 
     let proc = startSidecar();
     try {
       const port = await ready(proc, 'CORPUS_STT_PORT');
+      const token = (await readFile(join(root, '.api-token'), 'utf8')).trim();
+      const capabilities = await fetch(`http://127.0.0.1:${port}/corpus/capabilities`, {
+        headers: { 'x-kookr-corpus': '1', Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(capabilities.ok).toBeTruthy();
       await use({
         url: `ws://127.0.0.1:${port}`, root,
         get prediction() { return state.prediction; },
@@ -101,10 +107,15 @@ export const test = base.extend<object, { corpus: CorpusService; corpusEnabled: 
       await rm(root, { recursive: true, force: true });
     }
   }, { scope: 'worker' }],
-  serverURL: [async ({ corpus }, use) => {
+  serverURL: [async ({ corpus, corpusEnabled }, use) => {
     const proc = spawn('node', ['--import', 'tsx', join(__dirname, 'test-server.ts')], {
       cwd: join(__dirname, '..'),
-      env: sanitizedChildServerEnv({ E2E_PORT: '0', E2E_STT_URL: corpus.url, KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: '0' }),
+      env: sanitizedChildServerEnv({
+        E2E_PORT: '0', E2E_STT_URL: corpus.url, KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: '0',
+        // The actual authenticated proxy reads the same private credential as
+        // the isolated sidecar. No test route bypasses corpus authorization.
+        KOOKR_STT_CORPUS_DIR: corpus.root, KOOKR_STT_CORPUS: String(corpusEnabled),
+      }),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     try {

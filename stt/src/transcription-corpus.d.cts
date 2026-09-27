@@ -52,6 +52,8 @@ export interface CorpusView {
 }
 
 export interface CorpusApi {
+  /** Initialize archive API authentication without loading a speech model. */
+  initialize(): Promise<boolean>;
   get(id: string): Promise<CorpusView>;
   list(options?: { offset?: number; limit?: number }): Promise<{ schemaVersion: 1; records: CorpusView[]; truncated: boolean }>;
   annotate(id: string, body: Record<string, unknown>): Promise<{ schemaVersion: 1; annotation: Record<string, unknown>; duplicate: boolean }>;
@@ -78,8 +80,13 @@ export interface CorpusOptions {
   fileSystem?: CorpusFileSystem;
 }
 
-export type CorpusFileSystem = Partial<Pick<typeof fs, 'mkdir' | 'lstat' | 'statfs' | 'writeFile' | 'rename' | 'rm' | 'open' | 'readdir'>>;
+export type CorpusFileSystem = Partial<Pick<typeof fs, 'mkdir' | 'lstat' | 'statfs' | 'writeFile' | 'rename' | 'rm' | 'open' | 'readdir' | 'link'>>;
 
 export function getCorpusConfig(env?: NodeJS.ProcessEnv): CorpusConfig;
 export function ensureCorpusDirectory(directory: string, options?: { fileSystem?: CorpusFileSystem }): Promise<void>;
 export function createTranscriptionCorpus(options?: CorpusOptions): TranscriptionCorpus;
+
+/** Create or reuse the private 32-byte API key without returning it in archive metadata. */
+export function ensureCorpusApiToken(directory: string, options?: { fileSystem?: CorpusFileSystem }): Promise<string>;
+/** Read an existing key; absent roots/files return null, unsafe locations throw. */
+export function readCorpusApiToken(directory: string, options?: { fileSystem?: CorpusFileSystem }): Promise<string | null>;

@@ -1462,6 +1462,13 @@ Before forwarding any annotation, Kookr checks that the service advertises the
 version-one corpus capability. Unsupported services return an explicit
 limitation while ordinary dictation remains available.
 
+The bundled speech service authenticates its underlying `/corpus/*` HTTP routes
+with a bearer credential stored in the existing private corpus directory.
+Kookr reads the credential through the same directory used by the Docker bind
+mount and forwards it only to a configured loopback speech address. A public
+proxy marker or forged forwarded address cannot authenticate a request. Remote
+dictation remains available even when corpus access is unsupported.
+
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /api/stt/corpus/capabilities` | Report support and whether collection is enabled. |

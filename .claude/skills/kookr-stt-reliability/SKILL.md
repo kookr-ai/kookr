@@ -93,6 +93,14 @@ references; missing or incomplete audio cannot qualify. Deletion tests must use
 fixtures and cover queued publication, retries and unsafe paths. Never test
 deletion against the operator's corpus.
 
+Corpus HTTP requests require the private `.api-token` shared through the existing
+corpus directory. Give the fixture's Kookr server and sidecar the same temporary
+directory, initialize the key, and authenticate direct fixture requests. Test
+unauthenticated access over a real non-loopback socket: the proxy marker alone
+must never permit reads, review writes or deletion. A loopback-only peer filter
+is insufficient because Docker's bridge presents a different peer address to
+the bundled service. Keep the credential out of exports and shared datasets.
+
 The browser suite writes a screenshot and downloaded manifest under
 `runs/dictation-corpus-browser/`. Inspect their contents before reporting success.
 Keep the files available to the operator. These controlled fixtures establish

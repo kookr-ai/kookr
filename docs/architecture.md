@@ -843,7 +843,10 @@ collection failures from transcription. Recording identity is reserved before
 final speech delivery. Versioned annotations preserve draft insertions, submitted
 field snapshots and later per-recording reviews separately from the immutable
 record. The owning speech service exposes bounded corpus operations through
-Kookr's authenticated HTTP routes; external services must advertise support.
+Kookr's authenticated HTTP routes. The speech service separately checks a private
+credential shared through the existing corpus directory and Docker bind mount.
+Kookr sends it only to a loopback speech address; remote corpus access remains
+unsupported while ordinary remote dictation keeps working.
 Browser retry storage and correlated launch acknowledgements let archival settle
 after the launch dialog closes. Only an explicitly listened-to, faithful review
 of complete retained audio is eligible as an exported reference.

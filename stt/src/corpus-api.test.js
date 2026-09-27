@@ -1,11 +1,11 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { networkInterfaces, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { createTranscriptionCorpus } from './transcription-corpus.cjs';
+import { createTranscriptionCorpus, ensureCorpusApiToken, readCorpusApiToken } from './transcription-corpus.cjs';
 
 const directories = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true }))); });
@@ -202,8 +202,9 @@ test('bounded annotations reject oversized text, duplicates and untrusted added 
   }
 });
 
-test('HTTP corpus API requires the local proxy header and rejects browser Origins', async () => {
-  const { corpus, identity } = await fixture();
+test('HTTP corpus API requires private authentication, proxy marker and no browser Origin', async () => {
+  const { corpus, identity, directory } = await fixture();
+  const token = await ensureCorpusApiToken(directory);
   await corpus.write(record(identity));
   const server = createServer(async (req, res) => { if (!await corpus.api.handleHttp(req, res)) { res.writeHead(404); res.end(); } });
   server.listen(0, '127.0.0.1');
@@ -212,7 +213,8 @@ test('HTTP corpus API requires the local proxy header and rejects browser Origin
   try {
     expect((await fetch(`${base}/records`)).status).toBe(403);
     expect((await fetch(`${base}/records`, { headers: { 'x-kookr-corpus': '1', Origin: 'https://attacker.example' } })).status).toBe(403);
-    const headers = { 'x-kookr-corpus': '1' };
+    expect((await fetch(`${base}/records`, { headers: { 'x-kookr-corpus': '1' } })).status).toBe(401);
+    const headers = { 'x-kookr-corpus': '1', authorization: `Bearer ${token}` };
     expect(await (await fetch(`${base}/capabilities`, { headers })).json()).toEqual({ schemaVersion: 1, supported: true, enabled: true });
     expect((await (await fetch(`${base}/records`, { headers })).json()).records).toHaveLength(1);
     const submitted = await fetch(`${base}/records/${identity.recordingId}/annotations`, { method: 'POST', headers, body: JSON.stringify(submission(identity)) });
@@ -310,4 +312,170 @@ test('unavailable membership rejects malformed, overlapping, unordered and unbou
     expect(() => corpus.api.annotate(identity.recordingId, submission(identity, { unavailableRecordings }))).toThrow('corpus_invalid_unavailable_recordings');
   }
   expect((await corpus.api.annotate(identity.recordingId, submission(identity, { unavailableRecordings: [valid] }))).annotation.unavailableRecordings).toEqual([valid]);
+});
+
+
+test('private authentication works across a real network bridge analogue and forwarding headers cannot bypass it', async ({ skip }) => {
+  const external = Object.values(networkInterfaces()).flat().find((address) => address.family === 'IPv4' && !address.internal)?.address;
+  // Hosts without a non-loopback IPv4 interface still run loopback protocol
+  // tests; this bridge analogue requires a real routable local socket.
+  if (!external) { skip(); return; }
+  const { corpus, identity, directory } = await fixture();
+  const token = await ensureCorpusApiToken(directory);
+  await corpus.write(record(identity));
+  const peers = [];
+  const server = createServer(async (req, res) => {
+    peers.push(req.socket.remoteAddress);
+    if (!await corpus.api.handleHttp(req, res)) { res.writeHead(404); res.end(); }
+  });
+  server.listen(0, '0.0.0.0');
+  await once(server, 'listening');
+  const base = `http://${external}:${server.address().port}/corpus`;
+  const forwarding = { 'x-kookr-corpus': '1', 'x-forwarded-for': '127.0.0.1', forwarded: 'for="[::1]";proto=http', 'x-real-ip': '::1' };
+  const requests = [
+    ['/capabilities', 'GET'], ['/records', 'GET'], [`/records/${identity.recordingId}`, 'GET'],
+    [`/records/${identity.recordingId}/audio`, 'GET'], ['/export', 'GET'],
+    [`/records/${identity.recordingId}/annotations`, 'POST'], [`/records/${identity.recordingId}`, 'DELETE'],
+  ];
+  try {
+    for (const [route, method] of requests) {
+      for (const authorization of [undefined, 'Bearer invalid', `Bearer ${'0'.repeat(64)}`, `Bearer ${corpus.configId}`]) {
+        const response = await fetch(`${base}${route}`, { method,
+          headers: { ...forwarding, ...(authorization ? { authorization } : {}) },
+          ...(method === 'POST' ? { body: JSON.stringify(submission(identity)) } : {}) });
+        expect(response.status).toBe(401);
+        expect(await response.json()).toEqual({ error: 'corpus_authentication_required' });
+      }
+    }
+    expect(peers).toEqual(Array(requests.length * 4).fill(external));
+    expect((await corpus.api.get(identity.recordingId)).annotations).toEqual([]);
+    const headers = { 'x-kookr-corpus': '1', authorization: `Bearer ${token}` };
+    for (const [route, method] of requests) {
+      const response = await fetch(`${base}${route}`, { method, headers,
+        ...(method === 'POST' ? { body: JSON.stringify(submission(identity)) } : {}) });
+      expect(response.status).toBe(200);
+      const result = await response.text();
+      expect(result).not.toContain(token);
+    }
+    await expect(corpus.api.get(identity.recordingId)).rejects.toMatchObject({ status: 404 });
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('IPv6 and IPv4-mapped loopback sockets require the same private key', async ({ skip }) => {
+  const { corpus, directory } = await fixture();
+  const token = await ensureCorpusApiToken(directory);
+  const peers = [];
+  const server = createServer(async (req, res) => {
+    peers.push(req.socket.remoteAddress);
+    await corpus.api.handleHttp(req, res);
+  });
+  try {
+    const listening = once(server, 'listening');
+    server.listen(0, '::');
+    await listening;
+  } catch (error) {
+    if (error.code === 'EAFNOSUPPORT' || error.code === 'EADDRNOTAVAIL') { skip(); return; }
+    throw error;
+  }
+  try {
+    for (const host of ['[::1]', '127.0.0.1']) {
+      const base = `http://${host}:${server.address().port}/corpus/capabilities`;
+      expect((await fetch(base, { headers: { 'x-kookr-corpus': '1' } })).status).toBe(401);
+      const response = await fetch(base, { headers: { 'x-kookr-corpus': '1', authorization: `Bearer ${token}` } });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ supported: true });
+    }
+    expect(peers).toEqual(['::1', '::1', '::ffff:127.0.0.1', '::ffff:127.0.0.1']);
+  } finally { await new Promise((resolve) => server.close(resolve)); }
+});
+
+test('private API keys publish atomically, converge across initializers and survive service restart', async () => {
+  const { directory, corpus, env } = await fixture();
+  // A crashed initializer may leave a private temp file, never a final key.
+  await fs.writeFile(path.join(directory, '.api-token-crashed'), '', { mode: 0o600 });
+  expect(await readCorpusApiToken(directory)).toBeNull();
+  const keys = await Promise.all(Array.from({ length: 16 }, () => ensureCorpusApiToken(directory)));
+  expect(new Set(keys).size).toBe(1);
+  expect(keys[0]).toMatch(/^[a-f0-9]{64}$/);
+  expect((await fs.stat(path.join(directory, '.api-token'))).mode & 0o777).toBe(0o600);
+  expect((await fs.readdir(directory)).sort()).toEqual(['.api-token', '.api-token-crashed']);
+  expect(await corpus.api.initialize()).toBe(true);
+  expect(await createTranscriptionCorpus({ env }).api.initialize()).toBe(true);
+  expect(await readCorpusApiToken(directory)).toBe(keys[0]);
+  expect(JSON.stringify(await corpus.api.exportManifest())).not.toContain(keys[0]);
+});
+
+test('unsafe key permissions, symlinks, contents and ownership never become API credentials', async () => {
+  const { directory } = await fixture();
+  const keyPath = path.join(directory, '.api-token');
+  await ensureCorpusApiToken(directory);
+  await fs.chmod(keyPath, 0o644);
+  await expect(readCorpusApiToken(directory)).rejects.toThrow('corpus_api_token_unsafe');
+  await expect(ensureCorpusApiToken(directory)).rejects.toThrow('corpus_api_token_unsafe');
+  await fs.chmod(keyPath, 0o600);
+  await fs.writeFile(keyPath, 'z'.repeat(64));
+  await expect(readCorpusApiToken(directory)).rejects.toThrow('corpus_api_token_unsafe');
+  await fs.rm(keyPath);
+  const outside = path.join(directory, 'outside-key');
+  await fs.writeFile(outside, 'a'.repeat(64), { mode: 0o600 });
+  await fs.symlink(outside, keyPath);
+  await expect(readCorpusApiToken(directory)).rejects.toThrow('corpus_api_token_unsafe');
+  await expect(ensureCorpusApiToken(directory)).rejects.toThrow('corpus_api_token_unsafe');
+  expect(await fs.readFile(outside, 'utf8')).toBe('a'.repeat(64));
+  await fs.rm(keyPath);
+  await ensureCorpusApiToken(directory);
+  if (typeof process.getuid === 'function') {
+    await expect(readCorpusApiToken(directory, { fileSystem: { lstat: async (...args) => {
+      const stat = await fs.lstat(...args); stat.uid = process.getuid() + 1; return stat;
+    } } })).rejects.toThrow('corpus_api_token_unsafe');
+    await expect(readCorpusApiToken(directory, { fileSystem: { open: async (...args) => {
+      const handle = await fs.open(...args);
+      return { stat: async () => { const stat = await handle.stat(); stat.uid = process.getuid() + 1; return stat; },
+        readFile: (...readArgs) => handle.readFile(...readArgs), close: () => handle.close() };
+    } } })).rejects.toThrow('corpus_api_token_unsafe');
+  }
+});
+
+test('disabled collection never creates a key, and authentication failures do not block archival', async () => {
+  const { directory, env, identity } = await fixture();
+  const disabled = createTranscriptionCorpus({ env: { ...env, KOOKR_STT_CORPUS: 'false' } });
+  expect(await disabled.api.initialize()).toBe(false);
+  expect(await fs.readdir(directory)).toEqual([]);
+  expect(await readCorpusApiToken(path.join(directory, 'absent'))).toBeNull();
+  expect(await fs.readdir(directory)).toEqual([]);
+  const failedKey = createTranscriptionCorpus({ env, fileSystem: { link: async () => { throw new Error('controlled key publication failure'); } } });
+  expect(await failedKey.api.initialize()).toBe(false);
+  expect(await fs.readdir(directory)).toEqual([]);
+  const recording = failedKey.reserve(owner);
+  expect(await failedKey.write(record(recording))).not.toBeNull();
+  expect((await failedKey.api.get(recording.recordingId)).metadata.transcript).toBe('Original prediction');
+  expect(identity.recordingId).not.toBe(recording.recordingId);
+  const token = await ensureCorpusApiToken(directory);
+  const readOnlyIo = Object.fromEntries(['mkdir', 'writeFile', 'link', 'rm'].map((name) => [name, vi.fn()]));
+  const disabledRestarted = createTranscriptionCorpus({ env: { ...env, KOOKR_STT_CORPUS: 'false' }, fileSystem: readOnlyIo });
+  expect(await disabledRestarted.api.initialize()).toBe(true);
+  for (const operation of Object.values(readOnlyIo)) expect(operation).not.toHaveBeenCalled();
+  expect(await readCorpusApiToken(directory)).toBe(token);
+});
+
+
+test('transient credential publication failure recovers on retry while a loaded key stays stable', async () => {
+  const { directory, env } = await fixture();
+  let failPublication = true;
+  const link = vi.fn(async (...args) => {
+    if (failPublication) throw new Error('controlled temporary publication failure');
+    return fs.link(...args);
+  });
+  const corpus = createTranscriptionCorpus({ env, fileSystem: { link } });
+  expect(await corpus.api.initialize()).toBe(false);
+  expect(await readCorpusApiToken(directory)).toBeNull();
+  failPublication = false;
+  expect(await corpus.api.initialize()).toBe(true);
+  const saved = await readCorpusApiToken(directory);
+  expect(saved).toMatch(/^[a-f0-9]{64}$/);
+  expect(link).toHaveBeenCalledTimes(2);
+  failPublication = true;
+  expect(await corpus.api.initialize()).toBe(true);
+  expect(await readCorpusApiToken(directory)).toBe(saved);
+  expect(link).toHaveBeenCalledTimes(2);
 });

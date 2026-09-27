@@ -3,7 +3,7 @@
 // The speech service owns audio and sidecars. Callers supply UUIDs, never paths.
 const path = require('node:path');
 const { constants } = require('node:fs');
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, randomUUID, timingSafeEqual } = require('node:crypto');
 const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 const IDENTIFIER = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -21,7 +21,16 @@ function privateStat(stat, directory) {
 }
 function publicOwner(owner) { return owner ? { draftId: owner.draftId, field: owner.field } : null; }
 
-function createCorpusApi({ config, io, reservations, flush }) {
+function createCorpusApi({ config, io, reservations, flush, loadApiToken }) {
+  let tokenPromise;
+  const token = () => tokenPromise ??= Promise.resolve().then(loadApiToken).catch(() => null).then((value) => {
+    // A transient key read/publication failure must remain retryable without
+    // restarting recognition. Keep only a successfully loaded key cached.
+    if (!value) tokenPromise = undefined;
+    return value;
+  });
+  // Authentication setup must never interrupt recognition or expose the key.
+  const initialize = async () => Boolean(await token());
   let mutations = Promise.resolve();
   let queued = 0;
 
@@ -314,6 +323,12 @@ function createCorpusApi({ config, io, reservations, flush }) {
     };
     try {
       if (req.headers.origin || req.headers['x-kookr-corpus'] !== '1') fail('corpus_proxy_required', 403);
+      // The marker prevents browser CSRF; possession of the private mount's
+      // key authenticates the proxy even across Docker's network bridge.
+      const bearer = typeof req.headers.authorization === 'string'
+        ? /^Bearer ([a-f0-9]{64})$/.exec(req.headers.authorization)?.[1] : null;
+      const expected = bearer ? await token() : null;
+      if (!bearer || !expected || !timingSafeEqual(Buffer.from(bearer), Buffer.from(expected))) fail('corpus_authentication_required', 401);
       const match = /^\/corpus\/records\/([^/]+)(?:\/(audio|annotations))?$/.exec(url.pathname);
       if (req.method === 'GET' && url.pathname === '/corpus/capabilities') json(200, { schemaVersion: 1, supported: true, enabled: config.enabled });
       else if (req.method === 'GET' && url.pathname === '/corpus/records') json(200, await list({ offset: Number(url.searchParams.get('offset') ?? 0), limit: Number(url.searchParams.get('limit') ?? 200) }));
@@ -343,7 +358,7 @@ function createCorpusApi({ config, io, reservations, flush }) {
     return true;
   }
 
-  return { get, list, annotate, remove, exportManifest, audio, handleHttp };
+  return { get, list, annotate, remove, exportManifest, audio, handleHttp, initialize };
 }
 
 module.exports = { createCorpusApi };

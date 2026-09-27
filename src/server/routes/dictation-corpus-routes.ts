@@ -3,6 +3,8 @@ import type { Context } from 'hono';
 import type { TaskStore } from '../../core/tasks.js';
 import type { TaskStateSaveSchedulerLike } from '../task-state-save-scheduler.js';
 import { validateSpeechServiceUrl } from '../speech-service-url.js';
+import { isLoopbackHost } from '../auth.js';
+import { getCorpusConfig, readCorpusApiToken } from '../../../stt/src/transcription-corpus.cjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_ANNOTATION_BYTES = 128 * 1024;
@@ -12,6 +14,8 @@ const DEADLINE_MS = 10_000;
 
 interface CorpusRouteDeps {
   sttUrl?: string;
+  /** Existing corpus root; tests override it with a private temporary directory. */
+  corpusDirectory?: string;
   taskStore: TaskStore;
   taskStateSaveScheduler?: TaskStateSaveSchedulerLike;
 }
@@ -74,11 +78,19 @@ export function registerDictationCorpusRoutes(app: Hono, deps: CorpusRouteDeps):
     if (!deps.sttUrl) return unavailable('disabled', isCapabilities ? 200 : 503);
     if (!validateSpeechServiceUrl(deps.sttUrl).ok) return unavailable('invalid-stt-url', isCapabilities ? 200 : 503);
     const configured = new URL(deps.sttUrl);
+    // This secret belongs to the local archive's bind mount. Never send it to
+    // a remote recognizer or a hostname that happens to resolve to loopback.
+    const hostname = configured.hostname.replace(/^\[|\]$/g, '');
+    if (!isLoopbackHost(hostname)) return unavailable('nonlocal-corpus-unsupported', isCapabilities ? 200 : 501);
+    let token: string | null;
+    try { token = await readCorpusApiToken(deps.corpusDirectory ?? getCorpusConfig().directory); }
+    catch { return unavailable('corpus-auth-unavailable', 503); }
+    if (!token) return unavailable('corpus-auth-unavailable', 503);
     configured.protocol = configured.protocol === 'wss:' ? 'https:' : configured.protocol === 'ws:' ? 'http:' : configured.protocol;
     const origin = configured.origin;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), DEADLINE_MS);
-    const headers = { 'x-kookr-corpus': '1' };
+    const headers = { 'x-kookr-corpus': '1', authorization: `Bearer ${token}` };
     try {
       // Probe before sending any private annotation to external/old services.
       const capabilityResponse = await fetch(`${origin}/corpus/capabilities`, {
@@ -86,6 +98,7 @@ export function registerDictationCorpusRoutes(app: Hono, deps: CorpusRouteDeps):
       });
       if (!capabilityResponse.ok) {
         await capabilityResponse.body?.cancel();
+        if (capabilityResponse.status === 401 || capabilityResponse.status === 403) return unavailable('corpus-auth-unavailable', 503);
         return unavailable('unsupported', isCapabilities ? 200 : 501);
       }
       const capabilityBytes = await readBounded(capabilityResponse.body, 4096);

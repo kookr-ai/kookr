@@ -6,7 +6,8 @@
  * Human reference text is deliberately separate from the model's transcript.
  */
 const fs = require('node:fs/promises');
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, randomBytes, randomUUID } = require('node:crypto');
+const { constants } = require('node:fs');
 const { createCorpusApi } = require('./corpus-api.cjs');
 const { homedir } = require('node:os');
 const path = require('node:path');
@@ -55,6 +56,50 @@ async function ensureCorpusDirectory(directory, options = {}) {
   if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o777) !== 0o700 || wrongOwner) {
     throw new Error('corpus_directory_not_private');
   }
+}
+
+/** Read the shared service key without creating files when collection is off. */
+async function readCorpusApiToken(directory, options = {}) {
+  const io = { ...fs, ...options.fileSystem };
+  try {
+    const root = await io.lstat(directory);
+    if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o700
+      || (typeof process.getuid === 'function' && root.uid !== process.getuid())) throw new Error('corpus_api_token_unsafe');
+    const handle = await io.open(path.join(directory, '.api-token'), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size !== 64
+        || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new Error('corpus_api_token_unsafe');
+      const token = (await handle.readFile()).toString();
+      if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('corpus_api_token_unsafe');
+      return token;
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    // Filesystem errors include private paths. The key itself is never logged.
+    throw new Error('corpus_api_token_unsafe');
+  }
+}
+
+/** Atomically create one persistent key shared through the existing private mount. */
+async function ensureCorpusApiToken(directory, options = {}) {
+  const io = { ...fs, ...options.fileSystem };
+  await ensureCorpusDirectory(directory, { fileSystem: io });
+  const existing = await readCorpusApiToken(directory, { fileSystem: io });
+  if (existing) return existing;
+  const token = randomBytes(32).toString('hex');
+  const temporary = path.join(directory, `.api-token-${randomUUID()}`);
+  try {
+    await io.writeFile(temporary, token, { mode: 0o600, flag: 'wx' });
+    try {
+      // Hard-link publication is atomic and fails if another process won the
+      // race. Readers can never observe an empty or partially written key.
+      await io.link(temporary, path.join(directory, '.api-token'));
+    } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const saved = await readCorpusApiToken(directory, { fileSystem: io });
+    if (!saved) throw new Error('corpus_api_token_unavailable');
+    return saved;
+  } finally { await io.rm(temporary, { force: true }); }
 }
 
 function createTranscriptionCorpus(options = {}) {
@@ -189,8 +234,12 @@ function createTranscriptionCorpus(options = {}) {
     return result;
   }
 
-  const api = createCorpusApi({ config, io, reservations, flush: () => tail });
+  const api = createCorpusApi({ config, io, reservations, flush: () => tail,
+    loadApiToken: () => config.enabled
+      ? ensureCorpusApiToken(config.directory, { fileSystem: io })
+      : readCorpusApiToken(config.directory, { fileSystem: io }),
+  });
   return { ...config, write, reserve, api, flush: () => tail, stats: () => ({ ...counts }) };
 }
 
-module.exports = { getCorpusConfig, ensureCorpusDirectory, createTranscriptionCorpus };
+module.exports = { getCorpusConfig, ensureCorpusDirectory, ensureCorpusApiToken, readCorpusApiToken, createTranscriptionCorpus };

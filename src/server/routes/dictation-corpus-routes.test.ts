@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Hono } from 'hono';
 import { createApiAuthMiddleware } from '../auth.js';
 import { createJsonRequestBodyLimitMiddleware } from './shared.js';
@@ -8,12 +11,21 @@ import { registerDictationCorpusRoutes } from './dictation-corpus-routes.js';
 const recordId = '87d3e32a-e48e-4c7b-8518-d9b4294b57dc';
 const submissionId = '5b7ee799-01a1-4e23-8e92-f049cbdd3b5d';
 const capabilities = { schemaVersion: 1, supported: true, enabled: true };
+const corpusApiToken = 'ab'.repeat(32);
+let corpusDirectory: string;
+beforeEach(async () => {
+  corpusDirectory = await mkdtemp(join(tmpdir(), 'corpus-proxy-auth-'));
+  await writeFile(join(corpusDirectory, '.api-token'), corpusApiToken, { mode: 0o600 });
+});
 function app(sttUrl: string | undefined = 'ws://127.0.0.1:4000/stt', taskStore = new TaskStore()) {
   const result = new Hono();
-  registerDictationCorpusRoutes(result, { sttUrl, taskStore });
+  registerDictationCorpusRoutes(result, { sttUrl, taskStore, corpusDirectory });
   return result;
 }
-afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(async () => {
+  vi.unstubAllGlobals(); vi.useRealTimers();
+  await rm(corpusDirectory, { recursive: true, force: true });
+});
 
 describe('dictation corpus bridge', () => {
   test('disabled and invalid endpoints do not make network requests', async () => {
@@ -42,15 +54,15 @@ describe('dictation corpus bridge', () => {
   test('uses the configured origin, strips browser headers and bounds pagination', async () => {
     const fetch = vi.fn().mockImplementation(async () => Response.json(capabilities));
     vi.stubGlobal('fetch', fetch);
-    const response = await app('wss://speech.example.test/private?secret=1').request('/api/stt/corpus/records?offset=10&limit=5', {
+    const response = await app('wss://localhost/private?secret=1').request('/api/stt/corpus/records?offset=10&limit=5', {
       headers: { Origin: 'http://kookr.test', Authorization: 'Bearer secret' },
     });
     expect(response.status).toBe(200);
     expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
-      'https://speech.example.test/corpus/capabilities',
-      'https://speech.example.test/corpus/records?offset=10&limit=5',
+      'https://localhost/corpus/capabilities',
+      'https://localhost/corpus/records?offset=10&limit=5',
     ]);
-    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: 'error', headers: { 'x-kookr-corpus': '1' } });
+    expect(fetch.mock.calls[1]?.[1]).toMatchObject({ redirect: 'error', headers: { 'x-kookr-corpus': '1', authorization: `Bearer ${corpusApiToken}` } });
     expect(fetch.mock.calls[1]?.[1].headers).not.toHaveProperty('Origin');
     expect((await app().request('/api/stt/corpus/records?limit=201')).status).toBe(400);
   });
@@ -135,7 +147,7 @@ describe('corpus transport security and bounds', () => {
     vi.stubGlobal('fetch', fetch);
     const server = new Hono();
     server.use('/api/*', createJsonRequestBodyLimitMiddleware(1024 * 1024));
-    registerDictationCorpusRoutes(server, { sttUrl: 'ws://localhost:4000', taskStore: new TaskStore() });
+    registerDictationCorpusRoutes(server, { sttUrl: 'ws://localhost:4000', taskStore: new TaskStore(), corpusDirectory });
     const response = await server.request(`/api/stt/corpus/records/${recordId}/annotations`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'review' }),
     });
@@ -191,5 +203,64 @@ describe('corpus playback formats', () => {
     const response = await app().request(`/api/stt/corpus/records/${recordId}/audio`);
     expect(response.status).toBe(502);
     expect(await response.json()).toEqual({ error: 'corpus_invalid_response' });
+  });
+});
+
+
+describe('private speech archive authentication', () => {
+  test.each(['wss://speech.example.test', 'ws://192.168.1.5:4000', 'http://127.0.0.1.attacker.test:4000'])('does not disclose the local credential or annotation to %s', async (url) => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const response = await app(url).request(`/api/stt/corpus/records/${recordId}/annotations`, {
+      method: 'POST', body: JSON.stringify({ kind: 'review', correction: 'private words' }),
+    });
+    expect(response.status).toBe(501);
+    expect(await response.json()).toMatchObject({ supported: false, reason: 'nonlocal-corpus-unsupported' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test.each(['127.0.0.1', '127.0.1.5', 'localhost', '[::1]'])('authenticates a configured loopback archive at %s', async (hostname) => {
+    const fetch = vi.fn().mockImplementation(async () => Response.json(capabilities));
+    vi.stubGlobal('fetch', fetch);
+    const response = await app(`ws://${hostname}:4000/stt`).request('/api/stt/corpus/capabilities');
+    expect(response.status).toBe(200);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[1].headers).toEqual({ 'x-kookr-corpus': '1', authorization: `Bearer ${corpusApiToken}` });
+    expect(await response.text()).not.toContain(corpusApiToken);
+  });
+
+  test('does not create a missing token or send a marker-only fallback request', async () => {
+    await rm(join(corpusDirectory, '.api-token'));
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const response = await app().request(`/api/stt/corpus/records/${recordId}/annotations`, {
+      method: 'POST', body: JSON.stringify({ kind: 'review', correction: 'private words' }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ supported: false, reason: 'corpus-auth-unavailable' });
+    expect(fetch).not.toHaveBeenCalled();
+    await expect(readFile(join(corpusDirectory, '.api-token'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  test('rejects a token whose filesystem permissions expose it', async () => {
+    await chmod(join(corpusDirectory, '.api-token'), 0o644);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const response = await app().request('/api/stt/corpus/capabilities');
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ supported: false, reason: 'corpus-auth-unavailable' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test.each([401, 403])('authentication rejection %i stops before forwarding any private annotation', async (status) => {
+    const fetch = vi.fn().mockResolvedValue(new Response('denied', { status }));
+    vi.stubGlobal('fetch', fetch);
+    const response = await app().request(`/api/stt/corpus/records/${recordId}/annotations`, {
+      method: 'POST', body: JSON.stringify({ kind: 'review', correction: 'private words' }),
+    });
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ supported: false, reason: 'corpus-auth-unavailable' });
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls[0]?.[1]).not.toHaveProperty('body');
   });
 });

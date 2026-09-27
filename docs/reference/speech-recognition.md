@@ -240,8 +240,10 @@ hashes, recognition provenance, submitted field snapshots and review revisions.
 Only the latest faithful review of complete, readable, hash-matching audio enters
 `verifiedPairs`. Other eligible records enter `candidates` with `reference: null`;
 excluded examples are left out. Audio URLs locate the retained originals on this
-Kookr server; the manifest does not embed or upload audio. Copy the private corpus
-separately when moving an evaluation set to another machine.
+Kookr server; the manifest does not embed or upload audio. Copy the dated recording
+directories separately when moving an evaluation set to another machine. Keep
+the corpus root's `.api-token` private; it is a service credential, not part of
+an evaluation set, and is never included in the manifest.
 Manifest export is limited to 2,000 recordings and eight MiB of JSON. A larger
 archive reports that limit instead of downloading a truncated manifest; paged
 review and the private on-disk corpus remain available. A recording retains at
@@ -266,9 +268,19 @@ services that do not advertise corpus support keep dictation usable but cannot
 save corrections or supply playback through this workflow. The main server
 checks capabilities before forwarding annotations and never invents a local
 audio pair for an external recording. Corpus HTTP access goes through Kookr's
-existing authentication; the speech service itself must remain on a trusted
-local network, like its existing transcription endpoint. Its corpus routes
-reject browser-origin requests and require the internal proxy header.
+existing authentication. The bundled speech service also requires a private
+bearer credential for every corpus HTTP route. It generates that credential in
+the existing corpus directory with owner-only file permissions. Kookr reads it
+from the same directory; the existing Docker bind mount shares the file with
+the container, so Docker's network translation does not disable corpus access.
+Browser-origin requests remain rejected, and the proxy marker is an additional
+browser-request safeguard rather than a secret.
+
+Ordinary speech WebSockets keep their existing network behavior. Kookr sends
+the local corpus credential only to a configured loopback speech address. Remote
+speech services report corpus support as unavailable in this workflow; private
+annotations and the local credential are not forwarded to them. No production
+speech settings are changed automatically.
 
 ## Verification and diagnosis
 
