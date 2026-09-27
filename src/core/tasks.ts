@@ -485,6 +485,29 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Find the task actually acknowledged for a dictation submission, including after reload. */
+  findTaskByDictationSubmission(submissionId: string): Task | undefined {
+    for (const task of this.tasks.values()) {
+      if (task.metadata?.dictationSubmissionIds?.includes(submissionId)) return cloneTask(task);
+    }
+    return undefined;
+  }
+
+  /** Append a bounded receipt without allowing a retry to associate a different task. */
+  recordDictationSubmission(taskId: string, submissionId: string): void {
+    const existing = this.findTaskByDictationSubmission(submissionId);
+    if (existing) {
+      if (existing.id !== taskId) throw new Error('corpus_submission_conflict');
+      return;
+    }
+    const task = this.tasks.get(taskId);
+    if (!task) throw new Error('corpus_task_not_found');
+    const receipts = task.metadata?.dictationSubmissionIds ?? [];
+    if (receipts.length >= 128) throw new Error('corpus_task_receipt_limit');
+    task.metadata = { ...task.metadata, dictationSubmissionIds: [...receipts, submissionId] };
+    this.markTaskDirty(taskId);
+  }
+
   getTask(id: string): Task | undefined {
     const task = this.tasks.get(id);
     return task ? cloneTask(task) : undefined;

@@ -13,6 +13,7 @@
     "bin",
     "dist",
     "stt/src/transcription-corpus.cjs",
+    "stt/src/corpus-api.cjs",
     "stt/src/transcription-corpus.d.cts",
     "stt/src/vocabulary.cjs",
     "stt/src/vocabulary.d.cts",

@@ -839,4 +839,11 @@ the compiled TypeScript application publish the same versioned format. An
 opt-in Compose overlay mounts the host corpus directory into the Node service
 and runs it with the host user's UID/GID. Atomic directory publication pairs
 the audio with its metadata; bounded writes and a free-space reserve isolate
-collection failures from transcription. There is no corpus HTTP endpoint.
+collection failures from transcription. Recording identity is reserved before
+final speech delivery. Versioned annotations preserve draft insertions, submitted
+field snapshots and later per-recording reviews separately from the immutable
+record. The owning speech service exposes bounded corpus operations through
+Kookr's authenticated HTTP routes; external services must advertise support.
+Browser retry storage and correlated launch acknowledgements let archival settle
+after the launch dialog closes. Only an explicitly listened-to, faithful review
+of complete retained audio is eligible as an exported reference.

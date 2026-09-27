@@ -20,6 +20,7 @@ flowchart LR
     StateFiles[(~/.kookr/*.json\nsettings + schedules + OSS/workspace state)]
     HooksDir[(~/.kookr/hooks/\nper-session JSONL)]
     STT[TTS/STT helpers<br/>optional local services]
+    Corpus[(Opt-in speech corpus<br/>original audio + versioned annotations)]
   end
   HostedRelay[Hosted Relay<br/>optional external service]
 
@@ -40,6 +41,9 @@ flowchart LR
   CC -->|"hook output"| HooksDir
   Codex -->|"hook output"| HooksDir
   Backend -->|"optional HTTP / subprocess lifecycle"| STT
+  Browser -->|"dictation audio WebSocket"| STT
+  Backend -->|"authenticated corpus review proxy"| STT
+  STT -->|"private atomic recording / annotation writes"| Corpus
   Backend <-->|"optional session-sharing<br/>HTTPS / WebSocket"| HostedRelay
 ```
 
@@ -74,6 +78,11 @@ flowchart LR
 - **Embedded database, no server** in the local deployment — task/session state lives in an embedded SQLite DB (`~/.kookr/tasks.sqlite`, default since #1755; `KOOKR_TASK_STORE=json` for the legacy file-backed JSON path), and other operational state (settings, schedules, OSS/workspace attempts) remains file-backed JSON under `~/.kookr/`. No separate database *process/server* is run; active queue state remains in-memory with persisted snooze snapshots
 - **Core (tasks.ts) owns** the task store (`tasks.sqlite` by default, legacy `tasks.json`) including inline session metadata; adapter writes hook output to `~/.kookr/hooks/` (ADR-008)
 - **Remote/session-sharing modules** publish policy-filtered projections and supervised commands; they do not own task lifecycle or terminal process lifecycle
+- **Speech service owns** browser audio and corpus annotations. The browser retains
+  bounded submission retries; the backend records correlated task acknowledgements
+  in existing task metadata. Review/export use the backend's authenticated proxy
+  to the owning service. Submitted field text and listened-to references remain
+  separate from original audio and predictions.
 - **No discovery** in V1 — Kookr only shows agents it launched itself
 
 ## Evidence

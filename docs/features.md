@@ -350,7 +350,13 @@ storage is unavailable; another recording cannot silently replace it.
 Operators can enable a local audio/transcription corpus for later evaluation.
 It retains completed browser recordings and Telegram audio with the automatic
 text, recognition settings and outcome. Collection is off by default; enabling
-it does not create human reference transcripts. See the
+it does not create human reference transcripts. Both launchers retain recording
+links when the operator edits the prompt or criteria. Launch saves the submitted
+field text separately from the original prediction; saving failures remain
+visible and do not block launching. The operator can later play each recording,
+edit its correction, confirm a faithful transcript after listening, mark a
+reformulation, or exclude it. Corpus review offers separate verified-pair and
+candidate exports, and deletion of individual examples. See the
 [corpus configuration and format](reference/speech-recognition.md#local-evaluation-corpus).
 
 While recording, a small meter beside the stop button follows the captured

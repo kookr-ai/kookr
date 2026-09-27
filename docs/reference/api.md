@@ -1453,6 +1453,37 @@ unresolved spans that must not be counted as active.
 The same operations are available from the CLI: `kookr orchestration pause`,
 `kookr orchestration resume`, and `kookr orchestration status`.
 
+## Dictation corpus
+
+The dashboard reviews the archive owned by its configured speech service. These
+routes use the existing owner authentication and mutation CSRF checks. They
+accept identifiers, never filesystem paths or caller-selected upstream URLs.
+Before forwarding any annotation, Kookr checks that the service advertises the
+version-one corpus capability. Unsupported services return an explicit
+limitation while ordinary dictation remains available.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/stt/corpus/capabilities` | Report support and whether collection is enabled. |
+| `GET /api/stt/corpus/records` | List recordings and annotations; `offset` and `limit` page the list, at most 200 per page. |
+| `GET /api/stt/corpus/records/:id` | Read original metadata, annotations, completeness and audio availability. |
+| `GET /api/stt/corpus/records/:id/audio` | Play the original audio after validating its stored hash. |
+| `POST /api/stt/corpus/records/:id/annotations` | Save a versioned submission, task association or per-recording review. |
+| `DELETE /api/stt/corpus/records/:id` | Delete that example and its annotations; repeated deletion is harmless. |
+| `GET /api/stt/corpus/export` | Export separate verified pairs and unreviewed candidates in a versioned manifest. |
+| `GET /api/stt/corpus/submissions/:submissionId/task` | Recover the actual task receipt when the browser missed the launch acknowledgement. |
+
+Annotation operations carry an `operationId` for idempotent retries. Submission
+and task annotations also require the capture token and matching `draftId` and
+`field`. A task annotation must match a successful server receipt. Review writes
+carry `expectedRevision`; a concurrent correction returns a conflict instead of
+overwriting another review. A faithful reference requires complete, readable
+audio and explicit listening confirmation. Pending audio publication returns
+`409 corpus_pending`, so the browser keeps its submission for retry.
+
+See [speech recognition](speech-recognition.md#retaining-edits-and-reviewing-recordings)
+for the review workflow, privacy boundary and capture limits.
+
 ## WebSocket
 
 | Endpoint | Description |
@@ -1520,6 +1551,7 @@ delta sequence number.
 | `diagnosticReport` | Push the latest self-diagnostic report when findings exist. | `report` |
 | `ossAttempts` | Push OSS contribution-attempt store state and refresh status. | `store`, optional `refreshStatus` |
 | `wsBackpressureNotice` | Compact dashboard fan-out notice (issue #1725): `resyncNeeded` after one socket drains from bufferedAmount backpressure (it may have missed frames while skipped); `loadShedActive`/`loadShedRecovered` when the event-loop-delay load-shed gate engages/disengages (full snapshots are suspended while active). Older clients ignore unknown `type`s, so this is forward-compatible with no required frontend change. | `kind`, optional `scopeKey`, optional `eventLoopDelayP95Ms` |
+| `dictationLaunchResult` | Correlated result for a dictation submission. A task ID is sent only after the server records the successful launch receipt; an error leaves the submission unassociated. | `submissionId`, optional `taskId` or `error` |
 | `deployLifecycle` | Pre-blackout deploy notice (issue #1980). Broadcast on successful `POST /api/deploy/trigger` **before** `prod-update` is spawned so connected dashboards can set the sticky session deploy flag (ConnectionBanner “Redeploying”) while the WebSocket is still open. Older clients ignore unknown `type`s safely. **Not emitted** by script-path `pnpm prod:restart` / `scripts/prod-restart.sh` without the trigger route — see [low-downtime redeploy runbook](../runbooks/low-downtime-redeploy.md#deploylifecycle-coverage). | `phase` (`starting`) |
 
 ### Client-to-server messages
@@ -1538,7 +1570,7 @@ delta sequence number.
 | `skipAll` | Skip findings for multiple agents. | `agentIds` |
 | `snooze` | Snooze monitoring or attention for an agent. | `agentId`, `durationMs`, optional `taskId`, `reason`, `resumeMonitoring` |
 | `cancelSnooze` | Wake a snoozed agent. | `agentId`, optional `taskId` |
-| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `parentTaskId` (user-relaunch lineage), `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
+| `launch` | Launch a new task. | `prompt`, `cwd`, optional `criteria`, `agentType`, `dependencies`, `dictationSubmissionId` (UUID for a corpus submission receipt), `parentTaskId` (user-relaunch lineage), `disableDedup`, `metadataIntent` (`keep_as_duplicate`, required when `disableDedup` is true) |
 | `completeTask` | Mark a task complete, optionally with feedback, reflection request, or worktree cleanup override. | `taskId`, optional `feedback`, `requestReflect`, `cleanupWorktree` |
 | `setTaskFeedback` | Save feedback for an existing task. | `taskId`, `feedback` |
 | `requestTaskReflect` | Start task reflection from thumbs-up/down feedback. | `taskId`, `direction` |

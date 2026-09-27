@@ -46,6 +46,8 @@ export interface LifecycleHandlerDeps {
   interactionLog?: DeferredInteractionLogWriter;
   scheduleService?: ScheduleService;
   ralphLoopService: RalphLoopService;
+  /** Flush the existing task store before acknowledging a dictation receipt. */
+  flushTasks?: () => Promise<void>;
   launchTask?: (opts: LaunchOpts, serverOpts?: LaunchTaskServerOptions) => Promise<LaunchResult>;
   broadcastToAll?: (msg: ServerMessage) => void;
   activityMetaProvider?: { getActivityMeta(kookrSessionId: string): AgentActivityMeta | undefined };
@@ -104,6 +106,16 @@ type LifecycleMessage = Extract<ClientMessage, {
     | 'worktree:inspectCleanup'
 }>;
 
+interface DictationLaunchOutcome {
+  result?: LaunchResult;
+  error?: unknown;
+  receiptError?: string;
+}
+
+// Shared across socket handlers, scoped to their actual store, and released on
+// settlement. A retransmit from another tab must not launch a second task.
+const dictationLaunches = new WeakMap<TaskStore, Map<string, Promise<DictationLaunchOutcome>>>();
+
 /**
  * Handles task-lifecycle client messages.
  *
@@ -154,6 +166,45 @@ export class LifecycleHandler {
     });
   }
 
+  private async launchWithDictationReceipt(
+    msg: Extract<ClientMessage, { type: 'launch' }>,
+  ): Promise<DictationLaunchOutcome> {
+    let result: LaunchResult | undefined;
+    try {
+      const existing = msg.dictationSubmissionId
+        ? this.deps.taskStore.findTaskByDictationSubmission(msg.dictationSubmissionId)
+        : undefined;
+      result = existing
+        ? { task: existing, queued: existing.status === 'pending', duplicate: true }
+        : await this.deps.launchTask?.({
+          prompt: msg.prompt,
+          cwd: msg.cwd,
+          criteria: msg.criteria,
+          agentType: msg.agentType,
+          dependencies: msg.dependencies,
+          ...(msg.effort ? { effort: msg.effort } : {}),
+          ...(msg.model ? { model: msg.model } : {}),
+          disableDedup: msg.parentTaskId !== undefined ? true : msg.disableDedup,
+          metadataIntent: msg.metadataIntent,
+          parentTaskId: msg.parentTaskId,
+          ...(msg.parentTaskId !== undefined ? { userInitiatedRelaunch: true } : {}),
+        });
+    } catch (error) { return { error }; }
+    if (result && msg.dictationSubmissionId) {
+      try {
+        this.deps.taskStore.recordDictationSubmission(result.task.id, msg.dictationSubmissionId);
+        await this.deps.flushTasks?.();
+      } catch (error) {
+        // The task already exists. A failed archive receipt must never turn a
+        // successful launch into a launch failure or cause the browser to retry it.
+        const receiptError = error instanceof Error && error.message === 'corpus_task_receipt_limit'
+          ? 'corpus_task_receipt_limit' : 'corpus_task_receipt_pending';
+        return { result, receiptError };
+      }
+    }
+    return { result };
+  }
+
   async handle(msg: LifecycleMessage): Promise<{ duplicate: boolean }> {
     // `worktree:inspectCleanup` is a read-only question, not a lifecycle
     // mutation, so the Contact Share guard below must not swallow it: that path
@@ -173,25 +224,35 @@ export class LifecycleHandler {
 
     switch (msg.type) {
       case 'launch': {
-        const excerpt = msg.prompt.slice(0, 40);
-        let result: LaunchResult | undefined;
-        let err: unknown;
-        try {
-          result = await this.deps.launchTask?.({
-            prompt: msg.prompt,
-            cwd: msg.cwd,
-            criteria: msg.criteria,
-            agentType: msg.agentType,
-            dependencies: msg.dependencies,
-            ...(msg.effort ? { effort: msg.effort } : {}),
-            ...(msg.model ? { model: msg.model } : {}),
-            disableDedup: msg.parentTaskId !== undefined ? true : msg.disableDedup,
-            metadataIntent: msg.metadataIntent,
-            parentTaskId: msg.parentTaskId,
-            ...(msg.parentTaskId !== undefined ? { userInitiatedRelaunch: true } : {}),
+        const submissionId = msg.dictationSubmissionId;
+        let outcome: DictationLaunchOutcome;
+        if (submissionId) {
+          let active = dictationLaunches.get(this.deps.taskStore);
+          if (!active) {
+            active = new Map();
+            dictationLaunches.set(this.deps.taskStore, active);
+          }
+          const pending = active.get(submissionId);
+          if (pending) outcome = await pending;
+          else if (active.size >= 128) {
+            outcome = await this.launchWithDictationReceipt({ ...msg, dictationSubmissionId: undefined });
+            outcome.receiptError = 'corpus_receipt_queue_full';
+          } else {
+            const launch = this.launchWithDictationReceipt(msg);
+            active.set(submissionId, launch);
+            try { outcome = await launch; }
+            finally { active.delete(submissionId); }
+          }
+          this.deps.send({
+            type: 'dictationLaunchResult', submissionId,
+            ...(outcome.error || !outcome.result
+              ? { error: 'launch_failed' }
+              : outcome.receiptError
+                ? { error: outcome.receiptError }
+                : { taskId: outcome.result.task.id }),
           });
-        } catch (e) { err = e; }
-        return handleLaunchResult(this.deps.send, excerpt, result, err);
+        } else outcome = await this.launchWithDictationReceipt(msg);
+        return handleLaunchResult(this.deps.send, submissionId ? 'Dictated task' : msg.prompt.slice(0, 40), outcome.result, outcome.error);
       }
 
       case 'relaunch': {

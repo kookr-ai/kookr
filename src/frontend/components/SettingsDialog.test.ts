@@ -159,7 +159,7 @@ describe('SettingsDialog tabs', () => {
     await flush();
 
     const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]'));
-    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Sharing', 'Hooks']);
+    expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(['General', 'Sharing', 'Hooks', 'Dictation corpus']);
 
     const generalTab = tabs[0];
     const sharingTab = tabs[1];

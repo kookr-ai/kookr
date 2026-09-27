@@ -10,6 +10,7 @@ import { listSchedules } from '../schedule-api.js';
 import type { ScheduleListResponse } from '../../shared/protocol.js';
 import { DeltaSequenceTracker } from '../delta-sequence.js';
 import { measureSync } from '../debug-timeline.js';
+import { acknowledgeDictationLaunch, resumeDictationCorpusRetries } from '../store/dictation-corpus.js';
 
 // Stale-socket callbacks are ignored silently in the controller; here we count
 // them and emit at most one compact telemetry event per window so a burst of
@@ -196,6 +197,7 @@ export function useWebSocket() {
         hasFetchedSchedulesForConnectionRef.current = false;
       },
       onEstablished: () => {
+        resumeDictationCorpusRetries();
         useKookrStore.getState().setConnected(true);
         // Track reconnect if we were disconnected
         if (disconnectedAtRef.current !== null) {
@@ -301,6 +303,16 @@ export function useWebSocket() {
                 };
                 const sent = controllerRef.current?.send(JSON.stringify(resync)) ?? false;
                 if (sent) recordClientMessageForSend(resync);
+              }
+              break;
+            }
+            case 'dictationLaunchResult': {
+              if (typeof msg.submissionId === 'string') {
+                acknowledgeDictationLaunch(
+                  msg.submissionId,
+                  typeof msg.taskId === 'string' ? msg.taskId : undefined,
+                  typeof msg.error === 'string' ? msg.error : undefined,
+                );
               }
               break;
             }

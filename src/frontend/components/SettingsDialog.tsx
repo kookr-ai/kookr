@@ -32,6 +32,7 @@ import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
 import { applyQuotaHeadroomThreshold } from '../store/quota-headroom-threshold.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
+import { DictationCorpusPanel } from './DictationCorpusPanel.js';
 import type {
   RelayConnectionStatus,
 } from '../../shared/contracts/relay-connection.js';
@@ -114,9 +115,9 @@ interface Props {
   focusField?: SettingsFocusField;
 }
 
-type SettingsTab = 'general' | 'sharing' | 'hooks';
+type SettingsTab = 'general' | 'sharing' | 'hooks' | 'corpus';
 
-const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'sharing', 'hooks'];
+const SETTINGS_TABS: readonly SettingsTab[] = ['general', 'sharing', 'hooks', 'corpus'];
 
 // Searchable terms per tab, used only to decide which tab to switch to when the
 // active tab has no visible match for the search query. The actual show/hide of
@@ -144,6 +145,7 @@ const SETTINGS_SEARCH_INDEX: Record<SettingsTab, readonly string[]> = {
   hooks: [
     'hooks', 'sessionstart', 'read-only',
   ],
+  corpus: ['dictation corpus', 'recordings', 'transcript', 'correction', 'review', 'export'],
 };
 
 // Which tab hosts each focusable field. Extend this when SettingsFocusField
@@ -1069,7 +1071,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
         <div className="dialog-tabs settings-dialog-tabs" role="tablist" aria-label="Settings sections">
           {SETTINGS_TABS.map((tab) => {
             const isActive = activeTab === tab;
-            const label = tab === 'general' ? 'General' : tab === 'sharing' ? 'Sharing' : 'Hooks';
+            const label = tab === 'general' ? 'General' : tab === 'sharing' ? 'Sharing' : tab === 'hooks' ? 'Hooks' : 'Dictation corpus';
             return (
               <button
                 key={tab}
@@ -1841,6 +1843,12 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                   </div>
                 </>
               )}
+            </div>
+          )}
+
+          {activeTab === 'corpus' && (
+            <div role="tabpanel" id="settings-panel-corpus" aria-labelledby="settings-tab-corpus">
+              <DictationCorpusPanel />
             </div>
           )}
 

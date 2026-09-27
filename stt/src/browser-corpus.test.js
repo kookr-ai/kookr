@@ -6,7 +6,7 @@ test('omits oversized recordings entirely and can capture the next recording', (
   const capture = new BrowserCorpusCapture(writer, { name: 'qwen' }, {}, { warn: vi.fn() });
   capture.append(Buffer.alloc(16000 * 2 * 300));
   capture.append(Buffer.alloc(2));
-  capture.finish('Whole transcript', 'fr');
+  expect(capture.finish('Whole transcript', 'fr')).toEqual({ recordingId: null, complete: false, status: 'omitted', reason: 'recording_omitted' });
   expect(writer.write).not.toHaveBeenCalled();
   capture.append(Buffer.from([0, 1]));
   capture.finish('Next recording', 'fr');

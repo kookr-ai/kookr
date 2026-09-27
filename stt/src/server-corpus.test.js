@@ -36,11 +36,11 @@ async function control(ws, message, response) {
   return pending;
 }
 
-async function connect() {
+async function connect(owner) {
   const ws = new WebSocket(`ws://127.0.0.1:${stt.httpServer.address().port}`);
   clients.push(ws);
   await once(ws, 'open');
-  await control(ws, { type: 'config', language: 'fr', progressive: true }, (f) => f.type === 'config_ack');
+  await control(ws, { type: 'config', language: 'fr', progressive: true, ...(owner ? { corpus_owner: owner } : {}) }, (f) => f.type === 'config_ack');
   return ws;
 }
 
@@ -113,8 +113,10 @@ test('saves full original PCM once with final text despite rolling-window trimmi
   ws.send(JSON.stringify({ type: 'stop' }));
   await control(ws, { type: 'ping' }, (f) => f.type === 'pong');
   expect(final.text).toBe('Bonjour. Kookr.');
+  expect(final.corpus).toMatchObject({ recordingId: expect.any(String), ownerToken: expect.any(String), complete: true, status: 'pending' });
   const saved = await records();
   expect(saved).toHaveLength(1);
+  expect(saved[0].record.id).toBe(final.corpus.recordingId);
   expect(saved[0].record.metadata).toMatchObject({
     source: 'browser', status: 'success', transcript: final.text, durationSeconds: 3,
     language: 'fr', model: { requested: 'test-model', recognition: { vocabulary: 'Kookr' } },
@@ -132,6 +134,7 @@ test('disabled collection writes nothing and preserves transcription', async () 
   ws.send(Buffer.alloc(32000));
   const final = await control(ws, { type: 'stop' }, (f) => f.is_final);
   expect(final.text).toBe('Bonjour Kookr.');
+  expect(final.corpus).toEqual({ recordingId: null, complete: false, status: 'omitted', reason: 'collection_disabled' });
   expect(await records()).toEqual([]);
 });
 
@@ -186,8 +189,26 @@ test('inference failure is distinguished from a successful empty prediction', as
   await start();
   const ws = await connect();
   ws.send(Buffer.alloc(32000));
-  await control(ws, { type: 'stop' }, (f) => f.type === 'error');
+  const error = await control(ws, { type: 'stop' }, (f) => f.type === 'error');
+  expect(error.corpus).toMatchObject({ recordingId: expect.any(String), complete: false, status: 'pending' });
   const saved = await records();
   expect(saved).toHaveLength(1);
   expect(saved[0].record.metadata).toMatchObject({ status: 'error', errorCode: 'inference_failed' });
+});
+
+
+test('recording ownership is fixed before audio and late config cannot retarget its annotation', async () => {
+  await start();
+  const owner = { draftId: 'launch:draft-one', field: 'prompt' };
+  const ws = await connect(owner);
+  ws.send(Buffer.alloc(32000));
+  await control(ws, { type: 'config', corpus_owner: { draftId: 'launch:other-tab', field: 'criteria' } }, (f) => f.type === 'config_ack');
+  const final = await control(ws, { type: 'stop' }, (f) => f.is_final);
+  await records();
+  const view = await stt.transcriptionCorpus.api.get(final.corpus.recordingId);
+  expect(view.owner).toEqual(owner);
+  expect(view.archive).toEqual({ status: 'saved', complete: true });
+  const body = { operationId: 'submitted', kind: 'submission', ownerToken: final.corpus.ownerToken, ...owner,
+    submissionId: 'launch-attempt', recordingIds: [final.corpus.recordingId], beforeText: '', deliveredText: final.text, submittedText: 'Edited in original draft' };
+  expect((await stt.transcriptionCorpus.api.annotate(final.corpus.recordingId, body)).annotation.submittedText).toBe('Edited in original draft');
 });

@@ -16,12 +16,15 @@ import { track } from '../telemetry.js';
 import { copyText } from '../clipboard.js';
 import { formatShortcutBinding, type ShortcutBinding } from '../../shared/contracts/shortcut-bindings.js';
 
+import type { DictationDelivery, DictationField } from '../store/dictation-corpus.js';
+
 interface Props {
   inputId: string;
   /** Stable draft/task identity, separate from the DOM shortcut input ID. */
   recoveryKey?: string;
   recoveryLabel?: string;
-  onTranscript: (text: string) => void;
+  onTranscript: (text: string, delivery: DictationDelivery) => void;
+  corpusOwner?: { draftId: string; field: DictationField };
   /** Keep launch controls aware of capture and unresolved partial text. */
   onPendingChange?: (pending: boolean) => void;
   onRecoveryResolved?: () => void;
@@ -60,7 +63,7 @@ const AUDIO_SIGNAL_LABELS: Record<UseSTTResult['audioSignal']['status'], string>
 };
 const METER_BAR_SCALES = [0.45, 0.65, 0.85, 1, 0.85, 0.65, 0.45];
 
-export function VoiceInputButton({ inputId, recoveryKey = inputId, recoveryLabel = 'this input', onTranscript, onPendingChange, onRecoveryResolved, disabled, shortcutBinding }: Props) {
+export function VoiceInputButton({ inputId, recoveryKey = inputId, recoveryLabel = 'this input', corpusOwner, onTranscript, onPendingChange, onRecoveryResolved, disabled, shortcutBinding }: Props) {
   const signalId = useId();
   const [copyStatus, setCopyStatus] = useState('');
   const sttUrl = useKookrStore((s) => s.sttUrl);
@@ -68,7 +71,7 @@ export function VoiceInputButton({ inputId, recoveryKey = inputId, recoveryLabel
   const setActiveSTTInput = useKookrStore((s) => s.setActiveSTTInput);
   const language = useKookrStore((s) => s.sttLanguage);
   const setLanguage = useKookrStore((s) => s.setSTTLanguage);
-  const { state, transcript, error, degraded, retrying, elapsed, audioSignal, start, stop, retryHealth, recovery, restoreRecovery, discardRecovery } = useSTT(sttUrl, language, onTranscript, recoveryKey);
+  const { state, transcript, error, degraded, retrying, elapsed, audioSignal, start, stop, retryHealth, recovery, restoreRecovery, discardRecovery } = useSTT(sttUrl, language, onTranscript, recoveryKey, corpusOwner);
 
   const busy = state === 'starting' || state === 'recording' || state === 'processing';
   useLayoutEffect(() => {

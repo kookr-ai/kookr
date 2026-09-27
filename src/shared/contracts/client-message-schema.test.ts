@@ -771,3 +771,10 @@ function extractDocumentedWsTypes(markdown: string, heading: string): string[] {
     .map((row) => row[1])
     .filter((type) => type !== 'type');
 }
+
+
+test('dictation submission correlation requires a UUID and survives parsing', () => {
+  const message = { type: 'launch', prompt: 'edited', cwd: '/tmp', dictationSubmissionId: '5b7ee799-01a1-4e23-8e92-f049cbdd3b5d' };
+  expect(ClientMessageSchema.parse(message)).toEqual(message);
+  expect(ClientMessageSchema.safeParse({ ...message, dictationSubmissionId: '../other' }).success).toBe(false);
+});

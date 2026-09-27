@@ -1,0 +1,29 @@
+.dictation-corpus { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.dictation-corpus h4, .dictation-corpus h5, .dictation-corpus p { margin: 0; }
+.dictation-corpus h5 { margin-bottom: 6px; color: var(--text-bright); font-size: 12px; }
+.corpus-help { color: var(--text-secondary); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.corpus-warning, .corpus-error { font-size: 12px; line-height: 1.5; color: var(--amber); }
+.corpus-error { color: var(--red); }
+.corpus-record { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; border-top: 1px solid var(--border); min-width: 0; }
+.corpus-record-heading { display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; align-items: baseline; font-size: 12px; }
+.corpus-record-heading h4 { color: var(--text-bright); }
+.corpus-record audio { width: 100%; }
+.corpus-comparison { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.dictation-corpus .corpus-field { margin-bottom: 0; display: flex; flex-direction: column; gap: 6px; min-width: 0; font-size: 12px; color: var(--text-bright); }
+.corpus-field textarea, .corpus-field select { width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 6px; padding: 8px; color: var(--text-bright); background: var(--bg-input); font: inherit; }
+.corpus-field textarea { resize: vertical; min-height: 108px; line-height: 1.5; }
+.corpus-field :focus-visible { outline: 2px solid var(--teal); outline-offset: 2px; }
+.corpus-text { padding: 10px; border-radius: 6px; background: var(--bg-input); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit; font-size: 12px; line-height: 1.5; max-height: 300px; overflow-y: auto; margin: 0; }
+.dictation-corpus .corpus-confirm { flex-direction: row; margin-bottom: 0; display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 1.5; }
+.corpus-confirm input { margin-top: 3px; flex-shrink: 0; }
+.corpus-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.corpus-export { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; }
+.corpus-export .dictation-corpus .corpus-field { margin-bottom: 0; flex: 1; min-width: 200px; }
+.corpus-details { border-top: 1px solid var(--border-dim); padding-top: 10px; font-size: 12px; }
+.corpus-details summary { cursor: pointer; margin-bottom: 8px; color: var(--text-bright); }
+.corpus-submission { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.corpus-delete, .corpus-conflict { padding: 12px; border: 1px solid var(--border); border-radius: 6px; display: flex; flex-direction: column; gap: 10px; font-size: 12px; }
+@media (max-width: 600px) { .corpus-comparison { grid-template-columns: minmax(0, 1fr); } }
+
+.settings-dialog-tabs { overflow-x: auto; }
+.settings-dialog-tabs .dialog-tab { flex-shrink: 0; }

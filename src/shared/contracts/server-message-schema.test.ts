@@ -45,6 +45,7 @@ const workspaceView = {
 };
 
 const serverMessageCases = [
+  serverMessageCase({ type: 'dictationLaunchResult', submissionId: '5b7ee799-01a1-4e23-8e92-f049cbdd3b5d', taskId: 'task-1' }),
   serverMessageCase({
     type: 'snapshot',
     agents: [],

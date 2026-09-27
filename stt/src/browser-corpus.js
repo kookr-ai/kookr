@@ -30,6 +30,7 @@ export class BrowserCorpusCapture {
     this.pipeline = pipeline;
     this.logger = logger;
     this.generation = 0;
+    this.owner = null;
     this.discard();
   }
 
@@ -41,6 +42,15 @@ export class BrowserCorpusCapture {
     this.omitted = false;
     this.recognition = null;
     this.inferenceCount = 0;
+  }
+
+  setOwner(owner) {
+    // A config sent after the first sample cannot retarget the recording.
+    if (this.bytes || this.omitted) return;
+    this.owner = owner && typeof owner.draftId === 'string'
+      && /^[A-Za-z0-9_.:-]{1,200}$/.test(owner.draftId)
+      && ['prompt', 'criteria'].includes(owner.field)
+      ? { draftId: owner.draftId, field: owner.field } : null;
   }
 
   append(bytes) {
@@ -71,10 +81,20 @@ export class BrowserCorpusCapture {
 
   finish(transcript, language, status = 'success', errorCode = null) {
     if (!this.writer.enabled || this.omitted || this.bytes === 0) {
+      const reason = !this.writer.enabled ? 'collection_disabled'
+        : this.omitted ? 'recording_omitted' : 'empty_audio';
       this.discard();
-      return;
+      return { recordingId: null, complete: false, status: 'omitted', reason };
     }
+    const identity = this.writer.reserve?.(this.owner);
+    if (this.writer.reserve && !identity) {
+      this.discard();
+      return { recordingId: null, complete: false, status: 'failed', reason: 'corpus_queue_full' };
+    }
+    const complete = status === 'success';
     const record = {
+      id: identity?.recordingId,
+      complete,
       audio: pcmToWav(Buffer.concat(this.chunks, this.bytes)),
       format: 'wav',
       metadata: {
@@ -95,5 +115,6 @@ export class BrowserCorpusCapture {
     // Local persistence is deliberately outside the finalization deadline.
     // The writer bounds queued work and isolates filesystem failures.
     void this.writer.write(record);
+    return { ...identity, complete, status: 'pending' };
   }
 }

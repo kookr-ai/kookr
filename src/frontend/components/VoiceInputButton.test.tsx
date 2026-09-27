@@ -821,6 +821,27 @@ describe('VoiceInputButton STT health gating', () => {
     expect(useKookrStore.getState().activeSTTInputId).toBeNull();
   });
 
+  test('binds corpus ownership before audio and delivers pending identity without waiting for archive persistence', async () => {
+    const onTranscript = vi.fn();
+    await act(async () => root.render(<VoiceInputButton inputId="corpus" corpusOwner={{ draftId: 'owned-draft', field: 'criteria' }} onTranscript={onTranscript} />));
+    await click(container.querySelector('button')!);
+    const ws = FakeSTTWebSocket.instances[0];
+    act(() => ws.onopen?.());
+    expect(JSON.parse(ws.send.mock.calls[0][0])).toMatchObject({ corpus_owner: { draftId: 'owned-draft', field: 'criteria' } });
+    deliver(ws, { type: 'transcription', text: 'Tests pass', is_final: true, corpus: { recordingId: 'record-id', ownerToken: 'secret', complete: true, status: 'pending' } });
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Tests pass', expect.objectContaining({ recordingId: 'record-id', ownerToken: 'secret', complete: true, status: 'pending' }));
+  });
+
+  test('explicitly restored error-frame audio retains its identity while remaining incomplete', async () => {
+    const onTranscript = vi.fn();
+    const button = await renderButton(onTranscript);
+    await click(button);
+    deliver(FakeSTTWebSocket.instances[0], { type: 'error', error: 'Finalization failed', partial_text: 'Useful partial', corpus: { recordingId: 'partial-record', ownerToken: 'secret', complete: false, status: 'pending' } });
+    const restore = Array.from(container.querySelectorAll('button')).find(control => control.textContent?.startsWith('Restore to'))!;
+    await click(restore);
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Useful partial', expect.objectContaining({ recordingId: 'partial-record', complete: false }));
+  });
+
   test('previews partial speech and commits a final result once, then closes the socket', async () => {
     const onTranscript = vi.fn();
     const stream = createFakeMediaStream();
@@ -840,7 +861,7 @@ describe('VoiceInputButton STT health gating', () => {
     expect(ws.readyState).toBe(FakeSTTWebSocket.OPEN);
     deliver(ws, { type: 'transcription', text: 'Corrige le problème.', is_final: true });
     act(() => queuedMessage?.({ data: JSON.stringify({ type: 'transcription', text: 'Duplicate', is_final: true }) }));
-    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Corrige le problème.');
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Corrige le problème.', expect.objectContaining({ recordingId: null, complete: false, status: 'omitted' }));
     expect(ws.readyState).toBe(FakeSTTWebSocket.CLOSED);
     expect(container.querySelector('[role="status"]')).toBeNull();
     expect(useKookrStore.getState().activeSTTInputId).toBeNull();
@@ -907,7 +928,7 @@ describe('VoiceInputButton STT health gating', () => {
     expect(button.className).toContain('processing');
     deliver(ws, { type: 'transcription', text: 'Réponse finale.', is_final: true });
     await act(async () => { vi.advanceTimersByTime(10_000); });
-    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Réponse finale.');
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('Réponse finale.', expect.objectContaining({ recordingId: null, complete: false, status: 'omitted' }));
     expect(button.className).toContain('idle');
   });
 
@@ -976,7 +997,7 @@ describe('VoiceInputButton STT health gating', () => {
     act(() => vi.advanceTimersByTime(14_999));
     expect(ws.readyState).toBe(FakeSTTWebSocket.OPEN);
     deliver(ws, { type: 'transcription', is_final: true, text: 'All captured words' });
-    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('All captured words');
+    expect(onTranscript).toHaveBeenCalledExactlyOnceWith('All captured words', expect.objectContaining({ recordingId: null, complete: false, status: 'omitted' }));
   });
 
   test('fails truthfully when worklet flushing hangs and rejects stale flush messages after unmount', async () => {

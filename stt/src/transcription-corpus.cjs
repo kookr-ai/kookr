@@ -7,6 +7,7 @@
  */
 const fs = require('node:fs/promises');
 const { createHash, randomUUID } = require('node:crypto');
+const { createCorpusApi } = require('./corpus-api.cjs');
 const { homedir } = require('node:os');
 const path = require('node:path');
 
@@ -63,6 +64,35 @@ function createTranscriptionCorpus(options = {}) {
   const counts = { written: 0, skipped: 0, failed: 0 };
   let pending = 0;
   let tail = Promise.resolve();
+  const reservations = new Map();
+
+  function reserve(owner = null) {
+    if (!config.enabled) return null;
+    // Only terminal states are evicted; admitted audio writes stay addressable.
+    if (reservations.size >= 512) {
+      const oldest = [...reservations].find(([, value]) => value.status !== 'pending');
+      if (oldest) reservations.delete(oldest[0]);
+      else return null;
+    }
+    const id = randomUUID();
+    const ownerToken = randomUUID();
+    const validOwner = owner && typeof owner.draftId === 'string'
+      && /^[A-Za-z0-9_.:-]{1,200}$/.test(owner.draftId)
+      && ['prompt', 'criteria'].includes(owner.field);
+    const state = {
+      id, ownerToken, status: 'pending', complete: false,
+      recordedAt: new Date().toISOString(), metadata: null,
+      owner: validOwner ? { draftId: owner.draftId, field: owner.field,
+        tokenHash: createHash('sha256').update(ownerToken).digest('hex') } : null,
+    };
+    reservations.set(id, state);
+    return { recordingId: id, ownerToken };
+  }
+
+  function outcome(id, status, reason) {
+    const state = reservations.get(id);
+    if (state && !state.deleted) Object.assign(state, { status, ...(reason ? { reason } : {}) });
+  }
 
   function diagnostic(code) {
     // Filesystem errors can contain paths or input data. Log only fixed codes.
@@ -78,8 +108,10 @@ function createTranscriptionCorpus(options = {}) {
   async function persist(record) {
     let temporary;
     try {
-      const id = randomUUID();
-      const recordedAt = new Date().toISOString();
+      const id = record.id ?? randomUUID();
+      const state = reservations.get(id);
+      if (state?.deleted) return null;
+      const recordedAt = state?.recordedAt ?? new Date().toISOString();
       const dateDirectory = path.join(config.directory, recordedAt.slice(0, 10));
       const destination = path.join(dateDirectory, id);
       const filename = `audio.${record.format}`;
@@ -94,12 +126,14 @@ function createTranscriptionCorpus(options = {}) {
           sha256: createHash('sha256').update(record.audio).digest('hex'),
         },
         reference: null,
+        ...(state ? { owner: state.owner, complete: state.complete } : {}),
       }, null, 2) + '\n';
 
       await ensureCorpusDirectory(config.directory, { fileSystem: io });
       const disk = await io.statfs(config.directory, { bigint: true });
       const requiredBytes = BigInt(record.audio.length + Buffer.byteLength(document));
       if (BigInt(disk.bavail) * BigInt(disk.bsize) - requiredBytes < DISK_RESERVE_BYTES) {
+        outcome(record.id, 'failed', 'corpus_disk_reserve');
         return await skip('corpus_disk_reserve');
       }
       await ensureCorpusDirectory(dateDirectory, { fileSystem: io });
@@ -108,13 +142,16 @@ function createTranscriptionCorpus(options = {}) {
       temporary = pendingDirectory;
       await io.writeFile(path.join(temporary, filename), record.audio, { mode: 0o600, flag: 'wx' });
       await io.writeFile(path.join(temporary, 'record.json'), document, { mode: 0o600, flag: 'wx' });
+      if (state?.deleted) return null;
       await io.rename(temporary, destination);
       temporary = undefined;
       counts.written++;
+      outcome(record.id, 'saved');
       return path.join(destination, 'record.json');
     } catch {
       counts.failed++;
       diagnostic('corpus_write_failed');
+      outcome(record.id, 'failed', 'corpus_write_failed');
       return null;
     } finally {
       if (temporary) {
@@ -126,21 +163,25 @@ function createTranscriptionCorpus(options = {}) {
 
   function write(record) {
     if (!config.enabled) return Promise.resolve(null);
-    if (pending >= MAX_PENDING_WRITES) return skip('corpus_queue_full');
+    const reject = (code) => { outcome(record?.id, 'failed', code); return skip(code); };
+    if (pending >= MAX_PENDING_WRITES) return reject('corpus_queue_full');
     let snapshot;
     try {
       if (!record || !Buffer.isBuffer(record.audio) || !FORMATS.has(record.format) || !validMetadata(record.metadata)) {
-        return skip('corpus_invalid_record');
+        return reject('corpus_invalid_record');
       }
-      if (record.audio.length > MAX_AUDIO_BYTES) return skip('corpus_audio_too_large');
+      if (record.audio.length > MAX_AUDIO_BYTES) return reject('corpus_audio_too_large');
       const metadata = JSON.stringify(record.metadata);
-      if (Buffer.byteLength(metadata) > MAX_METADATA_BYTES) return skip('corpus_metadata_too_large');
+      if (Buffer.byteLength(metadata) > MAX_METADATA_BYTES) return reject('corpus_metadata_too_large');
       const storedMetadata = JSON.parse(metadata);
-      if (!validMetadata(storedMetadata)) return skip('corpus_invalid_record');
+      if (!validMetadata(storedMetadata)) return reject('corpus_invalid_record');
       // Callers may release or reuse their buffers immediately after submission.
-      snapshot = { audio: Buffer.from(record.audio), format: record.format, metadata: storedMetadata };
+      if (record.id && !reservations.has(record.id)) return reject('corpus_invalid_record');
+      snapshot = { audio: Buffer.from(record.audio), format: record.format, metadata: storedMetadata, id: record.id };
+      const state = reservations.get(record.id);
+      if (state) Object.assign(state, { metadata: storedMetadata, complete: record.complete === true });
     } catch {
-      return skip('corpus_invalid_record');
+      return reject('corpus_invalid_record');
     }
     pending++;
     const result = tail.then(() => persist(snapshot)).finally(() => { pending--; });
@@ -148,7 +189,8 @@ function createTranscriptionCorpus(options = {}) {
     return result;
   }
 
-  return { ...config, write, flush: () => tail, stats: () => ({ ...counts }) };
+  const api = createCorpusApi({ config, io, reservations, flush: () => tail });
+  return { ...config, write, reserve, api, flush: () => tail, stats: () => ({ ...counts }) };
 }
 
 module.exports = { getCorpusConfig, ensureCorpusDirectory, createTranscriptionCorpus };

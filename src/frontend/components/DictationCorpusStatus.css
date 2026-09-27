@@ -1,0 +1,16 @@
+.dictation-corpus-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+.dictation-corpus-status-entry {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dictation-corpus-status small {
+  color: var(--text-secondary);
+}

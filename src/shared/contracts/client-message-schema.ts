@@ -148,6 +148,7 @@ const ClientMessageSchemaImpl = z.union([
   z.object({ type: z.literal('cancelSnooze'), agentId: z.string(), taskId: z.string().optional() }),
   z.object({
     type: z.literal('launch'),
+    dictationSubmissionId: z.string().uuid().optional(),
     prompt: z.string(),
     cwd: z.string(),
     criteria: z.string().optional(),
