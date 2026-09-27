@@ -3,7 +3,9 @@ import * as fs from 'node:fs/promises';
 import { networkInterfaces, tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:http';
+import { createServer, request } from 'node:http';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
 import { createTranscriptionCorpus, ensureCorpusApiToken, readCorpusApiToken } from './transcription-corpus.cjs';
 
@@ -478,4 +480,55 @@ test('transient credential publication failure recovers on retry while a loaded 
   expect(await corpus.api.initialize()).toBe(true);
   expect(await readCorpusApiToken(directory)).toBe(saved);
   expect(link).toHaveBeenCalledTimes(2);
+});
+
+
+test.each(['true', 'false'])('malformed raw HTTP targets leave an isolated corpus service alive (collection=%s)', async (enabled) => {
+  const { directory } = await fixture();
+  const modulePath = fileURLToPath(new URL('./transcription-corpus.cjs', import.meta.url));
+  const child = spawn(process.execPath, ['-e', `
+    const { createServer } = require('node:http');
+    const { createTranscriptionCorpus } = require(process.argv[1]);
+    const corpus = createTranscriptionCorpus({ env: {
+      KOOKR_STT_CORPUS: process.argv[3], KOOKR_STT_CORPUS_DIR: process.argv[2],
+    } });
+    // Match the actual speech server's async request handler: no outer catch
+    // can conceal an escaped rejection or keep the child alive artificially.
+    const server = createServer(async (req, res) => {
+      if (await corpus.api.handleHttp(req, res)) return;
+      res.writeHead(200); res.end('ordinary route');
+    });
+    server.listen(0, '127.0.0.1', () => process.send({ port: server.address().port }));
+    process.on('message', () => server.close(() => process.exit(0)));
+  `, modulePath, directory, enabled], { stdio: ['ignore', 'ignore', 'pipe', 'ipc'] });
+  const exited = once(child, 'exit');
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+  const raw = (port, target) => new Promise((resolve, reject) => {
+    const outgoing = request({ hostname: '127.0.0.1', port, path: target, agent: false }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => { body += chunk; });
+      response.on('end', () => resolve({ status: response.statusCode, body }));
+    });
+    outgoing.on('error', reject);
+    outgoing.end();
+  });
+  try {
+    const [{ port }] = await Promise.race([
+      once(child, 'message'),
+      exited.then(([code]) => { throw new Error(`Child exited before listening: ${code}; ${stderr}`); }),
+    ]);
+    expect(await raw(port, '//[')).toEqual({ status: 400, body: JSON.stringify({ error: 'corpus_invalid_request' }) });
+    expect(await raw(port, '/health')).toEqual({ status: 200, body: 'ordinary route' });
+    expect(await raw(port, '/corpus/capabilities')).toEqual({ status: 403, body: JSON.stringify({ error: 'corpus_proxy_required' }) });
+    expect(child.exitCode).toBeNull();
+    expect(await fs.readdir(directory)).toEqual([]);
+    child.send('stop');
+    expect(await exited).toEqual([0, null]);
+    expect(stderr).toBe('');
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    await exited;
+  }
 });

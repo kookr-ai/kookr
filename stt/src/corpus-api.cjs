@@ -315,13 +315,15 @@ function createCorpusApi({ config, io, reservations, flush, loadApiToken }) {
   }
 
   async function handleHttp(req, res) {
-    const url = new URL(req.url, 'http://localhost');
-    if (!url.pathname.startsWith('/corpus/')) return false;
     const json = (status, data) => {
       res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
       res.end(JSON.stringify(data));
     };
     try {
+      let url;
+      try { url = new URL(req.url, 'http://localhost'); }
+      catch { fail('corpus_invalid_request', 400); }
+      if (!url.pathname.startsWith('/corpus/')) return false;
       if (req.headers.origin || req.headers['x-kookr-corpus'] !== '1') fail('corpus_proxy_required', 403);
       // The marker prevents browser CSRF; possession of the private mount's
       // key authenticates the proxy even across Docker's network bridge.
