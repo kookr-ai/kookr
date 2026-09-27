@@ -4,7 +4,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { DictationCorpusPanel } from './DictationCorpusPanel.js';
 import { forgetDictationCorpusRecording } from '../store/dictation-corpus.js';
+import { REVIEW_DRAFT_PREFIX } from '../store/dictation-review-drafts.js';
 
+vi.mock('../store/dictation-tab.js', () => ({ dictationTabId: () => 'review-test-tab' }));
 vi.mock('./DictationCorpusStatus.js', () => ({ DictationCorpusStatus: () => null }));
 vi.mock('../store/dictation-corpus.js', () => ({ forgetDictationCorpusRecording: vi.fn() }));
 
@@ -57,10 +59,12 @@ async function status(value: string) {
     node.dispatchEvent(new Event('change', { bubbles: true }));
   });
 }
+async function reopen() { act(() => root.unmount()); root = createRoot(container); await render(); }
 async function render() { await act(async () => { root.render(<DictationCorpusPanel />); }); await flush(); }
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  localStorage.clear();
   currentRecord = recording(); postCalls = []; deletes = []; responseForPost = undefined;
   container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
@@ -165,6 +169,81 @@ describe('R19.5 later dictation review', () => {
     responseForPost = undefined; await click('Save review');
     expect(postCalls).toHaveLength(2);
     expect(postCalls[0]?.operationId).toBe(postCalls[1]?.operationId);
+  });
+
+  test('restores a failed Save after closing the panel and retries exactly the same operation', async () => {
+    responseForPost = () => json({ error: 'corpus_unavailable' }, 503);
+    await render(); await input('Human correction that must survive retry.'); await click('Save review');
+    const first = postCalls[0];
+    expect(Object.keys(localStorage).some((key) => key.startsWith(REVIEW_DRAFT_PREFIX))).toBe(true);
+    await reopen();
+    expect(container.querySelector('textarea')?.value).toBe('Human correction that must survive retry.');
+    expect(container.textContent).toContain('Review retry restored');
+    responseForPost = undefined; await click('Save review');
+    expect(postCalls[1]).toEqual(first);
+    expect(Object.keys(localStorage).filter((key) => key.startsWith(REVIEW_DRAFT_PREFIX))).toEqual([]);
+  });
+
+  test('retries a lost response idempotently when the saved operation is already the latest server review', async () => {
+    responseForPost = (body) => {
+      currentRecord = recording({ reviewRevision: 1, annotations: [{ ...body, kind: 'review', revision: 1, reviewRevision: 1, createdAt: '2026-09-27T10:00:00Z' }] });
+      throw new Error('Response lost');
+    };
+    await render(); await input('Already retained correction.'); await click('Save review');
+    await reopen();
+    expect(container.querySelector('textarea')?.value).toBe('Already retained correction.');
+    expect(button('Save review').disabled).toBe(false);
+    responseForPost = undefined; await click('Save review');
+    expect(postCalls[1]).toEqual(postCalls[0]);
+  });
+
+  test('restores listening only for the same complete audio and requires comparison against a newer review', async () => {
+    await render(); await input('Checked against the audio.'); await status('faithful');
+    await act(async () => { container.querySelector('audio')!.dispatchEvent(new Event('ended', { bubbles: true })); });
+    await act(async () => { container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+    responseForPost = () => json({ error: 'corpus_unavailable' }, 503);
+    await click('Save review'); await reopen();
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+    currentRecord = recording({ reviewRevision: 1, annotations: [{ kind: 'review', operationId: 'other-review', revision: 1, reviewRevision: 1,
+      correction: 'Newer correction.', status: 'candidate', listened: false, createdAt: '2026-09-27T10:00:00Z' }] });
+    await reopen();
+    expect(container.textContent).toContain('Newer correction.');
+    expect(container.querySelector('textarea')?.value).toBe('Checked against the audio.');
+    expect(button('Save review').disabled).toBe(true);
+    currentRecord = recording({ audio: { filename: 'audio.wav', bytes: 32044, sha256: 'b'.repeat(64) } });
+    await reopen();
+    expect(container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(false);
+    expect(button('Save review').disabled).toBe(true);
+  });
+
+  test('does not resurrect a discarded retry after reopen or a storage deletion in another tab', async () => {
+    responseForPost = () => json({ error: 'corpus_unavailable' }, 503);
+    await render(); await input('Temporary review.'); await click('Save review');
+    button('Discard review retry').focus();
+    await click('Discard review retry');
+    expect(document.activeElement).toBe(container.querySelector('textarea'));
+    await reopen();
+    expect(container.querySelector('textarea')?.value).toBe('Original prediction.');
+    await input('Second temporary review.'); await click('Save review');
+    const key = Object.keys(localStorage).find((item) => item.startsWith(REVIEW_DRAFT_PREFIX))!;
+    localStorage.removeItem(key);
+    await act(async () => { window.dispatchEvent(new StorageEvent('storage', { key, newValue: null })); });
+    await input('Visible only after external discard.');
+    expect(localStorage.getItem(key)).toBeNull();
+    await reopen();
+    expect(container.querySelector('textarea')?.value).toBe('Original prediction.');
+  });
+
+  test('a newer server review supersedes an older pending operation that was already saved', async () => {
+    responseForPost = () => json({ error: 'corpus_unavailable' }, 503);
+    await render(); await input('Old successful operation.'); await click('Save review');
+    currentRecord = recording({ reviewRevision: 2, annotations: [
+      { ...postCalls[0], kind: 'review', revision: 1, reviewRevision: 1, createdAt: '2026-09-27T10:00:00Z' },
+      { kind: 'review', operationId: 'new-review', revision: 2, reviewRevision: 2, correction: 'Fresher server correction.', status: 'candidate', listened: false, createdAt: '2026-09-27T10:01:00Z' },
+    ] });
+    await reopen();
+    expect(container.querySelector('textarea')?.value).toBe('Fresher server correction.');
+    expect(Object.keys(localStorage).filter((key) => key.startsWith(REVIEW_DRAFT_PREFIX))).toEqual([]);
   });
 
   test('preserves the local correction on a concurrent revision conflict and requires explicit reconciliation', async () => {

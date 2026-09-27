@@ -247,7 +247,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     }
     submitAttemptRef.current += 1;
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
-    const corpusSubmissionId = submitDictationDraft(dictationId, [{ field: 'prompt', context: dictationOwner, text: prompt }]);
+    const corpusSubmissionId = submitDictationDraft(dictationId, [{ field: 'prompt', text: prompt }]);
     const sent = send({
       type: 'launch',
       ...(corpusSubmissionId ? { dictationSubmissionId: corpusSubmissionId } : {}),

@@ -6,6 +6,7 @@ import { test, expect } from './dictation-corpus-fixtures.js';
 import { getTasks, resetServer } from './battle-helpers.js';
 
 interface Annotation {
+  operationId?: string;
   kind: 'submission' | 'task' | 'review';
   submittedText?: string;
   beforeText?: string;
@@ -250,6 +251,53 @@ test('concurrent tabs retain separate recording owners and associate only their 
   await second.close();
 });
 
+for (const launcher of ['dialog', 'quick launch'] as const) {
+  test(`${launcher} retains completed recording links when the task directory changes`, async ({ page, request, corpus }) => {
+    await home(page);
+    if (launcher === 'dialog') await page.locator('.btn-launch').click();
+    else await page.keyboard.press('Alt+l');
+    const input = launcher === 'dialog'
+      ? page.locator('#launch-task-description') : page.locator('.quick-launch-input');
+    const field = launcher === 'dialog' ? input.locator('..') : page.locator('.quick-launch-draft');
+    await input.fill('Contexte saisi avant la dictée.');
+    await dictate(field, corpus.prediction);
+    const recordingId = await deliveredRecordingId(page);
+    const authored = `Contexte saisi avant la dictée. ${corpus.prediction}`;
+    await expect(input).toHaveValue(authored);
+    const nextCwd = '/tmp/corpus-changed-execution-directory';
+    if (launcher === 'dialog') await page.locator('#launch-task-cwd').fill(nextCwd);
+    else {
+      // Exercise the existing clipboard-path control without reading or
+      // overwriting the operator's system clipboard.
+      await page.evaluate(value => {
+        Object.defineProperty(navigator.clipboard, 'readText', { configurable: true, value: async () => value });
+      }, nextCwd);
+      await page.getByRole('button', { name: 'Use clipboard path', exact: true }).click();
+      await expect(page.locator('.quick-launch-cwd')).toHaveText(nextCwd);
+    }
+    await expect(input).toHaveValue(authored);
+    const submitted = 'Contexte conservé. Dictée corrigée après le changement de dossier.';
+    await input.fill(submitted);
+    if (launcher === 'dialog') await page.getByRole('button', { name: 'Launch', exact: true }).click();
+    else await input.press('Enter');
+    await expect.poll(async () => (await getTasks(request)).length).toBe(1);
+    const [task] = await getTasks(request);
+    expect(task.cwd).toBe(nextCwd);
+    await expect.poll(async () => (await recordings(request))[0]?.annotations.some(annotation => annotation.kind === 'task')).toBe(true);
+    const [retained] = await recordings(request);
+    expect(retained.id).toBe(recordingId);
+    expect(retained.annotations.filter(annotation => annotation.kind === 'submission')).toEqual([
+      expect.objectContaining({ submittedText: submitted, beforeText: 'Contexte saisi avant la dictée.', deliveredText: corpus.prediction, recordingIds: [recordingId] }),
+    ]);
+    expect(retained.annotations.filter(annotation => annotation.kind === 'task')).toEqual([
+      expect.objectContaining({ taskId: task.id }),
+    ]);
+    const article = await review(page, recordingId);
+    await expect(article).toContainText(submitted);
+    await expect(article).toContainText(task.id);
+  });
+}
+
 test('a failed archive never blocks launch or exports an audio/reference pair', async ({ page, request, corpus }) => {
   await corpus.control('fail');
   await home(page);
@@ -410,3 +458,50 @@ test('later reformulation review stays a candidate and deletion removes only thi
   expect((await request.get(`/api/stt/corpus/records/${record.id}/audio`)).status()).toBe(404);
   expect((await request.get(`/api/stt/corpus/records/${record.id}`)).status()).toBe(404);
 });
+
+for (const savedBeforeFailure of [false, true]) {
+  test(`a failed review save survives close and reload and retries once (${savedBeforeFailure ? 'response lost after commit' : 'request rejected before commit'})`, async ({ page, request, corpus }) => {
+    await home(page);
+    await page.keyboard.press('Alt+l');
+    await dictate(page.locator('.quick-launch-draft'), corpus.prediction);
+    await page.locator('.quick-launch-input').press('Enter');
+    await expect.poll(async () => (await recordings(request))[0]?.annotations.some(annotation => annotation.kind === 'task')).toBe(true);
+    const [record] = await recordings(request);
+    let article = await review(page, record.id);
+    const correction = 'Correction personnelle conservée malgré une réponse réseau perdue.';
+    await article.getByRole('textbox', { name: 'Correction for this recording' }).fill(correction);
+    await article.getByRole('combobox', { name: 'Review status' }).selectOption('reformulation');
+
+    const reviewRequests: Array<{ operationId: string; correction: string; expectedRevision: number }> = [];
+    await page.route(`**/api/stt/corpus/records/${record.id}/annotations`, async route => {
+      const body = route.request().postDataJSON() as { kind: string; operationId: string; correction: string; expectedRevision: number };
+      if (body.kind !== 'review') { await route.continue(); return; }
+      reviewRequests.push(body);
+      if (reviewRequests.length === 1) {
+        if (savedBeforeFailure) {
+          // The real archive commits revision 1, but the browser never receives
+          // its response. The persisted operation must be retried after reload.
+          const saved = await route.fetch();
+          expect(saved.ok()).toBeTruthy();
+          await route.abort('failed');
+        } else await route.fulfill({ status: 503, json: { error: 'controlled_corpus_unavailable' } });
+      } else await route.continue();
+    });
+    await article.getByRole('button', { name: 'Save review', exact: true }).click();
+    await expect(article).toContainText('Review was not confirmed saved.');
+    await expect.poll(async () => (await recordings(request))[0]?.annotations.filter(annotation => annotation.kind === 'review').length).toBe(savedBeforeFailure ? 1 : 0);
+    await page.getByRole('dialog', { name: 'Settings', exact: true }).getByRole('button', { name: 'Close', exact: true }).last().click();
+    await page.reload();
+    await expect(page.locator('.health-dot-connected')).toBeVisible();
+    article = await review(page, record.id);
+    await expect(article.getByRole('textbox', { name: 'Correction for this recording' })).toHaveValue(correction);
+    await expect(article.getByRole('combobox', { name: 'Review status' })).toHaveValue('reformulation');
+    await article.getByRole('button', { name: 'Save review', exact: true }).click();
+    await expect(article).toContainText('Review saved · revision 1');
+    expect(reviewRequests).toHaveLength(2);
+    expect(reviewRequests[1]).toEqual(reviewRequests[0]);
+    const reviews = (await recordings(request))[0].annotations.filter(annotation => annotation.kind === 'review');
+    expect(reviews).toHaveLength(1);
+    expect(reviews[0]).toMatchObject({ operationId: reviewRequests[0].operationId, correction, status: 'reformulation' });
+  });
+}

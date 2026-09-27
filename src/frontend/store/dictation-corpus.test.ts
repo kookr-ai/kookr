@@ -17,7 +17,7 @@ afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals()
 describe('dictation launch provenance', () => {
   test('retains insertion facts and raw field snapshots separately; task requires its acknowledgement', async () => {
     corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, 'typed prefix', 'automatic text', complete);
-    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: '  corrected text plus typed instruction  ' }]);
+    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: '  corrected text plus typed instruction  ' }]);
     expect(id).toBeTruthy();
     const entry = corpus.listDictationSubmissions()[0];
     expect(entry.fields[0].submittedText).toBe('  corrected text plus typed instruction  ');
@@ -30,20 +30,27 @@ describe('dictation launch provenance', () => {
     expect(entry.fields[0]).not.toHaveProperty('reference');
   });
 
-  test('deduplicates final delivery and does not select another context or field', () => {
-    const owner = { draftId: 'draft', field: 'prompt' as const, context: 'one' };
+  test('deduplicates delivery and keeps completed clips in their own draft and field across directory edits', () => {
+    const owner = { draftId: 'draft', field: 'prompt' as const, context: 'directory-one' };
     corpus.retainDictation(owner, '', 'first', complete);
     corpus.retainDictation(owner, '', 'first', complete);
-    corpus.retainDictation({ ...owner, context: 'two' }, '', 'second', { ...complete, deliveryId: 'other', recordingId: 'record-two' });
-    expect(corpus.listDictationLinks()).toHaveLength(2);
-    expect(corpus.submitDictationDraft('different-draft', [{ field: 'prompt', context: 'one', text: 'wrong' }])).toBeUndefined();
-    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'corrected' }]);
-    expect(corpus.listDictationSubmissions().find(entry => entry.id === id)?.fields[0].recordings.map(link => link.recordingId)).toEqual(['record-one']);
+    corpus.retainDictation({ ...owner, context: 'directory-two' }, 'first', 'second', { ...complete, deliveryId: 'other', recordingId: 'record-two' });
+    corpus.retainDictation({ ...owner, field: 'criteria' }, '', 'criteria speech', { ...complete, deliveryId: 'criteria', recordingId: 'criteria-record' });
+    corpus.retainDictation({ ...owner, draftId: 'another-tab-draft' }, '', 'other draft', { ...complete, deliveryId: 'other-tab', recordingId: 'other-tab-record' });
+    expect(corpus.listDictationLinks()).toHaveLength(4);
+    expect(corpus.submitDictationDraft('different-draft', [{ field: 'prompt', text: 'wrong' }])).toBeUndefined();
+    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'first and second corrected' }]);
+    const field = corpus.listDictationSubmissions().find(entry => entry.id === id)?.fields[0];
+    expect(field?.recordings.map(link => link.recordingId)).toEqual(['record-one', 'record-two']);
+    expect(field?.recordings.map(link => link.context)).toEqual(['directory-one', 'directory-two']);
+    expect(field?.submittedText).toBe('first and second corrected');
+    const other = corpus.submitDictationDraft('another-tab-draft', [{ field: 'prompt', text: 'other draft edited' }]);
+    expect(corpus.listDictationSubmissions().find(entry => entry.id === other)?.fields[0].recordings.map(link => link.recordingId)).toEqual(['other-tab-record']);
   });
 
   test('pending save is retried idempotently after module restart', async () => {
     corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'correct words' }])!;
+    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'correct words' }])!;
     vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ error: 'corpus_pending' }), { status: 409 }));
     await corpus.retryDictationCorpus(id);
     expect(corpus.listDictationSubmissions()[0].status).toBe('pending');
@@ -59,7 +66,7 @@ describe('dictation launch provenance', () => {
 
   test('partial and unsupported results stay omitted and never post annotations', async () => {
     corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'partial', { deliveryId: 'partial', recordingId: null, complete: false, status: 'omitted', reason: 'incomplete_dictation' });
-    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'partial plus typed' }]);
+    const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'partial plus typed' }]);
     expect(id).toBeUndefined();
     await corpus.retryDictationCorpus();
     expect(corpus.listDictationSubmissions()).toEqual([]);
@@ -69,7 +76,7 @@ describe('dictation launch provenance', () => {
 
   test('failures and failed launches retain the attempt across reload without attaching a task', async () => {
     corpus.retainDictation({ draftId: 'draft', field: 'criteria', context: 'one' }, '', 'passes', complete);
-    const id = corpus.submitDictationDraft('draft', [{ field: 'criteria', context: 'one', text: 'all pass' }])!;
+    const id = corpus.submitDictationDraft('draft', [{ field: 'criteria', text: 'all pass' }])!;
     corpus.acknowledgeDictationLaunch(id, undefined, 'launch failed');
     vi.mocked(fetch).mockRejectedValue(new Error('offline'));
     await corpus.retryDictationCorpus(id);
@@ -83,7 +90,7 @@ describe('dictation launch provenance', () => {
     const owner = { draftId: 'draft', field: 'prompt' as const, context: 'one' };
     corpus.retainDictation(owner, 'typed', 'first', complete);
     corpus.retainDictation(owner, 'typed first', 'second', { ...complete, deliveryId: 'second', recordingId: 'record-two' });
-    corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'typed first second then add detail' }]);
+    corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'typed first second then add detail' }]);
     const field = corpus.listDictationSubmissions()[0].fields[0];
     expect(field.recordings.map(record => record.deliveredText)).toEqual(['first', 'second']);
     expect(field.recordings).toHaveLength(2);
@@ -93,7 +100,7 @@ describe('dictation launch provenance', () => {
 
 test('an acknowledgement arriving while submission persistence waits is not overwritten', async () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }])!;
   let release!: () => void;
   let entered!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -113,7 +120,7 @@ test('an acknowledgement arriving while submission persistence waits is not over
 
 test('receipt-only failure remains eligible for durable acknowledgement lookup', async () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }])!;
   corpus.acknowledgeDictationLaunch(id, undefined, 'corpus_task_receipt_pending');
   expect(corpus.listDictationSubmissions()[0].launchError).toBeUndefined();
   vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: 'actual-task', archive: { status: 'saved', complete: true } }), { status: 200 }));
@@ -132,7 +139,7 @@ test('malformed stored fields and incorrect nested ownership never enter the ret
 
 test('restored incomplete audio can retain candidate edits but never claims completeness', async () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', { ...complete, complete: false });
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }])!;
   vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } }), { status: 200 }));
   await corpus.retryDictationCorpus(id);
   expect(corpus.listDictationSubmissions()[0].fields[0].recordings[0].complete).toBe(false);
@@ -141,7 +148,7 @@ test('restored incomplete audio can retain candidate edits but never claims comp
 
 test('retry storage is bounded when many large submissions are made and never truncates a saved snapshot', () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  for (let index = 0; index < 60; index++) corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'x'.repeat(32_000) }]);
+  for (let index = 0; index < 60; index++) corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'x'.repeat(32_000) }]);
   const entries = corpus.listDictationSubmissions();
   expect(JSON.stringify([...corpus.listDictationLinks(), ...entries]).length * 2).toBeLessThan(corpus.MAX_CORPUS_RETRY_BYTES + 2000);
   expect(entries.some(entry => entry.status === 'omitted')).toBe(true);
@@ -151,14 +158,14 @@ test('retry storage is bounded when many large submissions are made and never tr
 test('LAN pages without randomUUID still submit a protocol-valid correlation UUID', () => {
   vi.stubGlobal('crypto', undefined);
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }]);
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }]);
   expect(id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 });
 
 
 test.each(['collection_disabled', 'unsupported_external_service'])('%s never collects private field content into corpus retry storage', reason => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'private relaunch prompt' }, 'private typed prefix', 'private dictated words', { deliveryId: 'omitted', recordingId: null, complete: false, status: 'omitted', reason });
-  expect(corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'private relaunch prompt', text: 'private submitted correction' }])).toBeUndefined();
+  expect(corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'private submitted correction' }])).toBeUndefined();
   const corpusValues = Array.from({ length: localStorage.length }, (_, index) => localStorage.key(index)!).filter(key => key.startsWith('kookr:dictationCorpus:')).map(key => localStorage.getItem(key)).join('');
   for (const text of ['private relaunch prompt', 'private typed prefix', 'private dictated words', 'private submitted correction']) expect(corpusValues).not.toContain(text);
   expect(corpus.listDictationLinks()[0]).toMatchObject({ status: 'omitted', reason });
@@ -167,7 +174,7 @@ test.each(['collection_disabled', 'unsupported_external_service'])('%s never col
 
 test.each(['discard', 'delete'])('%s during a delayed acknowledgement lookup cannot resurrect retry data or post annotations', async action => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }])!;
   let release!: (response: Response) => void;
   const receipt = new Promise<Response>(resolve => { release = resolve; });
   vi.mocked(fetch).mockImplementation(async url => String(url).endsWith('/task') ? receipt : new Response('{}'));
@@ -184,7 +191,7 @@ test.each(['discard', 'delete'])('%s during a delayed acknowledgement lookup can
 
 test('discard during a pending submission POST prevents the following task association POST', async () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', complete);
-  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'edited' }])!;
   corpus.acknowledgeDictationLaunch(id, 'task');
   let release!: (response: Response) => void;
   const annotation = new Promise<Response>(resolve => { release = resolve; });
@@ -207,7 +214,7 @@ function retainPair() {
   const owner = { draftId: 'draft', field: 'prompt' as const, context: 'one' };
   corpus.retainDictation(owner, '', 'first prediction', complete);
   corpus.retainDictation(owner, 'first prediction', 'second prediction', { ...complete, deliveryId: 'second', recordingId: 'record-two' });
-  return corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'exact corrected field with typed additions' }])!;
+  return corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'exact corrected field with typed additions' }])!;
 }
 function postedAnnotations() {
   return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/annotations')).map(([url, init]) => ({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> }));
@@ -241,7 +248,7 @@ test('an annotation failure for the first retained clip does not suppress anothe
   const raw = corpus.listDictationSubmissions()[0];
   corpus.retainDictation({ draftId: 'draft', field: 'criteria', context: 'criteria' }, '', 'pass', { ...complete, deliveryId: 'criteria', recordingId: 'record-criteria' });
   corpus.discardDictationCorpusEntry(id);
-  const actualId = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: raw.fields[0].submittedText }, { field: 'criteria', context: 'criteria', text: 'all tests pass' }])!;
+  const actualId = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: raw.fields[0].submittedText }, { field: 'criteria', text: 'all tests pass' }])!;
   corpus.acknowledgeDictationLaunch(actualId, 'created-task');
   vi.mocked(fetch).mockImplementation(async url => String(url).endsWith('/records/record-one/annotations')
     ? new Response(JSON.stringify({ error: 'disk_write_failed' }), { status: 500 })
@@ -295,4 +302,17 @@ test('browser quota failures preserve bounded in-tab edits and failed deletion c
     await corpus.retryDictationCorpus(id);
     expect(corpus.listDictationSubmissions()).toEqual([]);
   } finally { Storage.prototype.setItem = originalSet; Storage.prototype.removeItem = originalRemove; }
+});
+
+
+test('a completed recording still receives the visible field text and acknowledged task after its CWD changes', async () => {
+  corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'old-working-directory' }, 'typed prefix', 'completed dictation', complete);
+  const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', text: 'typed prefix completed dictation' }]);
+  expect(id).toBeTruthy();
+  corpus.acknowledgeDictationLaunch(id!, 'task-in-new-directory');
+  await corpus.retryDictationCorpus(id);
+  const posts = postedAnnotations();
+  expect(posts.map(post => post.body.kind)).toEqual(['submission', 'task']);
+  expect(posts[0].body).toMatchObject({ draftId: 'draft', field: 'prompt', recordingIds: ['record-one'], beforeText: 'typed prefix', deliveredText: 'completed dictation', submittedText: 'typed prefix completed dictation' });
+  expect(posts[1].body).toMatchObject({ taskId: 'task-in-new-directory' });
 });

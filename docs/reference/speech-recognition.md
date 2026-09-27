@@ -206,7 +206,9 @@ an automatic transcript for each clip. Failed launches retain their submission
 attempt without claiming that a task was created.
 
 Recording links survive closing and reopening the launcher and reloading the
-tab. Other tabs own independent drafts. Archival status distinguishes pending,
+tab. Changing the launch directory also keeps the links for completed dictation
+whose text remains in the same draft and field. Other tabs own independent drafts.
+Archival status distinguishes pending,
 saved, failed and omitted data. Launch does not wait for disk writes. Retry
 retained submissions after temporary failures, or discard their local retry
 copies. Discarding a retry does not delete retained audio. If browser storage
@@ -235,6 +237,21 @@ Open **Settings → Dictation corpus** to review retained recordings after launc
 4. Export verified pairs for evaluation, or include candidates for inspection.
    Delete a selected example to remove its audio and associated annotations.
 
+Selecting **Save review** retains a local retry draft before sending the request.
+If saving fails or its response is lost, the correction and its operation identity
+survive closing Settings and reloading the tab. Edits to that retry are retained
+too. Up to twelve review retries are kept across this browser origin, each limited
+to 32,000 correction characters and seven days. Tabs keep separate review drafts.
+An explicit **Discard review retry** removes the local copy without deleting the
+recording. Deleting an example removes its review retries from all tabs.
+
+A restored listening confirmation applies only to the same complete, available
+audio with the same hash. A newer saved review requires an explicit comparison
+before your correction can become the next revision. If the retry limit is
+reached, keep the panel open until saving succeeds or discard an older retry.
+If browser storage is unavailable, the current tab can reopen its in-memory
+retry, but the panel warns that reloading may lose it.
+
 An export is a versioned JSON manifest. It retains original predictions, audio
 hashes, recognition provenance, submitted field snapshots and review revisions.
 Only the latest faithful review of complete, readable, hash-matching audio enters
@@ -251,7 +268,8 @@ most 256 annotations and two MiB of annotation data.
 
 The original `record.json` and audio stay unchanged. Versioned annotations live
 beside the record and remain separate facts. Concurrent review saves use a
-revision check; refresh after a conflict before saving another correction.
+revision check; compare the latest saved review after a conflict before choosing
+to save your correction as the next revision.
 The service validates recording identifiers and draft ownership, and rejects
 paths supplied by callers. Retried operations carry stable identifiers so a
 lost response cannot produce duplicate annotations.

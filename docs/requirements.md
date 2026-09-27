@@ -2175,6 +2175,8 @@ transcript. Launch SHALL remain usable when archival fails.
 - Retain ordered clip links, text before insertion and delivered text in the
   owning launch draft. Closing/reopening, reload, other drafts and concurrent
   tabs cannot mix ownership; late speech callbacks cannot change another field.
+  Changing the launch directory must preserve links for completed dictation
+  whose text remains in that same draft and field.
 - At each submission, retain the exact authored prompt and criteria before
   generated wrappers, separately from per-recording corrections. Associate the
   submission with a task only from the server's correlated acknowledgement.
@@ -2187,6 +2189,10 @@ transcript. Launch SHALL remain usable when archival fails.
   Corrections have candidate, faithful transcript, reformulation or excluded
   states. Only explicit confirmation after listening to that clip can establish
   a faithful reference. An unchanged prediction is not automatically verified.
+  A failed or unacknowledged review save retains a bounded retry draft across
+  closing/reopening Settings and reload. Retry keeps its operation identity;
+  newer saved revisions require conflict resolution, and discard or deletion
+  cannot leave a retry that later recreates the review.
 - Incomplete recovery, omitted or missing audio cannot become complete
   audio/reference pairs. Multiple clips and typed additions cannot turn a whole
   task field into a reference for every clip.
@@ -2201,6 +2207,7 @@ transcript. Launch SHALL remain usable when archival fails.
 **Evidence:** `stt/src/corpus-api.test.js`, `stt/src/server-corpus.test.js`,
 `src/server/routes/dictation-corpus-routes.test.ts`,
 `src/frontend/store/dictation-corpus.test.ts`,
+`src/frontend/store/dictation-review-drafts.test.ts`,
 `src/frontend/components/DictationCorpusPanel.test.tsx`,
 `e2e/dictation-corpus.spec.ts` and `e2e/dictation-corpus-disabled.spec.ts`.
 See [speech recognition usage](reference/speech-recognition.md).

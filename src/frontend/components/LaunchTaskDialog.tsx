@@ -389,8 +389,8 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     track({ type: 'launch_dialog_closed', submitted: true, dwellMs: Date.now() - openedAtRef.current });
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
     const corpusSubmissionId = submitDictationDraft(dictationId, [
-      { field: 'prompt', context: `${dictationContext}:prompt`, text: prompt },
-      { field: 'criteria', context: `${dictationContext}:criteria`, text: criteria },
+      { field: 'prompt', text: prompt },
+      { field: 'criteria', text: criteria },
     ]);
     const sent = send({
       type: 'launch',

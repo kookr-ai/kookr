@@ -10,6 +10,12 @@ import { forgetDictationCorpusRecording } from '../store/dictation-corpus.js';
 import { createDictationId } from '../store/dictation-recovery.js';
 import { ApiError } from '../api/client.js';
 import { explainDictationCorpusReason } from '../dictation-corpus-reason.js';
+import { dictationTabId } from '../store/dictation-tab.js';
+import {
+  REVIEW_DRAFT_PREFIX, loadDictationReviewDraft, retainDictationReviewDraft,
+  discardDictationReviewDraft, forgetDictationReviewDrafts,
+  type DictationReviewDraft, type DictationReviewRequest,
+} from '../store/dictation-review-drafts.js';
 import './DictationCorpusPanel.css';
 
 const PAGE_SIZE = 20;
@@ -23,13 +29,22 @@ function latestReview(record: CorpusRecord): CorpusReview | undefined {
   return record.annotations.filter((annotation): annotation is CorpusReview => annotation.kind === 'review').at(-1);
 }
 
-interface ReviewRequest {
-  operationId: string;
-  kind: 'review';
-  expectedRevision: number;
-  correction: string;
-  status: CorpusReviewStatus;
-  listened: boolean;
+function restoreReviewDraft(record: CorpusRecord, tabId: string) {
+  const draft = loadDictationReviewDraft(record.id, tabId);
+  if (!draft) return { draft: null, sameAudio: false, conflict: false };
+  const saved = draft.request && record.annotations.find((annotation) => annotation.kind === 'review'
+    && annotation.operationId === draft.request?.operationId
+    && annotation.correction === draft.request.correction && annotation.status === draft.request.status
+    && annotation.listened === draft.request.listened);
+  // A lost response followed by a newer review is already reconciled. Display
+  // the newer server review instead of reviving this completed older operation.
+  if (saved?.kind === 'review' && saved.reviewRevision < record.reviewRevision) {
+    discardDictationReviewDraft(record.id, tabId, saved.operationId);
+    return { draft: null, sameAudio: false, conflict: false };
+  }
+  const sameAudio = record.archive.status === 'saved' && record.archive.complete && record.audioAvailable
+    && record.audio !== null && draft.audioSha256 === record.audio.sha256;
+  return { draft, sameAudio, conflict: !saved && draft.expectedRevision !== record.reviewRevision };
 }
 
 function RecordingReview({ record, writable, onUpdated, onDeleted }: {
@@ -39,30 +54,72 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
   onDeleted: (id: string) => void;
 }) {
   const originalReview = latestReview(record);
-  const [correction, setCorrection] = useState(originalReview?.correction ?? record.metadata.transcript ?? '');
-  const [status, setStatus] = useState<CorpusReviewStatus>(originalReview?.status ?? 'candidate');
-  const [revision, setRevision] = useState(record.reviewRevision);
-  const [played, setPlayed] = useState(false);
-  const [confirmed, setConfirmed] = useState(false);
+  const [tabId] = useState(dictationTabId);
+  const [initial] = useState(() => restoreReviewDraft(record, tabId));
+  const [correction, setCorrection] = useState(initial.draft?.correction ?? originalReview?.correction ?? record.metadata.transcript ?? '');
+  const correctionRef = useRef<HTMLTextAreaElement>(null);
+  const [status, setStatus] = useState<CorpusReviewStatus>(initial.draft?.status ?? originalReview?.status ?? 'candidate');
+  const [revision, setRevision] = useState(initial.draft?.expectedRevision ?? record.reviewRevision);
+  const [played, setPlayed] = useState(initial.sameAudio && initial.draft?.played === true);
+  const [confirmed, setConfirmed] = useState(initial.sameAudio && initial.draft?.confirmed === true);
   const [audioFailed, setAudioFailed] = useState(false);
   const [audioAttempt, setAudioAttempt] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
-  const [conflict, setConflict] = useState<CorpusRecord | null>(null);
+  const [notice, setNotice] = useState(initial.draft ? 'Review retry restored. Save review will retry the same operation unless you change the correction.' : '');
+  const [conflict, setConflict] = useState<CorpusRecord | null>(initial.conflict ? record : null);
+  const [hasRetry, setHasRetry] = useState(Boolean(initial.draft));
+  const hasRetryRef = useRef(hasRetry);
+  const [retryWarning, setRetryWarning] = useState(initial.draft && !initial.draft.persisted ? 'Browser storage is unavailable. Keep this tab open; reloading may lose this review retry.' : '');
+  const [recordUnavailable, setRecordUnavailable] = useState(false);
   const [deleteConfirmation, setDeleteConfirmation] = useState(false);
   // A response can disappear after the service saved the review. Retrying the
   // unchanged request must reuse its operation ID to avoid adding a revision.
-  const pending = useRef<ReviewRequest | null>(null);
+  const pending = useRef<DictationReviewRequest | null>(initial.sameAudio || !initial.draft?.request?.listened ? initial.draft?.request ?? null : null);
   const eligible = record.archive.status === 'saved' && record.archive.complete
     && record.audioAvailable && record.audio !== null && !audioFailed;
   const faithfulAllowed = eligible && played && confirmed && correction.trim().length > 0;
   const submissions = record.annotations.filter((annotation) => annotation.kind === 'submission');
 
-  function changed() { pending.current = null; setNotice(''); setError(''); setConfirmed(false); }
+  function retainRetry(overrides: Partial<DictationReviewDraft> = {}) {
+    const result = retainDictationReviewDraft({
+      recordingId: record.id, tabId, audioSha256: record.audio?.sha256 ?? null,
+      correction, status, expectedRevision: revision, played, confirmed, request: pending.current,
+      ...overrides,
+    });
+    hasRetryRef.current = true; setHasRetry(true);
+    setRetryWarning(result.persisted ? '' : result.reason === 'full'
+      ? 'Local review retry storage is full. Keep this panel open or discard another review retry before leaving.'
+      : 'Browser storage is unavailable. Keep this tab open; reloading may lose this review retry.');
+  }
+  function changed(next: { correction?: string; status?: CorpusReviewStatus }) {
+    pending.current = null; setNotice(''); setError(''); setConfirmed(false);
+    if (hasRetryRef.current) retainRetry({ ...next, confirmed: false, request: null });
+  }
+  function discardRetry() {
+    discardDictationReviewDraft(record.id, tabId);
+    pending.current = null; hasRetryRef.current = false; setHasRetry(false); setRetryWarning('');
+    const latest = latestReview(record);
+    setCorrection(latest?.correction ?? record.metadata.transcript ?? '');
+    setStatus(latest?.status ?? 'candidate'); setRevision(record.reviewRevision);
+    setPlayed(false); setConfirmed(false); setConflict(null); setError('');
+    setNotice('Local review retry discarded. Saved archive annotations are unchanged.');
+    correctionRef.current?.focus();
+  }
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key && !event.key.startsWith(REVIEW_DRAFT_PREFIX)) return;
+      if (hasRetryRef.current && !loadDictationReviewDraft(record.id, tabId)) {
+        pending.current = null; hasRetryRef.current = false; setHasRetry(false); setRetryWarning('');
+        setNotice('This local review retry was removed in another tab. The visible correction is not retained.');
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [record.id, tabId]);
 
   async function save() {
-    if (!writable || busy || conflict || (status === 'faithful' && !faithfulAllowed)) return;
+    if (!writable || recordUnavailable || busy || conflict || (status === 'faithful' && !faithfulAllowed)) return;
     setBusy(true); setError(''); setNotice('');
     try {
       const request = pending.current ?? {
@@ -70,10 +127,15 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
         correction, status, listened: played && confirmed,
       };
       pending.current = request;
+      retainRetry({ request });
       const result = await postDictationAnnotation(record.id, request);
       if (!result.ok || !result.body || !('annotation' in result.body)) {
         const code = result.body && 'error' in result.body ? result.body.error : '';
-        if (result.status === 409 && code === 'corpus_revision_conflict') {
+        if (result.status === 404 || result.status === 410) {
+          forgetDictationReviewDrafts(record.id); pending.current = null;
+          hasRetryRef.current = false; setHasRetry(false); setRetryWarning(''); setRecordUnavailable(true);
+          setError('This recording is no longer available. Its local review retry has been removed.');
+        } else if (result.status === 409 && code === 'corpus_revision_conflict') {
           setConflict(await getDictationCorpusRecord(record.id));
           setError('Another review was saved. Compare it below before saving your correction.');
         } else {
@@ -83,11 +145,12 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
       }
       const annotation = result.body.annotation;
       if (annotation.kind !== 'review') throw new Error('Unexpected annotation');
-      setRevision(annotation.reviewRevision);
-      onUpdated({ ...record, reviewRevision: annotation.reviewRevision,
+      setRevision(Math.max(record.reviewRevision, annotation.reviewRevision));
+      onUpdated({ ...record, reviewRevision: Math.max(record.reviewRevision, annotation.reviewRevision),
         annotations: record.annotations.some((item) => item.operationId === annotation.operationId)
           ? record.annotations : [...record.annotations, annotation] });
-      pending.current = null;
+      discardDictationReviewDraft(record.id, tabId, request.operationId);
+      pending.current = null; hasRetryRef.current = false; setHasRetry(false); setRetryWarning('');
       setNotice(`Review saved · revision ${annotation.reviewRevision} · ${REVIEW_LABELS[annotation.status]}`);
     } catch {
       setError('Review was not confirmed saved. Your correction is still here; retry Save review.');
@@ -99,6 +162,7 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
     try {
       await deleteDictationCorpusRecord(record.id);
       forgetDictationCorpusRecording(record.id);
+      forgetDictationReviewDrafts(record.id);
       onDeleted(record.id);
     } catch { setError('Could not delete this example. Try again.'); }
     finally { setBusy(false); }
@@ -116,8 +180,13 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
         <audio
           key={`${record.id}:${audioAttempt}`} controls preload="none" aria-label="Original recording"
           src={dictationCorpusAudioUrl(record.id)}
-          onEnded={() => { if (!audioFailed) setPlayed(true); }}
-          onError={() => { setAudioFailed(true); setPlayed(false); setConfirmed(false); }}
+          onEnded={() => { if (!audioFailed) {
+            setPlayed(true); if (hasRetryRef.current) retainRetry({ played: true });
+          } }}
+          onError={() => {
+            setAudioFailed(true); setPlayed(false); setConfirmed(false); pending.current = null;
+            if (hasRetryRef.current) retainRetry({ played: false, confirmed: false, request: null });
+          }}
         />
       ) : <p className="corpus-help">Original audio is unavailable.</p>}
       {!eligible && <p className="corpus-warning">This recording cannot become a verified audio/reference pair because its audio is incomplete or unavailable.</p>}
@@ -133,9 +202,10 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
         <label className="corpus-field">
           <span>Correction for this recording</span>
           <textarea
+            ref={correctionRef}
             aria-label="Correction for this recording" value={correction}
             maxLength={MAX_CORRECTION_LENGTH} rows={5} disabled={busy || !writable}
-            onChange={(event) => { changed(); setCorrection(event.target.value); }}
+            onChange={(event) => { changed({ correction: event.target.value }); setCorrection(event.target.value); }}
           />
         </label>
       </div>
@@ -143,14 +213,17 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
       <label className="corpus-field">
         <span>Review status</span>
         <select aria-label="Review status" value={status} disabled={busy || !writable}
-          onChange={(event) => { changed(); setStatus(event.target.value as CorpusReviewStatus); }}>
+          onChange={(event) => { changed({ status: event.target.value as CorpusReviewStatus }); setStatus(event.target.value as CorpusReviewStatus); }}>
           {Object.entries(REVIEW_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select>
       </label>
       <label className="corpus-confirm">
         <input type="checkbox" checked={confirmed} disabled={!writable || !eligible || !played || busy}
           aria-label="I listened to this recording and confirm the correction faithfully transcribes it"
-          onChange={(event) => { pending.current = null; setConfirmed(event.target.checked); }} />
+          onChange={(event) => {
+            pending.current = null; setConfirmed(event.target.checked);
+            if (hasRetryRef.current) retainRetry({ confirmed: event.target.checked, request: null });
+          }} />
         <span>I listened to this recording and confirm the correction faithfully transcribes it.</span>
       </label>
       {!played && eligible && <p className="corpus-help">Play the recording to the end to enable confirmation. An unchanged prediction also needs review.</p>}
@@ -162,16 +235,20 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
           <button type="button" className="btn-secondary" onClick={() => {
             setRevision(conflict.reviewRevision); onUpdated(conflict); setConflict(null);
             pending.current = null; setError('');
+            if (hasRetryRef.current) retainRetry({ expectedRevision: conflict.reviewRevision, request: null });
           }}>Keep my correction as the next revision</button>
         </div>
       )}
       {error && <p className="corpus-error" role="alert">{error}</p>}
       <p className="corpus-help" role="status">{notice}</p>
+      {hasRetry && <p className="corpus-help">Local review retries expire after 7 days. At most 12 reviews are kept in this browser.</p>}
+      {retryWarning && <p className="corpus-warning" role="alert">{retryWarning}</p>}
       <div className="corpus-actions">
         <button type="button" className="btn-primary" onClick={() => void save()}
-          disabled={!writable || busy || conflict !== null || (status === 'faithful' && !faithfulAllowed)}>
+          disabled={!writable || recordUnavailable || busy || conflict !== null || (status === 'faithful' && !faithfulAllowed)}>
           {busy ? 'Saving…' : 'Save review'}
         </button>
+        {hasRetry && <button type="button" className="btn-secondary" disabled={busy} onClick={discardRetry}>Discard review retry</button>}
         <button type="button" className="btn-secondary" disabled={busy} onClick={() => setDeleteConfirmation(true)}>Delete example</button>
       </div>
       {deleteConfirmation && <div className="corpus-delete" role="group" aria-label="Confirm example deletion">
@@ -311,7 +388,7 @@ export function DictationCorpusPanel() {
           <button type="button" className="btn-secondary" disabled={loading || !truncated} onClick={() => void load(offset + PAGE_SIZE)}>Next recordings</button>
         </div>}
         {selected && <RecordingReview key={selected.id} record={selected} writable={capabilities.enabled}
-          onUpdated={(updated) => setRecords((current) => current.map((record) => record.id === updated.id ? updated : record))}
+          onUpdated={(updated) => setRecords((current) => current.map((record) => record.id === updated.id && record.reviewRevision <= updated.reviewRevision ? updated : record))}
           onDeleted={(id) => { setRecords((current) => current.filter((record) => record.id !== id)); setSelectedId(records.find((record) => record.id !== id)?.id ?? ''); }} />}
       </>}
     </section>

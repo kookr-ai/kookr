@@ -162,10 +162,14 @@ export function retainDictation(owner: DictationOwner, beforeText: string, deliv
 }
 
 /** Save before sending Launch. Only fields with dictation contribute corpus data. */
-export function submitDictationDraft(draftId: string, fields: Array<{ field: DictationField; context: string; text: string }>): string | undefined {
+export function submitDictationDraft(draftId: string, fields: Array<{ field: DictationField; text: string }>): string | undefined {
   const links = listDictationLinks();
   const included: SubmissionField[] = fields.flatMap(field => {
-    const recordings = links.filter(link => link.draftId === draftId && link.field === field.field && link.context === field.context && link.status !== 'omitted' && link.recordingId && link.ownerToken);
+    // Completed text belongs to its draft and field. Changing launch settings
+    // (for example CWD) does not remove those words from the visible field.
+    // Keep the original insertion context as evidence, while partial recovery
+    // continues to enforce its separate context-bound restore/cancel rules.
+    const recordings = links.filter(link => link.draftId === draftId && link.field === field.field && link.status !== 'omitted' && link.recordingId && link.ownerToken);
     return recordings.length ? [{ field: field.field, submittedText: field.text, recordings }] : [];
   });
   if (!included.length) return undefined;
