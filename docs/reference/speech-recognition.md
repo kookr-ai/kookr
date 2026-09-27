@@ -217,6 +217,12 @@ Retry storage expires after seven days. It holds at most 48 recording links and
 explicit omission instead of silently truncating the submitted text. Automatic
 retry runs for at most ten passes; the Retry control remains available afterward.
 
+If one clip fails to archive, the other clips can still retain the submitted
+field text and task association. A submission freezes its list of retained clips
+after pending audio writes settle. Failed or missing clips are recorded separately
+with their original positions and omission reasons; they are not treated as
+validated archive links. Retrying an annotation preserves this membership.
+
 Open **Settings → Dictation corpus** to review retained recordings after launch:
 
 1. Select a recording and compare its original prediction with its submitted

@@ -31,6 +31,6 @@ process.on('message', message => {
 const { httpServer } = await import('../stt/src/server.js');
 // startServer also loads model/VAD resources. The deterministic HTTP inference
 // fixture needs neither, and all recognition/capture paths remain real here.
-httpServer.listen(0, '127.0.0.1', () => {
+httpServer.listen(Number(process.env.E2E_CORPUS_STT_PORT ?? 0), '127.0.0.1', () => {
   console.log(`CORPUS_STT_PORT=${httpServer.address().port}`);
 });

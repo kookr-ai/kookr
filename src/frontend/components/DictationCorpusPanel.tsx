@@ -9,6 +9,7 @@ import { DictationCorpusStatus } from './DictationCorpusStatus.js';
 import { forgetDictationCorpusRecording } from '../store/dictation-corpus.js';
 import { createDictationId } from '../store/dictation-recovery.js';
 import { ApiError } from '../api/client.js';
+import { explainDictationCorpusReason } from '../dictation-corpus-reason.js';
 import './DictationCorpusPanel.css';
 
 const PAGE_SIZE = 20;
@@ -110,7 +111,7 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
         <span>{record.archive.status}{record.archive.complete ? ' · complete' : ' · incomplete'}</span>
       </div>
       <p className="corpus-help">Recording {record.id} · {record.owner?.field ?? record.metadata.source}</p>
-      {record.archive.reason && <p className="corpus-help">Archive reason: {record.archive.reason}</p>}
+      {record.archive.reason && <p className="corpus-help">Archive reason: {explainDictationCorpusReason(record.archive.reason)}</p>}
       {record.audioAvailable && record.audio ? (
         <audio
           key={`${record.id}:${audioAttempt}`} controls preload="none" aria-label="Original recording"
@@ -185,10 +186,17 @@ function RecordingReview({ record, writable, onUpdated, onDeleted }: {
         {submissions.length === 0 && <p className="corpus-help">No submitted field snapshot has been retained for this recording.</p>}
         {submissions.map((submission) => {
           const task = record.annotations.find((item) => item.kind === 'task' && item.submissionId === submission.submissionId);
+          const unavailableRecordings = submission.unavailableRecordings ?? [];
           return <section key={submission.operationId} className="corpus-submission">
             <h5>{submission.field} · {new Date(submission.createdAt).toLocaleString()}</h5>
-            <p className="corpus-help">{task?.kind === 'task' ? `Acknowledged task: ${task.taskId}` : 'No acknowledged task association'} · {submission.recordingIds.length} recording(s)</p>
+            <p className="corpus-help">{task?.kind === 'task' ? `Acknowledged task: ${task.taskId}` : 'No acknowledged task association'} · {submission.recordingIds.length} retained recording(s)</p>
             <pre className="corpus-text">{submission.submittedText}</pre>
+            {unavailableRecordings.length > 0 && <div className="corpus-unavailable">
+              <p className="corpus-warning">{unavailableRecordings.length} unavailable recording(s). These clips have no verified audio/reference link.</p>
+              <ul>{unavailableRecordings.map((clip) => <li key={`${clip.position}:${clip.recordingId}`}>
+                Clip {clip.position + 1}: {explainDictationCorpusReason(clip.reason)}
+              </li>)}</ul>
+            </div>}
             <details><summary>Insertion context</summary>
               <h5>Text before insertion</h5><pre className="corpus-text">{submission.beforeText || '(Empty)'}</pre>
               <h5>Delivered transcription</h5><pre className="corpus-text">{submission.deliveredText}</pre>

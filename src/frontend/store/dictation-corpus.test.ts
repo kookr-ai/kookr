@@ -8,7 +8,7 @@ beforeEach(async () => {
   localStorage.clear();
   sessionStorage.clear();
   vi.resetModules();
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ archive: { status: 'saved', complete: true }, taskId: null }), { status: 200 })));
+  vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => new Response(JSON.stringify({ archive: { status: 'saved', complete: true }, taskId: null }), { status: 200 })));
   corpus = await import('./dictation-corpus.js');
 });
 
@@ -49,7 +49,7 @@ describe('dictation launch provenance', () => {
     expect(corpus.listDictationSubmissions()[0].status).toBe('pending');
     vi.resetModules();
     corpus = await import('./dictation-corpus.js');
-    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: null }), { status: 200 }));
+    vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } }), { status: 200 }));
     await corpus.retryDictationCorpus(id);
     expect(corpus.listDictationSubmissions()[0].status).toBe('saved');
     const annotations = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/annotations'));
@@ -100,14 +100,15 @@ test('an acknowledgement arriving while submission persistence waits is not over
   const posting = new Promise<void>(resolve => { entered = resolve; });
   vi.mocked(fetch).mockImplementation(async (url) => {
     if (String(url).endsWith('/annotations')) { entered(); await held; }
-    return new Response(JSON.stringify({ taskId: null }), { status: 200 });
+    return new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } }), { status: 200 });
   });
   const work = corpus.retryDictationCorpus(id);
   await posting;
   corpus.acknowledgeDictationLaunch(id, 'actual-task');
   release();
   await work;
-  expect(corpus.listDictationSubmissions()[0]).toMatchObject({ taskId: 'actual-task', status: 'pending' });
+  expect(corpus.listDictationSubmissions()[0]).toMatchObject({ taskId: 'actual-task', status: 'saved' });
+  expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.body && JSON.parse(String(init.body)).kind === 'task')).toBe(true);
 });
 
 test('receipt-only failure remains eligible for durable acknowledgement lookup', async () => {
@@ -115,7 +116,7 @@ test('receipt-only failure remains eligible for durable acknowledgement lookup',
   const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
   corpus.acknowledgeDictationLaunch(id, undefined, 'corpus_task_receipt_pending');
   expect(corpus.listDictationSubmissions()[0].launchError).toBeUndefined();
-  vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: 'actual-task' }), { status: 200 }));
+  vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: 'actual-task', archive: { status: 'saved', complete: true } }), { status: 200 }));
   await corpus.retryDictationCorpus(id);
   expect(corpus.listDictationSubmissions()[0]).toMatchObject({ taskId: 'actual-task', status: 'saved' });
 });
@@ -132,7 +133,7 @@ test('malformed stored fields and incorrect nested ownership never enter the ret
 test('restored incomplete audio can retain candidate edits but never claims completeness', async () => {
   corpus.retainDictation({ draftId: 'draft', field: 'prompt', context: 'one' }, '', 'words', { ...complete, complete: false });
   const id = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'edited' }])!;
-  vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: null }), { status: 200 }));
+  vi.mocked(fetch).mockImplementation(async () => new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } }), { status: 200 }));
   await corpus.retryDictationCorpus(id);
   expect(corpus.listDictationSubmissions()[0].fields[0].recordings[0].complete).toBe(false);
   expect(corpus.listDictationSubmissions()[0].status).toBe('saved');
@@ -187,12 +188,111 @@ test('discard during a pending submission POST prevents the following task assoc
   corpus.acknowledgeDictationLaunch(id, 'task');
   let release!: (response: Response) => void;
   const annotation = new Promise<Response>(resolve => { release = resolve; });
-  vi.mocked(fetch).mockImplementation(async () => annotation);
+  let entered!: () => void;
+  const posting = new Promise<void>(resolve => { entered = resolve; });
+  vi.mocked(fetch).mockImplementation(async url => {
+    if (String(url).endsWith('/annotations')) { entered(); return annotation; }
+    return new Response(JSON.stringify({ archive: { status: 'saved', complete: true } }));
+  });
   const work = corpus.retryDictationCorpus(id);
-  await Promise.resolve();
+  await posting;
   corpus.discardDictationCorpusEntry(id);
   release(new Response('{}'));
   await work;
   expect(corpus.listDictationSubmissions()).toEqual([]);
-  expect(vi.mocked(fetch).mock.calls).toHaveLength(1);
+  expect(vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/annotations'))).toHaveLength(1);
+});
+
+function retainPair() {
+  const owner = { draftId: 'draft', field: 'prompt' as const, context: 'one' };
+  corpus.retainDictation(owner, '', 'first prediction', complete);
+  corpus.retainDictation(owner, 'first prediction', 'second prediction', { ...complete, deliveryId: 'second', recordingId: 'record-two' });
+  return corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: 'exact corrected field with typed additions' }])!;
+}
+function postedAnnotations() {
+  return vi.mocked(fetch).mock.calls.filter(([url]) => String(url).endsWith('/annotations')).map(([url, init]) => ({ url: String(url), body: JSON.parse(String(init?.body)) as Record<string, unknown> }));
+}
+
+test.each([200, 404, 410])('a failed first recording (%s) preserves the saved sibling and freezes its omission across reload', async status => {
+  const id = retainPair();
+  corpus.acknowledgeDictationLaunch(id, 'created-task');
+  vi.mocked(fetch).mockImplementation(async url => {
+    if (String(url).endsWith('/records/record-one')) return new Response(JSON.stringify({ archive: { status: 'failed', complete: false }, error: 'corpus_not_found' }), { status });
+    return new Response(JSON.stringify({ archive: { status: 'saved', complete: true }, audioAvailable: true }));
+  });
+  await corpus.retryDictationCorpus(id);
+  const first = postedAnnotations();
+  expect(first).toHaveLength(2);
+  expect(first.every(post => post.url.includes('record-two'))).toBe(true);
+  const reason = status === 200 ? 'corpus_archive_failed' : status === 404 ? 'corpus_not_found' : 'corpus_gone';
+  expect(first[0].body).toMatchObject({ recordingIds: ['record-two'], unavailableRecordings: [{ recordingId: 'record-one', position: 0, reason }], submittedText: 'exact corrected field with typed additions' });
+  expect(first[1].body).toMatchObject({ kind: 'task', taskId: 'created-task' });
+  expect(corpus.listDictationSubmissions()[0].status).toBe('failed');
+  vi.resetModules();
+  corpus = await import('./dictation-corpus.js');
+  vi.mocked(fetch).mockClear().mockImplementation(async () => new Response('{}'));
+  await corpus.retryDictationCorpus(id);
+  expect(postedAnnotations()).toEqual(first);
+  expect(vi.mocked(fetch).mock.calls.every(([url]) => String(url).endsWith('/annotations'))).toBe(true);
+});
+
+test('an annotation failure for the first retained clip does not suppress another clip or criteria field', async () => {
+  const id = retainPair();
+  const raw = corpus.listDictationSubmissions()[0];
+  corpus.retainDictation({ draftId: 'draft', field: 'criteria', context: 'criteria' }, '', 'pass', { ...complete, deliveryId: 'criteria', recordingId: 'record-criteria' });
+  corpus.discardDictationCorpusEntry(id);
+  const actualId = corpus.submitDictationDraft('draft', [{ field: 'prompt', context: 'one', text: raw.fields[0].submittedText }, { field: 'criteria', context: 'criteria', text: 'all tests pass' }])!;
+  corpus.acknowledgeDictationLaunch(actualId, 'created-task');
+  vi.mocked(fetch).mockImplementation(async url => String(url).endsWith('/records/record-one/annotations')
+    ? new Response(JSON.stringify({ error: 'disk_write_failed' }), { status: 500 })
+    : new Response(JSON.stringify({ archive: { status: 'saved', complete: true }, audioAvailable: true })));
+  await corpus.retryDictationCorpus(actualId);
+  const posts = postedAnnotations();
+  expect(posts.filter(post => post.url.includes('record-two')).map(post => post.body.kind)).toEqual(['submission', 'task']);
+  expect(posts.filter(post => post.url.includes('record-criteria')).map(post => post.body.kind)).toEqual(['submission', 'task']);
+  expect(posts.find(post => post.url.includes('record-two'))?.body.recordingIds).toEqual(['record-one', 'record-two']);
+  expect(corpus.listDictationSubmissions()[0].status).toBe('failed');
+});
+
+test.each(['pending', 'network', 'http'])('a %s preflight never freezes a temporary absence into the submission', async outcome => {
+  const id = retainPair();
+  vi.mocked(fetch).mockImplementation(async url => {
+    if (String(url).endsWith('/records/record-one')) {
+      if (outcome === 'network') throw new Error('network unavailable');
+      if (outcome === 'http') return new Response(JSON.stringify({ error: 'temporarily_unavailable' }), { status: 503 });
+      return new Response(JSON.stringify({ archive: { status: 'pending', complete: true } }));
+    }
+    return new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } }));
+  });
+  await corpus.retryDictationCorpus(id);
+  expect(corpus.listDictationSubmissions()[0].fields[0].archiveMembership).toBeUndefined();
+  expect(postedAnnotations()).toEqual([]);
+  vi.mocked(fetch).mockClear().mockImplementation(async () => new Response(JSON.stringify({ taskId: null, archive: { status: 'saved', complete: true } })));
+  await corpus.retryDictationCorpus(id);
+  expect(postedAnnotations()).toHaveLength(2);
+  for (const post of postedAnnotations()) {
+    expect(post.body.recordingIds).toEqual(['record-one', 'record-two']);
+    expect(post.body.unavailableRecordings).toBeUndefined();
+  }
+});
+
+test('browser quota failures preserve bounded in-tab edits and failed deletion cannot resurrect stored data', async () => {
+  const originalSet = Storage.prototype.setItem;
+  const originalRemove = Storage.prototype.removeItem;
+  try {
+    Storage.prototype.setItem = vi.fn(() => { throw new Error('QuotaExceededError'); });
+    const id = retainPair();
+    expect(corpus.listDictationSubmissions()[0]).toMatchObject({ persisted: false });
+    await corpus.retryDictationCorpus(id);
+    expect(corpus.listDictationSubmissions()[0]).toMatchObject({ persisted: false, status: 'saved' });
+    expect(postedAnnotations()[0].body.submittedText).toBe('exact corrected field with typed additions');
+    Storage.prototype.setItem = originalSet;
+    corpus.acknowledgeDictationLaunch(id, 'task');
+    expect(corpus.listDictationSubmissions()[0].persisted).toBe(true);
+    Storage.prototype.removeItem = vi.fn(() => { throw new Error('SecurityError'); });
+    corpus.discardDictationCorpusEntry(id);
+    expect(corpus.listDictationSubmissions()).toEqual([]);
+    await corpus.retryDictationCorpus(id);
+    expect(corpus.listDictationSubmissions()).toEqual([]);
+  } finally { Storage.prototype.setItem = originalSet; Storage.prototype.removeItem = originalRemove; }
 });

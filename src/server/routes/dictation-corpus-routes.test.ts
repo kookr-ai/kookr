@@ -167,3 +167,29 @@ describe('corpus transport security and bounds', () => {
     expect(await response.json()).toEqual({ error: 'corpus_response_too_large' });
   });
 });
+
+
+describe('corpus playback formats', () => {
+  test.each(['audio/flac', 'audio/aac'])('preserves %s archive bytes and type for playback', async (contentType) => {
+    const bytes = Uint8Array.from([0x66, 0x4c, 0x61, 0x43, 0xff, 0x00, 0x80]);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(Response.json(capabilities))
+      .mockResolvedValueOnce(new Response(bytes, { headers: { 'Content-Type': contentType } }));
+    vi.stubGlobal('fetch', fetch);
+    const response = await app().request(`/api/stt/corpus/records/${recordId}/audio`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toBe(contentType);
+    expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
+
+  test('continues rejecting active content returned by an upstream audio endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(Response.json(capabilities))
+      .mockResolvedValueOnce(new Response('<script>private()</script>', { headers: { 'Content-Type': 'text/html' } })));
+    const response = await app().request(`/api/stt/corpus/records/${recordId}/audio`);
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: 'corpus_invalid_response' });
+  });
+});

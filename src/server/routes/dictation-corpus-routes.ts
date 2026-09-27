@@ -109,7 +109,7 @@ export function registerDictationCorpusRoutes(app: Hono, deps: CorpusRouteDeps):
       const audio = path.endsWith('/audio') && response.ok;
       const bytes = await readBounded(response.body, audio ? MAX_AUDIO_BYTES : MAX_JSON_BYTES);
       const contentType = response.headers.get('content-type')?.split(';')[0]?.trim();
-      if (audio && !['audio/wav', 'audio/x-wav', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/mp4', 'application/octet-stream'].includes(contentType ?? '')) {
+      if (audio && !['audio/wav', 'audio/x-wav', 'audio/mpeg', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/flac', 'audio/aac', 'application/octet-stream'].includes(contentType ?? '')) {
         return c.json({ error: 'corpus_invalid_response' }, 502);
       }
       if (!audio) {

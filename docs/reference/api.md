@@ -1481,6 +1481,13 @@ overwriting another review. A faithful reference requires complete, readable
 audio and explicit listening confirmation. Pending audio publication returns
 `409 corpus_pending`, so the browser keeps its submission for retry.
 
+Submission `recordingIds` contains the ordered retained clips whose ownership
+the archive validates. Optional `unavailableRecordings` entries retain omitted
+clip identifiers, their zero-based `position` in the original field sequence,
+and a bounded `reason`. These are omission facts, not validated links to audio.
+Retained and unavailable entries together are limited to 32 clips. The browser
+freezes both lists before its first annotation write so retries stay idempotent.
+
 See [speech recognition](speech-recognition.md#retaining-edits-and-reviewing-recordings)
 for the review workflow, privacy boundary and capture limits.
 

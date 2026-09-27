@@ -15,12 +15,14 @@ export interface CorpusReview extends AnnotationBase {
   status: CorpusReviewStatus;
   listened: boolean;
 }
+export interface CorpusUnavailableRecording { recordingId: string; position: number; reason: string }
 export interface CorpusSubmission extends AnnotationBase {
   kind: 'submission';
   draftId: string;
   field: 'prompt' | 'criteria';
   submissionId: string;
   recordingIds: string[];
+  unavailableRecordings?: CorpusUnavailableRecording[];
   beforeText: string;
   deliveredText: string;
   submittedText: string;
@@ -93,4 +95,12 @@ export function deleteDictationCorpusRecord(id: string): Promise<{ deleted: true
 }
 export function getDictationCorpusManifest(): Promise<CorpusManifest> {
   return getJson(`${BASE}/export`);
+}
+
+/** Keep HTTP outcomes so retries distinguish missing audio from temporary outages. */
+export function getDictationCorpusRecordStatus(id: string): Promise<ApiResult<CorpusRecord | { error: string } | null>> {
+  return fetchResult(recordPath(id));
+}
+export function getDictationCorpusSubmissionTask(id: string): Promise<ApiResult<{ taskId: string | null } | null>> {
+  return fetchResult(`${BASE}/submissions/${encodeURIComponent(id)}/task`);
 }

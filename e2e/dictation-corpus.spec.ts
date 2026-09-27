@@ -11,6 +11,7 @@ interface Annotation {
   beforeText?: string;
   deliveredText?: string;
   recordingIds?: string[];
+  unavailableRecordings?: Array<{ recordingId: string; position: number; reason: string }>;
   taskId?: string;
   correction?: string;
   status?: string;
@@ -270,6 +271,61 @@ test('a failed archive never blocks launch or exports an audio/reference pair', 
   const manifest = await (await request.get('/api/stt/corpus/export')).json() as Manifest;
   expect(manifest.verifiedPairs).toEqual([]);
 });
+
+for (const restart of [false, true]) {
+  test(`a failed first clip cannot suppress a saved sibling's submission${restart ? ' after the archive service restarts' : ''}`, async ({ page, request, corpus }) => {
+    await corpus.control('fail');
+    await home(page);
+    await page.keyboard.press('Alt+l');
+    const field = page.locator('.quick-launch-draft');
+    await dictate(field, corpus.prediction);
+    const failedId = await deliveredRecordingId(page);
+    await expect.poll(async () => (await (await request.get(`/api/stt/corpus/records/${failedId}`)).json() as Recording).archive.status).toBe('failed');
+
+    await corpus.control('release');
+    corpus.prediction = 'Cette deuxième dictée possède un audio conservé.';
+    await dictate(field, corpus.prediction);
+    await expect.poll(async () => (await recordings(request)).length).toBe(1);
+    const [sibling] = await recordings(request);
+    expect(sibling.archive.status).toBe('saved');
+    expect(sibling.id).not.toBe(failedId);
+    if (restart) {
+      await corpus.restart();
+      expect((await request.get(`/api/stt/corpus/records/${failedId}`)).status()).toBe(404);
+    }
+
+    const submitted = 'Première dictée corrigée. Deuxième dictée corrigée. Instruction tapée supplémentaire.';
+    const input = page.locator('.quick-launch-input');
+    await input.fill(submitted);
+    await input.press('Enter');
+    await expect.poll(async () => (await getTasks(request)).length).toBe(1);
+    const [task] = await getTasks(request);
+    await expect.poll(async () => (await recordings(request))[0]?.annotations.some(annotation => annotation.kind === 'task')).toBe(true);
+    const [retained] = await recordings(request);
+    const omission = { recordingId: failedId, position: 0, reason: restart ? 'corpus_not_found' : 'corpus_archive_failed' };
+    expect(retained.annotations.filter(annotation => annotation.kind === 'submission')).toEqual([
+      expect.objectContaining({ submittedText: submitted, deliveredText: corpus.prediction, recordingIds: [sibling.id], unavailableRecordings: [omission] }),
+    ]);
+    expect(retained.annotations.filter(annotation => annotation.kind === 'task')).toEqual([
+      expect.objectContaining({ taskId: task.id }),
+    ]);
+    expect(retained.reference).toBeNull();
+
+    await page.reload();
+    await expect(page.locator('.health-dot-connected')).toBeVisible();
+    const article = await review(page, sibling.id);
+    await expect(article).toContainText(submitted);
+    await expect(article).toContainText(task.id);
+    await expect(article).toContainText('1 unavailable recording(s).');
+    await expect(article).toContainText(restart
+      ? 'The recording is no longer available; its audio may not have saved or may have been deleted.'
+      : 'This recording could not be saved in the archive.');
+    const manifest = await (await request.get('/api/stt/corpus/export')).json() as Manifest;
+    expect(manifest.verifiedPairs).toEqual([]);
+    expect(manifest.candidates).toHaveLength(1);
+    expect(manifest.candidates[0].annotations.find(annotation => annotation.kind === 'submission')).toMatchObject({ unavailableRecordings: [omission] });
+  });
+}
 
 test('an external service without recording identity keeps dictation usable and reports unsupported capture', async ({ page, request, corpus }) => {
   await page.routeWebSocket(corpus.url, socket => {

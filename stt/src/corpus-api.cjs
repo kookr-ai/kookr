@@ -149,7 +149,7 @@ function createCorpusApi({ config, io, reservations, flush }) {
     if (Buffer.byteLength(JSON.stringify(body)) > MAX_BODY) fail('corpus_payload_too_large', 413);
     const common = ['operationId', 'kind'];
     const ownerFields = ['ownerToken', 'draftId', 'field', 'submissionId'];
-    const permitted = body.kind === 'submission' ? [...common, ...ownerFields, 'recordingIds', 'beforeText', 'deliveredText', 'submittedText']
+    const permitted = body.kind === 'submission' ? [...common, ...ownerFields, 'recordingIds', 'unavailableRecordings', 'beforeText', 'deliveredText', 'submittedText']
       : body.kind === 'task' ? [...common, ...ownerFields, 'taskId']
         : body.kind === 'review' ? [...common, 'expectedRevision', 'correction', 'status', 'listened'] : [];
     if (!permitted.length || Object.keys(body).some((key) => !permitted.includes(key))) fail('corpus_invalid_annotation');
@@ -164,6 +164,18 @@ function createCorpusApi({ config, io, reservations, flush }) {
       if (body.kind === 'submission' && (!Array.isArray(body.recordingIds) || !body.recordingIds.length || body.recordingIds.length > 32
         || new Set(body.recordingIds).size !== body.recordingIds.length || body.recordingIds.some((id) => typeof id !== 'string' || !UUID.test(id))
         || !text(body.beforeText) || !text(body.deliveredText) || !text(body.submittedText))) fail('corpus_invalid_submission');
+      if (body.kind === 'submission' && body.unavailableRecordings !== undefined) {
+        const unavailable = body.unavailableRecordings;
+        if (!Array.isArray(unavailable) || unavailable.length + body.recordingIds.length > 32
+          || unavailable.some((item, index) => !item || typeof item !== 'object' || Array.isArray(item)
+            || Object.keys(item).length !== 3 || Object.keys(item).some((key) => !['recordingId', 'position', 'reason'].includes(key))
+            || typeof item.recordingId !== 'string' || !UUID.test(item.recordingId)
+            || body.recordingIds.includes(item.recordingId)
+            || !Number.isInteger(item.position) || item.position < 0 || item.position > 31
+            || (index > 0 && item.position <= unavailable[index - 1].position)
+            || typeof item.reason !== 'string' || !IDENTIFIER.test(item.reason))
+          || new Set(unavailable.map((item) => item.recordingId)).size !== unavailable.length) fail('corpus_invalid_unavailable_recordings');
+      }
       if (body.kind === 'task' && (typeof body.taskId !== 'string' || !IDENTIFIER.test(body.taskId))) fail('corpus_invalid_task');
     }
   }
@@ -182,6 +194,12 @@ function createCorpusApi({ config, io, reservations, flush }) {
       const record = await documentAt(location);
       const annotations = await sidecarAt(location);
       const { ownerToken, ...persisted } = body;
+      if (persisted.unavailableRecordings) {
+        // Omitted membership records a client-reported loss, not a link to
+        // another archive. Keep original positions without relaxing ownership
+        // checks on recordings that are retained and addressable.
+        persisted.unavailableRecordings = persisted.unavailableRecordings.map(({ recordingId, position, reason }) => ({ recordingId, position, reason }));
+      }
       if (body.kind !== 'review') {
         if (!record.owner || record.owner.draftId !== body.draftId || record.owner.field !== body.field
           || record.owner.tokenHash !== hash(ownerToken)) fail('corpus_owner_mismatch', 403);

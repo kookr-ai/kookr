@@ -80,7 +80,7 @@ function createTranscriptionCorpus(options = {}) {
       && /^[A-Za-z0-9_.:-]{1,200}$/.test(owner.draftId)
       && ['prompt', 'criteria'].includes(owner.field);
     const state = {
-      id, ownerToken, status: 'pending', complete: false,
+      status: 'pending', complete: false,
       recordedAt: new Date().toISOString(), metadata: null,
       owner: validOwner ? { draftId: owner.draftId, field: owner.field,
         tokenHash: createHash('sha256').update(ownerToken).digest('hex') } : null,

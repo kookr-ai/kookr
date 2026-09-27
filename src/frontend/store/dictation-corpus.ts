@@ -1,5 +1,4 @@
-import { postDictationAnnotation, getDictationCorpusRecord } from '../api/dictation-corpus.js';
-import { fetchResult } from '../api/client.js';
+import { postDictationAnnotation, getDictationCorpusRecord, getDictationCorpusRecordStatus, getDictationCorpusSubmissionTask, type CorpusUnavailableRecording } from '../api/dictation-corpus.js';
 
 export type DictationField = 'prompt' | 'criteria';
 export type CorpusStatus = 'pending' | 'saved' | 'failed' | 'omitted';
@@ -19,10 +18,13 @@ export interface DictationLink extends DictationDelivery, DictationOwner {
   createdAt: number;
   persisted: boolean;
 }
+interface ArchiveMembership { recordingIds: string[]; unavailableRecordings: CorpusUnavailableRecording[] }
 interface SubmissionField {
   field: DictationField;
   submittedText: string;
   recordings: DictationLink[];
+  /** Frozen before the first annotation write; later retries never change membership. */
+  archiveMembership?: ArchiveMembership;
 }
 export interface DictationSubmission {
   id: string;
@@ -91,11 +93,24 @@ function isLink(value: unknown): value is DictationLink {
     && (value.recordingId === null || isText(value.recordingId, 128)) && typeof value.complete === 'boolean'
     && (value.ownerToken === undefined || isText(value.ownerToken, 256));
 }
+function isArchiveMembership(value: unknown): value is ArchiveMembership {
+  if (!isRecord(value) || !Array.isArray(value.recordingIds) || !Array.isArray(value.unavailableRecordings)
+    || value.recordingIds.length + value.unavailableRecordings.length > 32) return false;
+  const recordingIds = value.recordingIds;
+  return recordingIds.every(id => isText(id, 128))
+    && new Set(recordingIds).size === recordingIds.length
+    && value.unavailableRecordings.every((item, index, entries) => isRecord(item)
+      && isText(item.recordingId, 128) && !recordingIds.includes(item.recordingId)
+      && typeof item.position === 'number' && Number.isInteger(item.position) && item.position >= 0 && item.position < 32
+      && (index === 0 || item.position > entries[index - 1].position)
+      && typeof item.reason === 'string' && /^[A-Za-z0-9_.:-]{1,128}$/.test(item.reason));
+}
 function isSubmission(value: unknown): value is DictationSubmission {
   return isBase(value) && Array.isArray(value.fields) && value.fields.length <= 2
     && value.fields.every(field => isRecord(field) && (field.field === 'prompt' || field.field === 'criteria')
       && isText(field.submittedText) && Array.isArray(field.recordings) && field.recordings.length <= 32
-      && field.recordings.every(link => isLink(link) && link.draftId === value.draftId && link.field === field.field))
+      && field.recordings.every(link => isLink(link) && link.draftId === value.draftId && link.field === field.field)
+      && (field.archiveMembership === undefined || isArchiveMembership(field.archiveMembership)))
     && (value.taskId === undefined || isText(value.taskId, 128)) && (value.launchError === undefined || isText(value.launchError, 1000));
 }
 function read<T extends DictationLink | DictationSubmission>(kind: 'link' | 'submission'): T[] {
@@ -188,54 +203,113 @@ function errorReason(body: unknown, status: number): string {
   return `Archive request failed (${status})`;
 }
 async function retrySubmission(initial: DictationSubmission): Promise<void> {
-  const current = listDictationSubmissions().find(item => item.id === initial.id);
-  if (!current || current.status === 'omitted') return;
-  let entry = current;
+  const current = () => listDictationSubmissions().find(item => item.id === initial.id);
+  let entry = current();
+  if (!entry || entry.status === 'omitted') return;
   let pending = false;
   let retained = 0;
-  let omitted = false;
-  try {
-    if (!entry.taskId && !entry.launchError) {
-      const receipt = await fetchResult<{ taskId: string | null }>(`/api/stt/corpus/submissions/${encodeURIComponent(entry.id)}/task`);
-      const current = listDictationSubmissions().find(item => item.id === entry.id);
-      if (!current) return;
-      entry = current;
+  let associated = 0;
+  const failures: string[] = [];
+  if (!entry.taskId && !entry.launchError) {
+    try {
+      const receipt = await getDictationCorpusSubmissionTask(entry.id);
+      const latest = current();
+      if (!latest) return;
+      entry = latest;
       if (receipt.ok && receipt.body?.taskId) {
-        entry = { ...current, taskId: current.taskId ?? receipt.body.taskId };
+        entry = { ...latest, taskId: latest.taskId ?? receipt.body.taskId };
         write('submission', entry);
+      } else if (!receipt.ok) pending = true;
+    } catch { pending = true; }
+  }
+  // One failed audio write or annotation must not suppress a different clip or field.
+  for (const originalField of entry.fields) {
+    if (!current()) return;
+    let field = originalField;
+    if (!field.archiveMembership) {
+      const membership: ArchiveMembership = { recordingIds: [], unavailableRecordings: [] };
+      let fieldPending = false;
+      let fieldFailed = false;
+      for (const [position, link] of field.recordings.entries()) {
+        if (!current()) return;
+        if (!link.recordingId || !link.ownerToken) continue;
+        try {
+          const result = await getDictationCorpusRecordStatus(link.recordingId);
+          if (!current()) return;
+          const archive = result.ok && result.body && 'archive' in result.body ? result.body.archive : null;
+          let unavailable: string | undefined;
+          if (result.status === 404 || result.status === 410) unavailable = result.status === 404 ? 'corpus_not_found' : 'corpus_gone';
+          else if (!result.ok) {
+            const reason = errorReason(result.body, result.status);
+            if (reason === 'corpus_pending') fieldPending = true;
+            else { failures.push(reason); fieldFailed = true; }
+          } else if (archive?.status === 'pending') fieldPending = true;
+          else if (archive?.status === 'failed' || archive?.status === 'omitted') unavailable = `corpus_archive_${archive.status}`;
+          else if (archive?.status === 'saved') {
+            if (result.body && 'audioAvailable' in result.body && result.body.audioAvailable === false) unavailable = 'corpus_audio_unavailable';
+            else membership.recordingIds.push(link.recordingId);
+          } else { failures.push('Archive status unavailable'); fieldFailed = true; }
+          if (unavailable) membership.unavailableRecordings.push({ recordingId: link.recordingId, position, reason: unavailable });
+        } catch (error) {
+          if (!current()) return;
+          fieldFailed = true;
+          failures.push(error instanceof Error ? error.message : 'Archive unavailable');
+        }
       }
+      if (fieldPending || fieldFailed) { pending ||= fieldPending; continue; }
+      const latest = current();
+      if (!latest) return;
+      const latestField = latest.fields.find(item => item.field === field.field);
+      if (!latestField) return;
+      // Another tab may have frozen the same submission while status requests ran.
+      // Keep that persisted body so every operation ID has one immutable payload.
+      if (!latestField.archiveMembership) {
+        write('submission', { ...latest, fields: latest.fields.map(item => item.field === field.field ? { ...item, archiveMembership: membership } : item) });
+      }
+      field = current()?.fields.find(item => item.field === field.field) ?? field;
+      if (!field.archiveMembership || !current()) return;
     }
-    for (const field of entry.fields) {
-      const recordIds = field.recordings.filter(link => link.recordingId && link.ownerToken && link.status !== 'omitted').map(link => link.recordingId!);
-      for (const link of field.recordings) {
-        if (!listDictationSubmissions().some(item => item.id === entry.id)) return;
-        if (!link.recordingId || !link.ownerToken || link.status === 'omitted') { omitted = true; continue; }
-        const common = { ownerToken: link.ownerToken, draftId: link.draftId, field: link.field, submissionId: entry.id };
-        const result = await postDictationAnnotation(link.recordingId, { ...common, operationId: `${entry.id}:${link.recordingId}:submission`, kind: 'submission', recordingIds: recordIds, beforeText: link.beforeText, deliveredText: link.deliveredText, submittedText: field.submittedText });
-        if (!listDictationSubmissions().some(item => item.id === entry.id)) return;
+    const membership = field.archiveMembership;
+    if (membership.unavailableRecordings.length) failures.push(`${membership.unavailableRecordings.length} recording(s) unavailable; retained recordings are saved independently.`);
+    for (const link of field.recordings) {
+      if (!current()) return;
+      if (!link.recordingId || !link.ownerToken || !membership.recordingIds.includes(link.recordingId)) continue;
+      const common = { ownerToken: link.ownerToken, draftId: link.draftId, field: link.field, submissionId: entry.id };
+      try {
+        const result = await postDictationAnnotation(link.recordingId, {
+          ...common, operationId: `${entry.id}:${link.recordingId}:submission`, kind: 'submission',
+          recordingIds: membership.recordingIds,
+          ...(membership.unavailableRecordings.length ? { unavailableRecordings: membership.unavailableRecordings } : {}),
+          beforeText: link.beforeText, deliveredText: link.deliveredText, submittedText: field.submittedText,
+        });
+        if (!current()) return;
         if (!result.ok) {
           const reason = errorReason(result.body, result.status);
-          if (reason === 'corpus_pending') { pending = true; continue; }
-          throw new Error(reason);
+          if (reason === 'corpus_pending') pending = true;
+          else failures.push(reason);
+          continue;
         }
         retained++;
-        if (entry.taskId) {
-          const result = await postDictationAnnotation(link.recordingId, { ...common, operationId: `${entry.id}:${link.recordingId}:task`, kind: 'task', taskId: entry.taskId });
-          if (!listDictationSubmissions().some(item => item.id === entry.id)) return;
-          if (!result.ok) throw new Error(errorReason(result.body, result.status));
+        const taskId = current()?.taskId;
+        if (taskId) {
+          const result = await postDictationAnnotation(link.recordingId, { ...common, operationId: `${entry.id}:${link.recordingId}:task`, kind: 'task', taskId });
+          if (!current()) return;
+          if (result.ok) associated++;
+          else failures.push(errorReason(result.body, result.status));
         }
+      } catch (error) {
+        if (!current()) return;
+        failures.push(error instanceof Error ? error.message : 'Archive unavailable');
       }
     }
-    // An acknowledgement can arrive during an archive request. Preserve it and
-    // retry its task annotation instead of overwriting it with the old snapshot.
-    const latest = listDictationSubmissions().find(item => item.id === entry.id);
-    if (!latest) return;
-    const newAck = latest.taskId && latest.taskId !== entry.taskId;
-    write('submission', { ...latest, status: pending || newAck ? 'pending' : retained ? 'saved' : 'omitted', reason: pending ? 'Audio persistence is still pending.' : omitted ? 'Some recordings were omitted or incomplete.' : undefined });
-  } catch (error) {
-    const latest = listDictationSubmissions().find(item => item.id === entry.id);
-    if (latest) write('submission', { ...latest, status: 'failed', reason: error instanceof Error ? error.message : 'Archive unavailable' });
   }
+  const latest = current();
+  if (!latest) return;
+  const needsTaskAssociation = Boolean(latest.taskId && associated < retained);
+  write('submission', {
+    ...latest, status: failures.length ? 'failed' : pending || needsTaskAssociation ? 'pending' : retained ? 'saved' : 'omitted',
+    reason: failures[0] ?? (pending ? 'Audio persistence or task association is still pending.' : undefined),
+  });
 }
 async function retryLink(link: DictationLink): Promise<void> {
   if (!link.recordingId || link.status === 'omitted' || !listDictationLinks().some(item => item.id === link.id)) return;

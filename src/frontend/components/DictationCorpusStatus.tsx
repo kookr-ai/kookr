@@ -1,5 +1,6 @@
 import './DictationCorpusStatus.css';
 import React, { useEffect, useSyncExternalStore } from 'react';
+import { explainDictationCorpusReason } from '../dictation-corpus-reason.js';
 import {
   dictationCorpusVersion, subscribeDictationCorpus, listDictationLinks, listDictationSubmissions,
   retryDictationCorpus, discardDictationCorpusEntry, resumeDictationCorpusRetries,
@@ -17,10 +18,10 @@ export function DictationCorpusStatus({ draftId }: { draftId?: string }) {
   const submissions = listDictationSubmissions().filter(entry => !draftId || entry.draftId === draftId);
   const entries = [...listDictationLinks().filter(entry => (!draftId || entry.draftId === draftId) && !submissions.some(submission => submission.fields.some(field => field.recordings.some(link => link.id === entry.id)))), ...submissions];
   if (!entries.length) return null;
-  return <div className="dictation-corpus-status" aria-label="Dictation archive status">
+  return <div className="dictation-corpus-status" role="group" aria-label="Dictation archive status">
     {entries.map(entry => <div className="dictation-corpus-status-entry" key={entry.id}>
       <span role="status">Dictation {'fields' in entry ? 'edits' : 'audio'}: {entry.status}.
-        {entry.reason ? ` ${entry.reason}` : ''}
+        {entry.reason ? ` ${explainDictationCorpusReason(entry.reason)}` : ''}
         {!entry.persisted ? ' Browser storage unavailable; keep this tab open.' : ''}
         {'fields' in entry && entry.taskId ? ' Task linked.' : ''}
         {'fields' in entry && entry.launchError ? ' Task launch failed; no task linked.' : ''}

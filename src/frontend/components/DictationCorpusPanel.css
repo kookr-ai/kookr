@@ -18,7 +18,7 @@
 .corpus-confirm input { margin-top: 3px; flex-shrink: 0; }
 .corpus-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .corpus-export { display: flex; align-items: flex-end; flex-wrap: wrap; gap: 8px; }
-.corpus-export .dictation-corpus .corpus-field { margin-bottom: 0; flex: 1; min-width: 200px; }
+.dictation-corpus .corpus-export .corpus-field { margin-bottom: 0; flex: 1; min-width: 200px; }
 .corpus-details { border-top: 1px solid var(--border-dim); padding-top: 10px; font-size: 12px; }
 .corpus-details summary { cursor: pointer; margin-bottom: 8px; color: var(--text-bright); }
 .corpus-submission { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
@@ -27,3 +27,5 @@
 
 .settings-dialog-tabs { overflow-x: auto; }
 .settings-dialog-tabs .dialog-tab { flex-shrink: 0; }
+
+.corpus-unavailable ul { padding-left: 20px; margin-top: 6px; color: var(--text-secondary); line-height: 1.5; }

@@ -13,6 +13,7 @@ interface CorpusService {
   root: string;
   prediction: string;
   control(action: 'hold' | 'release' | 'fail'): Promise<void>;
+  restart(): Promise<void>;
 }
 
 async function ready(proc: ChildProcess, marker: string): Promise<number> {
@@ -59,22 +60,29 @@ export const test = base.extend<object, { corpus: CorpusService; corpusEnabled: 
     await once(inference, 'listening');
     const address = inference.address();
     if (!address || typeof address === 'string') throw new Error('Inference fixture did not bind a TCP port');
-    const proc = spawn('node', [join(__dirname, 'dictation-corpus-sidecar.mjs')], {
+    const startSidecar = (port = 0) => spawn('node', [join(__dirname, 'dictation-corpus-sidecar.mjs')], {
       cwd: join(__dirname, '..'),
       env: sanitizedChildServerEnv({
         STT_BACKEND: 'qwen', QWEN_ASR_MODEL: 'corpus-cpu-fixture',
         QWEN_ASR_URL: `http://127.0.0.1:${address.port}`,
         KOOKR_STT_CORPUS: String(corpusEnabled), KOOKR_STT_CORPUS_DIR: root,
         PROGRESSIVE_INTERVAL: '60', MIN_AUDIO_SECONDS: '1',
+        E2E_CORPUS_STT_PORT: String(port),
       }),
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    let proc = startSidecar();
     try {
       const port = await ready(proc, 'CORPUS_STT_PORT');
       await use({
         url: `ws://127.0.0.1:${port}`, root,
         get prediction() { return state.prediction; },
         set prediction(value) { state.prediction = value; },
+        restart: async () => {
+          await stop(proc);
+          proc = startSidecar(port);
+          expect(await ready(proc, 'CORPUS_STT_PORT')).toBe(port);
+        },
         control: (action) => new Promise<void>((resolve, reject) => {
           const id = randomUUID();
           const timeout = setTimeout(() => { proc.off('message', listener); reject(new Error('Sidecar control timed out')); }, 5_000);

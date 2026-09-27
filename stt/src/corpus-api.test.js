@@ -258,3 +258,56 @@ test('export rejects an oversized manifest while smaller review pages remain ava
   await expect(corpus.api.exportManifest()).rejects.toMatchObject({ status: 413 });
 });
 
+
+test('a missing clip after a failed write and restart preserves its position beside a retained owned clip', async () => {
+  let failedId;
+  const { corpus, identity: failed, env } = await fixture({ fileSystem: { writeFile: async (filename, ...args) => {
+    if (failedId && filename.includes(`.pending-${failedId}`)) throw new Error('controlled audio write failure');
+    return fs.writeFile(filename, ...args);
+  } } });
+  failedId = failed.recordingId;
+  expect(await corpus.write(record(failed))).toBeNull();
+  const saved = corpus.reserve(owner);
+  await corpus.write(record(saved));
+  const foreign = corpus.reserve({ ...owner, draftId: 'another-draft' });
+  await corpus.write(record(foreign));
+
+  const restarted = createTranscriptionCorpus({ env });
+  await expect(restarted.api.get(failed.recordingId)).rejects.toMatchObject({ status: 404 });
+  const unavailable = [{ recordingId: failed.recordingId, position: 0, reason: 'corpus_write_failed' }];
+  const body = submission(saved, { unavailableRecordings: unavailable });
+  const result = await restarted.api.annotate(saved.recordingId, body);
+  expect(result.annotation).toMatchObject({
+    recordingIds: [saved.recordingId], unavailableRecordings: unavailable,
+    submittedText: 'Exact edited prompt + typed addition',
+  });
+  // JSON object key order is not part of an operation's identity.
+  const retry = { ...body, unavailableRecordings: [{ reason: 'corpus_write_failed', position: 0, recordingId: failed.recordingId }] };
+  expect(await restarted.api.annotate(saved.recordingId, retry)).toMatchObject({ duplicate: true, annotation: { revision: 1 } });
+  expect(await createTranscriptionCorpus({ env }).api.annotate(saved.recordingId, body)).toMatchObject({ duplicate: true });
+  await expect(restarted.api.annotate(saved.recordingId, { ...body, unavailableRecordings: [{ ...unavailable[0], reason: 'different_loss' }] })).rejects.toMatchObject({ message: 'corpus_operation_conflict' });
+  await expect(restarted.api.annotate(saved.recordingId, submission(saved, {
+    operationId: 'foreign-link', submissionId: 'foreign-attempt',
+    recordingIds: [saved.recordingId, foreign.recordingId], unavailableRecordings: unavailable,
+  }))).rejects.toMatchObject({ message: 'corpus_owner_mismatch', status: 403 });
+});
+
+test('unavailable membership rejects malformed, overlapping, unordered and unbounded loss reports', async () => {
+  const { corpus, identity } = await fixture();
+  await corpus.write(record(identity));
+  const absentId = randomUUID();
+  const valid = { recordingId: absentId, position: 0, reason: 'corpus_not_found' };
+  const malformed = [
+    null, {}, [null], [{ ...valid, filename: '../outside' }], [{ ...valid, recordingId: '../outside' }],
+    [{ ...valid, recordingId: identity.recordingId }], [{ ...valid, position: -1 }], [{ ...valid, position: 32 }],
+    [{ ...valid, position: 0.5 }], [{ ...valid, reason: '' }], [{ ...valid, reason: 'x'.repeat(129) }],
+    [{ ...valid, reason: 'private text instead of a reason code' }],
+    [valid, { ...valid, position: 1 }], [valid, { ...valid, recordingId: randomUUID() }],
+    [{ ...valid, position: 2 }, { ...valid, recordingId: randomUUID(), position: 1 }],
+    Array.from({ length: 32 }, (_, position) => ({ ...valid, recordingId: randomUUID(), position })),
+  ];
+  for (const unavailableRecordings of malformed) {
+    expect(() => corpus.api.annotate(identity.recordingId, submission(identity, { unavailableRecordings }))).toThrow('corpus_invalid_unavailable_recordings');
+  }
+  expect((await corpus.api.annotate(identity.recordingId, submission(identity, { unavailableRecordings: [valid] }))).annotation.unavailableRecordings).toEqual([valid]);
+});

@@ -96,6 +96,19 @@ describe('R19.5 later dictation review', () => {
     expect(container.textContent).toContain('Edited prompt plus typed addition.');
   });
 
+  test('shows missing contributing clips separately from retained recordings and preserves the field snapshot', async () => {
+    currentRecord = recording({ annotations: [{ ...recording().annotations[0], unavailableRecordings: [
+      { recordingId: 'missing-recording', position: 1, reason: 'corpus_not_found' },
+    ] }] });
+    await render();
+    expect(container.textContent).toContain('1 retained recording');
+    expect(container.textContent).toContain('1 unavailable recording');
+    expect(container.textContent).toContain('Clip 2: The recording is no longer available');
+    expect(container.textContent).toContain('These clips have no verified audio/reference link.');
+    expect(container.textContent).toContain('Edited prompt plus typed addition.');
+    expect(container.querySelector('textarea')?.value).toBe('Original prediction.');
+  });
+
   test('requires playback and explicit listening confirmation for a faithful reference', async () => {
     await render(); await status('faithful');
     expect(button('Save review').disabled).toBe(true);
@@ -135,6 +148,14 @@ describe('R19.5 later dictation review', () => {
     expect(postCalls).toHaveLength(0);
     expect(container.textContent).toContain('Review was not confirmed saved');
     expect(button('Save review').disabled).toBe(false);
+  });
+
+  test('explains missing archive audio without exposing a diagnostic code as the message', async () => {
+    currentRecord = recording({ audioAvailable: false,
+      archive: { status: 'failed', complete: false, reason: 'corpus_audio_missing_or_invalid' } });
+    await render();
+    expect(container.textContent).toContain('The original audio is missing or does not match its saved hash.');
+    expect(container.textContent).not.toContain('corpus_audio_missing_or_invalid');
   });
 
   test('retains the same operation ID after a lost response so retry cannot duplicate a review', async () => {
