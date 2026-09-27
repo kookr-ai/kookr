@@ -1,3 +1,5 @@
+import type { DictationDelivery } from './dictation-corpus.js';
+
 /** Text only: recovery never saves microphone audio or enables the opt-in corpus. */
 export const DICTATION_RECOVERY_KEY = 'kookr:dictationRecovery:v1';
 export const DICTATION_RECOVERY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -12,6 +14,7 @@ export interface DictationRecovery {
   truncated: boolean;
   /** False means this tab can recover it, but a reload cannot be guaranteed. */
   persisted: boolean;
+  corpus?: DictationDelivery;
 }
 
 // If storage fails, keep the complete latest snapshot in this tab. In particular,
@@ -116,4 +119,13 @@ export function discardDictationRecovery(owner: string, id: string): void {
 /** A stopped/unmounted capture releases capacity; saved words remain available. */
 export function releaseDictationReservation(id: string): void {
   activeReservations.delete(id);
+}
+
+/** An error-frame identity may retain incomplete audio; restored words never certify it. */
+export function saveDictationRecoveryCorpus(draft: DictationRecovery, corpus: DictationDelivery): void {
+  const entries = read();
+  const index = entries.findIndex(entry => entry.owner === draft.owner && entry.id === draft.id);
+  if (index < 0) return;
+  entries[index] = { ...entries[index], corpus: { ...corpus, complete: false } };
+  write(entries);
 }

@@ -5,7 +5,20 @@ import { join } from 'node:path';
 import { WebSocket } from 'ws';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-const { transcribe } = vi.hoisted(() => ({ transcribe: vi.fn() }));
+const { transcribe, tokenFailures } = vi.hoisted(() => ({ transcribe: vi.fn(), tokenFailures: { remaining: 0 } }));
+vi.mock('./transcription-corpus.cjs', async (importOriginal) => {
+  const original = await importOriginal();
+  const io = await import('node:fs/promises');
+  return { ...original, createTranscriptionCorpus: (options = {}) => original.createTranscriptionCorpus({ ...options,
+    fileSystem: { ...options.fileSystem, link: async (...args) => {
+      if (tokenFailures.remaining > 0) {
+        tokenFailures.remaining--;
+        throw new Error('controlled transient API credential publication failure');
+      }
+      return io.link(...args);
+    } },
+  }) };
+});
 vi.mock('./backends/index.js', () => ({
   createTranscriptionBackend: () => ({ name: 'qwen', modelName: 'test-model', transcribe }),
 }));
@@ -36,18 +49,18 @@ async function control(ws, message, response) {
   return pending;
 }
 
-async function connect() {
+async function connect(owner) {
   const ws = new WebSocket(`ws://127.0.0.1:${stt.httpServer.address().port}`);
   clients.push(ws);
   await once(ws, 'open');
-  await control(ws, { type: 'config', language: 'fr', progressive: true }, (f) => f.type === 'config_ack');
+  await control(ws, { type: 'config', language: 'fr', progressive: true, ...(owner ? { corpus_owner: owner } : {}) }, (f) => f.type === 'config_ack');
   return ws;
 }
 
 async function records() {
   await stt.transcriptionCorpus.flush();
   const result = [];
-  for (const date of await readdir(root)) {
+  for (const date of (await readdir(root)).filter((name) => /^\d{4}-\d{2}-\d{2}$/.test(name))) {
     for (const id of await readdir(join(root, date))) {
       const directory = join(root, date, id);
       result.push({ directory, record: JSON.parse(await readFile(join(directory, 'record.json'))) });
@@ -58,6 +71,7 @@ async function records() {
 
 beforeEach(async () => {
   vi.resetModules();
+  tokenFailures.remaining = 0;
   root = await mkdtemp(join(tmpdir(), 'stt-corpus-ws-'));
   clients = [];
   vi.stubEnv('KOOKR_STT_CORPUS', 'true');
@@ -113,8 +127,10 @@ test('saves full original PCM once with final text despite rolling-window trimmi
   ws.send(JSON.stringify({ type: 'stop' }));
   await control(ws, { type: 'ping' }, (f) => f.type === 'pong');
   expect(final.text).toBe('Bonjour. Kookr.');
+  expect(final.corpus).toMatchObject({ recordingId: expect.any(String), ownerToken: expect.any(String), complete: true, status: 'pending' });
   const saved = await records();
   expect(saved).toHaveLength(1);
+  expect(saved[0].record.id).toBe(final.corpus.recordingId);
   expect(saved[0].record.metadata).toMatchObject({
     source: 'browser', status: 'success', transcript: final.text, durationSeconds: 3,
     language: 'fr', model: { requested: 'test-model', recognition: { vocabulary: 'Kookr' } },
@@ -132,6 +148,7 @@ test('disabled collection writes nothing and preserves transcription', async () 
   ws.send(Buffer.alloc(32000));
   const final = await control(ws, { type: 'stop' }, (f) => f.is_final);
   expect(final.text).toBe('Bonjour Kookr.');
+  expect(final.corpus).toEqual({ recordingId: null, complete: false, status: 'omitted', reason: 'collection_disabled' });
   expect(await records()).toEqual([]);
 });
 
@@ -186,8 +203,40 @@ test('inference failure is distinguished from a successful empty prediction', as
   await start();
   const ws = await connect();
   ws.send(Buffer.alloc(32000));
-  await control(ws, { type: 'stop' }, (f) => f.type === 'error');
+  const error = await control(ws, { type: 'stop' }, (f) => f.type === 'error');
+  expect(error.corpus).toMatchObject({ recordingId: expect.any(String), complete: false, status: 'pending' });
   const saved = await records();
   expect(saved).toHaveLength(1);
   expect(saved[0].record.metadata).toMatchObject({ status: 'error', errorCode: 'inference_failed' });
+});
+
+
+test('recording ownership is fixed before audio and late config cannot retarget its annotation', async () => {
+  await start();
+  const owner = { draftId: 'launch:draft-one', field: 'prompt' };
+  const ws = await connect(owner);
+  ws.send(Buffer.alloc(32000));
+  await control(ws, { type: 'config', corpus_owner: { draftId: 'launch:other-tab', field: 'criteria' } }, (f) => f.type === 'config_ack');
+  const final = await control(ws, { type: 'stop' }, (f) => f.is_final);
+  await records();
+  const view = await stt.transcriptionCorpus.api.get(final.corpus.recordingId);
+  expect(view.owner).toEqual(owner);
+  expect(view.archive).toEqual({ status: 'saved', complete: true });
+  const body = { operationId: 'submitted', kind: 'submission', ownerToken: final.corpus.ownerToken, ...owner,
+    submissionId: 'launch-attempt', recordingIds: [final.corpus.recordingId], beforeText: '', deliveredText: final.text, submittedText: 'Edited in original draft' };
+  expect((await stt.transcriptionCorpus.api.annotate(final.corpus.recordingId, body)).annotation.submittedText).toBe('Edited in original draft');
+});
+
+
+test('a speech connection retries failed API credential setup without interrupting dictation', async () => {
+  tokenFailures.remaining = 1;
+  await start();
+  await expect(readFile(join(root, '.api-token'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  const ws = await connect({ draftId: 'launch:credential-retry', field: 'prompt' });
+  ws.send(Buffer.alloc(32000));
+  const final = await control(ws, { type: 'stop' }, (frame) => frame.is_final);
+  expect(final.text).toBe('Bonjour Kookr.');
+  await vi.waitFor(async () => expect(await readFile(join(root, '.api-token'), 'utf8')).toMatch(/^[a-f0-9]{64}$/));
+  expect(tokenFailures.remaining).toBe(0);
+  expect(await records()).toHaveLength(1);
 });

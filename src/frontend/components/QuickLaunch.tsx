@@ -33,9 +33,11 @@ import { LAUNCH_QUOTA_BANNER_ID, LaunchQuotaBanner } from './LaunchQuotaBanner.j
 import { useLaunchQuotaWarning } from '../hooks/useLaunchQuotaWarning.js';
 import { RecentPromptsPicker } from './RecentPromptsPicker.js';
 import { track } from '../telemetry.js';
-import { loadQuickLaunchDictationId, renewQuickLaunchDictationId } from '../store/quick-launch-dictation-id.js';
+import { loadQuickLaunchDictationId, renewQuickLaunchDictationId, loadQuickDictationDraft, saveQuickDictationDraft, clearQuickDictationDraft } from '../store/quick-launch-dictation-id.js';
 import { hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
 import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
+import { retainDictation, submitDictationDraft, acknowledgeDictationLaunch, dictationLaunchConfirmed, resumeDictationCorpusRetries, type DictationDelivery } from '../store/dictation-corpus.js';
+import { DictationCorpusStatus } from './DictationCorpusStatus.js';
 import { appendDictation } from '../append-dictation.js';
 import { looksLikeAbsoluteClipboardPath, readClipboardText } from '../clipboard.js';
 
@@ -50,15 +52,22 @@ interface Props {
 }
 
 export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
-  const [dictationId] = useState(loadQuickLaunchDictationId);
+  const [dictationId] = useState(() => {
+    const id = loadQuickLaunchDictationId();
+    const draft = loadQuickDictationDraft(id);
+    if (draft?.submissionId && dictationLaunchConfirmed(draft.submissionId)) { clearQuickDictationDraft(id); return renewQuickLaunchDictationId(); }
+    return id;
+  });
+  const [initialDictationDraft] = useState(() => loadQuickDictationDraft(dictationId));
   const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
   const [capturePending, setCapturePending] = useState(false);
   const dictationOwnerPrefix = `quick:${dictationId}:`;
   const dictationPending = capturePending || hasPendingDictation(dictationOwnerPrefix);
-  const [prompt, setPrompt] = useState('');
-  const [cwd, setCwd] = useState('');
+  const [prompt, setPrompt] = useState(initialDictationDraft?.prompt ?? '');
+  const [cwd, setCwd] = useState(initialDictationDraft?.cwd ?? '');
   const inputRef = useRef<HTMLInputElement>(null);
-  const preserveFailedDraftRef = useRef(false);
+  const preserveFailedDraftRef = useRef(Boolean(initialDictationDraft));
+  const submittedCorpusRef = useRef<string | undefined>(undefined);
   const hasManualAgentChoiceRef = useRef(false);
   const hasManualCwdRef = useRef(false);
   const submitAttemptRef = useRef(0);
@@ -109,6 +118,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
   const [model, setModel] = useState(initialPins.model);
   const [agentFallbackNotice, setAgentFallbackNotice] = useState<string | null>(null);
   const selectedAgentType = agents.find((agent) => agent.agentId === selectedAgentId)?.agentType;
+
+  useEffect(() => {
+    if (sttUrl && !submittedCorpusRef.current && (prompt || initialDictationDraft)) saveQuickDictationDraft(dictationId, { prompt, cwd });
+  }, [prompt, cwd, dictationId, sttUrl, initialDictationDraft]);
 
   // Resolve CWD: selected agent's task CWD > most recent path > server CWD
   useEffect(() => {
@@ -220,6 +233,12 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     grokAuth ? !grokAuth.launchWouldRefuse : undefined,
   );
 
+  function receivePrompt(text: string, delivery: DictationDelivery) {
+    retainDictation({ draftId: dictationId, field: 'prompt', context: dictationOwner }, inputRef.current?.value ?? prompt, text, delivery);
+    setPrompt(current => appendDictation(current, text));
+    resumeDictationCorpusRetries();
+  }
+
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd || grokAuthBlocksLaunch || dictationPending || hasPendingDictation(dictationOwnerPrefix)) return;
@@ -228,8 +247,10 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
     }
     submitAttemptRef.current += 1;
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
+    const corpusSubmissionId = submitDictationDraft(dictationId, [{ field: 'prompt', text: prompt }]);
     const sent = send({
       type: 'launch',
+      ...(corpusSubmissionId ? { dictationSubmissionId: corpusSubmissionId } : {}),
       prompt: trimmed,
       cwd,
       agentType,
@@ -244,12 +265,16 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
       } catch {
         // Browser storage is best-effort; the launch was already dispatched.
       }
-      renewQuickLaunchDictationId();
+      if (corpusSubmissionId) {
+        submittedCorpusRef.current = corpusSubmissionId;
+        saveQuickDictationDraft(dictationId, { prompt, cwd, submissionId: corpusSubmissionId });
+      } else { clearQuickDictationDraft(dictationId); renewQuickLaunchDictationId(); }
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
       onClose();
     } else {
+      if (corpusSubmissionId) acknowledgeDictationLaunch(corpusSubmissionId, undefined, 'Not connected');
       preserveFailedDraftRef.current = true;
       useKookrStore.getState().handleAlert(
         '',
@@ -257,6 +282,7 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         'error',
       );
     }
+    resumeDictationCorpusRetries();
   }
 
   function handleSubmit() {
@@ -387,10 +413,11 @@ export function QuickLaunch({ send, onClose, sttShortcutBinding }: Props) {
         />
         {sttUrl && (
           <Suspense fallback={null}>
-            <VoiceInputButton key={dictationOwner} recoveryKey={dictationOwner} recoveryLabel="quick launch prompt" onPendingChange={setCapturePending} onRecoveryResolved={() => inputRef.current?.focus()} inputId="quick-launch" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+            <VoiceInputButton key={dictationOwner} recoveryKey={dictationOwner} recoveryLabel="quick launch prompt" onPendingChange={setCapturePending} onRecoveryResolved={() => inputRef.current?.focus()} inputId="quick-launch" corpusOwner={{ draftId: dictationId, field: 'prompt' }} onTranscript={receivePrompt} shortcutBinding={sttShortcutBinding} />
           </Suspense>
         )}
       </div>
+      <DictationCorpusStatus draftId={dictationId} />
       {hiddenRecoveries.map(recovery => (
         <OtherContextDictationRecovery key={recovery.id} recovery={recovery} onChange={refreshRecoveries} inputRef={inputRef} />
       ))}

@@ -195,6 +195,111 @@ UUID directory is self-contained and can be moved or copied for offline
 evaluation. Raw recordings can contain the same private information spoken
 into a task, so keep the corpus outside Git and preserve its private permissions.
 
+## Retaining edits and reviewing recordings
+
+With collection enabled, dictate into the launch dialog's prompt or completion
+criteria, or Quick Launch. Edit the field normally and select **Launch**.
+Kookr retains the original prediction and records the exact submitted field
+text before adding generated instructions. Typed additions and several clips
+can share a field; the field snapshot is therefore a review candidate, never
+an automatic transcript for each clip. Failed launches retain their submission
+attempt without claiming that a task was created.
+
+Recording links survive closing and reopening the launcher and reloading the
+tab. Changing the launch directory also keeps the links for completed dictation
+whose text remains in the same draft and field. Other tabs own independent drafts.
+Archival status distinguishes pending,
+saved, failed and omitted data. Launch does not wait for disk writes. Retry
+retained submissions after temporary failures, or discard their local retry
+copies. Discarding a retry does not delete retained audio. If browser storage
+is unavailable, the current tab warns that its fallback cannot survive reload.
+Retry storage expires after seven days. It holds at most 48 recording links and
+48 submission attempts within a two-MiB text budget; each field is limited to
+32,000 characters and 32 recording links. Exceeding these limits produces an
+explicit omission instead of silently truncating the submitted text. Automatic
+retry runs for at most ten passes; the Retry control remains available afterward.
+
+If one clip fails to archive, the other clips can still retain the submitted
+field text and task association. A submission freezes its list of retained clips
+after pending audio writes settle. Failed or missing clips are recorded separately
+with their original positions and omission reasons; they are not treated as
+validated archive links. Retrying an annotation preserves this membership.
+
+Open **Settings → Dictation corpus** to review retained recordings after launch:
+
+1. Select a recording and compare its original prediction with its submitted
+   field snapshots. The recording also shows recognition settings and linked
+   task identifiers.
+2. Play the recording and enter a correction for that recording alone.
+3. Save it as an unreviewed candidate, a reformulation, or an excluded example.
+   After listening, explicitly confirm a faithful transcript to make it eligible
+   as a verified reference. Leaving the original words unchanged is not a review.
+4. Export verified pairs for evaluation, or include candidates for inspection.
+   Delete a selected example to remove its audio and associated annotations.
+
+Selecting **Save review** retains a local retry draft before sending the request.
+If saving fails or its response is lost, the correction and its operation identity
+survive closing Settings and reloading the tab. Edits to that retry are retained
+too. Up to twelve review retries are kept across this browser origin, each limited
+to 32,000 correction characters and seven days. Tabs keep separate review drafts.
+An explicit **Discard review retry** removes the local copy without deleting the
+recording. Deleting an example removes its review retries from all tabs.
+
+A restored listening confirmation applies only to the same complete, available
+audio with the same hash. A newer saved review requires an explicit comparison
+before your correction can become the next revision. If the retry limit is
+reached, keep the panel open until saving succeeds or discard an older retry.
+If browser storage is unavailable, the current tab can reopen its in-memory
+retry, but the panel warns that reloading may lose it.
+
+An export is a versioned JSON manifest. It retains original predictions, audio
+hashes, recognition provenance, submitted field snapshots and review revisions.
+Only the latest faithful review of complete, readable, hash-matching audio enters
+`verifiedPairs`. Other eligible records enter `candidates` with `reference: null`;
+excluded examples are left out. Audio URLs locate the retained originals on this
+Kookr server; the manifest does not embed or upload audio. Copy the dated recording
+directories separately when moving an evaluation set to another machine. Keep
+the corpus root's `.api-token` private; it is a service credential, not part of
+an evaluation set, and is never included in the manifest.
+Manifest export is limited to 2,000 recordings and eight MiB of JSON. A larger
+archive reports that limit instead of downloading a truncated manifest; paged
+review and the private on-disk corpus remain available. A recording retains at
+most 256 annotations and two MiB of annotation data.
+
+The original `record.json` and audio stay unchanged. Versioned annotations live
+beside the record and remain separate facts. Concurrent review saves use a
+revision check; compare the latest saved review after a conflict before choosing
+to save your correction as the next revision.
+The service validates recording identifiers and draft ownership, and rejects
+paths supplied by callers. Retried operations carry stable identifiers so a
+lost response cannot produce duplicate annotations.
+
+Collection limits still apply. Restored partial text, missing audio and recordings
+omitted by size or queue limits cannot become verified whole-recording pairs.
+The browser retains bounded retry text, not a replacement copy of lost audio.
+A failed audio write cannot be recovered after a speech-service restart merely
+by retrying its text annotation. Existing records survive disabling collection;
+the service performs no annotation writes while collection is disabled.
+
+The archive belongs to the configured Node speech service. Older or external
+services that do not advertise corpus support keep dictation usable but cannot
+save corrections or supply playback through this workflow. The main server
+checks capabilities before forwarding annotations and never invents a local
+audio pair for an external recording. Corpus HTTP access goes through Kookr's
+existing authentication. The bundled speech service also requires a private
+bearer credential for every corpus HTTP route. It generates that credential in
+the existing corpus directory with owner-only file permissions. Kookr reads it
+from the same directory; the existing Docker bind mount shares the file with
+the container, so Docker's network translation does not disable corpus access.
+Browser-origin requests remain rejected, and the proxy marker is an additional
+browser-request safeguard rather than a secret.
+
+Ordinary speech WebSockets keep their existing network behavior. Kookr sends
+the local corpus credential only to a configured loopback speech address. Remote
+speech services report corpus support as unavailable in this workflow; private
+annotations and the local credential are not forwarded to them. No production
+speech settings are changed automatically.
+
 ## Verification and diagnosis
 
 Check the Node dictation service on port 8003 and the GPU inference service on

@@ -518,6 +518,13 @@ export type ServerMessage =
       eventLoopDelayP95Ms?: number | null;
     }
   | {
+      /** Direct launch receipt. Failure retains the corpus candidate without guessing a task. */
+      type: 'dictationLaunchResult';
+      submissionId: string;
+      taskId?: string;
+      error?: string;
+    }
+  | {
       /**
        * Pre-blackout deploy notice (issue #1980). Broadcast on successful
        * `POST /api/deploy/trigger` *before* `prod-update` is spawned so
@@ -561,6 +568,8 @@ export type ClientMessage =
   | { type: 'cancelSnooze'; agentId: string; taskId?: string }
   | {
       type: 'launch';
+      /** Correlates the exact submitted dictation fields with the acknowledged task. */
+      dictationSubmissionId?: string;
       prompt: string;
       cwd: string;
       criteria?: string;
@@ -696,6 +705,7 @@ export const SERVER_MESSAGE_TYPES = [
   'diagnosticReport',
   'ossAttempts',
   'wsBackpressureNotice',
+  'dictationLaunchResult',
   'deployLifecycle',
 ] as const satisfies readonly ServerMessage['type'][];
 

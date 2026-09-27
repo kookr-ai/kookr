@@ -2109,7 +2109,7 @@ usage. Collection SHALL be disabled by default.
   writes and recording sizes are bounded; low disk space pauses capture without
   deleting existing recordings or failing transcription.
 - Disabling collection performs no corpus writes and retains existing data.
-  No corpus retrieval endpoint or external upload is added.
+  Review and retrieval follow R19.5; no external upload is added.
 
 **Evidence:** `stt/src/transcription-corpus.test.js`,
 `stt/src/server-corpus.test.js`, `src/integrations/telegram/transcribe.test.ts`,
@@ -2151,6 +2151,66 @@ and preserve text already typed by the operator.
 `e2e/voice-dictation-recovery.spec.ts`, `stt/src/server-finalization.test.js`,
 `stt/src/server-overflow.test.js`, and
 `docs/reports/3366-dictation-reliability.md`.
+
+### R19.5: Retain and Review Dictation Corrections [#3374] — SHALL — `done`
+
+When corpus collection is enabled, both launchers SHALL retain the connection
+between each dictated clip, its original prediction, and the field text submitted
+by the operator. A submitted edit is a candidate for review, not a verified
+transcript. Launch SHALL remain usable when archival fails.
+
+**Acceptance criteria:**
+
+- Allocate recording identity before delivering final text. Carry completeness
+  and pending, saved, failed or omitted archival status through the speech
+  protocol and callback. Resolve Launch-before-save independently of recognition.
+- Keep the original audio, its hash, prediction and recognition provenance
+  immutable. Version annotations through the service owning the archive with
+  bounded payloads, private permissions, validated identifiers and draft/field
+  ownership. Idempotent retries cannot duplicate or retarget an annotation.
+- Authenticate every underlying corpus HTTP route with a private service
+  credential, including reads and deletion. Share it through the existing
+  private corpus directory so the bundled Docker transport works; never forward
+  the local credential to a remote speech service or include it in an export.
+- Retain ordered clip links, text before insertion and delivered text in the
+  owning launch draft. Closing/reopening, reload, other drafts and concurrent
+  tabs cannot mix ownership; late speech callbacks cannot change another field.
+  Changing the launch directory must preserve links for completed dictation
+  whose text remains in that same draft and field.
+- At each submission, retain the exact authored prompt and criteria before
+  generated wrappers, separately from per-recording corrections. Associate the
+  submission with a task only from the server's correlated acknowledgement.
+  Failed or unacknowledged launches remain explicitly unassociated.
+- Show archival outcomes and retain a bounded browser retry draft with retry
+  and discard controls. Storage failures must be visible without blocking launch.
+  Disabled capture and unsupported external services report their limitations.
+- Provide a later-accessible review surface with playback, the original
+  prediction, submitted field snapshots, task association and model provenance.
+  Corrections have candidate, faithful transcript, reformulation or excluded
+  states. Only explicit confirmation after listening to that clip can establish
+  a faithful reference. An unchanged prediction is not automatically verified.
+  A failed or unacknowledged review save retains a bounded retry draft across
+  closing/reopening Settings and reload. Retry keeps its operation identity;
+  newer saved revisions require conflict resolution, and discard or deletion
+  cannot leave a retry that later recreates the review.
+- Incomplete recovery, omitted or missing audio cannot become complete
+  audio/reference pairs. Multiple clips and typed additions cannot turn a whole
+  task field into a reference for every clip.
+- Export a versioned manifest preserving hashes, predictions, provenance and
+  annotations. Separate explicitly verified pairs from unreviewed candidates and
+  exclusions. Delete one example and its annotations without escaping the corpus
+  root or allowing queued work to recreate it.
+- Verify service races, failures, restart, idempotence, ownership, annotation
+  selection and safe deletion with temporary corpora. Browser verification covers
+  both launchers and the edit → Launch → reopen/review → export journey.
+
+**Evidence:** `stt/src/corpus-api.test.js`, `stt/src/server-corpus.test.js`,
+`src/server/routes/dictation-corpus-routes.test.ts`,
+`src/frontend/store/dictation-corpus.test.ts`,
+`src/frontend/store/dictation-review-drafts.test.ts`,
+`src/frontend/components/DictationCorpusPanel.test.tsx`,
+`e2e/dictation-corpus.spec.ts` and `e2e/dictation-corpus-disabled.spec.ts`.
+See [speech recognition usage](reference/speech-recognition.md).
 
 ## Summary Matrix
 
@@ -2291,6 +2351,7 @@ and preserve text already typed by the operator.
 | R19.2 | Local Qwen recognition on GPU | SHALL | done | STT manager, Qwen HTTP service and backend, Telegram transcription |
 | R19.3 | Local transcription corpus | SHALL | done | Shared corpus writer, browser and Telegram capture, STT manager |
 | R19.4 | #3366 | SHALL | done | Dictation recovery store, VoiceInputButton, PCM drain, STT finalization |
+| R19.5 | #3374 | SHALL | done | Corpus annotation service, launch provenance, corpus review UI |
 
 ---
 

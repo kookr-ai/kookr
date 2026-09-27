@@ -566,3 +566,80 @@ describe('LifecycleHandler keepTaskAlive veto (RFC rfc-reap-grace-warning.md)', 
     }
   });
 });
+
+
+describe('dictation launch receipts', () => {
+  const submissionId = '5b7ee799-01a1-4e23-8e92-f049cbdd3b5d';
+  test('acknowledges only the actual task after its receipt has reached persistence', async () => {
+    const store = new TaskStore();
+    const task = store.createTask('dictated and edited', '/tmp');
+    let flushFinished = false;
+    const flushTasks = vi.fn(async () => { flushFinished = true; });
+    const { deps } = makeDeps(store, {
+      launchTask: vi.fn().mockResolvedValue({ task, queued: true }), flushTasks,
+      send: vi.fn((message) => {
+        if (message.type === 'dictationLaunchResult') expect(flushFinished).toBe(true);
+      }),
+    });
+    await new LifecycleHandler(deps).handle({ type: 'launch', prompt: task.prompt, cwd: '/tmp', dictationSubmissionId: submissionId });
+    expect(deps.send).toHaveBeenCalledWith({ type: 'dictationLaunchResult', submissionId, taskId: task.id });
+    const loaded = new TaskStore();
+    loaded.loadTasks(store.getAllTasks());
+    expect(loaded.findTaskByDictationSubmission(submissionId)?.id).toBe(task.id);
+  });
+
+  test('concurrent retries across sockets launch once, and retries after reload keep the association', async () => {
+    const store = new TaskStore();
+    const task = store.createTask('dictation', '/tmp');
+    const launchTask = vi.fn(async () => { await Promise.resolve(); return { task, queued: false }; });
+    const { deps } = makeDeps(store, { launchTask });
+    const message = { type: 'launch' as const, prompt: 'dictation', cwd: '/tmp', dictationSubmissionId: submissionId };
+    await Promise.all([new LifecycleHandler(deps).handle(message), new LifecycleHandler(deps).handle(message)]);
+    expect(launchTask).toHaveBeenCalledOnce();
+    const loaded = new TaskStore();
+    loaded.loadTasks(store.getAllTasks());
+    const next = makeDeps(loaded, { launchTask });
+    await new LifecycleHandler(next.deps).handle(message);
+    expect(launchTask).toHaveBeenCalledOnce();
+    expect(next.deps.send).toHaveBeenCalledWith({ type: 'dictationLaunchResult', submissionId, taskId: task.id });
+  });
+
+  test('failed launch and failed receipt persistence do not claim an acknowledged association', async () => {
+    const store = new TaskStore();
+    const { deps } = makeDeps(store, { launchTask: vi.fn().mockRejectedValue(new Error('cannot launch')) });
+    const message = { type: 'launch' as const, prompt: 'dictation', cwd: '/tmp', dictationSubmissionId: submissionId };
+    await new LifecycleHandler(deps).handle(message);
+    expect(store.findTaskByDictationSubmission(submissionId)).toBeUndefined();
+    expect(deps.send).toHaveBeenCalledWith({ type: 'dictationLaunchResult', submissionId, error: 'launch_failed' });
+    const task = store.createTask('dictation', '/tmp');
+    const later = makeDeps(store, {
+      launchTask: vi.fn().mockResolvedValue({ task, queued: false }),
+      flushTasks: vi.fn().mockRejectedValue(new Error('disk full')),
+    });
+    await new LifecycleHandler(later.deps).handle(message);
+    expect(later.deps.send).toHaveBeenCalledWith({ type: 'dictationLaunchResult', submissionId, error: 'corpus_task_receipt_pending' });
+  });
+});
+
+
+test('dictation receipts survive actual task-file persistence and cannot be retargeted', async () => {
+  const { saveTasks, loadTasks } = await import('../../core/task-persistence.js');
+  const directory = await mkdtemp(join(tmpdir(), 'dictation-receipt-'));
+  try {
+    const path = join(directory, 'tasks.json');
+    const store = new TaskStore();
+    const task = store.createTask('dictation', '/tmp');
+    const other = store.createTask('another task', '/tmp');
+    const id = '5b7ee799-01a1-4e23-8e92-f049cbdd3b5d';
+    store.recordDictationSubmission(task.id, id);
+    await saveTasks(store.getAllTasks(), path);
+    const reloaded = new TaskStore();
+    reloaded.loadTasks((await loadTasks(path)).tasks);
+    expect(reloaded.findTaskByDictationSubmission(id)?.id).toBe(task.id);
+    expect(() => reloaded.recordDictationSubmission(other.id, id)).toThrow('corpus_submission_conflict');
+    for (let index = 0; index < 127; index++) reloaded.recordDictationSubmission(task.id, `fixture-${index}`);
+    expect(() => reloaded.recordDictationSubmission(task.id, 'one-too-many')).toThrow('corpus_task_receipt_limit');
+    reloaded.recordDictationSubmission(task.id, id);
+    expect(reloaded.getTask(task.id)?.metadata?.dictationSubmissionIds).toHaveLength(128);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

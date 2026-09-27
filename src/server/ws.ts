@@ -215,6 +215,7 @@ export class MessageRouter {
       scheduleService: this.deps.scheduleService,
       ralphLoopService: this.deps.ralphLoopService,
       launchTask: this.deps.launchTask,
+      flushTasks: this.deps.agentLifecycleDeps?.flushTasks,
       broadcastToAll: this.deps.broadcastToAll,
       activityMetaProvider: this.deps.activityMetaProvider,
       takePredeleteSnapshot: this.deps.takePredeleteSnapshot,

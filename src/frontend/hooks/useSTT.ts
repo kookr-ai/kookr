@@ -13,10 +13,11 @@
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 
+import type { DictationDelivery, DictationField } from '../store/dictation-corpus.js';
 import type { STTLanguage } from '../store/stt-language.js';
 import {
   beginDictationRecovery, discardDictationRecovery, loadDictationRecovery, releaseDictationReservation,
-  saveDictationPartial, DICTATION_RECOVERY_TTL_MS, type DictationRecovery,
+  saveDictationRecoveryCorpus, saveDictationPartial, DICTATION_RECOVERY_TTL_MS, type DictationRecovery,
 } from '../store/dictation-recovery.js';
 
 export type STTState = 'starting' | 'idle' | 'recording' | 'processing' | 'error';
@@ -191,8 +192,25 @@ function createScriptProcessorFallback(
   return processor;
 }
 
+/** Older external services deliver text without promising a retained audio pair. */
+export function parseCorpusDelivery(value: unknown, deliveryId: string): DictationDelivery {
+  if (value && typeof value === 'object') {
+    const corpus = value as Record<string, unknown>;
+    if ((typeof corpus.recordingId === 'string' || corpus.recordingId === null)
+      && typeof corpus.complete === 'boolean'
+      && ['pending', 'saved', 'failed', 'omitted'].includes(String(corpus.status))) {
+      return { deliveryId, recordingId: corpus.recordingId, complete: corpus.complete,
+        status: corpus.status as DictationDelivery['status'],
+        ...(typeof corpus.ownerToken === 'string' ? { ownerToken: corpus.ownerToken } : {}),
+        ...(typeof corpus.reason === 'string' ? { reason: corpus.reason } : {}),
+      };
+    }
+  }
+  return { deliveryId, recordingId: null, complete: false, status: 'omitted', reason: 'This speech service does not provide corpus capture.' };
+}
+
 /** The callback receives each final result once, or partial text explicitly restored by the user. */
-export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (text: string) => void, recoveryOwner: string): UseSTTResult {
+export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (text: string, delivery: DictationDelivery) => void, recoveryOwner: string, corpusOwner?: { draftId: string; field: DictationField }): UseSTTResult {
   const [recovery, setRecovery] = useState(() => loadDictationRecovery(recoveryOwner));
   const recordingDraftRef = useRef<DictationRecovery | null>(null);
   const [state, setState] = useState<STTState>('idle');
@@ -353,11 +371,11 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       const ws = new WebSocket(sttUrl);
       wsRef.current = ws;
       ws.onopen = () => {
-        if (isCurrent()) ws.send(JSON.stringify({ type: 'config', language, progressive: true }));
+        if (isCurrent()) ws.send(JSON.stringify({ type: 'config', language, progressive: true, ...(corpusOwner ? { corpus_owner: corpusOwner } : {}) }));
       };
       ws.onmessage = (event) => {
         if (!isCurrent()) return;
-        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string; partial_text?: unknown; finalization_timeout_ms?: unknown };
+        let msg: { type?: string; language?: string; fixedText?: string; activeText?: string; text?: string; is_final?: boolean; error?: string; partial_text?: unknown; finalization_timeout_ms?: unknown; corpus?: unknown };
         try {
           msg = JSON.parse(event.data);
         } catch {
@@ -387,11 +405,12 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
           cleanup();
           // Capture this recording's consumer instead of retargeting to a
           // different input when props change while the service is processing.
-          if (msg.text.trim()) onTranscript(msg.text);
+          if (msg.text.trim()) onTranscript(msg.text, parseCorpusDelivery(msg.corpus, draft.id));
         } else if (msg.type === 'transcription' && msg.is_final === false && typeof msg.text === 'string') {
           savePartial(msg.text);
         } else if (msg.type === 'error') {
           if (typeof msg.partial_text === 'string' && msg.partial_text.trim()) savePartial(msg.partial_text);
+          if (msg.corpus) saveDictationRecoveryCorpus(draft, parseCorpusDelivery(msg.corpus, draft.id));
           markSTTDegraded(typeof msg.error === 'string' ? msg.error : 'Transcription failed');
           cleanup();
         }
@@ -454,7 +473,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
       setStateAndRef('error');
       cleanup();
     }
-  }, [sttUrl, language, onTranscript, recoveryOwner, cleanup]);
+  }, [sttUrl, language, onTranscript, recoveryOwner, corpusOwner, cleanup]);
 
   const stop = useCallback(() => {
     if (stateRef.current !== 'recording') return;
@@ -525,7 +544,7 @@ export function useSTT(sttUrl: string, language: STTLanguage, onTranscript: (tex
     discardDictationRecovery(current.owner, current.id);
     setRecovery(null);
     setTranscript('');
-    onTranscript(current.text);
+    onTranscript(current.text, current.corpus ? { ...current.corpus, complete: false } : { deliveryId: current.id, recordingId: null, complete: false, status: 'omitted', reason: 'Incomplete dictation restored; no complete recording is available.' });
   }, [recoveryOwner, onTranscript]);
 
   const retryHealth = useCallback(async () => {

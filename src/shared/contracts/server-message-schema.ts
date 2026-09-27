@@ -454,7 +454,15 @@ const deployLifecycleMessage = z.object({
   phase: z.literal('starting'),
 });
 
+const dictationLaunchResultMessage = z.object({
+  type: z.literal('dictationLaunchResult'),
+  submissionId: z.string().uuid(),
+  taskId: z.string().optional(),
+  error: z.string().optional(),
+});
+
 const ServerMessageSchemaImpl = z.union([
+  dictationLaunchResultMessage,
   snapshotMessage,
   deltaMessage,
   updateMessage,

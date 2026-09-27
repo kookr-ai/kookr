@@ -105,6 +105,8 @@ export interface AgentSubstitutionHop {
 }
 
 export interface TaskMetadata {
+  /** Explicit launch receipts; never inferred from the submitted prompt. Capped at 128 per task. */
+  dictationSubmissionIds?: string[];
   intent?: TaskMetadataIntent;
   /**
    * Marks a parent-linked task as an attended, user-initiated retry rather

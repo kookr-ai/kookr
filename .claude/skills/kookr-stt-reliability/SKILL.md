@@ -65,3 +65,43 @@ bounded window, a visible failure with recoverable text is truthful. Record
 that limit separately from ordinary substitutions or hallucinations. Cancelling
 Node's HTTP request cannot interrupt Python inference already running; retain
 its concurrency bound until the underlying GPU job finishes.
+
+## Corpus corrections and launch ownership
+
+When changing capture identity, launch snapshots or corpus review, use the CPU
+browser fixture. It runs the shipped speech protocol, corpus writer and dashboard
+proxy against a temporary corpus with controlled inference responses:
+
+```sh
+pnpm test:stt
+pnpm build:frontend
+pnpm exec playwright test e2e/dictation-corpus.spec.ts e2e/dictation-corpus-disabled.spec.ts e2e/voice-dictation.spec.ts e2e/voice-dictation-recovery.spec.ts --workers=1
+```
+
+The fixture can hold audio publication while Launch completes. Verify that the
+same recording later receives its submitted field snapshot and the server's
+actual task acknowledgement. Repeat across a reload with every editor closed:
+retry recovery must run at application reconnection, not depend on mounting the
+launcher or review panel. A receipt failure after a successful task launch means
+association is pending; it must not report that the task itself failed.
+
+Keep three facts separate: original recording/prediction, submitted field text,
+and listened-to per-recording correction. Typed additions and multiple clips
+make a whole submitted field unsuitable as a reference for each recording.
+Verify candidate, reformulation and excluded exports separately from faithful
+references; missing or incomplete audio cannot qualify. Deletion tests must use
+fixtures and cover queued publication, retries and unsafe paths. Never test
+deletion against the operator's corpus.
+
+Corpus HTTP requests require the private `.api-token` shared through the existing
+corpus directory. Give the fixture's Kookr server and sidecar the same temporary
+directory, initialize the key, and authenticate direct fixture requests. Test
+unauthenticated access over a real non-loopback socket: the proxy marker alone
+must never permit reads, review writes or deletion. A loopback-only peer filter
+is insufficient because Docker's bridge presents a different peer address to
+the bundled service. Keep the credential out of exports and shared datasets.
+
+The browser suite writes a screenshot and downloaded manifest under
+`runs/dictation-corpus-browser/`. Inspect their contents before reporting success.
+Keep the files available to the operator. These controlled fixtures establish
+workflow integrity; they do not establish recognition accuracy.

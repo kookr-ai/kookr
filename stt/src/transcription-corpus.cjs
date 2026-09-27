@@ -6,7 +6,9 @@
  * Human reference text is deliberately separate from the model's transcript.
  */
 const fs = require('node:fs/promises');
-const { createHash, randomUUID } = require('node:crypto');
+const { createHash, randomBytes, randomUUID } = require('node:crypto');
+const { constants } = require('node:fs');
+const { createCorpusApi } = require('./corpus-api.cjs');
 const { homedir } = require('node:os');
 const path = require('node:path');
 
@@ -56,6 +58,50 @@ async function ensureCorpusDirectory(directory, options = {}) {
   }
 }
 
+/** Read the shared service key without creating files when collection is off. */
+async function readCorpusApiToken(directory, options = {}) {
+  const io = { ...fs, ...options.fileSystem };
+  try {
+    const root = await io.lstat(directory);
+    if (!root.isDirectory() || root.isSymbolicLink() || (root.mode & 0o777) !== 0o700
+      || (typeof process.getuid === 'function' && root.uid !== process.getuid())) throw new Error('corpus_api_token_unsafe');
+    const handle = await io.open(path.join(directory, '.api-token'), constants.O_RDONLY | constants.O_NOFOLLOW);
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || (stat.mode & 0o777) !== 0o600 || stat.size !== 64
+        || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw new Error('corpus_api_token_unsafe');
+      const token = (await handle.readFile()).toString();
+      if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('corpus_api_token_unsafe');
+      return token;
+    } finally { await handle.close(); }
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    // Filesystem errors include private paths. The key itself is never logged.
+    throw new Error('corpus_api_token_unsafe');
+  }
+}
+
+/** Atomically create one persistent key shared through the existing private mount. */
+async function ensureCorpusApiToken(directory, options = {}) {
+  const io = { ...fs, ...options.fileSystem };
+  await ensureCorpusDirectory(directory, { fileSystem: io });
+  const existing = await readCorpusApiToken(directory, { fileSystem: io });
+  if (existing) return existing;
+  const token = randomBytes(32).toString('hex');
+  const temporary = path.join(directory, `.api-token-${randomUUID()}`);
+  try {
+    await io.writeFile(temporary, token, { mode: 0o600, flag: 'wx' });
+    try {
+      // Hard-link publication is atomic and fails if another process won the
+      // race. Readers can never observe an empty or partially written key.
+      await io.link(temporary, path.join(directory, '.api-token'));
+    } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    const saved = await readCorpusApiToken(directory, { fileSystem: io });
+    if (!saved) throw new Error('corpus_api_token_unavailable');
+    return saved;
+  } finally { await io.rm(temporary, { force: true }); }
+}
+
 function createTranscriptionCorpus(options = {}) {
   const config = getCorpusConfig(options.env);
   const io = { ...fs, ...options.fileSystem };
@@ -63,6 +109,35 @@ function createTranscriptionCorpus(options = {}) {
   const counts = { written: 0, skipped: 0, failed: 0 };
   let pending = 0;
   let tail = Promise.resolve();
+  const reservations = new Map();
+
+  function reserve(owner = null) {
+    if (!config.enabled) return null;
+    // Only terminal states are evicted; admitted audio writes stay addressable.
+    if (reservations.size >= 512) {
+      const oldest = [...reservations].find(([, value]) => value.status !== 'pending');
+      if (oldest) reservations.delete(oldest[0]);
+      else return null;
+    }
+    const id = randomUUID();
+    const ownerToken = randomUUID();
+    const validOwner = owner && typeof owner.draftId === 'string'
+      && /^[A-Za-z0-9_.:-]{1,200}$/.test(owner.draftId)
+      && ['prompt', 'criteria'].includes(owner.field);
+    const state = {
+      status: 'pending', complete: false,
+      recordedAt: new Date().toISOString(), metadata: null,
+      owner: validOwner ? { draftId: owner.draftId, field: owner.field,
+        tokenHash: createHash('sha256').update(ownerToken).digest('hex') } : null,
+    };
+    reservations.set(id, state);
+    return { recordingId: id, ownerToken };
+  }
+
+  function outcome(id, status, reason) {
+    const state = reservations.get(id);
+    if (state && !state.deleted) Object.assign(state, { status, ...(reason ? { reason } : {}) });
+  }
 
   function diagnostic(code) {
     // Filesystem errors can contain paths or input data. Log only fixed codes.
@@ -78,8 +153,10 @@ function createTranscriptionCorpus(options = {}) {
   async function persist(record) {
     let temporary;
     try {
-      const id = randomUUID();
-      const recordedAt = new Date().toISOString();
+      const id = record.id ?? randomUUID();
+      const state = reservations.get(id);
+      if (state?.deleted) return null;
+      const recordedAt = state?.recordedAt ?? new Date().toISOString();
       const dateDirectory = path.join(config.directory, recordedAt.slice(0, 10));
       const destination = path.join(dateDirectory, id);
       const filename = `audio.${record.format}`;
@@ -94,12 +171,14 @@ function createTranscriptionCorpus(options = {}) {
           sha256: createHash('sha256').update(record.audio).digest('hex'),
         },
         reference: null,
+        ...(state ? { owner: state.owner, complete: state.complete } : {}),
       }, null, 2) + '\n';
 
       await ensureCorpusDirectory(config.directory, { fileSystem: io });
       const disk = await io.statfs(config.directory, { bigint: true });
       const requiredBytes = BigInt(record.audio.length + Buffer.byteLength(document));
       if (BigInt(disk.bavail) * BigInt(disk.bsize) - requiredBytes < DISK_RESERVE_BYTES) {
+        outcome(record.id, 'failed', 'corpus_disk_reserve');
         return await skip('corpus_disk_reserve');
       }
       await ensureCorpusDirectory(dateDirectory, { fileSystem: io });
@@ -108,13 +187,16 @@ function createTranscriptionCorpus(options = {}) {
       temporary = pendingDirectory;
       await io.writeFile(path.join(temporary, filename), record.audio, { mode: 0o600, flag: 'wx' });
       await io.writeFile(path.join(temporary, 'record.json'), document, { mode: 0o600, flag: 'wx' });
+      if (state?.deleted) return null;
       await io.rename(temporary, destination);
       temporary = undefined;
       counts.written++;
+      outcome(record.id, 'saved');
       return path.join(destination, 'record.json');
     } catch {
       counts.failed++;
       diagnostic('corpus_write_failed');
+      outcome(record.id, 'failed', 'corpus_write_failed');
       return null;
     } finally {
       if (temporary) {
@@ -126,21 +208,25 @@ function createTranscriptionCorpus(options = {}) {
 
   function write(record) {
     if (!config.enabled) return Promise.resolve(null);
-    if (pending >= MAX_PENDING_WRITES) return skip('corpus_queue_full');
+    const reject = (code) => { outcome(record?.id, 'failed', code); return skip(code); };
+    if (pending >= MAX_PENDING_WRITES) return reject('corpus_queue_full');
     let snapshot;
     try {
       if (!record || !Buffer.isBuffer(record.audio) || !FORMATS.has(record.format) || !validMetadata(record.metadata)) {
-        return skip('corpus_invalid_record');
+        return reject('corpus_invalid_record');
       }
-      if (record.audio.length > MAX_AUDIO_BYTES) return skip('corpus_audio_too_large');
+      if (record.audio.length > MAX_AUDIO_BYTES) return reject('corpus_audio_too_large');
       const metadata = JSON.stringify(record.metadata);
-      if (Buffer.byteLength(metadata) > MAX_METADATA_BYTES) return skip('corpus_metadata_too_large');
+      if (Buffer.byteLength(metadata) > MAX_METADATA_BYTES) return reject('corpus_metadata_too_large');
       const storedMetadata = JSON.parse(metadata);
-      if (!validMetadata(storedMetadata)) return skip('corpus_invalid_record');
+      if (!validMetadata(storedMetadata)) return reject('corpus_invalid_record');
       // Callers may release or reuse their buffers immediately after submission.
-      snapshot = { audio: Buffer.from(record.audio), format: record.format, metadata: storedMetadata };
+      if (record.id && !reservations.has(record.id)) return reject('corpus_invalid_record');
+      snapshot = { audio: Buffer.from(record.audio), format: record.format, metadata: storedMetadata, id: record.id };
+      const state = reservations.get(record.id);
+      if (state) Object.assign(state, { metadata: storedMetadata, complete: record.complete === true });
     } catch {
-      return skip('corpus_invalid_record');
+      return reject('corpus_invalid_record');
     }
     pending++;
     const result = tail.then(() => persist(snapshot)).finally(() => { pending--; });
@@ -148,7 +234,12 @@ function createTranscriptionCorpus(options = {}) {
     return result;
   }
 
-  return { ...config, write, flush: () => tail, stats: () => ({ ...counts }) };
+  const api = createCorpusApi({ config, io, reservations, flush: () => tail,
+    loadApiToken: () => config.enabled
+      ? ensureCorpusApiToken(config.directory, { fileSystem: io })
+      : readCorpusApiToken(config.directory, { fileSystem: io }),
+  });
+  return { ...config, write, reserve, api, flush: () => tail, stats: () => ({ ...counts }) };
 }
 
-module.exports = { getCorpusConfig, ensureCorpusDirectory, createTranscriptionCorpus };
+module.exports = { getCorpusConfig, ensureCorpusDirectory, ensureCorpusApiToken, readCorpusApiToken, createTranscriptionCorpus };

@@ -31,6 +31,7 @@ import { registerRelayConnectionRoutes } from './routes/relay-connection-routes.
 import { registerSessionSharingRecoveryRoutes } from './routes/session-sharing-recovery-routes.js';
 import { registerCollaborationPairingRoutes } from './routes/collaboration-pairing-routes.js';
 import { registerViewerShareRoutes, isViewerShareRoute } from './routes/viewer-share-routes.js';
+import { registerDictationCorpusRoutes } from './routes/dictation-corpus-routes.js';
 import { registerSpeechRoutes } from './routes/speech-routes.js';
 import { registerPipelineStarvationRoutes } from './routes/pipeline-starvation-routes.js';
 import { PipelineStarvationService } from './pipeline-starvation-service.js';
@@ -203,6 +204,7 @@ export function createRoutes(deps: RouteDeps): Hono {
         ttsBreaker,
       })
     : null;
+  registerDictationCorpusRoutes(app, sharedDeps);
   registerSpeechRoutes(app, sharedDeps, {
     enabled: speakEnabled,
     cache: speakCache,

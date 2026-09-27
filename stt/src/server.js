@@ -111,6 +111,9 @@ export const transcriptionCorpus = createTranscriptionCorpus();
  * @param {import('http').IncomingMessage} req
  */
 function handleConnection(ws, req) {
+  // Retry transient credential setup on ordinary use; recognition never waits
+  // for corpus availability, and initialization shares its in-flight promise.
+  void transcriptionCorpus.api.initialize();
   const clientAddr = req.socket.remoteAddress;
   console.log(`Client connected: ${clientAddr}`);
 
@@ -159,9 +162,9 @@ function handleConnection(ws, req) {
 
   function failRecording(error, code) {
     const partialText = lastProcessedLanguage === language ? lastEmittedTranscription : '';
-    capture.finish(partialText, language, 'error', code);
+    const corpus = capture.finish(partialText, language, 'error', code);
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'error', error: error.message, code, partial_text: partialText }));
+      ws.send(JSON.stringify({ type: 'error', error: error.message, code, partial_text: partialText, corpus }));
     }
     resetRecording();
     stopped = true;
@@ -261,6 +264,7 @@ function handleConnection(ws, req) {
     const msgType = data.type;
 
     if (msgType === 'config') {
+      if (Object.hasOwn(data, 'corpus_owner')) capture.setOwner(data.corpus_owner);
       const normalized = normalizeConfigMessage(data, {
         currentLanguage: language,
         currentProgressive: progressiveEnabled,
@@ -277,6 +281,7 @@ function handleConnection(ws, req) {
       ws.send(
         JSON.stringify({
           type: 'config_ack',
+          corpus: { supported: true, enabled: transcriptionCorpus.enabled },
           ...(transcriptionBackend.name === 'qwen' ? { finalization_timeout_ms: QWEN_CLIENT_TIMEOUT_MS } : {}),
           language,
           progressive: progressiveEnabled,
@@ -325,10 +330,10 @@ function handleConnection(ws, req) {
         }
         // Empty recognition also terminates the request. Errors never pretend
         // that a partial preview is a complete, successful transcription.
-        capture.finish(fullText, finalLanguage);
+        const corpus = capture.finish(fullText, finalLanguage);
         ws.send(JSON.stringify({
           type: 'transcription', text: fullText, is_final: true,
-          confidence: 0.9, language: finalLanguage,
+          confidence: 0.9, language: finalLanguage, corpus,
         }));
         signal.removeEventListener('abort', onAbort);
         resetRecording();
@@ -366,6 +371,7 @@ function handleConnection(ws, req) {
 // --- HTTP + WebSocket Server ---
 
 export const httpServer = createServer(async (req, res) => {
+  if (await transcriptionCorpus.api.handleHttp(req, res)) return;
   if (req.url === '/health' && req.method === 'GET') {
     let backendHealth;
     if (transcriptionBackend.getHealth) {
@@ -437,6 +443,7 @@ const WARMUP_TIMEOUT_MS = parseInt(process.env.STT_WARMUP_TIMEOUT_MS || '120000'
 const WARMUP_RETRY_DELAY_MS = parseInt(process.env.STT_WARMUP_RETRY_DELAY_MS || '2000', 10);
 
 export async function startServer() {
+  await transcriptionCorpus.api.initialize();
   console.log('Starting STT WebSocket Server (Node.js)...');
   console.log(`Transcription backend: ${transcriptionBackend.name}`);
 

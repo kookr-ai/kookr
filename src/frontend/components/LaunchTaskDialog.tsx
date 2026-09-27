@@ -13,6 +13,7 @@ import { track } from '../telemetry.js';
 import { RecentPaths } from '../store/recent-paths.js';
 import {
   loadLaunchTaskDialogDraftForOpen,
+  loadRelaunchDictationDraft, saveRelaunchDictationDraft,
   saveLaunchTaskDialogDraft,
   clearLaunchTaskDialogDraft,
   markLaunchTaskDialogDraftSubmitted,
@@ -50,6 +51,8 @@ import { copyText, readClipboardText, looksLikeAbsoluteClipboardPath } from '../
 export { looksLikeAbsoluteClipboardPath } from '../clipboard.js';
 import { discardDictationRecoveries, createDictationId, hasPendingDictation, listDictationRecoveries } from '../store/dictation-recovery.js';
 import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.js';
+import { retainDictation, submitDictationDraft, acknowledgeDictationLaunch, dictationLaunchConfirmed, discardDictationDraftLinks, resumeDictationCorpusRetries, type DictationDelivery } from '../store/dictation-corpus.js';
+import { DictationCorpusStatus } from './DictationCorpusStatus.js';
 import { appendDictation } from '../append-dictation.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
@@ -99,6 +102,7 @@ interface CwdSuggestion {
  * cleared. A non-match keeps the draft — the safe direction.
  */
 function draftLaunchConfirmed(draft: LaunchTaskDialogDraft): boolean {
+  if (draft.submittedCorpusId) return dictationLaunchConfirmed(draft.submittedCorpusId);
   const target = draft.prompt.trim();
   if (!target) return true;
   return useKookrStore.getState().agents.some(
@@ -153,11 +157,15 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // Relaunch paths drive the form from props. In that mode we neither read
   // nor write the persisted draft — the relaunched task owns its own state.
   const isRelaunch = defaultPrompt != null || defaultCriteria != null || defaultCwd != null;
+  const relaunchDraftContext = JSON.stringify([relaunchParentTaskId, defaultPrompt, defaultCriteria, defaultCwd]);
   // Resolved once per open (lazy initializer): a draft kept across an
   // optimistic submit (RFC F12) is cleared here when the launch is confirmed
   // by a matching task in the store, and restored otherwise.
   const [initialDraft] = useState(() =>
-    isRelaunch ? null : loadLaunchTaskDialogDraftForOpen(draftLaunchConfirmed),
+    isRelaunch ? (() => {
+      const draft = sttUrl ? loadRelaunchDictationDraft(relaunchDraftContext) : null;
+      return draft?.submittedCorpusId && dictationLaunchConfirmed(draft.submittedCorpusId) ? null : draft;
+    })() : loadLaunchTaskDialogDraftForOpen(draftLaunchConfirmed),
   );
   // Was this dialog opened with content hydrated from a stored draft? Recorded
   // once at mount so subsequent typing (which keeps writing to storage) does
@@ -181,7 +189,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // LAST resort (RFC F13): it must never win while MRU entries or tracked
   // project checkouts exist.
   const resolvedInitialCwd =
-    defaultCwd ?? projectCwd ?? (
+    (isRelaunch ? initialDraft?.cwd : undefined) ?? defaultCwd ?? projectCwd ?? (
       initialDraft?.cwd
       || recentPaths.getAll()[0]
       || trackedProjectPaths[0]?.path
@@ -189,10 +197,10 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     );
   const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
   const [dictationId, setDictationId] = useState(() => initialDraft?.dictationId ?? createDictationId());
-  const [prompt, setPrompt] = useState(defaultPrompt ?? initialDraft?.prompt ?? '');
+  const [prompt, setPrompt] = useState(initialDraft?.prompt ?? defaultPrompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
-  const [criteria, setCriteria] = useState(defaultCriteria ?? initialDraft?.criteria ?? '');
-  const dictationScope = isRelaunch ? ['relaunch', relaunchParentTaskId, defaultPrompt, defaultCriteria, defaultCwd] : ['draft', dictationId];
+  const [criteria, setCriteria] = useState(initialDraft?.criteria ?? defaultCriteria ?? '');
+  const dictationScope = isRelaunch ? ['relaunch', dictationId, relaunchParentTaskId] : ['draft', dictationId];
   const dictationOwnerPrefix = `[${JSON.stringify(dictationScope)},`;
   const dictationContext = JSON.stringify([dictationScope, cwd, projectContext?.project]);
   const hiddenRecoveries = listDictationRecoveries(dictationOwnerPrefix).filter(entry =>
@@ -269,10 +277,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const lastNonTypedCwdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (isRelaunch) return;
     if (submittedRef.current) return;
-    saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
-  }, [prompt, cwd, criteria, isRelaunch, dictationId, sttUrl]);
+    if (isRelaunch) {
+      if (sttUrl) saveRelaunchDictationDraft(relaunchDraftContext, { prompt, cwd, criteria, dictationId });
+    } else saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
+  }, [prompt, cwd, criteria, isRelaunch, dictationId, sttUrl, relaunchDraftContext]);
 
   useEffect(() => {
     if (initialHadDraft) {
@@ -348,6 +357,18 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   const showBusyDirectoryBanner = busyDirectoryTasks.length > 0 && !activeDuplicate;
   const canSubmitLaunch = Boolean(prompt.trim() && cwd.trim() && !submitting && !grokAuthBlocksLaunch && !dictationPending);
 
+  function receivePrompt(text: string, delivery: DictationDelivery) {
+    retainDictation({ draftId: dictationId, field: 'prompt', context: `${dictationContext}:prompt` }, promptRef.current?.value ?? prompt, text, delivery);
+    setPrompt(current => appendDictation(current, text));
+    resumeDictationCorpusRetries();
+  }
+
+  function receiveCriteria(text: string, delivery: DictationDelivery) {
+    retainDictation({ draftId: dictationId, field: 'criteria', context: `${dictationContext}:criteria` }, criteriaRef.current?.value ?? criteria, text, delivery);
+    setCriteria(current => appendDictation(current, text));
+    resumeDictationCorpusRetries();
+  }
+
   function submitLaunch(keepAsDuplicate: boolean) {
     const trimmed = prompt.trim();
     if (!trimmed || !cwd.trim() || submitting || grokAuthBlocksLaunch || dictationPending || hasPendingDictation(dictationOwnerPrefix)) return;
@@ -367,8 +388,13 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     track({ type: 'launch_submitted', method: 'manual' });
     track({ type: 'launch_dialog_closed', submitted: true, dwellMs: Date.now() - openedAtRef.current });
     const excerpt = trimmed.slice(0, 40) + (trimmed.length > 40 ? '…' : '');
+    const corpusSubmissionId = submitDictationDraft(dictationId, [
+      { field: 'prompt', text: prompt },
+      { field: 'criteria', text: criteria },
+    ]);
     const sent = send({
       type: 'launch',
+      ...(corpusSubmissionId ? { dictationSubmissionId: corpusSubmissionId } : {}),
       prompt: trimmed,
       cwd: cwd.trim(),
       criteria: criteria.trim() || undefined,
@@ -388,17 +414,20 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
       // working directory) would otherwise lose the typed prompt. The marked
       // draft is reconciled on the next dialog open (cleared once a matching
       // task is visible, restored otherwise).
-      markLaunchTaskDialogDraftSubmitted();
+      if (!isRelaunch) markLaunchTaskDialogDraftSubmitted(Date.now(), corpusSubmissionId);
+      else if (sttUrl) saveRelaunchDictationDraft(relaunchDraftContext, { prompt, cwd, criteria, dictationId, submittedAt: Date.now(), submittedCorpusId: corpusSubmissionId });
       saveLastAgentType(agentType);
       saveLastLaunchPins(effort, model);
       useKookrStore.getState().handleAlert('', `Launching task: ${excerpt}`, 'info');
     } else {
+      if (corpusSubmissionId) acknowledgeDictationLaunch(corpusSubmissionId, undefined, 'Not connected');
       useKookrStore.getState().handleAlert(
         '',
         `Could not start task: not connected. ${excerpt}`,
         'error',
       );
     }
+    resumeDictationCorpusRetries();
     onClose();
   }
 
@@ -522,6 +551,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
   function discardDraft() {
     discardDictationRecoveries(dictationOwnerPrefix);
+    discardDictationDraftLinks(dictationId);
     clearLaunchTaskDialogDraft();
     setDictationId(createDictationId());
     setPrompt('');
@@ -636,6 +666,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
 
         {tab === 'manual' ? (
           <form onSubmit={handleSubmit}>
+            <DictationCorpusStatus draftId={dictationId} />
             {hiddenRecoveries.map(recovery => (
               <OtherContextDictationRecovery
                 key={recovery.id}
@@ -713,7 +744,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton key={`${dictationContext}:prompt`} recoveryKey={`${dictationContext}:prompt`} recoveryLabel="prompt" onPendingChange={setPromptDictationPending} onRecoveryResolved={() => promptRef.current?.focus()} inputId="launch-description" onTranscript={(text) => setPrompt((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton key={`${dictationContext}:prompt`} recoveryKey={`${dictationContext}:prompt`} recoveryLabel="prompt" onPendingChange={setPromptDictationPending} onRecoveryResolved={() => promptRef.current?.focus()} inputId="launch-description" corpusOwner={{ draftId: dictationId, field: 'prompt' }} onTranscript={receivePrompt} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
@@ -852,7 +883,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
                 />
                 {sttUrl && (
                   <Suspense fallback={null}>
-                    <VoiceInputButton key={`${dictationContext}:criteria`} recoveryKey={`${dictationContext}:criteria`} recoveryLabel="criteria" onPendingChange={setCriteriaDictationPending} onRecoveryResolved={() => criteriaRef.current?.focus()} inputId="launch-criteria" onTranscript={(text) => setCriteria((current) => appendDictation(current, text))} shortcutBinding={sttShortcutBinding} />
+                    <VoiceInputButton key={`${dictationContext}:criteria`} recoveryKey={`${dictationContext}:criteria`} recoveryLabel="criteria" onPendingChange={setCriteriaDictationPending} onRecoveryResolved={() => criteriaRef.current?.focus()} inputId="launch-criteria" corpusOwner={{ draftId: dictationId, field: 'criteria' }} onTranscript={receiveCriteria} shortcutBinding={sttShortcutBinding} />
                   </Suspense>
                 )}
               </div>
