@@ -947,7 +947,16 @@ export class SessionBridge {
         const captured = await this.captureUsableAbsoluteFrame(seedCols, seedRows);
         if (this.closed) return;
         if (captured?.kind === 'display-only') {
-          reconstruction = captured;
+          // Bytes that arrived while the secondary attach was reading are
+          // already in the ring and queued. Recapture so the seed boundary
+          // covers them; otherwise they replay on top of the recovered frame
+          // and can clear it. Prefer a fresh ring rebuild when it succeeds.
+          const recaptureStarted = performance.now();
+          snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+          captureMs += performance.now() - recaptureStarted;
+          if (this.closed) return;
+          const refreshed = await this.reconstructAbsoluteSnapshot(snapshot, seedCols, seedRows);
+          reconstruction = refreshed.kind === 'display-only' ? refreshed : captured;
           this.recoveryUsed = true;
           absoluteStrategy = 'absolute-snapshot';
         } else if (captured?.reason === 'busy') {

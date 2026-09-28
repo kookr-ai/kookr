@@ -155,6 +155,25 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('visible again'));
   });
 
+  test('bytes that arrived during the secondary attach are not painted again on top of the recovered frame', async () => {
+    const h = await setup(sparseGrokRing());
+    const original = h.backend.captureCurrentFrame.bind(h.backend);
+    h.backend.captureCurrentFrame = async (id, options) => {
+      h.emit('SHOULD-NOT-REPLAY');
+      return original(id, options);
+    };
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 });
+    await drain();
+    const painted = Buffer.concat(h.ws.send.mock.calls.map(([data]) => data).filter(Buffer.isBuffer)).toString();
+    expect(painted).toContain('fake-current-frame');
+    expect(painted).not.toContain('SHOULD-NOT-REPLAY');
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true,
+    });
+    expect(controls.find((frame) => frame?.type === 'seed-end')?.screenUnavailable).toBeUndefined();
+  });
+
   test('Ctrl+L redraw restores a sparse absolute screen when the secondary frame is empty', async () => {
     let bytes = sparseGrokRing();
     const h = await setup(bytes, false, false, 0);
