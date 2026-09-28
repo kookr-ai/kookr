@@ -26,7 +26,27 @@ function grokLikeRing(): Uint8Array {
 const bridges: SessionBridge[] = [];
 async function drain() { for (let i = 0; i < 60; i++) await setImmediate(); }
 
-async function setup(bytes = new TextEncoder().encode('seed'), readOnly = false, absolute = false) {
+function sparseGrokRing(): Uint8Array {
+  // Wide cursor addressing keeps the absolute-TUI classification, but every
+  // cell is a space except one spinner glyph, so reconstruction stays under
+  // the printable-cell floor.
+  const parts: string[] = ['\x1b[?2026h'];
+  for (let i = 0; i < 220; i++) {
+    const row = (i % 48) + 1;
+    const col = 150 + (i % 40);
+    parts.push(`\x1b[${row};${col}H `);
+  }
+  parts.push('\x1b[5;6H*');
+  parts.push('\x1b[?2026l');
+  return new TextEncoder().encode(parts.join(''));
+}
+
+async function setup(
+  bytes = new TextEncoder().encode('seed'),
+  readOnly = false,
+  absolute = false,
+  liveRedrawNudgeMs?: number,
+) {
   let snapshot: TerminalStreamSnapshot = {
     bytes, originComplete: true, epoch: 'e', start: 0, end: bytes.byteLength, geometryRevision: 1, cols: 80, rows: 24,
   };
@@ -52,7 +72,11 @@ async function setup(bytes = new TextEncoder().encode('seed'), readOnly = false,
     protocol: TERMINAL_V2_PROTOCOL, readyState: 1, OPEN: 1, send: vi.fn(), close: vi.fn(),
   });
   const bridge = new SessionBridge('test', ws as unknown as WebSocket, backend, undefined, undefined, undefined,
-    { readOnly, ...(absolute ? { ringReplay: 'skip-live-redraw' as const } : {}) });
+    {
+      readOnly,
+      ...(liveRedrawNudgeMs !== undefined ? { liveRedrawNudgeMs } : {}),
+      ...(absolute ? { ringReplay: 'skip-live-redraw' as const } : {}),
+    });
   bridges.push(bridge);
   await bridge.start();
   const hello = ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null).find((frame) => frame?.type === 'hello');
@@ -110,6 +134,72 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     h.send({ type: 'input', text: 'explicit initial view' });
     await drain();
     expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('explicit initial view'));
+  });
+
+  test('a secondary attach frame restores a sparse absolute screen and accepts input', async () => {
+    const h = await setup(sparseGrokRing());
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 });
+    await drain();
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true,
+    });
+    expect(controls.find((frame) => frame?.type === 'seed-end')?.screenUnavailable).toBeUndefined();
+    expect(controls.find((frame) => frame?.type === 'attach_timing')).toMatchObject({
+      strategy: 'absolute-snapshot', recoveryUsed: true,
+    });
+    expect(Buffer.concat(h.ws.send.mock.calls.map(([data]) => data).filter(Buffer.isBuffer)).toString()).toContain('fake-current-frame');
+    expect(h.write).not.toHaveBeenCalled();
+    h.send({ type: 'input', text: 'visible again' });
+    await drain();
+    expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('visible again'));
+  });
+
+  test('bytes that arrived during the secondary attach are not painted again on top of the recovered frame', async () => {
+    const h = await setup(sparseGrokRing());
+    const original = h.backend.captureCurrentFrame.bind(h.backend);
+    h.backend.captureCurrentFrame = async (id, options) => {
+      h.emit('SHOULD-NOT-REPLAY');
+      return original(id, options);
+    };
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 });
+    await drain();
+    const painted = Buffer.concat(h.ws.send.mock.calls.map(([data]) => data).filter(Buffer.isBuffer)).toString();
+    expect(painted).toContain('fake-current-frame');
+    expect(painted).not.toContain('SHOULD-NOT-REPLAY');
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true,
+    });
+    expect(controls.find((frame) => frame?.type === 'seed-end')?.screenUnavailable).toBeUndefined();
+  });
+
+  test('Ctrl+L redraw restores a sparse absolute screen when the secondary frame is empty', async () => {
+    let bytes = sparseGrokRing();
+    const h = await setup(bytes, false, false, 0);
+    h.backend.setCurrentFrameContent('test', '');
+    h.backend.captureStreamSnapshot.mockImplementation(async () => ({
+      bytes, originComplete: true, epoch: 'e', start: 0, end: bytes.byteLength,
+      geometryRevision: 1, cols: 80, rows: 24,
+    }));
+    h.write.mockImplementation(async (_id: string, data: Uint8Array) => {
+      if (data.length === 1 && data[0] === 0x0c) bytes = grokLikeRing();
+    });
+    h.attach({ cols: ABSOLUTE_TUI_COLS, rows: 24 });
+    await drain();
+    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+      cursor: null, approximate: true,
+    });
+    expect(controls.find((frame) => frame?.type === 'seed-end')?.screenUnavailable).toBeUndefined();
+    expect(controls.find((frame) => frame?.type === 'attach_timing')).toMatchObject({
+      strategy: 'absolute-redraw', recoveryUsed: true,
+    });
+    expect(h.write).toHaveBeenCalledWith('test', Uint8Array.of(0x0c));
+    expect(Buffer.concat(h.ws.send.mock.calls.map(([data]) => data).filter(Buffer.isBuffer)).toString()).toContain('x');
+    h.send({ type: 'input', text: 'visible again' });
+    await drain();
+    expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('visible again'));
   });
 
   test('an unavailable reconstructed screen cannot claim a cursor or accept input', async () => {

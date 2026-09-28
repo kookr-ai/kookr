@@ -12,13 +12,17 @@ import {
   type TerminalInputWriterPort,
 } from '../core/ports/terminal-input-writer-port.js';
 import type { TerminalSessionDataSource } from '../core/ports/terminal-session-stream-port.js';
-import type { TerminalSourceRange } from '../shared/terminal-stream.js';
+import type { TerminalSourceRange, TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import { TERMINAL_CLOSE, TERMINAL_V2_PROTOCOL } from '../shared/terminal-protocol.js';
 import { TerminalProtocolConnection, type TerminalAttachRequest } from './terminal-protocol-connection.js';
 import { isAbsolutePositionTuiRing } from './absolute-position-tui-ring.js';
 import { extractLastSubstantialAbsoluteFrame } from './absolute-position-tui-frame.js';
-import { reconstructAbsoluteTuiScreen, reconstructAbsoluteTuiScreenResult } from './absolute-position-tui-screen.js';
+import {
+  reconstructAbsoluteTuiScreen,
+  reconstructAbsoluteTuiScreenResult,
+  type AbsoluteTuiScreenResult,
+} from './absolute-position-tui-screen.js';
 import { getHotPathSampler } from '../core/hot-path-sampler.js';
 import {
   getTerminalSeedFrameCache,
@@ -928,11 +932,47 @@ export class SessionBridge {
         if (this.closed) return;
       }
       const seedStarted = performance.now();
-      const reconstruction = absolute ? await reconstructAbsoluteTuiScreenResult(snapshot.bytes, {
-        cols: seedCols, rows: seedRows, sessionKey: this.sessionId,
-        source: { epoch: snapshot.epoch, start: snapshot.start, end: snapshot.end,
-          geometryRevision: snapshot.geometryRevision, cols: snapshot.cols, rows: snapshot.rows },
-      }) : null;
+      // A wrapped Grok ring often holds only spinner-sized cell updates. The
+      // rebuilt grid then stays under the printable-cell floor, and pausing
+      // input does not bring the screen back. Try the secondary-attach frame
+      // first. If that is empty too, ask the TUI to repaint once and rebuild
+      // from the ring after the paint lands. A busy reconstruct must not take
+      // this path — that would poke the agent only because the CPU queue was full.
+      let absoluteStrategy: 'absolute-display-only' | 'absolute-snapshot' | 'absolute-redraw' = 'absolute-display-only';
+      let reconstruction = absolute ? await this.reconstructAbsoluteSnapshot(snapshot, seedCols, seedRows) : null;
+      if (
+        absolute && !this.readOnly && reconstruction?.kind === 'unavailable'
+        && reconstruction.reason === 'insufficient-cells'
+      ) {
+        const captured = await this.captureUsableAbsoluteFrame(seedCols, seedRows);
+        if (this.closed) return;
+        if (captured?.kind === 'display-only') {
+          // Bytes that arrived while the secondary attach was reading are
+          // already in the ring and queued. Recapture so the seed boundary
+          // covers them; otherwise they replay on top of the recovered frame
+          // and can clear it. Prefer a fresh ring rebuild when it succeeds.
+          const recaptureStarted = performance.now();
+          snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+          captureMs += performance.now() - recaptureStarted;
+          if (this.closed) return;
+          const refreshed = await this.reconstructAbsoluteSnapshot(snapshot, seedCols, seedRows);
+          reconstruction = refreshed.kind === 'display-only' ? refreshed : captured;
+          this.recoveryUsed = true;
+          absoluteStrategy = 'absolute-snapshot';
+        } else if (captured?.reason === 'busy') {
+          // The CPU queue was full. Do not poke the agent; leave input paused.
+        } else if (await this.requestAbsoluteRedraw()) {
+          const recaptureStarted = performance.now();
+          snapshot = await this.backend.captureStreamSnapshot(this.sessionId);
+          captureMs += performance.now() - recaptureStarted;
+          if (this.closed) return;
+          reconstruction = await this.reconstructAbsoluteSnapshot(snapshot, seedCols, seedRows);
+          if (reconstruction.kind === 'display-only') {
+            this.recoveryUsed = true;
+            absoluteStrategy = 'absolute-redraw';
+          }
+        }
+      }
       const seed = request.cursor ? snapshot.bytes.subarray(request.cursor.position - snapshot.start)
         : absolute ? reconstruction?.bytes ?? new Uint8Array(0)
           : history || this.forceFullRingAttach || this.ringReplayPolicy === 'full' ? snapshot.bytes
@@ -976,7 +1016,7 @@ export class SessionBridge {
       this.onBridgeReplay?.(this.sessionId);
       this.recordBridgeTiming({
         startedAt, resizeWaitMs, captureMs, reconstructMs: absolute ? performance.now() - seedStarted : 0,
-        seedCacheHit: false, strategy: request.cursor ? 'source-resume' : absolute ? 'absolute-display-only'
+        seedCacheHit: false, strategy: request.cursor ? 'source-resume' : absolute ? absoluteStrategy
           : seed.byteLength < snapshot.bytes.byteLength ? 'viewport-ring' : 'full-ring',
         replayBytes: seed.byteLength, earlySeedBytes: 0,
       });
@@ -1340,6 +1380,62 @@ export class SessionBridge {
     }
     this.lastAppliedResize = { cols, rows };
     this.safeForwardResize(cols, rows);
+  }
+
+  private reconstructAbsoluteSnapshot(
+    snapshot: TerminalStreamSnapshot,
+    cols: number,
+    rows: number,
+  ): Promise<AbsoluteTuiScreenResult> {
+    return reconstructAbsoluteTuiScreenResult(snapshot.bytes, {
+      cols, rows, sessionKey: this.sessionId,
+      source: {
+        epoch: snapshot.epoch, start: snapshot.start, end: snapshot.end,
+        geometryRevision: snapshot.geometryRevision, cols: snapshot.cols, rows: snapshot.rows,
+      },
+    });
+  }
+
+  /**
+   * Secondary dtach attach, reconstructed the same way as the ring. A raw
+   * dump that our cell walker cannot turn into a screen is treated as a miss
+   * so we do not enable input on a blank pane.
+   */
+  private async captureUsableAbsoluteFrame(cols: number, rows: number): Promise<AbsoluteTuiScreenResult | null> {
+    const captureFrame = this.backend.captureCurrentFrame?.bind(this.backend);
+    if (!captureFrame) return null;
+    try {
+      const raw = await captureFrame(this.sessionId, {
+        cols, rows,
+        timeoutMs: Math.max(800, this.liveRedrawNudgeMs * 10 || 800),
+      });
+      const frame = raw.byteLength > 0 ? stripLeadingTerminalClear(raw) : raw;
+      if (frame.byteLength === 0) return null;
+      return await reconstructAbsoluteTuiScreenResult(frame, {
+        cols, rows, sessionKey: this.sessionId,
+      });
+    } catch (error) {
+      console.warn(`[session-bridge] absolute frame snapshot failed for ${this.sessionId}:`, error);
+      return null;
+    }
+  }
+
+  /** One Ctrl+L. The caller recaptures the ring after the TUI has had time to repaint. */
+  private async requestAbsoluteRedraw(): Promise<boolean> {
+    try {
+      await this.inputWriter.writeInput(this.sessionId, new Uint8Array([0x0c]), {
+        reason: 'absolute-tui-redraw',
+      });
+    } catch (error) {
+      this.handleBackendRejection(error, 'write');
+      return false;
+    }
+    this.recoveryUsed = true;
+    if (this.closed) return false;
+    if (this.liveRedrawNudgeMs > 0) {
+      await this.sleep(Math.max(450, this.liveRedrawNudgeMs * 12));
+    }
+    return !this.closed;
   }
 
   /**
