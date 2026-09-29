@@ -94,6 +94,18 @@ Screenshot/automation notes that save an hour:
   localStorage-backed behavior (e.g. launch-draft restore) looks broken if
   your probe spawns a fresh context without re-saving `storageState` — two of
   this session's three suspected regressions were probe artifacts.
+  - **A closed dialog is not proof of lost state.** Draft restore is
+    localStorage-backed and only reappears on *reopen* in the same context —
+    reopen and check before claiming "typed work lost". (Sep-2026 run: the
+    bad-cwd launch closes the dialog *and* shows an error toast a beat later,
+    but the draft fully restores on reopen — not a finding.)
+  - **A section missing from one screenshot is not proof a state is
+    unsurfaced.** Grep the live DOM text for the item and for section headers
+    (e.g. a concurrency-queued task lives in a "PENDING (N)" rail section and is
+    Ctrl+K-searchable) before recording "invisible".
+  - **A dev-ish metric may be conditionally gated.** Read the component before
+    recording it as an always-on leak (e.g. the "Loop Nms" pill only renders on
+    high/critical event-loop delay and carries a tooltip).
 - The composer placeholder changes with task state ("Message X…" vs
   "Signaled complete — review or send a follow-up…") — match on
   `placeholder*="follow-up"` or use stable testids (`action-complete`).
