@@ -916,6 +916,70 @@ describe('launchTask', () => {
       expect(result.task.prompt).toBe('orchestrator tick');
       expect(store.listTasks()).toHaveLength(1);
     });
+
+    it('lets an operatorInitiated schedule launch through a per-project pause', async () => {
+      // A manual "Run now" carries serverOpts.operatorInitiated: it fires the one
+      // schedule an operator triggered by hand without lifting the project pause
+      // that keeps the rest of the fleet cordoned. Wider than safeModeExempt.
+      const gated = {
+        ...deps,
+        isAutomationEnabled: () => true,
+        getPausedProjectIds: () => new Set(['github.com/jeanibarz/lucy']),
+      };
+      const result = await launchTask(
+        gated,
+        { prompt: 'run now', cwd: '/tmp', launchSource: 'schedule' },
+        { automationProjectId: 'github.com/jeanibarz/lucy', operatorInitiated: true },
+      );
+      expect(result.task.prompt).toBe('run now');
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('lets an operatorInitiated schedule launch through global SAFE MODE too', async () => {
+      const gated = { ...deps, isAutomationEnabled: () => false };
+      const result = await launchTask(
+        gated,
+        { prompt: 'run now under safe mode', cwd: '/tmp', launchSource: 'schedule' },
+        { operatorInitiated: true },
+      );
+      expect(result.task.prompt).toBe('run now under safe mode');
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('operatorInitiated waives the missing-automationProjectId-stamp refusal', async () => {
+      // The stamp guard exists so an AUTONOMOUS schedule launch cannot guess its
+      // project; it refuses when getPausedProjectIds is wired but no stamp is
+      // supplied. An operator "Run now" bypasses the project gate entirely, so
+      // there is no project id to match — the refusal must be waived. This is the
+      // ONLY input combination the `&& !serverOpts.operatorInitiated` clause
+      // governs, so without this test that clause could be deleted undetected.
+      const gated = {
+        ...deps,
+        isAutomationEnabled: () => true,
+        getPausedProjectIds: () => new Set<string>(),
+      };
+      const result = await launchTask(
+        gated,
+        { prompt: 'run now no stamp', cwd: '/tmp', launchSource: 'schedule' },
+        { operatorInitiated: true },
+      );
+      expect(result.task.prompt).toBe('run now no stamp');
+      expect(store.listTasks()).toHaveLength(1);
+    });
+
+    it('still refuses an autonomous (non-operator) schedule launch missing the stamp when the getter is wired', async () => {
+      // Guard the negative half of the same clause: drop operatorInitiated and the
+      // refusal returns, so the waiver is scoped to operator runs only.
+      const gated = {
+        ...deps,
+        isAutomationEnabled: () => true,
+        getPausedProjectIds: () => new Set<string>(),
+      };
+      await expect(
+        launchTask(gated, { prompt: 'autonomous no stamp', cwd: '/tmp', launchSource: 'schedule' }),
+      ).rejects.toMatchObject({ name: 'AutomationKillSwitchError', code: 'project_automation' });
+      expect(store.listTasks()).toHaveLength(0);
+    });
   });
 
   it('records declared KB dependency preflight failures as advisory launch health', async () => {

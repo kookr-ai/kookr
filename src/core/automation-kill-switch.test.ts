@@ -212,6 +212,42 @@ describe('mayAutonomousActuate', () => {
       pausedProjectIds: paused,
     })).toBe('allow');
   });
+
+  it('operatorInitiated bypasses BOTH global SAFE MODE and a per-project pause', () => {
+    // Global kill switch engaged AND the project paused — the strongest block.
+    // An explicit operator "Run now" clears both, so exactly one schedule can
+    // fire on demand without lifting the pause on the rest of the fleet.
+    expect(mayAutonomousActuate({
+      source: 'schedule',
+      projectId: lucy,
+      globalEnabled: false,
+      pausedProjectIds: paused,
+      operatorInitiated: true,
+    })).toBe('allow');
+  });
+
+  it('operatorInitiated is wider than safeModeExempt (which still honors a project pause)', () => {
+    const input = {
+      source: 'schedule' as const,
+      projectId: lucy,
+      globalEnabled: true,
+      pausedProjectIds: paused,
+    };
+    // safeModeExempt alone leaves the project pause intact...
+    expect(mayAutonomousActuate({ ...input, safeModeExempt: true })).toBe('project_paused');
+    // ...but operatorInitiated clears it.
+    expect(mayAutonomousActuate({ ...input, operatorInitiated: true })).toBe('allow');
+  });
+
+  it('operatorInitiated does not fabricate autonomy for a non-autonomous source', () => {
+    expect(mayAutonomousActuate({
+      source: 'api',
+      projectId: lucy,
+      globalEnabled: false,
+      pausedProjectIds: paused,
+      operatorInitiated: true,
+    })).toBe('not_autonomous');
+  });
 });
 
 describe('applyProjectAutomationTransition', () => {
