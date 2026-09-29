@@ -26,8 +26,9 @@ all recorded on the keep-list.
 
 The surviving findings cluster into two themes:
 
-1. **Adjacent surfaces that disagree** (the June "data trust" bucket, now moved
-   up a level from raw counts to *status/relationship* displays): a task shown
+1. **Adjacent surfaces that disagree** — the same "data trust" bucket June used
+   (places where two displays show related values that contradict each other),
+   now moved up a level from raw counts to *status/relationship* displays: a task shown
    as **HEALTHY** while carrying a **WORKTREE MISSING** error badge (F1); a
    **"No dependencies"** summary stacked directly above a **"Dependencies"**
    arrow for the same task (F5); two spend figures ($39,905 all-time vs $122
@@ -101,8 +102,11 @@ Launching in `/home/jean/git/reason-at-home` with the prompt "Audit
 "Audit **/home/jean/git/reason-at-home/README.md** against the actual code in
 this r…". The user typed a bare filename; the UI shows a long absolute path.
 
-**Root cause**: `normalizePromptFileReferences` (`src/server/launch-service.ts:1315`)
-rewrites relative file references to absolute paths and stores the result in
+**Root cause**: the launch code rewrites file names to absolute paths so
+duplicate detection works, and the task title is then cut from that rewritten
+text — so the path leaks into the title. In detail:
+`normalizePromptFileReferences` (`src/server/launch-service.ts:1315`) rewrites
+relative file references to absolute paths and stores the result in
 `userPrompt` — intentional, because dedup matches on absolute-pathed tokens
 (`src/shared/launch-duplicate.ts:58`). But the human-facing display path does
 not undo this: `displayPromptForTask` (`src/core/prompt-display.ts`) strips the
@@ -242,7 +246,7 @@ to two worktrees (one per cluster).
 
 ## Method note (for the next run of this playbook)
 
-Three of the six phenomena that first looked like bugs this session were probe
+Three phenomena that first looked like bugs this session turned out to be probe
 or reading artifacts, all caught by the playbook's "re-verify in a single
 browser context" rule and by reading the code before recording: (1) launch
 draft "loss" was just the dialog closing — the draft restores on reopen;
