@@ -121,6 +121,14 @@ export type AutonomousActuationDecision =
  *
  * A missing / unknown `projectId` is a Set miss → do not skip for the project
  * lever (the launch-service stamp check is a separate programming-error gate).
+ *
+ * `operatorInitiated` is the strongest bypass: an explicit human "Run now" on a
+ * schedule is not autonomous drift, so it clears BOTH the global kill switch and
+ * any per-project pause — exactly as a manual API/CLI/UI task launch already
+ * does. It lets an operator fire one schedule on demand without lifting the
+ * pause that keeps the rest of the fleet cordoned. Set ONLY for a manual
+ * (runNow) fire — never a cron, catch-up, or dead-man self-heal fire. It is
+ * strictly wider than `safeModeExempt` (global-only), so it is checked first.
  */
 export function mayAutonomousActuate(input: {
   source: TaskLaunchSource | undefined;
@@ -128,8 +136,10 @@ export function mayAutonomousActuate(input: {
   globalEnabled: boolean;
   pausedProjectIds: ReadonlySet<string>;
   safeModeExempt?: boolean;
+  operatorInitiated?: boolean;
 }): AutonomousActuationDecision {
   if (!isAutonomousLaunchSource(input.source)) return 'not_autonomous';
+  if (input.operatorInitiated) return 'allow';
   if (!input.globalEnabled && !input.safeModeExempt) return 'safe_mode';
   if (input.projectId && input.pausedProjectIds.has(input.projectId)) {
     return 'project_paused';

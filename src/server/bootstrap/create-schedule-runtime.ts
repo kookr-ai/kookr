@@ -296,6 +296,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
             promptPrefix?: string;
             automationProjectId?: string;
             safeModeExempt?: boolean;
+            operatorInitiated?: boolean;
           }) =>
             (deps.launchLoopedPlaybookFn ?? launchLoopedPlaybook)(
               {
@@ -324,6 +325,7 @@ export async function createScheduleRuntime(deps: ScheduleRuntimeDeps): Promise<
                     ? { automationProjectId: extras.automationProjectId }
                     : {}),
                   ...(extras?.safeModeExempt ? { safeModeExempt: true } : {}),
+                  ...(extras?.operatorInitiated ? { operatorInitiated: true } : {}),
                 },
               },
             ),

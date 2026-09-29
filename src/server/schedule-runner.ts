@@ -422,6 +422,7 @@ export interface ScheduleRunnerDeps {
       promptPrefix?: string;
       automationProjectId?: string;
       safeModeExempt?: boolean;
+      operatorInitiated?: boolean;
     },
   ) => Promise<LaunchResult>;
   /**
@@ -781,7 +782,13 @@ export class ScheduleRunner {
   async runNow(id: string): Promise<ScheduleRunResult> {
     const schedule = this.deps.store.get(id);
     if (!schedule) return { error: 'Schedule not found' };
-    return this.fire(schedule, 'manual');
+    // A "Run now" is an explicit operator action, so it fires through the
+    // autonomous-actuation gates the way a manual API/CLI/UI launch does:
+    // neither global SAFE MODE nor a per-project automation pause blocks it.
+    // The dead-man self-heal (`forceRefire`) also uses the `manual` trigger but
+    // is NOT operator-initiated — it must keep honoring those gates — so the
+    // bypass is keyed on this explicit flag, never on `trigger === 'manual'`.
+    return this.fire(schedule, 'manual', undefined, undefined, /* operatorInitiated */ true);
   }
 
   /**
@@ -925,6 +932,7 @@ export class ScheduleRunner {
     trigger: 'cron' | 'manual',
     scheduledNextRun?: Date,
     decision: 'cron_due' | 'manual_run' | 'catch_up' = trigger === 'manual' ? 'manual_run' : 'cron_due',
+    operatorInitiated = false,
   ): Promise<ScheduleRunResult> {
     // An archived schedule is retired and must never fire (issue #2981). The
     // automatic loops (cron, catch-up, dead-man, stale-alarm) already exclude
@@ -964,7 +972,7 @@ export class ScheduleRunner {
     }
     this.inFlightFires.add(schedule.id);
     try {
-      return await this.dispatchAdmittedFire(schedule, trigger, scheduledNextRun, decision);
+      return await this.dispatchAdmittedFire(schedule, trigger, scheduledNextRun, decision, operatorInitiated);
     } finally {
       this.inFlightFires.delete(schedule.id);
     }
@@ -1018,6 +1026,7 @@ export class ScheduleRunner {
     trigger: 'cron' | 'manual',
     scheduledNextRun: Date | undefined,
     decision: 'cron_due' | 'manual_run' | 'catch_up',
+    operatorInitiated = false,
   ): Promise<ScheduleRunResult> {
     // Re-read the schedule fresh now that we hold the admission gate (issue
     // #3146). The caller's `schedule` may be a STALE snapshot: the startup
@@ -1119,6 +1128,7 @@ export class ScheduleRunner {
       globalEnabled: this.deps.isAutomationEnabled?.() ?? true,
       pausedProjectIds: this.deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
       safeModeExempt,
+      operatorInitiated,
     });
     if (actuation === 'safe_mode') {
       console.warn(`[schedule] Skipping "${schedule.name}" — automation kill-switch engaged (issue #1710)`);
@@ -1217,6 +1227,7 @@ export class ScheduleRunner {
       return this.fireLooped(schedule, receipt, drift, {
         automationProjectId,
         safeModeExempt,
+        operatorInitiated,
       });
     }
 
@@ -1312,6 +1323,7 @@ export class ScheduleRunner {
       }, {
         automationProjectId,
         ...(safeModeExempt ? { safeModeExempt: true } : {}),
+        ...(operatorInitiated ? { operatorInitiated: true } : {}),
       });
 
       const acceptDetails = buildSubstitutionAcceptDetails(
@@ -1406,7 +1418,7 @@ export class ScheduleRunner {
     schedule: Schedule,
     receipt: ScheduleExecutionReceipt,
     drift: PlaybookCheckoutDrift | null = null,
-    actuation?: { automationProjectId: string; safeModeExempt: boolean },
+    actuation?: { automationProjectId: string; safeModeExempt: boolean; operatorInitiated?: boolean },
   ): Promise<ScheduleRunResult> {
     const arbiter = this.deps.relaunchArbiter;
     const claimKey = scheduleRelaunchClaimKey(schedule);
@@ -1479,6 +1491,7 @@ export class ScheduleRunner {
             ? { automationProjectId: actuation.automationProjectId }
             : {}),
           ...(actuation?.safeModeExempt ? { safeModeExempt: true } : {}),
+          ...(actuation?.operatorInitiated ? { operatorInitiated: true } : {}),
         },
       );
       // Looped launcher may not surface substitution chains; ledger at least

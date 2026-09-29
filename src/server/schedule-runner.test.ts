@@ -20,7 +20,7 @@ import {
 } from './schedule-runner.js';
 import { ScheduleService } from './schedule-service.js';
 import { ScheduleValidator } from './schedule-validator.js';
-import { PendingQueueFullError, QuotaHeadroomAdmissionError, attachResolvedAgentType } from './launch-service.js';
+import { PendingQueueFullError, QuotaHeadroomAdmissionError, attachResolvedAgentType, type LaunchTaskServerOptions } from './launch-service.js';
 import { isGenuineExecutionFailure, isExecutionReceiptNotFoundError } from './schedule-service.js';
 import { aTask } from '../core/__fixtures__/task-builders.js';
 
@@ -53,6 +53,8 @@ describe('ScheduleRunner', () => {
       sourceDigest: string;
     };
   }>;
+  /** serverOpts the mock launcher last saw, so tests can assert what the fire path threads (e.g. operatorInitiated / safeModeExempt). */
+  let lastServerOpts: LaunchTaskServerOptions | undefined;
   let taskIdCounter: number;
   let activeTaskIds: Set<string>;
   /** Task ids the mock launcher pended instead of launching (issue #1526 Phase A: at-capacity fires queue). */
@@ -67,6 +69,7 @@ describe('ScheduleRunner', () => {
     validator = new ScheduleValidator();
     service = new ScheduleService({ store, validator });
     launched = [];
+    lastServerOpts = undefined;
     taskIdCounter = 0;
     activeTaskIds = new Set();
     pendingTaskIds = new Set();
@@ -104,7 +107,8 @@ Do the test thing.
       // or over capacity, the task is created and pended rather than
       // launched (issue #1526 Phase A) — `queued: true`, no active-count
       // increment. Below capacity, unchanged: launches immediately.
-      launcher: async (opts) => {
+      launcher: async (opts, serverOpts) => {
+        lastServerOpts = serverOpts;
         const taskId = `task-${++taskIdCounter}`;
         launched.push({
           prompt: opts.prompt,
@@ -1823,6 +1827,75 @@ Snapshot the fleet.
     expect(store.get(schedule.id)!.enabled).toBe(true);
   });
 
+  it('operator Run Now fires through a per-project automation pause and stamps operatorInitiated', async () => {
+    // The whole point: an operator can fire ONE schedule on demand without
+    // lifting the project pause that keeps the rest of the fleet cordoned.
+    const schedule = store.create({
+      name: 'Codex resync',
+      cron: '0 9 * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const runner = createRunner({
+      isAutomationEnabled: () => true,
+      getPausedProjectIds: () => new Set(['github.com/kookr-ai/kookr']),
+      resolveAutomationProjectId: async () => 'github.com/kookr-ai/kookr',
+    });
+    const result = await runner.runNow(schedule.id);
+
+    expect(result.error).toBeUndefined();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_project_automation');
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('running');
+    // The bypass is carried to the launcher too, so the launch-service gate lets it through.
+    expect(lastServerOpts?.operatorInitiated).toBe(true);
+  });
+
+  it('operator Run Now fires through global SAFE MODE as well', async () => {
+    const schedule = store.create({
+      name: 'Run now under safe mode',
+      cron: '0 9 * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const runner = createRunner({ isAutomationEnabled: () => false });
+    const result = await runner.runNow(schedule.id);
+
+    expect(result.error).toBeUndefined();
+    expect(launched).toHaveLength(1);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_safe_mode');
+    expect(lastServerOpts?.operatorInitiated).toBe(true);
+  });
+
+  it('dead-man self-heal re-fire still honors a project pause (uses the manual trigger but is NOT operator-initiated)', async () => {
+    // Regression guard for the operatorInitiated bypass: `forceRefire` fires
+    // with the `manual` trigger too, but it is an autonomous watchdog, not a
+    // human action — it must keep respecting the pause an operator set. The
+    // bypass is therefore keyed on operatorInitiated, never on trigger.
+    const schedule = store.create({
+      name: 'Starving schedule',
+      cron: '0 9 * * *',
+      playbook: { path: 'test.md', parameters: {} },
+      cwd: dir,
+    });
+
+    const runner = createRunner({
+      isAutomationEnabled: () => true,
+      getPausedProjectIds: () => new Set(['github.com/kookr-ai/kookr']),
+      resolveAutomationProjectId: async () => 'github.com/kookr-ai/kookr',
+    });
+
+    runner.selfHealRefire([schedule.id]);
+    // Let the deferred macrotask enqueue forceRefire's tracked work, then drain it.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await runner.stop();
+
+    expect(launched).toHaveLength(0);
+    expect(store.get(schedule.id)!.latestExecution?.outcome).toBe('skipped_project_automation');
+  });
+
   it('feeder-shaped schedule (Lucy cwd, kookr-queue-feeder.md) skips when Lucy is paused', async () => {
     await writeFile(join(dir, '.kookr', 'playbooks', 'kookr-queue-feeder.md'), `---
 name: Queue Feeder
@@ -3034,6 +3107,43 @@ Do the plugin thing.
         outcome: 'running',
         decision: 'cron_due',
       }));
+    });
+
+    it('operator Run Now threads operatorInitiated to the looped launcher through a project pause', async () => {
+      // The bypass must reach the loop-arming path too: a loop-config schedule
+      // fired by hand under a project pause arms rather than skipping, and the
+      // flag is forwarded to the looped launcher's extras.
+      const schedule = store.create({
+        name: 'LoopArmManual',
+        cron: '0 9 * * *',
+        playbook: { path: 'test.md', parameters: {} },
+        cwd: dir,
+        loop: {},
+      });
+
+      const loopedExtras: Array<{ operatorInitiated?: boolean } | undefined> = [];
+      const runner = createRunner({
+        isAutomationEnabled: () => true,
+        getPausedProjectIds: () => new Set(['github.com/kookr-ai/kookr']),
+        resolveAutomationProjectId: async () => 'github.com/kookr-ai/kookr',
+        launcher: async () => {
+          throw new Error('one-shot launcher must not be used for loop-configured schedules');
+        },
+        loopedLauncher: async (_s, extras) => {
+          loopedExtras.push(extras);
+          const taskId = `loop-task-${++taskIdCounter}`;
+          activeTaskIds.add(taskId);
+          activeCount += 1;
+          return { task: { id: taskId } as any, queued: false };
+        },
+      });
+
+      const result = await runner.runNow(schedule.id);
+
+      expect(result.error).toBeUndefined();
+      expect(store.get(schedule.id)!.latestExecution?.outcome).not.toBe('skipped_project_automation');
+      expect(loopedExtras).toHaveLength(1);
+      expect(loopedExtras[0]?.operatorInitiated).toBe(true);
     });
 
     it('classifies a manually armed dependency-parked loop separately from capacity', async () => {

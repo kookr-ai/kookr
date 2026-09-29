@@ -122,6 +122,15 @@ export interface LaunchTaskServerOptions {
    */
   safeModeExempt?: boolean;
   /**
+   * Bypass BOTH the SAFE-MODE kill switch AND the per-project automation pause
+   * because this launch is an explicit operator "Run now" of a schedule. Set
+   * ONLY by the schedule runner for a manual (runNow) fire — never a cron,
+   * catch-up, or dead-man self-heal fire, and never derived from a client
+   * `LaunchOpts`. Strictly wider than {@link safeModeExempt} (global-only): a
+   * paused project still runs the one schedule an operator fired by hand.
+   */
+  operatorInitiated?: boolean;
+  /**
    * Project id the per-project automation gate uses. Trusted server-internal
    * channel — never from client LaunchOpts. Launch-service uses ONLY this
    * stamp, never `opts.projectId` (scout target) and never a second
@@ -1316,6 +1325,7 @@ async function launchTaskCore(
       globalEnabled: deps.isAutomationEnabled?.() ?? true,
       pausedProjectIds: deps.getPausedProjectIds?.() ?? EMPTY_PAUSED_PROJECT_IDS,
       safeModeExempt: serverOpts.safeModeExempt,
+      operatorInitiated: serverOpts.operatorInitiated,
     });
     if (decision === 'safe_mode') {
       throw new AutomationKillSwitchError('safe_mode');
@@ -1325,8 +1335,10 @@ async function launchTaskCore(
     }
     // Production always wires getPausedProjectIds. A missing stamp is a
     // programming error — refuse rather than guess opts.projectId. Older tests
-    // that omit the getter keep the previous signature.
-    if (deps.getPausedProjectIds && !stamp) {
+    // that omit the getter keep the previous signature. An operator-initiated
+    // "Run now" skips the stamp requirement too: it bypasses the project gate
+    // entirely, so there is nothing for the stamp to be matched against.
+    if (deps.getPausedProjectIds && !stamp && !serverOpts.operatorInitiated) {
       console.error(
         '[launch] autonomous launch missing automationProjectId stamp; refusing rather than guessing opts.projectId',
       );
