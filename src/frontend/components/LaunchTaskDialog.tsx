@@ -402,6 +402,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
         ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
         : {}),
     });
+    if (!isRelaunch) {
+      // An unedited starter skips the live save-effect so Cancel stays empty.
+      // Persist now so a rejected launch can still restore the prompt (RFC F12).
+      saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
+    }
     if (sent) {
       // Set the ref *before* marking so any pending save-effect re-run sees
       // it and early-returns instead of overwriting the submitted marker.

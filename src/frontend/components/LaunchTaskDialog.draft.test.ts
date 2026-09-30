@@ -250,6 +250,26 @@ describe('LaunchTaskDialog draft persistence', () => {
     act(() => root.unmount());
   });
 
+  test('submitting an unedited seedPrompt retains the draft when send fails', async () => {
+    const { root } = renderDialog(container, {
+      seedPrompt: 'Run tests and fix failures',
+      sendReturns: false,
+    });
+    await flush();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+    const form = container.querySelector('form')!;
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+
+    expect(localStorage.getItem(DRAFT_KEY)).not.toBeNull();
+    const stored = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
+    expect(stored.prompt).toBe('Run tests and fix failures');
+    expect(stored.submittedAt).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
   test('failed launch (send returns false) retains the draft', async () => {
     const { root } = renderDialog(container, { sendReturns: false });
     await flush();
