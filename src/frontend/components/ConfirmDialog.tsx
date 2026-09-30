@@ -7,6 +7,12 @@ interface Props {
   message: string;
   confirmLabel: string;
   confirmClass?: string;
+  /**
+   * When true, the confirm button is disabled and the Enter-confirms shortcut is
+   * suppressed — used when a preview has determined the action is ineligible
+   * (e.g. a task that can't be migrated to the selected target).
+   */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onClose: () => void;
   /** Optional content rendered between the message and the action buttons. */
@@ -36,6 +42,7 @@ export function ConfirmDialog({
   message,
   confirmLabel,
   confirmClass,
+  confirmDisabled,
   onConfirm,
   onClose,
   children,
@@ -49,7 +56,7 @@ export function ConfirmDialog({
   useDialogFocus({ dialogRef, initialFocusRef: cancelButtonRef });
 
   useEffect(() => {
-    if (suppressEnterToConfirm) return;
+    if (suppressEnterToConfirm || confirmDisabled) return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Enter' && !isNativeEnterTarget(e.target)) {
         e.preventDefault();
@@ -59,7 +66,7 @@ export function ConfirmDialog({
     }
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [onConfirm, suppressEnterToConfirm]);
+  }, [onConfirm, suppressEnterToConfirm, confirmDisabled]);
 
   // Overlay click must both close the dialog and stop bubbling. When the
   // dialog is rendered as a descendant of a clickable element (e.g. a section
@@ -86,7 +93,13 @@ export function ConfirmDialog({
         {footer && <div className="confirm-dialog-footer">{footer}</div>}
         <div className="confirm-dialog-actions">
           <button ref={cancelButtonRef} className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className={confirmClass ?? 'btn-primary'} onClick={onConfirm}>{confirmLabel}</button>
+          <button
+            className={confirmClass ?? 'btn-primary'}
+            onClick={onConfirm}
+            disabled={confirmDisabled}
+          >
+            {confirmLabel}
+          </button>
         </div>
         <div className="confirm-dialog-hint">
           <kbd>Esc</kbd> cancel
