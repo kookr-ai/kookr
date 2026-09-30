@@ -95,6 +95,12 @@ interface Props {
   onOpenSchedules?: () => void;
   /** Opens Diagnostics from the first-run empty-state "Check setup" control. */
   onCheckSetup?: () => void;
+  /**
+   * Open Cost Comparison from the overview live-spend chip (issue #3391).
+   * Threads App's existing modal opener — the same `openModal('costComparison')`
+   * path the status-bar 24h chip already uses.
+   */
+  onOpenCostComparison?: () => void;
   onRequestComplete: () => void;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
@@ -383,7 +389,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -680,6 +686,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
           onLaunchPlaybooks={onLaunchPlaybooks}
           onOpenSchedules={onOpenSchedules}
           onCheckSetup={onCheckSetup}
+          onOpenCostComparison={onOpenCostComparison}
           shortcutBindings={shortcutBindings}
         />
       </div>

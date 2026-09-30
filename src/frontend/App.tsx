@@ -1408,6 +1408,7 @@ export function App() {
       onLaunchPlaybooks={(playbookId) => openLaunchFromPalette('playbooks', 'overview_recent_playbook', playbookId)}
       onOpenSchedules={() => openModal('schedules')}
       onCheckSetup={() => setShowOperations(true)}
+      onOpenCostComparison={() => openModal('costComparison')}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;
         openCompleteConfirmation({
