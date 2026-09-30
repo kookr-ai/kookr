@@ -1,13 +1,13 @@
 import { describe, test, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { DEFAULT_SETTINGS, type KookrSettings } from '../../core/settings-store.js';
+import type { AgentType } from '../../shared/contracts/agent-types.js';
 import { applyKillSwitchTransition } from '../../core/automation-kill-switch.js';
-import { registerSettingsRoutes } from './settings-routes.js';
-import type { RouteDeps } from './shared.js';
+import { registerSettingsRoutes, type SettingsRouteDeps } from './settings-routes.js';
 
-function mkApp(deps: Partial<RouteDeps>): Hono {
+function mkApp(deps: SettingsRouteDeps): Hono {
   const app = new Hono();
-  registerSettingsRoutes(app, deps as unknown as RouteDeps);
+  registerSettingsRoutes(app, deps);
   return app;
 }
 
@@ -23,8 +23,8 @@ function mkRouteDeps(options: {
   loadWarnings?: string[];
   updateWarnings?: string[];
   loadedFromDefaults?: boolean;
-} = {}): Partial<RouteDeps> & {
-  settings: NonNullable<RouteDeps['settings']>;
+} = {}): SettingsRouteDeps & {
+  settings: NonNullable<SettingsRouteDeps['settings']>;
   broadcastToAll: ReturnType<typeof vi.fn>;
   getUpdateCalls: () => KookrSettings[];
 } {
@@ -32,17 +32,19 @@ function mkRouteDeps(options: {
   const updateCalls: KookrSettings[] = [];
   const broadcastToAll = vi.fn();
 
+  // The narrow SettingsRouteDeps contract (issue #1463) lets these minimal
+  // collaborators satisfy the compiler directly — no `as unknown as RouteDeps`.
   return {
     serverCwd: '/repo',
     sttUrl: 'ws://127.0.0.1:4010/stt',
-    monitor: { getSnapshot: () => [] } as unknown as RouteDeps['monitor'],
-    taskStore: { listRelations: () => [] } as unknown as RouteDeps['taskStore'],
+    monitor: { getSnapshot: () => [] },
+    taskStore: { listRelations: () => [], getPendingSignal: () => undefined },
     getMaxActiveTasks: () => committed.maxActiveTasks,
     launchServiceDeps: {
       adapterRegistry: {
-        getTypes: () => ['claude-code', 'codex-cli', 'grok-build'],
+        getTypes: (): AgentType[] => ['claude-code', 'codex-cli', 'grok-build'],
       },
-    } as RouteDeps['launchServiceDeps'],
+    },
     broadcastToAll,
     settings: {
       get: () => committed,
@@ -78,7 +80,7 @@ describe('settings routes', () => {
       const deps = mkRouteDeps({
         initialSettings: mkSettings({ maxActiveTasks: 10, automationKillSwitch: false }),
       });
-      (deps as { auditLogPath?: string }).auditLogPath = auditLogPath;
+      deps.auditLogPath = auditLogPath;
 
       const res = await mkApp(deps).request('/api/settings', {
         method: 'PUT',

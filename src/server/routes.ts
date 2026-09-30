@@ -12,6 +12,7 @@ import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
 import { registerTaskRoutes } from './routes/task-routes.js';
+import { applyDefaultAgentUpdate } from './settings-service.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
 import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
@@ -134,7 +135,15 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerSettingsRoutes(app, sharedDeps);
   registerOrchestrationRoutes(app, sharedDeps);
   registerRalphRoutes(app, sharedDeps);
-  registerTaskRoutes(app, sharedDeps);
+  // Inject the typed default-agent update op so task migration's "set as
+  // default" toggle declares its settings dependency (issue #1463) instead of
+  // casting TaskRouteDeps to the full RouteDeps at the call site. `sharedDeps`
+  // (a RouteDeps) satisfies the narrow SettingsMutationDeps contract.
+  registerTaskRoutes(app, {
+    ...sharedDeps,
+    applyDefaultAgentUpdate: (agent, actorHeader) =>
+      applyDefaultAgentUpdate(sharedDeps, agent, actorHeader),
+  });
   registerSessionTransportRoutes(app, sharedDeps);
   registerCoordinatorRoutes(app, sharedDeps);
   registerAgentRoutes(app, sharedDeps);

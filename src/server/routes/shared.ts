@@ -114,6 +114,18 @@ export interface TaskRouteDeps {
    */
   terminalBackend?: TerminalBackend;
   /**
+   * Injected settings-mutation op for the migrate "set as default" toggle
+   * (issue #1463). Wired from routes.ts with the narrow `SettingsMutationDeps`
+   * contract, so task routes DECLARE this dependency instead of casting their
+   * deps to the full `RouteDeps`. Optional so lightweight test harnesses can
+   * omit it — the migrate path then reports the `not_supported` default-update
+   * reason rather than silently skipping persistence.
+   */
+  applyDefaultAgentUpdate?: (
+    agent: import('../../shared/contracts/agent-types.js').AgentType,
+    actorHeader?: string,
+  ) => Promise<import('../settings-service.js').DefaultAgentUpdateResult>;
+  /**
    * Latest already-sampled host/server resource snapshot (issue #1590). The
    * `POST /api/tasks` admission gate reads
    * `server.eventLoopDelayP95Ms` from it to fast-fail with 503 when the event

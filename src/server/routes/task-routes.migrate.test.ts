@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
 import { Hono } from 'hono';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore } from '../../core/tasks.js';
@@ -10,6 +10,8 @@ import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
 import type { TaskRouteDeps } from './shared.js';
 import type { ServerMessage } from '../../shared/contracts/messages.js';
+import { applyDefaultAgentUpdate, type SettingsMutationDeps } from '../settings-service.js';
+import { DEFAULT_SETTINGS, type KookrSettings } from '../../core/settings-store.js';
 
 vi.mock('../launch-service.js', async (importActual) => {
   const actual = await importActual<typeof import('../launch-service.js')>();
@@ -44,7 +46,10 @@ function tempGitRepo(): string {
   return dir;
 }
 
-function mkDeps(taskStore: TaskStore): TaskRouteDeps {
+function mkDeps(
+  taskStore: TaskStore,
+  overrides: Partial<TaskRouteDeps> = {},
+): TaskRouteDeps {
   const queue = new AttentionQueue();
   const monitor = new Monitor(taskStore, queue);
   return {
@@ -59,6 +64,7 @@ function mkDeps(taskStore: TaskStore): TaskRouteDeps {
       lifecycleDeps: {},
     } as never,
     adapter: {} as never,
+    ...overrides,
   } as unknown as TaskRouteDeps;
 }
 
@@ -66,6 +72,40 @@ function mkApp(taskStore: TaskStore): Hono {
   const app = new Hono();
   registerTaskRoutes(app, mkDeps(taskStore));
   return app;
+}
+
+/**
+ * A real settings backing that satisfies the narrow SettingsMutationDeps
+ * contract (issue #1463), so the migrate "set as default" path can be exercised
+ * end-to-end through the injected, typed `applyDefaultAgentUpdate` op — no
+ * whole-object cast into the full RouteDeps.
+ */
+function mkSettingsBacking(auditLogPath: string) {
+  let stored: KookrSettings = {
+    ...DEFAULT_SETTINGS,
+    defaultAgentType: 'grok-build',
+    maxActiveTasks: 7,
+  };
+  const broadcasts: ServerMessage[] = [];
+  const deps: SettingsMutationDeps = {
+    settings: {
+      get: () => stored,
+      update: async (next: KookrSettings) => {
+        stored = { ...next, roundRobinIndex: stored.roundRobinIndex };
+        return [];
+      },
+      getLoadError: () => undefined,
+    },
+    auditLogPath,
+    broadcastToAll: (m) => {
+      broadcasts.push(m);
+    },
+    monitor: { getSnapshot: () => [] },
+    serverCwd: '/server',
+    getMaxActiveTasks: () => stored.maxActiveTasks,
+    taskStore: { listRelations: () => [], getPendingSignal: () => undefined },
+  };
+  return { deps, broadcasts, getStored: () => stored };
 }
 
 /** Make the mocked launchTask create a real task in the store, like production. */
@@ -140,6 +180,58 @@ describe('POST /api/tasks/migrate', () => {
     expect(opts.priorAgentSubstitutions).toEqual([
       { reason: 'task_migrate', from: 'grok-build', to: 'claude-code' },
     ]);
+  });
+
+  test('setAsDefault persists the committed agent, preserves settings, records the actor, and broadcasts (issue #1463)', async () => {
+    const store = new TaskStore();
+    const repo = tempGitRepo();
+    const source = store.createTask({ prompt: 'do Z', cwd: repo, agentType: 'grok-build' });
+    store.terminateTask(source.id);
+    mockLaunch(store);
+
+    const auditDir = mkdtempSync(join(tmpdir(), 'kookr-migrate-audit-'));
+    const auditLogPath = join(auditDir, 'audit.jsonl');
+    const backing = mkSettingsBacking(auditLogPath);
+
+    const app = new Hono();
+    // Inject the typed default-agent update op exactly as routes.ts does, bound
+    // to a narrow settings backing — the route no longer casts to RouteDeps.
+    registerTaskRoutes(
+      app,
+      mkDeps(store, {
+        applyDefaultAgentUpdate: (agent, actorHeader) =>
+          applyDefaultAgentUpdate(backing.deps, agent, actorHeader),
+      }),
+    );
+
+    const res = await app.request('/api/tasks/migrate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-kookr-actor': 'operator-jean' },
+      body: JSON.stringify({
+        targetAgent: 'claude-code',
+        scope: { kind: 'ids', taskIds: [source.id] },
+        setAsDefault: true,
+      }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { defaultUpdated: boolean };
+    expect(body.defaultUpdated).toBe(true);
+
+    // Persisted the committed agent, preserving unrelated settings.
+    expect(backing.getStored().defaultAgentType).toBe('claude-code');
+    expect(backing.getStored().maxActiveTasks).toBe(7);
+
+    // Broadcast the resulting snapshot.
+    expect(backing.broadcasts.some((m) => m.type === 'snapshot')).toBe(true);
+
+    // Recorded the supplied actor in the durable settings-mutation audit.
+    const rows = readFileSync(auditLogPath, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; actor?: { actorId?: string }; changedKeys?: string[] });
+    const auditRow = rows.find((r) => r.type === 'settings.mutation');
+    expect(auditRow?.actor?.actorId).toBe('operator-jean');
+    expect(auditRow?.changedKeys).toContain('defaultAgentType');
   });
 });
 
