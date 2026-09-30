@@ -257,11 +257,79 @@ function resolveSha(repo, pr, explicitSha) {
   return out.trim();
 }
 
-/** Fetch check runs for a SHA and enrich each failing run with its annotations. */
-function fetchCheckRuns(repo, sha) {
-  const raw = gh(['api', `repos/${repo}/commits/${sha}/check-runs?per_page=100`]);
-  const parsed = JSON.parse(raw);
-  const checkRuns = Array.isArray(parsed.check_runs) ? parsed.check_runs : [];
+/**
+ * Fetch ALL check runs for a SHA (following pagination) and enrich each failing
+ * run with its annotations. Completeness is a safety property, not an
+ * optimization: a caller that merges over a `never-executed` verdict must have
+ * seen every run, or a real `executed-red` sitting on page 2 would be invisible
+ * and the head misread as merge-safe. The commits/check-runs endpoint caps a
+ * page at 100 and reports the true count in `total_count`, so keep pulling pages
+ * until we have them all.
+ */
+const CHECK_RUNS_PER_PAGE = 100;
+const CHECK_RUNS_MAX_PAGES = 100; // 100*100 = 10k runs — a hard stop against a runaway loop.
+
+/**
+ * Page through the check-runs endpoint to its natural end (a short/empty page),
+ * deduping by run id. Returns the runs, the page-1 `total_count`, and whether the
+ * end was reached within the page budget.
+ */
+function fetchCheckRunPages(repo, sha) {
+  const byId = new Map();
+  const unkeyed = [];
+  let totalCount = 0;
+  let reachedEnd = false;
+  for (let page = 1; page <= CHECK_RUNS_MAX_PAGES; page += 1) {
+    // `filter=all` (not the API default `latest`): a rerun keeps the same commit
+    // SHA, so a check that RAN and failed and was then re-run into a billing block
+    // would, under `latest`, show only the never-executed rerun and hide the real
+    // failure. We must see every attempt so "ran and failed on this head" is never
+    // waived. Attempts have distinct ids, so the dedup-by-id below keeps them all.
+    const parsed = JSON.parse(
+      gh(['api', `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=${CHECK_RUNS_PER_PAGE}&page=${page}`]),
+    );
+    const batch = Array.isArray(parsed.check_runs) ? parsed.check_runs : [];
+    if (page === 1) totalCount = Number(parsed.total_count) || 0;
+    for (const run of batch) {
+      if (run && run.id != null) byId.set(run.id, run);
+      else unkeyed.push(run);
+    }
+    // A short (or empty) page is the authoritative end of the list at read time.
+    if (batch.length < CHECK_RUNS_PER_PAGE) {
+      reachedEnd = true;
+      break;
+    }
+  }
+  return { runs: [...byId.values(), ...unkeyed], totalCount, reachedEnd };
+}
+
+/**
+ * Assert a pagination pass is a WHOLE, consistent snapshot. Completeness is a
+ * SAFETY property, not an optimization: a caller may waive a `never-executed`
+ * verdict and merge, so anything short of the whole list must ERROR and refuse
+ * the merge — never look quietly clean.
+ */
+function assertCompletePass(pass, sha) {
+  if (!pass.reachedEnd) {
+    throw new Error(`check-runs fetch for ${sha} exceeded ${CHECK_RUNS_MAX_PAGES} pages — refusing to classify`);
+  }
+  if (pass.runs.length < pass.totalCount) {
+    throw new Error(
+      `incomplete check-runs fetch for ${sha}: retrieved ${pass.runs.length} of ${pass.totalCount} — refusing to classify a partial view`,
+    );
+  }
+}
+
+/**
+ * One complete, enriched read of a SHA's checks: all paginated check runs
+ * (asserted whole), each failing run enriched with its annotations, plus legacy
+ * commit statuses folded in as pseudo-runs. Returns the run array ready to
+ * classify.
+ */
+function collectCheckRuns(repo, sha) {
+  const pass = fetchCheckRunPages(repo, sha);
+  assertCompletePass(pass, sha);
+  const checkRuns = pass.runs;
   for (const run of checkRuns) {
     const annCount = run.output && run.output.annotations_count;
     const settledNotPass =
@@ -279,28 +347,67 @@ function fetchCheckRuns(repo, sha) {
 
   // Legacy commit statuses (Status API) are a separate required-check surface
   // from check runs. A red *required status* would otherwise be invisible here
-  // and the head SHA misread as `none-required` / merge-safe. Fold statuses in
-  // as pseudo-runs; a failing status has no billing/never-executed concept, so
-  // it carries no annotations and no null started_at and thus classifies as
-  // executed-red (the safe direction).
+  // and the head SHA misread as `none-required` / merge-safe. The combined-status
+  // endpoint returns a single `state` aggregated over EVERY context (all pages),
+  // so reading that — not the first page of the `statuses` array — is complete by
+  // construction: a failed context on page 2 still turns `state` to failure. Fold
+  // the aggregate in as one pseudo-run. A failing status has no billing/
+  // never-executed concept, so it classifies as executed-red (the safe way).
+  // `total_count` distinguishes "no statuses" (the common Actions-only case,
+  // where `state` defaults to pending) from genuinely pending statuses.
   try {
-    const status = JSON.parse(gh(['api', `repos/${repo}/commits/${sha}/status?per_page=100`]));
-    for (const s of Array.isArray(status.statuses) ? status.statuses : []) {
-      const state = String(s.state);
-      if (state === 'success') {
-        checkRuns.push({ name: s.context, status: 'completed', conclusion: 'success', annotations: [] });
-      } else if (state === 'pending') {
-        checkRuns.push({ name: s.context, status: 'in_progress', conclusion: null, annotations: [] });
+    const status = JSON.parse(gh(['api', `repos/${repo}/commits/${sha}/status`]));
+    const statusCount = Number(status.total_count) || 0;
+    const combined = String(status.state || '').toLowerCase();
+    if (statusCount > 0) {
+      if (combined === 'success') {
+        checkRuns.push({ name: 'commit statuses (combined)', status: 'completed', conclusion: 'success', annotations: [] });
+      } else if (combined === 'pending') {
+        checkRuns.push({ name: 'commit statuses (combined)', status: 'in_progress', conclusion: null, annotations: [] });
       } else {
-        // failure | error — a genuine red status.
-        checkRuns.push({ name: s.context, status: 'completed', conclusion: 'failure', annotations: [] });
+        // failure | error — at least one required status failed somewhere.
+        checkRuns.push({ name: 'commit statuses (combined)', status: 'completed', conclusion: 'failure', annotations: [] });
       }
     }
   } catch {
-    // Status API unavailable or empty — check runs alone still classify.
+    // The status fetch itself FAILED (network/API error) — not the same as an
+    // empty statuses list, which parses fine above. We cannot rule out a red
+    // required status, so fold in a synthetic unresolved run: that forces a
+    // `pending` classification (never a clean `never-executed`/green), so a
+    // caller waiving on incomplete data is impossible. Fail closed.
+    checkRuns.push({
+      name: 'commit-status (unreadable)',
+      status: 'in_progress',
+      conclusion: null,
+      annotations: [],
+    });
   }
 
-  return { total_count: checkRuns.length, check_runs: checkRuns };
+  return checkRuns;
+}
+
+function fetchCheckRuns(repo, sha) {
+  const first = collectCheckRuns(repo, sha);
+  // Enumerating a mutable check set is not atomic: across our page reads a run
+  // can be inserted, removed, or updated (its conclusion OR started_at flipped),
+  // so a single read can classify a set that never existed as a whole. Read the
+  // WHOLE set a second time and compare the VERDICTS — not a hand-picked field
+  // list, which is fragile (miss one field and a state change slips through).
+  // Classifying both reads and requiring the same verdict is immune to which
+  // field changed: any change that would alter the classification is caught, and
+  // one that would not is harmless. Fail closed on a mismatch. A change occurring
+  // entirely after this second read is the irreducible residual of a non-snapshot
+  // API; the exact-head commit pin bounds it at merge time.
+  const second = collectCheckRuns(repo, sha);
+  const firstClass = classifyCheckRuns(first).classification;
+  const secondClass = classifyCheckRuns(second).classification;
+  if (firstClass !== secondClass) {
+    throw new Error(
+      `check-runs verdict changed during pagination for ${sha} (${firstClass} -> ${secondClass}) — refusing to classify a set that mutated mid-scan`,
+    );
+  }
+
+  return { total_count: first.length, check_runs: first };
 }
 
 function parseArgs(argv) {
