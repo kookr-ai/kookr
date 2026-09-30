@@ -17,8 +17,9 @@
 # source branches after the first merge, for audit, replay, or the second
 # repository's merge. Pass --preserve-branch to skip source-branch deletion.
 # Preservation does not skip review, exact-head pinning, required checks,
-# mergeability, or the post-merge `.merged == true` confirmation. The caller
-# remains responsible for deleting the preserved branch later.
+# mergeability, or the post-merge confirmation (CLI: state=MERGED or a
+# non-null mergedAt; REST: .merged == true). The caller remains responsible
+# for deleting the preserved branch later.
 #
 # When GitHub Actions never executed the checks — an external billing/quota/
 # spending-limit block that "completes" every job as failure in seconds without
@@ -603,13 +604,19 @@ else
 fi
 
 # `gh pr merge` can exit 0 after queueing rather than completing. Confirm the
-# same `.merged == true` postcondition the REST path already requires before
-# treating the PR as landed.
-if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json merged)"; then
+# PR actually merged before treating it as landed. The REST merge body uses
+# `.merged`, but that is not a `gh pr view --json` field — older (and current)
+# gh list `state`, `mergedAt`, `mergedBy`, `mergeCommit` and reject `merged`
+# (issue #3403). Asking for `merged` made a successful squash-merge look like
+# a failure. `state=MERGED` or a non-null `mergedAt` is the same postcondition
+# on fields gh already supports.
+if ! merged_json="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json state,mergedAt)"; then
   echo "kookr-merge: could not verify whether PR #$PR merged" >&2
   exit 1
 fi
-if ! printf '%s' "$merged_json" | jq -e '.merged == true' >/dev/null 2>&1; then
+if ! printf '%s' "$merged_json" | jq -e \
+    '((.state // "") | ascii_upcase) == "MERGED" or ((.mergedAt // null) != null)' \
+    >/dev/null 2>&1; then
   echo "kookr-merge: PR #$PR did not merge according to GitHub" >&2
   exit 1
 fi

@@ -93,8 +93,11 @@ options are rejected before any GitHub request.
 
 Preservation changes only branch cleanup. It grants no exemption from independent
 review, merging the exact reviewed commit, required checks, or mergeability.
-Both merge paths require GitHub to confirm the PR has merged (`.merged == true`),
-so a queued merge is not reported as complete. The caller remains responsible
+Both merge paths require GitHub to confirm the PR has merged before the wrapper
+reports success, so a queued merge is not treated as complete. The CLI path
+reads `gh pr view --json state,mergedAt` (`state=MERGED` or a non-null
+`mergedAt`; `merged` is not a CLI field). The REST path still checks
+`.merged == true` on the merge-endpoint body. The caller remains responsible
 for deleting each preserved branch once paired delivery and its audit or replay
 needs are complete. Preservation does not waive the completion gate: verify the
 PR's non-null `mergedAt` as usual.

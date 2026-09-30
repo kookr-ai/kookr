@@ -12,7 +12,8 @@
  * Branch preservation (#3222): paired delivery can still need the source
  * branch after merge. `--preserve-branch` must skip wrapper-owned deletion
  * on both the CLI merge path and the pinned REST fallback, including forks,
- * without skipping review, exact-head pinning, checks, or `.merged == true`.
+ * without skipping review, exact-head pinning, checks, or the post-merge
+ * confirmation (CLI: state=MERGED / non-null mergedAt; REST: .merged == true).
  *
  * Never-executed check waiver (#3396): a GitHub Actions billing/quota block
  * "completes" every job as failure in seconds without running the code. That is
@@ -68,6 +69,10 @@ function makeStubDir(opts: {
   modernGh?: boolean;
   headOwner?: string;
   mergeResponse?: string;
+  // CLI post-merge `gh pr view --json state,mergedAt` body (issue #3403).
+  // Separate from mergeResponse: the REST merge endpoint uses `.merged`, the
+  // CLI schema does not.
+  verificationJson?: string;
   mergeExit?: number;
   verificationExit?: number;
   // Never-executed classifier (#3396) inputs. When set, the stub serves the
@@ -104,6 +109,10 @@ function makeStubDir(opts: {
   writeFileSync(join(dir, 'checks.count'), String(opts.checksResponses.length));
   writeFileSync(join(dir, 'review.json'), JSON.stringify(opts.reviewJson ?? {}));
   writeFileSync(join(dir, 'merge.json'), opts.mergeResponse ?? '{"merged":true}');
+  writeFileSync(
+    join(dir, 'verification.json'),
+    opts.verificationJson ?? '{"state":"MERGED","mergedAt":"2026-10-01T00:00:00Z"}',
+  );
   // Defaults keep the classifier surface valid even for tests that never reach
   // it: an empty check-runs set classifies as none-required (exit 0), which the
   // caller treats as "no waiver", the safe direction.
@@ -129,9 +138,15 @@ DIR=${JSON.stringify(dir)}
 args="$*"
 printf '%s\\n' "$args" >> "$DIR/calls.log"
 case "$args" in
-  *"--json merged"*)
+  *"--json state,mergedAt"*|*"--json mergedAt,state"*|*"--json mergedAt"*)
     [ ${opts.verificationExit ?? 0} -eq 0 ] || exit ${opts.verificationExit ?? 0}
-    cat "$DIR/merge.json"; exit 0 ;;
+    cat "$DIR/verification.json"; exit 0 ;;
+  *"--json merged "*|*"--json merged,"*|*"--json merged")
+    # Real gh (including current 2.x) has no \`merged\` field on \`pr view\`.
+    # Match a field boundary so \`mergedAt\` is not treated as \`merged\`.
+    echo 'Unknown JSON field: "merged"' >&2
+    echo 'Available fields: mergedAt, mergeCommit, state, mergedBy' >&2
+    exit 1 ;;
   *"--json comments,labels,commits"*)
     cat "$DIR/review.json"; exit 0 ;;
   *"--json headRefName,headRepository,headRepositoryOwner"*)
@@ -422,7 +437,8 @@ describe.each([true, false])('guarded branch policy (modern gh: %s)', (modernGh)
           ]);
           expect(putCalls).toEqual([]);
           expect(deleteCalls).toEqual([]);
-          expect(result.calls.some((call) => call.includes('--json merged'))).toBe(true);
+          expect(result.calls.some((call) => call.includes('--json state,mergedAt'))).toBe(true);
+          expect(result.calls.some((call) => /--json merged(?:\s|$)/.test(call))).toBe(false);
         } else {
           expect(mergeCalls).toEqual([]);
           expect(putCalls).toEqual([
@@ -441,22 +457,26 @@ describe.each([true, false])('guarded branch policy (modern gh: %s)', (modernGh)
       }
     });
 
-    it.each(['{"merged":false}', '{}', 'not-json'])('rejects an unconfirmed merge: %s', (mergeResponse) => {
-      const dir = makeStubDir({
-        checksResponses: [CLEAN],
-        reviewJson: REVIEW_VIEW,
-        modernGh,
-        mergeResponse,
-      });
-      try {
-        const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', ...args]);
-        expect(result.status).toBe(1);
-        expect(result.stderr).toMatch(/did not merge|could not verify/i);
-        expect(result.calls.join('\n')).not.toContain('--method DELETE');
-      } finally {
-        rmSync(dir, { recursive: true, force: true });
-      }
-    });
+    it.each(['{"merged":false}', '{}', 'not-json', '{"state":"OPEN","mergedAt":null}'])(
+      'rejects an unconfirmed merge: %s',
+      (unconfirmed) => {
+        const dir = makeStubDir({
+          checksResponses: [CLEAN],
+          reviewJson: REVIEW_VIEW,
+          modernGh,
+          mergeResponse: unconfirmed,
+          verificationJson: unconfirmed,
+        });
+        try {
+          const result = runMerge(dir, { KOOKR_MERGE_REQUIRE_REVIEW: '1' }, ['123', ...args]);
+          expect(result.status).toBe(1);
+          expect(result.stderr).toMatch(/did not merge|could not verify/i);
+          expect(result.calls.join('\n')).not.toContain('--method DELETE');
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      },
+    );
 
     it('refuses a merge rejected by GitHub, including a moved head', () => {
       const dir = makeStubDir({
@@ -980,6 +1000,59 @@ describe('branch option validation before any GitHub request', () => {
       expect(result.status).toBe(2);
       for (const error of errors) expect(result.stderr).toContain(error);
       expect(result.calls).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('CLI merge confirmation uses gh-supported fields (#3403)', () => {
+  it('succeeds when state is MERGED even if mergedAt is null', () => {
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      verificationJson: '{"state":"MERGED","mergedAt":null}',
+    });
+    try {
+      const result = runMerge(dir, {}, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.merged).toBe(true);
+      expect(result.calls.some((call) => call.includes('--json state,mergedAt'))).toBe(true);
+      expect(result.calls.some((call) => /--json merged(?:\s|$)/.test(call))).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('succeeds when mergedAt is set even if state is not MERGED', () => {
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      verificationJson: '{"state":"CLOSED","mergedAt":"2026-10-01T12:00:00Z"}',
+    });
+    try {
+      const result = runMerge(dir, {}, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.merged).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not treat a successful squash-merge as failure just because gh rejects --json merged', () => {
+    // The original bug: gh pr view --json merged exits 1 with "Unknown JSON
+    // field", so the wrapper printed "could not verify" after gh pr merge had
+    // already succeeded. The stub still rejects --json merged like real gh.
+    const dir = makeStubDir({
+      checksResponses: [CLEAN],
+      modernGh: true,
+      verificationJson: '{"state":"MERGED","mergedAt":"2026-10-01T12:00:00Z"}',
+    });
+    try {
+      const result = runMerge(dir, {}, ['123']);
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).not.toContain('could not verify');
+      expect(result.calls.filter((call) => call.startsWith('pr merge 123'))).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
