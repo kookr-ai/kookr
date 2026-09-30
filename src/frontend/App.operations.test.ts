@@ -40,15 +40,22 @@ vi.mock('./telemetry.js', () => ({
 vi.mock('./components/DetailPanel.js', () => ({
   DetailPanel: (props: {
     onRequestComplete: () => void;
+    onLaunch?: () => void;
     onLaunchPlaybooks?: (playbookId?: string) => void;
+    onLaunchSample?: (prompt: string) => void;
     onOpenSchedules?: () => void;
   }) => React.createElement(
     'div',
     { 'data-testid': 'detail-panel' },
     React.createElement('button', { 'data-testid': 'mock-complete-button', onClick: props.onRequestComplete }, 'Complete'),
+    React.createElement('button', { 'data-testid': 'mock-launch-blank', onClick: props.onLaunch }, 'Launch New Task'),
     React.createElement('button', { 'data-testid': 'mock-launch-playbooks', onClick: () => props.onLaunchPlaybooks?.() }, 'Recent playbook'),
     React.createElement('button', { 'data-testid': 'mock-launch-playbook-chip', onClick: () => props.onLaunchPlaybooks?.('deploy.md') }, 'Pinned playbook'),
     React.createElement('button', { 'data-testid': 'mock-launch-missing-playbook', onClick: () => props.onLaunchPlaybooks?.('gone.md') }, 'Missing playbook'),
+    React.createElement('button', {
+      'data-testid': 'mock-launch-sample',
+      onClick: () => props.onLaunchSample?.('Review the diff since origin/main and summarize risks'),
+    }, 'Review the latest diff'),
     React.createElement('button', { 'data-testid': 'mock-open-schedules', onClick: props.onOpenSchedules }, 'Next scheduled'),
   ),
 }));
@@ -1172,6 +1179,50 @@ describe('App operations modal shortcuts', () => {
     await waitForElement(container, '[data-testid="onboarding-overlay"]');
     expect(container.querySelector('[data-testid="onboarding-overlay"]')).not.toBeNull();
     expect(container.textContent).toContain('Welcome to Kookr');
+  });
+
+  test('overview sample-prompt chip opens Launch on Manual with that prompt filled and does not submit', async () => {
+    useKookrStore.setState({
+      serverCwd: '/tmp/kookr',
+      availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }],
+      defaultAgentType: 'claude-code',
+    });
+
+    await act(async () => {
+      root.render(React.createElement(App));
+    });
+
+    const chip = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-sample"]');
+    await act(async () => {
+      chip.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    const prompt = container.querySelector<HTMLTextAreaElement>('#launch-task-description');
+    expect(prompt?.value).toBe('Review the diff since origin/main and summarize risks');
+    const cwd = container.querySelector<HTMLInputElement>('.combo-input input[type="text"]');
+    expect(cwd?.value).toBe('/tmp/kookr');
+    expect(websocketMock.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'launch' }));
+
+    const close = await waitForElement<HTMLButtonElement>(container, '.dialog-close');
+    await act(async () => {
+      close.click();
+    });
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < 5_000) {
+      await flush();
+      if (container.querySelector('#launch-task-dialog-title') === null) break;
+    }
+    expect(container.querySelector('#launch-task-dialog-title')).toBeNull();
+
+    const blank = await waitForElement<HTMLButtonElement>(container, '[data-testid="mock-launch-blank"]');
+    await act(async () => {
+      blank.click();
+    });
+    await waitForElement(container, '#launch-task-dialog-title');
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    expect(container.querySelector<HTMLTextAreaElement>('#launch-task-description')?.value).toBe('');
+    expect(websocketMock.send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'launch' }));
   });
 
   test('overview recent-playbook callback opens Launch on the Playbooks tab', async () => {

@@ -22,6 +22,7 @@ import {
   GETTING_STARTED_GUIDE_URL as CLI_INSTALL_GUIDE_URL,
 } from './CliInstallGuidanceBanner.js';
 import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
+import { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
   open: vi.fn(),
@@ -524,6 +525,70 @@ describe('OverviewEmptyState', () => {
     expect(container.querySelector('.overview-tour-link')).toBeNull();
     expect(container.textContent).not.toContain('Getting Started');
     expect(container.textContent).not.toContain('Check setup');
+  });
+
+  describe('first-run starter prompts (#3397)', () => {
+    test('empty overview shows the three existing starter prompts as sibling chips', () => {
+      render();
+
+      const group = container.querySelector('[data-testid="overview-sample-prompts"] .sample-prompt-chips');
+      expect(group?.getAttribute('aria-label')).toBe('Starter prompts');
+      const chips = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-sample-prompt"]'),
+      );
+      expect(chips).toHaveLength(SAMPLE_LAUNCH_PROMPTS.length);
+      expect(chips.map((chip) => chip.textContent)).toEqual(
+        SAMPLE_LAUNCH_PROMPTS.map((sample) => sample.label),
+      );
+
+      const reentry = container.querySelector('.overview-tour-reentry');
+      expect(reentry).not.toBeNull();
+      for (const chip of chips) {
+        expect(reentry?.contains(chip)).toBe(false);
+        expect(chip.getAttribute('aria-label')).toBeNull();
+        expect(chip.textContent).toBe(chip.textContent?.trim() ?? '');
+      }
+    });
+
+    test('clicking a chip calls onLaunchSample with that prompt, not onLaunch', () => {
+      const onLaunch = vi.fn();
+      const onLaunchSample = vi.fn();
+      render({ onLaunch, onLaunchSample });
+
+      const sample = SAMPLE_LAUNCH_PROMPTS[1];
+      const chip = Array.from(
+        container.querySelectorAll<HTMLButtonElement>('[data-testid="overview-sample-prompt"]'),
+      ).find((button) => button.textContent === sample.label);
+      expect(chip).toBeDefined();
+
+      act(() => {
+        chip?.click();
+      });
+      expect(onLaunchSample).toHaveBeenCalledTimes(1);
+      expect(onLaunchSample).toHaveBeenCalledWith(sample.prompt);
+      expect(onLaunch).not.toHaveBeenCalled();
+    });
+
+    test('does not show starter chips once a waiting task exists', () => {
+      render({ waiting: [makeWaitingAgent('agent-1', 'Fix the build')] });
+
+      expect(container.querySelector('[data-testid="overview-sample-prompts"]')).toBeNull();
+      expect(container.querySelector('[data-testid="overview-sample-prompt"]')).toBeNull();
+    });
+
+    test('does not show starter chips once a running task exists', () => {
+      render({ running: [makeRunningAgent('run-1', 'Watch logs')] });
+
+      expect(container.querySelector('[data-testid="overview-sample-prompts"]')).toBeNull();
+      expect(container.textContent).not.toContain('Review the latest diff');
+    });
+
+    test('does not show starter chips once a completed task exists', () => {
+      render({ completed: [makeCompletedAgent('done-1', 'Ship the fix')] });
+
+      expect(container.querySelector('[data-testid="overview-sample-prompts"]')).toBeNull();
+      expect(container.textContent).not.toContain('Run tests and fix failures');
+    });
   });
 
   test('keyboard hint includes the command palette and quick launch shortcuts', () => {

@@ -203,6 +203,23 @@ describe('LaunchTaskDialog sample prompt chips', () => {
     expect(container.querySelector('.launch-copy-spawn')).not.toBeNull();
   });
 
+  test('seedPrompt fills Manual without treating the open as a relaunch', () => {
+    const sample = SAMPLE_LAUNCH_PROMPTS[0];
+    const send = render({
+      defaultCwd: undefined,
+      seedPrompt: sample.prompt,
+      initialTab: 'manual',
+    });
+
+    expect(container.querySelector('.dialog-tab.active')?.textContent).toBe('Manual');
+    expect(promptEl().value).toBe(sample.prompt);
+    expect(cwdEl().value).toBe(CWD);
+    expect(container.querySelector('.draft-restored-banner')).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'launch' }));
+    expect(chips()).toHaveLength(SAMPLE_LAUNCH_PROMPTS.length);
+  });
+
   test('sample chips are not shown on the Playbooks tab', () => {
     render({ initialTab: 'playbooks' });
     const playbooksTab = Array.from(container.querySelectorAll('.dialog-tab'))

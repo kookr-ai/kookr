@@ -22,6 +22,7 @@ import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
 import { CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
+import { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
 
 /** Distinct from Launch/Quick Launch's default banner id — the overview stays
@@ -168,6 +169,13 @@ interface Props {
   completed: AgentState[];
   onLaunch: () => void;
   /**
+   * Opens Launch on the Manual tab with this starter prompt filled.
+   * First-run chips only — cwd and Launch stay operator-controlled; nothing
+   * is submitted (issue #3397). Optional so isolated overview tests keep
+   * today's no-op click when App is not wired.
+   */
+  onLaunchSample?: (prompt: string) => void;
+  /**
    * Opens Launch on the Playbooks tab (pinned and recent chips).
    * Called with the chip's stable playbook id. Launch preselects when that
    * catalog entry exists; a missing entry still opens the Playbooks tab and
@@ -206,6 +214,7 @@ export function OverviewEmptyState({
   running,
   completed,
   onLaunch,
+  onLaunchSample,
   onLaunchPlaybooks,
   onOpenSchedules,
   onCheckSetup,
@@ -491,6 +500,27 @@ export function OverviewEmptyState({
             </button>
           )}
         </div>
+
+        {!hasAnyTask && (
+          <div className="overview-sample-prompts" data-testid="overview-sample-prompts">
+            {/* Sibling of "New to Kookr?" — nesting under that label would
+                concatenate accessible names. Each chip is its own button. */}
+            <div className="sample-prompt-chips" role="group" aria-label="Starter prompts">
+              {SAMPLE_LAUNCH_PROMPTS.map((sample) => (
+                <button
+                  key={sample.id}
+                  type="button"
+                  className="sample-prompt-chip"
+                  data-testid="overview-sample-prompt"
+                  title={sample.prompt}
+                  onClick={() => onLaunchSample?.(sample.prompt)}
+                >
+                  {sample.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {pinnedPlaybooks.length > 0 && (
           <div className="overview-recent-playbooks" data-testid="overview-pinned-playbooks">

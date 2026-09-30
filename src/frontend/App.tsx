@@ -439,6 +439,8 @@ export function App() {
   // Overview pinned/recent chips pass a catalog playbook id so Launch can
   // reuse relaunch preselect without faking a full relaunchTask.
   const [launchPlaybookId, setLaunchPlaybookId] = useState<string | undefined>(undefined);
+  // Overview first-run starter chips fill Manual without a relaunch (#3397).
+  const [launchSeedPrompt, setLaunchSeedPrompt] = useState<string | undefined>(undefined);
   // Bumped by palette opens so an already-mounted LaunchTaskDialog remounts
   // onto the requested tab instead of ignoring the new initialTab prop.
   const [launchDialogGeneration, setLaunchDialogGeneration] = useState(0);
@@ -681,15 +683,19 @@ export function App() {
   useEffect(() => {
     if (relaunchTask) {
       setLaunchPlaybookId(undefined);
+      setLaunchSeedPrompt(undefined);
       openModal('launch');
     }
   }, [relaunchTask, openModal]);
 
   // Chip preselect lives in App state, not the dialog. Leaving Launch (another
   // modal, or close without handleCloseLaunch) must drop it so a later blank
-  // open cannot inherit the last chip's playbook.
+  // open cannot inherit the last chip's playbook or starter prompt.
   useEffect(() => {
-    if (activeModal !== 'launch') setLaunchPlaybookId(undefined);
+    if (activeModal !== 'launch') {
+      setLaunchPlaybookId(undefined);
+      setLaunchSeedPrompt(undefined);
+    }
   }, [activeModal]);
 
   // First-run onboarding tour: opens once per browser when localStorage has
@@ -851,11 +857,13 @@ export function App() {
     setLaunchProjectCwd(null);
     setLaunchInitialTab(null);
     setLaunchPlaybookId(undefined);
+    setLaunchSeedPrompt(undefined);
     clearRelaunchTask();
   }
 
   function openBlankLaunch(method: string) {
     setLaunchPlaybookId(undefined);
+    setLaunchSeedPrompt(undefined);
     track({ type: 'launch_dialog_opened', method });
     openModal('launch');
   }
@@ -866,6 +874,7 @@ export function App() {
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('manual');
       setLaunchPlaybookId(undefined);
+      setLaunchSeedPrompt(undefined);
       track({ type: 'launch_dialog_opened', method: 'project_drawer_manual' });
       openModal('launch');
     }
@@ -877,6 +886,7 @@ export function App() {
       setLaunchProjectCwd(deriveLaunchProjectCwd(agents, selectedProjectSummary) ?? '');
       setLaunchInitialTab('playbooks');
       setLaunchPlaybookId(undefined);
+      setLaunchSeedPrompt(undefined);
       track({ type: 'launch_dialog_opened', method: 'project_drawer' });
       openModal('launch');
     }
@@ -887,9 +897,22 @@ export function App() {
     setLaunchProjectCwd(null);
     setLaunchInitialTab(tab);
     setLaunchPlaybookId(playbookId);
+    setLaunchSeedPrompt(undefined);
     clearRelaunchTask();
     setLaunchDialogGeneration((generation) => generation + 1);
     track({ type: 'launch_dialog_opened', method });
+    openModal('launch');
+  }, [clearRelaunchTask, openModal]);
+
+  const openLaunchWithSample = useCallback((prompt: string) => {
+    setLaunchProjectContext(null);
+    setLaunchProjectCwd(null);
+    setLaunchInitialTab('manual');
+    setLaunchPlaybookId(undefined);
+    setLaunchSeedPrompt(prompt);
+    clearRelaunchTask();
+    setLaunchDialogGeneration((generation) => generation + 1);
+    track({ type: 'launch_dialog_opened', method: 'overview_sample_prompt' });
     openModal('launch');
   }, [clearRelaunchTask, openModal]);
 
@@ -904,6 +927,7 @@ export function App() {
     setLaunchProjectCwd(deriveLaunchProjectCwd(agents, projectSummary) ?? '');
     setLaunchInitialTab('manual');
     setLaunchPlaybookId(undefined);
+    setLaunchSeedPrompt(undefined);
     clearRelaunchTask();
     setLaunchDialogGeneration((generation) => generation + 1);
     track({ type: 'launch_dialog_opened', method: 'command_palette_project' });
@@ -1406,6 +1430,7 @@ export function App() {
       agent={selectedAgent}
       send={send}
       onLaunch={() => openBlankLaunch('empty_panel')}
+      onLaunchSample={openLaunchWithSample}
       onLaunchPlaybooks={(playbookId) => openLaunchFromPalette('playbooks', 'overview_recent_playbook', playbookId)}
       onOpenSchedules={() => openModal('schedules')}
       onCheckSetup={() => setShowOperations(true)}
@@ -1982,6 +2007,7 @@ export function App() {
             projectContext={launchProjectContext ?? undefined}
             projectCwd={launchProjectCwd ?? undefined}
             initialTab={launchInitialTab ?? undefined}
+            seedPrompt={launchSeedPrompt}
             sttShortcutBinding={shortcutBindings.stt_toggle}
           />
         </Suspense>
