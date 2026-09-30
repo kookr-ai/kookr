@@ -9257,6 +9257,19 @@ button.ops-health-pill.ops-health-faa:focus-visible {
   outline-offset: 1px;
 }
 
+button.ops-health-pill.ops-health-paused-schedules {
+  cursor: pointer;
+}
+
+button.ops-health-pill.ops-health-paused-schedules:hover {
+  background: rgba(251, 191, 36, 0.28);
+}
+
+button.ops-health-pill.ops-health-paused-schedules:focus-visible {
+  outline: 1px solid var(--amber);
+  outline-offset: 1px;
+}
+
 button.ops-health-pill.ops-health-timer-overdue {
   cursor: pointer;
 }

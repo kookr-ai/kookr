@@ -33,7 +33,11 @@ async function flush() {
 
 async function renderStatusBar(
   root: Root,
-  props: { onOpenCapacity?: () => void; onOpenDiagnostics?: () => void } = {},
+  props: {
+    onOpenCapacity?: () => void;
+    onOpenDiagnostics?: () => void;
+    onOpenSchedules?: () => void;
+  } = {},
 ): Promise<void> {
   await act(async () => {
     root.render(
@@ -43,6 +47,7 @@ async function renderStatusBar(
         onShowShortcuts: vi.fn(),
         onOpenCapacity: props.onOpenCapacity,
         onOpenDiagnostics: props.onOpenDiagnostics,
+        onOpenSchedules: props.onOpenSchedules,
       }),
     );
   });
@@ -374,6 +379,60 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
     expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')?.textContent)
       .toBe('Smoke: fail×2');
     expect(container.querySelector('[data-testid="ops-health-watchdog-pill"]')).toBeNull();
+  });
+
+  test('does not invent a clickable paused-schedules pill when none are paused (issue #3399)', async () => {
+    const onOpenSchedules = vi.fn();
+    useKookrStore.getState().handleOpsHealth({
+      pausedSchedules: { schedulesPausedByFailure: [] },
+    });
+
+    await renderStatusBar(root, { onOpenSchedules });
+
+    expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
+    expect(container.textContent).not.toContain('schedule paused');
+    expect(onOpenSchedules).not.toHaveBeenCalled();
+  });
+
+  test('paused-schedules pill stays a non-button span when onOpenSchedules is omitted (issue #3399)', async () => {
+    useKookrStore.getState().handleOpsHealth({
+      pausedSchedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 3 },
+        ],
+      },
+    });
+
+    await renderStatusBar(root);
+
+    const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
+    expect(pill?.tagName).toBe('SPAN');
+    expect(pill?.getAttribute('role')).toBe('status');
+    expect(pill?.textContent).toBe('1 schedule paused');
+  });
+
+  test('paused-schedules pill click opens Schedules when the opener is wired (issue #3399)', async () => {
+    const onOpenSchedules = vi.fn();
+    useKookrStore.getState().handleOpsHealth({
+      pausedSchedules: {
+        schedulesPausedByFailure: [
+          { id: 's1', name: 'orchestrator', consecutiveFailures: 30 },
+          { id: 's2', name: 'deploy-conv', consecutiveFailures: 55 },
+        ],
+      },
+    });
+
+    await renderStatusBar(root, { onOpenSchedules });
+
+    const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
+    expect(pill?.tagName).toBe('BUTTON');
+    expect(pill?.textContent).toBe('2 schedules paused');
+    expect(pill?.getAttribute('aria-label')).toBe('2 schedules paused. Open Schedules');
+    expect(pill?.getAttribute('title')).toContain('Open Schedules');
+    await act(async () => {
+      (pill as HTMLButtonElement).click();
+    });
+    expect(onOpenSchedules).toHaveBeenCalledOnce();
   });
 
   test('hides the timer-overdue pill when overdue is 0 (issue #2643)', async () => {
