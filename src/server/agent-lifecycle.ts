@@ -31,6 +31,7 @@ import {
   allocateLaunchSessionId,
   isLaunchTimeoutError,
   noteLaunchSession,
+  reapAbandonedLaunchSession,
   reapLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
@@ -1142,27 +1143,29 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
             sessionId,
           );
           if (!lateCleanup) return;
-          try {
-            taskStore.recordAbandonedLaunchSession(pending.id, {
-              tmuxSession: sessionId,
-              agentType: pending.agentType,
-              cwd: pending.cwd,
-              createdAt: new Date(),
-            });
-            taskStore.updateSession(pending.id, sessionId, { lastStatus: undefined });
-          } catch {
+          // `noteLaunchSession` already started the shared physical stop; the
+          // owner re-derives the same promise from the guard, so late creation
+          // and late resolution still share one stop attempt.
+          reapAbandonedLaunchSession(launchReapGuard, adapter, pending.agentType, pending.id, sessionId, {
+            link: () => {
+              taskStore.recordAbandonedLaunchSession(pending.id, {
+                tmuxSession: sessionId,
+                agentType: pending.agentType,
+                cwd: pending.cwd,
+                createdAt: new Date(),
+              });
+              taskStore.updateSession(pending.id, sessionId, { lastStatus: undefined });
+            },
             // The adapter may attach immediately after reporting creation.
-          }
-          void lateCleanup.then(
-            async () => {
-              try {
-                taskStore.updateSession(pending.id, sessionId, { lastStatus: 'aborted' });
-              } catch {
-                // Task deletion after proven cleanup needs no bookkeeping.
-              }
+            onLinkError: () => undefined,
+            markAborted: () => {
+              // Task deletion after proven cleanup needs no bookkeeping.
+              taskStore.updateSession(pending.id, sessionId, { lastStatus: 'aborted' });
+            },
+            onReaped: async () => {
               await lifecycleDeps.flushTasks().catch(() => undefined);
             },
-            async () => {
+            onReapFailed: async () => {
               const current = taskStore.getTask(pending.id);
               if (
                 admissionMarkerWrittenByOwner?.status === 'probing'
@@ -1175,7 +1178,7 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
               }
               await lifecycleDeps.flushTasks().catch(() => undefined);
             },
-          );
+          });
         },
         ...(intent.intent.ralphVerdictEnv
           ? {
