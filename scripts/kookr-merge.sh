@@ -20,12 +20,37 @@
 # mergeability, or the post-merge `.merged == true` confirmation. The caller
 # remains responsible for deleting the preserved branch later.
 #
+# When GitHub Actions never executed the checks — an external billing/quota/
+# spending-limit block that "completes" every job as failure in seconds without
+# running the code, not a code failure — the merge may still proceed, but ONLY
+# when the operator recorded the local verification gate on the PR: the
+# `local-verified` label AND a comment carrying the local-gate marker with a
+# `local-gate-head-sha:` line equal to the current head. That head binding makes
+# the waiver specific to the reviewed code, exactly like the independent-review
+# gate above; a check that RAN and failed is never waived (issue #3396). The
+# never-executed vs executed-red distinction is made by the same reusable
+# classifier the delivery playbooks call (scripts/check-verification.mjs).
+#
 # Usage: kookr-merge <pr-number> [--repo OWNER/NAME] [--preserve-branch | --delete-branch]
 set -euo pipefail
+
+# Absolute directory of this script, so the reusable check classifier resolves
+# whether kookr-merge is invoked by path, via `pnpm merge`, or from another CWD.
+KOOKR_MERGE_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- independent-review gate literals (keep in sync with src/core/independent-review.ts) ---
 KOOKR_REVIEW_MARKER='<!-- kookr-independent-review -->'
 KOOKR_REVIEW_TIMEOUT_LABEL='review-skipped-timeout'
+
+# --- local-gate literals (never-executed CI waiver, issue #3396) ---
+# A never-executed (billing/quota) block is waived only by the local-verified
+# label plus a comment with this marker AND a `local-gate-head-sha:` line equal
+# to the current head. Keep the marker and head-sha line format in sync with the
+# operator-facing contract in plugin/playbooks/parallel-issue-batch.md and
+# plugin/playbooks/implement-github-issue.md. Override the classifier for tests.
+KOOKR_LOCAL_GATE_MARKER='<!-- kookr-local-gate -->'
+KOOKR_LOCAL_VERIFIED_LABEL='local-verified'
+KOOKR_MERGE_CLASSIFIER="${KOOKR_MERGE_CLASSIFIER:-$KOOKR_MERGE_DIR/check-verification.mjs}"
 
 PR=""
 REPO_ARG=()
@@ -60,7 +85,9 @@ Exit codes:
   0  merged successfully
   1  pre-flight failed (state/draft/review) or merge command failed
   2  bad usage
-  3  one or more checks failed (gh pr checks --watch returned non-zero)
+  3  one or more checks RAN and failed, or never-executed checks lacked the
+     recorded local gate (local-verified label + a local-gate-head-sha comment
+     bound to the current head)
   4  blocked by the independent-review gate (no pass verdict / confirmed finding)
 EOF
 }
@@ -242,6 +269,94 @@ zero_check_merge_eligible() {
   [[ "$mergeable" == "MERGEABLE" ]]
 }
 
+# run_head_check_classifier — classify the head SHA's check runs with the same
+# reusable classifier the delivery playbooks call (scripts/check-verification.mjs),
+# so kookr-merge and the playbooks agree bit-for-bit on what "never executed"
+# means. `$1` is the head SHA to classify — passed with `--sha` so the whole
+# merge path (classification, local-gate binding, and the final --match-head
+# pin) uses ONE head definition (`commits | last`). The classifier's human
+# summary is echoed to stderr for the run log. Returns its exit code: 0
+# executed-green/none-required, 10 never-executed, 20 executed-red, 30 pending,
+# 1 error. Any inability to classify (no node, classifier missing, gh error)
+# returns non-10 so the caller treats the failure as a real one — fail closed.
+run_head_check_classifier() {
+  local head_sha="$1"
+  if ! command -v node >/dev/null 2>&1; then
+    echo "kookr-merge: node is required to classify never-executed checks; treating the check failure as real" >&2
+    return 1
+  fi
+  if [[ ! -f "$KOOKR_MERGE_CLASSIFIER" ]]; then
+    echo "kookr-merge: check classifier not found at $KOOKR_MERGE_CLASSIFIER; treating the check failure as real" >&2
+    return 1
+  fi
+  local rc=0
+  node "$KOOKR_MERGE_CLASSIFIER" --sha "$head_sha" ${REPO_ARG[@]+"${REPO_ARG[@]}"} >&2 || rc=$?
+  return "$rc"
+}
+
+# local_gate_recorded_on_head — true iff the PR records the local verification
+# gate for the given head SHA: the `local-verified` label AND a comment carrying
+# the local-gate marker with a `local-gate-head-sha:` line equal to that SHA.
+# `$1` is the `gh pr view` JSON (comments+labels), `$2` the head SHA — both
+# resolved once by the caller so the classifier and the gate see the same head.
+# The head binding makes the waiver specific to the reviewed code — a local-gate
+# comment from an earlier push does not carry forward — mirroring the exact-head
+# binding of the independent-review gate (issue #3396).
+local_gate_recorded_on_head() {
+  local view="$1" head_sha="$2" decision
+  decision="$(printf '%s' "$view" | jq -r \
+    --arg marker "$KOOKR_LOCAL_GATE_MARKER" \
+    --arg wantlabel "$KOOKR_LOCAL_VERIFIED_LABEL" \
+    --arg head "$head_sha" '
+    def strip: gsub("^\\s+|\\s+$"; "");
+    ([ .labels[]?.name | ascii_downcase ] | index(($wantlabel | ascii_downcase))) as $hasLabel
+    | ([ .comments[]?
+         | select((.body // "") | contains($marker))
+         | ((.body // "") | split("\n") | map(strip))[]
+         | select(ascii_downcase | startswith("local-gate-head-sha:"))
+         | ascii_downcase | ltrimstr("local-gate-head-sha:") | strip
+       ] | index($head)) as $hasComment
+    | if ($hasLabel != null) and ($hasComment != null) then "ok" else "missing" end
+  ')"
+  [[ "$decision" == "ok" ]]
+}
+
+# never_executed_merge_allowed — the rollup looks failed; decide whether that is
+# actually an EXTERNAL never-executed block (GitHub Actions billing/quota) that
+# the recorded local gate waives, versus a check that RAN and failed on the code.
+# Returns 0 to ALLOW the merge (never-executed + local gate on the current head),
+# 1 to refuse (executed-red, still pending, classifier error, or never-executed
+# without the recorded local gate). executed-red is NEVER waived, even when the
+# local-verified label is present.
+never_executed_merge_allowed() {
+  local view head_sha rc=0
+  # Resolve the head + comments once. `commits | last | .oid` is the same head
+  # definition require_review_verdict pins the merge to, so classification, the
+  # local-gate binding, and the final pin never disagree.
+  if ! view="$(gh pr view "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --json comments,labels,commits)"; then
+    echo "kookr-merge: could not read the PR for the local gate; treating the check failure as real" >&2
+    return 1
+  fi
+  head_sha="$(printf '%s' "$view" | jq -r '((.commits // []) | last | .oid // "") | ascii_downcase')"
+  if [[ -z "$head_sha" ]]; then
+    echo "kookr-merge: could not resolve the PR head SHA; treating the check failure as real" >&2
+    return 1
+  fi
+
+  run_head_check_classifier "$head_sha" || rc=$?
+  if [[ "$rc" != "10" ]]; then
+    # 20 executed-red, 30 pending, 0 green (rollup lag), or 1 error — never waive.
+    return 1
+  fi
+  if local_gate_recorded_on_head "$view" "$head_sha"; then
+    echo "kookr-merge: checks never executed (external GitHub Actions billing/quota block, not a code failure); the PR carries the '$KOOKR_LOCAL_VERIFIED_LABEL' label and a local-gate comment bound to the current head — proceeding on the local verification gate (issue #3396)"
+    return 0
+  fi
+  echo "kookr-merge: checks never executed (billing/quota), but the local gate is not recorded on the current head." >&2
+  echo "kookr-merge: to merge, record local verification on this PR — add the '$KOOKR_LOCAL_VERIFIED_LABEL' label AND comment the local-gate result with a 'local-gate-head-sha: <current head>' line — then retry." >&2
+  return 1
+}
+
 watch_checks() {
   # Shared pre-flight for BOTH the --watch fast path and the poll loop.
   # A PR with no reported checks has statusCheckRollup=null (repos without CI)
@@ -269,8 +384,16 @@ watch_checks() {
   # Zero-check-but-not-yet-clean PRs must NOT use --watch (it exits 1 on "no
   # checks", issue #2102) — they fall through to the poll loop below.
   if [[ "$total" != "0" ]] && gh pr checks --help 2>/dev/null | grep -q -- '--watch'; then
-    gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch
-    return $?
+    if gh pr checks "$PR" ${REPO_ARG[@]+"${REPO_ARG[@]}"} --watch; then
+      return 0
+    fi
+    # A non-zero --watch means at least one check settled as "not passing". That
+    # is a real red UNLESS the checks never executed (external billing/quota) and
+    # the local gate is recorded on the current head (issue #3396).
+    if never_executed_merge_allowed; then
+      return 0
+    fi
+    return 3
   fi
 
   local timeout="${KOOKR_MERGE_CHECK_TIMEOUT_SECONDS:-3600}"
@@ -309,6 +432,11 @@ watch_checks() {
 
     if [[ "$failed" != "0" ]]; then
       printf '%s\n' "$checks" | jq -r '(.statusCheckRollup // [])[] | select(.status == "COMPLETED" and (.conclusion as $c | $c != "SUCCESS" and $c != "SKIPPED" and $c != "NEUTRAL")) | "  \(.name): \(.conclusion)"' >&2
+      # A failing rollup is a real red UNLESS the checks never executed (external
+      # billing/quota block) and the local gate is recorded on the current head.
+      if never_executed_merge_allowed; then
+        return 0
+      fi
       return 3
     fi
 

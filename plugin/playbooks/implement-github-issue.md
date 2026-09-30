@@ -623,12 +623,19 @@ If `{{mergeAfterImplementation}}` is `true`:
 
      ```bash
      pnpm verify   # or the repo's documented local gate; capture the pass/fail + test counts
-     gh pr comment <PR_NUMBER> --repo "$REPO" --body "Local gate (CI never executed — billing/quota): \`pnpm verify\` passed — <N> tests. Recorded per CLAUDE.md CI policy (closes-context #1713)."
+     HEAD_SHA=$(gh pr view <PR_NUMBER> --repo "$REPO" --json commits --jq '.commits[-1].oid')
+     # The comment MUST carry the `<!-- kookr-local-gate -->` marker AND a
+     # `local-gate-head-sha:` line equal to the current head — that head binding is
+     # what `pnpm merge` checks (see below). A plain-prose comment is NOT accepted.
+     gh pr comment <PR_NUMBER> --repo "$REPO" --body "$(printf '%s\n' \
+       '<!-- kookr-local-gate -->' \
+       'Local gate (CI never executed — billing/quota): `pnpm verify` passed — <N> tests. Recorded per CLAUDE.md CI policy.' \
+       "local-gate-head-sha: ${HEAD_SHA}")"
      gh label create local-verified --repo "$REPO" --color 0e8a16 --description "Merged on local-gate evidence because CI never executed" 2>/dev/null || true
      gh pr edit <PR_NUMBER> --repo "$REPO" --add-label local-verified
      ```
 
-     Only merge after that comment and the `local-verified` label are posted. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
+     Only merge after that comment and the `local-verified` label are posted. On `kookr-ai/kookr`, `pnpm merge` enforces this deterministically: for a `never-executed` block it proceeds only when the PR carries the `local-verified` label AND a local-gate comment whose `local-gate-head-sha:` equals the current head (a comment from an earlier push does not carry forward); otherwise it exits 3. A check that RAN and failed is never waived. If `{{ignoreBudgetCiFailures}}` is `false`, `never-executed` blocks like any failing check.
    - **`executed-green` / `none-required`** — no check-run objection; proceed to merge.
    - **`pending`** — checks are still running; wait (subject to the CI-rerun bound below) rather than merging.
 
