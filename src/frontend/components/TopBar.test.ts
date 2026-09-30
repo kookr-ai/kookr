@@ -380,3 +380,94 @@ describe('TopBar triage-queue indicator (#2684)', () => {
     expect(onFocusQueue).not.toHaveBeenCalled();
   });
 });
+
+describe('TopBar all-time spend Cost Comparison opener (issue #3398)', () => {
+  beforeEach(() => {
+    document.body.innerHTML = '';
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    useKookrStore.setState({
+      connected: true,
+      totalSpendUsd: 0,
+      agents: [],
+      circuitBreakers: [],
+      diagnosticReport: null,
+      coordinator: null,
+    });
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(fetchResponse({ configured: false }))));
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+    vi.unstubAllGlobals();
+  });
+
+  function render(overrides: Record<string, unknown> = {}): void {
+    act(() => {
+      root.render(
+        React.createElement(TopBar, {
+          findings: 0,
+          currentIndex: -1,
+          totalFindings: 0,
+          onLaunch: vi.fn(),
+          onCommandPalette: vi.fn(),
+          onOperations: vi.fn(),
+          onCoordinatorFindings: vi.fn(),
+          onTerminalFocusToggle: vi.fn(),
+          ...overrides,
+        }),
+      );
+    });
+  }
+
+  test('clicking a visible non-zero spend figure calls the Cost Comparison opener', () => {
+    const onOpenCostComparison = vi.fn();
+    const onCommandPalette = vi.fn();
+    useKookrStore.setState({ totalSpendUsd: 12.3 });
+    render({ onOpenCostComparison, onCommandPalette });
+
+    const chip = container.querySelector<HTMLButtonElement>('.topbar-spend');
+    expect(chip?.tagName).toBe('BUTTON');
+    expect(chip?.textContent).toBe('$12.30');
+    expect(chip?.getAttribute('aria-label')).toBe('$12.30. Open Cost Comparison');
+    expect(chip?.classList.contains('topbar-spend-placeholder')).toBe(false);
+
+    act(() => {
+      chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onOpenCostComparison).toHaveBeenCalledOnce();
+    expect(onCommandPalette).not.toHaveBeenCalled();
+  });
+
+  test('isolated TopBar without the opener still renders a span', () => {
+    useKookrStore.setState({ totalSpendUsd: 12.3 });
+    render();
+
+    const chip = container.querySelector('.topbar-spend');
+    expect(chip).not.toBeNull();
+    expect(chip?.tagName).toBe('SPAN');
+    expect(chip?.textContent).toBe('$12.30');
+    expect(chip?.getAttribute('aria-label')).toBeNull();
+  });
+
+  test('zero spend stays a non-interactive placeholder even when the opener is wired', () => {
+    const onOpenCostComparison = vi.fn();
+    useKookrStore.setState({ totalSpendUsd: 0 });
+    render({ onOpenCostComparison });
+
+    const chip = container.querySelector('.topbar-spend');
+    expect(chip).not.toBeNull();
+    expect(chip?.tagName).toBe('SPAN');
+    expect(chip?.classList.contains('topbar-spend-placeholder')).toBe(true);
+    expect(chip?.getAttribute('aria-hidden')).toBe('true');
+
+    act(() => {
+      chip?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onOpenCostComparison).not.toHaveBeenCalled();
+  });
+});

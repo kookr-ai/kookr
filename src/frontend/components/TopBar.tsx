@@ -56,6 +56,11 @@ interface Props {
   scheduleHintActive?: boolean;
   /** Resolved platform/user bindings for FollowPill and related hints. */
   shortcutBindings?: ShortcutBindingMap;
+  /**
+   * Open Cost Comparison when the all-time spend figure is clicked (issue #3398).
+   * Optional so isolated TopBar tests keep today's non-interactive span.
+   */
+  onOpenCostComparison?: () => void;
 }
 
 function timeAgo(isoString: string): string {
@@ -92,6 +97,7 @@ export function TopBar({
   readOnly = false,
   scheduleHintActive = false,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
+  onOpenCostComparison,
 }: Props) {
   const {
     connected,
@@ -300,6 +306,9 @@ export function TopBar({
     : undefined;
   const queueDotCount = Math.max(totalFindings, 1);
   const spendLabel = totalSpendUsd > 0 ? formatCost(totalSpendUsd) : '$0.00';
+  const spendTitle = totalSpendUsd > 0
+    ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks'
+    : undefined;
   const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
   const lastRestart = deployStatus?.lastRestart;
   const blackoutTier = lastRestart ? apiBlackoutTier(lastRestart.apiBlackoutSeconds) : null;
@@ -553,13 +562,25 @@ export function TopBar({
       </div>
       <div className="topbar-right">
         <div className="metric-group topbar-spend-group">
-          <span
-            className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
-            title={totalSpendUsd > 0 ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks' : undefined}
-            aria-hidden={totalSpendUsd > 0 ? undefined : true}
-          >
-            {spendLabel}
-          </span>
+          {totalSpendUsd > 0 && onOpenCostComparison ? (
+            <button
+              type="button"
+              className="topbar-spend"
+              title={spendTitle}
+              aria-label={`${spendLabel}. Open Cost Comparison`}
+              onClick={onOpenCostComparison}
+            >
+              {spendLabel}
+            </button>
+          ) : (
+            <span
+              className={`topbar-spend${totalSpendUsd > 0 ? '' : ' topbar-spend-placeholder'}`}
+              title={spendTitle}
+              aria-hidden={totalSpendUsd > 0 ? undefined : true}
+            >
+              {spendLabel}
+            </span>
+          )}
         </div>
         <div className="metric-group">
           <FollowPill shortcutBindings={shortcutBindings} />
