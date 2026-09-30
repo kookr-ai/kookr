@@ -56,6 +56,7 @@ interface RenderOpts {
   defaultCwd?: string;
   defaultPrompt?: string;
   defaultCriteria?: string;
+  seedPrompt?: string;
   sendReturns?: boolean;
   onClose?: () => void;
 }
@@ -74,6 +75,7 @@ function renderDialog(container: HTMLElement, opts: RenderOpts = {}): { root: Ro
         defaultCwd: opts.defaultCwd,
         defaultPrompt: opts.defaultPrompt,
         defaultCriteria: opts.defaultCriteria,
+        seedPrompt: opts.seedPrompt,
       }),
     );
   });
@@ -248,6 +250,26 @@ describe('LaunchTaskDialog draft persistence', () => {
     act(() => root.unmount());
   });
 
+  test('submitting an unedited seedPrompt retains the draft when send fails', async () => {
+    const { root } = renderDialog(container, {
+      seedPrompt: 'Run tests and fix failures',
+      sendReturns: false,
+    });
+    await flush();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+    const form = container.querySelector('form')!;
+    await act(async () => { form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); });
+    await flush();
+
+    expect(localStorage.getItem(DRAFT_KEY)).not.toBeNull();
+    const stored = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
+    expect(stored.prompt).toBe('Run tests and fix failures');
+    expect(stored.submittedAt).toBeUndefined();
+
+    act(() => root.unmount());
+  });
+
   test('failed launch (send returns false) retains the draft', async () => {
     const { root } = renderDialog(container, { sendReturns: false });
     await flush();
@@ -263,6 +285,43 @@ describe('LaunchTaskDialog draft persistence', () => {
     expect(localStorage.getItem(DRAFT_KEY)).not.toBeNull();
     const stored = JSON.parse(localStorage.getItem(DRAFT_KEY)!);
     expect(stored.prompt).toBe('retry me');
+
+    act(() => root.unmount());
+  });
+
+  test('an unedited seedPrompt does not persist as a typed draft', async () => {
+    const { root } = renderDialog(container, {
+      seedPrompt: 'Review the diff since origin/main and summarize risks',
+    });
+    await flush();
+
+    expect(getPromptEl(container).value).toBe('Review the diff since origin/main and summarize risks');
+    expect(container.querySelector('.draft-restored-banner')).toBeNull();
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  test('seedPrompt does not load leftover draft prompt or criteria', async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ prompt: 'my draft', cwd: '/my/repo', criteria: 'my criteria' }),
+    );
+
+    const { root } = renderDialog(container, {
+      seedPrompt: 'Run tests and fix failures',
+    });
+    await flush();
+
+    expect(getPromptEl(container).value).toBe('Run tests and fix failures');
+    expect(getCriteriaEl(container).value).toBe('');
+    expect(container.querySelector('.draft-restored-banner')).toBeNull();
+    // Stored draft is untouched so Cancel cannot replace it with the canned starter.
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toEqual({
+      prompt: 'my draft',
+      cwd: '/my/repo',
+      criteria: 'my criteria',
+    });
 
     act(() => root.unmount());
   });

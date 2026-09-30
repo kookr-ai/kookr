@@ -2059,6 +2059,13 @@ button.section-header.detection-stats-header:focus-visible {
   font-size: 14px;
   padding: 10px 20px;
 }
+.overview-sample-prompts {
+  width: 100%;
+}
+.overview-sample-prompts .sample-prompt-chips {
+  justify-content: center;
+  margin: 0;
+}
 .overview-counts {
   display: flex;
   gap: 12px;

@@ -54,6 +54,9 @@ import { OtherContextDictationRecovery } from './OtherContextDictationRecovery.j
 import { retainDictation, submitDictationDraft, acknowledgeDictationLaunch, dictationLaunchConfirmed, discardDictationDraftLinks, resumeDictationCorpusRetries, type DictationDelivery } from '../store/dictation-corpus.js';
 import { DictationCorpusStatus } from './DictationCorpusStatus.js';
 import { appendDictation } from '../append-dictation.js';
+import { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
+
+export { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
 
 const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
@@ -62,29 +65,6 @@ const recentPaths = new RecentPaths();
 
 /** Time-to-live for the playbook list cache, in milliseconds. */
 const PLAYBOOK_CACHE_TTL_MS = 30_000;
-
-/**
- * First-agent starter prompts on the Manual tab (issue #2582). Click fills
- * the description only — cwd and Launch stay operator-controlled. Keep the
- * set tiny, local-first, and non-destructive.
- */
-export const SAMPLE_LAUNCH_PROMPTS = [
-  {
-    id: 'review-diff',
-    label: 'Review the latest diff',
-    prompt: 'Review the diff since origin/main and summarize risks',
-  },
-  {
-    id: 'run-tests',
-    label: 'Run tests and fix failures',
-    prompt: 'Run tests and fix failures',
-  },
-  {
-    id: 'explain-status',
-    label: 'Explain git status',
-    prompt: 'Explain git status and the last few commits',
-  },
-] as const;
 
 type Tab = 'manual' | 'playbooks';
 
@@ -131,10 +111,16 @@ interface Props {
   projectCwd?: string;
   /** Which tab to show first. Palette and project-drawer entry points pass this; relaunch still forces playbooks. */
   initialTab?: Tab;
+  /**
+   * Prefill the Manual description without treating the open as a relaunch.
+   * Overview starter chips (#3397) pass this so cwd, draft persistence, and
+   * Launch stay operator-controlled — unlike `defaultPrompt`, which marks a relaunch.
+   */
+  seedPrompt?: string;
   sttShortcutBinding?: ShortcutBinding;
 }
 
-export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchParentTaskId, relaunchPlaybookId, relaunchParameterValues, relaunchPlaybookSource, projectContext, projectCwd, initialTab: requestedInitialTab, sttShortcutBinding }: Props) {
+export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, defaultCriteria, defaultAgentType, relaunchParentTaskId, relaunchPlaybookId, relaunchParameterValues, relaunchPlaybookSource, projectContext, projectCwd, initialTab: requestedInitialTab, seedPrompt, sttShortcutBinding }: Props) {
   const serverCwd = useKookrStore((s) => s.serverCwd);
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
@@ -161,17 +147,22 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
   // Resolved once per open (lazy initializer): a draft kept across an
   // optimistic submit (RFC F12) is cleared here when the launch is confirmed
   // by a matching task in the store, and restored otherwise.
-  const [initialDraft] = useState(() =>
-    isRelaunch ? (() => {
+  const [initialDraft] = useState(() => {
+    if (isRelaunch) {
       const draft = sttUrl ? loadRelaunchDictationDraft(relaunchDraftContext) : null;
       return draft?.submittedCorpusId && dictationLaunchConfirmed(draft.submittedCorpusId) ? null : draft;
-    })() : loadLaunchTaskDialogDraftForOpen(draftLaunchConfirmed),
-  );
+    }
+    // Overview starter chips fill the description without treating the open
+    // as a relaunch. Skip the stored draft so leftover prompt/criteria do
+    // not ride along, and so Cancel cannot persist the canned text (#3397).
+    if (seedPrompt != null) return null;
+    return loadLaunchTaskDialogDraftForOpen(draftLaunchConfirmed);
+  });
   // Was this dialog opened with content hydrated from a stored draft? Recorded
   // once at mount so subsequent typing (which keeps writing to storage) does
   // not flip the indicator on/off. cwd alone doesn't count — see saveLaunchTaskDialogDraft
   // for the same "cwd is auto-populated, ignore it" rationale.
-  const initialHadDraft = !isRelaunch && initialDraft != null
+  const initialHadDraft = !isRelaunch && seedPrompt == null && initialDraft != null
     && (initialDraft.prompt.trim().length > 0 || initialDraft.criteria.trim().length > 0);
   // Local checkouts of tracked projects, labeled for the cwd dropdown and
   // used as a default ahead of the server's own runtime checkout (RFC F13).
@@ -197,7 +188,7 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     );
   const [, refreshRecoveries] = useReducer((revision: number) => revision + 1, 0);
   const [dictationId, setDictationId] = useState(() => initialDraft?.dictationId ?? createDictationId());
-  const [prompt, setPrompt] = useState(initialDraft?.prompt ?? defaultPrompt ?? '');
+  const [prompt, setPrompt] = useState(seedPrompt ?? initialDraft?.prompt ?? defaultPrompt ?? '');
   const [cwd, setCwd] = useState(resolvedInitialCwd);
   const [criteria, setCriteria] = useState(initialDraft?.criteria ?? defaultCriteria ?? '');
   const dictationScope = isRelaunch ? ['relaunch', dictationId, relaunchParentTaskId] : ['draft', dictationId];
@@ -280,8 +271,14 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
     if (submittedRef.current) return;
     if (isRelaunch) {
       if (sttUrl) saveRelaunchDictationDraft(relaunchDraftContext, { prompt, cwd, criteria, dictationId });
-    } else saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
-  }, [prompt, cwd, criteria, isRelaunch, dictationId, sttUrl, relaunchDraftContext]);
+      return;
+    }
+    // An unedited starter is not operator-typed content. Persist only after
+    // they change the prompt or add criteria — otherwise Cancel restores the
+    // canned text on the next blank open (#3397).
+    if (seedPrompt != null && prompt === seedPrompt && !criteria.trim()) return;
+    saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
+  }, [prompt, cwd, criteria, isRelaunch, seedPrompt, dictationId, sttUrl, relaunchDraftContext]);
 
   useEffect(() => {
     if (initialHadDraft) {
@@ -405,6 +402,11 @@ export function LaunchTaskDialog({ send, onClose, defaultCwd, defaultPrompt, def
         ? { disableDedup: true, metadataIntent: 'keep_as_duplicate' as const }
         : {}),
     });
+    if (!isRelaunch) {
+      // An unedited starter skips the live save-effect so Cancel stays empty.
+      // Persist now so a rejected launch can still restore the prompt (RFC F12).
+      saveLaunchTaskDialogDraft({ prompt, cwd, criteria, ...(sttUrl ? { dictationId } : {}) });
+    }
     if (sent) {
       // Set the ref *before* marking so any pending save-effect re-run sees
       // it and early-returns instead of overwriting the submitted marker.

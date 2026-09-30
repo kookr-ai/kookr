@@ -89,6 +89,8 @@ interface Props {
   agent: AgentState | null;
   send: (msg: ClientMessage) => boolean;
   onLaunch: () => void;
+  /** Opens Launch on the Manual tab with a starter prompt filled (overview chips). */
+  onLaunchSample?: (prompt: string) => void;
   /** Opens Launch on the Playbooks tab (overview pinned/recent chips). */
   onLaunchPlaybooks?: (playbookId?: string) => void;
   /** Opens the existing Schedules dialog from the overview next-run row. */
@@ -395,7 +397,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -689,6 +691,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchPlaybooks, onOpenSc
           running={overview?.running ?? []}
           completed={overview?.completed ?? []}
           onLaunch={onLaunch}
+          onLaunchSample={onLaunchSample}
           onLaunchPlaybooks={onLaunchPlaybooks}
           onOpenSchedules={onOpenSchedules}
           onCheckSetup={onCheckSetup}
