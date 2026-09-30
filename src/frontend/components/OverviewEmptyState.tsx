@@ -181,6 +181,11 @@ interface Props {
    * palette). First-run empty state only — returning "All clear" hides it.
    */
   onCheckSetup?: () => void;
+  /**
+   * Open Cost Comparison when the live-spend chip is clicked (issue #3391).
+   * Optional so isolated overview tests keep today's non-interactive span.
+   */
+  onOpenCostComparison?: () => void;
   shortcutBindings?: ShortcutBindingMap;
 }
 
@@ -197,6 +202,7 @@ export function OverviewEmptyState({
   onLaunchPlaybooks,
   onOpenSchedules,
   onCheckSetup,
+  onOpenCostComparison,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
@@ -287,13 +293,26 @@ export function OverviewEmptyState({
                 {runtimeMix.length > 0 && (
                   <span className="overview-runtime-mix-sep"> · </span>
                 )}
-                <span
-                  className="overview-runtime-mix-entry"
-                  data-testid="overview-fleet-cost"
-                  title="Total cost across running, waiting, and completed agents"
-                >
-                  {formatCost(fleetCostUsd)} live spend
-                </span>
+                {onOpenCostComparison ? (
+                  <button
+                    type="button"
+                    className="overview-runtime-mix-entry"
+                    data-testid="overview-fleet-cost"
+                    title="Total cost across running, waiting, and completed agents"
+                    aria-label={`${formatCost(fleetCostUsd)} live spend. Open Cost Comparison`}
+                    onClick={onOpenCostComparison}
+                  >
+                    {formatCost(fleetCostUsd)} live spend
+                  </button>
+                ) : (
+                  <span
+                    className="overview-runtime-mix-entry"
+                    data-testid="overview-fleet-cost"
+                    title="Total cost across running, waiting, and completed agents"
+                  >
+                    {formatCost(fleetCostUsd)} live spend
+                  </span>
+                )}
               </>
             )}
           </p>

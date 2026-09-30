@@ -1497,6 +1497,52 @@ describe('OverviewEmptyState', () => {
       expect(container.querySelector('[data-testid="overview-fleet-cost"]')?.textContent)
         .toBe('$2.50 live spend');
     });
+
+    test('clicking a visible spend chip calls the Cost Comparison opener (issue #3391)', () => {
+      const onOpenCostComparison = vi.fn();
+      const onOpenSchedules = vi.fn();
+      render({
+        running: [makeRunningAgent('r-1', 'Watch logs', { tokenUsage: usage(1.5) })],
+        onOpenCostComparison,
+        onOpenSchedules,
+      });
+
+      const chip = container.querySelector<HTMLButtonElement>('[data-testid="overview-fleet-cost"]');
+      expect(chip?.tagName).toBe('BUTTON');
+      expect(chip?.textContent).toBe('$1.50 live spend');
+      expect(chip?.getAttribute('aria-label')).toBe(
+        '$1.50 live spend. Open Cost Comparison',
+      );
+
+      act(() => {
+        chip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      });
+
+      expect(onOpenCostComparison).toHaveBeenCalledOnce();
+      expect(onOpenSchedules).not.toHaveBeenCalled();
+    });
+
+    test('isolated overview still renders a non-button spend chip without App wiring', () => {
+      render({
+        running: [makeRunningAgent('r-1', 'Watch logs', { tokenUsage: usage(1.5) })],
+      });
+
+      const chip = container.querySelector('[data-testid="overview-fleet-cost"]');
+      expect(chip).not.toBeNull();
+      expect(chip?.tagName).toBe('SPAN');
+      expect(chip?.textContent).toBe('$1.50 live spend');
+    });
+
+    test('does not invent a clickable chip when fleet spend is hidden', () => {
+      const onOpenCostComparison = vi.fn();
+      render({
+        running: [makeRunningAgent('r-1', 'Subscription', { tokenUsage: usage(0) })],
+        onOpenCostComparison,
+      });
+
+      expect(container.querySelector('[data-testid="overview-fleet-cost"]')).toBeNull();
+      expect(onOpenCostComparison).not.toHaveBeenCalled();
+    });
   });
 
   describe('CLI-install guidance banner (#3390)', () => {

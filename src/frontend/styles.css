@@ -2084,6 +2084,25 @@ button.section-header.detection-stats-header:focus-visible {
 .overview-runtime-mix-entry {
   white-space: nowrap;
 }
+/* Issue #3391: the live-spend chip is a button when App supplies the Cost
+   Comparison opener. Reset native button chrome so it stays an inline mix
+   caption, then add hover/focus so it is discoverable as a control. */
+button.overview-runtime-mix-entry {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+button.overview-runtime-mix-entry:hover {
+  color: var(--text-bright);
+}
+button.overview-runtime-mix-entry:focus-visible {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 1px;
+}
 .overview-runtime-mix-sep {
   color: var(--text-muted);
 }
