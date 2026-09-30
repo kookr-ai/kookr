@@ -10,12 +10,17 @@ import { open as openOnboardingTour } from '../store/onboarding-store.js';
 import { getTask } from '../api/tasks.js';
 import {
   GETTING_STARTED_GUIDE_URL,
+  OVERVIEW_CLI_INSTALL_BANNER_ID,
   OVERVIEW_PINNED_PLAYBOOK_LIMIT,
   OVERVIEW_RECENT_COMPLETED_LIMIT,
   OVERVIEW_RECENT_PLAYBOOK_LIMIT,
   OVERVIEW_RUNNING_LIMIT,
   OverviewEmptyState,
 } from './OverviewEmptyState.js';
+import {
+  CLI_INSTALL_BANNER_ID,
+  GETTING_STARTED_GUIDE_URL as CLI_INSTALL_GUIDE_URL,
+} from './CliInstallGuidanceBanner.js';
 import { NARRATED_DEMO_YOUTUBE_URL } from './OnboardingTour.js';
 
 vi.mock('../store/onboarding-store.js', () => ({
@@ -1491,6 +1496,83 @@ describe('OverviewEmptyState', () => {
       expect(mix?.textContent).toBe('Claude 2 · $2.50 live spend');
       expect(container.querySelector('[data-testid="overview-fleet-cost"]')?.textContent)
         .toBe('$2.50 live spend');
+    });
+  });
+
+  describe('CLI-install guidance banner (#3390)', () => {
+    function launchButton(): HTMLButtonElement | undefined {
+      return Array.from(container.querySelectorAll('button')).find(
+        (b) => b.textContent === 'Launch New Task',
+      ) as HTMLButtonElement | undefined;
+    }
+
+    test('shows the banner on the empty overview and keeps Launch enabled when no CLI is advertised', () => {
+      useKookrStore.setState({ availableAgentTypes: [] });
+      render();
+
+      const banner = container.querySelector('[data-testid="cli-install-guidance-banner"]');
+      expect(banner).not.toBeNull();
+      expect(banner?.textContent).toContain('No coding-agent CLI detected');
+      expect(banner?.textContent).toContain('Claude Code');
+      expect(banner?.textContent).toContain('Codex');
+      expect(banner?.textContent).toContain('Grok Build');
+      expect(banner?.querySelector('a')?.getAttribute('href')).toBe(CLI_INSTALL_GUIDE_URL);
+
+      const launch = launchButton();
+      expect(launch).toBeDefined();
+      expect(launch?.disabled).toBe(false);
+      expect(banner?.id).toBe(OVERVIEW_CLI_INSTALL_BANNER_ID);
+      expect(banner?.id).not.toBe(CLI_INSTALL_BANNER_ID);
+      expect(launch?.getAttribute('aria-describedby')?.split(' ')).toContain(
+        OVERVIEW_CLI_INSTALL_BANNER_ID,
+      );
+    });
+
+    test('hides the banner when at least one CLI is advertised', () => {
+      useKookrStore.setState({
+        availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }],
+      });
+      render();
+
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).toBeNull();
+      expect(launchButton()?.disabled).toBe(false);
+    });
+
+    test('hides the banner when a waiting task exists even with no advertised CLI', () => {
+      useKookrStore.setState({ availableAgentTypes: [] });
+      render({ waiting: [makeWaitingAgent('agent-1', 'Fix the build')] });
+
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).toBeNull();
+      expect(launchButton()?.disabled).toBe(false);
+    });
+
+    test('hides the banner when a running task exists even with no advertised CLI', () => {
+      useKookrStore.setState({ availableAgentTypes: [] });
+      render({ running: [makeRunningAgent('run-1', 'Watch logs')] });
+
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).toBeNull();
+    });
+
+    test('hides the banner when a completed task exists even with no advertised CLI', () => {
+      useKookrStore.setState({ availableAgentTypes: [] });
+      render({ completed: [makeCompletedAgent('done-1', 'Ship the fix')] });
+
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).toBeNull();
+    });
+
+    test('reacts to availableAgentTypes arriving after mount (WS snapshot path)', () => {
+      useKookrStore.setState({ availableAgentTypes: [] });
+      render();
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).not.toBeNull();
+
+      act(() => {
+        useKookrStore.setState({
+          availableAgentTypes: [{ type: 'claude-code', label: 'Claude Code' }],
+        });
+      });
+
+      expect(container.querySelector('[data-testid="cli-install-guidance-banner"]')).toBeNull();
+      expect(launchButton()?.disabled).toBe(false);
     });
   });
 });

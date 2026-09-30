@@ -21,7 +21,12 @@ import { buildRuntimeMix, findingTypeLabel, findingWaitStartedAt, formatAge, for
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { pickNextOverviewSchedule, scheduleNextRunLabel } from '../schedule-format.js';
 import { track } from '../telemetry.js';
+import { CliInstallGuidanceBanner } from './CliInstallGuidanceBanner.js';
 import { ShortcutKeys } from './ShortcutKeys.js';
+
+/** Distinct from Launch/Quick Launch's default banner id — the overview stays
+ *  mounted under those overlays, so a shared id would collide (#3390). */
+export const OVERVIEW_CLI_INSTALL_BANNER_ID = 'overview-cli-install-guidance-banner';
 
 /** Rows shown in the "Waiting on you" list; the rest stay in the findings rail. */
 const MAX_WAITING_ROWS = 6;
@@ -199,11 +204,16 @@ export function OverviewEmptyState({
   const sttUrl = useKookrStore((s) => s.sttUrl);
   const playbooks = useKookrStore((s) => s.playbooks);
   const schedules = useKookrStore((s) => s.schedules);
+  const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const nextSchedule = pickNextOverviewSchedule(schedules);
   const nextRun = nextSchedule ? scheduleNextRunLabel(nextSchedule) : null;
   const runningCount = running.length;
   const completedCount = completed.length;
   const hasAnyTask = waiting.length > 0 || runningCount > 0 || completedCount > 0;
+  // First-run only: once any task exists the operator already launched, so the
+  // install nudge would be noise. Empty `availableAgentTypes` before the first
+  // WS snapshot is the same flash Launch/Quick Launch already accept (#3390).
+  const noAgentCliDetected = !hasAnyTask && availableAgentTypes.length === 0;
   // Composition across every live bucket, not just what needs input — answers
   // "what am I running?" at a glance (issue #2670).
   const liveAgents = [...waiting, ...running, ...completed];
@@ -420,8 +430,17 @@ export function OverviewEmptyState({
           </div>
         )}
 
+        {noAgentCliDetected && <CliInstallGuidanceBanner id={OVERVIEW_CLI_INSTALL_BANNER_ID} />}
+
         <div className="overview-launch-actions">
-          <button type="button" className="btn-primary" onClick={onLaunch}>Launch New Task</button>
+          <button
+            type="button"
+            className="btn-primary"
+            onClick={onLaunch}
+            aria-describedby={noAgentCliDetected ? OVERVIEW_CLI_INSTALL_BANNER_ID : undefined}
+          >
+            Launch New Task
+          </button>
           {showCreateScheduleCta && (
             <button
               type="button"
