@@ -703,17 +703,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1396,6 +1396,65 @@ overrides auto-detect; otherwise Kookr probes ports `4800` then `4801` and, like
 Exit codes: `0` success (browser launched, or URL printed for a remote/headless
 host), `2` usage error (unknown flag), `3` no server reachable, `5` ambiguous port
 (two instances reachable; set `KOOKR_PORT` to choose one).
+
+## `kookr reply`
+
+Deliver a terminal reply to a task's **live agent** from the command line — the
+counterpart to opening the dashboard just to type an answer to an agent waiting on
+input. `kookr spawn` / `kookr stop` / `kookr open` could create, abort, and view a
+task from a headless loop, but a scripted supervisor had no verb to talk *back* to a
+running agent. `kookr reply` is the thin client for the pre-existing
+`POST /api/agents/:id/message` route (`sendDirectAgentInput`): it resolves the
+task's live agent from the running instance and posts the text as terminal input,
+attributed to the `cli` actor.
+
+```bash
+kookr reply <taskId|name> "<text>" [--json]
+echo "<text>" | kookr reply <taskId|name> [--json]  # reply text from stdin
+kookr reply t-1 "approved, continue" --json         # machine-readable envelope
+```
+
+**Task resolution.** The first positional is a task reference matched by **exact**
+`taskId` **or** exact `taskName` against the live agents reported by
+`GET /api/snapshot`; agents whose task is already in a terminal status are excluded.
+Resolution is all-or-nothing rather than a guess:
+
+- **Zero** live agents match → `NO_AGENT` (exit `2`, a user error): the task is not
+  running, so there is nothing to reply to.
+- **More than one** live agent matches the same reference → `AMBIGUOUS_AGENT`
+  (exit `5`): the reply is not delivered. The human output and the JSON
+  `details.candidates` list each candidate's `agentId`, `taskName`, and `taskStatus`
+  so the caller can disambiguate.
+
+**Reply text.** Taken from the second positional argument; when it is omitted the
+text is read from **piped stdin** (trailing whitespace trimmed). An interactive
+stdin with no positional text, or empty text, is a usage error — the command never
+blocks waiting for a human to type at a TTY.
+
+**Supervisor token & attribution.** Authorization mirrors `kookr stop` / `kookr
+open`: `kookr reply` forwards `KOOKR_SUPERVISOR_TOKEN` when set, falls back to
+`KOOKR_API_TOKEN` for a non-loopback server, and otherwise sends no auth header (the
+loopback-open default). Every reply carries the `x-kookr-actor: cli` header so the
+interaction log records the CLI (not `unattributed`) as the sender.
+
+Target selection mirrors `kookr stop`: `KOOKR_API_BASE_URL` or `KOOKR_PORT`
+overrides auto-detect; otherwise Kookr probes ports `4800` then `4801` and, like
+`stop`/`open`/`signal`, exits with an ambiguity error when both respond.
+
+`--json` emits one `{ ok, code, message, details }` envelope. On success `code` is
+`OK` and `details` carries `{ taskId, agentId, delivered: true }`; failures use the
+codes `USER_ERROR`, `NO_AGENT`, `AMBIGUOUS_AGENT`, `NO_SERVER`, `SERVER_ERROR`, or
+`AMBIGUOUS_PORT`.
+
+Exit codes: `0` success (reply delivered), `2` usage error — including bad flags, a
+missing `<taskId|name>`, missing/empty reply text, and **`NO_AGENT`** (no live agent
+matched), `3` no server reachable — no instance answered on the probed ports, or the
+snapshot request could not be completed (connection failure, timeout, or an unreadable
+response body), `4` server/HTTP error — the snapshot returned a non-success HTTP status
+or an unexpected shape, or the reply could not be delivered (the delivery request
+failed, was rejected, or returned an unexpected body), `5` ambiguous — either two
+instances reachable (`AMBIGUOUS_PORT`; set `KOOKR_PORT`) or more than one live agent
+matched the reference (`AMBIGUOUS_AGENT`).
 
 ## `kookr migrate`
 
