@@ -1607,6 +1607,7 @@ export function App() {
           toggleTerminalFocusMode();
         }}
         shortcutBindings={shortcutBindings}
+        onOpenCostComparison={() => openModal('costComparison')}
       />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>

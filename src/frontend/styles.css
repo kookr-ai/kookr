@@ -415,6 +415,21 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 .topbar-spend-placeholder { visibility: hidden; }
+/* Issue #3398: the all-time spend figure is a button when App supplies the Cost
+   Comparison opener. Reset native button chrome so it stays a compact metric. */
+button.topbar-spend {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+button.topbar-spend:hover {
+  color: var(--text-bright);
+}
+button.topbar-spend:focus-visible {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 1px;
+}
 
 .btn-settings,
 .btn-icon {
