@@ -86,6 +86,85 @@ export function reapLaunchSession(
 }
 
 /**
+ * Task/session bookkeeping for a session that an abandoned launch reported
+ * after its timeout. Each launch path supplies its own persistence and
+ * recovery effects through these collaborators; the shared owner
+ * ({@link reapAbandonedLaunchSession}) sequences them around the physical stop.
+ */
+export interface AbandonedLaunchSessionBookkeeping {
+  /**
+   * Link the late session to its task as a reaper-owned terminal leak and mark
+   * its status unresolved. Throwing signals the link failed; the physical stop
+   * still runs and remains the source of truth.
+   */
+  link(sessionId: string): void;
+  /** Mark the linked session `aborted` after a proven physical stop. */
+  markAborted(sessionId: string): void;
+  /** Best-effort recovery when {@link link} throws. */
+  onLinkError?(sessionId: string, err: unknown): void;
+  /**
+   * Runs after linking and before the shared stop is awaited (e.g. an operator
+   * intent line). It must not throw.
+   */
+  beforeReap?(sessionId: string): void;
+  /**
+   * Runs after the session is marked `aborted` on a proven stop (e.g. a success
+   * audit row or a state flush).
+   */
+  onReaped?(sessionId: string): void | Promise<void>;
+  /**
+   * Runs when the shared stop rejects; the session stays unresolved and owned so
+   * the next reaper sweep retries it (e.g. a warning or probe-ownership
+   * retention plus a flush).
+   */
+  onReapFailed?(sessionId: string, err: unknown): void | Promise<void>;
+}
+
+/**
+ * Own the bookkeeping for a session an abandoned launch reported after its
+ * timeout: link it to the task as a reaper-owned terminal leak, keep its status
+ * unresolved while the shared physical stop is pending, and mark it `aborted`
+ * only once that stop resolves. The stop itself is {@link reapLaunchSession}, so
+ * a late creation and a late promise resolution share one physical attempt.
+ * Path-specific effects (success auditing, state flushes, dependency-probe
+ * retention) are delegated to {@link AbandonedLaunchSessionBookkeeping} so each
+ * caller keeps its exact audit, persistence, and recovery behavior and order.
+ *
+ * Idempotent with respect to the guard: if a stop was already started via the
+ * guard (e.g. by {@link noteLaunchSession} on late creation), this re-derives
+ * the same shared promise instead of starting a second stop.
+ */
+export function reapAbandonedLaunchSession(
+  guard: LaunchReapGuard,
+  adapter: Pick<AgentAdapter, 'stop'>,
+  agentType: AgentType,
+  taskId: string,
+  sessionId: string,
+  bookkeeping: AbandonedLaunchSessionBookkeeping,
+): void {
+  try {
+    bookkeeping.link(sessionId);
+  } catch (linkErr) {
+    bookkeeping.onLinkError?.(sessionId, linkErr);
+  }
+  bookkeeping.beforeReap?.(sessionId);
+  void reapLaunchSession(guard, adapter, agentType, taskId, sessionId).then(
+    async () => {
+      try {
+        bookkeeping.markAborted(sessionId);
+      } catch {
+        // A concurrent task purge may remove the bookkeeping after the physical
+        // stop resolves. Cleanup is already proven in that case.
+      }
+      await bookkeeping.onReaped?.(sessionId);
+    },
+    async (stopErr) => {
+      await bookkeeping.onReapFailed?.(sessionId, stopErr);
+    },
+  );
+}
+
+/**
  * Race one adapter launch against a hard timeout. A late session id is stopped
  * best-effort so a recovery timeout cannot leave an unowned terminal session.
  */

@@ -95,6 +95,7 @@ import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
   isLaunchTimeoutError,
+  reapAbandonedLaunchSession,
   reapLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
@@ -2277,52 +2278,52 @@ async function launchTaskCore(
   };
   const launchAbort = new AbortController();
   const linkAndReapAbandonedSession = (sessionId: string): void => {
-    // Link first (terminal-safe, idempotent) so the reaper owns the master as a
-    // `terminal-task-leak` (60s) even if the async kill below races a sweep,
-    // and so a restart never re-attaches it. Its status stays unknown until
-    // physical stop resolves, then becomes `aborted`.
-    try {
-      taskStore.recordAbandonedLaunchSession(task.id, {
-        tmuxSession: sessionId,
-        agentType,
-        cwd: opts.cwd,
-        createdAt: new Date(),
-      });
-      // `recordAbandonedLaunchSession` defaults to aborted for historical
-      // terminal leaks. This launch still has an in-flight physical stop, so
-      // keep it live-looking until that stop actually resolves.
-      taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
-    } catch (linkErr) {
-      console.warn(
-        `[launch] failed to link abandoned session ${sessionId} to task ${task.id}: ` +
-        `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
-      );
-    }
-    // Operator signal (issue #2500): the incident that motivated this fix was
-    // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
-    // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
-    // reaper's evidence here — a positive intent line now, and the durable
-    // `session.reap` row (actor `system:launch-service`) only AFTER
-    // `adapter.stop()` actually resolves. Matching the reaper's contract
-    // (session-reaper.ts: `killSession` then audit row, and NO success row when
-    // the kill throws), a failed kill must never leave a false "reaped" trail —
-    // the session is already recorded on the task, so the next reaper sweep
-    // still reaps it as a terminal-task-leak.
-    console.warn(
-      `[launch] linking + reaping abandoned-launch session ${sessionId} for terminal task ${task.id} ` +
-      `(agent ${agentType}) — owned as terminal-task-leak (60s), not left as a 24h unowned orphan`,
-    );
-    // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
-    // #1528 race helper does the same on a late RESOLUTION; this covers the
-    // common case where the launch never resolves at all).
-    void reapLaunchSession(abandon, adapter, agentType, task.id, sessionId).then(
-      () => {
-        try {
-          taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
-        } catch {
-          // A concurrent task purge may remove the bookkeeping after the
-          // physical stop. Cleanup is already proven in that case.
-        }
+    reapAbandonedLaunchSession(abandon, adapter, agentType, task.id, sessionId, {
+      // Link first (terminal-safe, idempotent) so the reaper owns the master as
+      // a `terminal-task-leak` (60s) even if the async kill races a sweep, and
+      // so a restart never re-attaches it. Its status stays unknown until
+      // physical stop resolves, then becomes `aborted`.
+      link: () => {
+        taskStore.recordAbandonedLaunchSession(task.id, {
+          tmuxSession: sessionId,
+          agentType,
+          cwd: opts.cwd,
+          createdAt: new Date(),
+        });
+        // `recordAbandonedLaunchSession` defaults to aborted for historical
+        // terminal leaks. This launch still has an in-flight physical stop, so
+        // keep it live-looking until that stop actually resolves.
+        taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
+      },
+      onLinkError: (_sid, linkErr) => {
+        console.warn(
+          `[launch] failed to link abandoned session ${sessionId} to task ${task.id}: ` +
+          `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
+        );
+      },
+      // Operator signal (issue #2500): the incident that motivated this fix was
+      // diagnosed from `audit.jsonl` `session.reap` rows + the reaper's orphan
+      // counters. This reap runs OUTSIDE the periodic sweep, so mirror the
+      // reaper's evidence here — a positive intent line now, and the durable
+      // `session.reap` row (actor `system:launch-service`) only AFTER
+      // `adapter.stop()` actually resolves. Matching the reaper's contract
+      // (session-reaper.ts: `killSession` then audit row, and NO success row
+      // when the kill throws), a failed kill must never leave a false "reaped"
+      // trail — the session is already recorded on the task, so the next reaper
+      // sweep still reaps it as a terminal-task-leak.
+      beforeReap: () => {
+        console.warn(
+          `[launch] linking + reaping abandoned-launch session ${sessionId} for terminal task ${task.id} ` +
+          `(agent ${agentType}) — owned as terminal-task-leak (60s), not left as a 24h unowned orphan`,
+        );
+      },
+      // TERM -> grace -> KILL + socket removal via the adapter's stop() (issue
+      // #1528 race helper does the same on a late RESOLUTION; this covers the
+      // common case where the launch never resolves at all).
+      markAborted: () => {
+        taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+      },
+      onReaped: () => {
         void appendAuditRow(deps.auditLogPath, {
           type: 'session.reap',
           timestamp: nowISO(),
@@ -2335,14 +2336,14 @@ async function launchTaskCore(
             'launch abandoned after session-create (top-level launch timeout) — late dtach master linked and reaped',
         });
       },
-      (stopErr) => {
+      onReapFailed: (_sid, stopErr) => {
         console.warn(
           `[launch] failed to reap abandoned session ${sessionId} for task ${task.id} ` +
           '(recorded on the task; the next reaper sweep reaps it as a terminal-task-leak): ' +
           `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
         );
       },
-    );
+    });
   };
   const probeSessionId = dependencyAdmissionDecision?.admit
     && dependencyAdmissionDecision.probe
@@ -3011,35 +3012,32 @@ export async function launchFreshTaskSession(
     : launchAbort.signal;
 
   const linkAndReapAbandonedSession = (sessionId: string): void => {
-    try {
-      deps.taskStore.recordAbandonedLaunchSession(task.id, {
-        tmuxSession: sessionId,
-        agentType: task.agentType,
-        cwd: task.cwd,
-        createdAt: new Date(),
-      });
-      deps.taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
-    } catch (linkErr) {
-      console.warn(
-        `[launch] failed to link abandoned fresh-session ${sessionId} to task ${task.id}: ` +
-        `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
-      );
-    }
-    void reapLaunchSession(abandon, adapter, task.agentType, task.id, sessionId).then(
-      () => {
-        try {
-          deps.taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
-        } catch {
-          // Bookkeeping may race a concurrent task purge after proven stop.
-        }
+    reapAbandonedLaunchSession(abandon, adapter, task.agentType, task.id, sessionId, {
+      link: () => {
+        deps.taskStore.recordAbandonedLaunchSession(task.id, {
+          tmuxSession: sessionId,
+          agentType: task.agentType,
+          cwd: task.cwd,
+          createdAt: new Date(),
+        });
+        deps.taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
       },
-      (stopErr) => {
+      onLinkError: (_sid, linkErr) => {
+        console.warn(
+          `[launch] failed to link abandoned fresh-session ${sessionId} to task ${task.id}: ` +
+          `${linkErr instanceof Error ? linkErr.message : String(linkErr)}`,
+        );
+      },
+      markAborted: () => {
+        deps.taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+      },
+      onReapFailed: (_sid, stopErr) => {
         console.warn(
           `[launch] failed to reap abandoned fresh-session ${sessionId} for task ${task.id}: ` +
           `${stopErr instanceof Error ? stopErr.message : String(stopErr)}`,
         );
       },
-    );
+    });
   };
 
   try {

@@ -34,6 +34,7 @@ import {
   allocateLaunchSessionId,
   isLaunchTimeoutError,
   noteLaunchSession,
+  reapAbandonedLaunchSession,
   reapLaunchSession,
   raceLaunchAgainstTimeout,
   type LaunchReapGuard,
@@ -411,27 +412,29 @@ export async function recoverCrashedSessions(
               sessionId,
             );
             if (!lateCleanup) return;
-            try {
-              taskStore.recordAbandonedLaunchSession(task.id, {
-                tmuxSession: sessionId,
-                agentType: task.agentType,
-                cwd: originalCwd,
-                createdAt: new Date(),
-              });
-              taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
-            } catch {
+            // `noteLaunchSession` already started the shared physical stop; the
+            // owner re-derives the same promise from the guard, so late creation
+            // and late resolution still share one stop attempt.
+            reapAbandonedLaunchSession(launchReapGuard, adapter, task.agentType, task.id, sessionId, {
+              link: () => {
+                taskStore.recordAbandonedLaunchSession(task.id, {
+                  tmuxSession: sessionId,
+                  agentType: task.agentType,
+                  cwd: originalCwd,
+                  createdAt: new Date(),
+                });
+                taskStore.updateSession(task.id, sessionId, { lastStatus: undefined });
+              },
               // The adapter may attach immediately after reporting creation.
-            }
-            void lateCleanup.then(
-              async () => {
-                try {
-                  taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
-                } catch {
-                  // Task deletion after proven cleanup needs no bookkeeping.
-                }
+              onLinkError: () => undefined,
+              markAborted: () => {
+                // Task deletion after proven cleanup needs no bookkeeping.
+                taskStore.updateSession(task.id, sessionId, { lastStatus: 'aborted' });
+              },
+              onReaped: async () => {
                 await options.flushTasks?.().catch(() => undefined);
               },
-              async () => {
+              onReapFailed: async () => {
                 const current = taskStore.getTask(task.id);
                 if (
                   admissionMarkerWrittenByOwner?.status === 'probing'
@@ -444,7 +447,7 @@ export async function recoverCrashedSessions(
                 }
                 await options.flushTasks?.().catch(() => undefined);
               },
-            );
+            });
           },
           ...(expectedProbeSessionId ? { tmuxName: expectedProbeSessionId } : {}),
         };
