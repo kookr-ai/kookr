@@ -105,6 +105,12 @@ interface Props {
    */
   onOpenDiagnostics?: () => void;
   /**
+   * Open the Schedules dialog when the paused-schedules pill is clicked
+   * (issue #3399). Optional so isolated StatusBar tests keep today's
+   * non-button span. Does not resume paused jobs — the operator decides.
+   */
+  onOpenSchedules?: () => void;
+  /**
    * Open Cost Comparison when the 24h cost chip is clicked (issue #3335).
    * Optional so isolated StatusBar tests need no App wiring.
    */
@@ -261,15 +267,18 @@ function ResourceDisplay({ compact }: { compact: boolean }) {
  * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
  * (issue #2037), chronic finishedAwaitingAck residual (issue #2082),
  * launch-dependency degradation (issue #2364), fail-closed paused
- * schedules (issue #2432), and overdue lifecycle timers (issue #2643).
- * Hidden when healthy / enabled / residual clear / no data yet.
+ * schedules (issue #2432 / click-through #3399), and overdue lifecycle
+ * timers (issue #2643). Hidden when healthy / enabled / residual clear /
+ * no data yet.
  */
 function OpsHealthPills({
   onOpenCapacity,
   onOpenDiagnostics,
+  onOpenSchedules,
 }: {
   onOpenCapacity?: () => void;
   onOpenDiagnostics?: () => void;
+  onOpenSchedules?: () => void;
 }) {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
   const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
@@ -344,7 +353,12 @@ function OpsHealthPills({
   const pausedSchedulesLabel =
     showPausedSchedules && pausedSchedules ? formatPausedSchedulesLabel(pausedSchedules) : '';
   const pausedSchedulesTitle =
-    showPausedSchedules && pausedSchedules ? formatPausedSchedulesTitle(pausedSchedules) : '';
+    showPausedSchedules && pausedSchedules
+      ? [
+          formatPausedSchedulesTitle(pausedSchedules),
+          onOpenSchedules ? 'Open Schedules' : null,
+        ].filter(Boolean).join(' · ')
+      : '';
 
   const timerOverdueLabel =
     showTimerOverdue && timerHealth ? formatTimerOverdueLabel(timerHealth) : '';
@@ -410,14 +424,27 @@ function OpsHealthPills({
         </span>
       )}
       {showPausedSchedules && (
-        <span
-          className="ops-health-pill ops-health-paused-schedules"
-          data-testid="ops-health-paused-schedules-pill"
-          title={pausedSchedulesTitle}
-          role="status"
-        >
-          {pausedSchedulesLabel}
-        </span>
+        onOpenSchedules ? (
+          <button
+            type="button"
+            className="ops-health-pill ops-health-paused-schedules"
+            data-testid="ops-health-paused-schedules-pill"
+            title={pausedSchedulesTitle}
+            aria-label={`${pausedSchedulesLabel}. Open Schedules`}
+            onClick={onOpenSchedules}
+          >
+            {pausedSchedulesLabel}
+          </button>
+        ) : (
+          <span
+            className="ops-health-pill ops-health-paused-schedules"
+            data-testid="ops-health-paused-schedules-pill"
+            title={pausedSchedulesTitle}
+            role="status"
+          >
+            {pausedSchedulesLabel}
+          </span>
+        )
       )}
       {showTimerOverdue && (
         onOpenDiagnostics ? (
@@ -457,6 +484,7 @@ export function StatusBar({
   onOpenCapacity,
   onOpenLiveFriction,
   onOpenDiagnostics,
+  onOpenSchedules,
   onOpenCostComparison,
   onExpandCompleted,
   onSelectOldestFinding,
@@ -748,7 +776,11 @@ export function StatusBar({
         )}
         <ResourceDisplay compact={compact} />
         {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
-        <OpsHealthPills onOpenCapacity={onOpenCapacity} onOpenDiagnostics={onOpenDiagnostics} />
+        <OpsHealthPills
+          onOpenCapacity={onOpenCapacity}
+          onOpenDiagnostics={onOpenDiagnostics}
+          onOpenSchedules={onOpenSchedules}
+        />
         {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
         <button
           className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}

@@ -1740,6 +1740,7 @@ export function App() {
         onOpenCapacity={openSettingsAtMaxActiveTasks}
         onOpenLiveFriction={openLiveFrictionDiagnostics}
         onOpenDiagnostics={openDiagnostics}
+        onOpenSchedules={() => openModal('schedules')}
         onOpenCostComparison={() => openModal('costComparison')}
         onExpandCompleted={expandCompletedRail}
         onSelectOldestFinding={oldestWaitingFinding ? selectOldestWaitingFinding : undefined}
