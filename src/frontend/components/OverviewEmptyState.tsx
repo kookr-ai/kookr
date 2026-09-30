@@ -186,6 +186,13 @@ interface Props {
    * Optional so isolated overview tests keep today's non-interactive span.
    */
   onOpenCostComparison?: () => void;
+  /**
+   * Expand and scroll the Completed rail when the "+N more in Completed"
+   * overflow is clicked (issue #3392). Same opener as the status-bar 24h
+   * completed chip. Optional so isolated overview tests keep today's
+   * non-interactive overflow line.
+   */
+  onExpandCompleted?: () => void;
   shortcutBindings?: ShortcutBindingMap;
 }
 
@@ -203,6 +210,7 @@ export function OverviewEmptyState({
   onOpenSchedules,
   onCheckSetup,
   onOpenCostComparison,
+  onExpandCompleted,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
@@ -442,9 +450,21 @@ export function OverviewEmptyState({
               })}
             </ul>
             {completed.length > OVERVIEW_RECENT_COMPLETED_LIMIT && (
-              <p className="overview-waiting-more">
-                +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
-              </p>
+              onExpandCompleted ? (
+                <button
+                  type="button"
+                  className="overview-waiting-more"
+                  data-testid="overview-completed-overflow"
+                  aria-label={`+${completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed. Show completed tasks`}
+                  onClick={onExpandCompleted}
+                >
+                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
+                </button>
+              ) : (
+                <p className="overview-waiting-more">
+                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
+                </p>
+              )
             )}
           </div>
         )}

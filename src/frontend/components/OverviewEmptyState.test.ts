@@ -299,6 +299,7 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).toContain(`Live task ${OVERVIEW_RUNNING_LIMIT - 1}`);
     expect(container.textContent).not.toContain(`Live task ${OVERVIEW_RUNNING_LIMIT}`);
     expect(container.textContent).toContain('+2 more in Healthy');
+    expect(section?.querySelector('.overview-waiting-more')?.tagName).toBe('P');
     expect(section?.textContent).not.toContain('Relaunch');
   });
 
@@ -995,6 +996,68 @@ describe('OverviewEmptyState', () => {
 
     expect(container.querySelectorAll('.overview-completed-name')).toHaveLength(3);
     expect(container.textContent).not.toContain('more in Completed');
+  });
+
+  test('overflow is a button that calls onExpandCompleted when more than three completed tasks exist (issue #3392)', () => {
+    const onExpandCompleted = vi.fn();
+    const onOpenSchedules = vi.fn();
+    render({
+      completed: [
+        makeCompletedAgent('a', 'First', { finishedAt: '2026-06-20T12:00:00.000Z' }),
+        makeCompletedAgent('b', 'Second', { finishedAt: '2026-06-20T11:00:00.000Z' }),
+        makeCompletedAgent('c', 'Third', { finishedAt: '2026-06-20T10:00:00.000Z' }),
+        makeCompletedAgent('d', 'Fourth', { finishedAt: '2026-06-20T09:00:00.000Z' }),
+      ],
+      onExpandCompleted,
+      onOpenSchedules,
+    });
+
+    const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-completed-overflow"]');
+    expect(overflow?.tagName).toBe('BUTTON');
+    expect(overflow?.textContent).toBe('+1 more in Completed');
+    expect(overflow?.getAttribute('aria-label')).toBe(
+      '+1 more in Completed. Show completed tasks',
+    );
+
+    act(() => {
+      overflow!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onExpandCompleted).toHaveBeenCalledOnce();
+    expect(onOpenSchedules).not.toHaveBeenCalled();
+  });
+
+  test('does not render the overflow control when three or fewer completed tasks exist, even with an opener', () => {
+    const onExpandCompleted = vi.fn();
+    render({
+      completed: [
+        makeCompletedAgent('a', 'First', { finishedAt: '2026-06-20T12:00:00.000Z' }),
+        makeCompletedAgent('b', 'Second', { finishedAt: '2026-06-20T11:00:00.000Z' }),
+        makeCompletedAgent('c', 'Third', { finishedAt: '2026-06-20T10:00:00.000Z' }),
+      ],
+      onExpandCompleted,
+    });
+
+    expect(container.querySelector('[data-testid="overview-completed-overflow"]')).toBeNull();
+    expect(container.textContent).not.toContain('more in Completed');
+    expect(onExpandCompleted).not.toHaveBeenCalled();
+  });
+
+  test('isolated overview still renders a non-button overflow without App wiring', () => {
+    render({
+      completed: [
+        makeCompletedAgent('a', 'First', { finishedAt: '2026-06-20T12:00:00.000Z' }),
+        makeCompletedAgent('b', 'Second', { finishedAt: '2026-06-20T11:00:00.000Z' }),
+        makeCompletedAgent('c', 'Third', { finishedAt: '2026-06-20T10:00:00.000Z' }),
+        makeCompletedAgent('d', 'Fourth', { finishedAt: '2026-06-20T09:00:00.000Z' }),
+      ],
+    });
+
+    const overflow = container.querySelector('.overview-completed .overview-waiting-more');
+    expect(overflow).not.toBeNull();
+    expect(overflow?.tagName).toBe('P');
+    expect(overflow?.textContent).toBe('+1 more in Completed');
+    expect(container.querySelector('[data-testid="overview-completed-overflow"]')).toBeNull();
   });
 
   test('Open selects the completed task from the overview', () => {

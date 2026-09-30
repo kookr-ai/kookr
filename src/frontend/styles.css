@@ -2165,6 +2165,33 @@ button.overview-runtime-mix-entry:focus-visible {
   font-size: 11px;
   color: var(--text-muted);
 }
+/* Issue #3392: the Completed overflow is a button when App supplies the
+   rail expander. Reset native button chrome so it stays a muted caption,
+   then add hover/focus so it is discoverable as a control. Waiting and
+   Healthy overflow stay <p> and are unaffected. */
+button.overview-waiting-more {
+  display: block;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  /* Keep family/weight/line-height from the page; leave font-size to
+     `.overview-waiting-more` (11px). `font: inherit` would override that
+     with the body's 13px because this selector is more specific. */
+  font-family: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+button.overview-waiting-more:hover {
+  color: var(--text-secondary);
+}
+button.overview-waiting-more:focus-visible {
+  outline: 1px solid var(--text-secondary);
+  outline-offset: 1px;
+}
 .overview-completed {
   width: 100%;
 }
