@@ -406,7 +406,11 @@ runtime and otherwise uses CPU; `KOOKR_STT_DEVICE` can override that choice.
 The dashboard offers Auto, Français, and English recognition. Its language
 choice is remembered per browser and sent with each recording. Auto lets
 the recognizer detect the spoken language. Explicit language selection is useful for
-short utterances.
+short utterances. This picker's options are fixed to those three and do not read
+`STT_SUPPORTED_LANGUAGES`, so adding a language to that allowlist will not make it
+appear in the dashboard picker. The allowlist still applies to the dashboard's own
+recognition requests: it is enforced server-side for every WebSocket client, and a
+requested language outside it clamps to the `STT_LANGUAGE` fallback.
 
 See [local speech recognition](speech-recognition.md) for model selection,
 vocabulary hints, resource requirements and migration from GPU Whisper.
@@ -418,7 +422,7 @@ vocabulary hints, resource requirements and migration from GPU Whisper.
 | `KOOKR_STT_PORT` | `8003` | Integer port | Port for the bundled speech-to-text service. Also injected into the STT child process. |
 | `KOOKR_STT_WHISPER_PORT` | `8010` | Integer port | Loopback HTTP port of the bundled inference service, including Qwen. If changed, update `KOOKR_STT_WHISPER_URL` for Telegram to match. The legacy name is retained for compatibility. |
 | `STT_LANGUAGE` | `auto` | `auto` or a supported language code | Default recognition language for bundled-service clients that do not select a language. The dashboard sends its own selection for each recording. |
-| `STT_SUPPORTED_LANGUAGES` | `auto,en,fr` plus `STT_LANGUAGE` | Comma-separated recognition language codes | Optional operator allowlist for WebSocket configuration. An explicitly configured list replaces the default list; keep the languages your clients use. If it excludes STT_LANGUAGE, its first entry becomes the fallback language. |
+| `STT_SUPPORTED_LANGUAGES` | `auto,en,fr` plus `STT_LANGUAGE` | Comma-separated recognition language codes | Optional operator allowlist for WebSocket configuration. An explicitly configured list replaces the default list; keep the languages your clients use. If it excludes STT_LANGUAGE, its first entry becomes the fallback language. Does **not** add languages to the dashboard dictation picker, whose options are fixed to Auto/Français/English (see the note above). The allowlist is still enforced server-side for every WebSocket client, the dashboard included; a requested language outside it clamps to the `STT_LANGUAGE` fallback. |
 | `KOOKR_STT_HEALTH_TIMEOUT_S` | `600` | Positive number of seconds | Maximum time to wait for the bundled speech-to-text service health check. Increase for slow first-run model downloads or Qwen image builds. |
 | `KOOKR_STT_DEVICE` | `auto` | `auto`, `cpu`, `gpu` | Inference device for the bundled STT stack. `auto` probes `docker info` for an nvidia runtime and resolves to `gpu` (Qwen3-ASR 0.6B plus forced aligner by default) or `cpu` (CPU Whisper image, `base`, int8). Set explicitly to override the auto choice. |
 | `KOOKR_STT_BACKEND` | `auto` | `auto`, `qwen`, `whisper` | Selects Qwen on GPU and Whisper on CPU in auto mode. Explicit Qwen requires a GPU. See [speech recognition](speech-recognition.md). |
