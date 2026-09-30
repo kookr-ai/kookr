@@ -139,13 +139,20 @@ export interface MigratableQuery {
   fromAgent?: AgentType;
   includeCancelled?: boolean;
   onlyIsolated?: boolean;
+  /**
+   * Ids-scoped preview: restrict classification to these tasks (mirrors the POST
+   * `ids` scope). When present the server ignores `fromAgent`/`includeCancelled`
+   * and evaluates exactly these ids with cancelled tasks opted in — so a
+   * single-task preview matches what an ids-scoped {@link migrateTasks} would do.
+   */
+  taskIds?: string[];
 }
 
 /**
  * GET the migratable-candidate preview for a target agent. Returns the
  * ok/status/body envelope (rather than throwing) so callers — the batch
- * dialog's live count — can treat a transient failure as "unknown" instead of
- * an unhandled rejection.
+ * dialog's live count, the per-task dialog's eligibility preview — can treat a
+ * transient failure as "unknown" instead of an unhandled rejection.
  */
 export function getMigratableTasks(
   query: MigratableQuery,
@@ -155,6 +162,7 @@ export function getMigratableTasks(
   if (query.fromAgent) params.set('fromAgent', query.fromAgent);
   if (query.includeCancelled) params.set('includeCancelled', 'true');
   if (query.onlyIsolated) params.set('onlyIsolated', 'true');
+  if (query.taskIds && query.taskIds.length > 0) params.set('taskIds', query.taskIds.join(','));
   return fetchResult<MigratableResponse | { error: string }>(
     `/api/tasks/migratable?${params.toString()}`,
     signal ? { signal } : undefined,
