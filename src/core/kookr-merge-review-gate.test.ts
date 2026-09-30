@@ -55,6 +55,14 @@ describe('kookr-merge.sh review-gate literals stay in sync with independent-revi
     // script against a stubbed gh below, which does not break on a reworded line.
     expect(script).toMatch(/merge_pinned_via_api/);
   });
+
+  test('confirms CLI merge via state/mergedAt, not unsupported --json merged (#3403)', () => {
+    // `merged` is a REST merge-body field, not a `gh pr view --json` field.
+    // Bound the negative so `mergedAt` is allowed and an unquoted
+    // `--json merged)` (the historical invocation) is not.
+    expect(script).toMatch(/--json state,mergedAt/);
+    expect(script).not.toMatch(/--json merged(?:\s|$|[),])/);
+  });
 });
 
 /** Build the view JSON the gate expects: comments/labels/commits (not headRefOid). */
@@ -84,8 +92,8 @@ describe('kookr-merge.sh review gate (integration, stubbed gh)', () => {
   const fakeGh = (viewJsonPath: string, mergeArgsPath: string) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  if [[ "$args" == *"--json merged"* ]]; then
-    echo '{"merged":true}'; exit 0
+  if [[ "$args" == *"state,mergedAt"* ]]; then
+    echo '{"state":"MERGED","mergedAt":"2026-10-01T00:00:00Z"}'; exit 0
   fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
@@ -271,8 +279,8 @@ describe('kookr-merge.sh review gate on older gh without --match-head-commit (#1
     headViewStatus: string;
   }) => `#!/usr/bin/env bash
 args="$*"
-if [[ "$1" == "pr" && "$2" == "view" && "$args" == *"--json merged"* ]]; then
-  echo '{"merged":true}'; exit 0
+if [[ "$1" == "pr" && "$2" == "view" && "$args" == *"state,mergedAt"* ]]; then
+  echo '{"state":"MERGED","mergedAt":"2026-10-01T00:00:00Z"}'; exit 0
 fi
 if [[ "$1" == "repo" && "$2" == "view" ]]; then
   # Real gh applies -q to the JSON; the script relies on that to get a bare slug.
@@ -541,8 +549,8 @@ describe('kookr-merge.sh watch_checks with no reported checks (integration, stub
   const fakeGhNoWatch = (viewJsonPath: string, rollupJsonPath: string) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  if [[ "$args" == *"--json merged"* ]]; then
-    echo '{"merged":true}'; exit 0
+  if [[ "$args" == *"state,mergedAt"* ]]; then
+    echo '{"state":"MERGED","mergedAt":"2026-10-01T00:00:00Z"}'; exit 0
   fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
@@ -645,8 +653,8 @@ describe('kookr-merge.sh watch_checks skips --watch when no checks are reported 
   ) => `#!/usr/bin/env bash
 args="$*"
 if [[ "$1" == "pr" && "$2" == "view" ]]; then
-  if [[ "$args" == *"--json merged"* ]]; then
-    echo '{"merged":true}'; exit 0
+  if [[ "$args" == *"state,mergedAt"* ]]; then
+    echo '{"state":"MERGED","mergedAt":"2026-10-01T00:00:00Z"}'; exit 0
   fi
   if [[ "$args" == *"state,isDraft,reviewDecision"* ]]; then
     echo '{"state":"OPEN","isDraft":false,"reviewDecision":""}'; exit 0
