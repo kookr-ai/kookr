@@ -1,5 +1,7 @@
 import type { Hono } from 'hono';
-import type { RouteDeps } from './shared.js';
+import type { KookrSettings } from '../../core/settings-store.js';
+import type { LaunchServiceDeps } from '../launch-service.js';
+import type { SettingsMutationDeps } from '../settings-service.js';
 import { createSnapshotMessage } from '../use-cases/get-snapshot.js';
 import { validateSettingsWithWarnings } from '../../core/settings-store.js';
 import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
@@ -10,7 +12,30 @@ import {
 import { resolveSafeModeStatus } from '../../core/automation-kill-switch.js';
 import { advertisedAgentTypes } from '../../core/agent-types.js';
 
-export function registerSettingsRoutes(app: Hono, deps: RouteDeps): void {
+/**
+ * Narrow dependency contract for the settings routes (issue #1463). Reuses the
+ * settings-mutation collaborators the `PUT` audit/broadcast sequence shares with
+ * {@link applyDefaultAgentUpdate}, widens `settings` with the read-only getters
+ * the `GET` route needs, and adds only the adapter registry the `PUT` broadcast
+ * consults to advertise available agents — never the whole `RouteDeps`. The full
+ * `RouteDeps` stays assignable to this, so composition wiring passes it unchanged.
+ */
+export interface SettingsRouteDeps extends Omit<SettingsMutationDeps, 'settings'> {
+  settings?: {
+    get: () => KookrSettings;
+    update: (settings: KookrSettings) => Promise<string[]>;
+    getLoadedFromDefaults: () => boolean;
+    getLoadWarnings?: () => string[];
+    /** Issue #2085: load failure that forced fail-closed SAFE MODE. */
+    getLoadError?: () => string | undefined;
+  };
+  /** Adapter registry consulted for advertised-agent filtering in the PUT broadcast. */
+  launchServiceDeps?: {
+    adapterRegistry: Pick<LaunchServiceDeps['adapterRegistry'], 'getTypes'>;
+  };
+}
+
+export function registerSettingsRoutes(app: Hono, deps: SettingsRouteDeps): void {
   app.get('/api/settings', (c) => {
     if (!deps.settings) return c.json({ error: 'Settings not configured' }, 500);
     return c.json({

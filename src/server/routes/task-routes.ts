@@ -55,7 +55,7 @@ import { isSharedTaskId } from '../../shared/contracts/contact-share.js';
 import { MAX_BATCH_ABORT_TASKS } from '../../shared/contracts/messages.js';
 import { CoordinatorSuppressionStore } from '../coordinator/suppression-store.js';
 import { promotePendingTasks } from '../agent-lifecycle.js';
-import type { RouteDeps, TaskRouteDeps } from './shared.js';
+import type { TaskRouteDeps } from './shared.js';
 import type { AttentionQueue } from '../../core/attention-queue.js';
 import type { Watchdog } from '../../core/watchdog.js';
 import { resolveTaskAttentionSignals } from '../task-attention-signals.js';
@@ -81,7 +81,6 @@ import {
   type MigrateScope,
   type MigrateTasksDeps,
 } from '../use-cases/migrate-tasks.js';
-import { applyDefaultAgentUpdate } from '../settings-service.js';
 import { filterLaunchableAgentTypes } from '../../adapters/grok-auth-availability.js';
 import { excludeBlacklistedAgents, isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
 import { isModelTier } from '../../shared/contracts/model-tier.js';
@@ -1081,9 +1080,13 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         // Non-fatal: an invalid transition (already terminal) is fine here.
       }
     },
-    // Reuse the full settings path (validate + audit + broadcast). The route is
-    // always invoked with a full RouteDeps object (see routes.ts sharedDeps).
-    setDefaultAgent: (agent) => applyDefaultAgentUpdate(deps as unknown as RouteDeps, agent, actorHeader),
+    // Reuse the full settings path (validate + audit + broadcast) via the
+    // injected, typed default-agent update op (issue #1463). Bound here so the
+    // per-request actor header flows through. Absent only in lightweight test
+    // harnesses ⇒ the migrate use-case reports `not_supported`.
+    setDefaultAgent: deps.applyDefaultAgentUpdate
+      ? (agent) => deps.applyDefaultAgentUpdate!(agent, actorHeader)
+      : undefined,
     logAudit: (event) => {
       void deps.interactionLog?.append(event as never);
     },

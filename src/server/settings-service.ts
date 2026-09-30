@@ -13,7 +13,11 @@
  */
 
 import type { AgentType } from '../shared/contracts/agent-types.js';
-import type { RouteDeps } from './routes/shared.js';
+import type { Monitor } from '../core/monitor.js';
+import type { TaskStore } from '../core/tasks.js';
+import type { HookIngestion } from './hook-ingestion.js';
+import type { ServerMessage } from '../shared/contracts/messages.js';
+import type { KookrSettings } from '../core/settings-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { validateSettingsWithWarnings } from '../core/settings-store.js';
 import { resolveLifecycleActor } from './actor-attribution.js';
@@ -22,6 +26,37 @@ import {
   buildSettingsMutationAuditRow,
 } from '../core/settings-mutation-audit.js';
 import { resolveSafeModeStatus } from '../core/automation-kill-switch.js';
+
+/**
+ * Narrow dependency contract for the shared settings-mutation helper (issue
+ * #1463). Names ONLY the nine collaborators {@link applyDefaultAgentUpdate}
+ * reads, instead of the whole `RouteDeps`. A future route split cannot silently
+ * drop settings persistence, audit attribution, or the snapshot broadcast
+ * without the type checker flagging it here. The full `RouteDeps` remains
+ * assignable to this contract, so composition wiring passes it unchanged.
+ */
+export interface SettingsMutationDeps {
+  /** Settings store. Absent ⇒ the update reports `settings_not_configured`. */
+  settings?: {
+    get: () => KookrSettings;
+    update: (settings: KookrSettings) => Promise<string[]>;
+    /** Issue #2085: load failure that forced fail-closed SAFE MODE. */
+    getLoadError?: () => string | undefined;
+  };
+  /** Shared `audit.jsonl` path (issue #1710). Absent ⇒ the audit row is skipped. */
+  auditLogPath?: string;
+  broadcastToAll: (msg: ServerMessage) => void;
+  monitor: Pick<Monitor, 'getSnapshot'> &
+    Partial<Pick<Monitor, 'getTaskSnapshot' | 'getTaskSnapshotReadonly'>>;
+  serverCwd: string;
+  sttUrl?: string;
+  /** Activity-meta provider carried into the snapshot broadcast. */
+  hookIngestion?: Pick<HookIngestion, 'getActivityMeta'>;
+  getMaxActiveTasks?: () => number;
+  /** Relation store carried into the snapshot broadcast. */
+  taskStore: Pick<TaskStore, 'listRelations' | 'getPendingSignal'> &
+    Partial<Pick<TaskStore, 'getTask'>>;
+}
 
 export interface DefaultAgentUpdateResult {
   updated: boolean;
@@ -36,7 +71,7 @@ export interface DefaultAgentUpdateResult {
  * not configured.
  */
 export async function applyDefaultAgentUpdate(
-  deps: RouteDeps,
+  deps: SettingsMutationDeps,
   agent: AgentType,
   actorHeader?: string,
 ): Promise<DefaultAgentUpdateResult> {
