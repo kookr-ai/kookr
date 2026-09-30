@@ -379,10 +379,13 @@ export function DictationCorpusPanel() {
         {records.length > 0 && <label className="corpus-field"><span>Recording</span>
           <select aria-label="Recording" value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
             {records.map((record) => <option key={record.id} value={record.id}>
-              {new Date(record.recordedAt).toLocaleString()} · {record.owner?.field ?? record.metadata.source} · {record.metadata.transcript?.slice(0, 60) || '(No prediction)'}
+              {new Date(record.recordedAt).toLocaleString()} · {record.owner?.field ?? record.metadata.source} · {REVIEW_LABELS[latestReview(record)?.status ?? 'candidate']} · {record.metadata.transcript?.slice(0, 60) || '(No prediction)'}
             </option>)}
           </select>
         </label>}
+        {records.length > 0 && <p className="corpus-help" role="status">
+          Recordings {offset + 1}–{offset + records.length}{truncated ? ' (more available)' : ''}
+        </p>}
         {(offset > 0 || truncated) && <div className="corpus-actions">
           <button type="button" className="btn-secondary" disabled={loading || offset === 0} onClick={() => void load(Math.max(0, offset - PAGE_SIZE))}>Previous recordings</button>
           <button type="button" className="btn-secondary" disabled={loading || !truncated} onClick={() => void load(offset + PAGE_SIZE)}>Next recordings</button>

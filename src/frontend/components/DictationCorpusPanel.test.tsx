@@ -323,6 +323,50 @@ describe('R19.5 later dictation review', () => {
     expect(container.textContent).toContain('exceeds the manifest export limit');
   });
 
+  test('shows each recording review status in the picker and a pager position with more-pages state', async () => {
+    currentRecord = recording({ reviewRevision: 1, annotations: [
+      ...recording().annotations,
+      { kind: 'review', operationId: 'review-op', revision: 3, reviewRevision: 1,
+        correction: 'Reworded prompt.', status: 'reformulation', listened: false, createdAt: '2026-09-27T09:03:00Z' },
+    ] });
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((url, init) => String(url).includes('/records?')
+      ? Promise.resolve(json({ schemaVersion: 1, records: [currentRecord], truncated: true }))
+      : original(url, init));
+    await render();
+    const option = container.querySelector<HTMLOptionElement>('[aria-label="Recording"] option')!;
+    expect(option.textContent).toContain('Reformulation');
+    expect(container.textContent).toContain('Recordings 1–1 (more available)');
+  });
+
+  test('labels an unreviewed recording as a candidate and omits more-pages when the page is complete', async () => {
+    await render();
+    const option = container.querySelector<HTMLOptionElement>('[aria-label="Recording"] option')!;
+    expect(option.textContent).toContain('Unreviewed candidate');
+    expect(container.textContent).toContain('Recordings 1–1');
+    expect(container.textContent).not.toContain('(more available)');
+  });
+
+  test('advances the pager position by the offset when moving to the next page', async () => {
+    const page2 = ['rec-21', 'rec-22', 'rec-23'].map((recordId) => recording({ id: recordId }));
+    const original = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation((url, init) => {
+      const target = String(url);
+      if (target.includes('/records?')) {
+        const offset = Number(target.match(/offset=(\d+)/)?.[1] ?? '0');
+        return Promise.resolve(offset >= 20
+          ? json({ schemaVersion: 1, records: page2, truncated: false })
+          : json({ schemaVersion: 1, records: [currentRecord], truncated: true }));
+      }
+      return original(target, init);
+    });
+    await render();
+    expect(container.textContent).toContain('Recordings 1–1 (more available)');
+    await click('Next recordings');
+    expect(container.textContent).toContain('Recordings 21–23');
+    expect(container.textContent).not.toContain('(more available)');
+  });
+
   test('downloads the versioned manifest and explains the verified/candidate separation', async () => {
     const createObjectURL = vi.fn((_blob: Blob) => 'blob:fixture');
     vi.stubGlobal('URL', class extends URL { static createObjectURL = createObjectURL; static revokeObjectURL = vi.fn(); });
