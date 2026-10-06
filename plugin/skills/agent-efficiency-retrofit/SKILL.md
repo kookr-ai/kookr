@@ -17,8 +17,9 @@ not rely on a playbook file being found by chance.
 Turn observed agent waste into a durable, visible improvement:
 
 1. Sample recent Claude Code and Codex CLI sessions.
-2. Identify repeated inefficient patterns with concrete examples.
-3. Rank fixes by expected benefit and implementation ease.
+2. Identify candidate patterns, then verify each against raw transcripts before
+   trusting it — first-pass metadata counts routinely over- or mis-report waste.
+3. Rank the verified fixes by expected benefit and implementation ease.
 4. Present up to 10 options, with a short recommendation.
 5. After explicit user approval, implement the smallest durable fix in the right
    surface: hook, skill, concise agent instruction, script, or project docs.
@@ -54,7 +55,42 @@ Look for patterns that can be prevented next time:
 - Boilerplate repeated across tasks that belongs in a script or helper.
 - Hook failures whose remediation could be shown before the blocked action.
 
-### 3. Rank Fixes
+### 3. Verify Signals Before Reporting
+
+Cheap metadata is a lead, not a finding. Before reporting any pattern, confirm
+it against raw transcripts — first-pass counts routinely lie in these specific
+ways, each of which has produced a false or inflated finding:
+
+- **Repeated reads counted by file path.** Count a re-read as waste only when
+  the same `file_path` is read with the same `offset`/`limit` and no edit in
+  between. Paging a large file (different ranges) and re-reading after your own
+  edit are correct, cheap behavior — not waste.
+- **Bash "first word" counts.** Strip `cd`, and exclude custom project CLIs,
+  `git`/`gh`/`cargo`/`node`/`python`, heredocs, and compound pipelines. A raw
+  `grep`/`cat`/`sed`/`echo` tally conflates legitimate glue, scratchpad/log
+  work, and tool output with replaceable inspection. `echo` is almost never
+  replaceable; multi-pattern or multi-file greps are often cheaper than several
+  Grep calls.
+- **Big-output attribution.** Separate Read-tool output from Bash output before
+  blaming shell; oversized output is often the Read tool itself, and a reviewed
+  diff or test log is intentional, not waste.
+- **Error-text substring matching.** Dedupe tool results by `tool_use_id`, and
+  exclude the current analysis session and any transcript that merely quotes an
+  error string — your own analysis script's printed output matches its own
+  patterns. This removes self-match false positives.
+- **Already-guarded behavior.** Before proposing a new instruction, check
+  whether the guidance already exists (tool descriptions, block messages,
+  `CLAUDE.md`). If it exists and the behavior persists, a new text rule is
+  redundant — only a deterministic hook will change it.
+- **Look-alike errors with different causes.** Split them (e.g. "string not
+  found" vs "multiple matches found") — one remedy rarely fits both.
+
+For each surviving pattern, state the verified magnitude (corrected count,
+distinct sessions, repo concentration) and read 2-4 real examples in context.
+When the sample is large and the user has allowed subagents (see step 1), spawn
+one per candidate pattern, each tasked to *refute* it, not confirm it.
+
+### 4. Rank Fixes
 
 Score each candidate on:
 
@@ -74,7 +110,7 @@ Prefer this order for behavioral prevention:
 Do not use memory as the primary fix for behavioral rules in mixed Claude/Codex
 workflows; Codex agents will not reliably see it.
 
-### 4. Report Before Editing
+### 5. Report Before Editing
 
 Present the highest-value ideas first. For each, include:
 
@@ -87,7 +123,7 @@ Present the highest-value ideas first. For each, include:
 If the user asks for more detail, expand the top options and choose the easiest
 high-benefit starting point.
 
-### 5. Implement After Approval
+### 6. Implement After Approval
 
 After the user says to proceed:
 
