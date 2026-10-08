@@ -127,6 +127,25 @@ run_case "broken — codex --help exits non-zero" "$TMPDIR/codex-broken"
 assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_TIMED_OUT (unset)" "" "${PROBE_TIMED_OUT:-}"
 
+# Stock macOS has no GNU `timeout` (or Homebrew `gtimeout`); the probe must
+# fall back to a perl alarm instead of failing every probe with 127. Simulate
+# that host with a PATH holding only the tools the probe and stubs need.
+NO_TIMEOUT_BIN="$TMPDIR/no-timeout-bin"
+mkdir -p "$NO_TIMEOUT_BIN"
+for tool in bash perl grep sleep; do
+  ln -sf "$(command -v "$tool")" "$NO_TIMEOUT_BIN/$tool"
+done
+SAVED_PATH="$PATH"
+PATH="$NO_TIMEOUT_BIN"
+run_case "no timeout/gtimeout on PATH — fork still detected" "$TMPDIR/codex-fork"
+PATH="$SAVED_PATH"
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+PATH="$NO_TIMEOUT_BIN"
+run_case "no timeout/gtimeout on PATH — hang still bounded" "$TMPDIR/codex-slow"
+PATH="$SAVED_PATH"
+assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_TIMED_OUT" "1" "${PROBE_TIMED_OUT:-<unset>}"
+
 # KOOKR_CODEX_BIN unset → fallback to bare `codex` resolved via PATH.
 # Synthesize a `codex` binary in $TMPDIR and prepend $TMPDIR to PATH so the
 # fallback name resolves to the fork stub.

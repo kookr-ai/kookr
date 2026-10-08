@@ -17,8 +17,11 @@
 # warns about a binary the server never runs.
 #
 # Pass the env files the server will load, in the order it loads them. The
-# resolution itself runs in Node with the same `process.loadEnvFile()`, so the
-# dotenv parsing and "already set wins" rules cannot drift from the server's.
+# resolution itself runs in Node with the same `process.loadEnvFile()`, so for
+# the server's own `.env` the dotenv parsing and "already set wins" rules
+# cannot drift from the server's. (A systemd EnvironmentFile is parsed by
+# systemd, not Node; the two agree on the plain KEY=value lines that
+# docs/reference/production-server-service.md documents.)
 # `--ignore-exported` drops this shell's own KOOKR_CODEX_BIN first, for a
 # server (e.g. under systemd) that never inherits this shell's environment.
 #
@@ -43,6 +46,29 @@ for (const file of process.argv.slice(1)) {
 }
 process.stdout.write(process.env.KOOKR_CODEX_BIN || "");
 '
+
+# Run "$@" with a SECONDS limit; return 124 when the limit is hit, like GNU
+# `timeout`. Stock macOS ships no `timeout`, and without this fallback every
+# probe there failed with 127 and reported a working fork as not-installed.
+# Order: GNU `timeout`, Homebrew's `gtimeout`, then a perl alarm (perl ships
+# with macOS). The alarm survives `exec`, so SIGALRM ends the command itself;
+# bash reports that as 142 (128 + SIGALRM), mapped to 124 here.
+_probe_run_with_timeout() {
+  local secs="$1" status
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout "$secs" "$@"
+  elif command -v perl >/dev/null 2>&1; then
+    perl -e 'alarm shift; exec @ARGV or exit 127' "$secs" "$@"
+    status=$?
+    [ "$status" -eq 142 ] && return 124
+    return "$status"
+  else
+    "$@"
+  fi
+}
 
 probe_codex_plugin_dir() {
   local ignore_exported=0
@@ -83,13 +109,13 @@ probe_codex_plugin_dir() {
   fi
 
   # 5-second timeout matches the TS adapter's 2s bound plus headroom for
-  # cold-start cargo/node startup. `timeout` exits 124 on hit. Bracket the
+  # cold-start cargo/node startup. The runner returns 124 on hit. Bracket the
   # call with set +e/set -e so we capture the real exit code under callers
   # that run with errexit (prod-restart.sh) — `|| true` would swallow it.
   local help_output timeout_status prev_e
   case $- in *e*) prev_e=1 ;; *) prev_e=0 ;; esac
   set +e
-  help_output="$(timeout 5 "$PROBE_CODEX_BIN" --help 2>/dev/null)"
+  help_output="$(_probe_run_with_timeout 5 "$PROBE_CODEX_BIN" --help 2>/dev/null)"
   timeout_status=$?
   [ "$prev_e" -eq 1 ] && set -e
 
