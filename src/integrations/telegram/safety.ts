@@ -110,6 +110,12 @@ export interface AcquireLockOptions {
  * also accepts), and the dead owner's lock would block Telegram forever.
  * When the start time cannot be read we fail closed and treat the holder as
  * live — two pollers on one bot token is the failure this lock exists to stop.
+ *
+ * The exact match follows `src/server/single-writer-lock.ts`. A wall-clock
+ * step (e.g. WSL resyncing after host sleep) shifts computed start times and
+ * could make a live holder look recycled, but this lock lives inside the data
+ * dir: a second server only reaches it after the single-writer lock, which
+ * makes the same comparison, has already judged the first server gone.
  */
 function isLockHolderLive(
   record: LockRecord,

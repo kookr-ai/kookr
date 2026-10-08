@@ -112,6 +112,25 @@ describe('acquireLockOrFail', () => {
       ).rejects.toBeInstanceOf(LockBusyError);
     });
 
+    it('stays busy on an old-format lock with no usable write time', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: 'not-a-date' });
+      await expect(
+        acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) }),
+      ).rejects.toBeInstanceOf(LockBusyError);
+    });
+
+    it('still writes a usable lock when its own start time is unreadable', async () => {
+      const path = join(tmp, 'lock');
+      const a = await acquireLockOrFail(path, { readProcessStartTimeMs: () => null });
+      const fs = await import('node:fs/promises');
+      const written = JSON.parse(await fs.readFile(path, 'utf-8')) as Record<string, unknown>;
+      expect(written.pid).toBe(process.pid);
+      expect(written).not.toHaveProperty('processStartTimeMs');
+      await a.release();
+      await expect(fs.access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
     it('records its own process start time so the next owner can detect recycling', async () => {
       const path = join(tmp, 'lock');
       const a = await acquireLockOrFail(path, { readProcessStartTimeMs: startedAt(NOW) });
