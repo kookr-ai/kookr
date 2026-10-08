@@ -113,9 +113,10 @@ export interface AcquireLockOptions {
  *
  * The exact match follows `src/server/single-writer-lock.ts`. A wall-clock
  * step (e.g. WSL resyncing after host sleep) shifts computed start times and
- * could make a live holder look recycled, but this lock lives inside the data
- * dir: a second server only reaches it after the single-writer lock, which
- * makes the same comparison, has already judged the first server gone.
+ * could make a live holder look recycled. That cannot start a second poller:
+ * this lock lives inside the data dir, and a second server on that dir is
+ * stopped earlier by the single-writer lock's SQLite write transaction, an
+ * OS-level lock held for the owner's whole lifetime that no clock affects.
  */
 function isLockHolderLive(
   record: LockRecord,

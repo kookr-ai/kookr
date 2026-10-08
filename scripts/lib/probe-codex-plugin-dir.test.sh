@@ -149,11 +149,14 @@ assert_eq "PROBE_CODEX_BIN" "codex" "${PROBE_CODEX_BIN:-<unset>}"
 # `codex` that happens to come first on PATH. Regression: prod-restart.sh
 # warned about a stock PATH codex while the server ran the fork from .env.
 ln -sf "$TMPDIR/codex-stock" "$TMPDIR/codex"
+# The resolution runs through Node's own process.loadEnvFile(), so this file
+# uses forms a hand-written parser tends to miss: `export`, spaces around `=`,
+# and a trailing comment. The last assignment in one file wins.
 cat > "$TMPDIR/server.env" <<EOF
 # comment line
 OTHER=1
-export	KOOKR_CODEX_BIN="$TMPDIR/codex-stock"
-KOOKR_CODEX_BIN=$TMPDIR/codex-fork   # last assignment wins
+export KOOKR_CODEX_BIN="$TMPDIR/codex-stock"
+KOOKR_CODEX_BIN = $TMPDIR/codex-fork   # trailing comment
 EOF
 echo
 echo "[case] KOOKR_CODEX_BIN unset — resolved from the env file, not PATH"
@@ -181,6 +184,29 @@ assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-stock" "${PROBE_CODEX_BIN:-<unset>}"
 run_case "exported KOOKR_CODEX_BIN beats the env file" "$TMPDIR/codex-stock"
 probe_codex_plugin_dir "$TMPDIR/server.env"
 assert_eq "PROBE_RESULT" "missing-flag" "${PROBE_RESULT:-<unset>}"
+unset KOOKR_CODEX_BIN
+
+# Exported but EMPTY also beats the env file: loadEnvFile() never overrides a
+# variable that exists, and the server then falls back to `codex` on PATH.
+echo
+echo "[case] exported-but-empty KOOKR_CODEX_BIN beats the env file"
+unset PROBE_RESULT PROBE_TIMED_OUT
+KOOKR_CODEX_BIN=""; export KOOKR_CODEX_BIN
+PATH="$TMPDIR:$ORIG_PATH"; export PATH
+. "$LIB"
+probe_codex_plugin_dir "$TMPDIR/server.env"
+PATH="$ORIG_PATH"; export PATH
+assert_eq "PROBE_CODEX_BIN" "codex" "${PROBE_CODEX_BIN:-<unset>}"
+assert_eq "PROBE_RESULT" "missing-flag" "${PROBE_RESULT:-<unset>}"
+unset KOOKR_CODEX_BIN
+
+# --ignore-exported: a server that never inherits this shell (systemd) must be
+# probed from its env files only, even when this shell exports a value.
+run_case "--ignore-exported drops the shell's value" "$TMPDIR/codex-stock"
+probe_codex_plugin_dir --ignore-exported "$TMPDIR/server.env"
+assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-fork" "${PROBE_CODEX_BIN:-<unset>}"
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "caller's KOOKR_CODEX_BIN untouched" "$TMPDIR/codex-stock" "${KOOKR_CODEX_BIN:-<unset>}"
 unset KOOKR_CODEX_BIN
 
 # Errexit-safety invariant: when the probe completes via the timeout block

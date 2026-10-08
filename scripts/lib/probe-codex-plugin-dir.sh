@@ -3,20 +3,24 @@
 #
 # Usage (sourced):
 #   . "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
-#   probe_codex_plugin_dir [ENV_FILE ...]
+#   probe_codex_plugin_dir [--ignore-exported] [ENV_FILE ...]
 #   # Sets: PROBE_RESULT in {ok, missing-flag, not-installed}
 #   #       PROBE_TIMED_OUT (1 if --help hit the 5s timeout; otherwise unset)
 #   #       PROBE_CODEX_BIN (resolved binary path or PATH-resolvable name)
 #
 # Which binary is probed: the one the Kookr server will actually launch. The
-# server reads KOOKR_CODEX_BIN from its environment and, only when that is
-# unset, from the `.env` in its working directory (`process.loadEnvFile()`
-# never overrides an existing variable). A shell script usually has NOT loaded
-# that `.env`, so probing `${KOOKR_CODEX_BIN:-codex}` alone checks whatever
-# `codex` comes first on PATH — often a stock install — and warns about a
-# binary the server never runs. Pass the env files the server will load, in
-# precedence order; the first one that sets KOOKR_CODEX_BIN wins, and a value
-# already exported in the caller's environment beats them all.
+# server runs `process.loadEnvFile()` on the `.env` in its working directory,
+# which never overrides a variable already in its environment, and then uses
+# `KOOKR_CODEX_BIN || 'codex'` (src/server/start.ts). A shell script usually
+# has NOT loaded that `.env`, so probing `${KOOKR_CODEX_BIN:-codex}` alone
+# checks whatever `codex` comes first on PATH — often a stock install — and
+# warns about a binary the server never runs.
+#
+# Pass the env files the server will load, in the order it loads them. The
+# resolution itself runs in Node with the same `process.loadEnvFile()`, so the
+# dotenv parsing and "already set wins" rules cannot drift from the server's.
+# `--ignore-exported` drops this shell's own KOOKR_CODEX_BIN first, for a
+# server (e.g. under systemd) that never inherits this shell's environment.
 #
 # This file owns the diagnostic side of the "does the configured Codex
 # binary support --plugin-dir?" contract. The runtime side lives in
@@ -29,41 +33,39 @@
 # global — always reference it immediately after the call, before any
 # branching that might short-circuit under `set -u`.
 
-# Print the last value a dotenv file assigns to KEY (nothing if unassigned).
-# Covers the forms Node's loadEnvFile accepts in practice: an optional
-# `export ` prefix, single/double quotes, and a ` #` comment after an
-# unquoted value. Bash 3.2-safe (macOS).
-_probe_env_file_value() {
-  local file="$1" key="$2" line value found=""
-  [ -f "$file" ] && [ -r "$file" ] || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
-    line="${line#"${line%%[![:space:]]*}"}"
-    case "$line" in
-      export[[:space:]]*)
-        line="${line#export}"
-        line="${line#"${line%%[![:space:]]*}"}"
-        ;;
-    esac
-    case "$line" in "$key="*) ;; *) continue ;; esac
-    value="${line#"$key="}"
-    case "$value" in
-      \"*) value="${value#\"}"; value="${value%%\"*}" ;;
-      \'*) value="${value#\'}"; value="${value%%\'*}" ;;
-      *)   value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}" ;;
-    esac
-    found="$value"
-  done < "$file"
-  printf '%s' "$found"
+# Node program that mirrors the server's KOOKR_CODEX_BIN resolution: load each
+# env file in order (missing files are skipped; a variable that is already set,
+# even to "", is never overridden), then print the value. An empty result means
+# the server falls back to `codex`.
+_PROBE_CODEX_BIN_RESOLVER='
+for (const file of process.argv.slice(1)) {
+  try { process.loadEnvFile(file); } catch { /* absent or unreadable: skip */ }
 }
+process.stdout.write(process.env.KOOKR_CODEX_BIN || "");
+'
 
 probe_codex_plugin_dir() {
-  PROBE_CODEX_BIN="${KOOKR_CODEX_BIN:-}"
-  local env_file
-  if [ -z "$PROBE_CODEX_BIN" ]; then
-    for env_file in "$@"; do
-      PROBE_CODEX_BIN="$(_probe_env_file_value "$env_file" KOOKR_CODEX_BIN)"
-      [ -n "$PROBE_CODEX_BIN" ] && break
-    done
+  local ignore_exported=0
+  if [ "${1:-}" = "--ignore-exported" ]; then
+    ignore_exported=1
+    shift
+  fi
+
+  if [ "$ignore_exported" -eq 1 ]; then
+    PROBE_CODEX_BIN=""
+  else
+    PROBE_CODEX_BIN="${KOOKR_CODEX_BIN:-}"
+  fi
+  # Without node (or without env files) keep the plain-shell answer above.
+  local resolved
+  if [ "$#" -gt 0 ] && command -v node >/dev/null 2>&1; then
+    if [ "$ignore_exported" -eq 1 ]; then
+      if resolved="$(env -u KOOKR_CODEX_BIN node -e "$_PROBE_CODEX_BIN_RESOLVER" "$@" 2>/dev/null)"; then
+        PROBE_CODEX_BIN="$resolved"
+      fi
+    elif resolved="$(node -e "$_PROBE_CODEX_BIN_RESOLVER" "$@" 2>/dev/null)"; then
+      PROBE_CODEX_BIN="$resolved"
+    fi
   fi
   PROBE_CODEX_BIN="${PROBE_CODEX_BIN:-codex}"
   unset PROBE_TIMED_OUT
