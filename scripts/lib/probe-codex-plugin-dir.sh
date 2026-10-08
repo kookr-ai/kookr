@@ -3,10 +3,20 @@
 #
 # Usage (sourced):
 #   . "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
-#   probe_codex_plugin_dir
+#   probe_codex_plugin_dir [ENV_FILE ...]
 #   # Sets: PROBE_RESULT in {ok, missing-flag, not-installed}
 #   #       PROBE_TIMED_OUT (1 if --help hit the 5s timeout; otherwise unset)
 #   #       PROBE_CODEX_BIN (resolved binary path or PATH-resolvable name)
+#
+# Which binary is probed: the one the Kookr server will actually launch. The
+# server reads KOOKR_CODEX_BIN from its environment and, only when that is
+# unset, from the `.env` in its working directory (`process.loadEnvFile()`
+# never overrides an existing variable). A shell script usually has NOT loaded
+# that `.env`, so probing `${KOOKR_CODEX_BIN:-codex}` alone checks whatever
+# `codex` comes first on PATH — often a stock install — and warns about a
+# binary the server never runs. Pass the env files the server will load, in
+# precedence order; the first one that sets KOOKR_CODEX_BIN wins, and a value
+# already exported in the caller's environment beats them all.
 #
 # This file owns the diagnostic side of the "does the configured Codex
 # binary support --plugin-dir?" contract. The runtime side lives in
@@ -19,8 +29,38 @@
 # global — always reference it immediately after the call, before any
 # branching that might short-circuit under `set -u`.
 
+# Print the last value a dotenv file assigns to KEY (nothing if unassigned).
+# Covers the forms Node's loadEnvFile accepts in practice: an optional
+# `export ` prefix, single/double quotes, and a ` #` comment after an
+# unquoted value. Bash 3.2-safe (macOS).
+_probe_env_file_value() {
+  local file="$1" key="$2" line value found=""
+  [ -f "$file" ] && [ -r "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line#export }"
+    case "$line" in "$key="*) ;; *) continue ;; esac
+    value="${line#"$key="}"
+    case "$value" in
+      \"*) value="${value#\"}"; value="${value%%\"*}" ;;
+      \'*) value="${value#\'}"; value="${value%%\'*}" ;;
+      *)   value="${value%%[[:space:]]#*}"; value="${value%"${value##*[![:space:]]}"}" ;;
+    esac
+    found="$value"
+  done < "$file"
+  printf '%s' "$found"
+}
+
 probe_codex_plugin_dir() {
-  PROBE_CODEX_BIN="${KOOKR_CODEX_BIN:-codex}"
+  PROBE_CODEX_BIN="${KOOKR_CODEX_BIN:-}"
+  local env_file
+  if [ -z "$PROBE_CODEX_BIN" ]; then
+    for env_file in "$@"; do
+      PROBE_CODEX_BIN="$(_probe_env_file_value "$env_file" KOOKR_CODEX_BIN)"
+      [ -n "$PROBE_CODEX_BIN" ] && break
+    done
+  fi
+  PROBE_CODEX_BIN="${PROBE_CODEX_BIN:-codex}"
   unset PROBE_TIMED_OUT
 
   # Accept either an absolute executable file or a PATH-resolvable name.

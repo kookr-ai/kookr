@@ -331,9 +331,10 @@ fi
 # one-time console.warn at first launch). Surface the gap on demand here.
 # Mirrors the runtime probe in src/adapters/probe-agent-binary.ts —
 # see scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
+# Passing the repo .env probes the binary a server started here would use.
 # ---------------------------------------------------------------------------
 . "$REPO_ROOT/scripts/lib/probe-codex-plugin-dir.sh"
-probe_codex_plugin_dir
+probe_codex_plugin_dir "$REPO_ROOT/.env"
 CODEX_VERSION_DISPLAY="unknown"
 if [ "$PROBE_RESULT" != "not-installed" ]; then
   CODEX_VERSION_DISPLAY="$(timeout 2 "$PROBE_CODEX_BIN" --version 2>/dev/null \

@@ -144,6 +144,45 @@ export PATH
 assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
 assert_eq "PROBE_CODEX_BIN" "codex" "${PROBE_CODEX_BIN:-<unset>}"
 
+# KOOKR_CODEX_BIN unset in the shell but set in the server's .env: the probe
+# must check the .env binary (the one the server launches), not the stock
+# `codex` that happens to come first on PATH. Regression: prod-restart.sh
+# warned about a stock PATH codex while the server ran the fork from .env.
+ln -sf "$TMPDIR/codex-stock" "$TMPDIR/codex"
+cat > "$TMPDIR/server.env" <<EOF
+# comment line
+OTHER=1
+export KOOKR_CODEX_BIN="$TMPDIR/codex-stock"
+KOOKR_CODEX_BIN=$TMPDIR/codex-fork   # last assignment wins
+EOF
+echo
+echo "[case] KOOKR_CODEX_BIN unset — resolved from the env file, not PATH"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+PATH="$TMPDIR:$ORIG_PATH"
+export PATH
+. "$LIB"
+probe_codex_plugin_dir "$TMPDIR/missing.env" "$TMPDIR/server.env"
+PATH="$ORIG_PATH"
+export PATH
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-fork" "${PROBE_CODEX_BIN:-<unset>}"
+
+# Quoted values are unwrapped, and the first env file that sets the key wins.
+printf 'KOOKR_CODEX_BIN='"'"'%s'"'"'\n' "$TMPDIR/codex-stock" > "$TMPDIR/first.env"
+echo
+echo "[case] first env file that sets KOOKR_CODEX_BIN wins"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+. "$LIB"
+probe_codex_plugin_dir "$TMPDIR/first.env" "$TMPDIR/server.env"
+assert_eq "PROBE_RESULT" "missing-flag" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-stock" "${PROBE_CODEX_BIN:-<unset>}"
+
+# An exported KOOKR_CODEX_BIN beats the env file, as with process.loadEnvFile().
+run_case "exported KOOKR_CODEX_BIN beats the env file" "$TMPDIR/codex-stock"
+probe_codex_plugin_dir "$TMPDIR/server.env"
+assert_eq "PROBE_RESULT" "missing-flag" "${PROBE_RESULT:-<unset>}"
+unset KOOKR_CODEX_BIN
+
 # Errexit-safety invariant: when the probe completes via the timeout block
 # (i.e. through the set +e/set -e bracket — NOT via the early `[ -f ]` exit),
 # the caller's errexit state must be preserved. Use the fork stub so the
