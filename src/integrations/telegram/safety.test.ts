@@ -59,6 +59,89 @@ describe('acquireLockOrFail', () => {
     const a = await acquireLockOrFail(path);
     await a.release();
   });
+
+  // A pid recycled after a crash or reboot is alive, but belongs to an
+  // unrelated process that started long after the lock was written. These
+  // tests plant this test process's (live) pid as the holder and control the
+  // start time the probe reports for it.
+  describe('recycled holder pid', () => {
+    const NOW = Date.parse('2026-10-08T17:50:00.000Z');
+    const alive = (): boolean => true;
+    const startedAt = (ms: number) => (): number => ms;
+
+    async function plant(path: string, record: Record<string, unknown>): Promise<void> {
+      const fs = await import('node:fs/promises');
+      await fs.writeFile(path, JSON.stringify(record));
+    }
+
+    it('takes over when the live pid has a different start time than recorded', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: '2026-10-07T18:01:01.480Z', processStartTimeMs: NOW - 86_400_000 });
+      const a = await acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) });
+      await a.release();
+    });
+
+    it('stays busy when the live pid has the recorded start time', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: '2026-10-08T17:50:05.000Z', processStartTimeMs: NOW });
+      await expect(
+        acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) }),
+      ).rejects.toBeInstanceOf(LockBusyError);
+    });
+
+    it('takes over an old-format lock whose pid now belongs to a process started after it was written', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: '2026-10-07T18:01:01.480Z' });
+      const a = await acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) });
+      await a.release();
+    });
+
+    it('stays busy on an old-format lock whose live pid started before it was written', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: '2026-10-08T17:50:05.000Z' });
+      await expect(
+        acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) }),
+      ).rejects.toBeInstanceOf(LockBusyError);
+    });
+
+    it('fails closed when the holder start time cannot be read', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: '2020-01-01T00:00:00.000Z', processStartTimeMs: 1 });
+      await expect(
+        acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: () => null }),
+      ).rejects.toBeInstanceOf(LockBusyError);
+    });
+
+    it('stays busy on an old-format lock with no usable write time', async () => {
+      const path = join(tmp, 'lock');
+      await plant(path, { pid: process.pid, startedAt: 'not-a-date' });
+      await expect(
+        acquireLockOrFail(path, { isAlive: alive, readProcessStartTimeMs: startedAt(NOW) }),
+      ).rejects.toBeInstanceOf(LockBusyError);
+    });
+
+    it('still writes a usable lock when its own start time is unreadable', async () => {
+      const path = join(tmp, 'lock');
+      const a = await acquireLockOrFail(path, { readProcessStartTimeMs: () => null });
+      const fs = await import('node:fs/promises');
+      const written = JSON.parse(await fs.readFile(path, 'utf-8')) as Record<string, unknown>;
+      expect(written.pid).toBe(process.pid);
+      expect(written).not.toHaveProperty('processStartTimeMs');
+      await a.release();
+      await expect(fs.access(path)).rejects.toMatchObject({ code: 'ENOENT' });
+    });
+
+    it('records its own process start time so the next owner can detect recycling', async () => {
+      const path = join(tmp, 'lock');
+      const a = await acquireLockOrFail(path, { readProcessStartTimeMs: startedAt(NOW) });
+      const fs = await import('node:fs/promises');
+      expect(JSON.parse(await fs.readFile(path, 'utf-8'))).toMatchObject({
+        pid: process.pid,
+        processStartTimeMs: NOW,
+      });
+      await a.release();
+    });
+  });
 });
 
 describe('StateStore + DailyCap', () => {

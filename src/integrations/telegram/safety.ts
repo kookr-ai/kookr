@@ -8,7 +8,9 @@
  *     per round-2 N7).
  *   - Lockfile based on O_EXCL with pid liveness check (round-2 N11: avoid
  *     pid-check + unlink + create race; we use exclusive create and only
- *     replace on stale-pid AFTER reading current owner).
+ *     replace on stale-pid AFTER reading current owner). The liveness check
+ *     also compares OS process start times, so a pid recycled after a crash
+ *     or reboot does not keep a dead owner's lock alive.
  *   - Pending confirmation store (one file per sha256 hash; consume = read +
  *     unlink + counter-record in one logical operation, best-effort across
  *     crashes — see round-3 V9 for the honest non-fs-atomic note).
@@ -21,6 +23,7 @@
 import { mkdir, open, readdir, readFile, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isAgentType, type AgentType } from '../../shared/contracts/agent-types.js';
+import { readProcessStartTimeMs } from '../../adapters/process-tree.js';
 
 // ---------------------------------------------------------------------------
 // Token bucket (per-sender, in-memory, simple)
@@ -81,14 +84,91 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-export async function acquireLockOrFail(path: string): Promise<LockHandle> {
+/** What a lockfile says about the process that wrote it. */
+interface LockRecord {
+  pid: number;
+  /** Wall-clock time the holder wrote the lock (ISO 8601). */
+  startedAt?: string;
+  /**
+   * OS start time of the holder process. Locks written before this field
+   * existed carry only `startedAt`; see {@link isLockHolderLive}.
+   */
+  processStartTimeMs?: number;
+}
+
+export interface AcquireLockOptions {
+  /** Test seam: replace the pid liveness probe. */
+  isAlive?: (pid: number) => boolean;
+  /** Test seam: replace the OS process-start-time reader. */
+  readProcessStartTimeMs?: (pid: number) => number | null;
+}
+
+/**
+ * True when the lock's recorded holder is still the process running at that
+ * pid. A live pid alone is not enough: after a crash or a reboot the kernel
+ * hands the number to an unrelated process (or thread, which `kill(pid, 0)`
+ * also accepts), and the dead owner's lock would block Telegram forever.
+ * When the start time cannot be read we fail closed and treat the holder as
+ * live — two pollers on one bot token is the failure this lock exists to stop.
+ *
+ * The exact match follows `src/server/single-writer-lock.ts`. A wall-clock
+ * step (e.g. WSL resyncing after host sleep) shifts computed start times and
+ * could make a live holder look recycled. That cannot start a second poller:
+ * this lock lives inside the data dir, and a second server on that dir is
+ * stopped earlier by the single-writer lock's SQLite write transaction, an
+ * OS-level lock held for the owner's whole lifetime that no clock affects.
+ */
+function isLockHolderLive(
+  record: LockRecord,
+  isAlive: (pid: number) => boolean,
+  readStartTime: (pid: number) => number | null,
+): boolean {
+  if (!isAlive(record.pid)) return false;
+  const currentStartMs = readStartTime(record.pid);
+  if (currentStartMs === null) return true;
+  if (record.processStartTimeMs !== undefined) {
+    return currentStartMs === record.processStartTimeMs;
+  }
+  // Older lock format: the real owner started before it wrote the lock, so a
+  // process that started afterwards must have inherited a recycled pid.
+  const writtenAtMs = record.startedAt === undefined ? NaN : Date.parse(record.startedAt);
+  if (Number.isNaN(writtenAtMs)) return true;
+  return currentStartMs <= writtenAtMs;
+}
+
+function parseLockRecord(raw: string): LockRecord | null {
+  const parsed = JSON.parse(raw) as Partial<LockRecord>;
+  if (typeof parsed.pid !== 'number' || !Number.isSafeInteger(parsed.pid) || parsed.pid <= 0) {
+    return null;
+  }
+  return {
+    pid: parsed.pid,
+    ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt } : {}),
+    ...(Number.isSafeInteger(parsed.processStartTimeMs)
+      ? { processStartTimeMs: parsed.processStartTimeMs }
+      : {}),
+  };
+}
+
+export async function acquireLockOrFail(
+  path: string,
+  options: AcquireLockOptions = {},
+): Promise<LockHandle> {
+  const isAlive = options.isAlive ?? isProcessAlive;
+  const readStartTime = options.readProcessStartTimeMs ?? readProcessStartTimeMs;
   const ourPid = process.pid;
+  const ownStartTimeMs = readStartTime(ourPid);
+  const ownRecord = (): LockRecord => ({
+    pid: ourPid,
+    startedAt: new Date().toISOString(),
+    ...(ownStartTimeMs === null ? {} : { processStartTimeMs: ownStartTimeMs }),
+  });
   const tryAcquire = async (): Promise<boolean> => {
     try {
       // O_CREAT | O_EXCL | O_WRONLY — atomic create-or-fail.
       const handle = await open(path, 'wx', 0o600);
       try {
-        await handle.write(JSON.stringify({ pid: ourPid, startedAt: new Date().toISOString() }));
+        await handle.write(JSON.stringify(ownRecord()));
       } finally {
         await handle.close();
       }
@@ -101,16 +181,15 @@ export async function acquireLockOrFail(path: string): Promise<LockHandle> {
 
   if (await tryAcquire()) return makeLockHandle(path);
 
-  // Existing lock — read pid, check liveness.
-  let holderPid: number;
+  // Existing lock — read the holder, check it is still the same live process.
+  let holder: LockRecord | null;
   try {
-    const raw = await readFile(path, 'utf-8');
-    const parsed = JSON.parse(raw) as { pid?: number };
-    holderPid = typeof parsed.pid === 'number' ? parsed.pid : -1;
+    holder = parseLockRecord(await readFile(path, 'utf-8'));
   } catch {
-    holderPid = -1;
+    holder = null;
   }
-  if (holderPid > 0 && isProcessAlive(holderPid)) {
+  const holderPid = holder?.pid ?? -1;
+  if (holder && isLockHolderLive(holder, isAlive, readStartTime)) {
     throw new LockBusyError(holderPid);
   }
   // Stale lock — replace it. Race window is small: O_EXCL retry once.

@@ -946,13 +946,26 @@ run_post_restart_checks() {
   # advertise --plugin-dir, kookr-spawned codex sessions silently miss the
   # toolkit. Mirrors the `pnpm run doctor` row; emits only on missing-flag.
   # See scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
+  #
+  # Probe the binary the server just launched, not this shell's `codex`: the
+  # server resolves KOOKR_CODEX_BIN from its own environment, then from
+  # ${APP_DIR}/.env. Under systemd that environment comes from the unit's
+  # EnvironmentFile rather than this shell, so --ignore-exported drops this
+  # shell's value. (A hand-added `Environment=KOOKR_CODEX_BIN=` line in the
+  # unit is not consulted.)
+  local mode="${1:-script}"
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   . "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"
-  probe_codex_plugin_dir
+  if [[ "$mode" == "systemd" ]]; then
+    probe_codex_plugin_dir --ignore-exported "$SYSTEMD_ENV_FILE" "${APP_DIR}/.env"
+  else
+    probe_codex_plugin_dir "${APP_DIR}/.env"
+  fi
   if [[ "$PROBE_RESULT" == "missing-flag" ]]; then
     {
-      echo "WARN: codex on PATH does not advertise --plugin-dir; kookr-spawned codex sessions"
-      echo "      will NOT see the kookr-toolkit. Run \`pnpm codex:rebuild\` to fix."
+      echo "WARN: the server's codex (${PROBE_CODEX_BIN}) does not advertise --plugin-dir;"
+      echo "      kookr-spawned codex sessions will NOT see the kookr-toolkit."
+      echo "      Point KOOKR_CODEX_BIN at the Kookr fork or run \`pnpm codex:rebuild\`."
     } >&2
   fi
 
@@ -1180,7 +1193,7 @@ if systemd_unit_active; then
   # should keep flagging. A failed readiness gate exits the script before this
   # line, leaving the marker to age into the "failed deploy" reading.
   clear_restart_intent
-  run_post_restart_checks
+  run_post_restart_checks systemd
   run_post_deploy_smoke systemd
   PHASE_SMOKE_S=$((SECONDS - RESTART_T0))
   print_restart_phase_timings \
