@@ -950,7 +950,9 @@ run_post_restart_checks() {
   # Probe the binary the server just launched, not this shell's `codex`: the
   # server resolves KOOKR_CODEX_BIN from its own environment, then from
   # ${APP_DIR}/.env. Under systemd that environment comes from the unit's
-  # EnvironmentFile rather than this shell, so this shell's value is ignored.
+  # EnvironmentFile rather than this shell, so the `KOOKR_CODEX_BIN=""` prefix
+  # deliberately drops this shell's value for the call. (A hand-added
+  # `Environment=KOOKR_CODEX_BIN=` line in the unit is not consulted.)
   local mode="${1:-script}"
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   . "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"

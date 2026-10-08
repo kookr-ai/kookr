@@ -401,6 +401,89 @@ exit 1
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // The --plugin-dir nag must probe the codex the server launches. The server
+  // reads KOOKR_CODEX_BIN from its environment, then from ${APP_DIR}/.env; the
+  // restart shell never loads that .env, so probing the shell alone checked a
+  // stock `codex` on PATH and warned on every deploy while prod ran the fork.
+  describe('codex --plugin-dir probe', () => {
+    const PLUGIN_DIR_WARN = 'does not advertise --plugin-dir';
+
+    function runCodexProbe(opts: {
+      mode?: 'systemd';
+      dotenvBin?: 'fork' | 'stock';
+      systemdEnvBin?: 'fork' | 'stock';
+      shellBin?: 'fork' | 'stock';
+    }): { status: number | null; stderr: string; stockBin: string } {
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-codex-'));
+      try {
+        const appDir = join(dir, 'app');
+        const binDir = join(dir, 'bin');
+        const stubDir = join(dir, 'stubs');
+        for (const d of [appDir, binDir, stubDir, join(dir, '.kookr')]) mkdirSync(d, { recursive: true });
+        writeSuccessfulPostRestartCheckStubs(binDir);
+        const stub = (name: string, help: string): string => {
+          const path = join(stubDir, name);
+          writeFileSync(path, `#!/usr/bin/env bash\n[[ "$1" == "--help" ]] && { echo ${JSON.stringify(help)}; exit 0; }\nexit 1\n`);
+          chmodSync(path, 0o755);
+          return path;
+        };
+        const bins = {
+          fork: stub('codex-fork', 'Usage: codex --plugin-dir <dir>'),
+          stock: stub('codex-stock', 'Usage: codex --model <name>'),
+        };
+        // The first `codex` on PATH is a stock build, as on the real host.
+        writeFileSync(join(binDir, 'codex'), readFileSync(bins.stock));
+        chmodSync(join(binDir, 'codex'), 0o755);
+        if (opts.dotenvBin) writeFileSync(join(appDir, '.env'), `KOOKR_CODEX_BIN=${bins[opts.dotenvBin]}\n`);
+        if (opts.systemdEnvBin) {
+          mkdirSync(join(dir, '.config', 'kookr'), { recursive: true });
+          writeFileSync(join(dir, '.config', 'kookr', 'kookr.env'), `KOOKR_CODEX_BIN=${bins[opts.systemdEnvBin]}\n`);
+        }
+
+        const { KOOKR_CODEX_BIN: _ambient, ...baseEnv } = process.env;
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}; run_post_restart_checks ${opts.mode ?? ''}`,
+          ],
+          {
+            cwd: appDir,
+            env: {
+              ...baseEnv,
+              HOME: dir,
+              PATH: `${binDir}:${process.env.PATH ?? ''}`,
+              KOOKR_RESTART_RELAY: '',
+              ...(opts.shellBin ? { KOOKR_CODEX_BIN: bins[opts.shellBin] } : {}),
+            },
+            encoding: 'utf8',
+          },
+        );
+        return { status: result.status, stderr: result.stderr, stockBin: bins.stock };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('does not warn when the server .env points at the fork and PATH has a stock codex', () => {
+      const result = runCodexProbe({ dotenvBin: 'fork' });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain(PLUGIN_DIR_WARN);
+    });
+
+    it('warns and names the binary when the server .env points at a stock codex', () => {
+      const result = runCodexProbe({ dotenvBin: 'stock' });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain(`the server's codex (${result.stockBin}) ${PLUGIN_DIR_WARN}`);
+    });
+
+    it('under systemd, uses the unit EnvironmentFile and ignores the restart shell value', () => {
+      const result = runCodexProbe({ mode: 'systemd', systemdEnvBin: 'fork', dotenvBin: 'stock', shellBin: 'stock' });
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain(PLUGIN_DIR_WARN);
+    });
+  });
 });
 
 describe('prod-restart wait_for_health bounded readiness gate (issue #1553 / #1721)', () => {

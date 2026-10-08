@@ -152,7 +152,7 @@ ln -sf "$TMPDIR/codex-stock" "$TMPDIR/codex"
 cat > "$TMPDIR/server.env" <<EOF
 # comment line
 OTHER=1
-export KOOKR_CODEX_BIN="$TMPDIR/codex-stock"
+export	KOOKR_CODEX_BIN="$TMPDIR/codex-stock"
 KOOKR_CODEX_BIN=$TMPDIR/codex-fork   # last assignment wins
 EOF
 echo
