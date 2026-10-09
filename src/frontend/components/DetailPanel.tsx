@@ -34,6 +34,7 @@ import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
 import { appendDictation } from '../append-dictation.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
+import { TranscriptView, TranscriptToggle } from './TranscriptView.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -1193,7 +1194,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         // the digest's rendering + verification hydration lives in the
         // extracted TaskCompletionDigest component.
         if (isCompleted && agent.completionDigest) {
-          return <TaskCompletionDigest agent={agent} />;
+          return (
+            <>
+              <TaskCompletionDigest agent={agent} />
+              {agent.taskId && <TranscriptToggle key={agent.taskId} taskId={agent.taskId} />}
+            </>
+          );
         }
 
         return (
@@ -1331,15 +1337,19 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     className="right-pane-slot right-pane-slot-terminal"
                     style={{ display: rightPane === 'terminal' ? 'flex' : 'none' }}
                   >
-                    <Suspense fallback={null}>
-                      <TerminalPanel
-                        tmuxName={agent.agentId}
-                        agentType={agent.agentType}
-                        visible={terminalVisible}
-                        onEmptySubmit={handleEmptyEnterAdvance}
-                        onOpenFile={handleOpenFile}
-                      />
-                    </Suspense>
+                    {isCompleted && agent.taskId ? (
+                      <TranscriptView key={agent.taskId} taskId={agent.taskId} />
+                    ) : (
+                      <Suspense fallback={null}>
+                        <TerminalPanel
+                          tmuxName={agent.agentId}
+                          agentType={agent.agentType}
+                          visible={terminalVisible}
+                          onEmptySubmit={handleEmptyEnterAdvance}
+                          onOpenFile={handleOpenFile}
+                        />
+                      </Suspense>
+                    )}
                   </div>
                   {activeDiff && (
                     <div

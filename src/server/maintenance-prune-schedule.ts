@@ -197,6 +197,14 @@ export interface MaintenancePruneScheduleConfig {
    */
   compactTaskArchive?: () => Promise<void>;
   /**
+   * Durable transcript capture (RFC rfc-durable-transcript-capture, Phase 2):
+   * when wired (capture opt-in enabled), run the backstop capture sweep and the
+   * transcript retention sweep. Invoked BEFORE the prune step so a terminal
+   * task's conversation is captured before its hot record can age out.
+   * Best-effort — exceptions are logged, never fatal, and never block prune.
+   */
+  captureTranscripts?: () => Promise<void>;
+  /**
    * Payload-diet observability (issue #1526 Phase C / C2): when wired, one
    * stats line is logged after every sweep so operators can watch the diet
    * working. Bootstrap also logs the same line once at boot.
@@ -630,6 +638,15 @@ export async function runScheduledRelayOrphanSweep(
  * stats line when the stats provider is wired.
  */
 async function runScheduledTaskRecordPrune(config: MaintenancePruneScheduleConfig): Promise<void> {
+  // Capture transcripts BEFORE prune so a terminal task's conversation is
+  // durably captured before its hot record can age out this same tick.
+  if (config.captureTranscripts) {
+    try {
+      await config.captureTranscripts();
+    } catch (err) {
+      console.error('[maintenance-prune] transcript capture sweep failed:', err);
+    }
+  }
   if (config.pruneTaskRecords) {
     try {
       const result = await config.pruneTaskRecords();

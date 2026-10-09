@@ -373,6 +373,23 @@ describe('record-maintenance health', () => {
     expect(health.getSnapshot()).toEqual(recoveredSchedule);
   });
 
+  test('transcript capture runs before task-record prune, and a capture failure does not block prune', async () => {
+    const order: string[] = [];
+    const health = new MaintenancePruneHealth(24, () => NOW);
+    const captureTranscripts = vi.fn(async () => { order.push('capture'); });
+    const pruneTaskRecords = vi.fn(async () => { order.push('prune'); return pruneResult('pruned'); });
+    await runScheduledMaintenancePrune({ ...config(health), captureTranscripts, pruneTaskRecords });
+    expect(order).toEqual(['capture', 'prune']);
+
+    const throwing = vi.fn(async () => { throw new Error('capture boom'); });
+    pruneTaskRecords.mockClear();
+    await expect(
+      runScheduledMaintenancePrune({ ...config(health), captureTranscripts: throwing, pruneTaskRecords }),
+    ).resolves.toBe(diskResult);
+    expect(throwing).toHaveBeenCalledTimes(1);
+    expect(pruneTaskRecords).toHaveBeenCalledTimes(1);
+  });
+
   test('health reads use cached copies without invoking maintenance, clocks, or filesystem reads', async () => {
     const nowIso = vi.fn(() => NOW);
     const health = new MaintenancePruneHealth(24, nowIso);

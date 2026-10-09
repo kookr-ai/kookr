@@ -83,6 +83,24 @@ export interface PruneAgedTaskRecordsDeps {
     import('../../core/github-state-store.js').GitHubStateStore,
     'removeTask'
   >;
+  /**
+   * Optional transcript-capture gate (RFC durable-transcript-capture, Phase 2).
+   * When present, an otherwise-prunable terminal task with at least one session
+   * and no complete transcript snapshot for its newest session is held back
+   * (pending capture) until `captureGraceMs` has elapsed since it became
+   * terminal; after that it is pruned anyway (abandoned) so prune never blocks
+   * forever. Absent => prune behaves exactly as before. Pruning never deletes
+   * transcripts: they outlive the hot record under their own retention.
+   */
+  captureGate?: {
+    transcriptsDir: string;
+    captureGraceMs: number;
+    hasCompleteSnapshot: (
+      transcriptsDir: string,
+      taskId: string,
+      sessionId: string,
+    ) => boolean | Promise<boolean>;
+  };
   /** Injectable clock (ms since epoch) for deterministic tests. */
   now?: () => number;
 }
@@ -94,6 +112,8 @@ export interface PruneAgedTaskRecordsResult {
   /** Task-record count remaining in the store after the sweep. */
   remainingTasks: number;
   maxAgeDays: number;
+  /** Aged terminal tasks held back this sweep awaiting transcript capture (only with `captureGate`). */
+  captureHeldTaskIds?: string[];
 }
 
 /**
@@ -101,12 +121,17 @@ export interface PruneAgedTaskRecordsResult {
  * still present in the store that is not itself prunable. Iterates to a
  * fixpoint so a chain of parents over one recent leaf is fully protected.
  */
-export function selectPrunableTasks(tasks: readonly Task[], cutoffMs: number): Task[] {
+export function selectPrunableTasks(
+  tasks: readonly Task[],
+  cutoffMs: number,
+  heldTaskIds: ReadonlySet<string> = new Set(),
+): Task[] {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const prunable = new Set(
     tasks
       .filter((task) => task.launchAdmission?.status !== 'probing')
       .filter((task) => isAgedTerminalTask(task, cutoffMs))
+      .filter((task) => !heldTaskIds.has(task.id))
       .map((task) => task.id),
   );
 
@@ -159,12 +184,14 @@ export async function pruneAgedTaskRecords(
   const tasks = typeof deps.taskStore.viewTasks === 'function'
     ? deps.taskStore.viewTasks()
     : deps.taskStore.listTasks();
-  const toPrune = selectPrunableTasks(tasks, cutoffMs);
+  const heldTaskIds = await selectCaptureHeldTaskIds(tasks, cutoffMs, deps.captureGate, now());
+  const toPrune = selectPrunableTasks(tasks, cutoffMs, heldTaskIds);
+  const heldResult = deps.captureGate ? { captureHeldTaskIds: [...heldTaskIds] } : {};
   const remainingBefore = typeof deps.taskStore.countTasks === 'function'
     ? deps.taskStore.countTasks()
     : tasks.length;
   if (toPrune.length === 0) {
-    return { outcome: 'pruned', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
+    return { outcome: 'pruned', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays, ...heldResult };
   }
 
   if (deps.takePredeleteSnapshot) {
@@ -175,7 +202,7 @@ export async function pruneAgedTaskRecords(
         '[task-record-prune] predelete snapshot failed, aborting prune to prevent unrecoverable data loss:',
         err,
       );
-      return { outcome: 'snapshot_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
+      return { outcome: 'snapshot_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays, ...heldResult };
     }
   }
 
@@ -187,7 +214,7 @@ export async function pruneAgedTaskRecords(
         '[task-record-prune] terminal-task archive failed, aborting prune to prevent unarchived data loss:',
         err,
       );
-      return { outcome: 'archive_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays };
+      return { outcome: 'archive_failed', prunedTaskIds: [], remainingTasks: remainingBefore, maxAgeDays, ...heldResult };
     }
   }
 
@@ -212,7 +239,41 @@ export async function pruneAgedTaskRecords(
     ? deps.taskStore.countTasks()
     : deps.taskStore.listTasks().length;
   await writePruneAudit(deps.auditLogPath, { maxAgeDays, prunedTaskIds, remainingTasks, now });
-  return { outcome: 'pruned', prunedTaskIds, remainingTasks, maxAgeDays };
+  return { outcome: 'pruned', prunedTaskIds, remainingTasks, maxAgeDays, ...heldResult };
+}
+
+/**
+ * Aged terminal tasks to hold back for transcript capture: has a session, no
+ * complete snapshot for the newest session, and still inside the grace window
+ * measured from the task's terminal recency. Gate errors fail open (not held).
+ */
+async function selectCaptureHeldTaskIds(
+  tasks: readonly Task[],
+  cutoffMs: number,
+  gate: PruneAgedTaskRecordsDeps['captureGate'],
+  nowMs: number,
+): Promise<Set<string>> {
+  // Fail-safe backstop, effectively a no-op under default timings: the prune age
+  // (1 day) far exceeds the default capture grace (15 min), so a candidate is
+  // already past grace when it first becomes prune-eligible and nothing is held.
+  // The real guarantee is the capture sweep running BEFORE prune on the same
+  // maintenance tick.
+  const held = new Set<string>();
+  if (!gate) return held;
+  for (const task of tasks) {
+    if (!isAgedTerminalTask(task, cutoffMs)) continue;
+    const newest = task.sessions[task.sessions.length - 1];
+    if (!newest) continue;
+    if (nowMs - taskSnapshotRecencyMs(task) >= gate.captureGraceMs) continue; // abandoned
+    try {
+      if (await gate.hasCompleteSnapshot(gate.transcriptsDir, task.id, newest.tmuxSession)) continue;
+    } catch (err) {
+      console.warn(`[task-record-prune] capture gate check failed for ${task.id}:`, err);
+      continue;
+    }
+    held.add(task.id);
+  }
+  return held;
 }
 
 async function writePruneAudit(

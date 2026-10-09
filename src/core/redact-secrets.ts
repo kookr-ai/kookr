@@ -32,13 +32,70 @@ const SECRET_PATTERNS: RegExp[] = [
   /\bBearer\s+[^\s"'\\]+/gi,
   // Cookie / Set-Cookie header values (session tokens in log lines)
   /\b(?:Set-)?Cookie\s*[:=]\s*[^\r\n]+/gi,
-  /-----BEGIN [A-Z ]+-----[\s\S]+?-----END [A-Z ]+-----/g, // PEM blocks
 ];
+
+const PEM_BEGIN = '-----BEGIN ';
+const PEM_END = '-----END ';
+const PEM_DASHES = '-----';
+
+/** Index just past a run of [A-Z ] starting at `from` (== from when the run is empty). */
+function skipPemLabel(s: string, from: number): number {
+  let i = from;
+  while (i < s.length) {
+    const c = s.charCodeAt(i);
+    if (!((c >= 65 && c <= 90) || c === 32)) break;
+    i++;
+  }
+  return i;
+}
+
+/**
+ * Redact `-----BEGIN X-----` ... `-----END X-----` blocks with indexOf scans
+ * instead of a lazy `[\s\S]+?` regex, which backtracks quadratically on many
+ * BEGIN headers with no END. Unterminated blocks are left untouched (as the
+ * old regex did). Each position is visited a bounded number of times.
+ */
+function redactPemBlocks(s: string): string {
+  let out = '';
+  let last = 0;
+  let from = 0;
+  for (;;) {
+    const begin = s.indexOf(PEM_BEGIN, from);
+    if (begin === -1) break;
+    const labelStart = begin + PEM_BEGIN.length;
+    const labelEnd = skipPemLabel(s, labelStart);
+    if (labelEnd === labelStart || !s.startsWith(PEM_DASHES, labelEnd)) {
+      from = begin + 1;
+      continue;
+    }
+    const bodyStart = labelEnd + PEM_DASHES.length;
+    // Find the first well-formed END terminator after the body start.
+    let end = -1;
+    let search = bodyStart + 1; // body needs at least one char
+    for (;;) {
+      const e = s.indexOf(PEM_END, search);
+      if (e === -1) break;
+      const eLabelStart = e + PEM_END.length;
+      const eLabelEnd = skipPemLabel(s, eLabelStart);
+      if (eLabelEnd > eLabelStart && s.startsWith(PEM_DASHES, eLabelEnd)) {
+        end = eLabelEnd + PEM_DASHES.length;
+        break;
+      }
+      search = e + 1;
+    }
+    // No terminator anywhere after this point means none for later BEGINs either.
+    if (end === -1) break;
+    out += s.slice(last, begin) + '[REDACTED]';
+    last = end;
+    from = end;
+  }
+  return last === 0 ? s : out + s.slice(last);
+}
 
 export function redactSecrets(s: string): string {
   let out = s;
   for (const re of SECRET_PATTERNS) out = out.replace(re, '[REDACTED]');
-  return out;
+  return redactPemBlocks(out);
 }
 
 export function isSecretFieldName(name: string): boolean {

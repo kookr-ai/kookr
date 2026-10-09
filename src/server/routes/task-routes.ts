@@ -104,11 +104,41 @@ import {
   TASK_ARCHIVE_DIRNAME,
   type ReadArchivedTasksQuery,
 } from '../use-cases/task-archive.js';
+import {
+  findTaskAnywhere,
+  readLedgerMessages,
+  readVendorTranscript,
+  resolveSessionTranscriptPointer,
+} from '../use-cases/transcript-read.js';
+import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import { redactTranscriptText } from '../../core/redact-transcript-line.js';
+import type { TranscriptMessage } from '../../shared/contracts/transcript.js';
+import { readSnapshotMeta, readStoredTranscript } from '../use-cases/transcript-store.js';
+import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
 
 /** 401 response body for a supervisor-token-gated route with a missing/wrong bearer token. */
+const LIVE_TRANSCRIPT_MAX_BYTES = 2_000_000;
+
+/** Redact secrets from live (vendor/ledger) messages, then keep the most recent within budget. */
+function prepareLiveMessages(messages: TranscriptMessage[]): TranscriptMessage[] {
+  const redacted = messages.map((m): TranscriptMessage => {
+    switch (m.kind) {
+      case 'text':
+        return { ...m, text: redactTranscriptText(m.text) };
+      case 'tool_result':
+        return { ...m, text: redactTranscriptText(m.text) };
+      case 'tool_call':
+        return m.input !== undefined ? { ...m, input: redactTranscriptText(m.input) } : m;
+      case 'truncation_marker':
+        return m;
+    }
+  });
+  return capMessagesKeepingTail(redacted, LIVE_TRANSCRIPT_MAX_BYTES);
+}
+
 function supervisorUnauthorizedResponse(c: Context) {
   c.header('WWW-Authenticate', 'Bearer');
   return c.json({ error: 'supervisor-unauthorized' }, 401);
@@ -416,6 +446,68 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       normalizeCwd,
     });
     return c.json(entries);
+  });
+
+  // Read-only task conversation viewer (RFC durable-transcript-capture, Phase 1).
+  // Vendor transcript -> hook ledger -> unavailable. A pruned task is still
+  // reachable via the archive. Never mutates the task store. Registered BEFORE
+  // `/api/tasks/:id` alongside the other static-suffix reads.
+  app.get('/api/tasks/:id/transcript', async (c) => {
+    const taskId = c.req.param('id');
+    const requested = c.req.query('sessionId') || undefined;
+    const archiveDir = deps.kookrDir ? join(deps.kookrDir, TASK_ARCHIVE_DIRNAME) : undefined;
+    const task = await findTaskAnywhere(deps.taskStore, archiveDir, taskId);
+    if (!task) {
+      const body: TranscriptResponse = { taskId, unavailable: { reason: 'not_found' } };
+      return c.json(body, 404);
+    }
+    const sessions = task.sessions ?? [];
+    const session = requested
+      ? sessions.find((s) => s.tmuxSession === requested || s.claudeSessionId === requested)
+      : [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (!session) {
+      const body: TranscriptResponse = {
+        taskId,
+        ...(requested ? { sessionId: requested } : {}),
+        unavailable: { reason: requested ? 'not_found' : 'vendor_never_persisted' },
+      };
+      return c.json(body, requested ? 404 : 200);
+    }
+    const sessionId = session.tmuxSession;
+    const transcriptsDir = deps.kookrDir ? join(deps.kookrDir, 'transcripts') : undefined;
+    if (transcriptsDir && c.req.query('meta')) {
+      // Read-only operator inspection of the durable snapshot sidecar.
+      const meta = (await readSnapshotMeta(transcriptsDir, taskId, sessionId)) ?? null;
+      return c.json({ taskId, sessionId, meta });
+    }
+    if (transcriptsDir) {
+      // Prefer the durable (redacted, tool-results-omitted) snapshot; it survives vendor-file loss.
+      const stored = await readStoredTranscript(transcriptsDir, taskId, sessionId);
+      if (stored) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'stored', messages: stored };
+        return c.json(body);
+      }
+    }
+    const hooksDir = deps.kookrDir ? join(deps.kookrDir, 'hooks') : undefined;
+    if (hooksDir) {
+      const pointer = await resolveSessionTranscriptPointer(hooksDir, sessionId);
+      const transcriptPath = pointer.transcriptPath ?? session.transcriptPath;
+      const lines = transcriptPath ? await readVendorTranscript(transcriptPath) : undefined;
+      if (lines) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'vendor', messages: prepareLiveMessages(normalizeVendorLines(lines)) };
+        return c.json(body);
+      }
+      const messages = prepareLiveMessages(normalizeLedgerEvents(await readLedgerMessages(hooksDir, sessionId)));
+      if (messages.length > 0) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'ledger', messages };
+        return c.json(body);
+      }
+    }
+    const reason = session.agentType !== 'claude-code'
+      ? 'unsupported_provider'
+      : !deps.taskStore.getTask(taskId) ? 'aged_out' : 'vendor_never_persisted';
+    const body: TranscriptResponse = { taskId, sessionId, unavailable: { reason } };
+    return c.json(body);
   });
 
   app.get('/api/tasks/:id', (c) => {

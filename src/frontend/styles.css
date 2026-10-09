@@ -15935,3 +15935,15 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .dep-rail-dot.run { background: var(--teal); }
 .dep-rail-dot.wait { background: var(--text-muted); }
 .dep-rail-arrow { color: var(--text-muted); flex-shrink: 0; font-size: 12px; }
+
+/* Stored transcript viewer (terminal tasks) */
+.transcript-view { display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; overflow-y: auto; flex: 1; min-height: 0; color: var(--text-secondary); font-size: 13px; }
+.transcript-view-status { color: var(--text-muted); }
+.transcript-view-notice { font-size: 12px; color: var(--text-muted); border-left: 2px solid var(--border, currentColor); padding-left: 8px; }
+.transcript-msg-assistant { color: var(--text-bright); background: var(--bg-elevated, transparent); border-radius: 6px; padding: 10px 12px; white-space: pre-wrap; line-height: 1.5; }
+.transcript-msg-user { color: var(--text-muted); padding: 4px 12px; white-space: pre-wrap; border-left: 2px solid var(--border, currentColor); }
+.transcript-msg-label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 2px; }
+.transcript-tool { font-size: 12px; color: var(--text-muted); }
+.transcript-tool summary { cursor: pointer; }
+.transcript-tool pre { margin: 4px 0 0; white-space: pre-wrap; max-height: 200px; overflow: auto; }
+.transcript-toggle { padding: 0 20px 16px; }
