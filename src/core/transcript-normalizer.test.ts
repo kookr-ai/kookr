@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { normalizeLedgerEvents, normalizeVendorLines } from './transcript-normalizer.js';
+import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } from './transcript-normalizer.js';
 import type { AgentEvent } from './types.js';
 
 describe('normalizeVendorLines', () => {
@@ -68,5 +68,26 @@ describe('normalizeLedgerEvents', () => {
     const events = Array.from({ length: 20 }, () => ({ type: 'stop', sessionId: 's', lastMessage: 'z'.repeat(50) })) as unknown as AgentEvent[];
     const out = normalizeLedgerEvents(events, { maxTotalBytes: 200 });
     expect(out[out.length - 1].kind).toBe('truncation_marker');
+  });
+});
+
+describe('capMessagesKeepingTail', () => {
+  const t = (text: string) => ({ kind: 'text' as const, role: 'assistant' as const, text });
+  test('returns input unchanged when within budget', () => {
+    const msgs = [t('a'), t('b')];
+    expect(capMessagesKeepingTail(msgs, 10_000)).toEqual(msgs);
+  });
+  test('keeps the tail and prepends one marker when dropping', () => {
+    const msgs = [t('x'.repeat(100)), t('y'.repeat(100)), t('final')];
+    const out = capMessagesKeepingTail(msgs, 150);
+    expect(out[0]).toMatchObject({ kind: 'truncation_marker' });
+    expect(out.filter((m) => m.kind === 'truncation_marker')).toHaveLength(1);
+    expect(out[out.length - 1]).toEqual(t('final'));
+    expect(out).toHaveLength(2);
+  });
+  test('keeps the last message even when it alone exceeds the budget', () => {
+    const out = capMessagesKeepingTail([t('a'), t('z'.repeat(500))], 50);
+    expect(out[out.length - 1]).toEqual(t('z'.repeat(500)));
+    expect(out[0]).toMatchObject({ kind: 'truncation_marker' });
   });
 });

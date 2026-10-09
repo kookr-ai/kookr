@@ -110,7 +110,9 @@ import {
   readVendorTranscript,
   resolveSessionTranscriptPointer,
 } from '../use-cases/transcript-read.js';
-import { normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import { redactTranscriptText } from '../../core/redact-transcript-line.js';
+import type { TranscriptMessage } from '../../shared/contracts/transcript.js';
 import { readSnapshotMeta, readStoredTranscript } from '../use-cases/transcript-store.js';
 import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 
@@ -118,6 +120,25 @@ const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
 
 /** 401 response body for a supervisor-token-gated route with a missing/wrong bearer token. */
+const LIVE_TRANSCRIPT_MAX_BYTES = 2_000_000;
+
+/** Redact secrets from live (vendor/ledger) messages, then keep the most recent within budget. */
+function prepareLiveMessages(messages: TranscriptMessage[]): TranscriptMessage[] {
+  const redacted = messages.map((m): TranscriptMessage => {
+    switch (m.kind) {
+      case 'text':
+        return { ...m, text: redactTranscriptText(m.text) };
+      case 'tool_result':
+        return { ...m, text: redactTranscriptText(m.text) };
+      case 'tool_call':
+        return m.input !== undefined ? { ...m, input: redactTranscriptText(m.input) } : m;
+      case 'truncation_marker':
+        return m;
+    }
+  });
+  return capMessagesKeepingTail(redacted, LIVE_TRANSCRIPT_MAX_BYTES);
+}
+
 function supervisorUnauthorizedResponse(c: Context) {
   c.header('WWW-Authenticate', 'Bearer');
   return c.json({ error: 'supervisor-unauthorized' }, 401);
@@ -473,10 +494,10 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       const transcriptPath = pointer.transcriptPath ?? session.transcriptPath;
       const lines = transcriptPath ? await readVendorTranscript(transcriptPath) : undefined;
       if (lines) {
-        const body: TranscriptResponse = { taskId, sessionId, source: 'vendor', messages: normalizeVendorLines(lines) };
+        const body: TranscriptResponse = { taskId, sessionId, source: 'vendor', messages: prepareLiveMessages(normalizeVendorLines(lines)) };
         return c.json(body);
       }
-      const messages = normalizeLedgerEvents(await readLedgerMessages(hooksDir, sessionId));
+      const messages = prepareLiveMessages(normalizeLedgerEvents(await readLedgerMessages(hooksDir, sessionId)));
       if (messages.length > 0) {
         const body: TranscriptResponse = { taskId, sessionId, source: 'ledger', messages };
         return c.json(body);

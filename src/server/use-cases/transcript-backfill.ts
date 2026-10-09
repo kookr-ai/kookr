@@ -17,8 +17,9 @@ export interface TranscriptBackfillDeps {
   /**
    * Attributes a session (tmux name) to its owning task id. Returning
    * undefined means "cannot attribute": the session is skipped, since
-   * snapshots are keyed by taskId. The wiring builds this from the task
-   * store plus the task archive.
+   * snapshots are keyed by taskId. The wiring resolves attribution from the
+   * hot task store only; sessions whose task was archived/pruned cannot be
+   * attributed and are counted as skipped.
    */
   taskIdForSession?: (tmux: string) => string | undefined;
   resolvePointer?: (hooksDir: string, tmux: string) => Promise<{ transcriptPath?: string }>;

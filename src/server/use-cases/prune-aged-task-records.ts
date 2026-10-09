@@ -253,6 +253,11 @@ async function selectCaptureHeldTaskIds(
   gate: PruneAgedTaskRecordsDeps['captureGate'],
   nowMs: number,
 ): Promise<Set<string>> {
+  // Fail-safe backstop, effectively a no-op under default timings: the prune age
+  // (1 day) far exceeds the default capture grace (15 min), so a candidate is
+  // already past grace when it first becomes prune-eligible and nothing is held.
+  // The real guarantee is the capture sweep running BEFORE prune on the same
+  // maintenance tick.
   const held = new Set<string>();
   if (!gate) return held;
   for (const task of tasks) {

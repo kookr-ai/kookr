@@ -4211,6 +4211,21 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
     expect(body).toEqual({ taskId: task.id, sessionId: 'sess-a', source: 'vendor', messages: [{ kind: 'text', role: 'user', text: 'hi there' }] });
   });
 
+  test('redacts planted secrets in the live vendor response', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-r');
+    const tpath = join(kookrDir, 'vendor-r.jsonl');
+    writeFileSync(tpath, [
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'cfg DATABASE_URL=postgres://u:p@h/db ok' }] } }),
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'DATABASE_URL=postgres://u:p@h/db' }] } }),
+    ].join('\n') + '\n');
+    writeFileSync(join(kookrDir, 'hooks', 'sess-r.jsonl'), hookLine({ hook_event_name: 'SessionStart', transcript_path: tpath }) + '\n');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body.source).toBe('vendor');
+    expect(JSON.stringify(body.messages)).not.toContain('u:p@h');
+  });
+
   test('falls back to the ledger answer when the vendor file is gone', async () => {
     const taskStore = new TaskStore();
     const task = mkTaskWithSession(taskStore, 'sess-b');

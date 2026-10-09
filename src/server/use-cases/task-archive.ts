@@ -357,6 +357,19 @@ export async function readArchivedTasks(
   };
 }
 
+/** Newest archived copy of one task id, scanning every segment once; undefined when absent. */
+export async function readArchivedTaskById(archiveDir: string, taskId: string): Promise<Task | undefined> {
+  let best: ArchivedTaskRecord | undefined;
+  for (const segment of await listSegments(archiveDir)) {
+    const { records } = await parseSegment(join(archiveDir, segment));
+    for (const record of records) {
+      if (record.task.id !== taskId) continue;
+      if (!best || record.archivedAt >= best.archivedAt) best = record;
+    }
+  }
+  return best?.task;
+}
+
 function clampLimit(limit: number | undefined): number {
   if (limit === undefined || !Number.isFinite(limit)) return DEFAULT_ARCHIVE_PAGE_LIMIT;
   const floored = Math.floor(limit);

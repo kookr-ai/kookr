@@ -45,8 +45,8 @@ function MessageRow({ message }: { message: TranscriptMessage }) {
   }
 }
 
-/** Pure presentation of a fetched transcript; exported for tests. */
-export function TranscriptBody({ response }: { response: TranscriptResponse }) {
+/** Pure presentation of a fetched transcript. */
+function TranscriptBody({ response }: { response: TranscriptResponse }) {
   if ('unavailable' in response) {
     return (
       <div className="transcript-view-status" data-testid="transcript-unavailable" role="status">

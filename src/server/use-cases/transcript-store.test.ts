@@ -116,4 +116,29 @@ describe('transcript-store', () => {
     expect(await selectExpiredTranscriptTaskDirs(dir, 90, now)).toEqual(['old']);
     expect(await selectExpiredTranscriptTaskDirs(join(root, 'missing'), 90, now)).toEqual([]);
   });
+
+  it('keeps the final assistant answer after >2MB of earlier tool-result-heavy content', async () => {
+    const lines: unknown[] = [{ type: 'user', message: { content: 'start' } }];
+    const big = 'q'.repeat(15_000);
+    for (let i = 0; i < 300; i++) {
+      lines.push({ type: 'assistant', message: { content: [{ type: 'tool_use', id: `t${i}`, name: 'Read', input: { n: i } }] } });
+      lines.push({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: `t${i}`, content: big }] } });
+    }
+    lines.push({ type: 'assistant', message: { content: [{ type: 'text', text: 'FINAL ANSWER HERE' }] } });
+    await writeFile(vendor, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    expect((await cap()).outcome).toBe('captured');
+    const msgs = (await readStoredTranscript(dir, 'task1', 'sess1'))!;
+    expect(msgs[msgs.length - 1]).toEqual({ kind: 'text', role: 'assistant', text: 'FINAL ANSWER HERE' });
+    expect(msgs[0]).toEqual({ kind: 'text', role: 'user', text: 'start' });
+  });
+  it('drops earliest messages with a marker once stored bytes exceed the budget', async () => {
+    const lines: unknown[] = [];
+    for (let i = 0; i < 400; i++) lines.push({ type: 'user', message: { content: `m${i} ` + 'word '.repeat(2_000).trim().split(' ').join('\n') } });
+    lines.push({ type: 'assistant', message: { content: [{ type: 'text', text: 'LAST' }] } });
+    await writeFile(vendor, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+    await cap();
+    const msgs = (await readStoredTranscript(dir, 'task1', 'sess1'))!;
+    expect(msgs[0]).toMatchObject({ kind: 'truncation_marker' });
+    expect(msgs[msgs.length - 1]).toMatchObject({ text: 'LAST' });
+  });
 });

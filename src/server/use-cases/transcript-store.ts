@@ -14,7 +14,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { gunzipSync, gzipSync } from 'node:zlib';
-import { normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import { capMessagesKeepingTail, normalizeVendorLines } from '../../core/transcript-normalizer.js';
 import { redactTranscriptLine, redactTranscriptText } from '../../core/redact-transcript-line.js';
 import type { TranscriptMessage } from '../../shared/contracts/transcript.js';
 import { readVendorTranscript } from './transcript-read.js';
@@ -26,6 +26,8 @@ export const DEFAULT_TRANSCRIPT_RETENTION_DAYS = DEFAULT_TASK_ARCHIVE_RETENTION_
 /** Max chars of a tool_call input persisted. */
 export const STORED_TOOL_INPUT_MAX_CHARS = 2000;
 /** Max compressed bytes read back from a stored snapshot. */
+/** Budget for stored message JSON; measured after tool-result bodies are omitted. */
+const STORED_MAX_BYTES = 2_000_000;
 const STORED_READ_MAX_BYTES = 16_000_000;
 const STORED_INFLATE_MAX_BYTES = 32_000_000;
 
@@ -130,7 +132,7 @@ export async function captureTaskTranscript(params: CaptureParams): Promise<Capt
   const lines = await readVendorTranscript(vendorTranscriptPath);
   if (lines === undefined) return { outcome: 'vendor_absent' };
 
-  const messages = toStoredMessages(normalizeVendorLines(lines));
+  const messages = capMessagesKeepingTail(toStoredMessages(normalizeVendorLines(lines)), STORED_MAX_BYTES);
   const gz = gzipSync(Buffer.from(messages.map((m) => JSON.stringify(m)).join('\n'), 'utf8'));
   const meta: SnapshotMeta = {
     schemaVersion: 1,

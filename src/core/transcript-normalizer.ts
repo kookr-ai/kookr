@@ -1,8 +1,12 @@
 import type { AgentEvent } from './types.js';
 import type { TranscriptMessage } from '../shared/contracts/transcript.js';
 
-/** Stop emitting messages once this many bytes of text have been produced. */
-export const TRANSCRIPT_MAX_TOTAL_BYTES = 2_000_000;
+/**
+ * High safety bound (below the 32 MB read cap) on bytes produced during
+ * normalization. The real display/stored budget is enforced afterwards by
+ * {@link capMessagesKeepingTail}, which keeps the END of the conversation.
+ */
+export const TRANSCRIPT_MAX_TOTAL_BYTES = 24_000_000;
 /** Per-message text cap; longer text is cut and flagged. */
 export const TRANSCRIPT_MAX_MESSAGE_BYTES = 20_000;
 
@@ -62,6 +66,27 @@ class Collector {
       this.messages.push({ kind: 'truncation_marker', note: `A message exceeded ${this.maxMsg} bytes and was truncated.` });
     }
   }
+}
+
+/**
+ * Keep the most recent messages that fit in `maxBytes` (JSON size). When any
+ * are dropped, prepend one truncation marker. The last message always survives,
+ * even alone over budget (the per-message clip bounds it).
+ */
+export function capMessagesKeepingTail(messages: TranscriptMessage[], maxBytes: number): TranscriptMessage[] {
+  let total = 0;
+  let start = messages.length;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const size = JSON.stringify(messages[i]).length;
+    if (total + size > maxBytes && start < messages.length) break;
+    total += size;
+    start = i;
+  }
+  if (start === 0) return messages;
+  return [
+    { kind: 'truncation_marker', note: `Earlier messages truncated (showing the most recent ${messages.length - start}).` },
+    ...messages.slice(start),
+  ];
 }
 
 function makeCollector(limits?: NormalizeLimits): Collector {

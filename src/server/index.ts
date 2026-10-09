@@ -3186,15 +3186,19 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const transcriptCaptureConfig = readTranscriptCaptureConfig(process.env);
   const transcriptsDir = join(kookrDir, 'transcripts');
   const transcriptHooksDir = join(kookrDir, 'hooks');
-  // Conservative 'own-repos' predicate: capture a task only when its newest
-  // session cwd is under the operator's own checkout tree (the parent dir of the
-  // server checkout). External contribution worktrees outside that tree are
+  // Coarse 'own-repos' heuristic: capture a task only when the cwd of the session
+  // the sweep captures (newest claude-code session) is the server checkout or
+  // under the parent dir of the server checkout (so sibling dirs of the checkout
+  // are admitted too). External contribution worktrees outside that tree are
   // excluded. Over-exclusion is the safe direction for a privacy control; an
   // operator who wants everything captured sets scope 'all'. Documented in the RFC.
   const ownRepoRoot = dirname(serverCwd);
   const transcriptScopeAllows = transcriptCaptureConfig.scope === 'own-repos'
     ? (task: import('../core/tasks.js').Task): boolean => {
-        const cwd = task.sessions[task.sessions.length - 1]?.cwd;
+        const claudeSessions = task.sessions.filter((s) => s.agentType === 'claude-code');
+        const cwd = claudeSessions.length > 0
+          ? claudeSessions.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)).cwd
+          : undefined;
         return !!cwd && (cwd === serverCwd || cwd.startsWith(`${ownRepoRoot}/`));
       }
     : undefined;
@@ -3211,6 +3215,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       hooksDir: transcriptHooksDir,
       transcriptsDir,
       maxTasks: 500,
+      // Hot-store attribution only: archive-pruned sessions are not backfilled.
       taskIdForSession: (tmux) => taskStore.findTaskBySession(tmux)?.id,
     })
       .then((s) => console.log(

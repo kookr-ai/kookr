@@ -1340,15 +1340,15 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     {isCompleted && agent.taskId ? (
                       <TranscriptView key={agent.taskId} taskId={agent.taskId} />
                     ) : (
-                    <Suspense fallback={null}>
-                      <TerminalPanel
-                        tmuxName={agent.agentId}
-                        agentType={agent.agentType}
-                        visible={terminalVisible}
-                        onEmptySubmit={handleEmptyEnterAdvance}
-                        onOpenFile={handleOpenFile}
-                      />
-                    </Suspense>
+                      <Suspense fallback={null}>
+                        <TerminalPanel
+                          tmuxName={agent.agentId}
+                          agentType={agent.agentType}
+                          visible={terminalVisible}
+                          onEmptySubmit={handleEmptyEnterAdvance}
+                          onOpenFile={handleOpenFile}
+                        />
+                      </Suspense>
                     )}
                   </div>
                   {activeDiff && (

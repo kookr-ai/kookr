@@ -9,6 +9,7 @@ import {
   compactTaskArchive,
   countArchivedTasks,
   DEFAULT_TASK_ARCHIVE_RETENTION_DAYS,
+  readArchivedTaskById,
   readArchivedTasks,
 } from './task-archive.js';
 
@@ -327,5 +328,21 @@ describe('compactTaskArchive', () => {
 
     const result = await compactTaskArchive(dir, { now: () => NOW });
     expect(result.removedSegments).toEqual([`${stamp}.jsonl`]);
+  });
+});
+
+describe('readArchivedTaskById', () => {
+  it('returns the newest archived copy, undefined when absent, and skips malformed lines', async () => {
+    const dir = await makeArchiveDir();
+    const older = makeTerminalTask('a', new Date(NOW - 3 * DAY));
+    older.prompt = 'old copy';
+    const newer = makeTerminalTask('a', new Date(NOW - DAY));
+    newer.prompt = 'new copy';
+    await archiveTerminalTasks(dir, [older], { now: () => NOW - 2 * DAY });
+    await appendFile(join(dir, '202609.jsonl'), 'not json\n', 'utf-8');
+    await archiveTerminalTasks(dir, [newer, makeTerminalTask('b', new Date(NOW - DAY))], { now: () => NOW });
+    expect((await readArchivedTaskById(dir, 'a'))?.prompt).toBe('new copy');
+    expect((await readArchivedTaskById(dir, 'b'))?.id).toBe('b');
+    expect(await readArchivedTaskById(dir, 'zzz')).toBeUndefined();
   });
 });

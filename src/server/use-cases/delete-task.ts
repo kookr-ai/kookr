@@ -94,6 +94,9 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
       // Best-effort — never fail a delete on tail filesystem state.
     }
   }
+  // Dormant: no production caller sets `transcriptsDir` yet, so this scrub does
+  // not run today (the retention sweep is what removes transcripts). Kept ready
+  // for a follow-up that wires the directory into the delete path.
   if (deps.transcriptsDir) {
     try {
       await deleteTaskTranscripts(deps.transcriptsDir, taskId);

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { parseHookEvent } from '../../core/hook-parser.js';
 import type { AgentEvent } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
-import { readArchivedTasks, MAX_ARCHIVE_PAGE_LIMIT } from './task-archive.js';
+import { readArchivedTaskById } from './task-archive.js';
 
 /**
  * Upper bound on bytes read from any one ledger / transcript file. Set above the
@@ -36,7 +36,7 @@ function ledgerLines(text: string): string[] {
   return lines.filter((l) => l.trim().length > 0);
 }
 
-/** Find the SessionStart `transcript_path` for a Kookr session's hook ledger. */
+/** Find the most recent SessionStart `transcript_path` for a Kookr session's hook ledger. */
 export async function resolveSessionTranscriptPointer(
   hooksDir: string,
   sessionTmuxName: string,
@@ -44,18 +44,19 @@ export async function resolveSessionTranscriptPointer(
   if (!SAFE_NAME.test(sessionTmuxName)) return {};
   const text = await readBounded(join(hooksDir, `${sessionTmuxName}.jsonl`), TRANSCRIPT_READ_MAX_BYTES);
   if (text === undefined) return {};
+  let transcriptPath: string | undefined;
   for (const line of ledgerLines(text)) {
     if (!line.includes('SessionStart')) continue;
     try {
       const parsed = JSON.parse(line) as { hook_event_name?: unknown; transcript_path?: unknown };
       if (parsed.hook_event_name === 'SessionStart' && typeof parsed.transcript_path === 'string' && parsed.transcript_path) {
-        return { transcriptPath: parsed.transcript_path };
+        transcriptPath = parsed.transcript_path; // keep scanning: most recent wins
       }
     } catch {
       // skip malformed line
     }
   }
-  return {};
+  return transcriptPath ? { transcriptPath } : {};
 }
 
 /** Decode the hook ledger for a session into events (bounded, tolerant). */
@@ -92,16 +93,9 @@ export async function findTaskAnywhere(
   if (hot) return hot;
   if (!archiveDir) return undefined;
   try {
-    let cursor: string | undefined;
-    do {
-      const page = await readArchivedTasks(archiveDir, { limit: MAX_ARCHIVE_PAGE_LIMIT, ...(cursor ? { cursor } : {}) });
-      const found = page.records.find((r) => r.task.id === taskId);
-      if (found) return found.task;
-      cursor = page.nextCursor;
-    } while (cursor);
+    return await readArchivedTaskById(archiveDir, taskId);
   } catch {
     return undefined;
   }
-  return undefined;
 }
 
