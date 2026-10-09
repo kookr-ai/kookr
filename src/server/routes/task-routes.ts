@@ -104,6 +104,14 @@ import {
   TASK_ARCHIVE_DIRNAME,
   type ReadArchivedTasksQuery,
 } from '../use-cases/task-archive.js';
+import {
+  findTaskAnywhere,
+  readLedgerMessages,
+  readVendorTranscript,
+  resolveSessionTranscriptPointer,
+} from '../use-cases/transcript-read.js';
+import { normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
 const MAX_TASK_EDGE_LENGTH = 240;
@@ -416,6 +424,54 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       normalizeCwd,
     });
     return c.json(entries);
+  });
+
+  // Read-only task conversation viewer (RFC durable-transcript-capture, Phase 1).
+  // Vendor transcript -> hook ledger -> unavailable. A pruned task is still
+  // reachable via the archive. Never mutates the task store. Registered BEFORE
+  // `/api/tasks/:id` alongside the other static-suffix reads.
+  app.get('/api/tasks/:id/transcript', async (c) => {
+    const taskId = c.req.param('id');
+    const requested = c.req.query('sessionId') || undefined;
+    const archiveDir = deps.kookrDir ? join(deps.kookrDir, TASK_ARCHIVE_DIRNAME) : undefined;
+    const task = await findTaskAnywhere(deps.taskStore, archiveDir, taskId);
+    if (!task) {
+      const body: TranscriptResponse = { taskId, unavailable: { reason: 'not_found' } };
+      return c.json(body, 404);
+    }
+    const sessions = task.sessions ?? [];
+    const session = requested
+      ? sessions.find((s) => s.tmuxSession === requested || s.claudeSessionId === requested)
+      : [...sessions].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+    if (!session) {
+      const body: TranscriptResponse = {
+        taskId,
+        ...(requested ? { sessionId: requested } : {}),
+        unavailable: { reason: requested ? 'not_found' : 'vendor_never_persisted' },
+      };
+      return c.json(body, requested ? 404 : 200);
+    }
+    const sessionId = session.tmuxSession;
+    const hooksDir = deps.kookrDir ? join(deps.kookrDir, 'hooks') : undefined;
+    if (hooksDir) {
+      const pointer = await resolveSessionTranscriptPointer(hooksDir, sessionId);
+      const transcriptPath = pointer.transcriptPath ?? session.transcriptPath;
+      const lines = transcriptPath ? await readVendorTranscript(transcriptPath) : undefined;
+      if (lines) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'vendor', messages: normalizeVendorLines(lines) };
+        return c.json(body);
+      }
+      const messages = normalizeLedgerEvents(await readLedgerMessages(hooksDir, sessionId));
+      if (messages.length > 0) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'ledger', messages };
+        return c.json(body);
+      }
+    }
+    const reason = session.agentType !== 'claude-code'
+      ? 'unsupported_provider'
+      : !deps.taskStore.getTask(taskId) ? 'aged_out' : 'vendor_never_persisted';
+    const body: TranscriptResponse = { taskId, sessionId, unavailable: { reason } };
+    return c.json(body);
   });
 
   app.get('/api/tasks/:id', (c) => {

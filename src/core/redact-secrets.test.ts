@@ -104,4 +104,30 @@ describe('redactSecrets', () => {
     expect(redactSecrets(`Cookie: ${cookie}`)).toBe('[REDACTED]');
     expect(redactSecrets(`Set-Cookie: ${cookie}`)).toBe('[REDACTED]');
   });
+
+  it('redacts a legitimate PEM block but keeps surrounding text', () => {
+    const pem = ['-----BEGIN RSA PRIVATE KEY-----', 'MIIEowIBAAKCAQEA', '-----END RSA PRIVATE KEY-----'].join('\n');
+    expect(redactSecrets(`before\n${pem}\nafter`)).toBe('before\n[REDACTED]\nafter');
+  });
+
+  it('redacts multiple PEM blocks independently', () => {
+    const b = (n: string) => `-----BEGIN ${n}-----\nxx\n-----END ${n}-----`;
+    expect(redactSecrets(`${b('CERTIFICATE')} mid ${b('PRIVATE KEY')}`)).toBe('[REDACTED] mid [REDACTED]');
+  });
+
+  it('does not hang on an unterminated PEM header followed by a huge body', () => {
+    const input = '-----BEGIN RSA PRIVATE KEY-----\n' + 'A'.repeat(1_400_000);
+    const t0 = performance.now();
+    const out = redactSecrets(input);
+    const elapsed = performance.now() - t0;
+    expect(elapsed).toBeLessThan(500);
+    expect(out).toBe(input);
+  });
+
+  it('does not hang on many BEGIN headers with no END', () => {
+    const input = '-----BEGIN RSA PRIVATE KEY-----\nAAAA\n'.repeat(40_000);
+    const t0 = performance.now();
+    redactSecrets(input);
+    expect(performance.now() - t0).toBeLessThan(500);
+  });
 });

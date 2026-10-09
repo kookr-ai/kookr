@@ -4181,3 +4181,78 @@ describe('GET /api/tasks/archive (issue #2765)', () => {
     expect(body.schemaVersion).toBe('task-archive.v1');
   });
 });
+
+describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () => {
+  let kookrDir: string;
+  beforeEach(() => {
+    kookrDir = mkdtempSync(join(tmpdir(), 'kookr-transcript-route-'));
+    mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+  });
+  afterEach(() => {
+    rmSync(kookrDir, { recursive: true, force: true });
+  });
+
+  function mkTaskWithSession(taskStore: TaskStore, tmux: string) {
+    const task = taskStore.createTask('convo', '/repo');
+    taskStore.addSession(task.id, { tmuxSession: tmux, agentType: 'claude-code', cwd: '/repo', createdAt: new Date() } as never);
+    return task;
+  }
+  const hookLine = (o: Record<string, unknown>) => JSON.stringify({ session_id: 'cs1', ...o });
+
+  test('serves the vendor transcript when the file exists', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-a');
+    const tpath = join(kookrDir, 'vendor.jsonl');
+    writeFileSync(tpath, JSON.stringify({ type: 'user', message: { content: 'hi there' } }) + '\n');
+    writeFileSync(join(kookrDir, 'hooks', 'sess-a.jsonl'), hookLine({ hook_event_name: 'SessionStart', transcript_path: tpath }) + '\n');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body).toEqual({ taskId: task.id, sessionId: 'sess-a', source: 'vendor', messages: [{ kind: 'text', role: 'user', text: 'hi there' }] });
+  });
+
+  test('falls back to the ledger answer when the vendor file is gone', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-b');
+    writeFileSync(join(kookrDir, 'hooks', 'sess-b.jsonl'), [
+      hookLine({ hook_event_name: 'SessionStart', transcript_path: join(kookrDir, 'missing.jsonl') }),
+      hookLine({ hook_event_name: 'UserPromptSubmit', prompt: 'question' }),
+      hookLine({ hook_event_name: 'Stop', last_assistant_message: 'the answer' }),
+    ].join('\n') + '\n');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body.source).toBe('ledger');
+    expect(body.messages).toEqual([
+      { kind: 'text', role: 'user', text: 'question' },
+      { kind: 'text', role: 'assistant', text: 'the answer' },
+    ]);
+  });
+
+  test('reports unavailable when neither source exists, and 404 for unknown task', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-c');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body.unavailable).toEqual({ reason: 'vendor_never_persisted' });
+    const res = await app.request('/api/tasks/nope/transcript');
+    expect(res.status).toBe(404);
+    expect((await res.json()).unavailable.reason).toBe('not_found');
+  });
+
+  test('reaches a pruned task through the archive without mutating the store', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-d');
+    writeFileSync(join(kookrDir, 'hooks', 'sess-d.jsonl'), hookLine({ hook_event_name: 'Stop', last_assistant_message: 'archived answer' }) + '\n');
+    taskStore.completeTask(task.id);
+    const mut = taskStore.getTaskForMutation(task.id)!;
+    const when = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    mut.updatedAt = when;
+    mut.finishedAt = when;
+    await archiveTerminalTasks(join(kookrDir, 'task-archive'), [mut]);
+    const emptyStore = new TaskStore();
+    const app = mkApp({ ...mkLoopDeps(emptyStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body.source).toBe('ledger');
+    expect(body.messages).toEqual([{ kind: 'text', role: 'assistant', text: 'archived answer' }]);
+    expect(emptyStore.getTask(task.id)).toBeUndefined();
+  });
+});

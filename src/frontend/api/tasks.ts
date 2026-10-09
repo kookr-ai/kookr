@@ -1,6 +1,7 @@
 import { apiFetch, fetchJson, fetchResult, getJson, type ApiResult } from './client.js';
 import type { AgentType } from '../../shared/contracts/agent-types.js';
 import { parseTaskArchivePage, type TaskArchivePage } from '../completed-history.js';
+import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 import {
   parseRecentPromptsResponse,
   RECENT_PROMPTS_DEFAULT_LIMIT,
@@ -104,6 +105,21 @@ export async function getTaskVerificationCommands(taskId: string, signal: AbortS
   const raw = task.completionDigest?.verificationCommands;
   if (!Array.isArray(raw)) return [];
   return raw.filter((c): c is string => typeof c === 'string' && c.trim().length > 0);
+}
+
+/**
+ * Fetch the read-only stored transcript for a task. The route answers 200 with
+ * a transcript or `{unavailable}`, and 404 with `{unavailable:{reason:'not_found'}}`;
+ * both parse as a {@link TranscriptResponse}. Any other failure or malformed
+ * body rejects so the caller can render an error state.
+ */
+export async function getTaskTranscript(taskId: string, signal: AbortSignal, sessionId?: string): Promise<TranscriptResponse> {
+  const qs = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
+  const res = await apiFetch(`/api/tasks/${encodeURIComponent(taskId)}/transcript${qs}`, { signal });
+  const body = (await res.json().catch(() => null)) as Partial<TranscriptResponse> | null;
+  const isShape = !!body && typeof body === 'object' && ('messages' in body || 'unavailable' in body);
+  if (!isShape || (!res.ok && res.status !== 404)) throw new Error(`Transcript request failed (${res.status})`);
+  return body as TranscriptResponse;
 }
 
 // --- Cross-agent task migration (RFC: rfc-cross-agent-task-migration) -----
