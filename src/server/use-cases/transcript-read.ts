@@ -5,8 +5,13 @@ import type { AgentEvent } from '../../core/types.js';
 import type { Task, TaskStore } from '../../core/tasks.js';
 import { readArchivedTasks, MAX_ARCHIVE_PAGE_LIMIT } from './task-archive.js';
 
-/** Upper bound on bytes read from any one ledger / transcript file. */
-export const TRANSCRIPT_READ_MAX_BYTES = 8_000_000;
+/**
+ * Upper bound on bytes read from any one ledger / transcript file. Set above the
+ * largest observed vendor transcript (~9.5 MB) with headroom, because the final
+ * assistant answer sits at the END of the file — a cap below the file size would
+ * silently drop exactly the content the viewer exists to surface.
+ */
+export const TRANSCRIPT_READ_MAX_BYTES = 32_000_000;
 
 const SAFE_NAME = /^[A-Za-z0-9._-]+$/;
 

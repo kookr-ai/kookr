@@ -36,6 +36,7 @@ import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, 
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
+import { captureTaskTranscript } from '../use-cases/transcript-store.js';
 import { archiveTerminalTasks } from '../use-cases/task-archive.js';
 
 function mkApp(deps: Partial<TaskRouteDeps>): Hono {
@@ -4236,6 +4237,33 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
     const res = await app.request('/api/tasks/nope/transcript');
     expect(res.status).toBe(404);
     expect((await res.json()).unavailable.reason).toBe('not_found');
+  });
+
+  test('prefers a stored snapshot over vendor/ledger and exposes meta via ?meta=1', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-e');
+    const tpath = join(kookrDir, 'vendor-e.jsonl');
+    writeFileSync(tpath, JSON.stringify({ type: 'user', message: { content: 'stored hello' } }) + '\n');
+    const out = await captureTaskTranscript({ transcriptsDir: join(kookrDir, 'transcripts'), taskId: task.id, sessionId: 'sess-e', vendorTranscriptPath: tpath });
+    expect(out.outcome).toBe('captured');
+    // Vendor file is now gone and the ledger would say something else.
+    rmSync(tpath);
+    writeFileSync(join(kookrDir, 'hooks', 'sess-e.jsonl'), hookLine({ hook_event_name: 'Stop', last_assistant_message: 'ledger answer' }) + '\n');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+    expect(body).toEqual({ taskId: task.id, sessionId: 'sess-e', source: 'stored', messages: [{ kind: 'text', role: 'user', text: 'stored hello' }] });
+    const metaBody = await (await app.request(`/api/tasks/${task.id}/transcript?meta=1`)).json();
+    expect(metaBody.taskId).toBe(task.id);
+    expect(metaBody.sessionId).toBe('sess-e');
+    expect(metaBody.meta).toMatchObject({ schemaVersion: 1, complete: true, messageCount: 1, source: 'vendor' });
+  });
+
+  test('?meta=1 returns meta null when no snapshot exists', async () => {
+    const taskStore = new TaskStore();
+    const task = mkTaskWithSession(taskStore, 'sess-f');
+    const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+    const body = await (await app.request(`/api/tasks/${task.id}/transcript?meta=1`)).json();
+    expect(body).toEqual({ taskId: task.id, sessionId: 'sess-f', meta: null });
   });
 
   test('reaches a pruned task through the archive without mutating the store', async () => {

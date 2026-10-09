@@ -348,4 +348,63 @@ describe('pruneAgedTaskRecords', () => {
       pruneAgedTaskRecords({ taskStore: store, monitor: monitorSpy() }, { maxAgeDays: 0 }),
     ).rejects.toThrow(/maxAgeDays/);
   });
+
+  describe('captureGate', () => {
+    const DAY = 24 * 60 * 60 * 1000;
+
+    it('holds an aged task within the grace window that has no complete snapshot', async () => {
+      const store = new TaskStore();
+      const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+      const has = vi.fn().mockResolvedValue(false);
+
+      const result = await pruneAgedTaskRecords({
+        taskStore: store,
+        monitor: monitorSpy(),
+        now: () => NOW.getTime(),
+        captureGate: { transcriptsDir: '/t', captureGraceMs: 30 * DAY, hasCompleteSnapshot: has },
+      });
+
+      expect(has).toHaveBeenCalledWith('/t', aged.id, 'aged-session');
+      expect(result.prunedTaskIds).toEqual([]);
+      expect(result.captureHeldTaskIds).toEqual([aged.id]);
+      expect(store.getTask(aged.id)).toBeDefined();
+    });
+
+    it('prunes the task once a complete snapshot exists', async () => {
+      const store = new TaskStore();
+      const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+
+      const result = await pruneAgedTaskRecords({
+        taskStore: store,
+        monitor: monitorSpy(),
+        now: () => NOW.getTime(),
+        captureGate: { transcriptsDir: '/t', captureGraceMs: 30 * DAY, hasCompleteSnapshot: () => true },
+      });
+
+      expect(result.prunedTaskIds).toEqual([aged.id]);
+      expect(result.captureHeldTaskIds).toEqual([]);
+    });
+
+    it('prunes an abandoned task past the grace window even without a snapshot', async () => {
+      const store = new TaskStore();
+      const aged = seedTask(store, { session: 'aged-session', finishedAt: AGED });
+
+      const result = await pruneAgedTaskRecords({
+        taskStore: store,
+        monitor: monitorSpy(),
+        now: () => NOW.getTime(),
+        captureGate: { transcriptsDir: '/t', captureGraceMs: 2 * DAY, hasCompleteSnapshot: () => false },
+      });
+
+      expect(result.prunedTaskIds).toEqual([aged.id]);
+      expect(store.getTask(aged.id)).toBeUndefined();
+    });
+
+    it('omits captureHeldTaskIds when no gate is configured', async () => {
+      const store = new TaskStore();
+      seedTask(store, { session: 'aged-session', finishedAt: AGED });
+      const result = await pruneAgedTaskRecords({ taskStore: store, monitor: monitorSpy(), now: () => NOW.getTime() });
+      expect(result).not.toHaveProperty('captureHeldTaskIds');
+    });
+  });
 });

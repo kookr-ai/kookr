@@ -111,6 +111,7 @@ import {
   resolveSessionTranscriptPointer,
 } from '../use-cases/transcript-read.js';
 import { normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
+import { readSnapshotMeta, readStoredTranscript } from '../use-cases/transcript-store.js';
 import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 
 const MAX_TASK_EDGE_COUNT = 64;
@@ -452,6 +453,20 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       return c.json(body, requested ? 404 : 200);
     }
     const sessionId = session.tmuxSession;
+    const transcriptsDir = deps.kookrDir ? join(deps.kookrDir, 'transcripts') : undefined;
+    if (transcriptsDir && c.req.query('meta')) {
+      // Read-only operator inspection of the durable snapshot sidecar.
+      const meta = (await readSnapshotMeta(transcriptsDir, taskId, sessionId)) ?? null;
+      return c.json({ taskId, sessionId, meta });
+    }
+    if (transcriptsDir) {
+      // Prefer the durable (redacted, tool-results-omitted) snapshot; it survives vendor-file loss.
+      const stored = await readStoredTranscript(transcriptsDir, taskId, sessionId);
+      if (stored) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'stored', messages: stored };
+        return c.json(body);
+      }
+    }
     const hooksDir = deps.kookrDir ? join(deps.kookrDir, 'hooks') : undefined;
     if (hooksDir) {
       const pointer = await resolveSessionTranscriptPointer(hooksDir, sessionId);

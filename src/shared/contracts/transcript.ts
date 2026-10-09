@@ -16,7 +16,7 @@ export type TranscriptUnavailableReason =
   | 'unsupported_provider'
   | 'not_found';
 
-export type TranscriptSource = 'vendor' | 'ledger';
+export type TranscriptSource = 'vendor' | 'ledger' | 'stored';
 
 export interface TranscriptAvailableResponse {
   taskId: string;

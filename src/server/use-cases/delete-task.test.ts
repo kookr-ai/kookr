@@ -1,3 +1,6 @@
+import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { GitHubStateStore } from '../../core/github-state-store.js';
 import { TaskStore } from '../../core/tasks.js';
@@ -228,5 +231,36 @@ describe('deleteTask use case', () => {
     expect(taskStore.deleteTask).toHaveBeenCalledWith('task-1');
     // Ingestion bookkeeping is still cleared even when the ledger prune fails.
     expect(hookIngestion.forgetSession).toHaveBeenCalledWith('live-1');
+  });
+
+  it('removes the task transcripts when transcriptsDir is set, and leaves them otherwise', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'delete-task-transcripts-'));
+    try {
+      const mk = async (id: string) => {
+        await mkdir(join(dir, id), { recursive: true });
+        await writeFile(join(dir, id, 's1.meta.json'), '{}');
+      };
+      const exists = (id: string) => access(join(dir, id)).then(() => true, () => false);
+      const deps = (transcriptsDir?: string) => ({
+        taskStore: {
+          getTask: vi.fn().mockReturnValue({ id: 'task-1', sessions: [] }),
+          deleteTask: vi.fn(),
+        } as any,
+        adapter: { stop: vi.fn() } as any,
+        monitor: { unregisterAgent: vi.fn() } as any,
+        transcriptsDir,
+      });
+
+      await mk('task-1');
+      await mk('task-2');
+      expect(await deleteTask(deps(), 'task-1')).toBe(true);
+      expect(await exists('task-1')).toBe(true); // unchanged without transcriptsDir
+
+      expect(await deleteTask(deps(dir), 'task-1')).toBe(true);
+      expect(await exists('task-1')).toBe(false);
+      expect(await exists('task-2')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
@@ -161,6 +161,10 @@ import {
   compactTaskArchive,
   TASK_ARCHIVE_DIRNAME,
 } from './use-cases/task-archive.js';
+import { readTranscriptCaptureConfig } from './use-cases/transcript-capture-config.js';
+import { runTranscriptCaptureSweep, runTranscriptRetentionSweep } from './use-cases/capture-transcript-sweep.js';
+import { runTranscriptBackfill } from './use-cases/transcript-backfill.js';
+import { hasCompleteSnapshot } from './use-cases/transcript-store.js';
 import { createProdSmokeTickFromEnv } from './prod-smoke-tick.js';
 import { createDeployLagDetectorFromEnv } from './deploy-lag-detector.js';
 import { createDeployConvergenceControllerFromEnv } from './deploy-convergence-controller.js';
@@ -3174,6 +3178,47 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // enabled=false when the interval is off.
   const maintenancePruneIntervalHours = resolveMaintenancePruneIntervalHours(process.env);
   maintenancePruneHealth = new MaintenancePruneHealth(maintenancePruneIntervalHours);
+
+  // Durable task-conversation transcript capture (RFC rfc-durable-transcript-capture,
+  // Phase 2). Opt-in: default scope 'off', so this whole block is inert unless
+  // the operator sets KOOKR_TRANSCRIPT_CAPTURE=own-repos|all. The read-only
+  // viewer (Phase 1) works regardless of this.
+  const transcriptCaptureConfig = readTranscriptCaptureConfig(process.env);
+  const transcriptsDir = join(kookrDir, 'transcripts');
+  const transcriptHooksDir = join(kookrDir, 'hooks');
+  // Conservative 'own-repos' predicate: capture a task only when its newest
+  // session cwd is under the operator's own checkout tree (the parent dir of the
+  // server checkout). External contribution worktrees outside that tree are
+  // excluded. Over-exclusion is the safe direction for a privacy control; an
+  // operator who wants everything captured sets scope 'all'. Documented in the RFC.
+  const ownRepoRoot = dirname(serverCwd);
+  const transcriptScopeAllows = transcriptCaptureConfig.scope === 'own-repos'
+    ? (task: import('../core/tasks.js').Task): boolean => {
+        const cwd = task.sessions[task.sessions.length - 1]?.cwd;
+        return !!cwd && (cwd === serverCwd || cwd.startsWith(`${ownRepoRoot}/`));
+      }
+    : undefined;
+  if (transcriptCaptureConfig.enabled) {
+    console.log(
+      `[transcript-capture] enabled (scope=${transcriptCaptureConfig.scope}, ` +
+        `grace=${transcriptCaptureConfig.graceMs}ms, maxPerTick=${transcriptCaptureConfig.maxTasksPerTick}, ` +
+        `retentionDays=${transcriptCaptureConfig.retentionDays}); storing redacted, tool-results-omitted ` +
+        `snapshots under ${transcriptsDir}`,
+    );
+    // One-shot backfill of still-present vendor transcripts for sessions we can
+    // attribute to a task (hot store or archive). Fire-and-forget; bounded.
+    void runTranscriptBackfill({
+      hooksDir: transcriptHooksDir,
+      transcriptsDir,
+      maxTasks: 500,
+      taskIdForSession: (tmux) => taskStore.findTaskBySession(tmux)?.id,
+    })
+      .then((s) => console.log(
+        `[transcript-capture] backfill: scanned ${s.scanned}, captured ${s.captured}, skipped ${s.skipped}, errors ${s.errors}`,
+      ))
+      .catch((err) => console.warn('[transcript-capture] backfill failed:', err));
+  }
+
   const maintenancePruneConfig = {
     dataDir: kookrDir,
     intervalHours: maintenancePruneIntervalHours,
@@ -3190,10 +3235,53 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
       auditLogPath: join(kookrDir, 'audit.jsonl'),
       githubStateStore,
+      // Durable transcript capture gate: when capture is enabled, do not prune a
+      // terminal task whose conversation has not yet been captured and is still
+      // within the grace window (the next sweep retries). Inert when disabled.
+      ...(transcriptCaptureConfig.enabled
+        ? {
+            captureGate: {
+              transcriptsDir,
+              captureGraceMs: transcriptCaptureConfig.graceMs,
+              hasCompleteSnapshot,
+            },
+          }
+        : {}),
     }),
     compactTaskArchive: async () => {
       await compactTaskArchive(join(kookrDir, TASK_ARCHIVE_DIRNAME));
     },
+    ...(transcriptCaptureConfig.enabled
+      ? {
+          captureTranscripts: async () => {
+            const summary = await runTranscriptCaptureSweep({
+              tasks: taskStore.listTasks(),
+              hooksDir: transcriptHooksDir,
+              transcriptsDir,
+              config: {
+                scope: transcriptCaptureConfig.scope,
+                maxTasksPerTick: transcriptCaptureConfig.maxTasksPerTick,
+                graceMs: transcriptCaptureConfig.graceMs,
+              },
+              ...(transcriptScopeAllows ? { scopeAllows: transcriptScopeAllows } : {}),
+            });
+            if (summary.captured > 0 || summary.errors > 0) {
+              console.log(
+                `[transcript-capture] sweep: captured ${summary.captured}, ` +
+                  `candidates ${summary.candidates}, alreadyCaptured ${summary.alreadyCaptured}, ` +
+                  `vendorAbsent ${summary.vendorAbsent}, errors ${summary.errors}`,
+              );
+            }
+            const removed = await runTranscriptRetentionSweep(
+              transcriptsDir,
+              transcriptCaptureConfig.retentionDays,
+            );
+            if (removed > 0) {
+              console.log(`[transcript-capture] retention removed ${removed} expired transcript dir(s)`);
+            }
+          },
+        }
+      : {}),
     onTaskRecordsPruned: () => {
       broadcastToAll(createSnapshotMessage({
         monitor,

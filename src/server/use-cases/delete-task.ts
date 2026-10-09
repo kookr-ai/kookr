@@ -8,6 +8,7 @@ import type { ShadowDetectorRegistry } from '../../core/shadow-detector.js';
 import type { SnoozeSuppressionTracker } from '../../core/snooze-suppression.js';
 import type { ActivityLedger } from '../../core/activity-ledger.js';
 import type { HookIngestion } from '../hook-ingestion.js';
+import { deleteTaskTranscripts } from './transcript-store.js';
 import { cleanupSessionResources } from '../agent-lifecycle.js';
 
 export interface DeleteTaskDeps {
@@ -36,6 +37,8 @@ export interface DeleteTaskDeps {
     import('../../core/github-state-store.js').GitHubStateStore,
     'removeTask'
   >;
+  /** Durable transcripts root; when set, an explicit delete removes the task's transcripts (prune never does). */
+  transcriptsDir?: string;
 }
 
 export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<boolean> {
@@ -89,6 +92,13 @@ export async function deleteTask(deps: DeleteTaskDeps, taskId: string): Promise<
       await deps.taskTailStore.removeByTaskId(taskId);
     } catch {
       // Best-effort — never fail a delete on tail filesystem state.
+    }
+  }
+  if (deps.transcriptsDir) {
+    try {
+      await deleteTaskTranscripts(deps.transcriptsDir, taskId);
+    } catch {
+      // Best-effort — never fail a delete on transcript filesystem state.
     }
   }
   return true;
