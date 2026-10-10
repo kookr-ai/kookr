@@ -123,6 +123,17 @@ Choose the reviewer lane. **Codex is the primary lane; Claude is the fallback.**
 On a hard-gate repo, zero-review merges must stay unreachable when Codex is
 rate-limited.
 
+**Why this lane order (do not mistake it for a cross-vendor guarantee).** The
+value this review adds is **fresh context + exact-head binding + the hard gate**
+— an independent pass that the implementer's narrative cannot steer, bound to
+the sha that actually merges. It is **not** a claim that a *different vendor*
+catches more bugs: re-slicing 591 verdicts by implementer vendor found no
+cross-vendor effect (same-vs-cross 5.6% vs 3.1%, p=0.20), and the clearest
+real catch was fully same-vendor. Codex is primary only for **availability**
+(so the Claude fallback keeps zero-review merges unreachable), not because
+same-vendor review is weaker. A same-vendor fallback is therefore acceptable —
+**provided it runs at the strength floor in §2**, which is the real protection.
+
 - **Codex lane (primary):** spawn a Codex reviewer (`spawn_agent`, or a
   `codex-cli` child task). If Codex is **unavailable or rate-limited** — the
   spawn errors, the agent reports a usage/quota limit, or it returns no verdict
@@ -141,6 +152,17 @@ implementer — it sees the diff, the issue, and the repo, but **not** the
 implementer's reasoning, plan, or self-report. That independence is the whole
 point: a reviewer told "the author says this is fine" is not an independent
 check.
+
+**Strength floor (do not spawn a weak reviewer).** This is the gated,
+defect-catching pass — spawn it at **full reviewing strength**: the lane's
+strong default reasoning model at high effort (the Codex reviewer at its
+standard high-reasoning setting; the Claude fallback on the session's strong
+default model — e.g. an Opus-class model — **never** a cheap/nit-tier model
+such as the one the `pre-pr-review` `lint-like` lane now runs on). The reviewer
+is never downgraded to save tokens: a cheap pass here would silently weaken the
+one hard merge gate, and under a Codex outage the same-vendor Claude fallback is
+only safe *because* it holds this floor. If you cannot spawn at the floor, treat
+it as a reviewer failure (fall back / timeout path), not as a cheaper review.
 
 Reuse the reviewer-specialist prompts (`plugin/reviewer-specialists/`), at
 minimum `correctness-specialist.md`, prefixed with the fan-out marker header
