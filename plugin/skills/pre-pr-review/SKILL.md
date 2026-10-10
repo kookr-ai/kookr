@@ -278,6 +278,23 @@ return a **separate, labelled verdict per concern** (`conventions:`, `deadcode:`
 `docs-drift:`) rather than one merged opinion. `correctness` and `test` stay
 standalone specialists spawned from their own files.
 
+**Per-lane model — cheap for nits, strong for defects (cost + speed).** Spawn the
+consolidated `lint-like` reviewer on a **cheap, fast model** — `model: "sonnet"`
+on the Claude lane, the equivalent lightweight model argument on the Codex
+`spawn_agent` lane. `lint-like` folds only nit-tier concerns (conventions, dead
+code, docs-drift), and a hand-checked A/B over 6 real diffs (`sonnet` vs the
+`opus` default — see
+[`rfc-review-gate-consolidation-ab-lintlike.md`](../../../docs/rfc/rfc-review-gate-consolidation-ab-lintlike.md))
+found **no loss of substantive findings**: the only divergences were nit-level
+and symmetric. Keep **`correctness` and `test` on the default/strong model** —
+`correctness` is the deep audit, and `test` is **not** a pure nit (a missed
+coverage gap can hide a real defect), so `test` is downgraded only if its own
+A/B shows no finding loss; until then it stays strong. This is a spawn-site pin:
+no contract field, no schema change. Without it, every lane inherits the
+session's (opus-class) model — pricing a nit-level lint like a deep audit, which
+the [evidence pack](../../../docs/rfc/rfc-review-gate-consolidation-evidence.md)
+measured as the panel's dominant token waste.
+
 #### Structured fan-out — mark launches as machine events (issue #1149)
 
 The reviewer fan-out is a **structured workflow**, not a series of ad-hoc user
@@ -347,12 +364,29 @@ Use when the change touches module boundaries, imports, or public APIs:
 
 **How to run:**
 1. Prepare context: `git diff main..HEAD` and `git diff main..HEAD --stat`, then run `select-specialists.sh` (see *Diff-adaptive panel selection* above) to decide the panel and capture the gating rationale.
+
+   **Use a review context pack when one exists (cold-start saver).** If a review
+   pack has already been built for this unit (e.g. `parallel-issue-batch` writes
+   `/tmp/<unit-slug>.review.md` via `kookr context-pack`), inline it into **every**
+   Layer-1 specialist prompt so each one warm-starts instead of re-reading the
+   same files and re-grepping the same tree cold. When no pack exists (interactive
+   work, OSS PRs, plugin-consumer repos), proceed cold — the pack is an
+   optimization, never a precondition, so review is never skipped for lack of one.
+   Two hard rules: (a) the pack is a **floor, not a ceiling** — a specialist stays
+   free (and is expected) to re-read source to verify any load-bearing claim, and
+   treats pack contents as hints to check against the diff, not as settled fact;
+   (b) the pack is for the **pre-push panel only** — the `independent-merge-review`
+   reviewer **never** receives it, because it carries implementer-chosen content
+   and that reviewer must stay blind to the implementer.
 2. Launch the selected agents **in parallel** as subagents, passing the diff and repo path. Compose the consolidated `lint-like` reviewer as described above; spawn `correctness` (and `test` when selected) standalone.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
 
    **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body, prefixed with the machine-event marker header (see *Structured fan-out* above):
    ```
+   # correctness + test: strong model (deep audit) — no model override, inherits the session default
    Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   # lint-like (consolidated nits): cheap, fast model — see "Per-lane model" above
+   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
@@ -363,6 +397,9 @@ Use when the change touches module boundaries, imports, or public APIs:
      instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
    })
    ```
+   For the `lint-like` lane, pass the equivalent **lightweight/cheap model**
+   argument that `spawn_agent` exposes; keep `review_correctness` and
+   `review_test` at the default strong model (see "Per-lane model" above).
    Then `wait_agent` on all spawned ids. Do NOT fall back to forging a `.review-state/<branch>.json` marker via shell — that bypasses the review the gate exists to enforce. Layer-2 architecture agents on Codex follow the same `spawn_agent` pattern, naming the role in `task_name`.
 3. Collect findings — fix any **blocking** issues before proceeding.
 4. Note informational findings in the PR description if relevant.

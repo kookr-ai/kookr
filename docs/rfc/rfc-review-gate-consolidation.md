@@ -4,6 +4,11 @@
 **Date:** 2026-10-10
 **Author:** Jean Ibarz (with Claude)
 **Evidence pack:** [`rfc-review-gate-consolidation-evidence.md`](./rfc-review-gate-consolidation-evidence.md)
+**Part 1 shipped:** 2026-10-10 — the three do-now fixes (1.1 cheap `lint-like`
+model, 1.2 context-pack reuse, 1.3 re-based merge rationale + strength floor)
+are implemented in the skills; the `lint-like` A/B is in
+[`rfc-review-gate-consolidation-ab-lintlike.md`](./rfc-review-gate-consolidation-ab-lintlike.md).
+Part 2 (the correctness de-dup experiment) remains unstarted by design.
 
 ---
 
@@ -276,7 +281,10 @@ question.
 ## Open questions
 
 - **O1:** Does a cheap model lose `lint-like`/`test` findings? (1.1 A/B — gates
-  the `test` downgrade.)
+  the `test` downgrade.) — **`lint-like` half resolved (2026-10-10): no loss;
+  `lint-like` pinned to `sonnet`, `test` kept strong.** See
+  [`rfc-review-gate-consolidation-ab-lintlike.md`](./rfc-review-gate-consolidation-ab-lintlike.md).
+  The `test`-lane A/B remains open.
 - **O2:** Is pre-push correctness actually redundant with the merge review?
   (2.1 same-head overlap — gates all of Part 2.)
 - **O3:** Why do 14% of advisory-repo merges carry no review artifact at all?
