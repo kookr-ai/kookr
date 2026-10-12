@@ -1781,6 +1781,24 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           auditLogPath: deps.auditLogPath,
           broadcastToAll: deps.broadcastToAll,
           isProviderPaused: isTaskProviderPaused,
+          // Live-human veto (parity with the FAA reapers): never tear down a
+          // completion-ready session whose turn resumed, whose pane shows a
+          // human composer / permission dialog, that a viewer has attached, or
+          // that holds a confirmed-open PR.
+          isHoldingOpenPr: deps.isTaskHoldingOpenPr,
+          isTaskSelectedByAnyConnection: deps.isTaskSelectedByAnyConnection,
+          ...(deps.taskTailStore
+            ? {
+                getTaskPaneText: async (taskId: string) => {
+                  try {
+                    const record = await deps.taskTailStore!.getByTaskId(taskId);
+                    return record?.text;
+                  } catch {
+                    return undefined;
+                  }
+                },
+              }
+            : {}),
         },
         {
           thresholdMs: deps.getAutoCloseCompletionReadyDelayMs?.(),

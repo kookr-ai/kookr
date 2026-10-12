@@ -530,6 +530,59 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
       .toBe('running');
   });
 
+  test('clears a stale completion_ready signal when the turn resumes (root-cause clear)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+
+    // Agent finished its turn and signalled completion_ready (awaiting ack).
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+
+    // A follow-up prompt resumes the turn → the stale signal must be dropped so
+    // no TTL/ack reaper can tear the now-live session down.
+    adapter.injectHookEvent(tmuxName, makeUserPromptHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('running');
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
+  test('retains a pending completion_ready during replay hydration (no wipe on restart)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+
+    // Startup replay re-feeds historical user_prompts; it must NOT clear a
+    // signal that was legitimately pending at restart.
+    adapter.injectHookEvent(tmuxName, makeUserPromptHook(), undefined, { origin: 'replay' });
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('preserves a pending completion_ready when the turn is NOT live (e.g. a Stop)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+
+    // A Stop derives to `completed_turn` (not in the live-turn whitelist), so
+    // the signal — the whole point of which is "finished" — must survive.
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(taskStore.findTaskBySession(tmuxName)!.sessions.find(s => s.tmuxSession === tmuxName)!.lastTurnState)
+      .toBe('completed_turn');
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
   test('events that do not change anomaly state do not trigger clearing', async () => {
     setup();
     const tmuxName = await launchAgent();

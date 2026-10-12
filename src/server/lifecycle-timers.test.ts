@@ -415,6 +415,133 @@ describe('autoCloseStaleCompletionReadyTasks', () => {
     expect(taskStore.getTask(task.id)?.status).toBe('completed');
   });
 
+  describe('live-human veto (completion-ready-ttl parity with FAA reapers)', () => {
+    // Build an ask-first task whose completion_ready signal is well past the
+    // TTL — i.e. the exact population the drain valve escalates and closes.
+    function staleAskFirstTask(taskStore: TaskStore, raisedAt = '2026-06-20T12:00:00.000Z') {
+      const task = taskStore.createTask({ prompt: 'Live', cwd: '/tmp', deliveryAuthorization: 'ask-first' });
+      taskStore.addSession(task.id, {
+        tmuxSession: `kookr-${task.id}`,
+        agentType: 'claude-code',
+        cwd: '/tmp',
+        createdAt: new Date('2026-06-19T00:00:00.000Z'),
+      });
+      taskStore.setPendingSignal(task.id, { kind: 'completion_ready', raisedAt });
+      return task;
+    }
+    const RUN_OPTS = { now: new Date('2026-06-21T00:00:00.000Z'), ttlMs: 2 * 60 * 60 * 1000 };
+
+    test('still escalates a stale task with no live-human signals', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      const result = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        RUN_OPTS,
+      );
+      expect(result.closedTaskIds).toEqual([task.id]);
+      expect(taskStore.getTask(task.id)?.status).toBe('completed');
+    });
+
+    test('defers when the turn resumed (live turn) since selection', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      taskStore.updateSession(task.id, `kookr-${task.id}`, { lastTurnState: 'running' });
+      const result = await autoCloseStaleCompletionReadyTasks(
+        { taskStore, lifecycleDeps: lifecycleDeps(taskStore) },
+        RUN_OPTS,
+      );
+      expect(result.closedTaskIds).toEqual([]);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+      expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    });
+
+    test('defers when the live pane shows a human-interactive prompt (the mid-keystroke case)', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      const result = await autoCloseStaleCompletionReadyTasks(
+        {
+          taskStore,
+          lifecycleDeps: lifecycleDeps(taskStore),
+          getTaskPaneText: async () => 'agent output\n❯\n',
+        },
+        RUN_OPTS,
+      );
+      expect(result.closedTaskIds).toEqual([]);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    });
+
+    test('defers when a viewer currently has the task attached', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      const result = await autoCloseStaleCompletionReadyTasks(
+        {
+          taskStore,
+          lifecycleDeps: lifecycleDeps(taskStore),
+          isTaskSelectedByAnyConnection: (id) => id === task.id,
+        },
+        RUN_OPTS,
+      );
+      expect(result.closedTaskIds).toEqual([]);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    });
+
+    test('defers when the task holds a confirmed-open delivery PR', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      const result = await autoCloseStaleCompletionReadyTasks(
+        {
+          taskStore,
+          lifecycleDeps: lifecycleDeps(taskStore),
+          isHoldingOpenPr: () => true,
+        },
+        RUN_OPTS,
+      );
+      expect(result.closedTaskIds).toEqual([]);
+      expect(taskStore.getTask(task.id)?.status).toBe('inProgress');
+    });
+
+    test('a vetoed older task never starves a drainable newer one (cap counts closes, not attempts)', async () => {
+      // Regression for the review's head-of-line-starvation finding: the two
+      // OLDEST signals are attended (viewer present) → vetoed every tick. With
+      // the old limit-in-selection they would have filled the max-2 batch and
+      // the newer, genuinely drainable task behind them would never close.
+      const taskStore = new TaskStore();
+      const old1 = staleAskFirstTask(taskStore, '2026-06-20T00:00:00.000Z');
+      const old2 = staleAskFirstTask(taskStore, '2026-06-20T00:00:01.000Z');
+      const drainable = staleAskFirstTask(taskStore, '2026-06-20T06:00:00.000Z');
+      const attended = new Set([old1.id, old2.id]);
+      const result = await autoCloseStaleCompletionReadyTasks(
+        {
+          taskStore,
+          lifecycleDeps: lifecycleDeps(taskStore),
+          isTaskSelectedByAnyConnection: (id) => attended.has(id),
+        },
+        RUN_OPTS, // maxPerTick defaults to 2
+      );
+      expect(result.closedTaskIds).toEqual([drainable.id]);
+      expect(taskStore.getTask(old1.id)?.status).toBe('inProgress');
+      expect(taskStore.getTask(old2.id)?.status).toBe('inProgress');
+      expect(taskStore.getTask(drainable.id)?.status).toBe('completed');
+    });
+
+    test('a deferred task drains on a later tick once the human is gone', async () => {
+      const taskStore = new TaskStore();
+      const task = staleAskFirstTask(taskStore);
+      let present = true;
+      const deps = {
+        taskStore,
+        lifecycleDeps: lifecycleDeps(taskStore),
+        isTaskSelectedByAnyConnection: () => present,
+      };
+      const first = await autoCloseStaleCompletionReadyTasks(deps, RUN_OPTS);
+      expect(first.closedTaskIds).toEqual([]);
+      present = false;
+      const second = await autoCloseStaleCompletionReadyTasks(deps, RUN_OPTS);
+      expect(second.closedTaskIds).toEqual([task.id]);
+      expect(taskStore.getTask(task.id)?.status).toBe('completed');
+    });
+  });
+
   describe('TTL escalation and stagger (issue #1526 Phase A)', () => {
     async function readAuditRows(auditLogPath: string): Promise<Record<string, unknown>[]> {
       try {

@@ -14,7 +14,7 @@ import {
 } from '../core/finished-awaiting-ack-ttl.js';
 import { appendAuditRow } from '../core/audit-log.js';
 import { nowISO } from '../core/interaction-log.js';
-import { analyzePaneSemantics } from '../shared/pane-semantics.js';
+import { paneHasHumanInteractiveMarkers } from '../shared/pane-semantics.js';
 
 /** Cap last-pass outcome samples on health (issue #2084 task-id audit). */
 const MAX_LAST_OUTCOMES = 16;
@@ -225,19 +225,11 @@ function ageHistogramBucketKey(ageMs: number): string {
   return '+Inf';
 }
 
-/**
- * True when pane text shows a human-interactive prompt (permission dialog or
- * idle input prompt). Used as the Lucy #2238-style tail veto so we never
- * auto-complete under an active human composer / approval UI.
- */
-export function paneHasHumanInteractiveMarkers(paneText: string | undefined | null): boolean {
-  if (!paneText) return false;
-  const semantics = analyzePaneSemantics(paneText);
-  return (
-    (semantics.state === 'input_prompt' || semantics.state === 'permission_dialog')
-    && semantics.confidence === 'high'
-  );
-}
+// `paneHasHumanInteractiveMarkers` now lives in `shared/pane-semantics.ts` so
+// every reaper (FAA ttl/ack, completion-ready-ttl) shares one definition. Kept
+// re-exported here for the existing importers (ack-path reaper + this module's
+// tests).
+export { paneHasHumanInteractiveMarkers };
 
 export interface ReclaimFinishedAwaitingAckTasksDeps {
   taskStore: TaskStore;
