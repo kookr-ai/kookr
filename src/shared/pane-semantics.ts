@@ -423,6 +423,25 @@ export function analyzeVisiblePaneLines(visibleLines: readonly string[]): PaneSe
   return { state: 'unknown', confidence: 'low' };
 }
 
+/**
+ * True when pane text shows a human-interactive prompt (permission dialog or
+ * idle input prompt) with high confidence. Used as the Lucy #2238-style tail
+ * veto so no auto-complete / auto-close path tears down a session under an
+ * active human composer or approval UI. Pure wrapper over
+ * {@link analyzePaneSemantics}; lives here (not in a single sweep module) so
+ * every reaper reads the same definition (issue: completion-ready-ttl killed a
+ * session whose human was mid-keystroke because this guard was never wired
+ * into that path).
+ */
+export function paneHasHumanInteractiveMarkers(paneText: string | undefined | null): boolean {
+  if (!paneText) return false;
+  const semantics = analyzePaneSemantics(paneText);
+  return (
+    (semantics.state === 'input_prompt' || semantics.state === 'permission_dialog')
+    && semantics.confidence === 'high'
+  );
+}
+
 export function normalizePaneForActivity(paneText: string): string {
   return normalizeVisiblePaneLines(visibleLinesFromTerminalText(paneText));
 }

@@ -660,6 +660,29 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
         if (session && session.lastTurnState !== turnState) {
           taskStore.updateSession(ownerTask.id, tmuxName, { lastTurnState: turnState });
         }
+        // Root-cause clear (companion to the reapers' live-work veto): a
+        // `completion_ready` signal means the agent FINISHED its turn and the
+        // task is awaiting ack. When work RESUMES — a follow-up prompt or a
+        // programmatic resume drives the turn back to a live state — the signal
+        // is stale, yet nothing cleared it, so the TTL/ack reapers kept treating
+        // the now-live task as finished-awaiting-ack and tore it down. Clear it
+        // here, at the single turn-state writer, so both interactive and
+        // programmatic resumes are covered. Skip replay hydration
+        // (meta.origin === 'replay'): it re-feeds historical user_prompts and
+        // must not wipe a signal that was legitimately pending at restart.
+        // Note: a preemptive manual `kookr signal completion-ready` raised while
+        // the agent is still mid-turn is intentionally dropped here — the signal
+        // means "finished", so an in-flight live turn contradicts it.
+        if (
+          meta.origin !== 'replay'
+          && (turnState === 'running' || turnState === 'waiting_for_input' || turnState === 'blocked')
+          && taskStore.getPendingSignal(ownerTask.id)?.kind === 'completion_ready'
+          && taskStore.clearPendingSignal(ownerTask.id)
+        ) {
+          console.debug(
+            `[event-pipeline] cleared stale completion_ready for task ${ownerTask.id} — turn resumed (${turnState})`,
+          );
+        }
       }
     }
     sessionActivityProcessor.process(tmuxName);

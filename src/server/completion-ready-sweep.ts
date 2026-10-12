@@ -8,6 +8,7 @@ import {
   DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
   selectAutoClosableCompletionReadyTasks,
 } from '../core/completion/index.js';
+import { evaluateLiveWorkVeto, liveWorkVetoReasonText } from './live-work-veto.js';
 
 export interface AutoCloseStaleCompletionReadyDeps {
   taskStore: TaskStore;
@@ -21,6 +22,21 @@ export interface AutoCloseStaleCompletionReadyDeps {
    * (billing/quota). Optional — omit → no pause filtering (legacy tests).
    */
   isProviderPaused?: (task: Task) => boolean;
+  /**
+   * Live-human veto inputs (parity with the finished-awaiting-ack reapers).
+   * Age-only selection can pick a task that has since resumed its turn, has a
+   * human mid-keystroke in the composer, is attached in the dashboard, or is
+   * holding an open delivery PR. All optional — omitted ⇒ that signal never
+   * vetoes (legacy callers/tests keep their age-only behaviour).
+   */
+  /** Latest reconstructed pane text for the task's live session (TOCTOU tail veto). May be async. */
+  getTaskPaneText?: (
+    taskId: string,
+  ) => string | undefined | null | Promise<string | undefined | null>;
+  /** True when a viewer connection currently has the task selected/attached. */
+  isTaskSelectedByAnyConnection?: (taskId: string) => boolean;
+  /** Confirmed-open delivery-PR hold — only a definite `true` vetoes the close. */
+  isHoldingOpenPr?: (task: Task) => boolean | undefined;
 }
 
 export interface AutoCloseStaleCompletionReadyResult {
@@ -85,23 +101,76 @@ export async function autoCloseStaleCompletionReadyTasks(
     opts.throttle.lastSweepAt = nowMs;
   }
 
+  // The per-tick cap bounds TEARDOWNS, not selection attempts: select every
+  // eligible task (oldest signal first) and stop after `maxCloses` ACTUAL
+  // closes below. Slicing to the cap in selection — as this used to — let
+  // live-human-vetoed tasks burn the batch so a genuinely drainable task
+  // behind two perpetually-attended older ones never drained (head-of-line
+  // starvation). Counting closes keeps the #1526 teardown-storm throttle
+  // (≤ maxCloses teardown broadcasts per tick) while never letting a deferral
+  // consume a drain slot.
+  const maxCloses = opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK;
   const entries = selectAutoClosableCompletionReadyTasks(deps.taskStore.listTasks(), {
     now: opts.now,
     thresholdMs: opts.thresholdMs ?? DEFAULT_STALE_COMPLETION_READY_THRESHOLD_MS,
     ttlMs: opts.ttlMs,
     ...(deps.isProviderPaused ? { isProviderPaused: deps.isProviderPaused } : {}),
     excludeActiveRalph: true,
-    limit: opts.maxPerTick ?? DEFAULT_MAX_AUTO_CLOSE_PER_TICK,
   });
 
   for (const entry of entries) {
+    if (closedTaskIds.length >= maxCloses) break;
     const taskId = entry.task.id;
     try {
+      // TOCTOU re-GET + live-human veto (parity with the finished-awaiting-ack
+      // TTL/ack reapers; issues #2170 / #2238 / #3040). Selection is age-only:
+      // between selection and teardown a quiet task can resume its turn, show a
+      // human composer / permission dialog, be attached in the dashboard, or
+      // grow a confirmed-open PR. Closing then tears a live session down out
+      // from under a present human (the completion-ready-ttl drain valve did
+      // exactly this to a session whose operator was mid-keystroke). Defer
+      // instead — a genuinely idle task re-selects next tick and drains then,
+      // while an attended one holds only its OWN slot until the human detaches.
+      const fresh = deps.taskStore.getTask(taskId);
+      if (
+        !fresh
+        || fresh.status !== 'inProgress'
+        || fresh.pendingSignal?.kind !== 'completion_ready'
+      ) {
+        // Acked / dismissed / transitioned since selection — no longer ours to close.
+        continue;
+      }
+      // Cheap synchronous vetoes first (live turn / viewer attached / open PR);
+      // only read the live pane — the one async, per-task cost — for a task
+      // that still looks drainable after those. The captured pane of the
+      // incident that motivated this guard classified as `unknown` while the
+      // human was mid-keystroke, so the pane check is a backstop, not the
+      // primary signal — viewer-attached is.
+      let veto = evaluateLiveWorkVeto(fresh, {
+        present: deps.isTaskSelectedByAnyConnection?.(taskId) ?? false,
+        holdingOpenPr: deps.isHoldingOpenPr?.(fresh),
+      });
+      if (!veto.veto && deps.getTaskPaneText) {
+        const paneText = await deps.getTaskPaneText(taskId);
+        veto = evaluateLiveWorkVeto(fresh, {
+          paneText,
+          present: deps.isTaskSelectedByAnyConnection?.(taskId) ?? false,
+          holdingOpenPr: deps.isHoldingOpenPr?.(fresh),
+        });
+      }
+      if (veto.veto) {
+        console.warn(
+          `[completion-ready-ttl] deferred task ${taskId} — ${liveWorkVetoReasonText(veto.reason)}`
+            + ` (completion_ready ${Math.round(entry.ageMs / 60_000)}m; slot held, not closed)`,
+        );
+        continue;
+      }
+
       // Headless completion bypasses the interactive dialog's dirty-worktree
       // verdict, so surface a finding first when the worktree holds
       // uncommitted work (issue #1580). Inspection runs before the transition,
       // while the task still owns the worktree, and never throws.
-      await surfaceDirtyWorktreeOnHeadlessCompletion(entry.task, {
+      await surfaceDirtyWorktreeOnHeadlessCompletion(fresh, {
         taskStore: deps.taskStore,
         auditLogPath: deps.auditLogPath,
         broadcastToAll: deps.broadcastToAll,
