@@ -2,8 +2,8 @@
  * Shared inventory for the root Vitest integration lanes (#2823).
  *
  * Consumed by:
- * - `vitest.integration.config.ts` (self-contained / deterministic lane)
- * - `vitest.integration.live.config.ts` (opt-in live-LLM lane)
+ * - `vitest.integration.config.mts` (self-contained / deterministic lane)
+ * - `vitest.integration.live.config.mts` (opt-in live-LLM lane)
  * - `scripts/integration-lane-inventory.test.ts` (drift guard)
  *
  * File-name patterns (under `src/` and `relay/`):

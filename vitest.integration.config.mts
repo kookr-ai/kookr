@@ -1,12 +1,12 @@
 import { defineConfig } from 'vitest/config';
 
-import { SELF_CONTAINED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.ts';
+import { SELF_CONTAINED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.mts';
 
 /**
  * Deterministic root Vitest integration lane (#2823).
  *
  * Selects the self-contained subset from the shared inventory
- * (`scripts/integration-lane-inventory.ts`). Live-LLM files run via
+ * (`scripts/integration-lane-inventory.mts`). Live-LLM files run via
  * `pnpm test:integration:live` instead.
  *
  * Uses the same env scrub / global setup as the unit suite so these tests

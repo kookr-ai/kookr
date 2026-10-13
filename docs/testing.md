@@ -8,9 +8,9 @@ For the design history, see [RFC: Testing Surfacing and Coverage Visibility](rfc
 
 | Command | What it runs | Where it runs |
 | --- | --- | --- |
-| `pnpm test` | Vitest unit tests under the root `vitest.config.ts` include globs (no coverage). Excludes integration-style files (`*-integration.test.ts`, `*.integration.test.ts`, `*-e2e.test.ts`) under `src/` and `relay/`. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
-| `pnpm test:integration` | Deterministic root Vitest lane (`vitest.integration.config.ts`) for the **self-contained** subset of the shared inventory (`scripts/integration-lane-inventory.ts`). No provider API keys required. Part of `pnpm verify` and the pre-push test path (docs-only pushes still skip it). | Local (authoritative). |
-| `pnpm test:integration:live` | Opt-in live-LLM lane (`vitest.integration.live.config.ts`) for the **credential-gated** inventory subset. Files `skipIf` without provider keys so the command stays exit-0 when keys are absent. Not part of `pnpm verify` or pre-push. | Local / manual (needs API keys to execute). |
+| `pnpm test` | Vitest unit tests under the root `vitest.config.mts` include globs (no coverage). Excludes integration-style files (`*-integration.test.ts`, `*.integration.test.ts`, `*-e2e.test.ts`) under `src/` and `relay/`. | Local (authoritative). Workflows under `.github/workflows/` document the historical CI shape; Actions are currently off — see [workflows README](../.github/workflows/README.md). |
+| `pnpm test:integration` | Deterministic root Vitest lane (`vitest.integration.config.mts`) for the **self-contained** subset of the shared inventory (`scripts/integration-lane-inventory.mts`). No provider API keys required. Part of `pnpm verify` and the pre-push test path (docs-only pushes still skip it). | Local (authoritative). |
+| `pnpm test:integration:live` | Opt-in live-LLM lane (`vitest.integration.live.config.mts`) for the **credential-gated** inventory subset. Files `skipIf` without provider keys so the command stays exit-0 when keys are absent. Not part of `pnpm verify` or pre-push. | Local / manual (needs API keys to execute). |
 | `pnpm test:coverage` | Vitest with V8 coverage. | Local. |
 | `pnpm test:watch` | Vitest watch mode. | Local. |
 | `pnpm check:e2e` | TypeScript check for Playwright tests. | Local. |
@@ -68,7 +68,7 @@ If the **`test`** job failed before coverage finalized, the summary will say "Co
 ## Interpretation Rules
 
 - **Coverage is a trend and gap-finding signal, not a target.** A high percent does not mean the code is well-tested; it means the lines were executed.
-- **The published number covers all of `src`.** `vitest.config.ts` includes `src/**/*.{ts,tsx}` (tests and `src/server/start.ts` excluded). The step summary subtitles the figure as whole-`src` coverage so reviewers do not under-read it as server/core only.
+- **The published number covers all of `src`.** `vitest.config.mts` includes `src/**/*.{ts,tsx}` (tests and `src/server/start.ts` excluded). The step summary subtitles the figure as whole-`src` coverage so reviewers do not under-read it as server/core only.
 - **Branch coverage matters more for orchestration code.** For hooks, lifecycle handlers, and WebSocket dispatch, branch coverage is the earliest warning that a code path is untested.
 - **Browser report artifacts are for failure investigation.** Default CI uploads them only on failure; the manual `/run-e2e` workflow uploads on every requested run.
 
@@ -78,7 +78,7 @@ Reproduce CI locally:
 
 ```bash
 pnpm install --frozen-lockfile
-pnpm test:coverage           # vitest --coverage; reporter list lives in vitest.config.ts
+pnpm test:coverage           # vitest --coverage; reporter list lives in vitest.config.mts
 pnpm coverage:summary        # renders coverage/coverage-summary.json to Markdown
 ```
 
@@ -147,7 +147,7 @@ The script distinguishes three error paths:
 
 ### Coverage numbers look implausibly low or high
 
-Check `vitest.config.ts` `include` and `exclude` lists. The most common cause is a new directory under `src/` that has no `*.test.ts` siblings yet (untested code dilutes the aggregate); also confirm you are not comparing against an older CI run that excluded the frontend.
+Check `vitest.config.mts` `include` and `exclude` lists. The most common cause is a new directory under `src/` that has no `*.test.ts` siblings yet (untested code dilutes the aggregate); also confirm you are not comparing against an older CI run that excluded the frontend.
 
 ### Preview the summary locally before pushing
 

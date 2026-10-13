@@ -50,8 +50,8 @@ jobs:
               - 'e2e/**'
               - 'package.json'
               - 'pnpm-lock.yaml'
-              - 'vitest.config.ts'
-              - 'vite.config.ts'
+              - 'vitest.config.mts'
+              - 'vite.config.mts'
               - 'tsconfig*.json'
               - '.github/workflows/ci.yml'
             hooks:
@@ -113,7 +113,7 @@ jobs:
       - name: Validate requirements status matrix
         run: pnpm validate:requirements
 
-      # Reporter list and reportOnFailure live in vitest.config.ts so local
+      # Reporter list and reportOnFailure live in vitest.config.mts so local
       # `pnpm test:coverage` and CI produce the same artifacts. `--coverage`
       # is the only flag this step adds; do not re-pass reporters here or
       # the CLI list will override the config and they will drift.
@@ -203,7 +203,7 @@ jobs:
               - 'e2e/**'
               - 'scripts/**'
               - 'playwright.config.ts'
-              - 'vite.config.ts'
+              - 'vite.config.mts'
               - 'package.json'
               - 'pnpm-lock.yaml'
               - 'tsconfig*.json'
