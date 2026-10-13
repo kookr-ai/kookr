@@ -228,6 +228,98 @@ assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
 assert_eq "caller's KOOKR_CODEX_BIN untouched" "$TMPDIR/codex-stock" "${KOOKR_CODEX_BIN:-<unset>}"
 unset KOOKR_CODEX_BIN
 
+# ---------------------------------------------------------------------------
+# --base-environ: resolve against the running server's own environment dump
+# (issue #3413). Emulates /proc/<pid>/environ with NUL-separated KEY=VALUE.
+# ---------------------------------------------------------------------------
+
+# NUL-separated environ dump, one KEY=VALUE per argument.
+make_environ() {
+  local pair
+  for pair in "$@"; do
+    printf '%s\0' "$pair"
+  done
+}
+
+# Server PATH dirs holding exactly one `codex` each.
+SERVER_FORK_BIN="$TMPDIR/server-fork-bin"
+SERVER_STOCK_BIN="$TMPDIR/server-stock-bin"
+mkdir -p "$SERVER_FORK_BIN" "$SERVER_STOCK_BIN"
+ln -sf "$TMPDIR/codex-fork" "$SERVER_FORK_BIN/codex"
+ln -sf "$TMPDIR/codex-stock" "$SERVER_STOCK_BIN/codex"
+
+# A stock `codex` first on THIS shell's PATH, so a probe that leaked onto the
+# shell PATH (the #3413 bug) would answer missing-flag.
+ln -sf "$TMPDIR/codex-stock" "$TMPDIR/codex"
+
+# item 1: KOOKR_CODEX_BIN unset → a bare `codex` resolves on the SERVER's PATH
+# (fork), not this shell's PATH (stock first).
+make_environ "PATH=$SERVER_FORK_BIN" > "$TMPDIR/environ-fork-path"
+echo
+echo "[case] --base-environ: bare codex resolves on the server's PATH, not the shell's"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+PATH="$TMPDIR:$ORIG_PATH"; export PATH
+. "$LIB"
+probe_codex_plugin_dir --base-environ "$TMPDIR/environ-fork-path"
+PATH="$ORIG_PATH"; export PATH
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "$SERVER_FORK_BIN/codex" "${PROBE_CODEX_BIN:-<unset>}"
+
+# item 2: KOOKR_CODEX_BIN set in the server environ (e.g. after
+# `systemctl --user import-environment`) is honored even when this shell exports
+# a different value and .env points elsewhere.
+make_environ "PATH=$SERVER_STOCK_BIN" "KOOKR_CODEX_BIN=$TMPDIR/codex-fork" \
+  > "$TMPDIR/environ-with-bin"
+printf 'KOOKR_CODEX_BIN=%s\n' "$TMPDIR/codex-stock" > "$TMPDIR/base-env-dotenv-stock.env"
+echo
+echo "[case] --base-environ: KOOKR_CODEX_BIN from the environ beats the shell and .env"
+unset PROBE_RESULT PROBE_TIMED_OUT
+KOOKR_CODEX_BIN="$TMPDIR/codex-stock"; export KOOKR_CODEX_BIN
+probe_codex_plugin_dir --base-environ "$TMPDIR/environ-with-bin" "$TMPDIR/base-env-dotenv-stock.env"
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-fork" "${PROBE_CODEX_BIN:-<unset>}"
+assert_eq "caller's KOOKR_CODEX_BIN untouched" "$TMPDIR/codex-stock" "${KOOKR_CODEX_BIN:-<unset>}"
+unset KOOKR_CODEX_BIN
+
+# .env applies on top of the environ when the environ does not set the key, with
+# the server's own process.loadEnvFile() semantics.
+make_environ "PATH=$SERVER_STOCK_BIN" > "$TMPDIR/environ-no-bin"
+printf 'KOOKR_CODEX_BIN=%s\n' "$TMPDIR/codex-fork" > "$TMPDIR/base-env-dotenv-fork.env"
+echo
+echo "[case] --base-environ: .env sets KOOKR_CODEX_BIN when the environ does not"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+probe_codex_plugin_dir --base-environ "$TMPDIR/environ-no-bin" "$TMPDIR/base-env-dotenv-fork.env"
+assert_eq "PROBE_RESULT" "ok" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN" "$TMPDIR/codex-fork" "${PROBE_CODEX_BIN:-<unset>}"
+
+# A bare name the server's PATH cannot resolve is not-installed — the probe must
+# NOT fall back to a `codex` on this shell's PATH (which here is the fork).
+make_environ "PATH=$TMPDIR/empty-server-path" > "$TMPDIR/environ-empty-path"
+ln -sf "$TMPDIR/codex-fork" "$TMPDIR/codex" # shell PATH fork would be a false OK
+echo
+echo "[case] --base-environ: bare codex absent from the server's PATH is not-installed"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+PATH="$TMPDIR:$ORIG_PATH"; export PATH
+. "$LIB"
+probe_codex_plugin_dir --base-environ "$TMPDIR/environ-empty-path"
+PATH="$ORIG_PATH"; export PATH
+assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN (display name)" "codex" "${PROBE_CODEX_BIN:-<unset>}"
+
+# An absent/unreadable environ dump (e.g. the server exited before the probe
+# read /proc/<pid>/environ) resolves against an empty base → bare `codex` with
+# no PATH → not-installed, never a shell-PATH fallback.
+ln -sf "$TMPDIR/codex-fork" "$TMPDIR/codex" # a false OK if the shell PATH leaked
+echo
+echo "[case] --base-environ: a missing environ dump is not-installed"
+unset PROBE_RESULT PROBE_TIMED_OUT KOOKR_CODEX_BIN
+PATH="$TMPDIR:$ORIG_PATH"; export PATH
+. "$LIB"
+probe_codex_plugin_dir --base-environ "$TMPDIR/environ-does-not-exist"
+PATH="$ORIG_PATH"; export PATH
+assert_eq "PROBE_RESULT" "not-installed" "${PROBE_RESULT:-<unset>}"
+assert_eq "PROBE_CODEX_BIN (display name)" "codex" "${PROBE_CODEX_BIN:-<unset>}"
+
 # Errexit-safety invariant: when the probe completes via the timeout block
 # (i.e. through the set +e/set -e bracket — NOT via the early `[ -f ]` exit),
 # the caller's errexit state must be preserved. Use the fork stub so the
