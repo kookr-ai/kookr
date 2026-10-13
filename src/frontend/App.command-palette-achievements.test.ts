@@ -166,9 +166,19 @@ describe('App command-palette achievements', () => {
     expect(useKookrStore.getState().showAchievements).toBe(true);
     expect(container.querySelector('[data-testid="command-palette-input"]')).toBeNull();
 
-    // Second choice toggles it back closed.
+    // Second choice toggles it back closed. The palette is re-opened (Ctrl+K
+    // works from anywhere) while the panel is still open, so both overlays
+    // coexist. They share `.dialog-overlay` (z-index 100) and the panel renders
+    // later in the DOM, so without a lift the panel backdrop would paint over
+    // the palette and swallow the click (#3407, caught by independent review).
+    // jsdom can't compute paint order, so assert the structural contract: the
+    // palette overlay carries the `command-palette-overlay` lift class while the
+    // panel is still mounted.
     await openPaletteAndSearch('achievements');
     const rowAgain = await waitForElement<HTMLButtonElement>(container, '[data-action-id="achievements"]');
+    expect(container.querySelector('.achievements-panel')).not.toBeNull();
+    const paletteOverlay = rowAgain.closest('.dialog-overlay');
+    expect(paletteOverlay?.classList.contains('command-palette-overlay')).toBe(true);
     await act(async () => {
       rowAgain.click();
     });
