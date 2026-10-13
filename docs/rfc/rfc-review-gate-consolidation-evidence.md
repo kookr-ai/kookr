@@ -175,16 +175,19 @@ both flagged the same dead export).
 |---|---|
 | Coverage | 545 / 596 merged PRs carry ≥1 verdict comment. |
 | Verdicts | 591 total: **557 pass, 34 block (5.8% block rate)**. |
-| By lane | claude 359 pass / 9 block (**2.4%**); **codex 192 pass / 24 block (≈11%)**; grok 6/1. Cross-vendor Codex blocks ~4.5× more often. |
-| PRs blocked | 26 PRs (4.8%) got ≥1 block; ~20 of 26 are real code defects **with a reproduction** (auth bypass, crash, data loss, unbounded allocation). 3 took 3–4 blocks before pass (#3375, #3145, #2855). |
+| By lane | claude 359 pass / 9 block (**2.4%**); **codex 192 pass / 24 block (≈11%)**; grok 6/1. ~~Cross-vendor Codex blocks \~4.5× more often.~~ **Superseded (see Corrections box):** the lane gap is a **lane-level** effect (strictness / PR size), not cross-vendor — pooled same-vs-cross 5.6% vs 3.1%, Fisher p=0.20. |
+| PRs blocked | ~~26 PRs (4.8%) got ≥1 block; \~20 of 26 are real code defects~~ **Superseded (see Corrections box):** **24 blocked PRs / 34 blocks**; ~17 (71%) are code defects a correctness specialist targets, **with a reproduction** (auth bypass, crash, data loss, unbounded allocation). 3 took 3–4 blocks before pass (#3375, #3145, #2855). |
 | Cost/run | Claude lane median **304k** context / 6.3k output / ~90s — ≈ **0.23× one pre-push panel**. Codex lane median 2.9M input (~95% cached) / 11.8k output. |
 
-**Smoking gun (#3375):** the 7-agent pre-push panel + implementation-review
-**passed**; the independent reviewer then found an **unauthenticated proxy
-auth bypass** (list/download/export/delete private data, reproduced HTTP 200),
-a **crash** (`//[` URL), and a **data-loss** bug — over 3 blocking rounds. A
-same-vendor pre-push panel missed what the cross-vendor independent reviewer
-caught.
+**The #3375 catch (originally "smoking gun" — see Corrections box):** the
+7-agent pre-push panel + implementation-review **passed**; the independent
+reviewer then found an **unauthenticated proxy auth bypass**
+(list/download/export/delete private data, reproduced HTTP 200), a **crash**
+(`//[` URL), and a **data-loss** bug — over 3 blocking rounds. ~~A same-vendor
+pre-push panel missed what the cross-vendor independent reviewer caught.~~
+**Retracted:** #3375 was **fully same-vendor** (Codex implementer, Codex
+pre-push panel, Codex merge reviewer); what caught the bugs was
+**fresh context + exact head + prompt/effort**, not cross-vendor review.
 
 **Honest caveat:** among the 16 PRs whose Claude pre-push panels were locally
 inspectable, the merge reviewer passed all first time (small, mostly-Claude
@@ -203,7 +206,7 @@ implementer sessions with encrypted/unreadable pre-push transcripts. There is
 | Panel spawned as `general-purpose`, no model/effort | `pre-pr-review` SKILL.md:353-356; grep of `select-specialists.sh`, `reviewer-fanout.ts` |
 | Each specialist re-reads the repo | `plugin/reviewer-specialists/correctness-specialist.md:5-8`, `deadcode-specialist.md`, `docs-drift-specialist.md` |
 | context-pack mitigation only in one playbook | `src/core/context-pack.ts` (`renderReviewPack`); `plugin/playbooks/parallel-issue-batch.md` |
-| Merge review reuses `correctness-specialist.md` | `plugin/skills/independent-merge-review/SKILL.md:145-146 |
+| Merge review reuses `correctness-specialist.md` | `plugin/skills/independent-merge-review/SKILL.md:145-146` |
 | Merge review fresh-context, exact-head, Codex-primary | `independent-merge-review` SKILL.md:122-160; `src/core/independent-review.ts` |
 | Hard/advisory split | `independent-merge-review` SKILL.md:23-60 (#3027/#3030) |
 | Hard-gate enforcement | `scripts/kookr-merge.sh` (`require_review_verdict`, exit 4); `hooks/gh-pr-merge-gate.sh` |
