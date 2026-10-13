@@ -86,6 +86,10 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_SPEAK',
   'KOOKR_USER_PLAYBOOKS_DIR',
   'KOOKR_KB_CONTEXT_INJECT',
+  // kb relevance-nudge distance threshold (kb-relevance-nudge.ts) — an
+  // operator-tunable experiment toggle, documented alongside the hook in
+  // docs/hooks-setup.md rather than the canonical env reference.
+  'KOOKR_KB_NUDGE_MAX_DISTANCE',
   // bin/kb-spool-shim.js recursion depth counter — set only by the shim on
   // child env, never operator-configured. Aborts peer-shim chains at depth≥3.
   'KOOKR_KB_SHIM_DEPTH',

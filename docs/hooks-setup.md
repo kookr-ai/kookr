@@ -16,7 +16,7 @@ This document walks both newcomers through the setup, from the "I just want to c
 > - `hooks/oss-contribution-gate.sh` → `~/.claude/hooks/oss-contribution-gate.sh`
 > - `hooks/gh-pr-merge-gate.sh` → `~/.claude/hooks/gh-pr-merge-gate.sh`
 > - `hooks/post-merge-keyword-scan.sh` → `~/.claude/hooks/post-merge-keyword-scan.sh`
-> - `hooks/kb-context-inject.sh` → `~/.claude/hooks/kb-context-inject.sh` (RFC 018 M2; off by default)
+> - `hooks/kb-context-inject.sh` → `~/.claude/hooks/kb-context-inject.sh` (nudge|inject modes; off by default)
 > - `plugin/skills/pre-pr-review/` → `~/.claude/skills/pre-pr-review/`
 > - `plugin/reviewer-specialists/` → `~/.claude/reviewer-specialists/`
 > - `plugin/skills/pr-contribution-excellence/` → `~/.claude/skills/pr-contribution-excellence/`
@@ -29,14 +29,15 @@ This document walks both newcomers through the setup, from the "I just want to c
 
 ## KB context-injection hook (`kb-context-inject.sh`)
 
-`hooks/kb-context-inject.sh` is a `UserPromptSubmit` hook implementing the
-RFC 018 §11 consumer contract. RFC 018 lives in the companion
-`knowledge-base-mcp-server` repository, not this one; it defines how
-relevance-gated knowledge-base context is injected into an agent turn, and its
-milestones (M1, M2, M3) are referenced below as the staging plan for that
-rollout. Before an agent turn it runs a
-relevance-gated `kb search` and injects the post-gate knowledge-base context
-into the turn:
+`hooks/kb-context-inject.sh` is a `UserPromptSubmit` hook with two modes (see
+**Modes** below): a fast, judge-free `nudge` and the RFC 018 §11 `inject` path.
+
+In **`inject`** mode it implements the RFC 018 §11 consumer contract. RFC 018
+lives in the companion `knowledge-base-mcp-server` repository, not this one; it
+defines how relevance-gated knowledge-base context is injected into an agent
+turn, and its milestones (M1, M2, M3) are referenced below as the staging plan
+for that rollout. In this mode, before an agent turn it runs a relevance-gated
+`kb search` and injects the post-gate knowledge-base context into the turn:
 
 - Calls `kb search "<prompt>" --gate --task-context-file=<f> --format=json`.
 - Assembles `task_context` from the prompt, stamped with a monotonic
@@ -49,15 +50,30 @@ into the turn:
 - Echoes `gate_verdict` (state, by-stage drop counts, `degraded`) to stderr —
   the collapsed debug channel.
 
-**OFF by default.** The hook is inert unless `KOOKR_KB_CONTEXT_INJECT` is
-truthy (`1`/`true`/`on`/`yes`). RFC 018 M1 returned a **NO-GO** for defaulting
-the gate on (see `docs/rfcs/018-m1-canary-report.md` in
-`knowledge-base-mcp-server`), and `kb search --gate` invokes an LLM judge
-that adds latency to every turn. M2 ships the mechanism; M3 decides
-default-on. Opt in for a session with:
+### Modes: `nudge` (recommended) vs `inject`
+
+`KOOKR_KB_CONTEXT_INJECT` selects the mode:
+
+- **`nudge`** — on a *substantive* turn (short glue/approval/command turns are
+  skipped) the hook runs ONE fast, ungated `kb search` and, only when the top
+  hit is clearly close (FAISS distance ≤ `KOOKR_KB_NUDGE_MAX_DISTANCE`, default
+  `0.8`), appends a one-line, non-blocking suggestion that the agent run `kb`
+  itself, naming the matching shelves. No LLM judge, no injected content, no
+  per-turn judge latency — and it preserves agent agency (the agent reads the
+  real results, so a false positive costs one ignored line). This is the
+  recommended way to turn the hook on. Logic: `src/core/kb-relevance-nudge.ts`.
+- **`inject`** (also the legacy `1`/`true`/`on`/`yes`) — the RFC 018 §11 path
+  above: `kb search --gate` (Stage-B LLM judge) and inject the gated context.
+  Slower and judge-dependent; RFC 018 M1 returned a **NO-GO** for defaulting it
+  on (see `docs/rfcs/018-m1-canary-report.md` in `knowledge-base-mcp-server`),
+  and when the judge endpoint is unhealthy it silently degrades.
+
+**OFF by default** — inert unless the var names a mode. Opt in for a session:
 
 ```bash
-export KOOKR_KB_CONTEXT_INJECT=1
+export KOOKR_KB_CONTEXT_INJECT=nudge     # recommended: fast, judge-free
+# export KOOKR_KB_CONTEXT_INJECT=inject  # RFC 018 gated injection (slower)
+# export KOOKR_KB_NUDGE_MAX_DISTANCE=0.7 # tighten nudge precision (lower = stricter)
 ```
 
 `scripts/install-hooks.sh` symlinks and registers the hook like the others.
