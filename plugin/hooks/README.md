@@ -21,6 +21,35 @@ failure path (missing jq, malformed payload, unwritable log) exits 0 silently.
 The data informs which skills actually get used when scoping quality passes
 (RFC plugin-skill-improvements, Phases 2-3).
 
+## Shared Chrome Notice
+
+Claude in Chrome (the browser extension behind the `mcp__claude-in-chrome__*`
+tools) drives the operator's real Chrome profile, and several agents can use it
+at once. Tabs are mostly safe: the extension gives each Claude Code session a
+private tab group that other sessions cannot see, although subagents share
+their parent session's group. The risk is everything else the profile shares:
+sign-ins, the server-side state of the accounts behind them, and the downloads
+folder. Modal dialogs (JavaScript alerts and confirmations) are a hazard too,
+because one left open can stop the extension from responding.
+
+`shared-chrome-notice.sh` is registered for `PostToolUse` with matcher
+`mcp__claude-in-chrome__.*`. The first time an agent uses a Chrome tool, the
+hook adds a short notice to that agent's context. The notice says: work only in
+your own tabs, never log out or clear site data, change only the account data
+your task needs, identify downloads by exact name, avoid triggering dialogs,
+and stop and report to the operator if the task needs something forbidden.
+Later Chrome calls by the same agent stay silent.
+
+A subagent shares its parent's `session_id` but has its own context, so the
+hook tracks every (`session_id`, `agent_id`) pair separately. It records which
+agents were told with one marker directory per pair under
+`${TMPDIR:-/tmp}/kookr-shared-chrome-notice-<uid>/` (override with
+`KOOKR_SHARED_CHROME_NOTICE_DIR`; disable with
+`KOOKR_SHARED_CHROME_NOTICE_SKIP=1`). Markers are never deleted by the hook;
+the OS clears them with the temp directory. It requires `jq`; without it the
+hook does nothing. It never blocks the tool call: every failure path exits 0
+with no output.
+
 ## Placement Gate
 
 `placement-gate.sh` is an advisory `PreToolUse` hook for new skills and agents.
