@@ -422,6 +422,17 @@ exit 1
         const stubDir = join(dir, 'stubs');
         for (const d of [appDir, binDir, stubDir, join(dir, '.kookr')]) mkdirSync(d, { recursive: true });
         writeSuccessfulPostRestartCheckStubs(binDir);
+        // The systemd path reads the live unit's /proc/<MainPID>/environ when it
+        // can (issue #3413); stub systemctl to report no live MainPID so these
+        // fixtures deterministically exercise the EnvironmentFile fallback and
+        // never read a real running kookr.service on the dev box.
+        if (opts.mode === 'systemd') {
+          writeFileSync(
+            join(binDir, 'systemctl'),
+            `#!/usr/bin/env bash\n[[ "$*" == *MainPID* ]] && echo 0\nexit 0\n`,
+          );
+          chmodSync(join(binDir, 'systemctl'), 0o755);
+        }
         const stub = (name: string, help: string): string => {
           const path = join(stubDir, name);
           writeFileSync(path, `#!/usr/bin/env bash\n[[ "$1" == "--help" ]] && { echo ${JSON.stringify(help)}; exit 0; }\nexit 1\n`);
@@ -478,10 +489,143 @@ exit 1
       expect(result.stderr).toContain(`the server's codex (${result.stockBin}) ${PLUGIN_DIR_WARN}`);
     });
 
-    it('under systemd, uses the unit EnvironmentFile and ignores the restart shell value', () => {
+    it('under systemd without a live MainPID, falls back to the unit EnvironmentFile', () => {
+      // systemctl reports MainPID=0 (stubbed), so there is no /proc/<pid>/environ
+      // to read and the probe uses the EnvironmentFile + .env approximation,
+      // ignoring the restart shell's value. (#3413 fallback path)
       const result = runCodexProbe({ mode: 'systemd', systemdEnvBin: 'fork', dotenvBin: 'stock', shellBin: 'stock' });
       expect(result.status).toBe(0);
       expect(result.stderr).not.toContain(PLUGIN_DIR_WARN);
+    });
+  });
+
+  // Reading the live unit's /proc/<MainPID>/environ (issue #3413, items 1 & 2)
+  // is Linux + systemd specific, so these run only where /proc exists. They
+  // spawn a long-lived holder process with a controlled environment to stand in
+  // for the running server, and a `systemctl` stub that reports its PID.
+  const describeProcEnviron = process.platform === 'linux' ? describe : describe.skip;
+  describeProcEnviron('codex --plugin-dir probe under systemd reads /proc/<MainPID>/environ', () => {
+    const PLUGIN_DIR_WARN = 'does not advertise --plugin-dir';
+
+    function stub(path: string, help: string): void {
+      writeFileSync(path, `#!/usr/bin/env bash\n[[ "$1" == "--help" ]] && { echo ${JSON.stringify(help)}; exit 0; }\nexit 1\n`);
+      chmodSync(path, 0o755);
+    }
+
+    function waitForEnviron(pid: number): void {
+      const deadline = Date.now() + 5_000;
+      const idle = new Int32Array(new SharedArrayBuffer(4));
+      while (Date.now() < deadline) {
+        try {
+          if (readFileSync(`/proc/${pid}/environ`, 'utf8').includes('PATH=')) return;
+        } catch {
+          /* not exec'd yet */
+        }
+        Atomics.wait(idle, 0, 0, 10); // 10ms between polls so we do not pin a core
+      }
+      throw new Error(`/proc/${pid}/environ never became readable for pid ${pid}`);
+    }
+
+    // Runs run_post_restart_checks with the systemd path pointed, via a
+    // systemctl stub, at a holder process whose /proc/<pid>/environ carries the
+    // given PATH and (optionally) KOOKR_CODEX_BIN.
+    function runWithServerEnviron(serverEnv: { PATH: string; KOOKR_CODEX_BIN?: string }): {
+      status: number | null;
+      stderr: string;
+    } {
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-prod-restart-environ-'));
+      const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)'], {
+        env: serverEnv,
+        stdio: 'ignore',
+      });
+      try {
+        if (holder.pid == null) throw new Error('failed to spawn holder process');
+        waitForEnviron(holder.pid);
+        const appDir = join(dir, 'app');
+        const shellBinDir = join(dir, 'shell-bin');
+        for (const d of [appDir, shellBinDir, join(dir, '.kookr')]) mkdirSync(d, { recursive: true });
+        writeSuccessfulPostRestartCheckStubs(shellBinDir); // writes curl + a FORK codex
+        // writeSuccessfulPostRestartCheckStubs' codex advertises --plugin-dir, so
+        // overwrite it with a STOCK codex: now a probe that wrongly resolved on
+        // this restart shell's PATH would find a stock codex and WARN, so items 1
+        // and 2 genuinely fail if the /proc-environ server-PATH resolution breaks.
+        stub(join(shellBinDir, 'codex'), 'Usage: codex --model <name>');
+        writeFileSync(
+          join(shellBinDir, 'systemctl'),
+          `#!/usr/bin/env bash\n[[ "$*" == *MainPID* ]] && echo ${holder.pid}\nexit 0\n`,
+        );
+        chmodSync(join(shellBinDir, 'systemctl'), 0o755);
+
+        const { KOOKR_CODEX_BIN: _ambient, ...baseEnv } = process.env;
+        const result = spawnSync(
+          'bash',
+          [
+            '-c',
+            `KOOKR_PROD_RESTART_TEST_ONLY=1 source ${JSON.stringify(join(process.cwd(), 'scripts/prod-restart.sh'))}; run_post_restart_checks systemd`,
+          ],
+          {
+            cwd: appDir,
+            env: {
+              ...baseEnv,
+              HOME: dir,
+              // A stock `codex` comes first on the RESTART shell's PATH; a probe
+              // that leaked onto this PATH would warn.
+              PATH: `${shellBinDir}:${process.env.PATH ?? ''}`,
+              KOOKR_RESTART_RELAY: '',
+            },
+            encoding: 'utf8',
+          },
+        );
+        return { status: result.status, stderr: result.stderr };
+      } finally {
+        holder.kill('SIGKILL');
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('item 1: resolves a bare codex on the server process PATH, not the restart shell PATH', () => {
+      // No KOOKR_CODEX_BIN anywhere; the fork is only on the server's PATH, a
+      // stock codex is first on the restart shell's PATH.
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-server-fork-bin-'));
+      try {
+        stub(join(dir, 'codex'), 'Usage: codex --plugin-dir <dir>'); // fork
+        const result = runWithServerEnviron({ PATH: dir });
+        expect(result.status).toBe(0);
+        expect(result.stderr).not.toContain(PLUGIN_DIR_WARN);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('item 2: honors KOOKR_CODEX_BIN injected into the server environment (import-environment)', () => {
+      // The server's environ names the fork directly (as after
+      // `systemctl --user import-environment`); its PATH holds only a stock
+      // codex. The probe must use the environ value, not the PATH stock.
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-server-env-bin-'));
+      try {
+        const forkPath = join(dir, 'codex-fork');
+        stub(forkPath, 'Usage: codex --plugin-dir <dir>');
+        stub(join(dir, 'codex'), 'Usage: codex --model <name>'); // stock on server PATH
+        const result = runWithServerEnviron({ PATH: dir, KOOKR_CODEX_BIN: forkPath });
+        expect(result.status).toBe(0);
+        expect(result.stderr).not.toContain(PLUGIN_DIR_WARN);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('warns when the server environment resolves a stock codex', () => {
+      // Regression guard: the warning still fires for a genuinely stock server
+      // binary, so these changes do not silence it.
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-server-stock-bin-'));
+      try {
+        stub(join(dir, 'codex'), 'Usage: codex --model <name>'); // stock fork-less
+        const result = runWithServerEnviron({ PATH: dir });
+        expect(result.status).toBe(0);
+        expect(result.stderr).toContain(PLUGIN_DIR_WARN);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 });

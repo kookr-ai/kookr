@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
-import { constants } from 'node:fs';
+import { constants, readFileSync } from 'node:fs';
 import { access, stat } from 'node:fs/promises';
 import { homedir, platform } from 'node:os';
 import { dirname, join } from 'node:path';
+import { parseEnv } from 'node:util';
 import {
   classifyKbDoctorCommandResult,
   classifyKbSearchSmokeResult,
@@ -387,6 +388,14 @@ interface RunDoctorDeps {
    * real compiled binding.
    */
   loadNodePty?: () => Promise<unknown>;
+  /**
+   * Optional override for reading the server's `.env` so doctor resolves
+   * KOOKR_CODEX_BIN the way the server does (issue #3413). Defaults to reading
+   * `${cwd}/.env`. Returns the file contents, or null when absent/unreadable.
+   * Tests inject a fixture so the repo's real `.env` never leaks into hermetic
+   * runs.
+   */
+  readServerDotenv?: (cwd: string) => string | null;
 }
 
 const HELP_TEXT = `kookr doctor — run launch preflight checks.
@@ -563,7 +572,8 @@ export async function buildDoctorJsonReport(deps: RunDoctorDeps = {}): Promise<D
   checks.push(await checkGhAuth(run));
   checks.push(await checkGithubScannerBackoff(env, deps.probeGithubScannerStatus));
   checks.push(...await checkKbLaunchDependency(run));
-  checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date())));
+  const serverDotenv = parseServerDotenv((deps.readServerDotenv ?? defaultReadServerDotenv)(cwd));
+  checks.push(...await checkAgentBinaries(env, run, deps.now ?? (() => new Date()), serverDotenv));
   checks.push(await checkHttpLatency(env, deps.probeHttpLatency));
   checks.push(await checkResourceWatchdog(env, deps.probeResourceWatchdogEnabled));
   checks.push(await checkHungSuspectReclaim(env, deps.probeHungSuspectReclaim));
@@ -2839,10 +2849,51 @@ async function checkKbLaunchDependency(run: CommandRunner): Promise<DoctorCheck[
   }];
 }
 
+/** Default `.env` reader: the server loads `.env` from its working directory. */
+function defaultReadServerDotenv(cwd: string): string | null {
+  try {
+    return readFileSync(join(cwd, '.env'), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse `.env` contents with the same parser the server uses
+ * (`process.loadEnvFile` ⇔ `util.parseEnv`), so doctor cannot drift from how the
+ * server reads the file. Returns null when there is nothing to parse.
+ */
+function parseServerDotenv(contents: string | null): Record<string, string> | null {
+  if (contents == null) return null;
+  try {
+    return parseEnv(contents) as Record<string, string>;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the codex binary the server would launch (issue #3413). Mirrors
+ * src/server/start.ts: `process.loadEnvFile()` applies `.env` but never
+ * overrides a variable already present in the process environment, then the
+ * server uses `KOOKR_CODEX_BIN || 'codex'`. So the process env wins when the key
+ * is present (even if empty, which falls back to `codex`); otherwise `.env`
+ * supplies it. A value from either source counts as explicitly configured — the
+ * same fail-loud treatment the server gives an unreachable configured binary.
+ */
+export function resolveServerCodexBin(
+  env: NodeJS.ProcessEnv,
+  dotenv: Record<string, string> | null,
+): { bin: string; configured: boolean } {
+  const raw = 'KOOKR_CODEX_BIN' in env ? env.KOOKR_CODEX_BIN : dotenv?.KOOKR_CODEX_BIN;
+  return { bin: raw || 'codex', configured: Boolean(raw) };
+}
+
 async function checkAgentBinaries(
   env: NodeJS.ProcessEnv,
   run: CommandRunner,
   now: () => Date,
+  serverDotenv: Record<string, string> | null,
 ): Promise<DoctorCheck[]> {
   const probeExec = probeExecFromRunner(run);
   const checks: DoctorCheck[] = [];
@@ -2855,8 +2906,10 @@ async function checkAgentBinaries(
     probeExec,
   }));
 
-  const codexBin = env.KOOKR_CODEX_BIN || 'codex';
-  const codexConfigured = Boolean(env.KOOKR_CODEX_BIN);
+  // Probe the codex the server would launch, not whatever `codex` comes first on
+  // the CLI's PATH (issue #3413): the server resolves KOOKR_CODEX_BIN from its
+  // environment, then from `.env`, so doctor applies `.env` the same way.
+  const { bin: codexBin, configured: codexConfigured } = resolveServerCodexBin(env, serverDotenv);
   const codex = await checkAgentBinary({
     id: 'agent.codex',
     label: 'Codex CLI binary',

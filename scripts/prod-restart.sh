@@ -941,23 +941,48 @@ wait_for_systemd_health() {
   exit 1
 }
 
+# MainPID of the running kookr.service user unit (issue #3413). Empty when
+# systemctl is unavailable or the unit reports no live MainPID (e.g. 0 when not
+# running). The caller resolves /proc/<pid>/environ from it to read the server's
+# real launch environment. systemd + Linux only; callers guard readability.
+server_codex_probe_main_pid() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  systemctl --user show -p MainPID --value kookr.service 2>/dev/null || true
+}
+
 run_post_restart_checks() {
   # Post-restart capability nag — if the configured Codex binary doesn't
   # advertise --plugin-dir, kookr-spawned codex sessions silently miss the
   # toolkit. Mirrors the `pnpm run doctor` row; emits only on missing-flag.
   # See scripts/lib/probe-codex-plugin-dir.sh for the shared contract.
   #
-  # Probe the binary the server just launched, not this shell's `codex`: the
-  # server resolves KOOKR_CODEX_BIN from its own environment, then from
-  # ${APP_DIR}/.env. Under systemd that environment comes from the unit's
-  # EnvironmentFile rather than this shell, so --ignore-exported drops this
-  # shell's value. (A hand-added `Environment=KOOKR_CODEX_BIN=` line in the
-  # unit is not consulted.)
+  # Probe the binary the server just launched, not this shell's `codex`. On the
+  # script path the server inherited this shell, so ${APP_DIR}/.env on top of it
+  # is faithful. Under systemd the server inherited none of this shell: its
+  # environment (every systemd source AND the PATH it searches) lives only in
+  # its own process, so read /proc/<MainPID>/environ and resolve against that,
+  # then ${APP_DIR}/.env on top (issue #3413). This also resolves a bare codex
+  # name on the server's PATH and honors a value injected via
+  # `systemctl --user import-environment`, which the old EnvironmentFile-only
+  # approximation missed. Falls back to that approximation when the live environ
+  # is unreadable (no MainPID, or /proc restricted).
   local mode="${1:-script}"
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
   . "${SCRIPT_DIR}/lib/probe-codex-plugin-dir.sh"
   if [[ "$mode" == "systemd" ]]; then
-    probe_codex_plugin_dir --ignore-exported "$SYSTEMD_ENV_FILE" "${APP_DIR}/.env"
+    local server_main_pid server_environ=""
+    server_main_pid="$(server_codex_probe_main_pid)"
+    if [[ "$server_main_pid" =~ ^[1-9][0-9]*$ ]] && [[ -r "/proc/${server_main_pid}/environ" ]]; then
+      server_environ="/proc/${server_main_pid}/environ"
+    fi
+    if [[ -n "$server_environ" ]]; then
+      probe_codex_plugin_dir --base-environ "$server_environ" "${APP_DIR}/.env"
+    else
+      # Live environ unavailable — approximate from the unit EnvironmentFile and
+      # .env, dropping this shell's value (a systemd-launched server never
+      # inherits it absent an import-environment, which the /proc path reads).
+      probe_codex_plugin_dir --ignore-exported "$SYSTEMD_ENV_FILE" "${APP_DIR}/.env"
+    fi
   else
     probe_codex_plugin_dir "${APP_DIR}/.env"
   fi

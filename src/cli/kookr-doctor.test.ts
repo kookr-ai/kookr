@@ -96,6 +96,9 @@ const hermeticOps = {
   readProdSmokeTickAlert: () => null as AlertArtifact | null,
   // Stub node-pty so hermetic runs never load the real compiled binding (issue #3068).
   loadNodePty: async () => ({ spawn: () => {} }) as unknown,
+  // No server `.env` by default so codex resolution stays deterministic and the
+  // developer's own repo `.env` never leaks into hermetic runs (issue #3413).
+  readServerDotenv: () => null,
   // Owner-only 0600 so settings-mode and data-dir-mode checks are deterministic
   // and hermetic (group/other bits are clear on both a file and a directory).
   statFile: async () => ({ mode: 0o600 }),
@@ -3315,6 +3318,80 @@ describe('kookr doctor --json', () => {
     for (const id of DOCUMENTED_DOCTOR_CHECK_IDS) {
       expect(cliMd, `missing documented doctor check id ${id} in docs/reference/cli.md`).toContain(id);
     }
+  });
+});
+
+describe('kookr doctor codex resolution from the server .env (issue #3413)', () => {
+  const FORK_PATH = '/opt/kookr/codex-fork';
+
+  function codexFixtures(forkHelp: string) {
+    return {
+      ...happyFixtures(),
+      // The server's resolved binary. The stock `codex` first on the CLI's PATH
+      // (from happyFixtures) must NOT be the one probed.
+      [JSON.stringify([FORK_PATH, ['--version']])]: { stdout: 'codex 0.9.0-kookr.1\n' },
+      [JSON.stringify([FORK_PATH, ['--help']])]: { stdout: forkHelp },
+      [JSON.stringify(['codex', ['--help']])]: { stdout: 'Usage: codex --model <name>\n' },
+    };
+  }
+
+  async function reportWith(env: NodeJS.ProcessEnv, dotenv: string | null) {
+    return buildDoctorJsonReport({
+      env,
+      commandRunner: commandRunner(codexFixtures('Usage: codex --plugin-dir <path>\n')),
+      access: async () => {},
+      now: () => new Date('2026-08-13T12:00:00.000Z'),
+      ...hermeticOps,
+      readServerDotenv: () => dotenv,
+    });
+  }
+
+  it('probes the fork named in .env, not the stock codex first on PATH (no false warning)', async () => {
+    const report = await reportWith({}, `KOOKR_CODEX_BIN=${FORK_PATH}\n`);
+    const codex = report.checks.find((c) => c.id === 'agent.codex');
+    expect(codex).toMatchObject({ status: 'ok', required: true });
+    expect(codex?.summary).toContain(FORK_PATH);
+    expect(report.checks.find((c) => c.id === 'agent.codex-plugin-dir')).toMatchObject({ status: 'ok' });
+  });
+
+  it('warns when .env points at a stock codex (the regression guard still fires)', async () => {
+    const report = await buildDoctorJsonReport({
+      env: {},
+      commandRunner: commandRunner(codexFixtures('Usage: codex --model <name>\n')),
+      access: async () => {},
+      now: () => new Date('2026-08-13T12:00:00.000Z'),
+      ...hermeticOps,
+      readServerDotenv: () => `KOOKR_CODEX_BIN=${FORK_PATH}\n`,
+    });
+    expect(report.checks.find((c) => c.id === 'agent.codex-plugin-dir')).toMatchObject({
+      status: 'warn',
+      summary: expect.stringContaining('does not advertise --plugin-dir'),
+    });
+  });
+
+  it('an exported KOOKR_CODEX_BIN overrides .env, matching the server', async () => {
+    const report = await reportWith({ KOOKR_CODEX_BIN: FORK_PATH }, 'KOOKR_CODEX_BIN=codex\n');
+    const codex = report.checks.find((c) => c.id === 'agent.codex');
+    expect(codex).toMatchObject({ status: 'ok', required: true });
+    expect(codex?.summary).toContain(FORK_PATH);
+  });
+
+  it('falls back to a bare `codex` when neither the env nor .env set it', async () => {
+    // No KOOKR_CODEX_BIN anywhere → the plain `codex` on PATH is probed and the
+    // check is advisory (required: false), exactly as before #3413.
+    const report = await buildDoctorJsonReport({
+      env: {},
+      commandRunner: commandRunner(happyFixtures()),
+      access: async () => {},
+      now: () => new Date('2026-08-13T12:00:00.000Z'),
+      ...hermeticOps,
+      readServerDotenv: () => null,
+    });
+    const codex = report.checks.find((c) => c.id === 'agent.codex');
+    expect(codex).toMatchObject({ status: 'ok', required: false });
+    // The bare `codex` resolved, not the fork from any .env.
+    expect(codex?.summary).not.toContain(FORK_PATH);
+    expect(report.checks.find((c) => c.id === 'agent.codex-plugin-dir')).toMatchObject({ status: 'ok' });
   });
 });
 
