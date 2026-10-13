@@ -166,6 +166,35 @@ else
   record_fail "8: enabled + low_confidence → snippet flagged" "got: $(printf '%s' "$out" | head -c 200)"
 fi
 
+# 9. nudge mode + substantive prompt + a close hit → emit a [kb-nudge] line via
+#    an UNGATED search (kb args must NOT contain --gate). Standalone so the
+#    recorded argv can be read before cleanup.
+case_9() {
+  local tmp; tmp=$(mktemp -d)
+  mkdir -p "$tmp/bin"
+  jq -n '{results: [{score: 0.45, chunk_id: "agent-task-lessons/recover.md#L1-L4", content: "x"}], gate_verdict: {state: "bypassed"}}' > "$tmp/payload.json"
+  printf '#!/usr/bin/env bash\nprintf "%%s " "$@" > %q\ncat %q\n' \
+    "$tmp/kb-args.log" "$tmp/payload.json" > "$tmp/bin/kb"
+  chmod +x "$tmp/bin/kb"
+  local out args
+  out=$(
+    cd "$REPO_ROOT"
+    export HOME="$tmp" PATH="$tmp/bin:$PATH" KOOKR_KB_CONTEXT_INJECT=nudge
+    printf '%s' "$(ups_event 'How should the supervisor recover a task after an exhausted review loop')" | bash "$HOOK" 2>/dev/null
+  ) || true
+  args=$(cat "$tmp/kb-args.log" 2>/dev/null || true)
+  rm -rf "$tmp"
+  if printf '%s' "$out" | grep -q '\[kb-nudge\]' \
+     && printf '%s' "$out" | grep -q 'agent-task-lessons' \
+     && ! printf '%s' "$args" | grep -q -- '--gate'; then
+    record_pass "9: nudge mode → [kb-nudge] via ungated kb search"
+  else
+    record_fail "9: nudge mode → [kb-nudge] via ungated kb search" \
+      "out: $(printf '%s' "$out" | head -c 120) | kb args: $args"
+  fi
+}
+case_9
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 if [ "$FAIL" -gt 0 ]; then
   printf 'Failed: %s\n' "${FAILED_CASES[*]}"

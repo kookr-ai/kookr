@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# RFC 018 M2 context-injection hook
-# Claude Code UserPromptSubmit hook
+# kb relevance hook — Claude Code UserPromptSubmit
 #
-# Before an agent turn, run a relevance-gated `kb search` and inject the
-# post-gate knowledge-base context into the turn (RFC 018 §11 consumer
-# contract). stdout → injected context (Claude Code feeds a UserPromptSubmit
-# hook's stdout into the turn); stderr → the gate_verdict debug echo.
+# Two modes, selected by KOOKR_KB_CONTEXT_INJECT:
+#   nudge  — run ONE fast, ungated `kb search` on substantive turns and, when
+#            the top hit is clearly close, append a one-line non-blocking
+#            suggestion that the agent run `kb` itself. No LLM judge, fast.
+#   inject — the original RFC 018 M2 path: `kb search --gate` + inject the gated
+#            context (slower, judge-dependent; 1/true/on/yes also select this).
+# stdout → injected into the turn; stderr → the debug echo.
 #
-# OFF BY DEFAULT. Inert unless KOOKR_KB_CONTEXT_INJECT is truthy — RFC 018
-# M1 returned a NO-GO for defaulting the gate on, and `kb search --gate`
-# invokes an LLM judge that adds latency to every turn. Opt in per-session
-# with `KOOKR_KB_CONTEXT_INJECT=1`.
+# OFF BY DEFAULT. Inert unless the var names a mode. Opt in per-session with
+# `KOOKR_KB_CONTEXT_INJECT=nudge` (recommended) or `=inject`.
 #
 # Design: fail-open. The gate never blocks retrieval and a hook crash must
 # never break the turn — every path exits 0. The real logic lives in the
@@ -25,12 +25,12 @@
 set -u
 
 # Fast env gate — exit before spawning node when the hook is opted out.
-# Case-folded so the accepted set matches the TS isHookEnabled() predicate.
+# Case-folded so the accepted set matches the TS hookMode() predicate.
 # tr instead of bash-4 lowercase parameter expansion (errors on macOS bash 3.2).
 _kbci_optin="${KOOKR_KB_CONTEXT_INJECT:-}"
 _kbci_optin=$(printf '%s' "$_kbci_optin" | tr '[:upper:]' '[:lower:]')
 case "$_kbci_optin" in
-  1 | true | on | yes) ;;
+  nudge | inject | 1 | true | on | yes) ;;
   *) exit 0 ;;
 esac
 

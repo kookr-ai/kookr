@@ -21,9 +21,9 @@
 #   - post-merge-keyword-scan.sh — when the user prompt mentions a merge,
 #     scans open PRs in the cwd repo and surfaces ones needing rebase.
 #     (UserPromptSubmit)
-#   - kb-context-inject.sh — RFC 018 M2 relevance-gated knowledge-base
-#     context injection. OFF by default; inert unless KOOKR_KB_CONTEXT_INJECT
-#     is truthy. (UserPromptSubmit)
+#   - kb-context-inject.sh — kb relevance prompt hook (nudge | RFC 018 inject).
+#     OFF by default; inert unless KOOKR_KB_CONTEXT_INJECT is nudge|inject
+#     (or legacy 1/true/on/yes → inject). (UserPromptSubmit)
 #
 # Skills installed today:
 #   - pre-pr-review — the companion skill for pr-workflow-gate.sh. It lives
