@@ -325,3 +325,50 @@ describe('runHook dispatch', () => {
     expect(res).toEqual({ stdout: '', stderr: '', exitCode: 0 });
   });
 });
+
+// --- preamble stripping (issue: query keyed off boilerplate, not the task) --
+
+// A launched kookr prompt as the hook actually sees it: Claude Code's
+// <pasted_content> wrapper, then the worktree-guardrail preamble, then a
+// playbook header, then the user's real manual prompt at the tail.
+const REAL_TASK = 'How should the supervisor recover a task after an exhausted review loop?';
+const GUARDED_PROMPT =
+  '\n\n<pasted_content id="af43">\n'
+  + 'You are currently in the main checkout `/repo` on branch `feat-x`. Do NOT commit to main.\n'
+  + '- Refresh the remote base first: `git fetch origin \'main\'`.\n'
+  + '- Create one: `git worktree add ../kookr-x -b feat-x \'origin/main\'`.\n'
+  + '\n'
+  + '> _Kookr playbook context — you are executing the **foo** playbook (scope: plugin). Its definition file is at `x`._\n'
+  + '\n'
+  + REAL_TASK;
+
+describe('stripKookrPromptEnvelope (via the nudge query path)', () => {
+  it('recovers the real task from a fully-wrapped launched prompt', () => {
+    // isNudgeEligiblePrompt strips the envelope before the glue/word checks, so
+    // a guarded prompt whose real body is a question is still eligible.
+    expect(isNudgeEligiblePrompt(GUARDED_PROMPT)).toBe(true);
+  });
+
+  it('queries the real task text, not the worktree/playbook boilerplate', async () => {
+    let captured: string[] = [];
+    await runKbNudge(
+      { prompt: GUARDED_PROMPT, sessionId: 's' },
+      {
+        execKbSearch: (args) => {
+          captured = args;
+          return Promise.resolve({ stdout: searchPayload([{ score: 0.5, chunk_id: 'agent-task-lessons/x.md#L1' }]), stderr: '', exitCode: 0 });
+        },
+        env: {},
+      },
+    );
+    const query = captured[1] ?? '';
+    expect(query).toContain('supervisor recover a task'); // the real request
+    expect(query).not.toContain('You are currently in the'); // no guardrail
+    expect(query).not.toContain('pasted_content'); // no provider wrapper
+    expect(query).not.toContain('Kookr playbook context'); // no playbook header
+  });
+
+  // Direct unit tests of stripKookrPromptEnvelope (incl. the non-empty fallback
+  // and partial-envelope cases) live in kb-context-injection.test.ts, next to
+  // the function and its sibling stripPlaybookContextHeader tests.
+});

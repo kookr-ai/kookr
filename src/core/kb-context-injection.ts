@@ -26,6 +26,7 @@ import {
   parseRelevanceGateVerdict,
   type RelevanceGateVerdict,
 } from './relevance-gate-schema.js';
+import { stripWorktreeGuardrailPrefix } from './prompt-display.js';
 
 /** RFC 018 §1 — `task_context` is hard-truncated to 2000 chars server-side. */
 const TASK_CONTEXT_MAX_CHARS = 2000;
@@ -53,6 +54,37 @@ export function stripPlaybookContextHeader(prompt: string): string {
   const stripped = prompt.replace(PLAYBOOK_CONTEXT_HEADER_RE, '');
   return stripped.trim() === '' ? prompt : stripped;
 }
+
+/**
+ * Claude Code wraps a large pasted prompt in a `<pasted_content id="...">` tag
+ * (often with no closing tag). Kookr never emits this — it is the provider's
+ * bracketed-paste capture — but it sits in front of the guardrail preamble in
+ * the hook's view of the prompt, so strip a leading open tag before the
+ * structural strips below can anchor on `^You are currently…`.
+ */
+const PASTED_CONTENT_OPEN_RE = /^\s*<pasted_content\b[^>]*>\s*\n?/;
+
+/**
+ * Recover the user's real task text from a launched prompt for use as a KB
+ * relevance query. A launched prompt is wrapped by several Kookr/provider
+ * envelopes that are identical across tasks and would dominate the query
+ * (making retrieval key off boilerplate rather than the request — the exact
+ * failure that made the prior-art injector fire on the worktree preamble).
+ * Strips, in the order they nest from the outside in: the Claude Code
+ * `<pasted_content>` wrapper, the worktree-guardrail preamble (reusing the
+ * canonical `stripWorktreeGuardrailPrefix`, which also covers reopened/relaunched
+ * tasks since they carry the same guarded prompt), and the playbook context
+ * header. Each step falls back to the pre-strip text if it would empty the
+ * prompt, so a boilerplate-only prompt still yields a non-empty query.
+ */
+export function stripKookrPromptEnvelope(prompt: string): string {
+  let text = prompt.replace(PASTED_CONTENT_OPEN_RE, '');
+  const afterGuardrail = stripWorktreeGuardrailPrefix(text);
+  if (afterGuardrail.trim() !== '') text = afterGuardrail;
+  text = stripPlaybookContextHeader(text);
+  return text.trim() === '' ? prompt : text;
+}
+
 /** Per-snippet cap on injected content so a turn is not flooded. */
 const SNIPPET_MAX_CHARS = 800;
 /** `kb search --gate` runs the Stage B LLM judge — bound the per-turn wait. */
@@ -331,7 +363,7 @@ export async function runKbContextInjection(
     // misbinding (kb-search throws on unknown `--flags`).
     const exec = await deps.execKbSearch([
       'search',
-      stripPlaybookContextHeader(prompt).slice(0, QUERY_MAX_CHARS),
+      stripKookrPromptEnvelope(prompt).slice(0, QUERY_MAX_CHARS),
       '--gate',
       `--task-context-file=${tcFile}`,
       '--format=json',

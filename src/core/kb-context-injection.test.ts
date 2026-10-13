@@ -11,6 +11,7 @@ import {
   parseKbSearchResponse,
   runKbContextInjection,
   stripPlaybookContextHeader,
+  stripKookrPromptEnvelope,
   type KbSearchExec,
   type TurnIdFsDeps,
 } from './kb-context-injection.js';
@@ -85,6 +86,41 @@ describe('stripPlaybookContextHeader', () => {
   it('falls back to the original prompt when only the header is present', () => {
     const headerOnly = `${HEADER}\n\n`;
     expect(stripPlaybookContextHeader(headerOnly)).toBe(headerOnly);
+  });
+});
+
+describe('stripKookrPromptEnvelope', () => {
+  const GUARDRAIL =
+    'You are currently in the main checkout `/repo` on branch `feat-x`. Do NOT commit to main.\n'
+    + "- Refresh the remote base first: `git fetch origin 'main'`.\n"
+    + "- Create one: `git worktree add ../x -b feat-x 'origin/main'`.\n";
+  const HEADER =
+    '> _Kookr playbook context — you are executing the **Deploy** playbook '
+    + '(scope: project). Its definition file is at `/path/to/deploy.md`._';
+  const TASK = 'How should the supervisor recover a task after an exhausted review loop?';
+
+  it('strips the full envelope (pasted_content + guardrail + playbook header)', () => {
+    const wrapped = `\n\n<pasted_content id="af43">\n${GUARDRAIL}\n${HEADER}\n\n${TASK}`;
+    expect(stripKookrPromptEnvelope(wrapped)).toBe(TASK);
+  });
+
+  it('strips the guardrail when no playbook header follows', () => {
+    expect(stripKookrPromptEnvelope(`${GUARDRAIL}\n${TASK}`)).toBe(TASK);
+  });
+
+  it('strips a lone pasted_content wrapper', () => {
+    expect(stripKookrPromptEnvelope(`<pasted_content id="x">\n${TASK}`)).toBe(TASK);
+  });
+
+  it('leaves a plain prompt untouched', () => {
+    expect(stripKookrPromptEnvelope(TASK)).toBe(TASK);
+  });
+
+  it('never yields an empty query for a boilerplate-only prompt (fallback)', () => {
+    // Guardrail with no body after the blank line: the guardrail capture is
+    // empty, so the strip keeps the pre-strip text rather than emptying it.
+    const boilerplateOnly = `${GUARDRAIL}\n`;
+    expect(stripKookrPromptEnvelope(boilerplateOnly).trim()).not.toBe('');
   });
 });
 

@@ -14,7 +14,7 @@
 // Fail-open throughout: any error returns an empty nudge so the turn proceeds.
 
 import {
-  stripPlaybookContextHeader,
+  stripKookrPromptEnvelope,
   type KbContextInjectionDeps,
   type KbContextInjectionInput,
   type KbContextInjectionResult,
@@ -39,7 +39,7 @@ const NUDGE_MAX_SHELVES = 3;
 
 /**
  * Glue / approval / command turns that are not information-needs. A turn whose
- * entire body (after header-strip) is one of these is never nudged, so a short
+ * entire body (after envelope-strip) is one of these is never nudged, so a short
  * "yes push the PR" never triggers a KB probe. Matched case-insensitively
  * against the whole trimmed prompt, with trailing punctuation ignored.
  */
@@ -61,7 +61,7 @@ export function nudgeMaxDistance(env: NodeJS.ProcessEnv): number {
  * never a KB question.
  */
 export function isNudgeEligiblePrompt(prompt: string): boolean {
-  const body = stripPlaybookContextHeader(prompt).trim();
+  const body = stripKookrPromptEnvelope(prompt).trim();
   if (body === '') return false;
   if (GLUE_PROMPT_RE.test(body)) return false;
   const words = body.split(/\s+/).filter((w) => /[A-Za-z0-9]/.test(w));
@@ -162,7 +162,7 @@ export async function runKbNudge(
   if (!isNudgeEligiblePrompt(prompt)) {
     return { stdout: '', stderr: '', turnId: 0 };
   }
-  const query = stripPlaybookContextHeader(prompt).slice(0, NUDGE_QUERY_MAX_CHARS);
+  const query = stripKookrPromptEnvelope(prompt).slice(0, NUDGE_QUERY_MAX_CHARS);
   try {
     // No `--gate` (no LLM judge → fast, no degradation) and no `--kb` (search
     // all shelves). `execFile` with an array arg makes the query shell-safe.
