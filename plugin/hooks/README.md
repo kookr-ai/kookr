@@ -50,6 +50,10 @@ the OS clears them with the temp directory. It requires `jq`; without it the
 hook does nothing. It never blocks the tool call: every failure path exits 0
 with no output.
 
+Known limitation: the notice is shown once per agent. If `/compact` drops it
+from the conversation summary, the agent is not told again, because compaction
+keeps the same session and agent ids.
+
 ## Placement Gate
 
 `placement-gate.sh` is an advisory `PreToolUse` hook for new skills and agents.

@@ -35,8 +35,8 @@ case "$key" in
   '' | *[!A-Za-z0-9_-]*) exit 0 ;;
 esac
 
-# Per-user default, so on a shared Linux /tmp one user's directory cannot
-# lock another user out of the notice.
+# Per-user default, so on a shared Linux /tmp one user's directory does not
+# accidentally lock another user out of the notice.
 MARKER_DIR="${KOOKR_SHARED_CHROME_NOTICE_DIR:-${TMPDIR:-/tmp}/kookr-shared-chrome-notice-$(id -u 2>/dev/null)}"
 mkdir -p "$MARKER_DIR" 2>/dev/null || exit 0
 # mkdir is atomic, so when an agent fires several Chrome tools in parallel,
@@ -45,8 +45,8 @@ mkdir "$MARKER_DIR/$key" 2>/dev/null || exit 0
 
 notice='Shared browser notice (shown once). This Chrome is the operator'"'"'s real profile, and other Kookr agents or the operator may be using it at the same time as you.
 
-- Tabs: each Claude Code session has its own tab group that other sessions cannot see, but subagents share their parent session'"'"'s group. Work only in tabs you opened yourself, and close them before you finish.
-- Sign-ins: every site sees you as the operator, already logged in to the operator'"'"'s accounts. Never log out, switch accounts, or clear cookies or site data; that would sign out the other sessions too.
+- Tabs: each Claude Code session has its own tab group that other sessions cannot see, but subagents share their parent session'"'"'s group. Work only in tabs you opened yourself and always pass their tabId: navigate without a tabId drives the group'"'"'s first tab, which may belong to another agent. Close your tabs before you finish.
+- Sign-ins: sites where the operator is signed in see you as the operator. Never log out, switch accounts, or clear cookies or site data; that would sign out the other sessions too.
 - Account data: carts, drafts, messages, favorites and settings live on the site'"'"'s server and are shared with any other agent using the same account. Change only what your task requires, and do not delete or overwrite items you did not create.
 - Downloads: every agent saves to the same folder. Do not assume the newest file is yours; identify it by its exact name, and pick a distinctive name when the site lets you choose.
 - Dialogs: avoid actions that open JavaScript alerts, confirmations or "leave this page?" prompts (for example, a Delete button that asks "Are you sure?"). An open dialog can stop the extension from responding, possibly for every agent.

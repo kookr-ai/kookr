@@ -69,10 +69,10 @@ entry=$(jq -c '[.hooks.PostToolUse[]? | select(any(.hooks[]; .command | endswith
 check "hooks.json registers the hook under PostToolUse" [ -n "$entry" ]
 matcher=$(printf '%s' "$entry" | jq -r '.matcher // empty')
 for tool in mcp__claude-in-chrome__navigate mcp__claude-in-chrome__computer mcp__claude-in-chrome__tabs_context_mcp; do
-  check "matcher matches $tool" jq -e -n --arg m "$matcher" --arg t "$tool" '$t | test($m)'
+  check "matcher matches $tool" jq -e -n --arg m "$matcher" --arg t "$tool" '$t | test($m)' >/dev/null
 done
 for tool in Bash mcp__n8n__get_node mcp__claude_ai_Gmail__authenticate; do
-  check "matcher does not match $tool" jq -e -n --arg m "$matcher" --arg t "$tool" '$t | test($m) | not'
+  check "matcher does not match $tool" jq -e -n --arg m "$matcher" --arg t "$tool" '$t | test($m) | not' >/dev/null
 done
 command_path=$(printf '%s' "$entry" | jq -r '.hooks[0].command' | sed "s|\${CLAUDE_PLUGIN_ROOT}|$REPO_ROOT/plugin|")
 check "registered command resolves to an executable" [ -x "$command_path" ]
