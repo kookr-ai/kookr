@@ -722,7 +722,7 @@ kookr/
 │           └── recent-paths.ts            # MRU path list
 ├── package.json
 ├── tsconfig.json
-└── vite.config.ts
+└── vite.config.mts
 ```
 
 > **Note on `src/shared/`:** The `shared/` layer contains the `ServerMessage`/`ClientMessage` protocol types used by both the server and frontend. The canonical definitions live in `src/shared/contracts/messages.ts` and are re-exported from `src/shared/protocol.ts`. The frontend also imports some pure `src/core/*` types/helpers directly (`Task`, `AgentEvent`, playbook DTOs, workspace DTOs, etc.); what remains forbidden is importing server or adapter I/O internals into the SPA.

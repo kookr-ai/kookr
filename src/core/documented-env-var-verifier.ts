@@ -53,11 +53,11 @@ export interface EnvVarDriftInput {
 
 const ENV_PREFIX = 'KOOKR_';
 
-const DEFAULT_SOURCE_ROOTS = ['src', 'relay', 'bin', 'plugin', 'vite.config.ts'];
+const DEFAULT_SOURCE_ROOTS = ['src', 'relay', 'bin', 'plugin', 'vite.config.mts'];
 const DEFAULT_DOC_FILE = 'docs/reference/environment-variables.md';
 const DEFAULT_ENV_EXAMPLE = '.env.example';
 
-const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.mjs', '.cjs']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.js', '.mjs', '.cjs']);
 const EXCLUDED_DIRS = new Set(['node_modules', 'dist', 'coverage', '__tests__']);
 const TEST_FILE_SUFFIXES = ['.test.ts', '.test.tsx', '.test.js', '.test.mjs', '.spec.ts', '.spec.tsx'];
 // This verifier reads `process.env.KOOKR_*` literally to scan; excluding its
@@ -127,7 +127,7 @@ export const INTERNAL_ENV_VARS: ReadonlySet<string> = new Set([
   'KOOKR_RELAY_PORT',
   'KOOKR_RELAY_TOKEN',
   // Die-with-parent watchdog for test-spawned relay servers (issue #1723).
-  // Set only by vitest.config.ts / the relay lifecycle spawn; not day-to-day
+  // Set only by vitest.config.mts / the relay lifecycle spawn; not day-to-day
   // operator config (production relays are meant to outlive their launcher).
   'KOOKR_RELAY_DIE_WITH_PARENT',
   'KOOKR_RELAY_DIE_WITH_PARENT_INTERVAL_MS',

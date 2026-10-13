@@ -1,6 +1,6 @@
 import { defineConfig } from 'vitest/config';
 
-import { CREDENTIAL_GATED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.ts';
+import { CREDENTIAL_GATED_INTEGRATION_FILES } from './scripts/integration-lane-inventory.mts';
 
 /**
  * Opt-in live-LLM integration lane (#2823).

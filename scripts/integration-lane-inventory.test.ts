@@ -9,7 +9,7 @@ import {
   INTEGRATION_STYLE_FILE_RE,
   SELF_CONTAINED_INTEGRATION_FILES,
   type IntegrationLaneClass,
-} from './integration-lane-inventory.ts';
+} from './integration-lane-inventory.mts';
 
 /**
  * Drift guard for issue #2823: every integration-style Vitest file under
@@ -66,13 +66,13 @@ describe('root Vitest integration lane inventory (#2823)', () => {
       scripts: Record<string, string>;
     };
     expect(pkg.scripts['test:integration']).toBe(
-      'vitest run --config vitest.integration.config.ts',
+      'vitest run --config vitest.integration.config.mts',
     );
     expect(pkg.scripts['test:integration:live']).toBe(
-      'vitest run --config vitest.integration.live.config.ts',
+      'vitest run --config vitest.integration.live.config.mts',
     );
-    expect(existsSync(join(repoRoot, 'vitest.integration.config.ts'))).toBe(true);
-    expect(existsSync(join(repoRoot, 'vitest.integration.live.config.ts'))).toBe(
+    expect(existsSync(join(repoRoot, 'vitest.integration.config.mts'))).toBe(true);
+    expect(existsSync(join(repoRoot, 'vitest.integration.live.config.mts'))).toBe(
       true,
     );
 
@@ -90,8 +90,8 @@ describe('root Vitest integration lane inventory (#2823)', () => {
       'src/server/task-naming-e2e.test.ts',
     ]);
 
-    const [integrationConfig] = readConfigInclude('vitest.integration.config.ts');
-    const [liveConfig] = readConfigInclude('vitest.integration.live.config.ts');
+    const [integrationConfig] = readConfigInclude('vitest.integration.config.mts');
+    const [liveConfig] = readConfigInclude('vitest.integration.live.config.mts');
     expect(integrationConfig).toContain('SELF_CONTAINED_INTEGRATION_FILES');
     expect(liveConfig).toContain('CREDENTIAL_GATED_INTEGRATION_FILES');
     expect(integrationConfig).toMatch(/maxWorkers:\s*4(?!\d)/);

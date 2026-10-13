@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import viteConfig from '../../vite.config';
+import viteConfig from '../../vite.config.mts';
 
 describe('frontend Vite config', () => {
   test('emits hidden production source maps', () => {
