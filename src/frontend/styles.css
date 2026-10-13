@@ -15762,6 +15762,16 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .command-trigger--compact .command-trigger-kbd { display: none; }
 
+/* The palette is a launcher opened with ⌘K/Ctrl+K from anywhere — including
+   while another dialog or panel is open (e.g. toggling the Achievements panel
+   shut, #3407). Both reuse .dialog-overlay (z-index: 100), and DOM order would
+   otherwise let a later-rendered panel's backdrop paint over the palette and
+   swallow its clicks. Lift the palette overlay above dialog-overlay (the same
+   z-index: 200 the first-run overlay uses to sit above dialogs) so the palette
+   stays clickable on top. */
+.command-palette-overlay {
+  z-index: 200;
+}
 /* The palette itself — reuses .dialog-overlay but anchors near the top. */
 .command-palette {
   align-self: flex-start;

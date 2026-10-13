@@ -1551,6 +1551,11 @@ export function App() {
     { id: 'bug-report', label: 'Bug report', section: 'session', keywords: ['feedback', 'issue', 'report'], run: () => openModal('bugReport') },
     { id: 'share-viewer', label: 'Share read-only view', section: 'session', keywords: ['viewer', 'share', 'read-only', 'guest', 'link'], run: () => openModal('shareViewer') },
     { id: 'settings', label: 'Settings', section: 'session', keywords: ['preferences', 'config', 'options'], run: () => { setSettingsFocus(undefined); openModal('settings'); } },
+    // #3407: the palette's second door to the Achievements panel, beside the
+    // status-bar trophy — not a replacement for it. toggleAchievementsPanel is
+    // pure client state (no WS mutation), so it stays visible to read-only
+    // viewers and is intentionally absent from READ_ONLY_HIDDEN_COMMANDS.
+    { id: 'achievements', label: 'Achievements', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_achievements), keywords: ['trophy', 'badge', 'unlock', 'awards'], run: () => toggleAchievementsPanel() },
     { id: 'tour', label: 'Take the tour', section: 'session', keywords: ['onboarding', 'walkthrough', 'product tour'], run: () => openOnboardingTour() },
     { id: 'shortcuts', label: 'Help & shortcuts', section: 'session', shortcut: formatShortcutBinding(shortcutBindings.toggle_shortcuts_help), keywords: ['help', 'keys', 'keyboard'], run: () => openModal('shortcuts') },
   ].filter((action) =>

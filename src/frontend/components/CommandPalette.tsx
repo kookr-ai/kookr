@@ -179,7 +179,7 @@ export function CommandPalette({
   const activeDescendant = selectedRow ? getCommandRowId(listId, selectedRow.key) : undefined;
 
   return (
-    <div className="dialog-overlay" onClick={onClose}>
+    <div className="dialog-overlay command-palette-overlay" onClick={onClose}>
       <div
         ref={dialogRef}
         className="command-palette"
