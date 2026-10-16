@@ -2,23 +2,30 @@ import { describe, test, expect } from 'vitest';
 import {
   classifyKbCommand,
   aggregateLessonDecision,
+  isGenuineKbWriteOutput,
   KB_LESSON_SKIP_MARKER,
+  KB_LESSON_WRITE_RECORDED_MARKER,
 } from './kb-lesson-classifier.js';
 
 describe('classifyKbCommand', () => {
-  test('detects lesson writes — naked, piped, and chained forms', () => {
+  test('`kb remember` is only a write ATTEMPT — naked, piped, and chained forms (#1538)', () => {
+    // The similarity guard can suppress a `kb remember` write, so the bare
+    // command only signals intent; a real write is confirmed from its output.
     expect(classifyKbCommand('kb remember --kb=agent-task-lessons --title="x" --stdin --yes')).toBe(
-      'lesson-write',
+      'lesson-write-attempt',
     );
+    expect(
+      classifyKbCommand('cat <<EOF | kb remember --kb=agent-task-lessons --stdin --yes\n...\nEOF'),
+    ).toBe('lesson-write-attempt');
+    expect(classifyKbCommand('cd /repo && kb remember --kb=agent-task-lessons --stdin --yes')).toBe(
+      'lesson-write-attempt',
+    );
+  });
+
+  test('`kookr lesson remember` is a confirmed write (it never similarity-suppresses)', () => {
     expect(
       classifyKbCommand('kookr lesson remember --title="x" --stdin --yes'),
     ).toBe('lesson-write');
-    expect(
-      classifyKbCommand('cat <<EOF | kb remember --kb=agent-task-lessons --stdin --yes\n...\nEOF'),
-    ).toBe('lesson-write');
-    expect(classifyKbCommand('cd /repo && kb remember --kb=agent-task-lessons --stdin --yes')).toBe(
-      'lesson-write',
-    );
   });
 
   test('detects the explicit-skip marker regardless of how it is printed', () => {
@@ -33,14 +40,15 @@ describe('classifyKbCommand', () => {
     );
   });
 
-  test('treats `kb remember` as stronger than the skip marker on the same line', () => {
-    // Defensive: if an agent writes a lesson and *also* prints a skip note,
-    // the actual write is the durable artifact — count it as a write.
+  test('treats a `kb remember` attempt as stronger than the skip marker on the same line', () => {
+    // If an agent both attempts a write and prints a skip note, the attempt
+    // takes precedence in the command classification (its real outcome is then
+    // confirmed from the PostToolUse output).
     expect(
       classifyKbCommand(
         "kb remember --kb=agent-task-lessons --stdin --yes && echo 'No generic KB lesson: ignore this'",
       ),
-    ).toBe('lesson-write');
+    ).toBe('lesson-write-attempt');
   });
 
   test('treats the skip marker as stronger than a `kb search` on the same line', () => {
@@ -78,6 +86,33 @@ describe('classifyKbCommand', () => {
 
   test('marker constant is exported for prompt/playbook consumers', () => {
     expect(KB_LESSON_SKIP_MARKER).toBe('No generic KB lesson:');
+  });
+});
+
+describe('isGenuineKbWriteOutput', () => {
+  test('confirms a write from the real kb write_performed:true envelope', () => {
+    expect(isGenuineKbWriteOutput('{\n  "action": "create",\n  "write_performed": true\n}')).toBe(true);
+    // Compact JSON too.
+    expect(isGenuineKbWriteOutput('{"write_performed":true}')).toBe(true);
+  });
+
+  test('confirms a write from the shim recorded marker (covers the spool path)', () => {
+    expect(isGenuineKbWriteOutput(`provider down\n${KB_LESSON_WRITE_RECORDED_MARKER} (durable spool abc…)`)).toBe(
+      true,
+    );
+  });
+
+  test('rejects a similarity-suppressed attempt (write_performed:false, no marker)', () => {
+    expect(
+      isGenuineKbWriteOutput(
+        '{\n  "action": "similarity-check",\n  "write_performed": false,\n  "decision_hint": {}\n}',
+      ),
+    ).toBe(false);
+  });
+
+  test('rejects empty or unrelated output', () => {
+    expect(isGenuineKbWriteOutput('')).toBe(false);
+    expect(isGenuineKbWriteOutput('some unrelated stdout')).toBe(false);
   });
 });
 

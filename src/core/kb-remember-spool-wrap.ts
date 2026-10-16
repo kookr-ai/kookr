@@ -8,6 +8,10 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import {
+  KB_LESSON_WRITE_NOT_RECORDED_MARKER,
+  KB_LESSON_WRITE_RECORDED_MARKER,
+} from './kb-lesson-classifier.js';
+import {
   appendLessonWrite,
   buildLessonEntry,
   defaultSpoolDir,
@@ -15,6 +19,27 @@ import {
   extractRememberTitle,
   isLessonRememberArgv,
 } from './lesson-write-spool.js';
+
+/**
+ * One-line hint printed after a suppressed/failed lesson remember so the agent
+ * knows how to turn it into a recorded decision (the #1538 gate will keep
+ * refusing completion-ready until then).
+ */
+const NOT_RECORDED_HINT =
+  `[kookr] No lesson stored. Either re-run with --force (override the similarity `
+  + `guard) or --append=<file> to extend the similar note, or declare an explicit `
+  + `skip: printf 'No generic KB lesson: %s\\n' '<one-line reason>'.\n`;
+
+/**
+ * Detect the real `kb` tool's `write_performed` envelope field in captured
+ * output. Returns the boolean when present, or null when absent (e.g. a
+ * non-lesson remember summary, which omits it).
+ */
+function detectWritePerformed(output: string): boolean | null {
+  if (/"write_performed"\s*:\s*true/.test(output)) return true;
+  if (/"write_performed"\s*:\s*false/.test(output)) return false;
+  return null;
+}
 
 export interface WrapRememberOptions {
   /** Full argv after the binary name (starts with `remember`). */
@@ -67,10 +92,25 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
   if (run.stderr) stderr.write(run.stderr);
 
   if (run.exitCode === 0) {
+    // Exit 0 is almost always a genuine lesson write (`write_performed: true`),
+    // but guard against a future `kb` that reports a suppressed no-op with a
+    // clean exit: only confirm when the envelope does not say otherwise. The
+    // marker lets the #1538 gate key off a real outcome, not the invocation.
+    if (detectWritePerformed(run.stdout + '\n' + run.stderr) === false) {
+      stdout.write(`\n${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb reported write_performed: false)\n`);
+      stdout.write(NOT_RECORDED_HINT);
+      return { exitCode: 0, spooled: false, reason: 'not-recorded' };
+    }
+    stdout.write(`\n${KB_LESSON_WRITE_RECORDED_MARKER}\n`);
     return { exitCode: 0, spooled: false };
   }
 
   if (NO_SPOOL_EXIT_CODES.has(run.exitCode) || !title || !opts.stdinBody.trim()) {
+    // Similarity guard (exit 3) / lesson-validation (exit 2) / caller error:
+    // nothing was stored and nothing is spoolable. Tell the agent (and the
+    // gate) explicitly that no lesson was recorded.
+    stdout.write(`\n${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb exit ${run.exitCode})\n`);
+    stdout.write(NOT_RECORDED_HINT);
     return { exitCode: run.exitCode, spooled: false, reason: 'not-spoolable' };
   }
 
@@ -90,6 +130,10 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     `durable spool (${entry.contentHash.slice(0, 12)}…). ` +
     `Will replay on KB recovery.\n`;
   stderr.write(msg);
+
+  // The lesson is durably captured (spool is the source of truth until drain
+  // succeeds), so confirm it to the #1538 gate just like a direct write.
+  stdout.write(`\n${KB_LESSON_WRITE_RECORDED_MARKER} (durable spool ${entry.contentHash.slice(0, 12)}…)\n`);
 
   // Exit 0 so agents/playbooks treat the lesson as durably captured.
   // The spool is the source of truth until drain succeeds.

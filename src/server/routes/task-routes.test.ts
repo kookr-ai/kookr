@@ -3143,6 +3143,9 @@ describe('POST /api/tasks/:id/signal', () => {
       taskStore: TaskStore,
       command: string,
       tmuxSession = 'kookr-lesson-gate',
+      // When set, also write a PostToolUse line carrying this captured output so
+      // a `kb remember` write can be confirmed from its outcome (#1538).
+      postOutput?: string,
     ): string {
       const task = taskStore.createTask({ prompt: 'Ship it', cwd: '/repo' });
       taskStore.addSession(task.id, {
@@ -3151,13 +3154,26 @@ describe('POST /api/tasks/:id/signal', () => {
         cwd: '/repo',
         createdAt: new Date(),
       });
-      writeFileSync(
-        join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
-        `${JSON.stringify({
+      const lines = [
+        JSON.stringify({
           hook_event_name: 'PreToolUse',
           tool_name: 'Bash',
           tool_input: { command },
-        })}\n`,
+        }),
+      ];
+      if (postOutput !== undefined) {
+        lines.push(
+          JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_response: { stdout: postOutput, stderr: '', interrupted: false },
+          }),
+        );
+      }
+      writeFileSync(
+        join(kookrDir, 'hooks', `${tmuxSession}.jsonl`),
+        lines.join('\n') + '\n',
         'utf8',
       );
       return task.id;
@@ -3213,11 +3229,13 @@ describe('POST /api/tasks/:id/signal', () => {
       expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
     });
 
-    test('allows completion_ready after a kb remember lesson write', async () => {
+    test('allows completion_ready after a CONFIRMED kb remember lesson write', async () => {
       const taskStore = new TaskStore();
       const id = seedSessionWithHook(
         taskStore,
         'kb remember --kb=agent-task-lessons --title="x" --stdin --yes',
+        'kookr-lesson-gate',
+        '{"action":"create","lesson":true,"write_performed":true}',
       );
       const deps = { ...mkLoopDeps(taskStore), kookrDir };
 
@@ -3229,6 +3247,29 @@ describe('POST /api/tasks/:id/signal', () => {
 
       expect(res.status).toBe(200);
       expect(taskStore.getPendingSignal(id)?.kind).toBe('completion_ready');
+    });
+
+    test('rejects completion_ready after a similarity-SUPPRESSED kb remember (#1538 loophole)', async () => {
+      const taskStore = new TaskStore();
+      const id = seedSessionWithHook(
+        taskStore,
+        'kb remember --kb=agent-task-lessons --title="dup" --stdin --yes',
+        'kookr-lesson-gate',
+        '{"action":"similarity-check","write_performed":false,"decision_hint":{"summary":"Similar KB chunks were found before writing."}}',
+      );
+      const deps = { ...mkLoopDeps(taskStore), kookrDir };
+
+      const res = await mkApp(deps).request(`/api/tasks/${id}/signal`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'completion_ready' }),
+      });
+
+      expect(res.status).toBe(409);
+      const body = await res.json();
+      expect(body.code).toBe('lesson_decision_required');
+      // The suppressed write stored nothing and is not counted as a decision.
+      expect(taskStore.getPendingSignal(id)).toBeUndefined();
     });
 
     test('allows completion_ready after an explicit skip marker', async () => {

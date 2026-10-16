@@ -18,16 +18,14 @@
  * search-only (kb activity with neither). See src/core/kb-lesson-classifier.
  */
 import { readFile, readdir } from 'node:fs/promises';
-import { existsSync, createReadStream } from 'node:fs';
-import { createInterface } from 'node:readline';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import {
-  classifyKbCommand,
   aggregateLessonDecision,
   KB_LESSON_SKIP_MARKER,
   type LessonDecisionState,
 } from '../src/core/kb-lesson-classifier.js';
+import { scanHookLogForLessonDecision } from '../src/core/lesson-decision.js';
 
 interface TaskSession {
   tmuxSession?: string;
@@ -51,52 +49,15 @@ const daysIdx = args.indexOf('--days');
 const days = daysIdx >= 0 ? Math.max(1, parseInt(args[daysIdx + 1] ?? '7', 10) || 7) : 7;
 const cutoffMs = Date.now() - days * 86_400_000;
 
-interface LogStats {
-  kbCalls: number;
-  bashCalls: number;
-  lessonWrites: number;
-  lessonSkips: number;
-  kbSearches: number;
-  exists: boolean;
-}
+// Reuse the gate's hook-log scanner so the report classifies lessons exactly
+// as the #1538 completion-ready gate does — in particular, a `kb remember`
+// write that the similarity guard suppressed is NOT counted as a lesson write
+// (it keys off the PostToolUse `write_performed`/shim-marker outcome, not the
+// bare invocation). See src/core/lesson-decision.ts.
+type LogStats = Awaited<ReturnType<typeof scanHookLogForLessonDecision>>;
 
 async function scanLog(path: string): Promise<LogStats> {
-  if (!existsSync(path)) {
-    return { kbCalls: 0, bashCalls: 0, lessonWrites: 0, lessonSkips: 0, kbSearches: 0, exists: false };
-  }
-  let kbCalls = 0;
-  let bashCalls = 0;
-  let lessonWrites = 0;
-  let lessonSkips = 0;
-  let kbSearches = 0;
-  const rl = createInterface({ input: createReadStream(path, { encoding: 'utf8' }) });
-  for await (const line of rl) {
-    if (!line) continue;
-    let evt: { hook_event_name?: string; tool_name?: string; tool_input?: { command?: string } };
-    try {
-      evt = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (evt.hook_event_name !== 'PreToolUse' || evt.tool_name !== 'Bash') continue;
-    bashCalls++;
-    const cmd = evt.tool_input?.command ?? '';
-    if (cmd.includes('kb ')) kbCalls++;
-    switch (classifyKbCommand(cmd)) {
-      case 'lesson-write':
-        lessonWrites++;
-        break;
-      case 'lesson-skip':
-        lessonSkips++;
-        break;
-      case 'kb-search':
-        kbSearches++;
-        break;
-      case 'none':
-        break;
-    }
-  }
-  return { kbCalls, bashCalls, lessonWrites, lessonSkips, kbSearches, exists: true };
+  return scanHookLogForLessonDecision(path);
 }
 
 function pad(s: string | number, n: number, right = false): string {
@@ -293,7 +254,7 @@ async function main(): Promise<void> {
   }
   console.log(`\nDetection rule: PreToolUse Bash event whose command contains the literal "kb " (trailing space). Source: ~/.kookr/hooks/<tmuxSession>.jsonl. Subagent tool calls only count if they fire the parent-session hook.`);
   console.log(
-    `Lesson-decision rule (#227): "kb remember" → wrote-lesson; "${KB_LESSON_SKIP_MARKER}" marker → explicit-skip; otherwise kb-search. Strongest signal wins per task.\n`,
+    `Lesson-decision rule (#227/#1538): a confirmed "kb remember" write (write_performed:true / shim recorded marker, NOT a similarity-suppressed attempt) → wrote-lesson; "${KB_LESSON_SKIP_MARKER}" marker → explicit-skip; otherwise kb-search. Strongest signal wins per task.\n`,
   );
 }
 

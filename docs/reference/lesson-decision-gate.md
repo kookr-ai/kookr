@@ -14,9 +14,18 @@ This gate makes lesson authoring a **lifecycle step**, not a voluntary act.
 `POST /api/tasks/:id/signal` with `kind: "completion_ready"`:
 
 1. Resolves the task's sessions → hook logs under `<kookrDir>/hooks/<tmuxSession>.jsonl`.
-2. Classifies PreToolUse Bash commands with the same rules as issue #227 /
+2. Classifies Bash hook lines with the same rules as issue #227 /
    `scripts/kb-usage-report.ts`:
-   - `kb remember` → **wrote-lesson**
+   - a **confirmed** `kb remember` write → **wrote-lesson**. The bare
+     PreToolUse command is only an *attempt*: the real `kb` similarity guard can
+     suppress the write (storing nothing, `write_performed: false`). A genuine
+     write is confirmed from the command's **PostToolUse output** —
+     `write_performed: true`, or the Kookr `kb` shim's
+     `KOOKR_LESSON_WRITE: recorded` marker (which also covers the
+     runtime-failure-then-spooled case). A suppressed attempt is **not** a
+     decision (issue #1538 loophole fix).
+   - `kookr lesson remember` → **wrote-lesson** from the command alone — it runs
+     with `--no-check-similar` and spools on failure, so it never suppresses.
    - literal `No generic KB lesson:` → **explicit-skip**
    - other `kb ` traffic → **search-only**
    - neither → **no-kb-activity**
@@ -144,8 +153,9 @@ Completion path is stamped on the task at complete time. Historical tasks withou
 
 | Path | Role |
 |------|------|
-| `src/core/kb-lesson-classifier.ts` | Line classification (issue #227) |
-| `src/core/lesson-decision.ts` | Gate + yield aggregation (issue #1538) |
+| `src/core/kb-lesson-classifier.ts` | Line classification + genuine-write detection (issues #227, #1538) |
+| `src/core/kb-remember-spool-wrap.ts` | `bin/kb` shim: emits the `KOOKR_LESSON_WRITE` outcome marker (issue #1538) |
+| `src/core/lesson-decision.ts` | Gate + yield aggregation, PreToolUse + PostToolUse scan (issue #1538) |
 | `src/server/routes/task-routes.ts` | `POST …/signal` enforcement |
 | `src/server/routes/diagnostics-routes.ts` | Health + diagnostics surfaces |
 | `src/cli/kookr-lesson.ts` | `kookr lesson yield` |
@@ -153,14 +163,21 @@ Completion path is stamped on the task at complete time. Historical tasks withou
 
 ## Detection notes
 
-- Classification is **presence of the command string** in a pre-tool shell
-  invocation, not proof that `kb remember` exited 0. A command containing
-  `kb remember` or `kookr lesson remember` counts as wrote-lesson.
+- A `kb remember` write is counted from its **outcome**, not the bare
+  invocation (issue #1538). The scanner reads the command's PostToolUse
+  `tool_response` and requires either `write_performed: true` or the Kookr `kb`
+  shim's `KOOKR_LESSON_WRITE: recorded` marker. A similarity-suppressed or
+  validation-failed attempt (`write_performed: false`, no marker) — or a
+  `kb remember` with no PostToolUse outcome at all — does **not** satisfy the
+  gate: the agent must re-run with `--force`/`--append`, or declare an explicit
+  `No generic KB lesson:` skip. `kookr lesson remember` still counts from the
+  command alone (it never suppresses).
 - **Dual agent schemas (issue #1608):** Claude Code writes snake_case
   (`hook_event_name: PreToolUse`, `tool_name: Bash`, `tool_input.command`);
   Grok Build writes camelCase (`hookEventName: pre_tool_use`,
   `toolName: run_terminal_command`, `toolInput.command`). The scanner accepts
-  both. Scanning only the Claude shape was the silent-bypass hole that made
+  both, for pre- and post-tool events alike (`PostToolUse` / `post_tool_use`,
+  with the captured output under `tool_response` / `toolResponse`). Scanning only the Claude shape was the silent-bypass hole that made
   every Grok completion look like `noKbActivity` even when the agent wrote a
   lesson or printed the skip marker.
 - Session names must match `^[A-Za-z0-9_-]{1,128}$`; unsafe names are treated as

@@ -38,6 +38,33 @@ function preToolGrok(command: string): string {
   });
 }
 
+/** Claude Code PostToolUse Bash shape with captured command output (issue #1538). */
+function postToolBash(command: string, output: string): string {
+  return JSON.stringify({
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: { stdout: output, stderr: '', interrupted: false },
+  });
+}
+
+/** Grok Build camelCase post_tool_use / run_terminal_command shape (issue #1538). */
+function postToolGrok(command: string, output: string): string {
+  return JSON.stringify({
+    hookEventName: 'post_tool_use',
+    toolName: 'run_terminal_command',
+    toolInput: { command },
+    toolResponse: { stdout: output },
+  });
+}
+
+/** Real `kb` success envelope for a lesson write (write_performed: true). */
+const KB_OUTPUT_WRITE_OK =
+  '{\n  "knowledge_base_name": "agent-task-lessons",\n  "action": "create",\n  "lesson": true,\n  "write_performed": true\n}';
+/** Real `kb` similarity-guard envelope that stored nothing (write_performed: false). */
+const KB_OUTPUT_SUPPRESSED =
+  '{\n  "action": "similarity-check",\n  "write_performed": false,\n  "decision_hint": { "summary": "Similar KB chunks were found before writing." }\n}';
+
 describe('isLessonDecisionSatisfied', () => {
   test('accepts wrote-lesson and explicit-skip only', () => {
     expect(isLessonDecisionSatisfied('wrote-lesson')).toBe(true);
@@ -173,13 +200,16 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  test('detects kb remember as wrote-lesson', async () => {
+  test('detects a confirmed kb remember write as wrote-lesson', async () => {
     const log = join(dir, 'hooks', 'sess-a.jsonl');
+    const cmd = 'cat <<EOF | kb remember --kb=agent-task-lessons --title="t" --stdin --yes\nbody\nEOF';
     writeFileSync(
       log,
       [
         preToolBash('kb search "x"'),
-        preToolBash('cat <<EOF | kb remember --kb=agent-task-lessons --title="t" --stdin --yes\nbody\nEOF'),
+        preToolBash(cmd),
+        // The write is only confirmed from its PostToolUse output (#1538).
+        postToolBash(cmd, KB_OUTPUT_WRITE_OK),
         '',
       ].join('\n'),
       'utf8',
@@ -196,6 +226,103 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(result.decision).toBe('wrote-lesson');
     expect(result.satisfied).toBe(true);
     expect(result.sessionsScanned).toBe(1);
+  });
+
+  test('a similarity-suppressed kb remember does NOT satisfy the gate (#1538 loophole)', async () => {
+    const log = join(dir, 'hooks', 'sess-suppressed.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title="dup" --stdin --yes';
+    writeFileSync(
+      log,
+      [
+        preToolBash('kb search "x"'),
+        preToolBash(cmd),
+        // kb stored nothing: write_performed:false, no shim recorded marker.
+        postToolBash(cmd, KB_OUTPUT_SUPPRESSED),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const stats = await scanHookLogForLessonDecision(log);
+    expect(stats.lessonWrites).toBe(0);
+
+    const result = await resolveTaskLessonDecision(
+      { id: 't-sup', sessions: [{ tmuxSession: 'sess-suppressed' }] },
+      join(dir, 'hooks'),
+    );
+    // Only kb search activity survives → search-only, which fails the gate.
+    expect(result.decision).toBe('search-only');
+    expect(result.satisfied).toBe(false);
+  });
+
+  test('an unconfirmed kb remember (no PostToolUse outcome) does NOT satisfy the gate', async () => {
+    const log = join(dir, 'hooks', 'sess-unconfirmed.jsonl');
+    writeFileSync(
+      log,
+      preToolBash('kb remember --kb=agent-task-lessons --title="t" --stdin --yes') + '\n',
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-unc', sessions: [{ tmuxSession: 'sess-unconfirmed' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.satisfied).toBe(false);
+  });
+
+  test('the kb shim recorded marker satisfies the gate even without a write_performed envelope', async () => {
+    // Runtime-failure-then-spooled path: no `write_performed:true` envelope,
+    // but the lesson is durably captured and the shim prints the marker.
+    const log = join(dir, 'hooks', 'sess-spooled.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title="t" --stdin --yes';
+    writeFileSync(
+      log,
+      [
+        preToolBash(cmd),
+        postToolBash(cmd, 'provider down\nKOOKR_LESSON_WRITE: recorded (durable spool abc123…)'),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-spool', sessions: [{ tmuxSession: 'sess-spooled' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.decision).toBe('wrote-lesson');
+    expect(result.satisfied).toBe(true);
+  });
+
+  test('a --force kb remember write (write_performed:true) satisfies the gate', async () => {
+    const log = join(dir, 'hooks', 'sess-force.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title="t" --force --stdin --yes';
+    writeFileSync(
+      log,
+      [
+        preToolBash(cmd),
+        postToolBash(cmd, KB_OUTPUT_WRITE_OK),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-force', sessions: [{ tmuxSession: 'sess-force' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.decision).toBe('wrote-lesson');
+    expect(result.satisfied).toBe(true);
+  });
+
+  test('`kookr lesson remember` counts as a write from the command alone (never suppresses)', async () => {
+    const log = join(dir, 'hooks', 'sess-kookr-lesson.jsonl');
+    writeFileSync(
+      log,
+      preToolBash('kookr lesson remember --title="t" --stdin --yes') + '\n',
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-kl', sessions: [{ tmuxSession: 'sess-kookr-lesson' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.decision).toBe('wrote-lesson');
+    expect(result.satisfied).toBe(true);
   });
 
   test('detects skip marker as explicit-skip', async () => {
@@ -249,7 +376,11 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     );
     writeFileSync(
       join(dir, 'hooks', 's2.jsonl'),
-      preToolBash('kb remember --kb=agent-task-lessons --title=x --stdin --yes') + '\n',
+      [
+        preToolBash('kb remember --kb=agent-task-lessons --title=x --stdin --yes'),
+        postToolBash('kb remember --kb=agent-task-lessons --title=x --stdin --yes', KB_OUTPUT_WRITE_OK),
+        '',
+      ].join('\n'),
       'utf8',
     );
     const result = await resolveTaskLessonDecision(
@@ -285,11 +416,16 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
     expect(result.satisfied).toBe(true);
   });
 
-  test('detects Grok Build kb remember as wrote-lesson (issue #1608)', async () => {
+  test('detects a confirmed Grok Build kb remember write as wrote-lesson (issue #1608/#1538)', async () => {
     const log = join(dir, 'hooks', 'sess-grok-write.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title=t --stdin --yes';
     writeFileSync(
       log,
-      preToolGrok('kb remember --kb=agent-task-lessons --title=t --stdin --yes') + '\n',
+      [
+        preToolGrok(cmd),
+        postToolGrok(cmd, KB_OUTPUT_WRITE_OK),
+        '',
+      ].join('\n'),
       'utf8',
     );
     const result = await resolveTaskLessonDecision(
@@ -431,7 +567,8 @@ describe('scan hardening (issue #1553)', () => {
     'early-break scans do not leak file descriptors',
     async () => {
       const log = join(dir, 'hooks', 'sess-fd.jsonl');
-      const lines = [preToolBash('kb remember --kb=agent-task-lessons --title=x --stdin --yes')];
+      const cmd = 'kb remember --kb=agent-task-lessons --title=x --stdin --yes';
+      const lines = [preToolBash(cmd), postToolBash(cmd, KB_OUTPUT_WRITE_OK)];
       for (let i = 0; i < 5000; i++) lines.push(preToolBash(`echo filler ${i}`));
       writeFileSync(log, lines.join('\n') + '\n', 'utf8');
 
@@ -469,7 +606,11 @@ describe('computeLessonYield', () => {
   test('computes yield rate over completed tasks in the window', async () => {
     writeFileSync(
       join(dir, 'hooks', 'done-write.jsonl'),
-      preToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes') + '\n',
+      [
+        preToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes'),
+        postToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes', KB_OUTPUT_WRITE_OK),
+        '',
+      ].join('\n'),
     );
     writeFileSync(
       join(dir, 'hooks', 'done-skip.jsonl'),
@@ -549,7 +690,11 @@ describe('computeLessonYield', () => {
   test('v2 joins decision buckets onto completionPath + gateExempt (issue #1608)', async () => {
     writeFileSync(
       join(dir, 'hooks', 'path-write.jsonl'),
-      preToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes') + '\n',
+      [
+        preToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes'),
+        postToolBash('kb remember --kb=agent-task-lessons --title=a --stdin --yes', KB_OUTPUT_WRITE_OK),
+        '',
+      ].join('\n'),
     );
     writeFileSync(
       join(dir, 'hooks', 'path-none.jsonl'),
