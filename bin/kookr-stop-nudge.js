@@ -33,7 +33,9 @@ const NUDGE_REASON =
   + '(`kb remember --kb=agent-task-lessons …` OR '
   + '`printf \'No generic KB lesson: %s\\n\' \'<reason>\'`), then run '
   + '`kookr signal completion-ready` (optionally with --note "..."). '
-  + 'Completion-ready is rejected without that decision (issue #1538). The user will then '
+  + 'Completion-ready is rejected without that decision (issue #1538); a '
+  + '`kb remember` the similarity guard suppressed (stored nothing) does not count — '
+  + 're-run with --force/--append or print the explicit skip. The user will then '
   + 'review and complete it. If there is more to do — or this is just a turn boundary, '
   + 'not the end of the task — simply continue or stop as you judge. '
   + 'This reminder fires at most once per task.';
@@ -162,7 +164,26 @@ async function main(env = process.env) {
   }
   if (!task) return done(false);
   if (isTerminalStatus(task.status)) return done(false);
-  if (task.pendingSignal) return done(false); // already signaled — nothing to remind
+  if (task.pendingSignal) {
+    // Already signaled — nothing to remind. When the raised signal is an
+    // accepted completion_ready, persist the once-per-task marker now. Its
+    // presence means the #1538 lesson-decision gate already passed (a decision
+    // is on record), so the whole ritual is done. Without this, the ephemeral
+    // pendingSignal is the only thing keeping the nudge quiet: once the signal
+    // is acked/cleared while the task is still non-terminal (e.g. a follow-up
+    // turn), the next stop would re-fire the full lesson-decision + re-signal
+    // dance (issue #1538 defect B). The durable marker makes the silence stick.
+    if (task.pendingSignal.kind === 'completion_ready') {
+      try {
+        mkdirSync(markerDir(), { recursive: true });
+        writeFileSync(mark, new Date().toISOString(), { flag: 'wx' });
+      } catch {
+        // Best-effort: already-present marker (wx) or unwritable dir — stay
+        // silent for this stop regardless.
+      }
+    }
+    return done(false);
+  }
 
   // 6. Minimal activity gate: don't spend the one nudge on a trivial first stop.
   const minAgeMs = parseMinAge(env.KOOKR_NUDGE_MIN_TASK_AGE_MS);

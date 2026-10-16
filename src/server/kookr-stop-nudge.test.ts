@@ -129,6 +129,23 @@ describe('kookr-stop-nudge behavior (subprocess, hard fail-open)', () => {
     expect(blocked(res.stdout)).toBe(false);
   });
 
+  it('does not re-nudge after an accepted completion_ready is acked and cleared (issue #1538 defect B)', async () => {
+    // First stop while completion_ready is pending: stay silent AND persist the
+    // once-per-task marker so the silence survives the signal being cleared.
+    task.pendingSignal = { kind: 'completion_ready', raisedAt: OLD_CREATED_AT };
+    const first = await run({ stdin: JSON.stringify({ stop_hook_active: false }), env: baseEnv() });
+    expect(first.status).toBe(0);
+    expect(blocked(first.stdout)).toBe(false);
+    expect(existsSync(join(home, '.kookr', 'stop-nudge', 't-1'))).toBe(true);
+
+    // The signal is acked/cleared but the task is still non-terminal (e.g. a
+    // follow-up turn). The next stop must NOT re-prompt the whole ritual.
+    delete task.pendingSignal;
+    const second = await run({ stdin: JSON.stringify({ stop_hook_active: false }), env: baseEnv() });
+    expect(second.status).toBe(0);
+    expect(blocked(second.stdout)).toBe(false);
+  });
+
   it('honors the KOOKR_NUDGE_DISABLED kill switch', async () => {
     const res = await run({ stdin: JSON.stringify({ stop_hook_active: false }), env: baseEnv({ KOOKR_NUDGE_DISABLED: '1' }) });
     expect(res.status).toBe(0);

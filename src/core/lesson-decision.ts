@@ -5,14 +5,18 @@
  * policy text — agents finished and signaled completion-ready without emitting
  * either a `kb remember` write or the explicit skip marker. This module:
  *
- *  1. Scans a task's pre-tool shell hook logs for a lesson decision
- *     (reuses {@link classifyKbCommand} / {@link aggregateLessonDecision}).
+ *  1. Scans a task's shell hook logs for a lesson decision (reuses
+ *     {@link classifyKbCommand} / {@link aggregateLessonDecision}). A
+ *     `kb remember` write is confirmed from its PostToolUse *output*
+ *     (`write_performed: true` / shim marker), not the bare invocation, so a
+ *     similarity-suppressed attempt no longer counts (issue #1538).
  *  2. Declares whether a `completion_ready` signal may proceed.
  *  3. Aggregates a per-window "lesson yield" (decided / completed tasks) so
  *     reflections can audit the flywheel without grepping the KB shelf.
  *
  * Detection source of truth: `~/.kookr/hooks/<tmuxSession>.jsonl` pre-tool
- * shell commands — same as `scripts/kb-usage-report.ts` / issue #227.
+ * shell commands (intent) plus post-tool output (write outcome) — same as
+ * `scripts/kb-usage-report.ts` / issues #227, #1538.
  *
  * Dual agent schemas (issue #1608): Claude Code writes snake_case
  * (`hook_event_name: PreToolUse`, `tool_name: Bash`, `tool_input.command`);
@@ -29,6 +33,7 @@ import { join } from 'node:path';
 import {
   aggregateLessonDecision,
   classifyKbCommand,
+  isGenuineKbWriteOutput,
   KB_LESSON_SKIP_MARKER,
   type LessonDecisionCounts,
   type LessonDecisionState,
@@ -188,6 +193,12 @@ const PRE_TOOL_EVENTS = new Set([
   'pre_tool_use', // Grok Build (snake_case value)
 ]);
 
+/** Post-tool hook event names across agent runtimes (issue #1538). */
+const POST_TOOL_EVENTS = new Set([
+  'PostToolUse', // Claude Code (PascalCase)
+  'post_tool_use', // Grok Build (snake_case value)
+]);
+
 /**
  * Extract a shell command from one hook JSONL line, accepting both Claude
  * Code (snake_case) and Grok Build (camelCase) payload shapes.
@@ -209,6 +220,87 @@ export function extractShellCommandFromHookLine(evt: {
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return null;
   const command = (toolInput as { command?: unknown }).command;
   return typeof command === 'string' ? command : null;
+}
+
+/** A shell hook line resolved to its phase, command, and (post) output text. */
+export interface ShellHookLine {
+  phase: 'pre' | 'post';
+  command: string;
+  /** Captured command output on a post-tool line (stdout+stderr); '' otherwise. */
+  output: string;
+}
+
+/** Bound the recursive string-leaf walk so a pathological payload can't blow up. */
+const MAX_TOOL_RESPONSE_STRINGS = 64;
+const MAX_TOOL_RESPONSE_DEPTH = 6;
+
+/**
+ * Flatten a tool_response into searchable output text. The captured command
+ * output lives in different shapes per runtime — Claude Code Bash is
+ * `{ stdout, stderr, … }`; Grok Build nests it (e.g. `toolResult.Content.content`).
+ * Rather than guess field names, collect every string leaf (bounded) and join
+ * them. Raw string leaves are returned un-escaped so the `kb` envelope
+ * (`"write_performed": true`) and the shim marker survive intact for
+ * {@link isGenuineKbWriteOutput} — a blind `JSON.stringify` would escape the
+ * quotes and defeat the match.
+ */
+function extractToolResponseText(toolResponse: unknown): string {
+  if (typeof toolResponse === 'string') return toolResponse;
+  const parts: string[] = [];
+  const walk = (value: unknown, depth: number): void => {
+    if (parts.length >= MAX_TOOL_RESPONSE_STRINGS || depth > MAX_TOOL_RESPONSE_DEPTH) return;
+    if (typeof value === 'string') {
+      parts.push(value);
+    } else if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+    } else if (value && typeof value === 'object') {
+      for (const v of Object.values(value)) walk(v, depth + 1);
+    }
+  };
+  walk(toolResponse, 0);
+  return parts.join('\n');
+}
+
+/**
+ * Extract a shell command (and, for post-tool lines, its output) from one hook
+ * JSONL line, accepting both Claude Code (snake_case) and Grok Build
+ * (camelCase) payload shapes. Returns null when the line is not a pre- or
+ * post-tool shell invocation. The pre/post split lets the #1538 gate confirm a
+ * lesson write from its *outcome* rather than the bare invocation.
+ *
+ * The hook writer logs the RAW runtime payload, so the post-tool output field
+ * is `tool_response` for Claude Code and `toolResult` for Grok Build (the
+ * decoder's rename to `toolResponse` happens downstream and never reaches the
+ * on-disk log). Reading only `toolResponse` here would silently never confirm
+ * a Grok lesson write — a #1608 regression. Both raw field names are accepted.
+ */
+export function extractShellHookLine(evt: {
+  hook_event_name?: unknown;
+  hookEventName?: unknown;
+  tool_name?: unknown;
+  toolName?: unknown;
+  tool_input?: unknown;
+  toolInput?: unknown;
+  tool_response?: unknown;
+  toolResponse?: unknown;
+  toolResult?: unknown;
+  tool_result?: unknown;
+}): ShellHookLine | null {
+  const hookEvent = evt.hook_event_name ?? evt.hookEventName;
+  const toolName = evt.tool_name ?? evt.toolName;
+  if (typeof hookEvent !== 'string' || typeof toolName !== 'string') return null;
+  if (!SHELL_TOOL_NAMES.has(toolName)) return null;
+  const isPre = PRE_TOOL_EVENTS.has(hookEvent);
+  const isPost = POST_TOOL_EVENTS.has(hookEvent);
+  if (!isPre && !isPost) return null;
+  const toolInput = evt.tool_input ?? evt.toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return null;
+  const command = (toolInput as { command?: unknown }).command;
+  if (typeof command !== 'string') return null;
+  if (isPre) return { phase: 'pre', command, output: '' };
+  const rawResponse =
+    evt.tool_response ?? evt.toolResponse ?? evt.toolResult ?? evt.tool_result;
+  return { phase: 'post', command, output: extractToolResponseText(rawResponse) };
 }
 
 /** Env escape hatch for hermetic tests / emergency ops. Values: `0`/`false`/`off`. */
@@ -385,10 +477,14 @@ export interface HookLogScanOptions {
 
 /**
  * Scan one hook JSONL file for lesson-decision signals.
- * Only pre-tool shell lines are considered (Claude `PreToolUse`/`Bash` and
- * Grok `pre_tool_use`/`run_terminal_command` — issue #1608). Early-exits
- * after the first decisive write (strongest signal) to bound latency on
- * large rotated-era live files.
+ * Shell lines are considered from both runtimes (Claude `Bash` and Grok
+ * `run_terminal_command` — issue #1608). An explicit skip marker and `kb
+ * search` activity are read from the pre-tool command; a genuine `kb remember`
+ * write is confirmed from the command's *post-tool output* (issue #1538), so a
+ * similarity-suppressed attempt that stored nothing no longer counts.
+ * `kookr lesson remember` never suppresses, so it counts from the command
+ * alone. Early-exits after the first confirmed write (strongest signal) to
+ * bound latency on large rotated-era live files.
  *
  * The underlying read stream is always destroyed, including on the
  * early-break path — `rl.close()` alone leaves the file descriptor pinned
@@ -431,22 +527,35 @@ export async function scanHookLogForLessonDecision(
       } catch {
         continue;
       }
-      const cmd = extractShellCommandFromHookLine(evt);
-      if (cmd === null) continue;
-      bashCalls++;
-      if (cmd.includes('kb ')) kbCalls++;
-      switch (classifyKbCommand(cmd)) {
-        case 'lesson-write':
-          lessonWrites++;
-          break;
-        case 'lesson-skip':
-          lessonSkips++;
-          break;
-        case 'kb-search':
-          kbSearches++;
-          break;
-        case 'none':
-          break;
+      const shell = extractShellHookLine(evt);
+      if (shell === null) continue;
+      const kind = classifyKbCommand(shell.command);
+      if (shell.phase === 'pre') {
+        // Pre-tool lines carry intent. Count bash/kb activity and the signals
+        // whose outcome equals their intent (an explicit skip is a decision by
+        // being printed; `kookr lesson remember` never suppresses).
+        bashCalls++;
+        if (shell.command.includes('kb ')) kbCalls++;
+        switch (kind) {
+          case 'lesson-write':
+            lessonWrites++;
+            break;
+          case 'lesson-skip':
+            lessonSkips++;
+            break;
+          case 'kb-search':
+            kbSearches++;
+            break;
+          case 'lesson-write-attempt': // confirmed below from the post-tool output
+          case 'none':
+            break;
+        }
+      } else if (kind === 'lesson-write-attempt' && isGenuineKbWriteOutput(shell.output)) {
+        // Post-tool line: a `kb remember` whose output confirms a real write
+        // (shim marker or `write_performed: true`). A similarity-suppressed or
+        // validation-failed attempt (`write_performed: false`, no marker) does
+        // NOT reach here — the #1538 loophole fix.
+        lessonWrites++;
       }
       // Strongest signal already present — further lines cannot change the
       // aggregate decision for this file (wrote-lesson wins over skip).

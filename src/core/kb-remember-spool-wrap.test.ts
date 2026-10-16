@@ -34,8 +34,8 @@ function collectStreams(): {
 }
 
 describe('wrapLessonRemember', () => {
-  test('pass-through success does not touch the spool', async () => {
-    const bin = await fakeKb(`#!/bin/sh\necho '{"action":"create"}'\nexit 0\n`);
+  test('pass-through success does not touch the spool and emits the recorded marker', async () => {
+    const bin = await fakeKb(`#!/bin/sh\necho '{"action":"create","lesson":true,"write_performed":true}'\nexit 0\n`);
     const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-'));
     const streams = collectStreams();
     const result = await wrapLessonRemember({
@@ -49,6 +49,30 @@ describe('wrapLessonRemember', () => {
     expect(result.exitCode).toBe(0);
     expect(result.spooled).toBe(false);
     expect(await readPendingLessons(spoolDir)).toHaveLength(0);
+    // The gate keys off this stdout marker, not the bare invocation (#1538).
+    expect(streams.stdout.chunks.join('')).toContain('KOOKR_LESSON_WRITE: recorded');
+  });
+
+  test('exit-0 no-op (write_performed:false) is reported as not-recorded, not a write', async () => {
+    // Defensive against a future kb that similarity-suppresses with a clean exit.
+    const bin = await fakeKb(
+      `#!/bin/sh\necho '{"action":"similarity-check","write_performed":false}'\nexit 0\n`,
+    );
+    const spoolDir = await mkdtemp(join(tmpdir(), 'kookr-spool-'));
+    const streams = collectStreams();
+    const result = await wrapLessonRemember({
+      argv: ['remember', '--kb=agent-task-lessons', '--title=dup', '--stdin', '--yes'],
+      stdinBody: '## Mistake\na\n## Why it happened\nb\n## Better next time\nc\n',
+      realKbBin: bin,
+      spoolDir,
+      stdout: streams.stdout,
+      stderr: streams.stderr,
+    });
+    expect(result.exitCode).toBe(0);
+    expect(result.spooled).toBe(false);
+    const out = streams.stdout.chunks.join('');
+    expect(out).toContain('KOOKR_LESSON_WRITE: not-recorded');
+    expect(out).not.toContain('KOOKR_LESSON_WRITE: recorded');
   });
 
   test('runtime failure spools the lesson and exits 0', async () => {
@@ -72,6 +96,8 @@ describe('wrapLessonRemember', () => {
     expect(pending[0]!.title).toBe('spool-me');
     expect(pending[0]!.taskId).toBe('task-xyz');
     expect(streams.stderr.chunks.join('')).toMatch(/durable spool/);
+    // Durably captured → confirmed to the gate just like a direct write (#1538).
+    expect(streams.stdout.chunks.join('')).toContain('KOOKR_LESSON_WRITE: recorded');
   });
 
   test('argv validation failure (exit 2) is not spooled', async () => {
@@ -106,6 +132,10 @@ describe('wrapLessonRemember', () => {
     expect(result.exitCode).toBe(3);
     expect(result.spooled).toBe(false);
     expect(await readPendingLessons(spoolDir)).toHaveLength(0);
+    // Nothing stored → the gate must not count it (#1538 loophole).
+    const out = streams.stdout.chunks.join('');
+    expect(out).toContain('KOOKR_LESSON_WRITE: not-recorded');
+    expect(out).not.toContain('KOOKR_LESSON_WRITE: recorded');
   });
 
   test('non-lesson remember is not spooled even on failure', async () => {

@@ -37,8 +37,19 @@ function oversizedHookLog(): string {
   const lines: string[] = [];
   for (let i = 0; i < 20_000; i++) lines.push(filler);
   // Decisive line last: the scan reads the whole file before it early-breaks,
-  // i.e. the worst case for a single file of this size (no early exit).
-  lines.push(preToolBash('kb remember --kb=agent-task-lessons --title="t" --stdin --yes'));
+  // i.e. the worst case for a single file of this size (no early exit). The
+  // write is confirmed from its PostToolUse outcome (#1538), not the bare
+  // invocation.
+  const writeCmd = 'kb remember --kb=agent-task-lessons --title="t" --stdin --yes';
+  lines.push(preToolBash(writeCmd));
+  lines.push(
+    JSON.stringify({
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: writeCmd },
+      tool_response: { stdout: '{"action":"create","lesson":true,"write_performed":true}', stderr: '' },
+    }),
+  );
   lines.push('');
   return lines.join('\n');
 }

@@ -2495,15 +2495,25 @@ describe('diagnostics routes', () => {
     test('returns lesson-yield.v2 for completed tasks in the window', async () => {
       const kookrDir = join(tempDir, 'kookr-state');
       mkdirSync(join(kookrDir, 'hooks'), { recursive: true });
+      const writeCmd = 'kb remember --kb=agent-task-lessons --title=t --stdin --yes';
       writeFileSync(
         join(kookrDir, 'hooks', 's-write.jsonl'),
-        `${JSON.stringify({
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Bash',
-          tool_input: {
-            command: 'kb remember --kb=agent-task-lessons --title=t --stdin --yes',
-          },
-        })}\n`,
+        [
+          JSON.stringify({
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: writeCmd },
+          }),
+          // Confirm the write from its outcome (#1538) — a bare invocation is
+          // only an attempt the similarity guard might have suppressed.
+          JSON.stringify({
+            hook_event_name: 'PostToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: writeCmd },
+            tool_response: { stdout: '{"action":"create","lesson":true,"write_performed":true}', stderr: '' },
+          }),
+          '',
+        ].join('\n'),
       );
 
       const taskStore = new TaskStore();
