@@ -12,10 +12,14 @@
  * literal substring `kb ` (with trailing space). This catches `kb search …`,
  * piped forms (`… | kb remember …`), and chained forms (`a && kb list`).
  *
- * Lesson decisions (issue #227): per-task classification of post-task lesson
- * behavior — wrote-lesson (saw `kb remember`), explicit-skip (saw the
- * `No generic KB lesson:` marker the playbook prompts agents to print), or
- * search-only (kb activity with neither). See src/core/kb-lesson-classifier.
+ * Lesson decisions (issues #227, #1538): per-task classification of post-task
+ * lesson behavior — wrote-lesson (a CONFIRMED `kb remember` write: PostToolUse
+ * `write_performed: true` or the shim's `KOOKR_LESSON_WRITE: recorded` marker,
+ * NOT a similarity-suppressed attempt; or any `kookr lesson remember`),
+ * explicit-skip (saw the `No generic KB lesson:` marker the playbook prompts
+ * agents to print), or search-only (kb activity with neither). The write is
+ * confirmed from the command's paired PostToolUse output, matching the
+ * completion-ready gate. See src/core/kb-lesson-classifier + lesson-decision.
  */
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -252,7 +256,7 @@ async function main(): Promise<void> {
     const n = rows.filter((r) => r.missingLogs > 0).length;
     console.log(`Note: ${n} task(s) had ${rows.reduce((a, r) => a + r.missingLogs, 0)} session(s) with no hook log on disk (rotated or pre-hook) — partial coverage.`);
   }
-  console.log(`\nDetection rule: PreToolUse Bash event whose command contains the literal "kb " (trailing space). Source: ~/.kookr/hooks/<tmuxSession>.jsonl. Subagent tool calls only count if they fire the parent-session hook.`);
+  console.log(`\nDetection rule: PreToolUse Bash event whose command contains the literal "kb " (trailing space); lesson writes are confirmed from the paired PostToolUse output (#1538). Source: ~/.kookr/hooks/<tmuxSession>.jsonl. Subagent tool calls only count if they fire the parent-session hook.`);
   console.log(
     `Lesson-decision rule (#227/#1538): a confirmed "kb remember" write (write_performed:true / shim recorded marker, NOT a similarity-suppressed attempt) → wrote-lesson; "${KB_LESSON_SKIP_MARKER}" marker → explicit-skip; otherwise kb-search. Strongest signal wins per task.\n`,
   );

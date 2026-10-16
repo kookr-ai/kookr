@@ -5,14 +5,18 @@
  * policy text — agents finished and signaled completion-ready without emitting
  * either a `kb remember` write or the explicit skip marker. This module:
  *
- *  1. Scans a task's pre-tool shell hook logs for a lesson decision
- *     (reuses {@link classifyKbCommand} / {@link aggregateLessonDecision}).
+ *  1. Scans a task's shell hook logs for a lesson decision (reuses
+ *     {@link classifyKbCommand} / {@link aggregateLessonDecision}). A
+ *     `kb remember` write is confirmed from its PostToolUse *output*
+ *     (`write_performed: true` / shim marker), not the bare invocation, so a
+ *     similarity-suppressed attempt no longer counts (issue #1538).
  *  2. Declares whether a `completion_ready` signal may proceed.
  *  3. Aggregates a per-window "lesson yield" (decided / completed tasks) so
  *     reflections can audit the flywheel without grepping the KB shelf.
  *
  * Detection source of truth: `~/.kookr/hooks/<tmuxSession>.jsonl` pre-tool
- * shell commands — same as `scripts/kb-usage-report.ts` / issue #227.
+ * shell commands (intent) plus post-tool output (write outcome) — same as
+ * `scripts/kb-usage-report.ts` / issues #227, #1538.
  *
  * Dual agent schemas (issue #1608): Claude Code writes snake_case
  * (`hook_event_name: PreToolUse`, `tool_name: Bash`, `tool_input.command`);
@@ -226,29 +230,35 @@ export interface ShellHookLine {
   output: string;
 }
 
+/** Bound the recursive string-leaf walk so a pathological payload can't blow up. */
+const MAX_TOOL_RESPONSE_STRINGS = 64;
+const MAX_TOOL_RESPONSE_DEPTH = 6;
+
 /**
- * Flatten a tool_response into searchable output text. Bash responses are
- * `{ stdout, stderr, ... }` (Claude Code); other runtimes vary, so fall back
- * to common string fields. Raw field strings are returned un-escaped so the
- * `kb` envelope (`"write_performed": true`) and the shim marker survive intact
- * for {@link isGenuineKbWriteOutput} — a blind `JSON.stringify` would escape
- * the quotes and defeat the match.
+ * Flatten a tool_response into searchable output text. The captured command
+ * output lives in different shapes per runtime — Claude Code Bash is
+ * `{ stdout, stderr, … }`; Grok Build nests it (e.g. `toolResult.Content.content`).
+ * Rather than guess field names, collect every string leaf (bounded) and join
+ * them. Raw string leaves are returned un-escaped so the `kb` envelope
+ * (`"write_performed": true`) and the shim marker survive intact for
+ * {@link isGenuineKbWriteOutput} — a blind `JSON.stringify` would escape the
+ * quotes and defeat the match.
  */
 function extractToolResponseText(toolResponse: unknown): string {
   if (typeof toolResponse === 'string') return toolResponse;
-  if (!toolResponse || typeof toolResponse !== 'object') return '';
-  const r = toolResponse as Record<string, unknown>;
   const parts: string[] = [];
-  for (const key of ['stdout', 'stderr', 'output', 'content', 'text', 'result']) {
-    const value = r[key];
-    if (typeof value === 'string') parts.push(value);
-  }
-  if (parts.length > 0) return parts.join('\n');
-  try {
-    return JSON.stringify(toolResponse);
-  } catch {
-    return '';
-  }
+  const walk = (value: unknown, depth: number): void => {
+    if (parts.length >= MAX_TOOL_RESPONSE_STRINGS || depth > MAX_TOOL_RESPONSE_DEPTH) return;
+    if (typeof value === 'string') {
+      parts.push(value);
+    } else if (Array.isArray(value)) {
+      for (const v of value) walk(v, depth + 1);
+    } else if (value && typeof value === 'object') {
+      for (const v of Object.values(value)) walk(v, depth + 1);
+    }
+  };
+  walk(toolResponse, 0);
+  return parts.join('\n');
 }
 
 /**
@@ -257,6 +267,12 @@ function extractToolResponseText(toolResponse: unknown): string {
  * (camelCase) payload shapes. Returns null when the line is not a pre- or
  * post-tool shell invocation. The pre/post split lets the #1538 gate confirm a
  * lesson write from its *outcome* rather than the bare invocation.
+ *
+ * The hook writer logs the RAW runtime payload, so the post-tool output field
+ * is `tool_response` for Claude Code and `toolResult` for Grok Build (the
+ * decoder's rename to `toolResponse` happens downstream and never reaches the
+ * on-disk log). Reading only `toolResponse` here would silently never confirm
+ * a Grok lesson write — a #1608 regression. Both raw field names are accepted.
  */
 export function extractShellHookLine(evt: {
   hook_event_name?: unknown;
@@ -267,6 +283,8 @@ export function extractShellHookLine(evt: {
   toolInput?: unknown;
   tool_response?: unknown;
   toolResponse?: unknown;
+  toolResult?: unknown;
+  tool_result?: unknown;
 }): ShellHookLine | null {
   const hookEvent = evt.hook_event_name ?? evt.hookEventName;
   const toolName = evt.tool_name ?? evt.toolName;
@@ -280,8 +298,9 @@ export function extractShellHookLine(evt: {
   const command = (toolInput as { command?: unknown }).command;
   if (typeof command !== 'string') return null;
   if (isPre) return { phase: 'pre', command, output: '' };
-  const output = extractToolResponseText(evt.tool_response ?? evt.toolResponse);
-  return { phase: 'post', command, output };
+  const rawResponse =
+    evt.tool_response ?? evt.toolResponse ?? evt.toolResult ?? evt.tool_result;
+  return { phase: 'post', command, output: extractToolResponseText(rawResponse) };
 }
 
 /** Env escape hatch for hermetic tests / emergency ops. Values: `0`/`false`/`off`. */

@@ -87,21 +87,22 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
   const kb = extractRememberKb(opts.argv);
   const run = await runCapturing(opts.realKbBin, opts.argv, opts.stdinBody, env, opts.timeoutMs);
 
-  // Always surface original stdout/stderr so agents see real diagnostics.
-  if (run.stdout) stdout.write(run.stdout);
-  if (run.stderr) stderr.write(run.stderr);
-
+  // Emit the outcome marker at the HEAD of our stdout — before echoing kb's own
+  // (possibly large) output. The #1538 gate reads this marker out of the hook
+  // trail's captured `tool_response`, which the agent runtime may truncate; a
+  // leading marker survives a tail-truncated capture, a trailing one may not.
   if (run.exitCode === 0) {
     // Exit 0 is almost always a genuine lesson write (`write_performed: true`),
     // but guard against a future `kb` that reports a suppressed no-op with a
-    // clean exit: only confirm when the envelope does not say otherwise. The
-    // marker lets the #1538 gate key off a real outcome, not the invocation.
+    // clean exit: only confirm when the envelope does not say otherwise.
     if (detectWritePerformed(run.stdout + '\n' + run.stderr) === false) {
-      stdout.write(`\n${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb reported write_performed: false)\n`);
+      stdout.write(`${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb reported write_performed: false)\n`);
       stdout.write(NOT_RECORDED_HINT);
+      echoRun(stdout, stderr, run);
       return { exitCode: 0, spooled: false, reason: 'not-recorded' };
     }
-    stdout.write(`\n${KB_LESSON_WRITE_RECORDED_MARKER}\n`);
+    stdout.write(`${KB_LESSON_WRITE_RECORDED_MARKER}\n`);
+    echoRun(stdout, stderr, run);
     return { exitCode: 0, spooled: false };
   }
 
@@ -109,8 +110,9 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     // Similarity guard (exit 3) / lesson-validation (exit 2) / caller error:
     // nothing was stored and nothing is spoolable. Tell the agent (and the
     // gate) explicitly that no lesson was recorded.
-    stdout.write(`\n${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb exit ${run.exitCode})\n`);
+    stdout.write(`${KB_LESSON_WRITE_NOT_RECORDED_MARKER} (kb exit ${run.exitCode})\n`);
     stdout.write(NOT_RECORDED_HINT);
+    echoRun(stdout, stderr, run);
     return { exitCode: run.exitCode, spooled: false, reason: 'not-spoolable' };
   }
 
@@ -124,16 +126,17 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     lastError: (run.stderr || run.stdout || `exit ${run.exitCode}`).slice(0, 500),
   });
   const appended = await appendLessonWrite(spoolDir, entry);
-  const msg =
-    `[kookr] kb remember failed (exit ${run.exitCode}); ` +
-    `lesson ${appended.reason === 'duplicate' ? 'already in' : 'appended to'} ` +
-    `durable spool (${entry.contentHash.slice(0, 12)}…). ` +
-    `Will replay on KB recovery.\n`;
-  stderr.write(msg);
 
   // The lesson is durably captured (spool is the source of truth until drain
   // succeeds), so confirm it to the #1538 gate just like a direct write.
-  stdout.write(`\n${KB_LESSON_WRITE_RECORDED_MARKER} (durable spool ${entry.contentHash.slice(0, 12)}…)\n`);
+  stdout.write(`${KB_LESSON_WRITE_RECORDED_MARKER} (durable spool ${entry.contentHash.slice(0, 12)}…)\n`);
+  echoRun(stdout, stderr, run);
+  stderr.write(
+    `[kookr] kb remember failed (exit ${run.exitCode}); ` +
+    `lesson ${appended.reason === 'duplicate' ? 'already in' : 'appended to'} ` +
+    `durable spool (${entry.contentHash.slice(0, 12)}…). ` +
+    `Will replay on KB recovery.\n`,
+  );
 
   // Exit 0 so agents/playbooks treat the lesson as durably captured.
   // The spool is the source of truth until drain succeeds.
@@ -143,6 +146,16 @@ export async function wrapLessonRemember(opts: WrapRememberOptions): Promise<Wra
     contentHash: entry.contentHash,
     reason: appended.reason,
   };
+}
+
+/** Echo the real kb process output after our leading outcome marker. */
+function echoRun(
+  stdout: NodeJS.WritableStream,
+  stderr: NodeJS.WritableStream,
+  run: { stdout: string; stderr: string },
+): void {
+  if (run.stdout) stdout.write(run.stdout);
+  if (run.stderr) stderr.write(run.stderr);
 }
 
 async function runCapturing(

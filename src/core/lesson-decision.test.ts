@@ -48,13 +48,19 @@ function postToolBash(command: string, output: string): string {
   });
 }
 
-/** Grok Build camelCase post_tool_use / run_terminal_command shape (issue #1538). */
+/**
+ * Grok Build camelCase post_tool_use / run_terminal_command shape (issue #1538).
+ * The hook writer logs the RAW payload, so the captured output lives under
+ * `toolResult` and is nested (e.g. `Content.content`) — NOT a flat
+ * `toolResponse.stdout`. Modeled on the real fixture
+ * `docs/poc/009-grok-build-basic-supervision/fixtures/hook-payloads.redacted.json`.
+ */
 function postToolGrok(command: string, output: string): string {
   return JSON.stringify({
     hookEventName: 'post_tool_use',
     toolName: 'run_terminal_command',
     toolInput: { command },
-    toolResponse: { stdout: output },
+    toolResult: { type: 'RunTerminalCommand', Content: { content: output } },
   });
 }
 
@@ -265,6 +271,30 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
       { id: 't-unc', sessions: [{ tmuxSession: 'sess-unconfirmed' }] },
       join(dir, 'hooks'),
     );
+    // An unconfirmed attempt counts as neither write nor search → no-kb-activity.
+    expect(result.decision).toBe('no-kb-activity');
+    expect(result.satisfied).toBe(false);
+  });
+
+  test('a kb remember whose PostToolUse output is truncated (no marker / envelope) does NOT satisfy the gate', async () => {
+    // Fail-closed: if the agent runtime truncates the captured output so neither
+    // write_performed:true nor the shim marker survives, the write is unproven
+    // and must not pass. The shim front-loads the marker to make this rare.
+    const log = join(dir, 'hooks', 'sess-trunc.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title="t" --stdin --yes 2>&1 | tail -2';
+    writeFileSync(
+      log,
+      [
+        preToolBash(cmd),
+        postToolBash(cmd, '  "candidates": [\n    { "score": 0.8 }\n  ]'),
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-trunc', sessions: [{ tmuxSession: 'sess-trunc' }] },
+      join(dir, 'hooks'),
+    );
     expect(result.satisfied).toBe(false);
   });
 
@@ -291,6 +321,9 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
   });
 
   test('a --force kb remember write (write_performed:true) satisfies the gate', async () => {
+    // `--force` is incidental to classification — it just makes the real kb
+    // override the similarity guard and emit the same `write_performed:true`
+    // envelope. This pins that an overridden write is accepted like any other.
     const log = join(dir, 'hooks', 'sess-force.jsonl');
     const cmd = 'kb remember --kb=agent-task-lessons --title="t" --force --stdin --yes';
     writeFileSync(
@@ -433,6 +466,21 @@ describe('scanHookLogForLessonDecision + resolveTaskLessonDecision', () => {
       join(dir, 'hooks'),
     );
     expect(result.decision).toBe('wrote-lesson');
+  });
+
+  test('a similarity-suppressed Grok Build kb remember does NOT satisfy the gate', async () => {
+    const log = join(dir, 'hooks', 'sess-grok-sup.jsonl');
+    const cmd = 'kb remember --kb=agent-task-lessons --title=t --stdin --yes';
+    writeFileSync(
+      log,
+      [preToolGrok(cmd), postToolGrok(cmd, KB_OUTPUT_SUPPRESSED), ''].join('\n'),
+      'utf8',
+    );
+    const result = await resolveTaskLessonDecision(
+      { id: 't-grok-sup', sessions: [{ tmuxSession: 'sess-grok-sup' }] },
+      join(dir, 'hooks'),
+    );
+    expect(result.satisfied).toBe(false);
   });
 });
 

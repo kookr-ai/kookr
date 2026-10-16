@@ -33,7 +33,9 @@ const NUDGE_REASON =
   + '(`kb remember --kb=agent-task-lessons …` OR '
   + '`printf \'No generic KB lesson: %s\\n\' \'<reason>\'`), then run '
   + '`kookr signal completion-ready` (optionally with --note "..."). '
-  + 'Completion-ready is rejected without that decision (issue #1538). The user will then '
+  + 'Completion-ready is rejected without that decision (issue #1538); a '
+  + '`kb remember` the similarity guard suppressed (stored nothing) does not count — '
+  + 're-run with --force/--append or print the explicit skip. The user will then '
   + 'review and complete it. If there is more to do — or this is just a turn boundary, '
   + 'not the end of the task — simply continue or stop as you judge. '
   + 'This reminder fires at most once per task.';

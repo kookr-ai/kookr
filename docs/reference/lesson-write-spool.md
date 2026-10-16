@@ -34,6 +34,13 @@ instances on the same host share one queue.
    - argv/template errors (exit 2) and similarity-guard refuses (exit 3) are
      **not** spooled
 
+The shim also prints an outcome marker to stdout so the #1538 completion-ready
+gate can key off a real result instead of the bare invocation:
+`KOOKR_LESSON_WRITE: recorded` on a genuine write or a successful spool, and
+`KOOKR_LESSON_WRITE: not-recorded` (plus a one-line fix-it hint) when nothing
+was stored (exit 2/3, or an exit-0 `write_performed: false`). See
+[lesson-decision-gate.md](./lesson-decision-gate.md).
+
 Operators can also write via `kookr lesson remember --title=… --stdin --yes`,
 which tries `kb remember` first and spools on failure.
 
