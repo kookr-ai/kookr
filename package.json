@@ -129,7 +129,7 @@
     "better-sqlite3": "^13.0.3",
     "cron-parser": "^5.10.0",
     "groq-sdk": "^1.6.0",
-    "hono": "4.13.7",
+    "hono": "4.13.11",
     "node-pty": "^1.1.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
