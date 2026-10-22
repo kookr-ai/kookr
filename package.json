@@ -7,7 +7,8 @@
     "kookr": "./bin/kookr.js",
     "kookr-spawn": "./bin/kookr-spawn.js",
     "kookr-status": "./bin/kookr-status.js",
-    "kookr-ralph": "./bin/kookr-ralph.js"
+    "kookr-ralph": "./bin/kookr-ralph.js",
+    "nb": "./bin/nb.js"
   },
   "files": [
     "bin",
