@@ -7,6 +7,7 @@ import {
   addEntry,
   assertSafeRole,
   dedupKey,
+  entryId,
   logUsage,
   maxChars,
   merge,
@@ -47,13 +48,13 @@ describe('add / read / render', () => {
     expect(raw).toBe('+1\trun pnpm lint before done\n');
   });
 
-  test('render shows 1-based ids, highest score first', async () => {
-    await addEntry(dir, 'v', 'a');
-    await addEntry(dir, 'v', 'b');
-    await vote(dir, 'v', 'b', 1); // b -> +2
+  test('render shows a stable id + score, highest score first', async () => {
+    await addEntry(dir, 'v', 'aaa');
+    await addEntry(dir, 'v', 'bbb');
+    await vote(dir, 'v', 'bbb', 1); // bbb -> +2, ranks first
     const out = render(dir, 'v');
-    expect(out.split('\n')[0]).toMatch(/^1\. \[\+2\] b$/);
-    expect(out.split('\n')[1]).toMatch(/^2\. \[\+1\] a$/);
+    expect(out.split('\n')[0]).toBe(`${entryId('bbb')}  [+2]  bbb`);
+    expect(out.split('\n')[1]).toBe(`${entryId('aaa')}  [+1]  aaa`);
   });
 
   test('empty notebook renders a friendly message', () => {
@@ -128,38 +129,59 @@ describe('caps', () => {
 
   test('rejects a new lesson when full and every entry outranks it', async () => {
     process.env.NB_MAX_LINES = '2';
-    await addEntry(dir, 'r', 'a');
-    await addEntry(dir, 'r', 'b');
-    await vote(dir, 'r', 'a', 1);
-    await vote(dir, 'r', 'b', 1); // both +2
-    const res = await addEntry(dir, 'r', 'c'); // +1 is the strict lowest -> not stored
+    await addEntry(dir, 'r', 'alpha');
+    await addEntry(dir, 'r', 'bravo');
+    await vote(dir, 'r', 'alpha', 1);
+    await vote(dir, 'r', 'bravo', 1); // both +2 (non-hex substrings, unambiguous)
+    const res = await addEntry(dir, 'r', 'charlie'); // +1 is the strict lowest -> not stored
     expect(res.added).toBe(false);
     expect(res.reason).toBe('rejected-full');
-    expect(readEntries(dir, 'r').map((e) => e.text).sort()).toEqual(['a', 'b']);
+    expect(readEntries(dir, 'r').map((e) => e.text).sort()).toEqual(['alpha', 'bravo']);
   });
 });
 
 describe('vote', () => {
-  test('votes by id and by substring query', async () => {
+  test('votes by stable id and by substring query', async () => {
     await addEntry(dir, 'v', 'alpha lesson');
     await addEntry(dir, 'v', 'beta lesson');
-    const byQuery = await vote(dir, 'v', 'alpha', 1);
+    const byQuery = await vote(dir, 'v', 'alpha', 1); // unique substring
     expect(byQuery.score).toBe(2);
-    // render puts alpha(+2) at id 1
-    const r = await vote(dir, 'v', '1', 1);
+    const r = await vote(dir, 'v', entryId('alpha lesson'), 1); // by stable id
     expect(r.text).toBe('alpha lesson');
     expect(r.score).toBe(3);
   });
 
-  test('numeric id follows DISPLAY order after reordering (regression: id vs file-order)', async () => {
+  test('a stable id keeps pointing at the same entry after reordering (regression)', async () => {
     await addEntry(dir, 'v', 'alpha'); // file index 0
     await addEntry(dir, 'v', 'beta'); // file index 1
-    await vote(dir, 'v', 'beta', 1); // beta -> +2, now shown as id 1 though it is 2nd in the file
-    const r = await vote(dir, 'v', '1', 1); // id 1 MUST resolve to the displayed top = beta
-    expect(r.text).toBe('beta');
-    expect(r.score).toBe(3);
-    const r2 = await vote(dir, 'v', '2', -1); // id 2 = alpha
-    expect(r2.text).toBe('alpha');
+    const idBeta = entryId('beta');
+    await vote(dir, 'v', idBeta, 1); // beta -> +2 (now ranks first)
+    await vote(dir, 'v', idBeta, 1); // same id still hits beta despite the reorder -> +3
+    expect(readEntries(dir, 'v').find((e) => e.text === 'beta')!.score).toBe(3);
+    expect(readEntries(dir, 'v').find((e) => e.text === 'alpha')!.score).toBe(1); // untouched
+  });
+
+  test('an id prefix shorter than the full id still resolves when unique', async () => {
+    await addEntry(dir, 'v', 'solo lesson');
+    const full = entryId('solo lesson');
+    const r = await vote(dir, 'v', full.slice(0, 2), 1); // 2-char unique prefix
+    expect(r.text).toBe('solo lesson');
+    expect(r.score).toBe(2);
+  });
+
+  test('a hex-looking word falls through to a text match when it is not an id', async () => {
+    await addEntry(dir, 'v', 'dead letter queue retries thrice'); // "dead" is hex but a real word here
+    await addEntry(dir, 'v', 'unrelated note');
+    const r = await vote(dir, 'v', 'dead', 1); // not an id prefix (6-hex) -> resolves as substring
+    expect(r.text).toBe('dead letter queue retries thrice');
+    expect(r.score).toBe(2);
+  });
+
+  test('an ambiguous selector refuses and mutates nothing (never a wrong-lesson vote)', async () => {
+    await addEntry(dir, 'v', 'widget cache warm path');
+    await addEntry(dir, 'v', 'widget cache cold path');
+    await expect(vote(dir, 'v', 'widget', 1)).rejects.toThrow(/matches 2/);
+    expect(readEntries(dir, 'v').every((e) => e.score === 1)).toBe(true); // both untouched
   });
 
   test('downvote lowers score', async () => {
@@ -186,7 +208,7 @@ describe('merge', () => {
     await addEntry(dir, 'm', 'tests live in __tests__');
     await addEntry(dir, 'm', 'run vitest for a single file');
     await vote(dir, 'm', 'vitest', 1); // that one -> +2
-    const r = await merge(dir, 'm', '1', '2', 'tests: __tests__, pnpm vitest run <file>');
+    const r = await merge(dir, 'm', entryId('tests live in __tests__'), 'vitest', 'tests: __tests__, pnpm vitest run <file>');
     expect(r.added).toBe(true);
     const entries = readEntries(dir, 'm');
     expect(entries).toHaveLength(1);
@@ -196,25 +218,34 @@ describe('merge', () => {
 
   test('refuses to merge an entry with itself', async () => {
     await addEntry(dir, 'm', 'only one');
-    await expect(merge(dir, 'm', '1', '1', 'x')).rejects.toThrow(/two different/);
+    const id = entryId('only one');
+    await expect(merge(dir, 'm', id, id, 'x')).rejects.toThrow(/two different/);
   });
 
   test('rejects an over-length merged lesson and leaves both source entries intact', async () => {
     process.env.NB_MAX_CHARS = '30';
     await addEntry(dir, 'm', 'alpha');
     await addEntry(dir, 'm', 'beta');
-    await expect(merge(dir, 'm', '1', '2', 'z'.repeat(50))).rejects.toThrow(/max is 30/);
+    await expect(merge(dir, 'm', entryId('alpha'), entryId('beta'), 'z'.repeat(50))).rejects.toThrow(/max is 30/);
     expect(readEntries(dir, 'm').map((e) => e.text).sort()).toEqual(['alpha', 'beta']); // nothing mutated
   });
 });
 
 describe('rm', () => {
-  test('removes an entry', async () => {
+  test('removes an entry by substring', async () => {
     await addEntry(dir, 'd', 'keep me');
     await addEntry(dir, 'd', 'delete me');
     const r = await remove(dir, 'd', 'delete');
     expect(r.text).toBe('delete me');
     expect(readEntries(dir, 'd').map((e) => e.text)).toEqual(['keep me']);
+  });
+
+  test('removes an entry by its stable id', async () => {
+    await addEntry(dir, 'd', 'keep this one');
+    await addEntry(dir, 'd', 'drop this one');
+    const r = await remove(dir, 'd', entryId('drop this one'));
+    expect(r.text).toBe('drop this one');
+    expect(readEntries(dir, 'd').map((e) => e.text)).toEqual(['keep this one']);
   });
 });
 

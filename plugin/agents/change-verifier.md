@@ -20,7 +20,7 @@ Your notebook role is **`change-verifier`** (bounded, voted, ≤200 lines × ≤
 
 - **Start:** `nb show change-verifier` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
 - **End (retrospective):**
-  - `nb vote change-verifier "<query>" +1` on each check that caught (or would have caught) a real defect; `-1` on any that produced noise/false alarms.
+  - `nb vote change-verifier <id> +1` on each check that caught (or would have caught) a real defect; `-1` on any that produced noise/false alarms.
   - `nb add change-verifier "<one check, ≤200 chars>"` for a reusable gate (e.g. `run pnpm lint before passing — it gates merge and catches most style regressions`).
   - Full notebook → `nb merge`/`nb rm` a weak entry.
 

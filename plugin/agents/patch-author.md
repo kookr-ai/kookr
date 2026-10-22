@@ -20,7 +20,7 @@ Your notebook role is **`patch-author`** (bounded, voted, ≤200 lines × ≤200
 
 - **Start:** `nb show patch-author@<owner>-<repo>` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
 - **End (retrospective):**
-  - `nb vote <role> "<query>" +1` on each convention that saved you; `-1` on any that misled you or no longer holds.
+  - `nb vote <role> <id> +1` on each convention that saved you; `-1` on any that misled you or no longer holds.
   - `nb add <role> "<one convention, ≤200 chars>"` for a reusable lesson (e.g. `this repo: prefer execFileSync, array args — shell-safety hook blocks execSync`).
   - Full notebook → `nb merge`/`nb rm` a weak entry.
 

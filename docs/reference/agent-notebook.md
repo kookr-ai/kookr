@@ -29,8 +29,11 @@ nb --version                            print the tool name
 
 - `<role>` is a name like `patch-author`. For knowledge that is repo-specific,
   scope it: `patch-author@<owner>-<repo>`.
-- `<id>` is the line number printed by `nb show`; `<query>` selects an entry by
-  case-insensitive substring (errors if it matches 0 or >1 entries).
+- `<id>` is the short **stable** token `nb show` prints at the start of each line
+  (content-derived, so it does not shift when other lessons are added or
+  reordered). Pass it — or a unique prefix of it — to `vote`/`rm`/`merge`. A
+  unique text substring also selects an entry; an ambiguous one (0 or >1 match)
+  is refused so a vote never lands on the wrong lesson.
 - A lesson is flattened to a single line. One longer than 200 chars is
   **rejected** (`nb add` exits 1), never truncated — rewrite it shorter and
   retry, so you never store a cut-off, useless entry. A lesson that needs a

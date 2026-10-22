@@ -53,7 +53,17 @@ describe('runNbCli', () => {
     const show = await run(['show', 'patcher']);
     expect(show.code).toBe(0);
     expect(show.out).toContain('prefer execFileSync, array args');
-    expect(show.out).toMatch(/1\. \[\+1\]/);
+    expect(show.out).toMatch(/^[0-9a-f]{6}\s+\[\+1\]\s+prefer execFileSync/m); // stable id + score
+  });
+
+  test('vote by the id shown in `show` succeeds', async () => {
+    await run(['add', 'patcher', 'alpha one']);
+    await run(['add', 'patcher', 'beta two']);
+    const show = await run(['show', 'patcher']);
+    const id = show.out.trim().split('\n')[0].split(/\s+/)[0]; // first token of the top line
+    const v = await run(['vote', 'patcher', id, '+1']);
+    expect(v.code).toBe(0);
+    expect(v.out).toContain('[+2]');
   });
 
   test('vote adjusts the score shown', async () => {

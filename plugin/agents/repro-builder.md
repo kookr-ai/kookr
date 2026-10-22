@@ -20,7 +20,7 @@ Your notebook role is **`repro-builder`** (bounded, voted, ≤200 lines × ≤20
 
 - **Start:** `nb show repro-builder` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
 - **End (retrospective):**
-  - `nb vote repro-builder "<query>" +1` on each recipe that worked; `-1` on any that misled you.
+  - `nb vote repro-builder <id> +1` on each recipe that worked; `-1` on any that misled you.
   - `nb add repro-builder "<one recipe, ≤200 chars>"` for a reusable trick (e.g. `flaky WS tests: await toBeVisible before asserting count`).
   - Full notebook → `nb merge`/`nb rm` a weak entry.
 

@@ -43,7 +43,8 @@ notes:
   - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
   - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
-  - <query> selects an entry by case-insensitive substring; <id> is the number from \`nb show\`.
+  - every \`nb show\` line begins with the entry's short stable <id>; pass that id to vote/rm/merge
+    (a unique id prefix works too). A unique text substring also selects an entry; an ambiguous one is refused.
   - storage: $NB_DIR or ~/.kookr/notebooks/<role>.md (plain text, git-diffable).
 
 docs: docs/reference/agent-notebook.md`;

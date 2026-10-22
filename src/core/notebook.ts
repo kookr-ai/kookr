@@ -13,6 +13,7 @@
 // than the FAISS-backed `kb`, with no spool-degradation failure mode.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -237,25 +238,44 @@ function ordered(entries: Entry[]): { e: Entry; idx: number }[] {
 }
 
 /**
- * Resolve a selector to a FILE-ORDER index. A numeric id is the 1-based row in
- * DISPLAY order — exactly what `nb show` prints and the SessionStart hook
- * injects — so `nb vote 1` always hits the entry shown as `1.` even after votes
- * reorder the file. A non-numeric selector is a case-insensitive substring.
+ * A short STABLE id for an entry, derived from its deduped content — not its
+ * position. `nb show` prints it and `vote`/`rm`/`merge` accept it, so an agent
+ * can promote/demote a specific lesson precisely, and the id does not shift when
+ * other lessons are added or reordered between `show` and `vote` (the fragility
+ * that made display-order numeric ids unreliable in practice). Collisions
+ * between distinct entries are improbable at 6 hex (~16M space); if one ever
+ * occurred, that id would simply resolve to neither (ambiguous) and the agent
+ * falls back to a text substring — a vote never lands on the wrong lesson.
+ */
+export function entryId(text: string): string {
+  return createHash('sha1').update(dedupKey(text)).digest('hex').slice(0, 6);
+}
+
+/**
+ * Resolve a selector to a FILE-ORDER index, acting ONLY on a unique match so a
+ * vote/rm/merge never lands on the wrong lesson. Order: (1) if the selector is a
+ * hex token that UNIQUELY identifies one entry id (exact or prefix), use it;
+ * (2) otherwise a case-insensitive text substring, if it uniquely matches one
+ * entry. A hex selector that matches zero OR several ids falls through to the
+ * substring step (so hex-looking words like "add"/"cafe" resolve as text). If
+ * neither step finds exactly one entry, refuse with a clear error. Numeric
+ * position ids are gone: they shifted under reordering and caused mis-votes.
  */
 function selectIndex(entries: Entry[], selector: string): number {
-  const asId = Number.parseInt(selector, 10);
-  if (String(asId) === selector.trim() && asId >= 1 && asId <= entries.length) {
-    return ordered(entries)[asId - 1].idx;
+  const sel = selector.trim();
+  // 1) stable id — use only when it UNIQUELY identifies one entry.
+  if (/^[0-9a-f]+$/i.test(sel)) {
+    const low = sel.toLowerCase();
+    const byId = entries.map((e, i) => ({ e, i })).filter((x) => entryId(x.e.text).startsWith(low));
+    if (byId.length === 1) return byId[0].i;
+    // 0 or >1 id matches: ambiguous/none as an id — fall through to text match.
   }
-  const q = selector.toLowerCase();
-  const matches = entries
-    .map((e, i) => ({ e, i }))
-    .filter((x) => x.e.text.toLowerCase().includes(q));
-  if (matches.length === 0) throw new Error(`no entry matches ${JSON.stringify(selector)}`);
-  if (matches.length > 1) {
-    throw new Error(`"${selector}" matches ${matches.length} entries — use the line id (see \`nb show\`)`);
-  }
-  return matches[0].i;
+  // 2) case-insensitive substring of the lesson text — use only when unique.
+  const q = sel.toLowerCase();
+  const matches = entries.map((e, i) => ({ e, i })).filter((x) => x.e.text.toLowerCase().includes(q));
+  if (matches.length === 1) return matches[0].i;
+  if (matches.length === 0) throw new Error(`no entry matches ${JSON.stringify(selector)} — use an id from \`nb show\``);
+  throw new Error(`"${selector}" matches ${matches.length} entries — use an id from \`nb show\` instead`);
 }
 
 export interface VoteResult {
@@ -310,16 +330,14 @@ export function remove(dir: string, role: string, selector: string): Promise<Vot
   });
 }
 
-/** Render a notebook for injection / `show`: 1-based ids, highest score first (most useful on top). */
+/** Render a notebook for injection / `show`: a stable id + score, highest score first (most useful on top). */
 export function render(dir: string, role: string): string {
   const ord = ordered(readEntries(dir, role));
   if (ord.length === 0) return `(notebook for role "${role}" is empty)`;
-  const width = String(ord.length).length;
   return ord
-    .map((x, rank) => {
-      const id = String(rank + 1).padStart(width, ' ');
+    .map((x) => {
       const s = x.e.score >= 0 ? `+${x.e.score}` : `${x.e.score}`;
-      return `${id}. [${s}] ${x.e.text}`;
+      return `${entryId(x.e.text)}  [${s}]  ${x.e.text}`;
     })
     .join('\n');
 }

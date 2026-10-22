@@ -20,8 +20,8 @@ Your notebook role is **`repo-cartographer`**. It is a bounded, voted store of o
 
 - **Start:** `nb show repo-cartographer@<owner>-<repo>` — your prior facts load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
 - **End (retrospective):**
-  - `nb vote <role> "<query>" +1` on each fact that proved correct and useful this task.
-  - `nb vote <role> "<query>" -1` on any fact that was stale or misleading (a build command that no longer works, a moved file).
+  - `nb vote <role> <id> +1` on each fact that proved correct and useful this task.
+  - `nb vote <role> <id> -1` on any fact that was stale or misleading (a build command that no longer works, a moved file).
   - `nb add <role> "<one fact, ≤200 chars>"` for a durable, reusable fact you confirmed (e.g. `tests: pnpm vitest run <file>; lint gates merge`). One line, distilled — if it needs a paragraph it's a procedure, put it in a skill, not the notebook.
   - If the notebook is full, `nb merge`/`nb rm` a weak or superseded entry.
 
