@@ -14,7 +14,7 @@ beforeEach(() => {
   process.env.NB_DIR = dir;
 });
 afterEach(() => {
-  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_ROLE']) {
+  for (const k of ['NB_DIR', 'NB_MAX_LINES', 'NB_MAX_CHARS', 'NB_ROLE']) {
     if (SAVED[k] === undefined) delete process.env[k];
     else process.env[k] = SAVED[k];
   }
@@ -87,6 +87,22 @@ describe('runNbCli', () => {
     const r = await run(['vote', 'patcher', 'x', '2']);
     expect(r.code).toBe(1);
     expect(r.err).toContain('+1 or -1');
+  });
+
+  test('--version exits 0', async () => {
+    const r = await run(['--version']);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/^nb \(kookr Agent Notebook\)/); // the distinct version line, not the HELP text
+  });
+
+  test('an over-long add exits 1, is not stored, and tells the agent to retry', async () => {
+    process.env.NB_MAX_CHARS = '25';
+    const r = await run(['add', 'patcher', 'z'.repeat(60)]);
+    expect(r.code).toBe(1);
+    expect(r.err).toMatch(/too long/i);
+    expect(r.err).toMatch(/retry/i);
+    const show = await run(['show', 'patcher']);
+    expect(show.out).toContain('is empty');
   });
 });
 

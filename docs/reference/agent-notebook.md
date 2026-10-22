@@ -5,7 +5,7 @@ sub-agents get better at one job across tasks without the memory ever growing
 unbounded or rotting. Design rationale: [`docs/rfc/rfc-self-improving-agent-fleet.md`](../rfc/rfc-self-improving-agent-fleet.md).
 
 **The one rule that makes it safe:** a notebook holds at most **200 lines**, each
-a single lesson of at most **120 characters**, each with a vote **score**. When a
+a single lesson of at most **200 characters**, each with a vote **score**. When a
 new line would overflow, the **lowest-scored** line is evicted (ties: oldest).
 The whole notebook is tiny by construction, so it is read **whole** at task start
 — no retrieval, no embeddings, no ranking. The cap and the vote are the entire
@@ -24,15 +24,17 @@ nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb rm     <role> <id|query>             delete an entry
 nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
 nb --help                               this help
+nb --version                            print the tool name
 ```
 
 - `<role>` is a name like `patch-author`. For knowledge that is repo-specific,
   scope it: `patch-author@<owner>-<repo>`.
 - `<id>` is the line number printed by `nb show`; `<query>` selects an entry by
   case-insensitive substring (errors if it matches 0 or >1 entries).
-- A lesson is always one line; anything longer is truncated to 120 chars and
-  flattened to a single line. A lesson that needs a paragraph is a *procedure* —
-  put it in a `SKILL.md`, not the notebook.
+- A lesson is flattened to a single line. One longer than 200 chars is
+  **rejected** (`nb add` exits 1), never truncated — rewrite it shorter and
+  retry, so you never store a cut-off, useless entry. A lesson that needs a
+  paragraph is a *procedure* — put it in a `SKILL.md`, not the notebook.
 
 ### Where notebooks live
 
@@ -105,11 +107,11 @@ All optional; defaults match the RFC.
 |---|---|---|
 | `NB_DIR` | `~/.kookr/notebooks` | notebooks directory |
 | `NB_MAX_LINES` | `200` | max entries per notebook (ceiling 5000) |
-| `NB_MAX_CHARS` | `120` | max characters per lesson |
+| `NB_MAX_CHARS` | `200` | max characters per lesson (over-long adds are rejected, not truncated) |
 | `NB_USAGE_RING` | `5000` | max lines in the usage log ring |
 | `NB_LOOP_N` / `NB_LOOP_WINDOW_S` | `10` / `120` | loop anomaly: N calls within S seconds |
 | `NB_SILENT_H` | `48` | went-silent anomaly: hours since last use |
 | `NB_ERR_MIN` / `NB_ERR_RATE` | `5` / `0.3` | high-error-rate anomaly: min calls, rate |
 
 Raise `NB_MAX_LINES`/`NB_MAX_CHARS` only if real notebooks show useful lessons
-being truncated or aged out too fast.
+rejected (too long) or aged out too fast.

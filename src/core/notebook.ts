@@ -21,7 +21,7 @@ export function maxLines(): number {
   return clampInt(process.env.NB_MAX_LINES, 200, 1, 5000);
 }
 export function maxChars(): number {
-  return clampInt(process.env.NB_MAX_CHARS, 120, 20, 2000);
+  return clampInt(process.env.NB_MAX_CHARS, 200, 20, 2000);
 }
 /** The usage log is itself a bounded ring (monitoring can't grow unbounded either). */
 export function usageRing(): number {
@@ -69,10 +69,14 @@ function usageFile(dir: string): string {
 // line (de)serialisation
 // ---------------------------------------------------------------------------
 
-/** A lesson is always one line, never longer than MAX_CHARS, with no tab (our field separator). */
+/**
+ * Flatten a lesson to a single whitespace-collapsed line with no tab (our field
+ * separator). Does NOT truncate: the caller enforces the length cap by rejecting
+ * an over-long write (addEntry/merge), so the agent can retry with a shorter
+ * *complete* lesson instead of silently storing a cut-off, possibly useless one.
+ */
 export function sanitizeLesson(raw: string): string {
-  const oneLine = raw.replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
-  return oneLine.slice(0, maxChars());
+  return raw.replace(/[\t\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
 function parseLine(line: string): Entry | null {
@@ -185,16 +189,23 @@ function trim(entries: Entry[]): Entry[] {
 
 export interface AddResult {
   added: boolean;
-  reason: 'added' | 'duplicate' | 'empty' | 'rejected-full';
+  reason: 'added' | 'duplicate' | 'empty' | 'too-long' | 'rejected-full';
   evicted: Entry | null;
   size: number;
+  /** For 'too-long': the length of the submitted lesson, so the caller can report it. */
+  length?: number;
 }
 
 export function addEntry(dir: string, role: string, lesson: string): Promise<AddResult> {
   return withLock(dir, () => {
     const text = sanitizeLesson(lesson);
-    if (text === '') return { added: false, reason: 'empty', evicted: null, size: readEntries(dir, role).length };
     const entries = readEntries(dir, role);
+    if (text === '') return { added: false, reason: 'empty', evicted: null, size: entries.length };
+    if (text.length > maxChars()) {
+      // Reject rather than truncate: a cut-off lesson is often useless, so the
+      // agent should retry with a shorter *complete* one.
+      return { added: false, reason: 'too-long', evicted: null, size: entries.length, length: text.length };
+    }
     const key = dedupKey(text);
     if (entries.some((e) => dedupKey(e.text) === key)) {
       return { added: false, reason: 'duplicate', evicted: null, size: entries.length };
@@ -272,6 +283,9 @@ export function merge(dir: string, role: string, selA: string, selB: string, mer
     if (ia === ib) throw new Error('merge needs two different entries');
     const text = sanitizeLesson(mergedLesson);
     if (text === '') throw new Error('merged lesson is empty');
+    if (text.length > maxChars()) {
+      throw new Error(`merged lesson is ${text.length} chars; max is ${maxChars()} — shorten it`);
+    }
     // Keep the usefulness: the merged line inherits the higher of the two scores.
     const score = Math.max(entries[ia].score, entries[ib].score);
     const remaining = entries.filter((_, i) => i !== ia && i !== ib);

@@ -82,13 +82,25 @@ describe('dedup', () => {
 });
 
 describe('caps', () => {
-  test('truncates a lesson to MAX_CHARS and collapses to one line', () => {
+  test('sanitizeLesson collapses to one line but does NOT truncate', () => {
     process.env.NB_MAX_CHARS = '20';
     const s = sanitizeLesson('this is\n a very   long\tlesson that exceeds the cap by a lot');
-    expect(s.length).toBeLessThanOrEqual(20);
     expect(s).not.toContain('\n');
     expect(s).not.toContain('\t');
+    expect(s.length).toBeGreaterThan(20); // full length preserved, not cut to the cap
     expect(maxChars()).toBe(20);
+  });
+
+  test('rejects an over-length lesson instead of truncating it', async () => {
+    process.env.NB_MAX_CHARS = '30';
+    const r = await addEntry(dir, 'c', 'x'.repeat(50));
+    expect(r.added).toBe(false);
+    expect(r.reason).toBe('too-long');
+    expect(r.length).toBe(50);
+    expect(readEntries(dir, 'c')).toHaveLength(0); // nothing stored
+    const ok = await addEntry(dir, 'c', 'y'.repeat(30)); // exactly at the cap
+    expect(ok.added).toBe(true);
+    expect(readEntries(dir, 'c')[0].text).toHaveLength(30); // stored in full
   });
 
   test('evicts the LOWEST-scored line when full (ties: oldest)', async () => {
@@ -185,6 +197,14 @@ describe('merge', () => {
   test('refuses to merge an entry with itself', async () => {
     await addEntry(dir, 'm', 'only one');
     await expect(merge(dir, 'm', '1', '1', 'x')).rejects.toThrow(/two different/);
+  });
+
+  test('rejects an over-length merged lesson and leaves both source entries intact', async () => {
+    process.env.NB_MAX_CHARS = '30';
+    await addEntry(dir, 'm', 'alpha');
+    await addEntry(dir, 'm', 'beta');
+    await expect(merge(dir, 'm', '1', '2', 'z'.repeat(50))).rejects.toThrow(/max is 30/);
+    expect(readEntries(dir, 'm').map((e) => e.text).sort()).toEqual(['alpha', 'beta']); // nothing mutated
   });
 });
 

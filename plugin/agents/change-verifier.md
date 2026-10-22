@@ -16,12 +16,12 @@ A verdict — **pass** or **block** — with evidence. For pass: which acceptanc
 4. Call it against the *acceptance criteria*, not your taste. Taste is a nit.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`change-verifier`** (bounded, voted, ≤200 lines × ≤120 chars; lowest-scored evicted when full).
+Your notebook role is **`change-verifier`** (bounded, voted, ≤200 lines × ≤200 chars; lowest-scored evicted when full).
 
 - **Start:** `nb show change-verifier` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
 - **End (retrospective):**
   - `nb vote change-verifier "<query>" +1` on each check that caught (or would have caught) a real defect; `-1` on any that produced noise/false alarms.
-  - `nb add change-verifier "<one check, ≤120 chars>"` for a reusable gate (e.g. `run pnpm lint before passing — it gates merge and catches most style regressions`).
+  - `nb add change-verifier "<one check, ≤200 chars>"` for a reusable gate (e.g. `run pnpm lint before passing — it gates merge and catches most style regressions`).
   - Full notebook → `nb merge`/`nb rm` a weak entry.
 
 One line per lesson; a multi-step checklist is a procedure — put it in a skill, not the notebook.
