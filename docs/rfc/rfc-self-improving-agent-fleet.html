@@ -1,0 +1,631 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Self-Improving Agent Fleet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* ---- Layout concept: a single reading column (~68ch) on a cool engineering-doc ground;
+        full-bleed diagram figures and callout bands break the column; one amber accent
+        for "memory = liability", semantic green/red only for good/bad flows. ---- */
+:root{
+  --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --fg:#171a21; --muted:#596273;
+  --border:#dde2ea; --border-strong:#c3ccd8;
+  --accent:#0f766e;            /* teal — structural emphasis */
+  --liability:#b45309;         /* amber — memory-as-liability */
+  --good:#15803d; --danger:#b42318;
+  --code-bg:#f0f3f8;
+  --shadow:0 1px 2px rgba(23,26,33,.06),0 8px 24px -16px rgba(23,26,33,.25);
+  --maxw:72rem; --col:40rem;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  --f-head:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1016; --surface:#141924; --surface-2:#1b2231; --fg:#e7eaf0; --muted:#97a1b2;
+  --border:#232c3a; --border-strong:#33405280;
+  --accent:#2dd4bf; --liability:#f59e0b; --good:#4ade80; --danger:#f87171;
+  --code-bg:#121825; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7);
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1016; --surface:#141924; --surface-2:#1b2231; --fg:#e7eaf0; --muted:#97a1b2;
+  --border:#232c3a; --border-strong:#33405280;
+  --accent:#2dd4bf; --liability:#f59e0b; --good:#4ade80; --danger:#f87171;
+  --code-bg:#121825; --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--f-body); font-size:17px; line-height:1.65;
+  font-feature-settings:"ss01";
+  -webkit-font-smoothing:antialiased;
+}
+img{max-width:100%}
+[hidden]{display:none!important}
+.wrap{max-width:var(--maxw);margin-inline:auto;
+  padding-left:max(18px,env(safe-area-inset-left,0px));
+  padding-right:max(18px,env(safe-area-inset-right,0px));}
+.col{max-width:var(--col);margin-inline:auto}
+.col.wide{max-width:60rem}
+
+/* header */
+header.site{position:relative;border-bottom:1px solid var(--border);background:
+  radial-gradient(130% 90% at 85% -10%, color-mix(in oklab,var(--accent) 16%,transparent), transparent 60%),
+  var(--surface);}
+header.site .wrap{padding-block:clamp(2.2rem,6vw,4rem)}
+.eyebrow{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1{font-family:var(--f-head);font-weight:700;letter-spacing:-.01em;line-height:1.08;
+  font-size:clamp(2rem,6.5vw,3.4rem);margin:.5rem 0 0;text-wrap:balance;max-width:20ch}
+.dek{font-size:clamp(1.05rem,2.4vw,1.3rem);color:var(--muted);margin:1.1rem 0 0;max-width:46ch;line-height:1.5}
+.meta{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1.6rem;font-family:var(--f-mono);font-size:.76rem}
+.chip{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border-strong);
+  border-radius:999px;padding:.28rem .7rem;color:var(--muted);background:var(--surface)}
+.chip b{color:var(--fg);font-weight:600}
+.theme-btn{position:absolute;top:1rem;right:max(18px,env(safe-area-inset-right,0px));
+  font-family:var(--f-mono);font-size:.72rem;border:1px solid var(--border-strong);
+  background:var(--surface);color:var(--muted);border-radius:999px;padding:.35rem .7rem;cursor:pointer}
+.theme-btn:hover{color:var(--fg);border-color:var(--accent)}
+
+main .wrap{padding-block:clamp(2rem,5vw,3.5rem)}
+section{margin-top:clamp(2.6rem,6vw,4.2rem)}
+h2{font-family:var(--f-head);font-weight:700;font-size:clamp(1.5rem,3.6vw,2.1rem);
+  line-height:1.15;letter-spacing:-.01em;margin:0 0 .3rem;text-wrap:balance}
+h2 .n{font-family:var(--f-mono);font-size:.62em;color:var(--accent);font-weight:600;margin-right:.6rem;vertical-align:.12em}
+h3{font-family:var(--f-head);font-weight:600;font-size:1.22rem;margin:2rem 0 .4rem;letter-spacing:-.005em}
+.lede{color:var(--muted);font-size:1.08rem;margin:.2rem 0 1.4rem;max-width:58ch}
+p{margin:.9rem 0;max-width:68ch}
+a{color:var(--accent);text-underline-offset:2px}
+strong{font-weight:600}
+code{font-family:var(--f-mono);font-size:.86em;background:var(--code-bg);
+  border:1px solid var(--border);border-radius:5px;padding:.08em .4em}
+.col p code{word-break:break-word}
+
+/* TL;DR + callouts */
+.tldr{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:clamp(1.2rem,3vw,1.8rem);box-shadow:var(--shadow);margin-top:1.5rem}
+.tldr h2{font-size:1.15rem;margin-bottom:.8rem}
+.tldr ul{margin:0;padding:0;list-style:none;display:grid;gap:.7rem}
+.tldr li{display:grid;grid-template-columns:1.6rem 1fr;gap:.6rem;align-items:start}
+.tldr li .k{font-family:var(--f-mono);color:var(--accent);font-weight:600;font-size:.95rem}
+.callout{border-left:3px solid var(--accent);background:var(--surface-2);
+  border-radius:0 12px 12px 0;padding:1rem 1.2rem;margin:1.4rem 0}
+.callout.warn{border-left-color:var(--liability)}
+.callout.bad{border-left-color:var(--danger)}
+.callout .tag{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem}
+.callout.warn .tag{color:var(--liability)} .callout.bad .tag{color:var(--danger)}
+.callout p{margin:.3rem 0}
+
+/* figures */
+figure{margin:1.8rem 0;max-width:100%}
+figure.bleed{max-width:62rem;margin-inline:auto}
+.figbox{background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  padding:clamp(1rem,2.5vw,1.6rem);box-shadow:var(--shadow);overflow-x:auto}
+figcaption{color:var(--muted);font-size:.9rem;margin-top:.7rem;line-height:1.45;max-width:66ch}
+figcaption b{color:var(--fg)}
+svg{display:block;max-width:100%;height:auto}
+.dia{font-family:var(--f-mono);font-size:12px}
+.dia .lbl{font-family:var(--f-body);font-size:13px}
+
+/* tables */
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;margin:1.4rem 0;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:30rem}
+th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--muted);background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+.mono{font-family:var(--f-mono)}
+
+/* principle grid */
+.grid{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));margin:1.4rem 0}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:1.1rem 1.2rem;box-shadow:var(--shadow)}
+.card .rid{font-family:var(--f-mono);font-weight:600;color:var(--accent);font-size:.82rem}
+.card h4{margin:.3rem 0 .4rem;font-size:1.02rem;font-weight:600;font-family:var(--f-head)}
+.card p{font-size:.92rem;color:var(--muted);margin:0;max-width:none}
+
+/* roles (provenance) */
+.roles{display:grid;gap:.8rem;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));margin:1.2rem 0}
+.role{border:1px solid var(--border);border-radius:12px;padding:.9rem 1rem;background:var(--surface)}
+.role .vs{font-family:var(--f-mono);font-size:.68rem;color:var(--liability);letter-spacing:.1em;text-transform:uppercase}
+.role h4{margin:.25rem 0 .3rem;font-size:.98rem;font-family:var(--f-head)}
+.role p{margin:0;font-size:.88rem;color:var(--muted);max-width:none}
+
+/* phase steps */
+ol.phases{list-style:none;counter-reset:p;margin:1.4rem 0;padding:0;display:grid;gap:.8rem}
+ol.phases li{counter-increment:p;position:relative;background:var(--surface);border:1px solid var(--border);
+  border-radius:12px;padding:1rem 1.1rem 1rem 3.4rem;box-shadow:var(--shadow)}
+ol.phases li::before{content:attr(data-id);position:absolute;left:0;top:0;height:100%;width:2.6rem;
+  display:flex;align-items:center;justify-content:center;font-family:var(--f-mono);font-weight:600;
+  font-size:.82rem;color:var(--accent);background:var(--surface-2);border-right:1px solid var(--border);border-radius:12px 0 0 12px}
+ol.phases h4{margin:0 0 .2rem;font-size:1rem;font-family:var(--f-head)}
+ol.phases p{margin:.2rem 0;font-size:.9rem;color:var(--muted);max-width:none}
+ol.phases .dep{font-family:var(--f-mono);font-size:.74rem;color:var(--liability)}
+
+footer.site{border-top:1px solid var(--border);margin-top:4rem;background:var(--surface)}
+footer.site .wrap{padding-block:2rem;display:flex;flex-wrap:wrap;gap:1rem;justify-content:space-between;align-items:center}
+footer.site a{font-family:var(--f-mono);font-size:.82rem}
+.foot-links{display:flex;flex-wrap:wrap;gap:1.2rem}
+.src{color:var(--muted);font-size:.8rem;font-family:var(--f-mono)}
+hr.sep{border:none;border-top:1px solid var(--border);margin:2.5rem 0}
+@media (prefers-reduced-motion:no-preference){a,.theme-btn{transition:color .15s,border-color .15s}}
+</style>
+</head>
+<body>
+<header class="site">
+  <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle colour theme">◑ theme</button>
+  <div class="wrap">
+    <span class="eyebrow">Kookr · RFC · Draft v2</span>
+    <h1>Self-Improving Agent Fleet with Bounded, Measured Memory</h1>
+    <p class="dek">A main orchestrator launches specialized sub-agents that act across repositories and capitalize their experience — while memory stays small, auto-purging, and <em>earned by measurement</em> rather than assumed.</p>
+    <div class="meta">
+      <span class="chip"><b>2026-10-22</b></span>
+      <span class="chip">author <b>Jean Ibarz (with Claude)</b></span>
+      <span class="chip">reviewed by <b>5-role swarm + consensus attack + 2 critics</b></span>
+      <span class="chip">reuse-first <b>1 playbook · 1 skill · 1 CLI verb</b></span>
+    </div>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+<div class="col">
+  <div class="tldr">
+    <h2>The idea in five lines</h2>
+    <ul>
+      <li><span class="k">1</span><span><b>Two layers, never welded.</b> Persistent cross-repo <em>workers</em> (the fleet) and ephemeral in-process <em>lenses</em> (the swarm) bound memory in opposite ways — keep them apart.</span></li>
+      <li><span class="k">2</span><span><b>Memory is a measured liability.</b> Standing semantic memory is <em>default-off</em>; an agent capitalizes mainly by promoting verified lessons to skills and re-deriving the rest from git/PRs.</span></li>
+      <li><span class="k">3</span><span><b>Every write gets a down-step.</b> Kookr already <em>forces</em> a lesson per task but never prunes — 1,319 notes and growing. We add the missing actuator.</span></li>
+      <li><span class="k">4</span><span><b>Typed brief in, typed result by reference out.</b> Workers return a pointer + verdict, not a conversation. An evaluator closes the loop — this is what cuts the back-and-forth.</span></li>
+      <li><span class="k">5</span><span><b>Measure before you build.</b> Phase 0 proves whether memory even helps, before any store machinery exists.</span></li>
+    </ul>
+  </div>
+</div>
+
+<!-- ============ PROBLEM ============ -->
+<section id="problem">
+<div class="col">
+  <h2><span class="n">01</span>Why this is not a greenfield build</h2>
+  <p class="lede">Kookr already contains almost every part. The honest gap is narrow. Two facts frame the whole design.</p>
+
+  <h3>Fact 1 — Kookr has two "agent" layers, and they bound memory <em>oppositely</em></h3>
+  <p>The request — "an orchestrator launches persistent cross-repo sub-agents with their own memory" — is <b>Layer A</b>. The "specialized lenses" (critics, reviewers) are <b>Layer B</b>. Collapsing them into one "sub-agent" abstraction is the single biggest design risk.</p>
+</div>
+
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 760 320" class="dia" role="img" aria-label="Layer A workers are persistent cross-repo processes whose memory must be purged; Layer B lenses are ephemeral in-process sub-agents whose context must never be persisted.">
+    <!-- Layer A -->
+    <rect x="20" y="24" width="340" height="272" rx="14" fill="none" stroke="currentColor" stroke-opacity=".3"/>
+    <text x="40" y="52" class="lbl" fill="var(--accent)" font-weight="600">LAYER A — the fleet</text>
+    <text x="40" y="72" fill="currentColor" fill-opacity=".65" font-size="11">task-level processes · dtach/tmux · git worktree</text>
+    <rect x="40" y="90" width="140" height="56" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="110" y="114" text-anchor="middle" fill="currentColor" font-size="11">worker (repo-1)</text>
+    <text x="110" y="130" text-anchor="middle" fill="currentColor" fill-opacity=".6" font-size="10">cross-repo, persistent</text>
+    <rect x="200" y="90" width="140" height="56" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="270" y="114" text-anchor="middle" fill="currentColor" font-size="11">worker (repo-2)</text>
+    <text x="270" y="130" text-anchor="middle" fill="currentColor" fill-opacity=".6" font-size="10">launch-service.ts</text>
+    <rect x="40" y="166" width="300" height="48" rx="9" fill="none" stroke="var(--liability)" stroke-opacity=".8"/>
+    <text x="190" y="186" text-anchor="middle" fill="var(--liability)" font-size="11" font-weight="600">MEMORY = a durable store</text>
+    <text x="190" y="202" text-anchor="middle" fill="var(--liability)" font-size="11">…that MUST be purged</text>
+    <text x="40" y="244" fill="currentColor" fill-opacity=".6" font-size="10.5">POST /api/tasks · kookr-spawn · repo-policy-resolver</text>
+    <text x="40" y="262" fill="currentColor" fill-opacity=".6" font-size="10.5">worktree-guardrails · lives for hours/days</text>
+
+    <!-- Layer B -->
+    <rect x="400" y="24" width="340" height="272" rx="14" fill="none" stroke="currentColor" stroke-opacity=".3"/>
+    <text x="420" y="52" class="lbl" fill="var(--accent)" font-weight="600">LAYER B — the swarm</text>
+    <text x="420" y="72" fill="currentColor" fill-opacity=".65" font-size="11">in-process Agent-tool sub-agents</text>
+    <rect x="420" y="90" width="140" height="56" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="490" y="114" text-anchor="middle" fill="currentColor" font-size="11">critic / lens</text>
+    <text x="490" y="130" text-anchor="middle" fill="currentColor" fill-opacity=".6" font-size="10">fresh context window</text>
+    <rect x="580" y="90" width="140" height="56" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="650" y="114" text-anchor="middle" fill="currentColor" font-size="11">reviewer</text>
+    <text x="650" y="130" text-anchor="middle" fill="currentColor" fill-opacity=".6" font-size="10">returns 1–2K summary</text>
+    <rect x="420" y="166" width="300" height="48" rx="9" fill="none" stroke="var(--good)" stroke-opacity=".8"/>
+    <text x="570" y="186" text-anchor="middle" fill="var(--good)" font-size="11" font-weight="600">MEMORY = a context window</text>
+    <text x="570" y="202" text-anchor="middle" fill="var(--good)" font-size="11">…that must NEVER be persisted</text>
+    <text x="420" y="244" fill="currentColor" fill-opacity=".6" font-size="10.5">Agent(subagent_type:"kookr-toolkit:…")</text>
+    <text x="420" y="262" fill="currentColor" fill-opacity=".6" font-size="10.5">vanishes on return · no persistence</text>
+  </svg>
+  </div>
+  <figcaption><b>The two layers bound memory in opposite directions.</b> A Layer-A worker's memory is a store on disk that <em>must</em> be purged; a Layer-B lens's "memory" is a window that <em>must never</em> be saved. One abstraction over both yields either poisoned persisted scratch, or a purge aimed at something already gone.</figcaption>
+</figure>
+
+<div class="col">
+  <h3>Fact 2 — the memory asymmetry is already shipped, and already hurting</h3>
+  <p>Kookr <em>forces</em> memory up: the post-task gate (issue #1538) returns <code>409</code> on <code>completion-ready</code> unless a lesson was written. It has <b>no down-step at all</b>. The result is measured, not hypothetical.</p>
+</div>
+
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 720 250" class="dia" role="img" aria-label="A forced write path pushes lesson volume up with every task, while no prune path exists, so the shelf grows to 1319 notes; and injected memory measurably lowered the judge's quality.">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker>
+      <marker id="arU" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--liability)"/></marker>
+    </defs>
+    <rect x="30" y="100" width="120" height="50" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="90" y="122" text-anchor="middle" font-size="11" fill="currentColor">task completes</text>
+    <text x="90" y="138" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">#1538 gate</text>
+    <line x1="150" y1="125" x2="235" y2="125" stroke="var(--liability)" stroke-width="2" marker-end="url(#arU)"/>
+    <text x="192" y="116" text-anchor="middle" font-size="10" fill="var(--liability)">forces write</text>
+    <rect x="240" y="92" width="170" height="66" rx="9" fill="none" stroke="var(--liability)"/>
+    <text x="325" y="120" text-anchor="middle" font-size="12" fill="var(--liability)" font-weight="600">agent-task-lessons</text>
+    <text x="325" y="140" text-anchor="middle" font-size="13" fill="var(--liability)" font-weight="700">1,319 ▲ growing</text>
+    <!-- missing down step -->
+    <line x1="325" y1="158" x2="325" y2="205" stroke="currentColor" stroke-opacity=".4" stroke-width="2" stroke-dasharray="5 5"/>
+    <text x="340" y="190" font-size="11" fill="var(--danger)" font-weight="600">no prune path</text>
+    <text x="340" y="206" font-size="10" fill="currentColor" fill-opacity=".6">kb superseded only proposes</text>
+    <circle cx="325" cy="210" r="4" fill="none" stroke="var(--danger)"/><line x1="322" y1="207" x2="328" y2="213" stroke="var(--danger)"/>
+    <!-- inject hurts -->
+    <rect x="470" y="40" width="220" height="56" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="580" y="62" text-anchor="middle" font-size="11" fill="currentColor">inject accumulated memory</text>
+    <text x="580" y="80" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">into a fresh context</text>
+    <line x1="470" y1="96" x2="470" y2="124" stroke="currentColor" stroke-opacity=".5" marker-end="url(#ar)"/>
+    <rect x="470" y="128" width="220" height="86" rx="9" fill="none" stroke="var(--danger)"/>
+    <text x="580" y="152" text-anchor="middle" font-size="11" fill="var(--danger)" font-weight="600">measured: quality DOWN</text>
+    <text x="580" y="172" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".75">kb-scout judge "devalues injected</text>
+    <text x="580" y="186" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".75">_wisdom chunks" → closed axis</text>
+    <text x="580" y="204" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".75">+ context-rot (18 models)</text>
+  </svg>
+  </div>
+  <figcaption><b>The real problem.</b> Volume is pushed <em>up</em> by a gate; the only in-house measurement says injecting the accumulated result pushes quality <em>down</em>; and nothing pushes volume back down. The gap is not "we lack a store" — it is "we never decided whether a memory earns its context cost, and we can't take it back when it doesn't."</figcaption>
+</figure>
+</section>
+
+<!-- ============ PRINCIPLES ============ -->
+<section id="principles">
+<div class="col">
+  <h2><span class="n">02</span>Eight principles the design commits to</h2>
+  <p class="lede">These are the requirements. They encode the swarm's hard-won agreements and the two corrections the consensus attack and critics forced.</p>
+</div>
+<div class="grid">
+  <div class="card"><span class="rid">R1</span><h4>Two layers, never welded</h4><p>Persistent memory and the brief→artifact contract ride Layer A only. Layer B stays ephemeral.</p></div>
+  <div class="card"><span class="rid">R2</span><h4>Memory is a measured liability</h4><p>No standing semantic store by default. Capitalize via procedural skills + just-in-time re-derivation; switch semantic memory on per-scope only where measured to help.</p></div>
+  <div class="card"><span class="rid">R3</span><h4>Every write has a down-step</h4><p>For the forced-write gate, a prune/demote counterpart. The injected budget (~1–2K tokens) is a hard cap.</p></div>
+  <div class="card"><span class="rid">R4</span><h4>Purge = demote, not delete</h4><p>Hidden-but-retrievable, undoable by run id. The fleet's shelves are separate from the shared human/kb-scout commons; autonomous apply never touches the commons.</p></div>
+  <div class="card"><span class="rid">R5</span><h4>Typed in, typed by reference out</h4><p>A complete brief in; a small result pointing at an artifact out. Loops close with an evaluator, not a chat. Missing results are a defined state.</p></div>
+  <div class="card"><span class="rid">R6</span><h4>Spawning is disciplined</h4><p>A sub-agent ≈ 15× tokens. Spawn only when parallelizable AND verifiable AND worth it. No own memory or tool boundary → it's a prompt.</p></div>
+  <div class="card"><span class="rid">R7</span><h4>Reuse over build</h4><p>A playbook + skill + hook + one thin verb beats a new service — except where reuse is skin-deep (demote is a real cross-package change).</p></div>
+  <div class="card"><span class="rid">R8</span><h4>Observable before/during/after</h4><p>A wrongful demotion or budget breach is caught by a signal, not by its consequence. Dry-run, ledger, blast-radius cap, regret tripwires, metered cost.</p></div>
+</div>
+</section>
+
+<!-- ============ SYSTEM SHAPE ============ -->
+<section id="shape">
+<div class="col">
+  <h2><span class="n">03</span>The system shape</h2>
+  <p class="lede">One orchestrator applies the spawn rule, dispatches typed briefs, reads typed results by reference, and verifies worker claims. A scheduled janitor keeps memory bounded.</p>
+</div>
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 760 430" class="dia" role="img" aria-label="The orchestrator dispatches typed briefs to parallel Layer-A workers, an ephemeral Layer-B lens swarm, and a scheduled memory janitor; memory is tiered into procedural, semantic (default off), episodic, and a protected shared commons.">
+    <defs><marker id="a2" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <!-- orchestrator -->
+    <rect x="210" y="20" width="340" height="66" rx="12" fill="var(--surface-2)" stroke="var(--accent)"/>
+    <text x="380" y="46" text-anchor="middle" font-size="13" fill="var(--accent)" font-weight="600">ORCHESTRATOR (Layer-A lead)</text>
+    <text x="380" y="66" text-anchor="middle" font-size="10.5" fill="currentColor" fill-opacity=".7">spawn rule · typed brief · typed result · verify claims</text>
+    <!-- arrows down -->
+    <line x1="300" y1="86" x2="150" y2="150" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a2)"/>
+    <line x1="380" y1="86" x2="380" y2="150" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a2)"/>
+    <line x1="460" y1="86" x2="620" y2="150" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a2)"/>
+    <text x="205" y="120" font-size="9.5" fill="currentColor" fill-opacity=".6">brief↓ result↑</text>
+    <!-- workers -->
+    <rect x="40" y="152" width="200" height="60" rx="10" fill="none" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="140" y="176" text-anchor="middle" font-size="11" fill="currentColor">Layer-A workers (parallel)</text>
+    <text x="140" y="194" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">repo-1 · repo-2 · own worktrees</text>
+    <rect x="285" y="152" width="190" height="60" rx="10" fill="none" stroke="currentColor" stroke-opacity=".35"/>
+    <text x="380" y="176" text-anchor="middle" font-size="11" fill="currentColor">Layer-B lens swarm</text>
+    <text x="380" y="194" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">ephemeral · 1–2K summaries</text>
+    <rect x="520" y="152" width="200" height="60" rx="10" fill="none" stroke="var(--liability)" stroke-opacity=".7"/>
+    <text x="620" y="176" text-anchor="middle" font-size="11" fill="var(--liability)">Memory-Janitor (scheduled)</text>
+    <text x="620" y="194" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity=".6">owns no memory · demotes</text>
+    <!-- memory tiers -->
+    <line x1="140" y1="212" x2="140" y2="250" stroke="currentColor" stroke-opacity=".4" marker-end="url(#a2)"/>
+    <text x="150" y="238" font-size="9.5" fill="currentColor" fill-opacity=".6">reflect→write (gated)</text>
+    <line x1="620" y1="212" x2="620" y2="250" stroke="var(--liability)" stroke-opacity=".7" marker-end="url(#a2)"/>
+    <rect x="40" y="252" width="680" height="158" rx="12" fill="none" stroke="currentColor" stroke-opacity=".3"/>
+    <text x="58" y="274" font-size="11" fill="currentColor" fill-opacity=".7" font-weight="600">MEMORY — Layer A + filesystem</text>
+    <rect x="58" y="284" width="200" height="44" rx="8" fill="var(--surface-2)" stroke="var(--good)" stroke-opacity=".7"/>
+    <text x="158" y="302" text-anchor="middle" font-size="10.5" fill="var(--good)" font-weight="600">PROCEDURAL · primary</text>
+    <text x="158" y="318" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".7">skills, metadata-only load</text>
+    <rect x="270" y="284" width="200" height="44" rx="8" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".7"/>
+    <text x="370" y="302" text-anchor="middle" font-size="10.5" fill="var(--liability)" font-weight="600">SEMANTIC · default OFF</text>
+    <text x="370" y="318" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".7">on per-scope by measure</text>
+    <rect x="482" y="284" width="220" height="44" rx="8" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+    <text x="592" y="302" text-anchor="middle" font-size="10.5" fill="currentColor">EPISODIC · source of truth</text>
+    <text x="592" y="318" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".7">git / PRs / ledger · re-derived</text>
+    <rect x="58" y="340" width="644" height="52" rx="8" fill="none" stroke="var(--danger)" stroke-opacity=".7" stroke-dasharray="6 4"/>
+    <text x="380" y="362" text-anchor="middle" font-size="10.5" fill="var(--danger)" font-weight="600">SHARED COMMONS — agent-task-lessons, _wisdom (humans + kb-scout)</text>
+    <text x="380" y="380" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".75">autonomous APPLY never touches it — propose-only, human-gated</text>
+  </svg>
+  </div>
+  <figcaption><b>Everything maps to a mechanism that already exists.</b> Workers launch via <code>POST /api/tasks</code>; the lens swarm via the <code>Agent</code> tool; the janitor runs on the existing maintenance schedule. The one protected box is the shared commons — the fleet's own scoped shelves are where autonomous <code>apply</code> is allowed.</figcaption>
+</figure>
+</section>
+
+<!-- ============ MEMORY MODEL ============ -->
+<section id="memory">
+<div class="col">
+  <h2><span class="n">04</span>The memory model — procedural-first, semantic default-off</h2>
+  <p class="lede">The user's priority: capitalize experience <em>and</em> keep memory small and auto-purging. The reconciliation is that these live on different layers — you bound what gets <b>injected</b>, not what the fleet <b>knows</b>.</p>
+
+  <div class="callout">
+    <span class="tag">The load-bearing distinction</span>
+    <p><b>Decays-out-of-hot ≠ truly forgotten.</b> Dropping below the injected top-k budget is invisible but recoverable (still on disk, still reachable by explicit search). A demotion is hidden-but-flagged and undoable by run id. Deleting a backing row is not a default operation at all.</p>
+  </div>
+
+  <h3>The write is a reconciliation, not an append</h3>
+  <p>When a scope's semantic memory is switched on, every candidate fact is reconciled against the nearest existing memories — the Mem0 four-operation pattern — and contradictions are time-stamped as invalid, never deleted (the Zep rule).</p>
+</div>
+
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 720 210" class="dia" role="img" aria-label="A new fact is compared to similar existing memories and routed to one of four operations: add, update-merge, invalidate with a timestamp, or no-op for a duplicate.">
+    <defs><marker id="a3" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <rect x="24" y="80" width="130" height="50" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+    <text x="89" y="100" text-anchor="middle" font-size="11" fill="currentColor">candidate fact</text>
+    <text x="89" y="116" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".6">from reflection</text>
+    <line x1="154" y1="105" x2="205" y2="105" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a3)"/>
+    <rect x="208" y="78" width="150" height="54" rx="9" fill="none" stroke="var(--accent)"/>
+    <text x="283" y="100" text-anchor="middle" font-size="11" fill="var(--accent)" font-weight="600">retrieve top-s similar</text>
+    <text x="283" y="116" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".65">then choose one op</text>
+    <!-- four ops -->
+    <g font-size="10.5">
+      <line x1="358" y1="95" x2="410" y2="40" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a3)"/>
+      <rect x="414" y="20" width="120" height="38" rx="8" fill="var(--surface-2)" stroke="var(--good)" stroke-opacity=".7"/>
+      <text x="474" y="37" text-anchor="middle" fill="var(--good)" font-weight="600">ADD</text>
+      <text x="474" y="51" text-anchor="middle" fill="currentColor" fill-opacity=".65" font-size="9">nothing similar (under cap)</text>
+      <line x1="358" y1="102" x2="410" y2="83" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a3)"/>
+      <rect x="414" y="64" width="120" height="38" rx="8" fill="var(--surface-2)" stroke="var(--accent)" stroke-opacity=".7"/>
+      <text x="474" y="81" text-anchor="middle" fill="var(--accent)" font-weight="600">UPDATE / merge</text>
+      <text x="474" y="95" text-anchor="middle" fill="currentColor" fill-opacity=".65" font-size="9">complementary info</text>
+      <line x1="358" y1="110" x2="410" y2="127" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a3)"/>
+      <rect x="414" y="108" width="120" height="38" rx="8" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".8"/>
+      <text x="474" y="125" text-anchor="middle" fill="var(--liability)" font-weight="600">INVALIDATE</text>
+      <text x="474" y="139" text-anchor="middle" fill="currentColor" fill-opacity=".65" font-size="9">timestamp, keep the row</text>
+      <line x1="358" y1="117" x2="410" y2="170" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a3)"/>
+      <rect x="414" y="152" width="120" height="38" rx="8" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+      <text x="474" y="169" text-anchor="middle" fill="currentColor">NOOP</text>
+      <text x="474" y="183" text-anchor="middle" fill="currentColor" fill-opacity=".65" font-size="9">duplicate (cosine &gt; 0.85)</text>
+    </g>
+    <text x="620" y="88" text-anchor="middle" font-size="10.5" fill="currentColor" fill-opacity=".7">cap 50–200</text>
+    <text x="620" y="104" text-anchor="middle" font-size="10.5" fill="currentColor" fill-opacity=".7">/ scope</text>
+    <line x1="540" y1="80" x2="588" y2="92" stroke="currentColor" stroke-opacity=".3"/>
+  </svg>
+  </div>
+  <figcaption><b>Write by reconciliation (Mem0 + Zep).</b> Blind append is what produced 1,319 notes. Each candidate instead routes to ADD / UPDATE / INVALIDATE / NOOP against its nearest neighbours — and a "contradiction" that is really a refinement is invalidated with a timestamp, never destroyed.</figcaption>
+</figure>
+
+<div class="col">
+<h3>Five bounding mechanisms, used together</h3>
+<p>No single mechanism is enough; the design layers them. Defaults are starting points drawn from the cited research.</p>
+</div>
+<div class="col wide">
+<div class="tablewrap">
+<table>
+<thead><tr><th>Mechanism</th><th>How</th><th>Default</th><th>Pitfall it must avoid</th></tr></thead>
+<tbody>
+<tr><td><b>Recency decay</b></td><td>exp decay on last-access; TTL time-sensitive facts</td><td class="mono">0.995</td><td>decaying the wrong time-axis buries rare-critical facts</td></tr>
+<tr><td><b>Importance eviction</b></td><td>evict lowest importance × recency × usage at the cap</td><td class="mono">cap 50–200</td><td>LLM importance is noisy — combine with real usage</td></tr>
+<tr><td><b>Dedup &amp; merge</b></td><td>drop near-duplicates; LLM-confirm a merge</td><td class="mono">cosine 0.85</td><td>false-dedup collapses distinct, caveat-bearing facts</td></tr>
+<tr><td><b>Invalidate ≠ delete</b></td><td>timestamp the contradicted row, prefer newest</td><td class="mono">bi-temporal</td><td>over-eager deletion erases refinements</td></tr>
+<tr><td><b>Consolidation</b></td><td>distill clusters → fewer semantic/procedural entries</td><td class="mono">every K tasks</td><td>detail loss — keep the raw episode, stay reversible</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<div class="col">
+  <div class="callout warn">
+    <span class="tag">The Forgetter's catch — don't launder the leak</span>
+    <p>"Promote recurring lessons to a skill" sounds like the bounded answer, but it can just relocate the 1,319-note pile into an authoritative-looking skill library that nothing purges. So the <b>procedural store is capped too</b>, by a fitness score — how often a skill actually fires <em>and</em> succeeds — contingent on that telemetry existing.</p>
+  </div>
+</div>
+</section>
+
+<!-- ============ ACTUATOR ============ -->
+<section id="actuator">
+<div class="col">
+  <h2><span class="n">05</span>The one genuinely new piece — a prune actuator that <em>demotes</em></h2>
+  <p class="lede">The missing self-prune path. Composed from three proven in-repo loops — but two critic corrections mean it is not the thin verb v1 imagined.</p>
+
+  <div class="callout bad">
+    <span class="tag">Correction — two problems, never conflated</span>
+    <p><b>The commons problem</b> (the 1,319 shared notes humans and kb-scout read) is real but is a <em>propose-only, human-gated</em> job — autonomous apply on the commons is forbidden. <b>The fleet problem</b> (new <code>&lt;capability&gt;/&lt;repo&gt;</code> shelves the fleet owns) is where apply can eventually run.</p>
+  </div>
+  <div class="callout warn">
+    <span class="tag">Correction — demote is a cross-package change, not a verb</span>
+    <p>"Demote while staying retrievable" needs the external KB package to gain a per-note <em>index-exclusion</em> state it does not have. So <code>kb demote</code> is a version-pinned prerequisite, shipped <b>propose-first</b>; <code>--apply</code> is gated on package support, a <code>kb undemote --run=&lt;id&gt;</code> restore verb, an enforced shelf allowlist, and a restore drill.</p>
+  </div>
+</div>
+
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 720 240" class="dia" role="img" aria-label="The janitor classifies notes, writes a dry-run diff and a per-note manifest, aborts if the blast radius is exceeded, archives before mutating, and every demotion is reversible by run id; the commons gets propose-only while fleet shelves get apply.">
+    <defs><marker id="a4" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <rect x="20" y="96" width="120" height="48" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+    <text x="80" y="116" text-anchor="middle" font-size="11" fill="currentColor">classify notes</text>
+    <text x="80" y="132" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".6">pruning-scout taxonomy</text>
+    <line x1="140" y1="120" x2="178" y2="120" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a4)"/>
+    <rect x="180" y="96" width="130" height="48" rx="9" fill="none" stroke="var(--accent)"/>
+    <text x="245" y="116" text-anchor="middle" font-size="11" fill="var(--accent)" font-weight="600">dry-run diff</text>
+    <text x="245" y="132" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".6">+ per-note manifest</text>
+    <line x1="310" y1="120" x2="348" y2="120" stroke="currentColor" stroke-opacity=".5" marker-end="url(#a4)"/>
+    <rect x="350" y="96" width="140" height="48" rx="9" fill="none" stroke="var(--liability)"/>
+    <text x="420" y="114" text-anchor="middle" font-size="11" fill="var(--liability)" font-weight="600">blast-radius cap</text>
+    <text x="420" y="131" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".65">abort if &gt; 10% of shelf</text>
+    <!-- split -->
+    <line x1="490" y1="110" x2="540" y2="70" stroke="var(--danger)" stroke-opacity=".7" marker-end="url(#a4)"/>
+    <rect x="544" y="44" width="156" height="50" rx="9" fill="none" stroke="var(--danger)" stroke-dasharray="6 4"/>
+    <text x="622" y="64" text-anchor="middle" font-size="10.5" fill="var(--danger)" font-weight="600">commons → PROPOSE</text>
+    <text x="622" y="81" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".7">human-gated, never auto-apply</text>
+    <line x1="490" y1="130" x2="540" y2="170" stroke="var(--good)" stroke-opacity=".7" marker-end="url(#a4)"/>
+    <rect x="544" y="146" width="156" height="60" rx="9" fill="none" stroke="var(--good)"/>
+    <text x="622" y="166" text-anchor="middle" font-size="10.5" fill="var(--good)" font-weight="600">fleet shelf → APPLY</text>
+    <text x="622" y="182" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".7">archive-before-mutate</text>
+    <text x="622" y="196" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".7">undoable: kb undemote --run</text>
+    <text x="80" y="176" font-size="9.5" fill="currentColor" fill-opacity=".55">invariants reused from prune-aged-task-records.ts</text>
+    <text x="80" y="192" font-size="9.5" fill="currentColor" fill-opacity=".55">recovery model NOT reused — a commons has no retention contract</text>
+    <text x="80" y="208" font-size="9.5" fill="currentColor" fill-opacity=".55">mandatory audit row: no row → no apply</text>
+  </svg>
+  </div>
+  <figcaption><b>Demote, don't delete — and prove it before you do.</b> Every run produces a reviewable diff and a per-note manifest; a blast-radius cap aborts a runaway classifier; the commons only ever gets proposals; fleet shelves get apply with archive-before-mutate and a run-id undo.</figcaption>
+</figure>
+</section>
+
+<!-- ============ CONTRACT ============ -->
+<section id="contract">
+<div class="col">
+  <h2><span class="n">06</span>The contract that cuts the back-and-forth</h2>
+  <p class="lede">Workers have no shared memory, so the brief <em>is</em> the contract. The result returns a pointer, not a payload, and an evaluator — not a conversation — closes the loop.</p>
+</div>
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 720 200" class="dia" role="img" aria-label="The orchestrator sends a typed brief to a worker, which writes an artifact to disk and returns a small typed result by reference; an evaluator checks it against the acceptance rubric and returns pass or block, which the orchestrator reads instead of re-reading the artifact.">
+    <defs><marker id="a5" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <rect x="24" y="74" width="130" height="52" rx="10" fill="var(--surface-2)" stroke="var(--accent)"/>
+    <text x="89" y="96" text-anchor="middle" font-size="11.5" fill="var(--accent)" font-weight="600">orchestrator</text>
+    <text x="89" y="113" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".65">reads summary+verdict</text>
+    <path d="M154,90 L250,90" stroke="currentColor" stroke-opacity=".55" marker-end="url(#a5)"/>
+    <text x="202" y="82" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".7">typed brief</text>
+    <rect x="252" y="66" width="140" height="68" rx="10" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+    <text x="322" y="90" text-anchor="middle" font-size="11.5" fill="currentColor">worker</text>
+    <text x="322" y="107" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".65">writes artifact</text>
+    <text x="322" y="121" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".65">to disk / PR</text>
+    <path d="M392,78 L470,78" stroke="currentColor" stroke-opacity=".55" marker-end="url(#a5)"/>
+    <text x="431" y="70" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".7">artifact_ref</text>
+    <rect x="472" y="54" width="120" height="48" rx="9" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".4"/>
+    <text x="532" y="74" text-anchor="middle" font-size="10.5" fill="currentColor">artifact store</text>
+    <text x="532" y="90" text-anchor="middle" font-size="9" fill="currentColor" fill-opacity=".6">git / PR / file</text>
+    <path d="M392,116 L470,140" stroke="currentColor" stroke-opacity=".55" marker-end="url(#a5)"/>
+    <rect x="472" y="120" width="140" height="56" rx="9" fill="none" stroke="var(--accent)"/>
+    <text x="542" y="142" text-anchor="middle" font-size="11" fill="var(--accent)" font-weight="600">evaluator</text>
+    <text x="542" y="159" text-anchor="middle" font-size="9.5" fill="currentColor" fill-opacity=".65">rubric → pass / block</text>
+    <path d="M472,150 C300,180 150,150 120,128" fill="none" stroke="var(--good)" stroke-opacity=".6" marker-end="url(#a5)"/>
+    <text x="300" y="178" text-anchor="middle" font-size="9.5" fill="var(--good)">verdict + structured feedback (not chat)</text>
+    <path d="M620,96 L660,96" stroke="var(--danger)" stroke-opacity=".5"/>
+    <text x="662" y="86" font-size="9" fill="var(--danger)">verify:</text>
+    <text x="662" y="99" font-size="9" fill="currentColor" fill-opacity=".7">ref resolves?</text>
+    <text x="662" y="112" font-size="9" fill="currentColor" fill-opacity=".7">cost metered?</text>
+  </svg>
+  </div>
+  <figcaption><b>Return by reference, verify the claims.</b> The orchestrator never re-reads the full artifact or the whole history; it reads a ≤2000-char summary and a verdict. Worker-asserted cost and artifact refs are cross-checked against metered truth — a mismatch is an anomaly event, not a trusted number.</figcaption>
+</figure>
+<div class="col wide">
+<div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(18rem,1fr))">
+  <div class="card"><span class="rid">BRIEF — in</span><h4>Everything the worker needs</h4><p><code>objective</code> · <code>repo_scope</code> · <code>cwd</code> · <code>output_format</code> · <code>acceptance</code> (rubric) · <code>allowed_tools</code> · <code>boundaries</code> · <code>artifact_path</code> · <code>memory_scope</code> (absent by default) · <code>brief_id</code>.</p></div>
+  <div class="card"><span class="rid">RESULT — out</span><h4>A pointer, not a payload</h4><p><code>verdict</code> (pass/block/input_required) · <code>artifact_ref</code> · <code>review-head-sha</code> · <code>brief_id</code> · <code>cost_usd</code> (cross-check only) · <code>summary ≤2000</code> · <code>started_at</code>/<code>last_progress_at</code> so a hung worker is a <em>state</em>, not silence.</p></div>
+</div>
+</div>
+</section>
+
+<!-- ============ DELIVERY ============ -->
+<section id="delivery">
+<div class="col">
+  <h2><span class="n">07</span>Delivery — measurement before machinery</h2>
+  <p class="lede">The decisive point from the consensus attack: the benefit of standing semantic memory was never measured, and the one in-house measurement is negative. So we build the measurement first, and every later phase is conditional on it.</p>
+</div>
+<div class="col wide">
+<ol class="phases">
+  <li data-id="P0"><h4>Measure (a designed experiment)</h4><p>Per-chunk injection logging with an <code>injected | suppressed | off</code> tag; a <b>randomized injection-off holdout</b> (observational on/off is confounded); outcome join via the terminal-task archive; a report surface (per-scope outcome on-vs-off, with a minimum-n). Plus a 3-state <code>fail-closed</code> flag on the one unconservative branch, default <code>log</code>.</p><p class="dep">depends on: nothing · creates the population the opt-in hook otherwise lacks</p></li>
+  <li data-id="P1"><h4>Typed contract + spawn rule</h4><p>The brief/result grammar as a doc, then its first real slice — a parser that consumes it; the Spawn-Decision Rule + effort ladder; a <b>server-side metered</b> fleet cost roll-up. Keep the hook-JSONL path as a cross-check; don't retire the sweeps yet.</p><p class="dep">depends on: nothing</p></li>
+  <li data-id="P2"><h4>Self-prune actuator — propose only</h4><p>The janitor skill + schedule in propose-only mode; dry-run diff; per-note manifest; blast-radius cap. Surfaces the <b>commons</b> defect for human review.</p><p class="dep">depends on: P0 (outcome signal) + P1 (cost ceiling for the scheduled job)</p></li>
+  <li data-id="P2a"><h4>Apply — fleet shelves only</h4><p><code>kb demote --apply</code> + <code>kb undemote</code>, gated on external-package support, shelf allowlist, restore drill, quarantine period. Never on the commons.</p><p class="dep">depends on: P2 + external-package capability</p></li>
+  <li data-id="P3"><h4>Earn semantic memory + fitness cap</h4><p>Turn on fleet semantic shelves <em>only where P0 shows benefit</em>; Mem0 four-op writes; promote ≥2-repo lessons to skills; fitness-cap the skill library (if telemetry exists).</p><p class="dep">depends on: P0 data + P2a</p></li>
+</ol>
+<div class="col">
+  <div class="callout">
+    <span class="tag">The honesty test</span>
+    <p><b>P0, P1, and P2 are worth doing even if P3 never happens</b> — even if the honest answer turns out to be "no standing semantic memory." P0 is the measurement, P1 is the contract, P2 surfaces the leak for review. Only P2a and P3 depend on the store being worth keeping. A design that survives its own premise being false is a design that respected the attack rather than rationalizing past it.</p>
+  </div>
+</div>
+</div>
+</section>
+
+<!-- ============ OBSERVABILITY ============ -->
+<section id="observe">
+<div class="col">
+  <h2><span class="n">08</span>Seeing what the night did</h2>
+  <p class="lede">Both critics found the same gap: an autonomous demotion and a lights-out cost integral must be caught by a <em>signal</em>, not by "later tasks score worse" or an invoice. Everything here reuses an existing Kookr surface.</p>
+</div>
+<div class="grid">
+  <div class="card"><span class="rid">LEDGER</span><h4>Per-note manifest, mandatory</h4><p>Every run writes path, hash, classification, score inputs, archive path to <code>audit.jsonl</code>. No audit row → no apply.</p></div>
+  <div class="card"><span class="rid">BLAST RADIUS</span><h4>Abort a runaway classifier</h4><p>If &gt; ~10% of a shelf would be demoted in one run, abort and escalate. The cheapest guard there is.</p></div>
+  <div class="card"><span class="rid">REGRET</span><h4>Tripwires, not outcome drift</h4><p>Log every explicit search that hits a demoted note, and every <code>kb remember</code> that re-learns one. A rising "regret rate" is the alarm.</p></div>
+  <div class="card"><span class="rid">RECOVERY</span><h4>Undo by run id</h4><p><code>kb undemote --run=&lt;id&gt;</code> ships with apply; a quarantine period keeps a demotion reversible while tripwires watch.</p></div>
+  <div class="card"><span class="rid">COST</span><h4>Metered, server-side, live</h4><p>Authoritative cost comes from adapter metering keyed by <code>brief_id</code> — not worker self-report (a crashed worker reports nothing). Exposed in orchestration status.</p></div>
+  <div class="card"><span class="rid">BREACH</span><h4>A cost-ceiling pause</h4><p>50/80% soft thresholds feed the anomaly detector; the hard stop refuses new spawns and leaves a visible reason.</p></div>
+</div>
+</section>
+
+<!-- ============ PROVENANCE ============ -->
+<section id="provenance">
+<div class="col">
+  <h2><span class="n">09</span>How this RFC was built</h2>
+  <p class="lede">Not by one voice. Five <em>invented, deliberately-conflicting</em> agents brainstormed it blind and in parallel; a devil's advocate attacked their agreement; two critics hardened the result against source.</p>
+</div>
+<div class="col wide">
+<div class="roles">
+  <div class="role"><span class="vs">bounds ⟷ capitalizes</span><h4>The Forgetter</h4><p>Minimal memory, aggressive purge. Caught that promoting to skills just relocates the leak.</p></div>
+  <div class="role"><span class="vs">capitalizes ⟷ bounds</span><h4>The Archivist</h4><p>Never lose a hard-won lesson. Reframed the one negative datapoint: "inject less," not "store less."</p></div>
+  <div class="role"><span class="vs">cost ⟷ specialization</span><h4>The Economist</h4><p>Multi-agent ≈ 15× tokens. Gave the spawn rule and the typed, by-reference contract.</p></div>
+  <div class="role"><span class="vs">specialization ⟷ cost</span><h4>The Fleet Maximalist</h4><p>Many narrow specialists. Showed specialization is itself a bounding strategy; gave the worth-a-specialist test.</p></div>
+  <div class="role"><span class="vs">reuse everything</span><h4>The Dark-Factory Mechanic</h4><p>Build nothing bespoke. Mapped every capability to an existing mechanism; flagged the Layer-A/B welding risk.</p></div>
+  <div class="role" style="border-color:var(--liability)"><span class="vs" style="color:var(--danger)">attacks the consensus</span><h4>Devil's advocate</h4><p>Found the shared blind spot: the whole panel assumed a semantic store <em>should</em> exist. It reframed the RFC's thesis.</p></div>
+</div>
+<div class="col">
+<p>Then <b>delivery-pragmatist</b> and <b>operability-reviewer</b> checked the draft against the real code — and corrected it: the "fail-open leak" wasn't visible in the actual opt-in hook; the janitor had been scoped to empty shelves; <code>kb demote</code> was a cross-package change; and the autonomous path needed the whole observability layer in §08. Every load-bearing reuse claim was verified against source.</p>
+</div>
+</div>
+</section>
+
+<!-- ============ OPEN QUESTIONS ============ -->
+<section id="open">
+<div class="col">
+  <h2><span class="n">10</span>Open questions</h2>
+  <ol>
+    <li><b>Retrieval-outcome attribution.</b> Crediting one of 5–20 chunks for a task's success is unsolved; P0 starts with the coarse randomized signal, not per-chunk attribution.</li>
+    <li><b>External package as mutation infra.</b> <code>kb demote</code>/<code>undemote</code> live in a separately-versioned package; pin it, keep apply human-gated behind a contract test, and run a restore drill first.</li>
+    <li><b>Commons ownership &amp; migration.</b> Who owns the shared shelves, and how are the ~1,300 frontmatter-less legacy notes handled — left out of scope, or a human-gated tagging migration?</li>
+    <li><b>Skill-fitness telemetry.</b> Low-fitness skill demotion needs a per-task skill-firing + outcome signal that does not exist yet; defer the fitness cap until it does.</li>
+    <li><b>Concurrency default.</b> Start at 4 or 20? Resolve with P1's metered-cost evidence from a real lights-out run.</li>
+  </ol>
+</div>
+</section>
+
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span class="src">RFC: docs/rfc/rfc-self-improving-agent-fleet.md · evidence pack alongside it</span>
+    <span class="foot-links">
+      <a href="./rfc-self-improving-agent-fleet.md">Markdown RFC →</a>
+      <a href="./rfc-self-improving-agent-fleet-evidence.md">Evidence pack →</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var KEY="rfc-fleet-theme", btn=document.getElementById("themeBtn"), root=document.documentElement;
+  var order=["system","light","dark"], label={system:"◑ system",light:"☀ light",dark:"☾ dark"};
+  function get(){try{return localStorage.getItem(KEY)||"system"}catch(e){return "system"}}
+  function apply(v){ if(v==="system"){root.removeAttribute("data-theme")} else {root.setAttribute("data-theme",v)} btn.textContent=label[v]; }
+  var cur=get(); apply(cur);
+  btn.addEventListener("click",function(){
+    cur=order[(order.indexOf(cur)+1)%order.length];
+    try{localStorage.setItem(KEY,cur)}catch(e){}
+    apply(cur);
+  });
+})();
+</script>
+</body>
+</html>
