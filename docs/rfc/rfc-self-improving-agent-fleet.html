@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Agent Notebook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column on a cool engineering-doc ground; full-bleed diagrams;
+   teal = structure, amber = the cap/bound, green/red = keep/drop & +1/-1 votes. */
+:root{
+  --bg:#f5f7fa; --surface:#ffffff; --surface-2:#eef1f6; --fg:#171a21; --muted:#596273;
+  --border:#dde2ea; --border-strong:#c3ccd8;
+  --accent:#0f766e; --liability:#b45309; --good:#15803d; --danger:#b42318;
+  --code-bg:#f0f3f8; --shadow:0 1px 2px rgba(23,26,33,.06),0 8px 24px -16px rgba(23,26,33,.25);
+  --maxw:70rem; --col:40rem;
+  --f-body:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  --f-head:"IBM Plex Serif",Georgia,"Times New Roman",serif;
+  --f-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1016; --surface:#141924; --surface-2:#1b2231; --fg:#e7eaf0; --muted:#97a1b2;
+  --border:#232c3a; --border-strong:#33405280; --accent:#2dd4bf; --liability:#f59e0b;
+  --good:#4ade80; --danger:#f87171; --code-bg:#121825;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7); color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1016; --surface:#141924; --surface-2:#1b2231; --fg:#e7eaf0; --muted:#97a1b2;
+  --border:#232c3a; --border-strong:#33405280; --accent:#2dd4bf; --liability:#f59e0b;
+  --good:#4ade80; --danger:#f87171; --code-bg:#121825;
+  --shadow:0 1px 2px rgba(0,0,0,.4),0 10px 30px -18px rgba(0,0,0,.7); color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:17px;line-height:1.65;-webkit-font-smoothing:antialiased}
+img{max-width:100%}
+[hidden]{display:none!important}
+.wrap{max-width:var(--maxw);margin-inline:auto;padding-left:max(18px,env(safe-area-inset-left,0px));padding-right:max(18px,env(safe-area-inset-right,0px))}
+.col{max-width:var(--col);margin-inline:auto}
+.col.wide{max-width:58rem}
+header.site{position:relative;border-bottom:1px solid var(--border);
+  background:radial-gradient(130% 90% at 85% -10%, color-mix(in oklab,var(--accent) 16%,transparent), transparent 60%),var(--surface)}
+header.site .wrap{padding-block:clamp(2.2rem,6vw,3.6rem)}
+.eyebrow{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--accent);font-weight:600}
+h1{font-family:var(--f-head);font-weight:700;letter-spacing:-.01em;line-height:1.08;font-size:clamp(2rem,6.5vw,3.3rem);margin:.5rem 0 0;text-wrap:balance;max-width:18ch}
+.dek{font-size:clamp(1.05rem,2.4vw,1.28rem);color:var(--muted);margin:1.1rem 0 0;max-width:50ch;line-height:1.5}
+.principle{display:inline-block;margin-top:1.2rem;font-family:var(--f-mono);font-size:.82rem;color:var(--liability);border:1px dashed var(--liability);border-radius:10px;padding:.5rem .8rem;background:color-mix(in oklab,var(--liability) 8%,transparent)}
+.meta{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:1.4rem;font-family:var(--f-mono);font-size:.76rem}
+.chip{display:inline-flex;align-items:center;gap:.4rem;border:1px solid var(--border-strong);border-radius:999px;padding:.28rem .7rem;color:var(--muted);background:var(--surface)}
+.chip b{color:var(--fg);font-weight:600}
+.theme-btn{position:absolute;top:1rem;right:max(18px,env(safe-area-inset-right,0px));font-family:var(--f-mono);font-size:.72rem;border:1px solid var(--border-strong);background:var(--surface);color:var(--muted);border-radius:999px;padding:.35rem .7rem;cursor:pointer}
+.theme-btn:hover{color:var(--fg);border-color:var(--accent)}
+main .wrap{padding-block:clamp(2rem,5vw,3.2rem)}
+section{margin-top:clamp(2.6rem,6vw,4rem)}
+h2{font-family:var(--f-head);font-weight:700;font-size:clamp(1.5rem,3.6vw,2rem);line-height:1.15;letter-spacing:-.01em;margin:0 0 .3rem;text-wrap:balance}
+h2 .n{font-family:var(--f-mono);font-size:.62em;color:var(--accent);font-weight:600;margin-right:.6rem;vertical-align:.12em}
+.lede{color:var(--muted);font-size:1.08rem;margin:.2rem 0 1.4rem;max-width:58ch}
+h3{font-family:var(--f-head);font-weight:600;font-size:1.18rem;margin:1.8rem 0 .4rem}
+p{margin:.9rem 0;max-width:66ch}
+a{color:var(--accent);text-underline-offset:2px}
+strong{font-weight:600}
+code{font-family:var(--f-mono);font-size:.84em;background:var(--code-bg);border:1px solid var(--border);border-radius:5px;padding:.08em .4em}
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:12px;padding:1rem 1.1rem;overflow-x:auto;font-family:var(--f-mono);font-size:.84rem;line-height:1.6;margin:1.2rem 0}
+pre .c{color:var(--muted)} pre .g{color:var(--good)} pre .a{color:var(--accent)}
+.tldr{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:clamp(1.2rem,3vw,1.8rem);box-shadow:var(--shadow);margin-top:1.5rem}
+.tldr h2{font-size:1.15rem;margin-bottom:.8rem}
+.tldr ul{margin:0;padding:0;list-style:none;display:grid;gap:.8rem}
+.tldr li{display:grid;grid-template-columns:1.8rem 1fr;gap:.6rem;align-items:start}
+.tldr li .k{font-family:var(--f-mono);color:var(--accent);font-weight:700;font-size:1.05rem}
+.callout{border-left:3px solid var(--accent);background:var(--surface-2);border-radius:0 12px 12px 0;padding:1rem 1.2rem;margin:1.4rem 0}
+.callout.warn{border-left-color:var(--liability)}
+.callout .tag{font-family:var(--f-mono);font-size:.7rem;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600;display:block;margin-bottom:.3rem}
+.callout.warn .tag{color:var(--liability)}
+.callout p{margin:.3rem 0}
+figure{margin:1.8rem 0;max-width:100%}
+figure.bleed{max-width:56rem;margin-inline:auto}
+.figbox{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:clamp(1rem,2.5vw,1.6rem);box-shadow:var(--shadow);overflow-x:auto}
+figcaption{color:var(--muted);font-size:.9rem;margin-top:.7rem;line-height:1.45;max-width:64ch}
+figcaption b{color:var(--fg)}
+svg{display:block;max-width:100%;height:auto}
+.tablewrap{overflow-x:auto;border:1px solid var(--border);border-radius:12px;margin:1.4rem 0;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:.92rem;min-width:30rem}
+th,td{text-align:left;padding:.6rem .8rem;border-bottom:1px solid var(--border);vertical-align:top}
+thead th{font-family:var(--f-mono);font-size:.72rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--surface-2)}
+tbody tr:last-child td{border-bottom:none}
+td code{white-space:nowrap}
+.two{display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(16rem,1fr));margin:1.4rem 0}
+.panel{border:1px solid var(--border);border-radius:14px;padding:1.1rem 1.2rem;background:var(--surface);box-shadow:var(--shadow)}
+.panel h4{margin:0 0 .6rem;font-size:1rem;font-family:var(--f-head)}
+.panel ul{margin:0;padding-left:0;list-style:none;display:grid;gap:.5rem}
+.panel li{font-size:.92rem;color:var(--muted);display:grid;grid-template-columns:1.2rem 1fr;gap:.4rem}
+.panel li .m{font-weight:700}
+.panel.keep li .m{color:var(--good)} .panel.drop li .m{color:var(--danger)}
+.anoms{display:grid;gap:.7rem;grid-template-columns:repeat(auto-fit,minmax(15rem,1fr));margin:1.2rem 0}
+.anom{border:1px solid var(--border);border-left:3px solid var(--danger);border-radius:10px;padding:.8rem 1rem;background:var(--surface)}
+.anom b{font-family:var(--f-mono);font-size:.84rem;color:var(--danger)}
+.anom p{margin:.3rem 0 0;font-size:.88rem;color:var(--muted);max-width:none}
+.params{display:flex;flex-wrap:wrap;gap:.8rem;margin:1.2rem 0}
+.param{border:1px solid var(--border-strong);border-radius:12px;padding:.8rem 1rem;background:var(--surface);min-width:8.5rem}
+.param .v{font-family:var(--f-mono);font-size:1.5rem;font-weight:600;color:var(--accent);line-height:1}
+.param .l{font-size:.82rem;color:var(--muted);margin-top:.3rem}
+ol.oq{max-width:64ch} ol.oq li{margin:.5rem 0}
+footer.site{border-top:1px solid var(--border);margin-top:4rem;background:var(--surface)}
+footer.site .wrap{padding-block:2rem;display:flex;flex-wrap:wrap;gap:1rem;justify-content:space-between;align-items:center}
+footer.site a{font-family:var(--f-mono);font-size:.82rem}
+.foot-links{display:flex;flex-wrap:wrap;gap:1.2rem}
+.src{color:var(--muted);font-size:.8rem;font-family:var(--f-mono)}
+@media (prefers-reduced-motion:no-preference){a,.theme-btn{transition:color .15s,border-color .15s}}
+</style>
+</head>
+<body>
+<header class="site">
+  <button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle colour theme">◑ theme</button>
+  <div class="wrap">
+    <span class="eyebrow">Kookr · RFC · Draft v4 · simplified</span>
+    <h1>The Agent Notebook</h1>
+    <p class="dek">Specialized sub-agents that get better at one job — each keeping a tiny notebook of one-line lessons it votes on, capped so hard it can never rot, kept honest by hooks.</p>
+    <div class="principle">design rule: MALIN + KISS — smart, not complex to look clever</div>
+    <div class="meta">
+      <span class="chip">cap <b>200 lines × 120 chars</b></span>
+      <span class="chip">each line <b>has a vote score</b></span>
+      <span class="chip">hooks <b>inject + force retrospective</b></span>
+      <span class="chip">monitored by <b>one log line + nb stats</b></span>
+    </div>
+  </div>
+</header>
+
+<main>
+<div class="wrap">
+
+<div class="col">
+  <div class="tldr">
+    <h2>The whole thing, in four lines</h2>
+    <ul>
+      <li><span class="k">A</span><span><b>Specialized roles.</b> The main agent delegates each unit of work to a focused sub-agent role (Cartographer, Reproducer, Patcher, Verifier…) that gets good at one thing.</span></li>
+      <li><span class="k">B</span><span><b>A bounded notebook.</b> Each role keeps a plain-text notebook: <b>≤ 200 lines</b>, <b>one lesson per line</b>, <b>≤ 120 characters</b>, each line with a <b>vote score</b>. Full → the lowest-scored line falls off. The hard cap <em>is</em> the safety.</span></li>
+      <li><span class="k">C</span><span><b>The agent curates.</b> End of task it votes <b>+1</b> on what helped, <b>−1</b> on what misled it, and when full it <b>consolidates or deletes</b> a weak line itself.</span></li>
+      <li><span class="k">D</span><span><b>Hooks + a fast CLI guarantee it.</b> A start hook <b>injects</b> the notebook; a stop hook <b>blocks</b> until the retrospective is done; the local <code>nb</code> command (plain text, no network) is faster and more reliable than <code>kb</code>, and monitors itself.</span></li>
+    </ul>
+  </div>
+</div>
+
+<!-- WHY -->
+<section id="why">
+<div class="col">
+  <h2><span class="n">01</span>Why</h2>
+  <p class="lede">Two gaps today — and the usual fix for the second is what makes systems complex.</p>
+  <p><b>Agents don't specialize.</b> One agent does nearly everything; no focused role gets sharp at a single kind of job.</p>
+  <p><b>Agents don't learn.</b> They finish and keep nothing. Kookr's existing lesson store is the opposite extreme — <em>forced</em> to grow (1,319 notes and counting) with no bound, so it rots: noise, stale and contradictory entries, context that drowns the signal.</p>
+  <div class="callout warn">
+    <span class="tag">The trap we refuse</span>
+    <p>"Add memory" normally means "add an unbounded store + a retrieval system + a pruning system." That spiral sank an earlier, over-built version of this RFC. <b>We make the bound structural, let the agent curate within it, and let hooks guarantee the ritual</b> — then none of that machinery is needed.</p>
+  </div>
+</div>
+</section>
+
+<!-- NOTEBOOK -->
+<section id="notebook">
+<div class="col">
+  <h2><span class="n">02</span>The notebook</h2>
+  <p class="lede">A new memory type: tiny, plain text, with a vote score per line. Its limits — and the agent's votes — do all the work.</p>
+</div>
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 640 316" role="img" aria-label="Each notebook line is a score plus a one-line lesson. The agent votes plus or minus one at task end; when the notebook is full the lowest-scored line falls off, and the agent can also consolidate or delete lines.">
+    <defs>
+      <marker id="arD" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--danger)"/></marker>
+      <marker id="arG" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--good)"/></marker>
+      <marker id="arA" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="var(--accent)"/></marker>
+    </defs>
+    <!-- lowest-scored falls off -->
+    <text x="70" y="34" font-family="var(--f-mono)" font-size="11.5" fill="var(--danger)">lowest score falls off</text>
+    <path d="M150,42 C122,58 122,70 150,84" fill="none" stroke="var(--danger)" stroke-width="1.6" marker-end="url(#arD)"/>
+    <g font-family="var(--f-mono)" font-size="12">
+      <!-- a negative line being evicted -->
+      <rect x="150" y="64" width="372" height="26" rx="5" fill="var(--surface-2)" stroke="var(--danger)" stroke-opacity=".6" stroke-dasharray="4 3"/>
+      <text x="162" y="81" fill="var(--danger)" font-weight="600">-2</text>
+      <text x="188" y="81" fill="currentColor" fill-opacity=".5">guessed import path (misled twice)</text>
+      <rect x="150" y="96" width="372" height="26" rx="5" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".3"/>
+      <text x="162" y="113" fill="var(--good)" font-weight="600">+1</text>
+      <text x="188" y="113" fill="currentColor" fill-opacity=".85">await toBeVisible before counting (flaky WS)</text>
+      <rect x="150" y="128" width="372" height="26" rx="5" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".3"/>
+      <text x="162" y="145" fill="var(--good)" font-weight="600">+3</text>
+      <text x="188" y="145" fill="currentColor" fill-opacity=".85">prefer execFileSync, array args (shell-safety)</text>
+      <rect x="150" y="160" width="372" height="26" rx="5" fill="var(--surface-2)" stroke="currentColor" stroke-opacity=".3"/>
+      <text x="162" y="177" fill="var(--good)" font-weight="600">+5</text>
+      <text x="188" y="177" fill="currentColor" fill-opacity=".85">run pnpm lint before done — gates merge</text>
+      <text x="336" y="205" text-anchor="middle" fill="currentColor" fill-opacity=".45">⋮  up to 200 lines  ⋮</text>
+      <rect x="150" y="214" width="372" height="26" rx="5" fill="var(--surface-2)" stroke="var(--good)"/>
+      <text x="162" y="231" fill="var(--good)" font-weight="600">+1</text>
+      <text x="188" y="231" fill="currentColor" fill-opacity=".85">repo X: build entry src/server/index.ts</text>
+    </g>
+    <!-- score column label -->
+    <text x="168" y="256" text-anchor="middle" font-family="var(--f-mono)" font-size="10.5" fill="var(--liability)">score</text>
+    <!-- new line + votes -->
+    <text x="548" y="150" font-family="var(--f-mono)" font-size="11.5" fill="var(--good)">+1 / −1</text>
+    <text x="548" y="166" font-family="var(--f-mono)" font-size="10" fill="currentColor" fill-opacity=".6">vote at task end</text>
+    <path d="M540,145 L524,145" stroke="var(--good)" stroke-width="1.6" marker-end="url(#arG)"/>
+    <path d="M540,177 L524,177" stroke="var(--good)" stroke-width="1.6" marker-end="url(#arG)"/>
+    <text x="548" y="231" font-family="var(--f-mono)" font-size="11.5" fill="var(--accent)">+ new line</text>
+    <path d="M540,227 L524,227" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#arA)"/>
+    <!-- cap bracket -->
+    <path d="M128,64 L120,64 L120,240 L128,240" fill="none" stroke="var(--liability)" stroke-width="1.6"/>
+    <text x="112" y="152" text-anchor="middle" font-family="var(--f-mono)" font-size="12" fill="var(--liability)" transform="rotate(-90 112 152)">MAX 200 lines</text>
+    <!-- agent curates -->
+    <text x="336" y="288" text-anchor="middle" font-family="var(--f-mono)" font-size="11.5" fill="currentColor" fill-opacity=".75">when full, the agent may <tspan fill="var(--accent)">merge</tspan> two lines into one, or <tspan fill="var(--danger)">rm</tspan> a useless one</text>
+    <text x="336" y="306" text-anchor="middle" font-family="var(--f-mono)" font-size="11" fill="var(--liability)">each lesson ≤ 120 characters — forces one distilled line</text>
+  </svg>
+  </div>
+  <figcaption><b>A ring buffer of voted one-liners.</b> Each line is <code>score ⇥ lesson</code>. The agent votes <span style="color:var(--good)">+1</span> on what helped and <span style="color:var(--danger)">−1</span> on what misled it; when the cap is reached the <em>lowest-scored</em> line leaves first (so harmful lines evict themselves), and the agent can consolidate or delete by hand. The 120-char limit forces each lesson to its essence.</figcaption>
+</figure>
+<div class="col wide">
+<div class="tablewrap">
+<table>
+<thead><tr><th>Property</th><th>What it buys you</th></tr></thead>
+<tbody>
+<tr><td><b>Whole notebook fits in context</b><br><span class="src">200 × ~120 ≈ 24 KB</span></td><td>The role just <b>reads the entire notebook</b> at task start. No retrieval, no ranking, no injection scoring.</td></tr>
+<tr><td><b>One line, few characters</b></td><td>You can't paste an essay — the limit <b>forces distillation</b>. Quality filter as a constraint, not a gate.</td></tr>
+<tr><td><b>Vote + agent consolidate/delete</b></td><td>Reinforcement and pruning are a legible integer and a judgment the agent already makes — not an engine to build or tune.</td></tr>
+<tr><td><b>Lowest-score-out at the cap</b></td><td>Auto-purge, now outcome-weighted: harmful lines leave first, useful ones persist. Size and cost stay constant.</td></tr>
+<tr><td><b>Plain text, one file per role</b></td><td>Human-readable, <code>git</code>-diffable, hand-editable. Open it to see exactly what a role knows.</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+</section>
+
+<!-- HOOKS + CLI -->
+<section id="hooks">
+<div class="col">
+  <h2><span class="n">03</span>Hooks make it trustworthy</h2>
+  <p class="lede">A rule in a prompt is a suggestion; a hook is a guarantee the harness enforces. Kookr already works this way — we reuse it so the ritual can't be skipped.</p>
+</div>
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 720 168" role="img" aria-label="A start-of-task hook injects the notebook into context before the role works; the role does the task; a stop hook blocks completion until the role has voted and curated the notebook.">
+    <defs><marker id="h1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <g font-family="var(--f-mono)" font-size="11.5">
+      <rect x="10" y="40" width="150" height="76" rx="11" fill="var(--surface-2)" stroke="var(--accent)"/>
+      <text x="85" y="63" text-anchor="middle" fill="var(--accent)" font-weight="600">START hook</text>
+      <text x="85" y="80" text-anchor="middle" fill="currentColor" fill-opacity=".7" font-size="10">injects the notebook</text>
+      <text x="85" y="95" text-anchor="middle" fill="currentColor" fill-opacity=".55" font-size="9.5">nb show &lt;role&gt;</text>
+      <text x="85" y="109" text-anchor="middle" fill="currentColor" fill-opacity=".45" font-size="9">(like kb-context-injection)</text>
+      <line x1="160" y1="78" x2="206" y2="78" stroke="currentColor" stroke-opacity=".5" marker-end="url(#h1)"/>
+      <rect x="208" y="40" width="150" height="76" rx="11" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+      <text x="283" y="70" text-anchor="middle" fill="currentColor">the role does</text>
+      <text x="283" y="86" text-anchor="middle" fill="currentColor">the task</text>
+      <line x1="358" y1="78" x2="404" y2="78" stroke="currentColor" stroke-opacity=".5" marker-end="url(#h1)"/>
+      <rect x="406" y="30" width="200" height="104" rx="11" fill="var(--surface-2)" stroke="var(--liability)"/>
+      <text x="506" y="52" text-anchor="middle" fill="var(--liability)" font-weight="600">STOP hook — BLOCKS</text>
+      <text x="506" y="70" text-anchor="middle" fill="currentColor" fill-opacity=".7" font-size="10">task can't close until:</text>
+      <text x="506" y="87" text-anchor="middle" fill="var(--good)" font-size="10">nb vote +1/−1 (used lines)</text>
+      <text x="506" y="102" text-anchor="middle" fill="var(--accent)" font-size="10">nb add ≤1 new line</text>
+      <text x="506" y="117" text-anchor="middle" fill="currentColor" fill-opacity=".7" font-size="10">if full: nb merge / nb rm</text>
+      <text x="660" y="74" font-size="9.5" fill="currentColor" fill-opacity=".55">block-then-</text>
+      <text x="660" y="86" font-size="9.5" fill="currentColor" fill-opacity=".55">instruct,</text>
+      <text x="660" y="98" font-size="9.5" fill="currentColor" fill-opacity=".55">like #1538</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption><b>The retrospective is the down-step the old lesson gate never had.</b> Kookr's #1538 gate forces a write <em>in</em>; the stop hook forces a <em>vote and a curation pass</em> in the same breath — so the notebook is kept honest every task instead of only growing.</figcaption>
+</figure>
+<div class="col wide">
+<h3>One fast, reliable command — <code>nb</code> (kb-shaped, but plain text)</h3>
+<pre><span class="a">nb show</span>   &lt;role&gt;                      <span class="c"># print the notebook (the start hook calls this)</span>
+<span class="a">nb add</span>    &lt;role&gt; "&lt;lesson&gt;"           <span class="c"># dedup-skip, score +1, write, trim (lowest-score out)</span>
+<span class="a">nb vote</span>   &lt;role&gt; &lt;id|query&gt; +1|-1     <span class="c"># adjust a score  (the stop hook calls this)</span>
+<span class="a">nb merge</span>  &lt;role&gt; &lt;idA&gt; &lt;idB&gt; "&lt;merged&gt;" <span class="c"># consolidate two entries into one</span>
+<span class="a">nb rm</span>     &lt;role&gt; &lt;id|query&gt;           <span class="c"># delete an entry the agent judges useless</span>
+<span class="a">nb stats</span>  [&lt;role&gt;] [--since 7d]       <span class="c"># usage analytics + anomaly flags</span>
+<span class="a">nb --help</span>                             <span class="c"># the documented entry point</span></pre>
+<p>Because a notebook is <b>local plain text</b> — no FAISS, no embeddings, no Ollama, no network — <code>nb</code> is <b>faster and more reliable than <code>kb</code></b> and has no spool-degradation failure mode. Every operation is a millisecond, deterministic, offline file edit under a lock.</p>
+</div>
+</section>
+
+<!-- MONITORING -->
+<section id="monitor">
+<div class="col">
+  <h2><span class="n">04</span>Monitored — without a monitoring system</h2>
+  <p class="lede">Same dumb-but-sufficient trick as the notebook: every <code>nb</code> call appends <b>one line</b> to a capped usage log; <code>nb stats</code> reads it. No metrics server, no dashboard to stand up.</p>
+</div>
+<div class="col wide">
+<pre><span class="c"># ~/.kookr/notebooks/.nb-usage.log  — one line per call, oldest-dropped ring</span>
+2026-10-22T21:40:11Z  patcher   add    ok   7ms
+2026-10-22T21:40:12Z  patcher   vote   ok   3ms
+2026-10-22T21:41:02Z  verifier  show   <span class="g">ok</span>   2ms</pre>
+<p>Then <code>nb stats</code> turns that into call counts, error rate, p50/p95 latency, last-used — and flags the three anomalies you'd actually want to catch:</p>
+<div class="anoms">
+  <div class="anom"><b>called in a loop</b><p>same role + command many times in a tight window → the agent is stuck or looping.</p></div>
+  <div class="anom"><b>went silent</b><p>a command that was used drops to zero → it probably broke or stopped behaving as expected.</p></div>
+  <div class="anom"><b>high error rate</b><p>a command erroring often → broken, or not doing what the agent expects.</p></div>
+</div>
+<p>How to reach the tool and its analytics lives in <b>one short page</b>, <code>docs/reference/agent-notebook.md</code> — the single source for operating and improving it.</p>
+</div>
+</section>
+
+<!-- ROLES -->
+<section id="roles">
+<div class="col">
+  <h2><span class="n">05</span>The roles</h2>
+  <p class="lede">A small starter set (capability-shaped, not human job titles) that grows as needs appear. The main agent stays the orchestrator — pick a role, hand a short brief, get a result back.</p>
+</div>
+<figure class="bleed">
+  <div class="figbox">
+  <svg viewBox="0 0 700 210" role="img" aria-label="A main orchestrator delegates to four specialized roles — Cartographer, Reproducer, Patcher, Verifier — each with its own small notebook.">
+    <defs><marker id="r1" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="currentColor"/></marker></defs>
+    <rect x="270" y="14" width="160" height="46" rx="11" fill="var(--surface-2)" stroke="var(--accent)"/>
+    <text x="350" y="34" text-anchor="middle" font-family="var(--f-head)" font-size="13" fill="var(--accent)" font-weight="600">main agent</text>
+    <text x="350" y="50" text-anchor="middle" font-family="var(--f-mono)" font-size="9.5" fill="currentColor" fill-opacity=".6">orchestrator</text>
+    <g font-family="var(--f-mono)" font-size="11">
+      <g><line x1="300" y1="60" x2="90" y2="112" stroke="currentColor" stroke-opacity=".4" marker-end="url(#r1)"/>
+        <rect x="18" y="114" width="150" height="40" rx="9" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="93" y="139" text-anchor="middle" fill="currentColor">Cartographer</text>
+        <rect x="30" y="162" width="126" height="34" rx="6" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".6"/>
+        <text x="93" y="177" text-anchor="middle" fill="var(--liability)" font-size="9">notebook</text>
+        <text x="93" y="189" text-anchor="middle" fill="currentColor" fill-opacity=".55" font-size="8.5">where things live</text></g>
+      <g><line x1="330" y1="60" x2="258" y2="112" stroke="currentColor" stroke-opacity=".4" marker-end="url(#r1)"/>
+        <rect x="186" y="114" width="150" height="40" rx="9" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="261" y="139" text-anchor="middle" fill="currentColor">Reproducer</text>
+        <rect x="198" y="162" width="126" height="34" rx="6" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".6"/>
+        <text x="261" y="177" text-anchor="middle" fill="var(--liability)" font-size="9">notebook</text>
+        <text x="261" y="189" text-anchor="middle" fill="currentColor" fill-opacity=".55" font-size="8.5">repro recipes</text></g>
+      <g><line x1="370" y1="60" x2="442" y2="112" stroke="currentColor" stroke-opacity=".4" marker-end="url(#r1)"/>
+        <rect x="364" y="114" width="150" height="40" rx="9" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="439" y="139" text-anchor="middle" fill="currentColor">Patcher</text>
+        <rect x="376" y="162" width="126" height="34" rx="6" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".6"/>
+        <text x="439" y="177" text-anchor="middle" fill="var(--liability)" font-size="9">notebook</text>
+        <text x="439" y="189" text-anchor="middle" fill="currentColor" fill-opacity=".55" font-size="8.5">fix conventions</text></g>
+      <g><line x1="400" y1="60" x2="610" y2="112" stroke="currentColor" stroke-opacity=".4" marker-end="url(#r1)"/>
+        <rect x="532" y="114" width="150" height="40" rx="9" fill="none" stroke="currentColor" stroke-opacity=".4"/>
+        <text x="607" y="139" text-anchor="middle" fill="currentColor">Verifier</text>
+        <rect x="544" y="162" width="126" height="34" rx="6" fill="var(--surface-2)" stroke="var(--liability)" stroke-opacity=".6"/>
+        <text x="607" y="177" text-anchor="middle" fill="var(--liability)" font-size="9">notebook</text>
+        <text x="607" y="189" text-anchor="middle" fill="currentColor" fill-opacity=".55" font-size="8.5">acceptance gates</text></g>
+    </g>
+  </svg>
+  </div>
+  <figcaption>Each role owns its own notebook, so its knowledge stays focused instead of becoming one incoherent pile. Delegation reuses Kookr's existing <code>Agent</code> tool / child-task spawn — no new contract machinery.</figcaption>
+</figure>
+</section>
+
+<!-- BUILD -->
+<section id="build">
+<div class="col">
+  <h2><span class="n">06</span>What we build — and what we don't</h2>
+  <p class="lede">The whole build is a small CLI, two hooks, a few role files, and one doc page. The rest is a deliberate list of things we are <em>not</em> doing.</p>
+</div>
+<div class="col wide">
+<div class="two">
+  <div class="panel keep">
+    <h4>Build (small)</h4>
+    <ul>
+      <li><span class="m">+</span><span>The <code>nb</code> CLI + notebook format (+ the one-line usage log &amp; <code>nb stats</code>) — ~1 small module, plain text + file lock.</span></li>
+      <li><span class="m">+</span><span>Two hooks: a <b>SessionStart</b> injector and a <b>Stop</b> retrospective-gate (block-then-instruct).</span></li>
+      <li><span class="m">+</span><span>A few <code>plugin/agents/&lt;role&gt;.md</code> role definitions that vote/curate in their retrospective.</span></li>
+      <li><span class="m">+</span><span>One doc page: <code>docs/reference/agent-notebook.md</code> (how to use the tool + read its analytics).</span></li>
+    </ul>
+  </div>
+  <div class="panel drop">
+    <h4>Don't build (the old complexity)</h4>
+    <ul>
+      <li><span class="m">−</span><span>No embeddings / FAISS / semantic retrieval — read the notebook whole.</span></li>
+      <li><span class="m">−</span><span>No decay scoring or bi-temporal invalidation — just the agent's vote.</span></li>
+      <li><span class="m">−</span><span>No <code>kb demote</code> actuator, janitor playbook, or scheduled purge — eviction is inline, curation is the agent's.</span></li>
+      <li><span class="m">−</span><span>No metrics server or dashboard — one log line per call + <code>nb stats</code>.</span></li>
+    </ul>
+  </div>
+</div>
+<div class="params">
+  <div class="param"><div class="v">200</div><div class="l">max lines / notebook</div></div>
+  <div class="param"><div class="v">120</div><div class="l">max chars / line</div></div>
+  <div class="param"><div class="v">±1</div><div class="l">vote per task</div></div>
+  <div class="param"><div class="v">2</div><div class="l">hooks (in / out)</div></div>
+  <div class="param"><div class="v">0</div><div class="l">services to stand up</div></div>
+</div>
+</div>
+</section>
+
+<!-- OPEN -->
+<section id="open">
+<div class="col">
+  <h2><span class="n">07</span>Open questions</h2>
+  <ol class="oq">
+    <li><b>Vote → eviction:</b> pure lowest-score-then-oldest is the default. Add a floor (never auto-evict a line scored ≥ k) only if useful lines get lost.</li>
+    <li><b>Scope:</b> one notebook per role (default), or per role × per repo for repo-specific roles (e.g. Cartographer). Add a <code>&lt;role&gt;@&lt;repo&gt;</code> suffix only where clearly needed.</li>
+    <li><b>The numbers:</b> 200 lines / 120 chars to start — tune only if real notebooks show useful lessons truncated or aged out too fast.</li>
+  </ol>
+</div>
+</section>
+
+</div>
+</main>
+
+<footer class="site">
+  <div class="wrap">
+    <span class="src">RFC v4 · docs/rfc/rfc-self-improving-agent-fleet.md</span>
+    <span class="foot-links">
+      <a href="./rfc-self-improving-agent-fleet.md">Markdown RFC →</a>
+      <a href="./rfc-self-improving-agent-fleet-evidence.md">Research evidence →</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+(function(){
+  var KEY="rfc-fleet-theme", btn=document.getElementById("themeBtn"), root=document.documentElement;
+  var order=["system","light","dark"], label={system:"◑ system",light:"☀ light",dark:"☾ dark"};
+  function get(){try{return localStorage.getItem(KEY)||"system"}catch(e){return "system"}}
+  function apply(v){ if(v==="system"){root.removeAttribute("data-theme")} else {root.setAttribute("data-theme",v)} btn.textContent=label[v]; }
+  var cur=get(); apply(cur);
+  btn.addEventListener("click",function(){
+    cur=order[(order.indexOf(cur)+1)%order.length];
+    try{localStorage.setItem(KEY,cur)}catch(e){}
+    apply(cur);
+  });
+})();
+</script>
+</body>
+</html>
