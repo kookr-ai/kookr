@@ -16,12 +16,12 @@ A minimal repro: the exact command/steps that fail, the observed vs expected beh
 4. Prefer a test in the repo's own harness over manual steps, so the next agent can run it.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`repro-builder`** (bounded, voted, ≤200 lines × ≤120 chars; lowest-scored evicted when full).
+Your notebook role is **`repro-builder`** (bounded, voted, ≤200 lines × ≤200 chars; lowest-scored evicted when full).
 
 - **Start:** `nb show repro-builder` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
 - **End (retrospective):**
   - `nb vote repro-builder "<query>" +1` on each recipe that worked; `-1` on any that misled you.
-  - `nb add repro-builder "<one recipe, ≤120 chars>"` for a reusable trick (e.g. `flaky WS tests: await toBeVisible before asserting count`).
+  - `nb add repro-builder "<one recipe, ≤200 chars>"` for a reusable trick (e.g. `flaky WS tests: await toBeVisible before asserting count`).
   - Full notebook → `nb merge`/`nb rm` a weak entry.
 
 One line per lesson. A recipe that needs a paragraph belongs in a skill, not the notebook.

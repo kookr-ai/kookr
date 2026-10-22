@@ -17,6 +17,7 @@
 import {
   addEntry,
   logUsage,
+  maxChars,
   merge,
   notebooksDir,
   parseWindowMs,
@@ -30,15 +31,17 @@ const HELP = `nb — the Agent Notebook (bounded, voted, per-role memory)
 
 usage:
   nb show   <role>                        print the notebook (highest-scored first)
-  nb add    <role> "<lesson>"             add a lesson (dedup-skipped, capped, trimmed)
+  nb add    <role> "<lesson>"             add a lesson (dedup-skipped; rejected if too long, never truncated)
   nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
   nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
   nb rm     <role> <id|query>             delete an entry
   nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
   nb --help                               show this help
+  nb --version                            print the tool name
 
 notes:
-  - a notebook holds at most 200 lines; each lesson is one line of at most 120 chars.
+  - a notebook holds at most 200 lines; each lesson is one line of at most 200 chars.
+  - an over-long add is REJECTED (exit 1), never truncated — rewrite shorter and retry.
   - when full, the LOWEST-scored line is evicted (ties: oldest).
   - <query> selects an entry by case-insensitive substring; <id> is the number from \`nb show\`.
   - storage: $NB_DIR or ~/.kookr/notebooks/<role>.md (plain text, git-diffable).
@@ -56,6 +59,10 @@ export async function runNbCli(argv: string[]): Promise<number> {
   const cmd = (argv[0] ?? '').trim();
   if (cmd === '' || cmd === '--help' || cmd === '-h' || cmd === 'help') {
     process.stdout.write(HELP + '\n');
+    return 0;
+  }
+  if (cmd === '--version' || cmd === '-v' || cmd === 'version') {
+    process.stdout.write('nb (kookr Agent Notebook)\n');
     return 0;
   }
 
@@ -77,6 +84,7 @@ export async function runNbCli(argv: string[]): Promise<number> {
         if (r.reason === 'duplicate') process.stdout.write(`skipped (near-duplicate already present) — ${r.size} lines\n`);
         else if (r.reason === 'empty') process.stdout.write('skipped (empty lesson)\n');
         else if (r.reason === 'rejected-full') process.stdout.write(`skipped (notebook full — every entry outranks this lesson; vote one down or merge first) — ${r.size} lines\n`);
+        else if (r.reason === 'too-long') throw new Error(`lesson too long (${r.length} chars > ${maxChars()} max). Rewrite it shorter as ONE complete line and retry — it was NOT truncated or stored.`);
         else {
           process.stdout.write(`added — ${r.size} lines`);
           if (r.evicted) process.stdout.write(` (evicted lowest-scored: [${fmt(r.evicted.score)}] ${r.evicted.text})`);
