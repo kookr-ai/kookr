@@ -251,6 +251,16 @@ export function entryId(text: string): string {
   return createHash('sha1').update(dedupKey(text)).digest('hex').slice(0, 6);
 }
 
+/** A compact "id  text" list of candidate entries, for an actionable selector error. */
+function listHint(items: Entry[], cap = 10): string {
+  if (items.length === 0) return '  (none)';
+  const lines = items
+    .slice(0, cap)
+    .map((e) => `  ${entryId(e.text)}  ${e.text.slice(0, 60)}${e.text.length > 60 ? '…' : ''}`);
+  if (items.length > cap) lines.push(`  …(${items.length - cap} more — run \`nb show\`)`);
+  return lines.join('\n');
+}
+
 /**
  * Resolve a selector to a FILE-ORDER index, acting ONLY on a unique match so a
  * vote/rm/merge never lands on the wrong lesson. Order: (1) if the selector is a
@@ -258,8 +268,9 @@ export function entryId(text: string): string {
  * (2) otherwise a case-insensitive text substring, if it uniquely matches one
  * entry. A hex selector that matches zero OR several ids falls through to the
  * substring step (so hex-looking words like "add"/"cafe" resolve as text). If
- * neither step finds exactly one entry, refuse with a clear error. Numeric
- * position ids are gone: they shifted under reordering and caused mis-votes.
+ * neither step finds exactly one entry, refuse with an error that lists the
+ * candidate ids. Numeric position ids are gone: they shifted under reordering
+ * and caused mis-votes.
  */
 function selectIndex(entries: Entry[], selector: string): number {
   const sel = selector.trim();
@@ -274,8 +285,13 @@ function selectIndex(entries: Entry[], selector: string): number {
   const q = sel.toLowerCase();
   const matches = entries.map((e, i) => ({ e, i })).filter((x) => x.e.text.toLowerCase().includes(q));
   if (matches.length === 1) return matches[0].i;
-  if (matches.length === 0) throw new Error(`no entry matches ${JSON.stringify(selector)} — use an id from \`nb show\``);
-  throw new Error(`"${selector}" matches ${matches.length} entries — use an id from \`nb show\` instead`);
+  // Refuse ambiguity/no-match — but LIST the candidates with their ids so the
+  // caller re-votes the real lesson by id instead of re-guessing a keyword
+  // (the observed failure: agents vote by a topic word absent from the text).
+  if (matches.length === 0) {
+    throw new Error(`no entry matches ${JSON.stringify(selector)}. Pick the one you mean by its id:\n${listHint(entries)}`);
+  }
+  throw new Error(`"${selector}" matches ${matches.length} entries — pick one by its id:\n${listHint(matches.map((x) => x.e))}`);
 }
 
 export interface VoteResult {
