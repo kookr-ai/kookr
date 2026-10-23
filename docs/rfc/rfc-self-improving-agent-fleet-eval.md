@@ -369,3 +369,60 @@ disappointment:
 **Next:** run Tier 1 on a real repo with an expensive process (`knowledge-base-mcp-server`), where
 the warm notebook carries costly setup/navigation lessons and the transfer delta can actually be
 large. Pre-register the thresholds in §3.8 first.
+
+---
+
+## Appendix B — Complex-task and real-repo results (2026-10-23)
+
+Extends Appendix A with a bigger synthetic task and the first **real-repo** Mode B run. Same harness,
+same caveats (synthetic E1–E4; Sonnet subagents; small N; tool-calls harness-reported). Raw per-run
+data lives in `nb-eval-results/runs.tsv` (41 runs); this section reports means.
+
+### B.1 Bigger synthetic task — `formula` (2-step setup + 2 bugs)
+
+Multi-step process (`make setup` runs two codegen/vendor tools, then env-gated `make test`) and two
+bugs in different modules (lexer multi-digit + parser precedence). Cold ≈ 6–8 tool calls.
+
+- **Mode A (same task, feedback):** ON **7 → 4** and plateaus; cold baseline (empty every run, n=4)
+  **6.5**. Warm ON ~38% fewer calls than the cold baseline. Confirms Appendix A's Mode A finding on
+  a larger, multi-bug task.
+- **Mode B (transfer, process-only warm notebook, n=4):** COLD **6.5** vs WARM **6.0** — **~null
+  again.** Making the task *bigger* did not move transfer, because its process is still cheap to
+  rediscover (one read of `HACKING.md`). The lever for transfer is the *expense* of the reusable
+  knowledge, not task size.
+
+### B.2 Real repo — `knowledge-base-mcp-server` Mode B (expensive setup)
+
+The decisive test: a repo whose setup is genuinely expensive and non-obvious. A fresh git worktree
+has **no `node_modules`**, so the agent must run `npm ci` (~65s–3min, builds faiss/hnswlib native
+modules) before any test runs — exactly the knowledge captured in the repo's real notebooks. Task =
+a controlled injected bug (`src/model-id.ts` `__`→`_` separator) caught by `src/active-model.test.ts`;
+identical across arms. WARM = the real `patch-author@…kb…` notebook (which contains the `npm ci`
+lesson but **not** this fix); COLD = empty. 3 runs/arm.
+
+| Arm | tool calls | mean |
+|---|---|---|
+| COLD (empty notebook) | 8, 10, 12 | **10.0** |
+| WARM (real repo notebook) | 5, 6, 10 | **7.0** |
+
+**WARM used ~30% fewer tool calls than COLD** — the first positive Mode B signal. COLD agents
+flailed on setup (one ran `npx jest` first → `Preset ts-jest not found`, another used
+`npm ci --ignore-scripts`); WARM read the notebook and ran `npm ci` directly. (Wall-clock was not
+used for inference: 6 parallel `npm ci` builds contended and agents backgrounded the install.)
+
+### B.3 Consolidated conclusion
+
+Across five experiments the picture is consistent and sharpens v1's retracted headline:
+
+1. **Mode A (repeat + feedback) works at every size** — ON falls to a warm plateau (5→3, 8→3, 7→4)
+   while the memory-less arm stays flat; the first run pays a learning tax.
+2. **Mode B (cross-task transfer) pays in proportion to how expensive the shared knowledge is to
+   rediscover.** Cheap synthetic setup → ~null (E3, E4). Expensive real-repo setup (`npm ci` +
+   native build) → **−30%** (E5).
+3. Memory's value ≈ *(cost of the knowledge it lets you skip) × (how often it's reused)*. That is
+   why v1 — ≤5-turn tasks, no feedback, nothing expensive or reused — measured nothing, and why the
+   real repo finally shows a signal.
+
+**Next (pre-register §3.8 thresholds first):** scale E5 to more runs and more kb-mcp issues, add the
+POISONED arm on the real repo, and report cost in wall-clock/tokens on a machine without `npm ci`
+contention.
