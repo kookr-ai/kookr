@@ -181,7 +181,19 @@ describe('vote', () => {
     await addEntry(dir, 'v', 'widget cache warm path');
     await addEntry(dir, 'v', 'widget cache cold path');
     await expect(vote(dir, 'v', 'widget', 1)).rejects.toThrow(/matches 2/);
+    // the error must also LIST the candidate ids so the agent can disambiguate by id
+    await expect(vote(dir, 'v', 'widget', 1)).rejects.toThrow(new RegExp(entryId('widget cache warm path')));
     expect(readEntries(dir, 'v').every((e) => e.score === 1)).toBe(true); // both untouched
+  });
+
+  test('a failed vote lists candidate ids so the agent can retry by id', async () => {
+    await addEntry(dir, 'v', 'use npm ci --ignore-scripts after lockfile regen');
+    await addEntry(dir, 'v', 'diff lockfile vs origin/main for dropped deps');
+    // agent guesses a topic word absent from the stored text -> no match, but the
+    // error must surface the real entries' ids so it can re-vote correctly.
+    await expect(vote(dir, 'v', 'lint', 1)).rejects.toThrow(
+      new RegExp(entryId('use npm ci --ignore-scripts after lockfile regen')),
+    );
   });
 
   test('downvote lowers score', async () => {
