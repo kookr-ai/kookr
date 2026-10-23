@@ -129,7 +129,7 @@ the notebook helps, and its one quantitative headline should not be repeated.
 
 ---
 
-## 3. v2 — an evaluation that measures capitalization
+## 3. v2 — an evaluation that measures whether memory pays off
 
 ### 3.1 The decisive variable: a corrective feedback signal
 
@@ -171,24 +171,24 @@ notebook must never contain this task's solution; it contains lessons from *sibl
 
 ### 3.4 Tasks: long enough to hold reusable knowledge
 
-Three tiers by cost/fidelity. Start at Tier 0.
+Three tiers by cost/fidelity, mapped to the modes in §3.2–3.3. Start at Tier 0. (The sequencing and
+rough cost of each tier are in §5.)
 
-**Tier 0 — Pilot on evidence we already have (cheap, days).**
-Real per-repo notebooks already exist from live Kookr work, e.g.
-`~/.kookr/notebooks/patch-author@jeanibarz-knowledge-base-mcp-server.md` with genuinely expensive,
-reusable lessons ("worktrees have no node_modules; `npm ci` to build faiss-node before tests",
-"`madge --circular` counts type-only imports as cycle edges", "full acceptance gate =
-`npm run build && KB_RUN_E2E=1 npm run test:serial`"). That is the substrate memory is *for*.
-- Pick 6–10 **new** issues/PRs in `knowledge-base-mcp-server` that none of those lessons solve
-  directly but that *benefit* from them.
-- Run each COLD and WARM (warm = the existing notebook, with any this-issue-specific line removed).
-- This is the fastest honest signal and needs no SWE-bench plumbing.
+**Tier 0 — Mode A improvement curve (cheapest, most direct).**
+One complex `knowledge-base-mcp-server` task with an objective test signal (its real `npm test` /
+`KB_RUN_E2E=1 npm run test:serial` suite is the feedback), run ~8–10× **ON+feedback vs OFF**, plotted
+vs run index per §3.2. Answers "does a repeated complex task get better over runs?" with no SWE-bench
+plumbing. This is where the live Kookr notebooks already show the shape of the lessons memory
+captures — e.g. `~/.kookr/notebooks/patch-author@jeanibarz-knowledge-base-mcp-server.md`: "worktrees
+have no node_modules; `npm ci` to build faiss-node before tests", "`madge --circular` counts
+type-only imports as cycle edges". That is the substrate memory is *for*.
 
-**Tier 1 — SWE‑bench Lite, grouped by repo (transfer within a repo).**
-Pick repos with several instances (django, sympy, sphinx, matplotlib…). For each repo: run instances
-in sequence; WARM carries the notebook forward across *different* instances, COLD wipes between them.
-Measures whether solving earlier issues makes later *different* issues cheaper/likelier. This is the
-natural analogue of Kookr's `<role>@<repo>` notebooks.
+**Tier 1 — Mode B transfer (warm vs cold).**
+First in-repo: 6–10 **different** `knowledge-base-mcp-server` issues that none of the warm lessons
+solve directly but that *benefit* from them; run each COLD and WARM (warm = the Tier-0 lessons, any
+this-issue-specific line removed). Then SWE‑bench Lite grouped by repo (django, sympy, sphinx…): per
+repo, run instances in sequence, WARM carrying the notebook across *different* instances, COLD wiping
+between them. The natural analogue of Kookr's `<role>@<repo>` notebooks.
 
 **Tier 2 — SWE‑bench Verified, curriculum (the headline number).**
 Human-validated, solvable tasks that genuinely take tens of steps. Same per-repo warm/cold protocol,
