@@ -9,7 +9,7 @@
  * Run: node --test bin/kb-spool-shim.test.mjs
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, rmSync, copyFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, chmodSync, rmSync, copyFileSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,50 @@ test('dual kookr launcher bins on PATH resolve to real kb (no recursion)', () =>
     assert.match(result.stdout, /REAL_KB_OK argv=--version/);
     assert.doesNotMatch(result.stderr ?? '', /recursion depth exceeded/);
   } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('remember does not hang when stdin never reaches EOF (agent-harness socket / char device)', () => {
+  // Regression: the spool shim read stdin unconditionally for `remember`,
+  // resolving only on EOF (with a lone isTTY escape hatch). Under the Kookr
+  // agent harness stdin is an inherited socket that is held open and never
+  // sends EOF, so the read parked in epoll_wait forever — stranding every
+  // lesson write (and leaking a stuck node process per call). A never-EOF
+  // char device (/dev/zero) reproduces the same non-pipe, no-EOF stdin shape.
+  const root = mkdtempSync(join(tmpdir(), 'kb-shim-stdin-'));
+  const zero = openSync('/dev/zero', 'r');
+  try {
+    const a = makeLauncherBin(root, 'kookr-a');
+    const real = makeRealKb(root);
+    const path = [a, real, '/usr/bin', '/bin'].join(':');
+
+    const result = spawnSync(
+      process.execPath,
+      [
+        join(a, 'kb-spool-shim.js'),
+        'remember',
+        '--kb=agent-task-lessons',
+        'a lesson passed as an argv, not piped on stdin',
+      ],
+      {
+        env: { ...process.env, PATH: path, KOOKR_KB_SHIM_DEPTH: '0' },
+        stdio: [zero, 'pipe', 'pipe'],
+        encoding: 'utf8',
+        timeout: 8000,
+      },
+    );
+
+    // The shim must terminate on its own, NOT be killed by the timeout. Its
+    // exit code depends on wrap-module availability (irrelevant here); the
+    // regression is purely that it does not block on the never-EOF stdin.
+    assert.equal(
+      result.signal,
+      null,
+      `shim hung on a never-EOF stdin (killed by timeout): signal=${result.signal} stderr=${result.stderr}`,
+    );
+  } finally {
+    closeSync(zero);
     rmSync(root, { recursive: true, force: true });
   }
 });
