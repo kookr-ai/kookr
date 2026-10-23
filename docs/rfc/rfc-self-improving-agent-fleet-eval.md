@@ -285,3 +285,87 @@ and far more honest than v1's retracted headline.
 > (tests, reviews, corrections), and a *complex* task repeated with feedback should get better over
 > runs — that is the first thing v2 measures (the improvement curve), before testing whether lessons
 > also transfer to different tasks. The honest status is "built and plumbed, value not yet measured."
+
+---
+
+## Appendix A — Pilot results (2026-10-23)
+
+First controlled runs of the v2 protocol. **Caveat up front:** synthetic tasks, small N, a single
+task family, and tool-call counts self-reported by the agent harness. These **validate the harness
+and demonstrate the curves; they are not generalizable effect sizes.** They do, however, already
+sharpen the thesis.
+
+**Setup.** A multi-file `minilang` repo (evaluator) with a genuinely multi-step process: a required
+`make gen` codegen step, an env-gated runner (`make test` sets `MINILANG_READY=1`; bare `pytest`
+aborts), and a bug to locate across files. Agent under test = Sonnet, via subagents; notebook =
+the real `nb` CLI with an isolated `NB_DIR`; feedback signal = the repo's own test suite; a lesson
+is written only after a verified green. Metric = tool calls per run (tokens reported separately).
+
+### A.1 Tier 0 — Mode A (same task repeated, feedback each run)
+
+Bug: operator-precedence fold in `parser.py`. 6 runs/arm.
+
+| Run | ON (notebook persists) | OFF (wiped each run) |
+|---|---|---|
+| r1 | **8** (cold: discovers process + bug, writes lesson) | 6 |
+| r2 | **3** | 6 |
+| r3 | 3 | 5 |
+| r4 | 3 | 6 |
+| r5 | 3 | 7 |
+| r6 | 3 | 5 |
+| **mean** | r1=8, then **3.0** | **5.83** (flat, no trend) |
+
+All runs in both tiers reached a verified green (every arm `pass=1`); no hidden failures. OFF run indices
+carry no meaning (the notebook is wiped each run), so only the OFF distribution and mean are interpreted.
+
+- ON drops **8 → 3 tool calls after the first run and plateaus** — a clean learning curve. OFF never
+  improves (re-discovers everything every run). Warm ON = **~49% fewer tool calls** than OFF.
+- **The first run paid a learning tax:** ON-r1 (8) > OFF mean (5.83). Discovering the gotchas *and*
+  writing the lesson costs extra up front; the payoff starts at run 2. Memory is an investment, not
+  a free lunch.
+- **Tokens barely moved** (ON-warm ~39.1k vs OFF ~41.3k, ~5%): prompt-caching + fixed overhead
+  dominate — v1's "cost masked by caching" finding, reproduced. At this scale the signal is in
+  tool-calls / wall-clock, not token totals.
+- Mechanism worked end to end: feedback-conditioned writes, persistence, and **dedup** (runs 3–6
+  added nothing; the notebook self-limited to two lines).
+
+### A.2 Tier 1 — Mode B (different task, process-only warm notebook)
+
+Held-out task: a **different** bug (multi-digit tokenization in `lexer.py`; parser now correct),
+same repo/process. WARM notebook carried **only** the reusable process lesson (`make gen` → `make
+test`), scrubbed of any fix. 4 runs/arm.
+
+| Arm | tool calls | mean |
+|---|---|---|
+| COLD (empty notebook) | 5, 5, 6, 5 | 5.25 |
+| WARM (process lesson only) | 5, 5, 5, 5 | 5.00 |
+
+**Transfer ≈ null here (0.25 calls, ~5%)** — and the reason is the important finding, not a
+disappointment:
+
+- The only legitimately transferable knowledge (the build/test ritual) was **cheap to rediscover**
+  (~1 call), so there was almost nothing to amortize. The dominant cost — finding and fixing the
+  *new* bug — is identical for both arms by construction (neither notebook contained it).
+- This is the boundary condition stated three ways across this doc and v1's report, now observed:
+  **transfer value ≈ (cost to rediscover the transferable knowledge) × (how often it's reused).**
+  Make the transferable part cheap and transfer pays ~nothing, however long the task.
+- It also means the synthetic task, though long (~8 cold calls), was the **wrong shape for Mode B**:
+  its process was a single `make gen`. Real repos are where the process is genuinely expensive —
+  faiss native builds, `npm ci` vs `--ignore-scripts`, multi-minute suites, non-obvious multi-step
+  env (exactly the lessons already in `~/.kookr/notebooks/*@jeanibarz-knowledge-base-mcp-server.md`).
+  **That** is where Mode B must be measured; a toy cannot show it.
+
+### A.3 What the pilot establishes
+
+1. **Mode A is real:** with a feedback signal and a task carrying expensive, directly-reusable
+   knowledge, a repeated task gets markedly cheaper and stays there; the memory-less arm does not.
+   This confirms the refinement in §2.1/§3.1 (the feedback signal is the crux) against live runs.
+2. **Mode B needs an expensive transferable core:** process-only transfer on a cheap process is
+   ~null. The decisive Mode B test must use a repo where setup/navigation is genuinely expensive —
+   i.e. the real-repo Tier 1, not a synthetic one.
+3. **The harness works** (inject → run → verify → feedback-conditioned write → reuse → dedup), and
+   token totals are the wrong headline metric at this scale (use tool-calls / wall-clock).
+
+**Next:** run Tier 1 on a real repo with an expensive process (`knowledge-base-mcp-server`), where
+the warm notebook carries costly setup/navigation lessons and the transfer delta can actually be
+large. Pre-register the thresholds in §3.8 first.
