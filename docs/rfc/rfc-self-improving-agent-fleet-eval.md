@@ -414,8 +414,10 @@ used for inference: 6 parallel `npm ci` builds contended and agents backgrounded
 
 Across five experiments the picture is consistent and sharpens v1's retracted headline:
 
-1. **Mode A (repeat + feedback) works at every size** — ON falls to a warm plateau (5→3, 8→3, 7→4)
-   while the memory-less arm stays flat; the first run pays a learning tax.
+1. **Mode A (repeat + feedback) works at every size** — ON falls to a warm plateau (8→3 on E2, 7→4
+   on E4) while the memory-less arm stays flat; the first run pays a learning tax. (The trivial E1
+   smoke, n=2/arm, was non-differential — ON and OFF were both 5→3 — so it validates plumbing, not
+   effect.)
 2. **Mode B (cross-task transfer) pays in proportion to how expensive the shared knowledge is to
    rediscover.** Cheap synthetic setup → ~null (E3, E4). Expensive real-repo setup (`npm ci` +
    native build) → **−30%** (E5).
