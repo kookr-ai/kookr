@@ -97,6 +97,21 @@ describe('selectAgent project synchronization', () => {
     expect(store.getState().selectedProject).toBeNull();
     expect(storage.has('kookr-selected-project')).toBe(false);
   });
+
+  test('stays in All Projects — clicking a task does not pin a project or open the drawer', () => {
+    // All Projects view: project drawer closed (selectedProject === null).
+    storage.delete('kookr-selected-project');
+    store.setState({ selectedProject: null });
+
+    store.getState().selectAgent('agent-b', 'task-b');
+
+    // The task is selected, but the dashboard stays in All Projects so the
+    // ProjectDetailDrawer (derived from selectedProject !== null) stays closed.
+    expect(store.getState().selectedAgentId).toBe('agent-b');
+    expect(store.getState().selectedTaskId).toBe('task-b');
+    expect(store.getState().selectedProject).toBeNull();
+    expect(storage.has('kookr-selected-project')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

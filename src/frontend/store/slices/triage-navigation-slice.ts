@@ -191,8 +191,19 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
               selectedTaskId: taskId ?? null,
               selectedAgentSource: 'manual' as const,
             };
+        // Clicking a task must not open the project drawer when it is closed.
+        // The drawer is derived purely from selectedProject !== null, so in All
+        // Projects view (selectedProject === null) keep it null — leaving the
+        // drawer closed and the list unpinned — instead of pinning to the
+        // clicked task's project. When a project is already open, selection
+        // follows the task to its project as before.
+        const keepAllProjects = state.selectedProject === null;
+        if (keepAllProjects) {
+          saveSelectedProject(null);
+        }
         set({
           ...selection,
+          ...(keepAllProjects ? { selectedProject: null } : {}),
           ...(agentId === null ? { focusZone: 'none' as const } : {}),
           respondAllAgentIds: null,
           leftPane: 'activity',
