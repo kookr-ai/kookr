@@ -17,7 +17,7 @@ import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, fstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -144,15 +144,33 @@ function execReal(bin, argv, env) {
 
 function readStdin() {
   return new Promise((resolve, reject) => {
+    // Only read stdin when it can deliver a deterministic EOF: a redirected
+    // file, a pipe (`… | kb remember --stdin`), or (handled below) a TTY.
+    // Under the Kookr agent harness stdin is an inherited socket that is held
+    // open and never sends EOF — a lesson body passed as an argv, or no body
+    // at all, would otherwise park this read in epoll_wait forever (and with
+    // a non-EOF char device such as /dev/zero, read unbounded data). In those
+    // cases there is no stdin body to capture, so resolve empty and move on.
+    if (process.stdin.isTTY) {
+      resolve('');
+      return;
+    }
+    let streamable = false;
+    try {
+      const st = fstatSync(0);
+      streamable = st.isFIFO() || st.isFile();
+    } catch {
+      // fd 0 unavailable / unstattable — nothing safe to read.
+    }
+    if (!streamable) {
+      resolve('');
+      return;
+    }
     const chunks = [];
     process.stdin.setEncoding('utf8');
     process.stdin.on('data', (c) => chunks.push(c));
     process.stdin.on('end', () => resolve(chunks.join('')));
     process.stdin.on('error', reject);
-    // If stdin is a TTY (interactive), don't hang — remember requires --stdin.
-    if (process.stdin.isTTY) {
-      resolve('');
-    }
   });
 }
 
