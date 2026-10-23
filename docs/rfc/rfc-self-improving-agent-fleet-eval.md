@@ -308,12 +308,15 @@ Bug: operator-precedence fold in `parser.py`. 6 runs/arm.
 | Run | ON (notebook persists) | OFF (wiped each run) |
 |---|---|---|
 | r1 | **8** (cold: discovers process + bug, writes lesson) | 6 |
-| r2 | **3** | 5 |
-| r3 | 3 | 6 |
+| r2 | **3** | 6 |
+| r3 | 3 | 5 |
 | r4 | 3 | 6 |
-| r5 | 3 | 5 |
-| r6 | 3 | 7 |
+| r5 | 3 | 7 |
+| r6 | 3 | 5 |
 | **mean** | r1=8, then **3.0** | **5.83** (flat, no trend) |
+
+All runs in both tiers reached a verified green (every arm `pass=1`); no hidden failures. OFF run indices
+carry no meaning (the notebook is wiped each run), so only the OFF distribution and mean are interpreted.
 
 - ON drops **8 → 3 tool calls after the first run and plateaus** — a clean learning curve. OFF never
   improves (re-discovers everything every run). Warm ON = **~49% fewer tool calls** than OFF.
