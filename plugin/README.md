@@ -53,7 +53,9 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Review subagents (19):** `ambition-amplifier`, `api-surface-auditor`, `architecture-drift-detector`, `architecture-smell-scanner`, `assumption-archaeologist`, `boundary-critic`, `clear-writing-reviewer`, `delivery-pragmatist`, `dependency-graph-analyzer`, `design-experimenter`, `design-minimalist`, `failure-mode-analyst`, `macos-compat-reviewer`, `module-interface-auditor`, `operability-reviewer`, `socratic-challenger`, `state-machine-verifier`, `test-fixer`, `test-quality-reviewer`.
 
-**Task-role agents (4):** `repo-cartographer`, `repro-builder`, `patch-author`, `change-verifier` — capability-shaped specialists an orchestrator delegates to, each carrying its own bounded, voted **Agent Notebook** (`nb` CLI; see [`docs/reference/agent-notebook.md`](../docs/reference/agent-notebook.md)). Unlike the review subagents, these do work and learn across tasks within a hard memory cap.
+**Task-role agents (4):** `repo-cartographer`, `repro-builder`, `patch-author`, `change-verifier` — capability-shaped specialists an orchestrator delegates to.
+
+**Every specialized agent carries its own bounded, voted [Agent Notebook](../docs/reference/agent-notebook.md)** (`nb` CLI) — review subagents keep a cross-repo methodology notebook; task-role and repo-analysis agents scope theirs per repo (`role@<owner>-<repo>`). A notebook is capped tiny by design (≤200 one-line lessons), injected whole at session start and maintained in a once-per-session end-of-task retrospective (upvote / downvote / remove-incorrect / add / merge). kookr dogfoods its own published [`agent-notebook`](https://www.npmjs.com/package/agent-notebook) npm package for the `nb` CLI itself.
 
 ## One-time setup for the OSS extension
 

@@ -100,3 +100,15 @@ Identify groups of files that form tight clusters (many mutual imports). These a
 ### Summary
 [2-3 sentences: structural health assessment, biggest risk, top action]
 ```
+
+## Notebook Protocol (your memory)
+Your notebook role is **`dependency-graph-analyzer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `dependency-graph-analyzer@<owner>-<repo>`.
+
+- **Start:** `nb show dependency-graph-analyzer@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote dependency-graph-analyzer@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm dependency-graph-analyzer@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add dependency-graph-analyzer@<owner>-<repo> "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `this repo: adapters→core is allowed; core→adapters is a layering violation`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
+
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.

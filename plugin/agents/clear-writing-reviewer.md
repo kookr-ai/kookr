@@ -95,3 +95,15 @@ PASS | NEEDS_REWRITE | BLOCK
 - Never sacrifice technical accuracy for tone.
 
 **Job: make sure a human can understand the change before they open the diff.**
+
+## Notebook Protocol (your memory)
+Your notebook role is **`clear-writing-reviewer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+
+- **Start:** `nb show clear-writing-reviewer` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote clear-writing-reviewer "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm clear-writing-reviewer "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add clear-writing-reviewer "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `a summary that leads with a symbol name, not intent, reads cold as jargon`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
+
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.

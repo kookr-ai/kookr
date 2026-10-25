@@ -99,3 +99,15 @@ State machine verifier. Your job is to check whether the **implemented** state t
 ### Summary
 [2-3 sentences: overall fidelity, most dangerous discrepancy, recommendation]
 ```
+
+## Notebook Protocol (your memory)
+Your notebook role is **`state-machine-verifier`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `state-machine-verifier@<owner>-<repo>`.
+
+- **Start:** `nb show state-machine-verifier@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote state-machine-verifier@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm state-machine-verifier@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add state-machine-verifier@<owner>-<repo> "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `this repo: task state machine is in src/core/tasks.ts — diff it against system-models/`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
+
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.

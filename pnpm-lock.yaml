@@ -42,6 +42,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      agent-notebook:
+        specifier: 0.1.3
+        version: 0.1.3
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -773,6 +776,11 @@ packages:
   agent-base@7.1.4:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
+
+  agent-notebook@0.1.3:
+    resolution: {integrity: sha512-paPgx7qYpic65wQCO4Am37VTpDEAKm4PeGv5er+yOfFAERRWDYm9QppHZ53QJyRbaFK/a2LARsd8qBRJK0EJpQ==}
+    engines: {node: '>=18'}
+    hasBin: true
 
   asn1.js@5.4.1:
     resolution: {integrity: sha512-+I//4cYPccV8LdmBLiX8CYvf9Sp3vQsrqu2QNXRcrbiWvcx/UdlFiqUJJzxRQxgsZmvhXhn4cSKeSmoFjVdupA==}
@@ -1928,6 +1936,8 @@ snapshots:
   abbrev@4.0.0: {}
 
   agent-base@7.1.4: {}
+
+  agent-notebook@0.1.3: {}
 
   asn1.js@5.4.1:
     dependencies:

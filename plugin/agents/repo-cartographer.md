@@ -16,13 +16,13 @@ A short report: the build/test/lint commands that actually work (verified, not g
 4. Keep the report to what the next agent needs. A map that lists everything is a map of nothing.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`repo-cartographer`**. It is a bounded, voted store of one-line facts (≤200 lines, ≤200 chars each; lowest-scored line is evicted when full). For repo-specific facts, scope by repo: use role `repo-cartographer@<owner>-<repo>`.
+Your notebook role is **`repo-cartographer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `repo-cartographer@<owner>-<repo>`.
 
-- **Start:** `nb show repo-cartographer@<owner>-<repo>` — your prior facts load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
-- **End (retrospective):**
-  - `nb vote <role> <id> +1` on each fact that proved correct and useful this task.
-  - `nb vote <role> <id> -1` on any fact that was stale or misleading (a build command that no longer works, a moved file).
-  - `nb add <role> "<one fact, ≤200 chars>"` for a durable, reusable fact you confirmed (e.g. `tests: pnpm vitest run <file>; lint gates merge`). One line, distilled — if it needs a paragraph it's a procedure, put it in a skill, not the notebook.
-  - If the notebook is full, `nb merge`/`nb rm` a weak or superseded entry.
+- **Start:** `nb show repo-cartographer@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote repo-cartographer@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm repo-cartographer@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add repo-cartographer@<owner>-<repo> "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `tests: pnpm vitest run <file>; lint gates merge`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
 
-Keep the map honest: a wrong fact that survives poisons every future task in that repo. Prefer to downvote-and-replace over piling on near-duplicates.
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.
