@@ -1514,9 +1514,11 @@ from the live snapshot (terminal or aged out) still resolves by id through the
 transcript endpoint — run-state is then reported from its persisted status.
 
 Target selection, the supervisor token, and `--json` envelope mirror `kookr reply`.
-Exit codes: `0` success, `2` usage error (including an unknown task, `404`), `3` no
-server reachable, `4` server/HTTP error, `5` ambiguous (`AMBIGUOUS_PORT` or
-`AMBIGUOUS_TASK`).
+Exit codes: `0` success, `2` usage error — bad flags, a missing `<taskId|name>`, or
+an unknown task/session (`404`, JSON code `NO_TASK`, distinct from `USER_ERROR` so
+consumers can tell "bad usage" from "no such task"), `3` no server reachable, `4`
+server/HTTP error (including an unexpected `/api/snapshot` or transcript body
+shape), `5` ambiguous (`AMBIGUOUS_PORT` or `AMBIGUOUS_TASK`).
 
 ## `kookr migrate`
 

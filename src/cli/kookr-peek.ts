@@ -251,12 +251,20 @@ export function deriveRunState(input: {
 
 /** The last `assistant` text message, and any `user` text messages after it. */
 export interface LastMessageView {
+  /** The agent's final assistant turn — all its text blocks, in order, joined. */
   lastAssistant?: string;
-  /** Operator/user replies delivered after the last assistant message. */
+  /** Operator/user replies delivered after that final assistant turn. */
   repliesAfter: string[];
 }
 
 export function extractLastMessageView(messages: TranscriptMessage[]): LastMessageView {
+  // Anchor on the LAST assistant text block, then walk back to recover the rest
+  // of the same turn: a provider splits one assistant turn into several text
+  // blocks around its tool calls (text → tool_use → concluding text), and only
+  // a user message delimits a new turn. Concatenating the turn's blocks — rather
+  // than printing the final block alone — is what makes "the full last message"
+  // literally true for a multi-block final turn. Tool calls/results and
+  // truncation markers between blocks are skipped, not treated as boundaries.
   let lastIdx = -1;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i];
@@ -266,7 +274,15 @@ export function extractLastMessageView(messages: TranscriptMessage[]): LastMessa
     }
   }
   if (lastIdx === -1) return { repliesAfter: [] };
-  const lastAssistant = (messages[lastIdx] as Extract<TranscriptMessage, { kind: 'text' }>).text;
+
+  const parts: string[] = [];
+  for (let i = lastIdx; i >= 0; i -= 1) {
+    const m = messages[i];
+    if (m.kind === 'text' && m.role === 'user') break; // previous turn boundary
+    if (m.kind === 'text' && m.role === 'assistant') parts.unshift(m.text);
+  }
+  const lastAssistant = parts.join('\n\n');
+
   const repliesAfter: string[] = [];
   for (let i = lastIdx + 1; i < messages.length; i += 1) {
     const m = messages[i];
@@ -334,6 +350,8 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
   };
 
   if (args.error) return userError(args.error);
+  // Type-narrowing only: parsePeekArgs already returns an `error` (handled just
+  // above) when no positional was given, so this branch never fires at runtime.
   const taskRef = args.taskRef;
   if (taskRef === undefined) return userError('a <taskId|name> is required.');
 
@@ -414,7 +432,19 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (res.status === 404) {
-      return userError(`no task found for ref '${taskRef}'.`, { taskRef });
+      // The server 404s both for an unknown task and for a `--session` that does
+      // not exist on an otherwise-valid task; name the session so the operator
+      // is not told "no task found" when the task is fine and the session is not.
+      const message = args.session
+        ? `no task or session found for ref '${taskRef}' (session '${args.session}').`
+        : `no task found for ref '${taskRef}'.`;
+      if (args.json) {
+        emitJson(out, { ok: false, code: 'NO_TASK', message, details: { subcommand: 'peek', taskRef, session: args.session } });
+      } else {
+        err.error(`kookr peek: ${message}`);
+        err.error('Run `kookr peek --help` for usage.');
+      }
+      return EXIT_USER_ERROR;
     }
     if (!res.ok) {
       const message = `failed to read the transcript (server returned HTTP ${res.status}).`;
@@ -431,12 +461,23 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
     return EXIT_NO_SERVER;
   }
 
+  // The transcript body is otherwise an unvalidated cast; the `in` checks below
+  // would throw a TypeError on a non-object 200 body (null / string / number).
+  // Guard it the way the snapshot path guards its own body, so a malformed
+  // response is a clean SERVER_ERROR rather than an uncaught crash.
+  if (typeof transcript !== 'object' || transcript === null) {
+    const message = 'unexpected transcript response (expected a JSON object).';
+    if (args.json) emitJson(out, { ok: false, code: 'SERVER_ERROR', message });
+    else err.error(`kookr peek: ${message}`);
+    return EXIT_SERVER_ERROR;
+  }
+
   const verdict = deriveRunState({
     taskStatus: agent?.taskStatus,
     turnState: agent?.turnState,
     anomalyType: agent?.anomaly?.type,
     anomalySubType: agent?.anomaly?.subType,
-    classification: agent?.sessionHealth?.classification ?? undefined,
+    classification: agent?.sessionHealth?.classification,
   });
 
   const unavailableReason = 'unavailable' in transcript ? transcript.unavailable.reason : undefined;

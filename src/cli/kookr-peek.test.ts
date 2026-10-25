@@ -32,22 +32,36 @@ interface FakeRequest {
  */
 function fakeFetch({
   port = 4800,
+  healthyPorts,
   agents = [] as unknown[],
+  snapshotStatus = 200,
   transcript = { taskId: 't1', source: 'stored', messages: [] as TranscriptMessage[] } as unknown,
   transcriptStatus = 200,
+}: {
+  port?: number;
+  healthyPorts?: number[];
+  agents?: unknown;
+  snapshotStatus?: number;
+  transcript?: unknown;
+  transcriptStatus?: number;
 } = {}) {
   const requests: FakeRequest[] = [];
+  const up = healthyPorts ?? [port];
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     requests.push({ url, method: init?.method ?? 'GET' });
     const portMatch = url.match(/127\.0\.0\.1:(\d+)/);
     const reqPort = portMatch ? Number(portMatch[1]) : NaN;
     if (url.includes('/api/health')) {
-      if (reqPort === port) return { ok: true } as Response;
+      if (up.includes(reqPort)) return { ok: true } as Response;
       throw new Error('ECONNREFUSED');
     }
     if (url.includes('/api/snapshot')) {
-      return { ok: true, json: async () => agents } as unknown as Response;
+      return {
+        ok: snapshotStatus >= 200 && snapshotStatus < 300,
+        status: snapshotStatus,
+        json: async () => agents,
+      } as unknown as Response;
     }
     if (url.includes('/transcript')) {
       return {
@@ -107,6 +121,12 @@ describe('deriveRunState', () => {
     expect(deriveRunState({ turnState: 'running', classification: 'provider-or-agent-stalled' }).state).toBe('possibly-hung');
   });
 
+  it('lets a needs_input anomaly override a stale provider-or-agent-stalled classification', () => {
+    // The headline promise: a task parked at the prompt (needs_input) is never
+    // mislabeled as hung just because the freshness classifier went stale.
+    expect(deriveRunState({ anomalyType: 'needs_input', classification: 'provider-or-agent-stalled' }).state).toBe('awaiting-operator');
+  });
+
   it('prioritizes a hard block over an idle turn state', () => {
     expect(deriveRunState({ anomalyType: 'permission_blocked', turnState: 'completed_turn' }).state).toBe('blocked');
     expect(deriveRunState({ turnState: 'blocked' }).state).toBe('blocked');
@@ -123,17 +143,30 @@ describe('deriveRunState', () => {
 });
 
 describe('extractLastMessageView', () => {
-  const messages: TranscriptMessage[] = [
-    { kind: 'text', role: 'assistant', text: 'early' },
-    { kind: 'tool_call', name: 'Bash' },
-    { kind: 'text', role: 'assistant', text: 'the real last words' },
-    { kind: 'text', role: 'user', text: 'operator reply after' },
-    { kind: 'tool_result', name: 'Bash', text: 'out' },
-  ];
-
-  it('returns the last assistant text and replies after it', () => {
+  it('joins the final assistant turn across tool-call-separated text blocks', () => {
+    const messages: TranscriptMessage[] = [
+      { kind: 'text', role: 'user', text: 'go' },
+      { kind: 'text', role: 'assistant', text: 'working on it' },
+      { kind: 'tool_call', name: 'Bash' },
+      { kind: 'tool_result', name: 'Bash', text: 'out' },
+      { kind: 'text', role: 'assistant', text: 'pausing here, say the word' },
+    ];
     const v = extractLastMessageView(messages);
-    expect(v.lastAssistant).toBe('the real last words');
+    expect(v.lastAssistant).toBe('working on it\n\npausing here, say the word');
+    expect(v.repliesAfter).toEqual([]);
+  });
+
+  it('stops at the previous turn boundary (a user message) and lists replies after', () => {
+    const messages: TranscriptMessage[] = [
+      { kind: 'text', role: 'assistant', text: 'old turn — do NOT include' },
+      { kind: 'text', role: 'user', text: 'new instruction' },
+      { kind: 'text', role: 'assistant', text: 'final words' },
+      { kind: 'text', role: 'user', text: 'operator reply after' },
+      { kind: 'tool_result', name: 'Bash', text: 'out' },
+    ];
+    const v = extractLastMessageView(messages);
+    expect(v.lastAssistant).toBe('final words');
+    expect(v.lastAssistant).not.toContain('old turn');
     expect(v.repliesAfter).toEqual(['operator reply after']);
   });
 
@@ -235,12 +268,101 @@ describe('runPeekCli', () => {
     expect(requests.some((r) => r.url.includes('/api/tasks/gone/transcript'))).toBe(true);
   });
 
-  it('returns a user error (exit 2) for a 404 transcript', async () => {
+  it('returns NO_TASK (exit 2) for a 404 transcript', async () => {
     const io = captureIo();
     const { impl } = fakeFetch({ agents: [], transcriptStatus: 404 });
     const code = await runPeekCli(['nope', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
     expect(code).toBe(2);
-    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'USER_ERROR' });
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'NO_TASK' });
+  });
+
+  it('names the session in a 404 when --session was given', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ agents: [], transcriptStatus: 404 });
+    const code = await runPeekCli(['t1', '--session', 'bogus', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(2);
+    const env = JSON.parse(io.logs[0]);
+    expect(env).toMatchObject({ ok: false, code: 'NO_TASK' });
+    expect(env.message).toContain("session 'bogus'");
+  });
+
+  it('prefers the live task when a name is shared with a terminal one', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({
+      agents: [
+        { agentId: 'a1', taskId: 't-live', taskName: 'dup', taskStatus: 'inProgress', turnState: 'running' },
+        { agentId: 'a2', taskId: 't-old', taskName: 'dup', taskStatus: 'completed' },
+      ],
+      transcript: { taskId: 't-live', source: 'stored', messages: [{ kind: 'text', role: 'assistant', text: 'live work' }] },
+    });
+    const code = await runPeekCli(['dup', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(0);
+    const env = JSON.parse(io.logs[0]);
+    expect(env.details.taskId).toBe('t-live');
+    expect(env.details.runState).toBe('working');
+  });
+
+  it('reports a non-ok snapshot as a server error (exit 4)', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ snapshotStatus: 500 });
+    const code = await runPeekCli(['t1', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(4);
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+  });
+
+  it('reports a non-array snapshot body as a server error (exit 4)', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ agents: { not: 'an array' } });
+    const code = await runPeekCli(['t1', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(4);
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+  });
+
+  it('reports a 500 transcript as a server error (exit 4)', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ agents: [], transcriptStatus: 500 });
+    const code = await runPeekCli(['t1', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(4);
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+  });
+
+  it('reports a non-object transcript body (HTTP 200) as a server error, not a crash', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ agents: [], transcript: null });
+    const code = await runPeekCli(['t1', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(4);
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'SERVER_ERROR' });
+  });
+
+  it('handles an unavailable transcript (aged-out task) without an assistant message', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ agents: [], transcript: { taskId: 'gone', unavailable: { reason: 'aged_out' } } });
+    const code = await runPeekCli(['gone', '--json'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(0);
+    const env = JSON.parse(io.logs[0]);
+    expect(env.details.transcriptUnavailable).toBe('aged_out');
+    expect(env.details.lastAssistantMessage).toBeUndefined();
+  });
+
+  it('auto-detects the port (health probe) when no base URL is set', async () => {
+    const io = captureIo();
+    // Only :4800 answers health; :4801 refuses — exercises the probe path.
+    const { impl, requests } = fakeFetch({
+      healthyPorts: [4800],
+      agents: [{ agentId: 'a1', taskId: 't1', turnState: 'running' }],
+      transcript: { taskId: 't1', source: 'stored', messages: [{ kind: 'text', role: 'assistant', text: 'hi' }] },
+    });
+    const code = await runPeekCli(['t1', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(0);
+    expect(requests.some((r) => r.url.includes('/api/health'))).toBe(true);
+  });
+
+  it('reports ambiguous ports (exit 5) when both default instances answer', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({ healthyPorts: [4800, 4801] });
+    const code = await runPeekCli(['t1', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(5);
+    expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'AMBIGUOUS_PORT' });
   });
 
   it('disambiguates when a name matches more than one live task', async () => {
