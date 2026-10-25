@@ -197,6 +197,20 @@ kookr spawn --prompt-file /tmp/prompt.md
 
 This keeps the shell command short, avoids hook false positives, and leaves the dashboard as the main supervision surface. After spawning several tasks, use `kookr status` for a quick terminal snapshot and use the dashboard's dense-supervision controls for routing: `Alt+N` for the next finding, `Alt+T` for desktop terminal focus mode, `Alt+P` for the project sidebar, and `?` for the full shortcut list.
 
+**Deciding whether a task is working, waiting, or hung.** Before you tell anyone (or
+the agent) that a task "stopped" or "went idle", read the agent's own last words and
+the server's real run-state — do **not** infer liveness from the `updatedAt`
+heartbeat, which advances for bookkeeping and subagent churn and cannot tell a
+deliberate pause from a hang. Run `kookr peek <taskId|name>`: it prints the
+`turnState` / session-health / `anomaly` run-state (never the heartbeat) **and** the
+full last assistant message. A turn that ended cleanly (`completed_turn` /
+`waiting_for_input` / `healthy-idle` / `needs_input`) is a task **awaiting the
+operator**, not a silent stall — and agents put the operative sentence (the pause,
+the question, the blocker) at the **end** of a long message, so never conclude from a
+head-truncated read. If you must cap a long message, keep the tail (`--max-chars`
+does this). Only escalate "hung" when the run-state is `possibly-hung` *and* the last
+message gives no deliberate reason to be waiting.
+
 ## `kookr-self-report`
 
 On the PATH of every Kookr-spawned agent (alongside the `kb` shim). It exists for the case where the agent cannot do its job because of something upstream of the work itself — most often a task prompt that arrived damaged.
@@ -703,17 +717,17 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr peek`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
 3. Probe local ports `4800` and `4801`
 
-Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
+Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `kookr open` / `kookr reply` / `kookr peek` / `kookr signal` / `kookr ralph` exit with an ambiguity error when both default ports respond and no explicit target is set. `kookr status`, `kookr ops`, and `kookr github` pick the first healthy port (`4800`, then `4801`).
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1455,6 +1469,56 @@ or an unexpected shape, or the reply could not be delivered (the delivery reques
 failed, was rejected, or returned an unexpected body), `5` ambiguous — either two
 instances reachable (`AMBIGUOUS_PORT`; set `KOOKR_PORT`) or more than one live agent
 matched the reference (`AMBIGUOUS_AGENT`).
+
+## `kookr peek`
+
+Answer "**what is this task actually doing, and what did it last say?**" from the
+shell — without hand-rolling `curl .../transcript | node -e '… .slice(0, N)'`.
+`kookr peek` is a read-only thin client that prints two things a supervisor needs
+before concluding a task is idle, stalled, or misbehaving:
+
+1. a **run-state headline** derived only from first-class signals the server
+   already computes — `turnState`, `anomaly`, and the session-health
+   `classification` on `GET /api/snapshot` — **never** the `updatedAt` heartbeat; and
+2. the agent's **last assistant message in full**, plus any operator replies
+   delivered after it.
+
+```bash
+kookr peek <taskId|name>                 # run-state + full last message
+kookr peek <taskId|name> --max-chars 800 # cap the message, keeping the TAIL
+kookr peek <taskId|name> --session <id>  # a specific session's transcript
+kookr peek <taskId|name> --json          # machine-readable envelope
+```
+
+**Why it exists — and why it keeps the tail.** A supervisor asked "is the agent
+doing anything?" answered from a truncated transcript read (`.slice(0, 2000)`) and
+the `updatedAt` heartbeat, and declared a well-behaved agent had "stopped silently."
+The agent's last message was a deliberate pause; its operative sentence ("…pausing
+at this clean slice boundary … say the word if you want me to reprioritize") sat
+at the **end** of a 2350-char message, past the cut. So `kookr peek` prints the
+message in **full by default**, and when `--max-chars` is given it keeps the
+**tail** (the conclusion), not the head.
+
+**Run-state** is one of `working`, `awaiting-operator`, `blocked`, `possibly-hung`,
+`terminal`, or `unknown`. The key distinction the heartbeat cannot make: a turn that
+ended cleanly (`turnState` `completed_turn` / `waiting_for_input`, or session health
+`healthy-idle`, or an `anomaly` of `needs_input`) is reported as **`awaiting-operator`
+— a legitimate pause**, not a stall. A `needs_input` anomaly takes precedence over a
+stale `provider-or-agent-stalled` classification, so a task parked at the prompt is
+never mislabeled as hung.
+
+**Task resolution.** The reference is matched by exact `taskId` **or** `taskName`
+against `GET /api/snapshot`; a live match is preferred when a name is shared with
+history, and more than one live match is `AMBIGUOUS_TASK` (exit `5`). A task absent
+from the live snapshot (terminal or aged out) still resolves by id through the
+transcript endpoint — run-state is then reported from its persisted status.
+
+Target selection, the supervisor token, and `--json` envelope mirror `kookr reply`.
+Exit codes: `0` success, `2` usage error — bad flags, a missing `<taskId|name>`, or
+an unknown task/session (`404`, JSON code `NO_TASK`, distinct from `USER_ERROR` so
+consumers can tell "bad usage" from "no such task"), `3` no server reachable, `4`
+server/HTTP error (including an unexpected `/api/snapshot` or transcript body
+shape), `5` ambiguous (`AMBIGUOUS_PORT` or `AMBIGUOUS_TASK`).
 
 ## `kookr migrate`
 

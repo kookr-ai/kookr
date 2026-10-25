@@ -102,6 +102,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Read-only run-state + full last assistant message. Positional is the
+    // taskId|name; keep in sync with src/cli/kookr-peek.ts.
+    name: 'peek',
+    flags: ['--max-chars', '--session', '--json', '-h', '--help'],
+  },
+  {
     name: 'signal',
     positionalValues: ['completion-ready'],
     flags: ['--note', '--task-id', '--json', '-h', '--help'],
@@ -434,6 +440,7 @@ function renderBashCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const peekFlags = flagsFor('peek');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -572,6 +579,9 @@ _kookr()
       ;;
     reply)
       COMPREPLY=( $(compgen -W "${replyFlags}" -- "\${cur}") )
+      ;;
+    peek)
+      COMPREPLY=( $(compgen -W "${peekFlags}" -- "\${cur}") )
       ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -784,6 +794,7 @@ function renderZshCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const peekFlags = flagsFor('peek');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -878,6 +889,9 @@ _kookr()
       ;;
     reply)
       compadd -- ${replyFlags}
+      ;;
+    peek)
+      compadd -- ${peekFlags}
       ;;
     signal)
       if (( CURRENT == 3 )); then
