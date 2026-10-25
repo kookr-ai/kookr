@@ -13,6 +13,7 @@ Usage:
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
   kookr open [taskId] [--json]  Open the running dashboard in your browser (deep-link to a task).
   kookr reply <taskId|name> "<text>" [--json]  Deliver a terminal reply to a task's live agent.
+  kookr peek <taskId|name> [--max-chars N] [--json]  Show a task's run-state and its FULL last assistant message.
   kookr stop|abort <taskId>... [--reason <text>]  Abort (terminate) running task(s).
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
   kookr signal <kind> [OPTIONS]  Raise an agent → user signal for the current task.
@@ -49,7 +50,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, open, reply, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, open, reply, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -115,6 +116,15 @@ async function main({
   // type a reply. Loads the src/cli module with a dist→src fallback.
   if (command === 'reply') {
     await runReplyCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Read-only "what is this task doing, and what did it last say?" (false-idle
+  // reflection). Prints a run-state derived from first-class signals (never the
+  // updatedAt heartbeat) and the FULL last assistant message, so a supervisor
+  // reads the agent's own words instead of hand-rolling curl + truncation.
+  if (command === 'peek') {
+    await runPeekCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -570,6 +580,21 @@ async function runReplyCommand(argv, { env = process.env, out = console, err = c
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runReplyCli(argv, { env, out, err });
+}
+
+async function runPeekCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-peek.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-peek.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] peek module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runPeekCli(argv, { env, out, err });
 }
 
 async function runContextPackCommand(argv, { env = process.env, out = console, err = console } = {}) {
