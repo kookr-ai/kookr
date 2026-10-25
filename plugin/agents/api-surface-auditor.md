@@ -95,3 +95,15 @@ API surface auditor. Your job is to inventory every HTTP route and WebSocket mes
 ### Summary
 [2-3 sentences: API surface health, biggest consistency risk, top priority]
 ```
+
+## Notebook Protocol (your memory)
+Your notebook role is **`api-surface-auditor`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `api-surface-auditor@<owner>-<repo>`.
+
+- **Start:** `nb show api-surface-auditor@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote api-surface-auditor@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm api-surface-auditor@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add api-surface-auditor@<owner>-<repo> "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `this repo: WS message types live in src/shared/contracts — keep route + type in sync`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
+
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.

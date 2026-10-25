@@ -1,6 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { delimiter, join, resolve } from 'node:path';
 import { resolveAgentLauncherBinDir } from '../core/hook-writer-paths.js';
+import { getProjectId, projectIdToOwnerRepo } from '../core/project-identity.js';
 import { INTERACTIVE_TOOL_DENY_RULES } from '../shared/contracts/operator-needed.js';
 import type { TaskStore } from '../core/tasks.js';
 import type {
@@ -218,6 +219,12 @@ interface BuildAgentLaunchContextOptions {
    * resolver to exercise the degraded (no `KOOKR_GIT_COMMON_DIR`) path.
    */
   resolveGitCommonDirImpl?: (cwd: string) => Promise<string | null>;
+  /**
+   * Test seam for the project-id probe behind the per-repo `NB_ROLE` (the Agent
+   * Notebook ritual). Defaults to {@link getProjectId}; inject to assert the
+   * derived role without touching a real git remote.
+   */
+  resolveProjectIdImpl?: (cwd: string) => Promise<string>;
 }
 
 /**
@@ -272,6 +279,41 @@ export async function resolveGitCommonDirBounded(
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/**
+ * The top-level notebook role every kookr-launched session runs under. The
+ * session's own lessons (how to orchestrate work in THIS repo) accrue here,
+ * scoped per repo so one repo's lessons never leak into another's. Specialized
+ * in-process sub-agents (patch-author, etc.) keep their own role notebooks.
+ */
+export const NB_TOP_LEVEL_ROLE = 'orchestrator';
+
+/** Flatten one path segment to the notebook role charset (`[a-z0-9._-]`). */
+function sanitizeRoleSegment(raw: string): string {
+  return raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-') // illegal char → hyphen
+    .replace(/\.{2,}/g, '.') // collapse `..` — the package rejects it as path-traversal
+    .replace(/^[^a-z0-9]+/, '') // role must START with alnum (hook + core regex)
+    .replace(/[^a-z0-9]+$/, ''); // ...and END with alnum (core SAFE_ROLE)
+}
+
+/**
+ * Derive the per-repo top-level notebook role from a project id.
+ * `github.com/owner/repo` → `orchestrator@owner-repo`; `local/<dir>` →
+ * `orchestrator@local-<dir>`. Returns null when no safe slug can be formed, so
+ * the caller simply omits `NB_ROLE` (the notebook hooks then no-op — fail-open).
+ */
+export function deriveNotebookRole(projectId: string): string | null {
+  const ownerRepo = projectIdToOwnerRepo(projectId);
+  let slug: string;
+  if (ownerRepo) slug = `${ownerRepo.owner}-${ownerRepo.repo}`;
+  else if (projectId.startsWith('local/')) slug = `local-${projectId.slice('local/'.length)}`;
+  else slug = projectId;
+  slug = sanitizeRoleSegment(slug);
+  if (!slug) return null;
+  return `${NB_TOP_LEVEL_ROLE}@${slug}`;
 }
 
 export async function buildAgentLaunchContext(
@@ -361,6 +403,23 @@ export async function buildAgentLaunchContext(
     permissionAllowlist.push(
       `Read(${toAbsolutePermissionPath(gitCommonDir)}/**)`,
       `Write(${toAbsolutePermissionPath(gitCommonDir)}/**)`,
+    );
+  }
+
+  // Per-repo Agent Notebook role for the top-level session (issue: notebook
+  // ritual coverage). Setting NB_ROLE is what makes the SessionStart/Stop
+  // notebook hooks fire: the session's per-repo lessons are injected at start,
+  // and a maintenance retrospective is nudged once at end. Fail-open — a probe
+  // failure or an unresolvable repo just omits NB_ROLE, and the hooks no-op.
+  // (getProjectId already swallows git errors and falls back to `local/<dir>`.)
+  try {
+    const resolveProjectId = opts.resolveProjectIdImpl ?? getProjectId;
+    const nbRole = deriveNotebookRole(await resolveProjectId(opts.cwd));
+    if (nbRole) env.NB_ROLE = nbRole;
+  } catch (err) {
+    console.warn(
+      `[launch-context] notebook-role probe failed for ${opts.cwd} (proceeding without NB_ROLE): ` +
+      `${err instanceof Error ? err.message : String(err)}`,
     );
   }
 

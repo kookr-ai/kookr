@@ -26,8 +26,9 @@ try {
     process.stdout.write(
       `## Your notebook — role: ${role}\n` +
         `Bounded, voted lessons from your past tasks (highest-scored first). ` +
-        `Use them. At task end, vote +1 on the ones that helped, -1 on any that ` +
-        `misled you, and add at most one new ≤120-char lesson:\n\n` +
+        `Use them. At task end, maintain them: vote +1 on the ones that helped, ` +
+        `-1 on any that misled you, \`nb rm\` any that proved incorrect, add at most ` +
+        `one new ≤120-char lesson, and \`nb merge\` redundant ones if the notebook is full:\n\n` +
         out +
         '\n',
     );

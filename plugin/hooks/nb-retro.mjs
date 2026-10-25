@@ -19,6 +19,11 @@ import { homedir } from 'node:os';
 const role = process.env.NB_ROLE;
 if (!role || !/^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(role)) process.exit(0);
 
+// Operator opt-out. The ritual now fires for every role session (including the
+// per-repo top-level `orchestrator@<owner>-<repo>` role set by the launcher), so
+// give operators a single switch to silence the retrospective nudge everywhere.
+if (process.env.NB_RETRO_DISABLED && process.env.NB_RETRO_DISABLED !== '0') process.exit(0);
+
 let event = {};
 try {
   event = JSON.parse(readFileSync(0, 'utf-8'));
@@ -61,11 +66,13 @@ try {
 }
 
 process.stderr.write(
-  `Notebook retrospective (role: ${role}) before you finish — this keeps your memory honest:\n` +
-    `  1. nb vote ${role} "<id|query>" +1   for each lesson that helped this task\n` +
-    `  2. nb vote ${role} "<id|query>" -1   for any lesson that misled or cost you time\n` +
-    `  3. nb add ${role} "<one lesson, <=120 chars>"   only if you learned something reusable\n` +
-    `  4. if the notebook was full: nb merge / nb rm a weak entry\n` +
+  `Notebook retrospective (role: ${role}) before you finish — this keeps your memory honest.\n` +
+    `Run the full maintenance cycle on the lessons you actually used this task:\n` +
+    `  1. UPVOTE   nb vote ${role} "<id|query>" +1   each lesson that helped\n` +
+    `  2. DOWNVOTE nb vote ${role} "<id|query>" -1   each lesson that misled or cost you time\n` +
+    `  3. REMOVE   nb rm   ${role} "<id|query>"       any lesson you found to be incorrect or no longer true\n` +
+    `  4. ADD      nb add  ${role} "<one lesson, <=120 chars>"   only if you learned something reusable\n` +
+    `  5. MERGE    nb merge ${role} "<idA>" "<idB>" "<merged>"   if the notebook is full/redundant, consolidate\n` +
     `Then stop again. (This fires once per session.)\n`,
 );
 process.exit(2);

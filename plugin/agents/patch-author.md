@@ -16,12 +16,13 @@ A focused diff plus a one-line summary of what changed and why, and confirmation
 4. Keep scope tight — no drive-by refactors, no unrelated files.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`patch-author`** (bounded, voted, ≤200 lines × ≤200 chars; lowest-scored evicted when full). Repo-specific conventions: scope with `patch-author@<owner>-<repo>`.
+Your notebook role is **`patch-author`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `patch-author@<owner>-<repo>`.
 
-- **Start:** `nb show patch-author@<owner>-<repo>` (auto-injected by the SessionStart hook when `NB_ROLE` is set; else run it).
-- **End (retrospective):**
-  - `nb vote <role> <id> +1` on each convention that saved you; `-1` on any that misled you or no longer holds.
-  - `nb add <role> "<one convention, ≤200 chars>"` for a reusable lesson (e.g. `this repo: prefer execFileSync, array args — shell-safety hook blocks execSync`).
-  - Full notebook → `nb merge`/`nb rm` a weak entry.
+- **Start:** `nb show patch-author@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
+  - `nb vote patch-author@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
+  - `nb rm patch-author@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.
+  - `nb add patch-author@<owner>-<repo> "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `this repo: prefer execFileSync, array args — the shell-safety hook blocks execSync`).
+  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
 
-Downvote-and-replace a stale convention rather than stacking near-duplicates. A wrong convention that survives makes every future patch worse.
+One line per lesson; a multi-step procedure belongs in a skill, not the notebook.
