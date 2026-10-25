@@ -60,8 +60,10 @@ Read it before concluding a task is idle or stalled: a deliberate pause
 in its own words at the end of its last message.
 
 Options:
-  --max-chars <N>   Cap the printed last message to N chars, keeping the TAIL
-                    (the operative conclusion), not the head. Default: no cap.
+  --max-chars <N>   Cap the last message (and each reply after it) to N chars,
+                    keeping the TAIL (the operative conclusion), not the head.
+                    Applies to human and --json output. Default: no cap.
+                    Also accepts --max-chars=<N>.
   --session <id>    Read a specific session's transcript (default: newest).
   --json            Print one machine-readable JSON envelope.
   -h, --help        Show this help.
@@ -93,33 +95,44 @@ export function parsePeekArgs(argv: string[]): ParsedPeekArgs {
   const args: ParsedPeekArgs = { json: false, help: false };
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
+    // Accept both `--flag value` and `--flag=value` for value-taking flags,
+    // mirroring `kookr stop --reason=`. An `=` splits the token into the flag
+    // name and an inline value; a space-separated value is read from argv[++i].
+    let arg = argv[i];
+    let inlineValue: string | undefined;
+    const eq = arg.startsWith('--') ? arg.indexOf('=') : -1;
+    if (eq !== -1) {
+      inlineValue = arg.slice(eq + 1);
+      arg = arg.slice(0, eq);
+    }
+    const takeValue = (): string | undefined => (inlineValue !== undefined ? inlineValue : argv[++i]);
     switch (arg) {
       case '-h':
       case '--help':
         return { ...args, help: true };
       case '--json':
+        if (inlineValue !== undefined) return { ...args, error: `Unknown option: ${argv[i]}` };
         args.json = true;
         break;
       case '--max-chars': {
-        const value = argv[++i];
+        const value = takeValue();
         const n = Number(value);
-        if (!Number.isInteger(n) || n < 1) {
+        if (value === undefined || value === '' || !Number.isInteger(n) || n < 1) {
           return { ...args, error: `--max-chars expects a positive integer (got: ${JSON.stringify(value)}).` };
         }
         args.maxChars = n;
         break;
       }
       case '--session': {
-        const value = argv[++i];
-        if (value === undefined || value.startsWith('-')) {
+        const value = takeValue();
+        if (value === undefined || value === '' || value.startsWith('-')) {
           return { ...args, error: '--session expects a session id value.' };
         }
         args.session = value;
         break;
       }
       default:
-        if (arg.startsWith('-')) return { ...args, error: `Unknown option: ${arg}` };
+        if (arg.startsWith('-')) return { ...args, error: `Unknown option: ${argv[i]}` };
         positionals.push(arg);
     }
   }
@@ -500,8 +513,12 @@ export async function runPeekCli(argv: string[], io: PeekCliIo = {}): Promise<nu
           anomalyExplanation: agent?.anomaly?.explanation,
           transcriptSource: 'source' in transcript ? transcript.source : undefined,
           transcriptUnavailable: unavailableReason,
-          lastAssistantMessage: view.lastAssistant,
-          repliesAfter: view.repliesAfter,
+          // Apply --max-chars (tail-kept) in JSON too, so the flag behaves the
+          // same way it does in the human output. Without a cap this is a no-op.
+          lastAssistantMessage: view.lastAssistant === undefined
+            ? undefined
+            : capKeepingTail(view.lastAssistant, args.maxChars),
+          repliesAfter: view.repliesAfter.map((r) => capKeepingTail(r, args.maxChars)),
         },
       }),
     );

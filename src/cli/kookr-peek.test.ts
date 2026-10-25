@@ -90,6 +90,20 @@ describe('parsePeekArgs', () => {
     expect(parsePeekArgs(['t1', '--max-chars', 'x']).error).toContain('--max-chars');
   });
 
+  it('accepts --flag=value forms', () => {
+    expect(parsePeekArgs(['t1', '--max-chars=500'])).toMatchObject({ taskRef: 't1', maxChars: 500 });
+    expect(parsePeekArgs(['t1', '--session=kookr-abc'])).toMatchObject({ taskRef: 't1', session: 'kookr-abc' });
+    // Only the first `=` splits, so a value containing `=` is preserved.
+    expect(parsePeekArgs(['t1', '--session=a=b'])).toMatchObject({ taskRef: 't1', session: 'a=b' });
+  });
+
+  it('rejects malformed --flag=value forms', () => {
+    expect(parsePeekArgs(['t1', '--max-chars=0']).error).toContain('--max-chars');
+    expect(parsePeekArgs(['t1', '--max-chars=x']).error).toContain('--max-chars');
+    expect(parsePeekArgs(['t1', '--session=']).error).toContain('--session');
+    expect(parsePeekArgs(['t1', '--json=x']).error).toContain('Unknown option');
+  });
+
   it('flags unknown options and extra positionals', () => {
     expect(parsePeekArgs(['--bogus']).error).toContain('Unknown option');
     expect(parsePeekArgs(['t1', 't2']).error).toContain('exactly one');
@@ -230,6 +244,32 @@ describe('runPeekCli', () => {
     // The operative conclusion at the END of the message is present in full.
     expect(env.details.lastAssistantMessage).toContain('Say the word if you want me to reprioritize');
     expect(env.details.signals.turnState).toBe('completed_turn');
+  });
+
+  it('applies --max-chars (tail-kept) in --json output too', async () => {
+    const io = captureIo();
+    const longMsg = 'HEAD'.repeat(500) + ' TAIL-CONCLUSION';
+    const longReply = 'PAD'.repeat(500) + ' REPLY-TAIL';
+    const { impl } = fakeFetch({
+      agents: [{ agentId: 'a1', taskId: 't1', turnState: 'running' }],
+      transcript: {
+        taskId: 't1',
+        source: 'stored',
+        messages: [
+          { kind: 'text', role: 'assistant', text: longMsg },
+          { kind: 'text', role: 'user', text: longReply },
+        ],
+      },
+    });
+    const code = await runPeekCli(['t1', '--json', '--max-chars=40'], { env: BASE_ENV, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(0);
+    const env = JSON.parse(io.logs[0]);
+    expect(env.details.lastAssistantMessage).toContain('TAIL-CONCLUSION');
+    expect(env.details.lastAssistantMessage).toMatch(/earlier char\(s\) omitted/);
+    expect(env.details.lastAssistantMessage.length).toBeLessThan(longMsg.length);
+    // The cap applies to replies-after too.
+    expect(env.details.repliesAfter[0]).toContain('REPLY-TAIL');
+    expect(env.details.repliesAfter[0].length).toBeLessThan(longReply.length);
   });
 
   it('human output surfaces run-state and the full last message, with a not-a-heartbeat note', async () => {

@@ -1511,7 +1511,8 @@ never mislabeled as hung.
 against `GET /api/snapshot`; a live match is preferred when a name is shared with
 history, and more than one live match is `AMBIGUOUS_TASK` (exit `5`). A task absent
 from the live snapshot (terminal or aged out) still resolves by id through the
-transcript endpoint — run-state is then reported from its persisted status.
+transcript endpoint and its last message is shown in full; its run-state then
+reads `unknown`, since the live run-state signals come only from the snapshot.
 
 Target selection, the supervisor token, and `--json` envelope mirror `kookr reply`.
 Exit codes: `0` success, `2` usage error — bad flags, a missing `<taskId|name>`, or
