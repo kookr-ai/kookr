@@ -59,6 +59,39 @@ export const REVIEWER_SPECIALIST_ROLES: readonly ReviewerSpecialistRole[] = [
   'lint-like',
 ];
 
+/**
+ * Base Agent Notebook role for the code-review task domain. Every fan-out
+ * specialist shares ONE bounded, voted notebook keyed on this base so the
+ * defect classes they learn accrue in a single place instead of being dropped
+ * (before this, the specialists were launched as prompts with no notebook at
+ * all, while adjacent roles like `change-verifier` did keep one).
+ *
+ * Repo-specific defect classes scope by repo as `code-review@<owner>-<repo>`;
+ * portable heuristics (a11y, cross-platform) use the bare base. Both are
+ * distinct files under one base name — the same shape the notebook system
+ * already uses for `orchestrator@<slug>`.
+ */
+export const REVIEWER_NOTEBOOK_ROLE_BASE = 'code-review';
+
+/**
+ * Resolve the fan-out's notebook role from a repo slug (`<owner>-<repo>`).
+ * Returns `code-review@<slug>` for a usable slug, else the global
+ * `code-review`. The slug is flattened to the notebook role charset
+ * (`[a-z0-9._-]`, no leading/trailing punctuation, no `..`) so an unexpected
+ * value can never produce a role the `nb` CLI rejects. Callers typically pass
+ * the slug from their own `orchestrator@<slug>` `NB_ROLE`, which is already
+ * safe; the sanitization is belt-and-suspenders and keeps this pure.
+ */
+export function reviewerNotebookRole(slug?: string | null): string {
+  const safe = (slug ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/\.{2,}/g, '.')
+    .replace(/^[^a-z0-9]+/, '')
+    .replace(/[^a-z0-9]+$/, '');
+  return safe ? `${REVIEWER_NOTEBOOK_ROLE_BASE}@${safe}` : REVIEWER_NOTEBOOK_ROLE_BASE;
+}
+
 /** Lifecycle status of a single specialist run and of the overall workflow. */
 export type ReviewerRunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
 
@@ -114,6 +147,15 @@ export interface ReviewerFanoutWorkflow {
   force: boolean;
   /** Whether the docs-drift concern is active for this diff. */
   docsDrift: 'active' | 'inactive';
+  /**
+   * The Agent Notebook role the specialists share for this fan-out, e.g.
+   * `code-review@owner-repo`. Resolved from the repo slug via
+   * {@link reviewerNotebookRole} at creation; omitted when no slug was
+   * available, in which case launches fall back to the global
+   * {@link REVIEWER_NOTEBOOK_ROLE_BASE}. Optional and additive — it does not
+   * change the serialized schema version.
+   */
+  notebookRole?: string;
 }
 
 /**

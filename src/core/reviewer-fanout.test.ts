@@ -2,8 +2,10 @@ import { describe, expect, test } from 'vitest';
 import {
   REVIEWER_FANOUT_LAUNCH_MARKER,
   REVIEWER_FANOUT_SCHEMA_VERSION,
+  REVIEWER_NOTEBOOK_ROLE_BASE,
   deserializeReviewerFanoutWorkflow,
   isReviewerFanoutLaunch,
+  reviewerNotebookRole,
   serializeReviewerFanoutWorkflow,
   type ReviewerDiffScope,
   type ReviewerFanoutWorkflow,
@@ -63,6 +65,36 @@ describe('createReviewerFanoutWorkflow', () => {
       'deadcode-specialist.md',
       'docs-drift-specialist.md',
     ]);
+  });
+
+  test('carries a provided notebook role, and omits the field when none is given', () => {
+    const scoped = createReviewerFanoutWorkflow({
+      roles: ['correctness'],
+      diffScope,
+      notebookRole: 'code-review@owner-repo',
+    });
+    expect(scoped.notebookRole).toBe('code-review@owner-repo');
+
+    const bare = createReviewerFanoutWorkflow({ roles: ['correctness'], diffScope });
+    expect('notebookRole' in bare).toBe(false);
+  });
+});
+
+describe('reviewerNotebookRole', () => {
+  test('scopes by slug when one is usable, else the global base', () => {
+    expect(reviewerNotebookRole('kookr-ai-kookr')).toBe('code-review@kookr-ai-kookr');
+    expect(reviewerNotebookRole()).toBe(REVIEWER_NOTEBOOK_ROLE_BASE);
+    expect(reviewerNotebookRole('')).toBe(REVIEWER_NOTEBOOK_ROLE_BASE);
+    expect(reviewerNotebookRole(null)).toBe(REVIEWER_NOTEBOOK_ROLE_BASE);
+  });
+
+  test('flattens an unsafe slug to the notebook role charset (never a traversal)', () => {
+    expect(reviewerNotebookRole('Owner/Repo')).toBe('code-review@owner-repo');
+    expect(reviewerNotebookRole('../evil')).toBe('code-review@evil');
+    expect(reviewerNotebookRole('--x--')).toBe('code-review@x');
+    // Interior `..` is collapsed to a single dot (pins the `.{2,}` step, which
+    // the leading/trailing strips alone do not exercise).
+    expect(reviewerNotebookRole('a..b')).toBe('code-review@a.b');
   });
 });
 
@@ -159,6 +191,24 @@ describe('buildSpecialistLaunch', () => {
     const launches = buildSpecialistLaunches(wf, loader({}));
     expect(launches.map((l) => l.role)).toEqual(['correctness', 'lint-like']);
     expect(launches.every((l) => isReviewerFanoutLaunch(l.prompt))).toBe(true);
+  });
+
+  test('inlines the workflow notebook role and tags the lens', () => {
+    const scoped = createReviewerFanoutWorkflow({
+      roles: ['correctness'],
+      diffScope,
+      notebookRole: 'code-review@owner-repo',
+    });
+    const launch = buildSpecialistLaunch(scoped, scoped.specialists[0], loader({}));
+    expect(launch.prompt).toContain('Notebook role: code-review@owner-repo');
+    expect(launch.prompt).toContain('nb show code-review@owner-repo');
+    expect(launch.prompt).toContain('(correctness)'); // lens tag
+  });
+
+  test('falls back to the global code-review role when the workflow has none', () => {
+    const launch = buildSpecialistLaunch(wf, wf.specialists[0], loader({}));
+    expect(launch.prompt).toContain(`Notebook role: ${REVIEWER_NOTEBOOK_ROLE_BASE}`);
+    expect(launch.prompt).not.toContain('code-review@');
   });
 });
 

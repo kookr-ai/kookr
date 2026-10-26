@@ -16,6 +16,7 @@
 import {
   REVIEWER_FANOUT_LAUNCH_MARKER,
   REVIEWER_FANOUT_SCHEMA_VERSION,
+  REVIEWER_NOTEBOOK_ROLE_BASE,
   REVIEWER_SPECIALIST_ROLES,
   type ReviewerAggregateReview,
   type ReviewerDiffScope,
@@ -61,6 +62,13 @@ export interface CreateReviewerFanoutInput {
   docsDrift?: 'active' | 'inactive';
   /** Override the derived id (defaults to `reviewer-fanout:<branch|headRef>`). */
   id?: string;
+  /**
+   * The shared code-review notebook role for this fan-out (e.g.
+   * `code-review@owner-repo`), usually from {@link reviewerNotebookRole}.
+   * Carried onto the workflow and inlined into every specialist launch.
+   * Omit it and launches fall back to the global `code-review`.
+   */
+  notebookRole?: string;
 }
 
 /**
@@ -95,6 +103,7 @@ export function createReviewerFanoutWorkflow(
     status: 'pending',
     force: input.force ?? false,
     docsDrift,
+    ...(input.notebookRole ? { notebookRole: input.notebookRole } : {}),
   };
 }
 
@@ -131,11 +140,18 @@ export function buildSpecialistLaunch(
     // interpreted as a `$&`/`$n` replacement pattern.
     .replace(/\{repoDir\}/g, () => workflow.diffScope.repoDir);
 
+  const notebookRole = workflow.notebookRole ?? REVIEWER_NOTEBOOK_ROLE_BASE;
   const header = [
     `${REVIEWER_FANOUT_LAUNCH_MARKER} role=${run.role} workflow=${workflow.id}`,
     `Repo: ${workflow.diffScope.repoDir}`,
     `Diff scope: ${workflow.diffScope.baseRef}..${workflow.diffScope.headRef}` +
       ` (${workflow.diffScope.changedFiles.length} changed file(s))`,
+    // Shared code-review notebook: load it before reviewing, maintain it after.
+    // This is the only path by which a fan-out specialist (a general-purpose
+    // subagent with no NB_ROLE and no SessionStart injection) learns its role.
+    `Notebook role: ${notebookRole} — run \`nb show ${notebookRole}\` first and apply its defect classes; ` +
+      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ≤120-char ` +
+      `defect class, tagged with your lens (${run.role}).`,
   ].join('\n');
 
   return {
