@@ -27,6 +27,31 @@ SessionStart hook fires for it). The role reaches it **only** through the prompt
 you write. That is the whole mechanism — and it means the orchestrator, which
 knows the task, is the right place to choose the role.
 
+## Prerequisite: the `nb` CLI
+
+Everything here needs the `nb` command on PATH. Check it:
+
+```bash
+nb --version   # prints: nb (agent-notebook)
+```
+
+- **Inside kookr** it is already bundled — `pnpm install` pulls the
+  `agent-notebook` dependency, and launched agents get `nb` on their PATH
+  automatically (the shim pins the store to `~/.kookr/notebooks` and git-backs
+  every write). You install nothing.
+- **Anywhere else** — a fresh machine, or a repo that only installed the
+  kookr-toolkit plugin — install the public package once:
+
+  ```bash
+  npm install -g agent-notebook   # puts `nb` on your PATH
+  ```
+
+  The store defaults to `~/.agent-notebook/notebooks`; set `NB_DIR` to relocate it.
+
+If `nb` is absent the ritual is **fail-open**: `nb show` simply errors and the
+agent proceeds with no memory, so a notebook step never blocks the task.
+Installing `nb` is what turns the memory on.
+
 ## 1. Pick an existing role — don't reinvent
 
 List what already exists, richest first, and reuse one of these names verbatim:
