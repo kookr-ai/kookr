@@ -31,9 +31,18 @@ describe('nb-retro Stop hook', () => {
 
   function runRetro(env: Record<string, string>, event: unknown): { code: number; err: string } {
     try {
+      // Merge over the real env for PATH etc., but let the caller's env be
+      // authoritative for NB_ROLE: a caller that omits it means "unset", which
+      // must hold even when the ambient process has NB_ROLE set (e.g. inside a
+      // kookr-launched session running under `orchestrator@<repo>`). Without
+      // this, the second `...process.env` spread would silently re-introduce
+      // the ambient NB_ROLE and the "no-op when unset" case could never be
+      // exercised off-CI.
+      const mergedEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
+      if (!('NB_ROLE' in env)) delete mergedEnv.NB_ROLE;
       execFileSync('node', [hook], {
         input: JSON.stringify(event),
-        env: { ...process.env, ...env },
+        env: mergedEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       return { code: 0, err: '' };

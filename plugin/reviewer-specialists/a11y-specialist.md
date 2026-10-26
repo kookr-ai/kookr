@@ -90,3 +90,6 @@ If the diff does not touch UI files (`.tsx`, `.jsx`, `.vue`, `.svelte`, or templ
 - **Verified**: Yes — method you used (element-role analysis / lib typings / live axe run).
 
 Only report issues you can demonstrate from the diff AND verified against the repo checkout or a live axe run.
+
+## Notebook Protocol
+You write to the shared **code-review** notebook — bounded, voted one-line lessons (≤200 lines × ≤200 chars). Your launch header names the exact role: `code-review`, or `code-review@<owner>-<repo>` when scoped to this repo. Run `nb show <that role>` before reviewing and apply the defect classes it lists; at the end vote `+1`/`-1` on the lessons you actually used, `nb rm` any that proved wrong, and `nb add <that role> "<one ≤120-char defect class you confirmed>"` tagged with your lens.

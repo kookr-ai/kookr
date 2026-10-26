@@ -381,12 +381,14 @@ Use when the change touches module boundaries, imports, or public APIs:
 2. Launch the selected agents **in parallel** as subagents, passing the diff and repo path. Compose the consolidated `lint-like` reviewer as described above; spawn `correctness` (and `test` when selected) standalone.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
 
+   **Give every specialist the shared code-review notebook.** A fan-out specialist is a `general-purpose` subagent — it has no `NB_ROLE` and gets no SessionStart notebook injection, so the role reaches it only through the launch prompt. Add a `Notebook role:` line to the header of every specialist prompt. Derive the role from this session's own `NB_ROLE`: it is `orchestrator@<owner>-<repo>`, so the fan-out role is `code-review@<owner>-<repo>` (same slug, `code-review` base). If `NB_ROLE` is unset, fall back to the bare global `code-review`. The specialist loads it with `nb show <role>` before reviewing and maintains it afterward (the specialist `.md` bodies spell out the ritual).
+
    **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body, prefixed with the machine-event marker header (see *Structured fan-out* above):
    ```
    # correctness + test: strong model (deep audit) — no model override, inherits the session default
-   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
    # lint-like (consolidated nits): cheap, fast model — see "Per-lane model" above
-   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
@@ -394,7 +396,7 @@ Use when the change touches module boundaries, imports, or public APIs:
    ```
    spawn_agent({
      task_name: "review_correctness",
-     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
+     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
    })
    ```
    For the `lint-like` lane, pass the equivalent **lightweight/cheap model**
