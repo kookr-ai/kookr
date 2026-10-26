@@ -171,3 +171,45 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
     expect(nb(['show', role]).out).toContain('per-repo orchestrator lesson');
   });
 });
+
+describe('bin/nb.js — `nb roles` discovery (reuse, not reinvent)', () => {
+  test('reports an empty store without crashing', () => {
+    const r = nb(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('no notebooks yet');
+  });
+
+  test('lists existing roles with lesson counts, richest first', () => {
+    nb(['add', 'code-review', 'one']);
+    nb(['add', 'patch-author', 'a']);
+    nb(['add', 'patch-author', 'b']);
+    nb(['add', 'patch-author', 'c']);
+    const r = nb(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('patch-author');
+    expect(r.out).toContain('code-review');
+    expect(r.out).toContain('3 lessons');
+    expect(r.out).toMatch(/\b1 lesson\b/); // singular — and must NOT render "1 lessons"
+    expect(r.out).not.toContain('1 lessons');
+    // richest first: patch-author (3) is listed before code-review (1)
+    expect(r.out.indexOf('patch-author')).toBeLessThan(r.out.indexOf('code-review'));
+  });
+
+  test('excludes non-.md files (usage log, stray files) from the listing', () => {
+    nb(['add', 'real-role', 'x']); // writes real-role.md (and a .nb-usage.log) into NB_DIR
+    writeFileSync(join(dir, 'notes.txt'), 'not a notebook');
+    const r = nb(['roles']);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain('real-role');
+    expect(r.out).toMatch(/roles — 1 in/); // only the .md file counts — not notes.txt / .nb-usage.log
+    expect(r.out).not.toContain('notes');
+  });
+
+  test('is read-only — listing roles creates no git commit', () => {
+    initRepo();
+    nb(['add', 'patcher', 'x']);
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    nb(['roles']);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before); // no commit from a read
+  });
+});
