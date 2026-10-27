@@ -212,4 +212,20 @@ describe('bin/nb.js — `nb roles` discovery (reuse, not reinvent)', () => {
     nb(['roles']);
     expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before); // no commit from a read
   });
+
+  test('accepts `list` and `ls` as aliases for `roles` (agents guess these)', () => {
+    nb(['add', 'alpha', 'l1']);
+    nb(['add', 'beta', 'l1']);
+    const roles = nb(['roles']);
+    const list = nb(['list']);
+    const ls = nb(['ls']);
+    for (const r of [list, ls]) {
+      expect(r.code).toBe(0); // the guessed names succeed instead of erroring
+      expect(r.out).toContain('alpha');
+      expect(r.out).toContain('beta');
+    }
+    // aliases render the same listing as the canonical command
+    expect(list.out).toBe(roles.out);
+    expect(ls.out).toBe(roles.out);
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "kookr-toolkit",
-  "version": "0.16.68",
+  "version": "0.16.69",
   "description": "Curated skills and review subagents for AI-assisted development. 68 skills and 23 review subagents for TypeScript, async, error handling, DI, DDD, TDD, git hygiene, OSS contribution, reviewer distillation, iterative RFC review, and communication-quality paper review.",
   "author": {
     "name": "Jean Ibarz",

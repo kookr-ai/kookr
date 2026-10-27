@@ -28,7 +28,8 @@ try {
         `Bounded, voted lessons from your past tasks (highest-scored first). ` +
         `Use them. At task end, maintain them: vote +1 on the ones that helped, ` +
         `-1 on any that misled you, \`nb rm\` any that proved incorrect, add at most ` +
-        `one new ≤120-char lesson, and \`nb merge\` redundant ones if the notebook is full:\n\n` +
+        `one new ≤120-char lesson, and \`nb merge\` redundant ones if the notebook is full. ` +
+        `To see what other roles exist — to reuse one, or spawn a subagent under it — run \`nb roles\`:\n\n` +
         out +
         '\n',
     );
