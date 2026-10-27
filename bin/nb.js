@@ -70,7 +70,7 @@ function notebooksDir() {
 }
 
 /**
- * `nb roles` — list the roles that already have a notebook, richest first, so a
+ * `nb roles` (aliases: `list`, `ls`) — list the roles that already have a notebook, richest first, so a
  * caller can DISCOVER and REUSE an existing role instead of minting a
  * near-duplicate (role resolution is exact-string, so a typo silently creates a
  * new orphan notebook). Read-only: never commits. This is a kookr-local command
@@ -157,7 +157,10 @@ async function main() {
 
   // `nb roles` is handled here, before delegating to the package CLI (which has
   // no such command). Read-only discovery so new agents reuse existing roles.
-  if ((process.argv[2] ?? '').trim() === 'roles') {
+  // `list` and `ls` are accepted as aliases: telemetry showed agents reaching
+  // for role discovery under those guessed names and getting a hard error, so
+  // the guesses now succeed instead of failing.
+  if (['roles', 'list', 'ls'].includes((process.argv[2] ?? '').trim())) {
     process.exitCode = listRoles(process.env.NB_DIR);
     return;
   }
