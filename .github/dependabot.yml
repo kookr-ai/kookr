@@ -22,6 +22,25 @@ updates:
       prefix-development: "chore(deps-dev)"
       include: "scope"
 
+  # Qwen GPU ASR sidecar (stt/qwen/requirements*.txt). The GPU stack is
+  # hand-pinned (torch+cu130, accelerate, huggingface-hub, …), so routine
+  # version-update PRs are disabled (open-pull-requests-limit: 0); only
+  # security updates flow. transformers is ignored entirely: qwen-asr pins
+  # transformers==4.57.6 across every release, so any bump (e.g. the 5.x
+  # series) is un-installable until upstream ships a transformers-5-compatible
+  # qwen-asr. See closed PR #3364.
+  - package-ecosystem: "pip"
+    directory: "/stt/qwen"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 0
+    ignore:
+      - dependency-name: "transformers"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
