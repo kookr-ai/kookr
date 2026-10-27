@@ -374,7 +374,7 @@ For each candidate, apply these filters before reading the issue body:
 
 1. Skip issues in the Phase 0 `completed_issues` or `blocked_issues` ledger. Record the exclusion and evidence in `$CANDIDATES_FILE`.
 2. If `allowOtherAuthors=false`, skip issues whose `author.login` differs from `$CURRENT_USER`.
-3. Skip labels indicating blocked, duplicate, invalid, wontfix, not planned, in progress, assigned to a team, or awaiting external input.
+3. Skip labels indicating blocked, duplicate, invalid, wontfix, not planned, in progress, assigned to a team, awaiting external input, or needing human work (`needs-human` — e.g. media production, real-host verification, or UI/design an issue-implementer can't produce).
 4. Skip issues already tied to an open implementation PR. Use both branch names and PR body/title checks:
 
    ```bash
