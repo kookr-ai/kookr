@@ -69,6 +69,7 @@ ALLOWLIST=(
   "plugin/skills/codex-pr-threshold/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/github-issue-workflow/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/hook-driven-workflow-enforcement/SKILL.md # follow-up: NONE — load-bearing user-scope path"
+  "plugin/skills/notebook-role-reuse/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/oss-fork-manager/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/oss-pr-critic/SKILL.md # follow-up: NONE — load-bearing user-scope path"
   "plugin/skills/oss-pr-distill/SKILL.md # follow-up: NONE — load-bearing user-scope path"
