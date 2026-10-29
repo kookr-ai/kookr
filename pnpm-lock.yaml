@@ -43,8 +43,8 @@ importers:
         specifier: ^6.0.0
         version: 6.0.0
       agent-notebook:
-        specifier: 0.1.3
-        version: 0.1.3
+        specifier: 0.3.0
+        version: 0.3.0
       better-sqlite3:
         specifier: ^13.0.3
         version: 13.0.3
@@ -778,8 +778,8 @@ packages:
     resolution: {integrity: sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==}
     engines: {node: '>= 14'}
 
-  agent-notebook@0.1.3:
-    resolution: {integrity: sha512-paPgx7qYpic65wQCO4Am37VTpDEAKm4PeGv5er+yOfFAERRWDYm9QppHZ53QJyRbaFK/a2LARsd8qBRJK0EJpQ==}
+  agent-notebook@0.3.0:
+    resolution: {integrity: sha512-KKaK+XxSi53rxH4TSQwStjjnl+UM4Y9SQLRuB8UkrhdwAK8/Py5YyEjaojIpCR7Swq1/UhVNgLkWd0+o2E35jQ==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -1935,7 +1935,7 @@ snapshots:
 
   agent-base@7.1.4: {}
 
-  agent-notebook@0.1.3: {}
+  agent-notebook@0.3.0: {}
 
   asn1.js@5.4.1:
     dependencies:

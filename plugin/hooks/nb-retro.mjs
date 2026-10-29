@@ -1,27 +1,25 @@
 #!/usr/bin/env node
-// Stop hook for the Agent Notebook — guarantees the end-of-task retrospective.
+// Stop / SubagentStop hook for the Agent Notebook — nudge the end-of-task
+// retrospective once per session.
 //
-// When the session is running as a specialized role (env NB_ROLE set), block
-// the first Stop of the session (exit 2) and instruct the agent to run its
-// notebook retrospective: vote +1/-1 on the lessons it used, add at most one
-// new lesson, and consolidate/delete if the notebook is full. The stderr text
-// is fed back to the agent as the reason it must continue (block-then-instruct,
-// the same mechanism as the #1538 lesson gate).
+// Role-agnostic (follows the published agent-notebook recipe,
+// examples/hooks/claude-code/nb-retrospective.sh): it does not guess a shelf.
+// The agent already knows which shelves it opened this task (from the injected
+// index) and votes/adds to those. Block the first Stop of the session (exit 2)
+// with the retrospective checklist as the reason (the same block-then-instruct
+// pattern as the lesson gate, issue #1538), then allow subsequent stops.
 //
-// Fires at most ONCE per session (a per-session sentinel), so it nudges the
-// retrospective without ever trapping the agent in a stop loop.
+// Fires at most ONCE per session (a per-session sentinel). Because SubagentStop
+// fires with the PARENT session id, the first stop in a session — a subagent's
+// or the main agent's — claims the sentinel and later stops are let through:
+// one nudge per whole session, not one per subagent.
 //
-// Fail-open: NB_ROLE unset, unparseable event, or any fs error -> allow (exit 0).
+// Fail-open: unparseable event, already-nudged, or any fs error -> allow (exit 0).
 import { readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 
-const role = process.env.NB_ROLE;
-if (!role || !/^[A-Za-z0-9][A-Za-z0-9._@-]*$/.test(role)) process.exit(0);
-
-// Operator opt-out. The ritual now fires for every role session (including the
-// per-repo top-level `orchestrator@<owner>-<repo>` role set by the launcher), so
-// give operators a single switch to silence the retrospective nudge everywhere.
+// Operator opt-out: one switch silences the retrospective nudge everywhere.
 if (process.env.NB_RETRO_DISABLED && process.env.NB_RETRO_DISABLED !== '0') process.exit(0);
 
 let event = {};
@@ -30,6 +28,10 @@ try {
 } catch {
   /* fall through with empty event */
 }
+
+// Claude Code sets stop_hook_active once it is re-running after a block; never
+// block twice in a row, so the agent can always finish.
+if (event.stop_hook_active) process.exit(0);
 
 const sid = String(event.session_id ?? event.sessionId ?? 'nosession').replace(/[^A-Za-z0-9._-]/g, '_');
 const dir =
@@ -66,13 +68,16 @@ try {
 }
 
 process.stderr.write(
-  `Notebook retrospective (role: ${role}) before you finish — this keeps your memory honest.\n` +
-    `Run the full maintenance cycle on the lessons you actually used this task:\n` +
-    `  1. UPVOTE   nb vote ${role} "<id|query>" +1   each lesson that helped\n` +
-    `  2. DOWNVOTE nb vote ${role} "<id|query>" -1   each lesson that misled or cost you time\n` +
-    `  3. REMOVE   nb rm   ${role} "<id|query>"       any lesson you found to be incorrect or no longer true\n` +
-    `  4. ADD      nb add  ${role} "<one lesson, <=120 chars>"   only if you learned something reusable\n` +
-    `  5. MERGE    nb merge ${role} "<idA>" "<idB>" "<merged>"   if the notebook is full/redundant, consolidate\n` +
-    `Then stop again. (This fires once per session.)\n`,
+  `Before you finish, update the agent-notebook shelves you opened this task ` +
+    `(skip this entirely if you opened none). One pass:\n` +
+    `  1. nb vote <shelf> <id> +1   each lesson that helped ` +
+    `(<id> is the short token at the start of each \`nb show\` line)\n` +
+    `  2. nb vote <shelf> <id> -1   each lesson that misled or wasted your time\n` +
+    `  3. nb rm   <shelf> <id> --reason "<why>"   a lesson that is wrong or no longer true\n` +
+    `  4. nb merge <shelf> <idA> <idB> "<merged lesson>"   combine two overlapping lessons; ` +
+    `or nb split <shelf> <id> "<a>" "<b>"   (rare) cut one overloaded lesson into two\n` +
+    `  5. nb add  <shelf> "<lesson, <=200 chars>"   at most one new, non-obvious lesson — or none\n` +
+    `Don't add filler: a full shelf evicts its lowest-scored lesson to make room, so each add costs ` +
+    `something. When done, finish as you normally would — this reminder won't repeat this session.\n`,
 );
 process.exit(2);

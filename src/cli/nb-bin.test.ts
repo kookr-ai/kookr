@@ -172,60 +172,35 @@ describe('bin/nb.js — per-change git auto-commit (Objective C)', () => {
   });
 });
 
-describe('bin/nb.js — `nb roles` discovery (reuse, not reinvent)', () => {
-  test('reports an empty store without crashing', () => {
-    const r = nb(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain('no notebooks yet');
-  });
-
-  test('lists existing roles with lesson counts, richest first', () => {
+describe('bin/nb.js — discovery passes through to the package (no shim interception)', () => {
+  // The shim used to intercept `roles`/`list`/`ls` with its own name+count view.
+  // The package now owns `nb list` (a richer index with per-shelf descriptions)
+  // AND exposes `ls`/`roles` as aliases of it, so the shim intercepts nothing —
+  // every discovery command reaches the package instead of being shadowed.
+  test('`nb list` / `ls` / `roles` all render the package index', () => {
     nb(['add', 'code-review', 'one']);
     nb(['add', 'patch-author', 'a']);
-    nb(['add', 'patch-author', 'b']);
-    nb(['add', 'patch-author', 'c']);
-    const r = nb(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain('patch-author');
-    expect(r.out).toContain('code-review');
-    expect(r.out).toContain('3 lessons');
-    expect(r.out).toMatch(/\b1 lesson\b/); // singular — and must NOT render "1 lessons"
-    expect(r.out).not.toContain('1 lessons');
-    // richest first: patch-author (3) is listed before code-review (1)
-    expect(r.out.indexOf('patch-author')).toBeLessThan(r.out.indexOf('code-review'));
-  });
-
-  test('excludes non-.md files (usage log, stray files) from the listing', () => {
-    nb(['add', 'real-role', 'x']); // writes real-role.md (and a .nb-usage.log) into NB_DIR
-    writeFileSync(join(dir, 'notes.txt'), 'not a notebook');
-    const r = nb(['roles']);
-    expect(r.code).toBe(0);
-    expect(r.out).toContain('real-role');
-    expect(r.out).toMatch(/roles — 1 in/); // only the .md file counts — not notes.txt / .nb-usage.log
-    expect(r.out).not.toContain('notes');
-  });
-
-  test('is read-only — listing roles creates no git commit', () => {
-    initRepo();
-    nb(['add', 'patcher', 'x']);
-    const before = Number(git(['rev-list', '--count', 'HEAD']));
-    nb(['roles']);
-    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before); // no commit from a read
-  });
-
-  test('accepts `list` and `ls` as aliases for `roles` (agents guess these)', () => {
-    nb(['add', 'alpha', 'l1']);
-    nb(['add', 'beta', 'l1']);
-    const roles = nb(['roles']);
     const list = nb(['list']);
     const ls = nb(['ls']);
-    for (const r of [list, ls]) {
-      expect(r.code).toBe(0); // the guessed names succeed instead of erroring
-      expect(r.out).toContain('alpha');
-      expect(r.out).toContain('beta');
+    const roles = nb(['roles']);
+    for (const r of [list, ls, roles]) {
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('code-review');
+      expect(r.out).toContain('patch-author');
+      // the package index header — proves the command reached the package, not a
+      // kookr-local name+count shim view (which rendered "roles —").
+      expect(r.out).toContain('notebooks —');
     }
-    // aliases render the same listing as the canonical command
-    expect(list.out).toBe(roles.out);
-    expect(ls.out).toBe(roles.out);
+    // `ls` and `roles` are the package's own aliases of `list` → identical output.
+    expect(ls.out).toBe(list.out);
+    expect(roles.out).toBe(list.out);
+  });
+
+  test('discovery is read-only — `nb list` creates no git commit', () => {
+    initRepo();
+    nb(['add', 'patcher', 'x']); // mutating → one commit
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    nb(['list']);
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before); // list is not mutating
   });
 });

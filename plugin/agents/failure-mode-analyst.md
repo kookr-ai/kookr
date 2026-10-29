@@ -52,7 +52,7 @@ Concise, precise language. No softened criticism. Unclear = unsafe due to ambigu
 ## Notebook Protocol (your memory)
 Your notebook role is **`failure-mode-analyst`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
 
-- **Start:** `nb show failure-mode-analyst` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **Start:** `nb show failure-mode-analyst` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
   - `nb vote failure-mode-analyst "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
   - `nb rm failure-mode-analyst "<id>"` on any lesson you found to be incorrect or no longer true.

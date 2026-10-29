@@ -18,7 +18,7 @@ A short report: the build/test/lint commands that actually work (verified, not g
 ## Notebook Protocol (your memory)
 Your notebook role is **`repo-cartographer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `repo-cartographer@<owner>-<repo>`.
 
-- **Start:** `nb show repo-cartographer@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **Start:** `nb show repo-cartographer@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
   - `nb vote repo-cartographer@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
   - `nb rm repo-cartographer@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.

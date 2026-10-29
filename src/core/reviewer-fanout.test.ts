@@ -200,14 +200,14 @@ describe('buildSpecialistLaunch', () => {
       notebookRole: 'code-review@owner-repo',
     });
     const launch = buildSpecialistLaunch(scoped, scoped.specialists[0], loader({}));
-    expect(launch.prompt).toContain('Notebook role: code-review@owner-repo');
+    expect(launch.prompt).toContain('Notebook shelf: code-review@owner-repo');
     expect(launch.prompt).toContain('nb show code-review@owner-repo');
     expect(launch.prompt).toContain('(correctness)'); // lens tag
   });
 
   test('falls back to the global code-review role when the workflow has none', () => {
     const launch = buildSpecialistLaunch(wf, wf.specialists[0], loader({}));
-    expect(launch.prompt).toContain(`Notebook role: ${REVIEWER_NOTEBOOK_ROLE_BASE}`);
+    expect(launch.prompt).toContain(`Notebook shelf: ${REVIEWER_NOTEBOOK_ROLE_BASE}`);
     expect(launch.prompt).not.toContain('code-review@');
   });
 });

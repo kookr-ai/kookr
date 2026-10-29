@@ -169,6 +169,7 @@ not user configuration knobs.
 | `KOOKR_API_BASE_URL` | `http://127.0.0.1:<server port>` when known | HTTP URL | Lets agents and CLIs call back to the active Kookr instance. |
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
 | `KOOKR_AGENT_ID` | Injected at launch from the terminal session name | Session id string | Stamps the claiming session for `kookr issue claim` (RFC rfc-issue-ownership-lock), and identifies the reporter for `kookr-self-report`, which refuses to run without it (exit 2). |
+| `KOOKR_REPO_SLUG` | Injected per task when the repo resolves | `<owner>-<repo>` slug string | The current repo's notebook slug (e.g. `kookr-ai-kookr`; `local-<dir>` for a non-GitHub checkout), derived from the git remote. Used to address repo-scoped Agent Notebook shelves such as the reviewer fan-out's `code-review@<owner>-<repo>`. Fail-open: unset when no safe slug forms, and callers fall back to the unscoped shelf. |
 
 ## CLI Tools
 
