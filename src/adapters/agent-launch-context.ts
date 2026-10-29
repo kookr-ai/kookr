@@ -220,9 +220,10 @@ interface BuildAgentLaunchContextOptions {
    */
   resolveGitCommonDirImpl?: (cwd: string) => Promise<string | null>;
   /**
-   * Test seam for the project-id probe behind the per-repo `NB_ROLE` (the Agent
-   * Notebook ritual). Defaults to {@link getProjectId}; inject to assert the
-   * derived role without touching a real git remote.
+   * Test seam for the project-id probe behind the per-repo `KOOKR_REPO_SLUG`
+   * (used to address repo-scoped notebooks such as the reviewer fan-out's
+   * `code-review@<slug>`). Defaults to {@link getProjectId}; inject to assert the
+   * derived slug without touching a real git remote.
    */
   resolveProjectIdImpl?: (cwd: string) => Promise<string>;
 }
@@ -281,31 +282,29 @@ export async function resolveGitCommonDirBounded(
   }
 }
 
-/**
- * The top-level notebook role every kookr-launched session runs under. The
- * session's own lessons (how to orchestrate work in THIS repo) accrue here,
- * scoped per repo so one repo's lessons never leak into another's. Specialized
- * in-process sub-agents (patch-author, etc.) keep their own role notebooks.
- */
-export const NB_TOP_LEVEL_ROLE = 'orchestrator';
-
-/** Flatten one path segment to the notebook role charset (`[a-z0-9._-]`). */
+/** Flatten one path segment to the notebook-name charset (`[a-z0-9._-]`). */
 function sanitizeRoleSegment(raw: string): string {
   return raw
     .toLowerCase()
     .replace(/[^a-z0-9._-]+/g, '-') // illegal char → hyphen
     .replace(/\.{2,}/g, '.') // collapse `..` — the package rejects it as path-traversal
-    .replace(/^[^a-z0-9]+/, '') // role must START with alnum (hook + core regex)
+    .replace(/^[^a-z0-9]+/, '') // name must START with alnum (nb core regex)
     .replace(/[^a-z0-9]+$/, ''); // ...and END with alnum (core SAFE_ROLE)
 }
 
 /**
- * Derive the per-repo top-level notebook role from a project id.
- * `github.com/owner/repo` → `orchestrator@owner-repo`; `local/<dir>` →
- * `orchestrator@local-<dir>`. Returns null when no safe slug can be formed, so
- * the caller simply omits `NB_ROLE` (the notebook hooks then no-op — fail-open).
+ * Derive the per-repo notebook slug from a project id.
+ * `github.com/owner/repo` → `owner-repo`; `local/<dir>` → `local-<dir>`.
+ * Returns null when no safe slug can be formed, so the caller simply omits
+ * `KOOKR_REPO_SLUG`.
+ *
+ * The slug is a bare `<owner>-<repo>` fragment, NOT a notebook role: the agent
+ * notebook integration is role-agnostic (the SessionStart hook injects the
+ * whole `nb list` index and the agent opens the shelves that fit). The slug is
+ * exposed only so repo-scoped shelves — notably the reviewer fan-out's
+ * `code-review@<slug>` — can be addressed without the agent parsing an env var.
  */
-export function deriveNotebookRole(projectId: string): string | null {
+export function deriveRepoSlug(projectId: string): string | null {
   const ownerRepo = projectIdToOwnerRepo(projectId);
   let slug: string;
   if (ownerRepo) slug = `${ownerRepo.owner}-${ownerRepo.repo}`;
@@ -313,7 +312,7 @@ export function deriveNotebookRole(projectId: string): string | null {
   else slug = projectId;
   slug = sanitizeRoleSegment(slug);
   if (!slug) return null;
-  return `${NB_TOP_LEVEL_ROLE}@${slug}`;
+  return slug;
 }
 
 export async function buildAgentLaunchContext(
@@ -406,19 +405,21 @@ export async function buildAgentLaunchContext(
     );
   }
 
-  // Per-repo Agent Notebook role for the top-level session (issue: notebook
-  // ritual coverage). Setting NB_ROLE is what makes the SessionStart/Stop
-  // notebook hooks fire: the session's per-repo lessons are injected at start,
-  // and a maintenance retrospective is nudged once at end. Fail-open — a probe
-  // failure or an unresolvable repo just omits NB_ROLE, and the hooks no-op.
+  // Per-repo notebook slug for the session. The Agent Notebook integration is
+  // role-agnostic: the SessionStart hook injects the whole `nb list` index and
+  // the agent opens the shelves that fit — nothing here has to guess a per-repo
+  // role. We still expose the bare `<owner>-<repo>` slug so repo-scoped shelves
+  // (notably the reviewer fan-out's `code-review@<slug>`) can be addressed
+  // without the agent parsing it out of some other variable. Fail-open — a probe
+  // failure or an unresolvable repo just omits KOOKR_REPO_SLUG.
   // (getProjectId already swallows git errors and falls back to `local/<dir>`.)
   try {
     const resolveProjectId = opts.resolveProjectIdImpl ?? getProjectId;
-    const nbRole = deriveNotebookRole(await resolveProjectId(opts.cwd));
-    if (nbRole) env.NB_ROLE = nbRole;
+    const repoSlug = deriveRepoSlug(await resolveProjectId(opts.cwd));
+    if (repoSlug) env.KOOKR_REPO_SLUG = repoSlug;
   } catch (err) {
     console.warn(
-      `[launch-context] notebook-role probe failed for ${opts.cwd} (proceeding without NB_ROLE): ` +
+      `[launch-context] repo-slug probe failed for ${opts.cwd} (proceeding without KOOKR_REPO_SLUG): ` +
       `${err instanceof Error ? err.message : String(err)}`,
     );
   }

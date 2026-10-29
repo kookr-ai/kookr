@@ -20,12 +20,13 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 // Commands that write the notebook — only these are worth a git commit.
-const MUTATING = new Set(['add', 'vote', 'merge', 'rm']);
+// Kept in sync with the package's mutating verbs (add/vote/merge/rm/split/describe).
+const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'describe']);
 
 // Inherited GIT_* vars pin git to a specific repo/worktree/index and would
 // OVERRIDE our `-C <NB_DIR>`. When `nb` runs from inside a git hook or any
@@ -67,47 +68,6 @@ function resolveNbCliEntry() {
 function notebooksDir() {
   const fromEnv = process.env.NB_DIR;
   return fromEnv && fromEnv.trim() !== '' ? fromEnv : join(homedir(), '.kookr', 'notebooks');
-}
-
-/**
- * `nb roles` (aliases: `list`, `ls`) — list the roles that already have a notebook, richest first, so a
- * caller can DISCOVER and REUSE an existing role instead of minting a
- * near-duplicate (role resolution is exact-string, so a typo silently creates a
- * new orphan notebook). Read-only: never commits. This is a kookr-local command
- * because the dogfooded `agent-notebook` package CLI has no listing command; if
- * it gains one upstream, this intercept can be retired.
- */
-function listRoles(dir) {
-  let files;
-  try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.md'));
-  } catch {
-    files = [];
-  }
-  if (files.length === 0) {
-    process.stdout.write(`(no notebooks yet in ${dir})\n`);
-    return 0;
-  }
-  const rows = files.map((f) => {
-    const role = f.slice(0, -'.md'.length);
-    let count = 0;
-    try {
-      count = readFileSync(join(dir, f), 'utf-8')
-        .split('\n')
-        .filter((l) => l.trim() !== '').length;
-    } catch {
-      /* unreadable file → report 0 rather than crash the whole listing */
-    }
-    return { role, count };
-  });
-  // Richest first (most useful to reuse); ties broken by name for determinism.
-  rows.sort((a, b) => b.count - a.count || a.role.localeCompare(b.role));
-  const width = rows.reduce((w, r) => Math.max(w, r.role.length), 0);
-  process.stdout.write(`agent-notebook roles — ${rows.length} in ${dir}\n`);
-  for (const r of rows) {
-    process.stdout.write(`  ${r.role.padEnd(width)}  ${r.count} lesson${r.count === 1 ? '' : 's'}\n`);
-  }
-  return 0;
 }
 
 /**
@@ -155,15 +115,10 @@ async function main() {
     process.env.NB_DIR = notebooksDir();
   }
 
-  // `nb roles` is handled here, before delegating to the package CLI (which has
-  // no such command). Read-only discovery so new agents reuse existing roles.
-  // `list` and `ls` are accepted as aliases: telemetry showed agents reaching
-  // for role discovery under those guessed names and getting a hard error, so
-  // the guesses now succeed instead of failing.
-  if (['roles', 'list', 'ls'].includes((process.argv[2] ?? '').trim())) {
-    process.exitCode = listRoles(process.env.NB_DIR);
-    return;
-  }
+  // No command interception: the shim is a thin wrapper that only pins NB_DIR
+  // and git-backs mutating writes. Discovery (`nb list` and its `ls`/`roles`
+  // aliases, with per-shelf descriptions) is now the package's own, so every
+  // command passes straight through to it — nothing kookr-local shadows it.
 
   let entry;
   try {

@@ -164,7 +164,7 @@ Has FR-* requirement reference?
 ## Notebook Protocol (your memory)
 Your notebook role is **`test-fixer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `test-fixer@<owner>-<repo>`.
 
-- **Start:** `nb show test-fixer@<owner>-<repo>` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **Start:** `nb show test-fixer@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
   - `nb vote test-fixer@<owner>-<repo> "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
   - `nb rm test-fixer@<owner>-<repo> "<id>"` on any lesson you found to be incorrect or no longer true.

@@ -57,7 +57,7 @@ Prefer concrete rollout criticism over abstract architecture critique. Good targ
 ## Notebook Protocol (your memory)
 Your notebook role is **`delivery-pragmatist`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
 
-- **Start:** `nb show delivery-pragmatist` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **Start:** `nb show delivery-pragmatist` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
   - `nb vote delivery-pragmatist "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
   - `nb rm delivery-pragmatist "<id>"` on any lesson you found to be incorrect or no longer true.

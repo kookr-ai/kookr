@@ -74,13 +74,17 @@ export const REVIEWER_SPECIALIST_ROLES: readonly ReviewerSpecialistRole[] = [
 export const REVIEWER_NOTEBOOK_ROLE_BASE = 'code-review';
 
 /**
- * Resolve the fan-out's notebook role from a repo slug (`<owner>-<repo>`).
+ * Resolve the fan-out's code-review shelf name from a repo slug (`<owner>-<repo>`).
  * Returns `code-review@<slug>` for a usable slug, else the global
- * `code-review`. The slug is flattened to the notebook role charset
+ * `code-review`. The slug is flattened to the notebook-name charset
  * (`[a-z0-9._-]`, no leading/trailing punctuation, no `..`) so an unexpected
- * value can never produce a role the `nb` CLI rejects. Callers typically pass
- * the slug from their own `orchestrator@<slug>` `NB_ROLE`, which is already
- * safe; the sanitization is belt-and-suspenders and keeps this pure.
+ * value can never produce a name the `nb` CLI rejects; the sanitization is
+ * belt-and-suspenders and keeps this pure.
+ *
+ * Callers pass the repo slug from `KOOKR_REPO_SLUG` (the bare `<owner>-<repo>`
+ * the launcher exposes). There is no `NB_ROLE`: the notebook integration is
+ * role-agnostic, and this repo-scoped `code-review@<slug>` shelf is addressed
+ * explicitly rather than inferred from a per-session role.
  */
 export function reviewerNotebookRole(slug?: string | null): string {
   const safe = (slug ?? '')

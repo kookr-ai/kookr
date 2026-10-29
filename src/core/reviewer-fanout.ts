@@ -146,11 +146,11 @@ export function buildSpecialistLaunch(
     `Repo: ${workflow.diffScope.repoDir}`,
     `Diff scope: ${workflow.diffScope.baseRef}..${workflow.diffScope.headRef}` +
       ` (${workflow.diffScope.changedFiles.length} changed file(s))`,
-    // Shared code-review notebook: load it before reviewing, maintain it after.
+    // Shared code-review shelf: load it before reviewing, maintain it after.
     // This is the only path by which a fan-out specialist (a general-purpose
-    // subagent with no NB_ROLE and no SessionStart injection) learns its role.
-    `Notebook role: ${notebookRole} — run \`nb show ${notebookRole}\` first and apply its defect classes; ` +
-      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ≤120-char ` +
+    // subagent that gets no SessionStart index injection) learns which shelf to open.
+    `Notebook shelf: ${notebookRole} — run \`nb show ${notebookRole}\` first and apply its defect classes; ` +
+      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ≤200-char ` +
       `defect class, tagged with your lens (${run.role}).`,
   ].join('\n');
 

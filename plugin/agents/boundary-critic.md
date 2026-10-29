@@ -58,7 +58,7 @@ Prefer structural criticism over stylistic opinions. If a boundary is ambiguous,
 ## Notebook Protocol (your memory)
 Your notebook role is **`boundary-critic`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
 
-- **Start:** `nb show boundary-critic` — your past lessons load automatically via the SessionStart hook when `NB_ROLE` is set; otherwise run it yourself.
+- **Start:** `nb show boundary-critic` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
   - `nb vote boundary-critic "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
   - `nb rm boundary-critic "<id>"` on any lesson you found to be incorrect or no longer true.

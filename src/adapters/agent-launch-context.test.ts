@@ -12,7 +12,7 @@ import {
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import {
   buildAgentLaunchContext,
-  deriveNotebookRole,
+  deriveRepoSlug,
   resolveGitCommonDirBounded,
   deliverInitialPromptToSession,
   resolveBracketedPasteSubmit,
@@ -92,7 +92,7 @@ describe('agent-launch-context', () => {
       // (production resolves these from the real bin/ and process.env.PATH).
       agentLauncherBinDir: '/opt/kookr/bin',
       basePath: '/usr/bin:/bin',
-      // Pin the project id so the derived per-repo NB_ROLE is deterministic
+      // Pin the project id so the derived per-repo slug is deterministic
       // (production runs `git remote get-url origin` on the real cwd).
       resolveProjectIdImpl: async () => 'github.com/acme/widgets',
     });
@@ -107,9 +107,10 @@ describe('agent-launch-context', () => {
       KOOKR_PORT: '4801',
       KOOKR_API_BASE_URL: 'http://127.0.0.1:4801',
       KOOKR_GIT_COMMON_DIR: join(repoDir, '.git'),
-      // Per-repo top-level Agent Notebook role — makes the notebook hooks fire
-      // (notebook ritual coverage). Scoped to the repo via the project id.
-      NB_ROLE: 'orchestrator@acme-widgets',
+      // Bare per-repo notebook slug — addresses repo-scoped shelves such as the
+      // reviewer fan-out's `code-review@<slug>`. The notebook hooks themselves
+      // are role-agnostic (they inject the `nb list` index, not this slug).
+      KOOKR_REPO_SLUG: 'acme-widgets',
       // Launcher dir prepended so a bare `kookr` resolves for agents (issue #786).
       PATH: '/opt/kookr/bin:/usr/bin:/bin',
     });
@@ -380,44 +381,44 @@ describe('agent-launch-context', () => {
   }
 });
 
-describe('deriveNotebookRole', () => {
-  test('github project id → orchestrator@owner-repo', () => {
-    expect(deriveNotebookRole('github.com/kookr-ai/kookr')).toBe('orchestrator@kookr-ai-kookr');
+describe('deriveRepoSlug', () => {
+  test('github project id → owner-repo', () => {
+    expect(deriveRepoSlug('github.com/kookr-ai/kookr')).toBe('kookr-ai-kookr');
   });
 
-  test('local fallback id → orchestrator@local-<dir>', () => {
-    expect(deriveNotebookRole('local/my-repo')).toBe('orchestrator@local-my-repo');
+  test('local fallback id → local-<dir>', () => {
+    expect(deriveRepoSlug('local/my-repo')).toBe('local-my-repo');
   });
 
-  test('sanitizes illegal characters and trims to the role charset', () => {
-    // A local dir with spaces/slashes flattens to the hook+core role charset.
-    expect(deriveNotebookRole('local/My Weird Dir!')).toBe('orchestrator@local-my-weird-dir');
+  test('sanitizes illegal characters and trims to the notebook-name charset', () => {
+    // A local dir with spaces/slashes flattens to the nb core name charset.
+    expect(deriveRepoSlug('local/My Weird Dir!')).toBe('local-my-weird-dir');
   });
 
   test('collapses `..` so the slug never trips the package path-traversal guard', () => {
-    expect(deriveNotebookRole('github.com/owner/re..po')).toBe('orchestrator@owner-re.po');
+    expect(deriveRepoSlug('github.com/owner/re..po')).toBe('owner-re.po');
   });
 
-  test('returns null when no safe slug can be formed (hooks then no-op)', () => {
+  test('returns null when no safe slug can be formed (slug then omitted)', () => {
     // Defensive: a pathological id with no alphanumerics sanitizes to empty.
     // (In practice getProjectId always yields a `local/`- or `github.com/`-
     // prefixed id, so the `local` prefix survives — this is the guard path.)
-    expect(deriveNotebookRole('!!!')).toBeNull();
+    expect(deriveRepoSlug('!!!')).toBeNull();
   });
 });
 
-describe('buildAgentLaunchContext — NB_ROLE (notebook ritual)', () => {
+describe('buildAgentLaunchContext — KOOKR_REPO_SLUG (repo-scoped shelves)', () => {
   const tempDirs: string[] = [];
   afterEach(() => {
     for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
   function makeTempDir(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-role-'));
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-repo-slug-'));
     tempDirs.push(dir);
     return dir;
   }
 
-  test('sets a per-repo NB_ROLE from the resolved project id', async () => {
+  test('sets a per-repo KOOKR_REPO_SLUG from the resolved project id', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask({ prompt: 'work', cwd: '/repo' });
     const context = await buildAgentLaunchContext({
@@ -427,10 +428,10 @@ describe('buildAgentLaunchContext — NB_ROLE (notebook ritual)', () => {
       agentLauncherBinDir: null,
       resolveProjectIdImpl: async () => 'github.com/kookr-ai/kookr',
     });
-    expect(context.env.NB_ROLE).toBe('orchestrator@kookr-ai-kookr');
+    expect(context.env.KOOKR_REPO_SLUG).toBe('kookr-ai-kookr');
   });
 
-  test('omits NB_ROLE (fail-open) when the probe throws', async () => {
+  test('omits KOOKR_REPO_SLUG (fail-open) when the probe throws', async () => {
     const taskStore = new TaskStore();
     const task = taskStore.createTask({ prompt: 'work', cwd: '/repo' });
     const context = await buildAgentLaunchContext({
@@ -442,7 +443,7 @@ describe('buildAgentLaunchContext — NB_ROLE (notebook ritual)', () => {
         throw new Error('probe boom');
       },
     });
-    expect(context.env.NB_ROLE).toBeUndefined();
+    expect(context.env.KOOKR_REPO_SLUG).toBeUndefined();
   });
 });
 
