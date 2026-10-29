@@ -31,21 +31,20 @@ try {
   process.exit(0);
 }
 
-// `nb list` prints a "(no notebooks…)" sentinel when the store is empty; match
-// its prefix so a real shelf whose text happens to contain those words still
-// injects. Nothing worth surfacing → stay silent.
-if (!index || index.startsWith('(no notebooks')) process.exit(0);
+// Empty store → `nb list` leaves stdout empty (its "no notebooks yet" notice
+// goes to stderr, which we ignore). Nothing to surface → stay silent.
+if (!index) process.exit(0);
 
 process.stdout.write(
   `## Your agent-notebook index\n` +
-    `These are your available notebooks (each a "shelf" — a bounded, voted set of ` +
-    `one-line lessons for one kind of task), written by you and other agents across ` +
-    `past tasks. Open the shelf/shelves whose description fits this task with ` +
-    `\`nb show <shelf>\` — and open more the moment the task reveals a need you didn't ` +
-    `see coming (a snag another shelf has already learned). Use their lessons.\n` +
-    `At the end, run the retrospective on the shelves you used: \`nb vote <shelf> <id> +1\` ` +
-    `on what helped and \`-1\` on what misled, prune/merge/split to keep each shelf sharp, ` +
-    `and \`nb add <shelf> "<lesson>"\` at most one new durable lesson (or none).\n\n` +
+    `Below is an index of your notebooks. Each one is a "shelf": a short, bounded list of ` +
+    `one-line lessons for one kind of task, written by you and other agents on past tasks. ` +
+    `Each line shows the shelf name, how many lessons it holds, and when to open it.\n` +
+    `Open the shelves that fit this task with \`nb show <shelf>\` (the shelf name is the first ` +
+    `column) and apply what they say. If the work turns up a new kind of problem, check the ` +
+    `index again and open another shelf.\n` +
+    `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
+    `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none).\n\n` +
     index +
     '\n',
 );

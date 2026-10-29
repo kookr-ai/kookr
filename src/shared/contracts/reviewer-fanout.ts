@@ -68,8 +68,8 @@ export const REVIEWER_SPECIALIST_ROLES: readonly ReviewerSpecialistRole[] = [
  *
  * Repo-specific defect classes scope by repo as `code-review@<owner>-<repo>`;
  * portable heuristics (a11y, cross-platform) use the bare base. Both are
- * distinct files under one base name — the same shape the notebook system
- * already uses for `orchestrator@<slug>`.
+ * distinct files under one base name — the `<name>@<slug>` namespacing the
+ * notebook store uses to scope any shelf to a repo.
  */
 export const REVIEWER_NOTEBOOK_ROLE_BASE = 'code-review';
 

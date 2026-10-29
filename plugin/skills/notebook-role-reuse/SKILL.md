@@ -18,12 +18,14 @@ A shelf is a bounded, voted store of one-line lessons kept in one file,
 `~/.kookr/notebooks/<shelf>.md` (git-backed; every write is auto-committed). The
 `nb` CLI calls a shelf a *role* — its argument is `<role>` — so the two words mean
 the same thing here; this skill says "shelf" for the grouping and uses the
-literal CLI commands as-is. **Name resolution is exact-string** — there is no
-fuzzy matching and no fallback. So "reuse a shelf" means exactly one thing: spawn
-the agent with the **exact existing shelf name** in its prompt, plus the show/add
-ritual. Pass the real string and the new agent inherits every past lesson and
-adds to the same file; pass a near-miss (`code-reviewer` for `code-review`) and
-you silently create a new, empty orphan notebook.
+literal CLI commands as-is.
+
+**Shelf names are exact strings** — there is no fuzzy matching and no fallback.
+So "reuse a shelf" means exactly one thing: spawn the agent with the **exact
+existing shelf name** in its prompt, plus the show/add ritual. Pass the real
+string and the new agent inherits every past lesson and adds to the same file;
+pass a near-miss (`code-reviewer` for `code-review`) and you silently create a
+new, empty orphan notebook.
 
 A subagent gets **no** automatic notebook injection — no SessionStart index hook
 fires for it. The shelf reaches it **only** through the prompt you write. That is
@@ -81,9 +83,9 @@ index first so you reuse instead of duplicating.
 
 **Scope rule.** Resolution is exact, and `code-review` and `code-review@owner-repo`
 are different files. Pick one per spawn:
-- repo-specific lessons → `<shelf>@<owner>-<repo>` (derive the slug from the
-  session's `KOOKR_REPO_SLUG`, which is the bare `<owner>-<repo>`)
-- portable, cross-repo lessons → the bare `<shelf>`
+- repo-specific lessons → `<shelf>@<owner>-<repo>` (use `KOOKR_REPO_SLUG` as the
+  `@` suffix — it is already `<owner>-<repo>`)
+- portable, cross-repo lessons → the unscoped `<shelf>`
 
 ## 2. Put the ritual in the spawn prompt
 
@@ -95,7 +97,7 @@ You work with Agent Notebook shelf **<SHELF>**.
 1. Start: run `nb show <SHELF>` and apply its lessons (it may be empty — fine).
 2. <the actual task>
 3. Before you return: `nb vote <SHELF> "<id>" +1` the lessons you used, and
-   `nb add <SHELF> "<one reusable lesson, ≤200 chars>"` if you confirmed something
+   `nb add <SHELF> "<one reusable lesson, ideally ≤120 chars, hard cap 200>"` if you confirmed something
    a future agent on this shelf would want. Do this BEFORE composing your final
    message — the agent that spawned you only sees your last message, so the
    notebook write must already be done when you return.

@@ -6,8 +6,8 @@
 // examples/hooks/claude-code/nb-retrospective.sh): it does not guess a shelf.
 // The agent already knows which shelves it opened this task (from the injected
 // index) and votes/adds to those. Block the first Stop of the session (exit 2)
-// with the retrospective checklist as the reason (block-then-instruct, the same
-// mechanism as the #1538 lesson gate), then allow subsequent stops.
+// with the retrospective checklist as the reason (the same block-then-instruct
+// pattern as the lesson gate, issue #1538), then allow subsequent stops.
 //
 // Fires at most ONCE per session (a per-session sentinel). Because SubagentStop
 // fires with the PARENT session id, the first stop in a session — a subagent's
@@ -68,15 +68,16 @@ try {
 }
 
 process.stderr.write(
-  `Agent-notebook retrospective before you finish — this keeps your memory honest.\n` +
-    `Run the maintenance cycle on the shelves you actually opened this task (one pass, then stop):\n` +
-    `  1. UPVOTE   nb vote <shelf> "<id|query>" +1   each lesson that helped\n` +
-    `  2. DOWNVOTE nb vote <shelf> "<id|query>" -1   each lesson that misled or cost you time\n` +
-    `  3. REMOVE   nb rm   <shelf> "<id|query>" --reason obsolete   anything incorrect / no longer true\n` +
-    `  4. MERGE/SPLIT nb merge|split <shelf> …   only if a shelf is cluttered or redundant\n` +
-    `  5. ADD      nb add  <shelf> "<=200-char lesson"   at MOST one new, non-obvious lesson (or none)\n` +
-    `Do not pad to hit a quota — "nothing new worth storing" is a valid outcome. A full shelf now always ` +
-    `admits a newcomer (it evicts its lowest-scored line), so never skip a worthwhile lesson. Then stop again. ` +
-    `(This fires once per session.)\n`,
+  `Before you finish, update the agent-notebook shelves you opened this task ` +
+    `(skip this entirely if you opened none). One pass:\n` +
+    `  1. nb vote <shelf> <id> +1   each lesson that helped ` +
+    `(<id> is the short token at the start of each \`nb show\` line)\n` +
+    `  2. nb vote <shelf> <id> -1   each lesson that misled or wasted your time\n` +
+    `  3. nb rm   <shelf> <id> --reason "<why>"   a lesson that is wrong or no longer true\n` +
+    `  4. nb merge <shelf> <idA> <idB> "<merged lesson>"   combine two overlapping lessons; ` +
+    `or nb split <shelf> <id> "<a>" "<b>"   (rare) cut one overloaded lesson into two\n` +
+    `  5. nb add  <shelf> "<lesson, <=200 chars>"   at most one new, non-obvious lesson — or none\n` +
+    `Don't add filler: a full shelf evicts its lowest-scored lesson to make room, so each add costs ` +
+    `something. When done, finish as you normally would — this reminder won't repeat this session.\n`,
 );
 process.exit(2);

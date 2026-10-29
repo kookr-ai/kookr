@@ -11,8 +11,9 @@ a single lesson of at most **200 characters**, each with a vote **score**. Evict
 is recency-aware and a full shelf **always admits a newcomer**: when full, `nb add`
 evicts the **lowest-scored** line (ties: stalest), then docks the stalest
 survivor one point. There is no "rejected, notebook full" dead end. A shelf is tiny
-by construction, so it is read **whole** — no retrieval, no embeddings. The cap
-and the vote are the entire mechanism; `nb list` is the index of shelves.
+by construction, so it is read **whole** — no retrieval, no embeddings. The cap,
+the vote, and that eviction rule are the entire mechanism; `nb list` is the index
+of shelves.
 
 ## Access the tool
 
@@ -35,7 +36,7 @@ nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
 nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb rm     <role> <id|query>             delete an entry
 nb describe <role> "<desc>"             set the shelf's one-line description (shown by nb list)
-nb split  <role> ...                    split a shelf
+nb split  <role> <id> "<a>" "<b>"       split one overloaded entry into two (reverse of merge)
 nb path                                 print NB_DIR
 nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
 nb --help                               this help
@@ -57,7 +58,7 @@ nb --version                            print the tool name
 
 ### Where notebooks live
 
-`$NB_DIR` or `~/.kookr/notebooks/<role>.md`. Plain text, one `+<score>\t<lesson>`
+`$NB_DIR` or `~/.kookr/notebooks/<shelf>.md`. Plain text, one `+<score>\t<lesson>`
 per line — human-readable, `git`-diffable, hand-editable. To fix a bad lesson,
 downvote it, `nb rm` it, or just edit the file.
 
@@ -90,7 +91,7 @@ gh repo create <you>/agent-notebooks --private --source=. --remote=origin --push
 ```
 
 The `.gitignore` keeps the churny usage ring, backup log, and retro sentinels out
-of history — only the `<role>.md` lesson files are versioned.
+of history — only the `<shelf>.md` lesson files are versioned.
 
 > **Only point `NB_DIR` at a dedicated notebooks directory.** The per-change
 > `git add -A` commits everything in `NB_DIR`; aiming it at a real source repo
@@ -103,7 +104,7 @@ of history — only the `<role>.md` lesson files are versioned.
 
 ```
 nb stats                 # whole fleet, last 7 days
-nb stats patch-author    # one role
+nb stats patch-author    # one shelf
 nb stats --since 24h     # a tighter window
 ```
 
@@ -112,34 +113,38 @@ three **anomaly flags**:
 
 | Flag | Meaning | Likely cause |
 |---|---|---|
-| `loop` | a role called one command many times in a tight window | the agent is stuck / looping |
+| `loop` | an agent called one command many times in a tight window | the agent is stuck / looping |
 | `went-silent` | a command used historically, 0 calls in the window | the command broke or was abandoned |
 | `high-error-rate` | a command erroring on a large fraction of calls | broken, or not behaving as the agent expects |
 
-Use these to decide whether the tool needs a fix or a role needs attention.
+Use these to decide whether the tool needs a fix or an agent needs attention.
 Monitoring is itself bounded: every `nb` call appends **one line** to
 `~/.kookr/notebooks/.nb-usage.log`, an oldest-dropped ring — there is no metrics
 server or dashboard to run.
 
 ## The hooks (how the ritual is guaranteed)
 
-The integration is **role-agnostic**: there is no longer an `NB_ROLE`, and kookr
-does not guess a shelf for a session. Two plugin hooks run for every session:
+The integration is **role-agnostic**: kookr does not pick a shelf for a session.
+Two plugin hooks (registered in `plugin/hooks/hooks.json`, each a `.sh` wrapper
+that runs its `.mjs`) run for every session:
 
-- **SessionStart → `nb-inject.sh`**: injects the `nb list` index (every shelf and
-  its description) into context. It does not inject a single `nb show <role>`;
-  the agent reads the index and opens the shelves that fit its task.
-- **Stop / SubagentStop → `nb-retro.sh`**: registered on both events and fires
-  for every session. It blocks the first stop once per session (per-session
-  sentinel) and instructs the **full maintenance cycle** — upvote the lessons
-  that helped, downvote the ones that misled, **`nb rm` any that proved
-  incorrect**, add at most one new lesson, and `nb merge` redundant entries —
-  then allows the stop. No-op when `NB_RETRO_DISABLED` is set (operator opt-out).
+- **SessionStart → `nb-inject.sh`** (runs `nb-inject.mjs`): injects the `nb list`
+  index — every shelf, its lesson count, and its one-line "open me when…"
+  description — into context. The agent reads the index and opens the shelves
+  that fit its task; nothing picks one for it.
+- **Stop / SubagentStop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first
+  stop of a session once (per-session sentinel; `stop_hook_active` lets a re-run
+  through) and shows the maintenance checklist — vote up what helped, vote down
+  what misled, **`nb rm`** what proved incorrect, `nb merge`/`split` redundant or
+  overloaded entries, and `nb add` at most one new lesson — then allows the stop.
+  No-op when `NB_RETRO_DISABLED` is set (operator opt-out).
 
-**`KOOKR_REPO_SLUG`.** The launcher exposes the bare `<owner>-<repo>` slug,
-derived from the repo's remote (`src/adapters/agent-launch-context.ts`). It is
-used only so repo-scoped shelves, such as the reviewer fan-out's
-`code-review@<owner>-<repo>`, can be addressed. Derivation is fail-open.
+**`KOOKR_REPO_SLUG`.** The launcher exposes the `<owner>-<repo>` slug, derived
+from the repo's remote (`src/adapters/agent-launch-context.ts`) — e.g.
+`github.com/kookr-ai/kookr` → `kookr-ai-kookr`. It is used only so repo-scoped
+shelves, such as the reviewer fan-out's `code-review@<owner>-<repo>`, can be
+addressed. Derivation is fail-open: when no safe slug forms, the variable is
+unset and callers fall back to the unscoped shelf name.
 
 Specialized subagents invoked via the `Agent` tool get no SessionStart
 injection (they are subagents), so each agent definition instructs the same
@@ -148,9 +153,9 @@ specialized agent** carries a Notebook Protocol: review subagents keep a
 cross-repo methodology shelf; task-role and repo-analysis agents scope theirs
 per repo.
 
-## The role agents
+## The task-specialist agents
 
-The four **task-role** specialists each own a repo-scoped shelf:
+The four **task specialists** each own a repo-scoped shelf:
 
 | Agent (shelf) | Does one thing |
 |---|---|
@@ -159,8 +164,8 @@ The four **task-role** specialists each own a repo-scoped shelf:
 | `patch-author` | writes a focused fix against a repro + acceptance |
 | `change-verifier` | independently verifies a change meets acceptance |
 
-The main agent stays the orchestrator: it delegates a unit of work to the role
-that owns it, and composes the result.
+The main agent stays the orchestrator: it delegates a unit of work to the
+specialist that owns it, and composes the result.
 
 Beyond these four, **every specialized review subagent also carries a shelf**
 (see each `plugin/agents/*.md` Notebook Protocol). Review/critic agents
