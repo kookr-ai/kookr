@@ -57,7 +57,7 @@ sessions can also see it when the plugin is installed or synced locally.
 
 **Product agents (2):** `product-owner`, `user-test-simulator` — a generic product owner that commissions a first-time-user journey, prioritizes what blocks activation, and drafts approval-ready onboarding issues (never auto-files), and the docs-first user-test simulator it commissions. Composed by the `product-onboarding-improvement-cycle` playbook.
 
-**Every specialized agent carries its own bounded, voted [Agent Notebook](../docs/reference/agent-notebook.md)** (`nb` CLI) — review subagents keep a cross-repo methodology notebook; task-role and repo-analysis agents scope theirs per repo (`role@<owner>-<repo>`). A notebook is capped tiny by design (≤200 one-line lessons), injected whole at session start and maintained in a once-per-session end-of-task retrospective (upvote / downvote / remove-incorrect / add / merge). kookr dogfoods its own published [`agent-notebook`](https://www.npmjs.com/package/agent-notebook) npm package for the `nb` CLI itself.
+**Every specialized agent carries its own bounded, voted [Agent Notebook](../docs/reference/agent-notebook.md)** (`nb` CLI) — review subagents keep a cross-repo methodology notebook; task-role and repo-analysis agents scope theirs per repo (`shelf@<owner>-<repo>`). A notebook (a *shelf*) is capped tiny by design (see [caps](../docs/reference/agent-notebook.md)), injected whole at session start and maintained in a once-per-session end-of-task retrospective (upvote / downvote / remove-incorrect / add / merge). kookr dogfoods its own published [`agent-notebook`](https://www.npmjs.com/package/agent-notebook) npm package for the `nb` CLI itself.
 
 ## One-time setup for the OSS extension
 

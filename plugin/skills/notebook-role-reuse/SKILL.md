@@ -140,4 +140,4 @@ maintenance chatter.)
 - **Bare `nb add`** — the shelf is a required argument; there is no implicit
   "current shelf" for a subagent.
 - **Notebook on throwaway work** — a one-grep agent has no reusable lesson;
-  skip the ritual rather than add noise that the 50-line cap will evict.
+  skip the ritual rather than add noise that a full shelf will evict.
