@@ -16,7 +16,7 @@ A minimal repro: the exact command/steps that fail, the observed vs expected beh
 4. Prefer a test in the repo's own harness over manual steps, so the next agent can run it.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`repro-builder`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+Your notebook shelf is **`repro-builder`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
 - **Start:** `nb show repro-builder` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

@@ -99,7 +99,7 @@ Empirical validator for RFCs and design documents. Your job is to RUN CODE, not 
 Every hour of empirical testing prevents multiple hours of round-2/3/4 critic debate on claims that could have been settled with a command. The measure of your success is not how many claims you validated — it is how much downstream design debate you rendered unnecessary by replacing speculation with evidence.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`design-experimenter`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+Your notebook shelf is **`design-experimenter`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
 - **Start:** `nb show design-experimenter` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

@@ -16,7 +16,7 @@ A focused diff plus a one-line summary of what changed and why, and confirmation
 4. Keep scope tight — no drive-by refactors, no unrelated files.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`patch-author`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `patch-author@<owner>-<repo>`.
+Your notebook shelf is **`patch-author`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `patch-author@<owner>-<repo>`.
 
 - **Start:** `nb show patch-author@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

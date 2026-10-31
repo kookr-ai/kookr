@@ -99,6 +99,9 @@ describe('agent-launch-context', () => {
 
     expect(context.env).toEqual({
       KOOKR_TASK_ID: child.id,
+      // Agent Notebook co-access session: the task id groups this task's `nb`
+      // calls (main agent + inherited by subagents) so surfacing is measurable.
+      NB_SESSION: child.id,
       TERM: 'xterm-256color',
       KOOKR_PARENT_TASK_ID: parent.id,
       // A child spawn is `parent` provenance (issue #1583); surfaced to the

@@ -81,6 +81,19 @@ a diff is `code-review`, not a new `boundary-review`. Only invent a new shelf wh
 no existing one fits the *kind of work* — new shelves are welcome, but read the
 index first so you reuse instead of duplicating.
 
+**Describe a shelf you create.** The index an agent reads to choose a shelf shows
+each shelf's one-line *description* — the "open me when…" trigger. A brand-new
+shelf is born without one, so it shows up in the index as `(auto)` (its top
+lesson stands in) and is hard to choose deliberately. The moment you create a new
+shelf, give it a trigger:
+
+```bash
+nb describe <new-shelf> "<the situation in which a future agent should open this shelf>"
+```
+
+Keep it a situation ("reviewing a diff for logic bugs"), not a summary of its
+lessons. This is what keeps the index selectable as it grows.
+
 **Scope rule.** Resolution is exact, and `code-review` and `code-review@owner-repo`
 are different files. Pick one per spawn:
 - repo-specific lessons → `<shelf>@<owner>-<repo>` (use `KOOKR_REPO_SLUG` as the
@@ -127,4 +140,4 @@ maintenance chatter.)
 - **Bare `nb add`** — the shelf is a required argument; there is no implicit
   "current shelf" for a subagent.
 - **Notebook on throwaway work** — a one-grep agent has no reusable lesson;
-  skip the ritual rather than add noise that the 50-line cap will evict.
+  skip the ritual rather than add noise that a full shelf will evict.

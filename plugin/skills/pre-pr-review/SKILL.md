@@ -386,9 +386,9 @@ Use when the change touches module boundaries, imports, or public APIs:
    **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body, prefixed with the machine-event marker header (see *Structured fan-out* above):
    ```
    # correctness + test: strong model (deep audit) — no model override, inherits the session default
-   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
    # lint-like (consolidated nits): cheap, fast model — see "Per-lane model" above
-   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
@@ -396,7 +396,7 @@ Use when the change touches module boundaries, imports, or public APIs:
    ```
    spawn_agent({
      task_name: "review_correctness",
-     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook role: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
+     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
    })
    ```
    For the `lint-like` lane, pass the equivalent **lightweight/cheap model**

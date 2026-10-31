@@ -56,7 +56,7 @@ Delay:
 Prefer removal and narrowing over adding “better” abstractions. If the design is simple enough already, say so explicitly.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`design-minimalist`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+Your notebook shelf is **`design-minimalist`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
 - **Start:** `nb show design-minimalist` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

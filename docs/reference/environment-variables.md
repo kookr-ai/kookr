@@ -170,6 +170,7 @@ not user configuration knobs.
 | `KOOKR_GIT_COMMON_DIR` | Injected when cwd is a Git worktree | Absolute path | Points at the shared Git common directory for worktree-aware workflows. |
 | `KOOKR_AGENT_ID` | Injected at launch from the terminal session name | Session id string | Stamps the claiming session for `kookr issue claim` (RFC rfc-issue-ownership-lock), and identifies the reporter for `kookr-self-report`, which refuses to run without it (exit 2). |
 | `KOOKR_REPO_SLUG` | Injected per task when the repo resolves | `<owner>-<repo>` slug string | The current repo's notebook slug (e.g. `kookr-ai-kookr`; `local-<dir>` for a non-GitHub checkout), derived from the git remote. Used to address repo-scoped Agent Notebook shelves such as the reviewer fan-out's `code-review@<owner>-<repo>`. Fail-open: unset when no safe slug forms, and callers fall back to the unscoped shelf. |
+| `NB_SESSION` | Injected per task (the task id) | Session id string | The Agent Notebook co-access session. The `nb` CLI groups the `nb` calls that share an `NB_SESSION` to compute co-access and its session-aware signals (surfacing coverage/recall-miss, browse-without-use, vote-reversal, failed-search). Keyed to the task id so one task's main agent and the subagents that inherit its environment count as one session. Unset outside Kookr, where `nb` treats each call as session-less and computes none of these. |
 
 ## CLI Tools
 

@@ -102,7 +102,7 @@ Identify groups of files that form tight clusters (many mutual imports). These a
 ```
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`dependency-graph-analyzer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `dependency-graph-analyzer@<owner>-<repo>`.
+Your notebook shelf is **`dependency-graph-analyzer`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `dependency-graph-analyzer@<owner>-<repo>`.
 
 - **Start:** `nb show dependency-graph-analyzer@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
