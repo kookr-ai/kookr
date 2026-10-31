@@ -1092,7 +1092,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               >
                 Reflect
               </button>
-              <button className="action-btn action-btn--neutral" onClick={() => send({ type: 'reopenTask', taskId: agent.taskId! })}>Reopen</button>
+              <button className="action-btn action-btn--neutral" title="Resume this task where it left off (continues the prior conversation when recoverable)" onClick={() => send({ type: 'reopenTask', taskId: agent.taskId! })}>Reopen</button>
               <button className="action-btn action-btn--neutral" onClick={handleRelaunch}>Relaunch</button>
             </>
           )}

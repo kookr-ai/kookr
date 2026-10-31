@@ -1015,6 +1015,7 @@ function makePromotionDeps(overrides: Partial<PromotionDeps> = {}): PromotionDep
       getNextPending: vi.fn().mockReturnValue(undefined),
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1081,6 +1082,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1127,6 +1129,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1146,6 +1149,55 @@ describe('promotePendingTasks', () => {
       '[Kookr launch warning] KB unavailable.\n\nFix the bug in auth',
       '/workspace/project',
       undefined,
+      expect.objectContaining({ onSessionCreated: expect.any(Function) }),
+    );
+  });
+
+  test('resumes the prior conversation when the reopened task flagged resume', async () => {
+    // A reopened task carries a prior session with a persisted provider
+    // conversation id; task-lifecycle-commands.reopenTask set the resume flag,
+    // which the launch path consumes via takeResumeOnNextLaunch.
+    const pendingTask = lifecycleTask({
+      id: 'pending-1',
+      status: 'pending',
+      sessions: [
+        aSession({
+          tmuxSession: 'kookr-prior',
+          cwd: '/workspace/project',
+          createdAt: new Date(),
+          claudeSessionId: 'sess-resumable',
+          lastStatus: 'aborted',
+        }),
+      ],
+    });
+    const mockTaskStore = {
+      getActiveCount: vi.fn().mockReturnValueOnce(0).mockReturnValueOnce(1),
+      getNextPending: vi.fn().mockReturnValueOnce(pendingTask).mockReturnValueOnce(undefined),
+      listTasks: vi.fn().mockReturnValue([]),
+      hasFreshLaunchReservation: vi.fn().mockReturnValue(false),
+      getTask: vi.fn().mockReturnValue(pendingTask),
+      cancelTask: vi.fn(),
+      beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(true),
+      ownsLaunchReservation: vi.fn().mockReturnValue(true),
+      endLaunch: vi.fn(),
+      listRelations: vi.fn().mockReturnValue([]),
+      setLaunchPermissionPosture: vi.fn(),
+    };
+    const deps = makePromotionDeps({
+      taskStore: mockTaskStore as any,
+      lifecycleDeps: makeDeps(),
+    });
+
+    const result = await promotePendingTasks(deps);
+
+    expect(result).toBe(1);
+    expect(mockTaskStore.takeResumeOnNextLaunch).toHaveBeenCalledWith('pending-1');
+    expect(deps.adapterRegistry.get('claude-code').launch).toHaveBeenCalledWith(
+      'pending-1',
+      'Fix the bug in auth',
+      '/workspace/project',
+      { sessionId: 'sess-resumable' },
       expect.objectContaining({ onSessionCreated: expect.any(Function) }),
     );
   });
@@ -1170,6 +1222,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(stuckTask),
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
@@ -1208,6 +1261,7 @@ describe('promotePendingTasks', () => {
       getTask: vi.fn().mockReturnValue(pendingTask),
       cancelTask: vi.fn(),
       beginLaunchWithToken: vi.fn().mockReturnValue('test-launch-reservation'),
+      takeResumeOnNextLaunch: vi.fn().mockReturnValue(false),
       ownsLaunchReservation: vi.fn().mockReturnValue(true),
       endLaunch: vi.fn(),
       listRelations: vi.fn().mockReturnValue([]),
