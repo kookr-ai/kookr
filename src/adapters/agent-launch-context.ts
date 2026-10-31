@@ -322,6 +322,14 @@ export async function buildAgentLaunchContext(
   const userInitiatedRelaunch = task?.metadata?.userInitiatedRelaunch === true;
   const env: Record<string, string> = {
     KOOKR_TASK_ID: opts.taskId,
+    // Group every `nb` call this task makes — the main agent's and any
+    // subagent's (they inherit this env) — under one session, so the Agent
+    // Notebook can compute co-access and its session-aware surfacing/diagnostic
+    // signals (coverage, recall-miss, browse-without-use, failed-search). The
+    // task id is the right co-access unit: lessons used together within one
+    // task. Without NB_SESSION the tool treats every call as session-less and
+    // computes none of this (`nb stats` reports "no engaged sessions").
+    NB_SESSION: opts.taskId,
     // Managed agents always run inside a PTY. A server restarted with
     // TERM=dumb would otherwise strand Codex on its interactive confirmation.
     TERM: DEFAULT_AGENT_TERM,
