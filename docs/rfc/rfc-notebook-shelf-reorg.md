@@ -2,10 +2,27 @@
 
 ## Status
 
-**Draft v2 — post-round-1 critic panel (design-minimalist, boundary-critic,
-delivery-pragmatist, socratic-challenger, failure-mode-analyst)**
+**Accepted — Slices A, B, C landed; consolidation and the 0.4.0 bump deferred.**
 **Date:** 2026-10-31
 **Author:** Jean Ibarz (with Claude)
+
+### Implementation status
+
+- **Slice A (NB_SESSION) + Slice B (de-duplicate docs + guard)** — merged in
+  **#3468**.
+- **Slice C (versioned `shelves.json` seed + idempotent apply)** — merged in
+  **#3469**; applied to the live store (12 shelves described, `r`/`reviewer`
+  debris removed) behind a `pre-shelf-seed` tag.
+- **Deferred — `@project`/thin-shelf consolidation** — still blocked on a
+  score-preserving cross-shelf move, now filed upstream as
+  **jeanibarz/agent-notebook#103** (`nb move`). Resume once it lands and
+  `NB_SESSION`-based co-access evidence (now being collected via Slice A) shows
+  which shelves actually need folding.
+- **Deferred — 0.4.0 bump** — unchanged; do it when a 0.4.0 feature is needed,
+  after verifying parity and the shim's mutating-verb set.
+
+_Drafted as v2 below through a round-1 critic panel (design-minimalist,
+boundary-critic, delivery-pragmatist, socratic-challenger, failure-mode-analyst)._
 
 **Major revisions in v2 (round-1 incorporation):**
 - **Reframed the thesis.** The root cause is not a stale *value* (the `200`-line
