@@ -97,7 +97,7 @@ API surface auditor. Your job is to inventory every HTTP route and WebSocket mes
 ```
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`api-surface-auditor`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `api-surface-auditor@<owner>-<repo>`.
+Your notebook shelf is **`api-surface-auditor`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `api-surface-auditor@<owner>-<repo>`.
 
 - **Start:** `nb show api-surface-auditor@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

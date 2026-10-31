@@ -63,7 +63,7 @@ export interface CreateReviewerFanoutInput {
   /** Override the derived id (defaults to `reviewer-fanout:<branch|headRef>`). */
   id?: string;
   /**
-   * The shared code-review notebook role for this fan-out (e.g.
+   * The shared code-review notebook shelf for this fan-out (e.g.
    * `code-review@owner-repo`), usually from {@link reviewerNotebookRole}.
    * Carried onto the workflow and inlined into every specialist launch.
    * Omit it and launches fall back to the global `code-review`.
@@ -150,7 +150,7 @@ export function buildSpecialistLaunch(
     // This is the only path by which a fan-out specialist (a general-purpose
     // subagent that gets no SessionStart index injection) learns which shelf to open.
     `Notebook shelf: ${notebookRole} — run \`nb show ${notebookRole}\` first and apply its defect classes; ` +
-      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ≤200-char ` +
+      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ` +
       `defect class, tagged with your lens (${run.role}).`,
   ].join('\n');
 

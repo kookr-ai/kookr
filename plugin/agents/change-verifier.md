@@ -16,7 +16,7 @@ A verdict — **pass** or **block** — with evidence. For pass: which acceptanc
 4. Call it against the *acceptance criteria*, not your taste. Taste is a nit.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`change-verifier`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+Your notebook shelf is **`change-verifier`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
 - **Start:** `nb show change-verifier` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

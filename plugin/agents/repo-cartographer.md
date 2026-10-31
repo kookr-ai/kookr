@@ -16,7 +16,7 @@ A short report: the build/test/lint commands that actually work (verified, not g
 4. Keep the report to what the next agent needs. A map that lists everything is a map of nothing.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`repo-cartographer`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `repo-cartographer@<owner>-<repo>`.
+Your notebook shelf is **`repo-cartographer`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `repo-cartographer@<owner>-<repo>`.
 
 - **Start:** `nb show repo-cartographer@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

@@ -298,7 +298,7 @@ function sanitizeRoleSegment(raw: string): string {
  * Returns null when no safe slug can be formed, so the caller simply omits
  * `KOOKR_REPO_SLUG`.
  *
- * The slug is a bare `<owner>-<repo>` fragment, NOT a notebook role: the agent
+ * The slug is a bare `<owner>-<repo>` fragment, NOT a notebook shelf name: the agent
  * notebook integration is role-agnostic (the SessionStart hook injects the
  * whole `nb list` index and the agent opens the shelves that fit). The slug is
  * exposed only so repo-scoped shelves — notably the reviewer fan-out's

@@ -55,7 +55,7 @@ Single table only. No prose sections. The table is the output.
 Do not add prose beyond the table and the optional hand-off line. Do not produce a risk summary, recommendations section, or failure modes — those belong to `failure-mode-analyst`.
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`assumption-archaeologist`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). Your lessons are reusable across repos — keep them general.
+Your notebook shelf is **`assumption-archaeologist`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
 - **Start:** `nb show assumption-archaeologist` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

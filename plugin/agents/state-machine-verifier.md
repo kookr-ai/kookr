@@ -101,7 +101,7 @@ State machine verifier. Your job is to check whether the **implemented** state t
 ```
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`state-machine-verifier`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `state-machine-verifier@<owner>-<repo>`.
+Your notebook shelf is **`state-machine-verifier`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `state-machine-verifier@<owner>-<repo>`.
 
 - **Start:** `nb show state-machine-verifier@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —

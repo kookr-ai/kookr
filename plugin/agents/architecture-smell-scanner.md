@@ -128,7 +128,7 @@ You analyze code organization, responsibility distribution, and coupling pattern
 ```
 
 ## Notebook Protocol (your memory)
-Your notebook role is **`architecture-smell-scanner`** — a bounded, voted store of one-line lessons (≤200 lines × ≤200 chars; lowest-scored evicted when full). For repo-specific facts, scope by repo: use role `architecture-smell-scanner@<owner>-<repo>`.
+Your notebook shelf is **`architecture-smell-scanner`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). For repo-specific facts, scope by repo: use shelf `architecture-smell-scanner@<owner>-<repo>`.
 
 - **Start:** `nb show architecture-smell-scanner@<owner>-<repo>` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
 - **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
