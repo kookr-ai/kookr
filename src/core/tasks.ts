@@ -197,6 +197,17 @@ export class TaskStore {
   private launchReservations = new Map<string, LaunchReservation>();
   private launchReservationSequence = 0;
   /**
+   * Tasks whose NEXT launch should resume the prior provider conversation
+   * rather than start fresh from the prompt (user-initiated reopen; see
+   * {@link reopenTask} callers and `resume-context.ts`). The launch path
+   * consumes this flag with {@link takeResumeOnNextLaunch} immediately before
+   * spawning so it applies exactly once. Deliberately NOT persisted — on a
+   * restart the task simply launches fresh, the same safe default as before
+   * this flag existed (the richer durable restore design is deferred to
+   * docs/rfc/rfc-restore-lost-agent-sessions.md).
+   */
+  private resumeOnNextLaunch = new Set<string>();
+  /**
    * Typed task-relation graph (issue #599). Keyed by
    * {@link taskRelationKey}`(source, target, type)` so dedup is a single map
    * lookup. The deterministic `parentTaskId` field on Task is the source of
@@ -930,6 +941,13 @@ export class TaskStore {
     task.updatedAt = now;
     if (isTerminalStatus(to)) {
       task.finishedAt ??= now;
+      // A pending resume-on-next-launch request is stale once the task returns
+      // to a terminal state before it launched (e.g. a reopened task reconciled
+      // back to terminated, or cancelled from the queue). Drop it here at the
+      // single terminal chokepoint so a later relaunch cannot act on it. Reopen
+      // itself transitions to open/pending (non-terminal), so the request set a
+      // moment earlier is preserved for the launch that follows.
+      this.resumeOnNextLaunch.delete(id);
       // Structured terminal-transition receipt (issue #2847). Stamped here, at
       // the single chokepoint every terminal move funnels through, so no path
       // can reach a terminal state without a typed reason + source. Purely an
@@ -1146,6 +1164,28 @@ export class TaskStore {
     return cloneTask(this.transition(id, 'open'));
   }
 
+  /**
+   * Mark this task so its next launch resumes the prior provider conversation
+   * (`adapter.launch(..., resumeContext)`) instead of starting fresh from the
+   * prompt. Idempotent; consumed once by {@link takeResumeOnNextLaunch}.
+   */
+  requestResumeOnNextLaunch(id: string): void {
+    this.resumeOnNextLaunch.add(id);
+  }
+
+  /** True while a resume-on-next-launch request is pending for this task. */
+  wantsResumeOnNextLaunch(id: string): boolean {
+    return this.resumeOnNextLaunch.has(id);
+  }
+
+  /**
+   * Consume the resume-on-next-launch request: returns whether one was pending
+   * and clears it so a later fresh pend of the same task does not inherit it.
+   */
+  takeResumeOnNextLaunch(id: string): boolean {
+    return this.resumeOnNextLaunch.delete(id);
+  }
+
   deleteTask(id: string): void {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -1157,6 +1197,7 @@ export class TaskStore {
       throw new TaskCleanupInProgressError(id);
     }
     this.launchReservations.delete(id);
+    this.resumeOnNextLaunch.delete(id);
     this.completionRemediation.delete(id);
     // Unlink from parent
     if (task.parentTaskId) {

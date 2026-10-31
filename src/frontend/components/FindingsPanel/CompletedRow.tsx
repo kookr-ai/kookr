@@ -357,7 +357,7 @@ export function CompletedRow({ agent, selected, send, pendingDeletion, onQueueDe
             {finishedAt && <time dateTime={agent.finishedAt}>{finishedAt}</time>}
           </span>
           {agent.taskId && isLiveTask && (
-            <button className="btn-xs" disabled={pendingDeletion} onClick={(e) => {
+            <button className="btn-xs" title="Resume this task where it left off (continues the prior conversation when recoverable)" disabled={pendingDeletion} onClick={(e) => {
               e.stopPropagation();
               send({ type: 'reopenTask', taskId: agent.taskId! });
             }}>Reopen</button>

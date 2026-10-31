@@ -24,6 +24,7 @@ import { deleteTask, type DeleteTaskDeps } from './delete-task.js';
 import { writeFeedbackBundle } from './write-feedback-bundle.js';
 import { writeTaskSnapshotBundle } from './write-task-snapshot-bundle.js';
 import { requestTaskReflect } from './request-task-reflect.js';
+import { hasResumableSession } from '../resume-context.js';
 import { hungTaskReportPrefix } from '../hung-task-report-paths.js';
 import { firstHookMissReportPrefix } from '../first-hook-miss-report-paths.js';
 
@@ -298,6 +299,18 @@ export class TaskLifecycleCommands {
     // same queue the recovery paths use (reopenTask -> pendTask) to resume a
     // task with a fresh session. This mirrors "reopen, then launch a new agent"
     // (state-machine catalog) as a single operator action.
+    // Resume the prior provider conversation instead of starting over from the
+    // prompt — the operator reopening a task expects `claude resume`-style
+    // continuity, not a blank restart. Gated to tasks that actually have a
+    // recoverable conversation (a persisted provider session id); a task that
+    // never got that far still launches fresh. Active Ralph loops are excluded:
+    // each Ralph iteration is intentionally a fresh context driven by the loop
+    // service, not a resumed conversation. The flag is consumed once by the
+    // launch path (adapters that do not yet support resume degrade to a fresh
+    // launch with a warning).
+    if (!isActiveRalphLoop(task) && hasResumableSession(task)) {
+      this.deps.taskStore.requestResumeOnNextLaunch(taskId);
+    }
     this.deps.taskStore.reopenTask(taskId); // terminated -> open
     const pended = this.deps.taskStore.pendTask(taskId); // open -> pending
     // Launch immediately when a slot is free so the task visibly resumes rather

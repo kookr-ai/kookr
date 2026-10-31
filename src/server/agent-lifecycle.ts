@@ -26,6 +26,7 @@ import type { TelegramTaskOutcome } from '../shared/contracts/telegram.js';
 import type { DependencyPreflightRunner } from '../core/launch-dependency-preflight.js';
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
+import { buildTaskResumeContext } from './resume-context.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
@@ -1247,8 +1248,18 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
           continue;
         }
       }
+      // Resume the prior provider conversation when the operator reopened this
+      // task (task-lifecycle-commands.reopenTask set the flag). Consumed once:
+      // a later fresh pend of the same task will not inherit it, and a launch
+      // that then fails forfeits resume (the retry launches fresh) — the
+      // documented safe default. The context is built from the task's newest
+      // recoverable session; adapters that do not support resume ignore it and
+      // launch fresh with a warning.
+      const resumeContext = taskStore.takeResumeOnNextLaunch(pending.id)
+        ? await buildTaskResumeContext(pending)
+        : undefined;
       adapterLaunchStarted = true;
-      const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, undefined, adapterOpts);
+      const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, resumeContext, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();
       const launchTimeoutMs = typeof configuredTimeout === 'number' && Number.isFinite(configuredTimeout) && configuredTimeout > 0
         ? configuredTimeout

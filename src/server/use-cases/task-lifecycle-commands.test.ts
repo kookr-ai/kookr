@@ -270,6 +270,65 @@ describe('TaskLifecycleCommands.cancelTask', () => {
   });
 });
 
+describe('TaskLifecycleCommands.reopenTask (resume prior conversation)', () => {
+  async function reopenTerminated(
+    configure: (taskStore: TaskStore, taskId: string) => void,
+  ): Promise<{ taskStore: TaskStore; taskId: string }> {
+    const taskStore = new TaskStore();
+    const task = taskStore.createTask('Resume me where it stopped', '/repo');
+    addSession(taskStore, task.id, 'kookr-prior'); // open -> inProgress
+    configure(taskStore, task.id);
+    taskStore.terminateTask(task.id); // inProgress -> terminated
+    const { deps } = makeDeps(taskStore);
+    await new TaskLifecycleCommands(deps).reopenTask(task.id);
+    return { taskStore, taskId: task.id };
+  }
+
+  test('requests resume when the task has a recoverable provider conversation', async () => {
+    const { taskStore, taskId } = await reopenTerminated((store, id) => {
+      store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+    });
+    // The task is re-queued as pending (reopen -> open -> pending) ...
+    expect(taskStore.getTask(taskId)?.status).toBe('pending');
+    // ... and its next launch is flagged to resume the conversation.
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(true);
+  });
+
+  test('does NOT request resume when no session recorded a provider conversation', async () => {
+    const { taskStore, taskId } = await reopenTerminated(() => {
+      /* session has no claudeSessionId → nothing to resume */
+    });
+    expect(taskStore.getTask(taskId)?.status).toBe('pending');
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
+  });
+
+  test('does NOT request resume for a Ralph loop (each iteration is a fresh context)', async () => {
+    const { taskStore, taskId } = await reopenTerminated((store, id) => {
+      store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+      store.getTaskForMutation(id)!.ralphLoop = { status: 'running', iteration: 3 } as never;
+    });
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
+  });
+
+  test('a terminal transition before launch clears a pending resume request', async () => {
+    const { taskStore, taskId } = await reopenTerminated((store, id) => {
+      store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+    });
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(true);
+    taskStore.cancelTask(taskId); // pending -> cancelled before it ever launched
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
+  });
+
+  test('a fresh pend of the same task does not inherit a consumed resume request', async () => {
+    const { taskStore, taskId } = await reopenTerminated((store, id) => {
+      store.updateSession(id, 'kookr-prior', { claudeSessionId: 'sess-resumable' });
+    });
+    expect(taskStore.takeResumeOnNextLaunch(taskId)).toBe(true); // launch consumes it
+    expect(taskStore.wantsResumeOnNextLaunch(taskId)).toBe(false);
+    expect(taskStore.takeResumeOnNextLaunch(taskId)).toBe(false); // idempotent after consume
+  });
+});
+
 describe('TaskLifecycleCommands.deleteTask', () => {
   test('empties the GitHub store for the deleted task', async () => {
     const taskStore = new TaskStore();

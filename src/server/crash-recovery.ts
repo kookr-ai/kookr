@@ -6,8 +6,8 @@ import {
   AdapterRegistry,
   type AdapterLaunchOptions,
   type AgentAdapter,
-  type ResumeContext,
 } from '../adapters/agent-adapter.js';
+import { buildResumeContext } from './resume-context.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
 import {
@@ -304,7 +304,7 @@ export async function recoverCrashedSessions(
     // dead session has a persisted claudeSessionId — that means the agent
     // emitted SessionStart before the crash, so the conversation is resumable.
     // See docs/rfc/rfc-crash-recovery-resume.md.
-    const { resumeContext, fallbackReason } = await buildResumeContext(task, session);
+    const { resumeContext, fallbackReason } = await buildResumeContext(session);
 
     const dependencyAdmission = await evaluateRecoveryDependencyAdmission(intent.intent, options);
     // Dependency collection is asynchronous. Cancellation or another state
@@ -857,48 +857,6 @@ function buildRecoveryLaunchOptions(
         }
       : {}),
   };
-}
-
-/**
- * Decide whether the given dead session is resumable, and if so build a
- * ResumeContext to hand to `adapter.launch()`. Returns `undefined` context
- * with a `fallbackReason` when resume is not applicable, so the caller can
- * surface the reason on the recovery entry.
- *
- * Performs a best-effort transcript-existence pre-flight here. A stale
- * transcript path must not force a fresh launch when the provider session id is
- * still known: Claude Code can validate the id itself, and preserving the
- * conversation is more important than trusting Kookr's cached path.
- */
-async function buildResumeContext(
-  _task: Task,
-  session: SessionInfo,
-): Promise<{ resumeContext: ResumeContext | undefined; fallbackReason: string | undefined }> {
-  if (!session.claudeSessionId) {
-    return { resumeContext: undefined, fallbackReason: 'no claudeSessionId persisted' };
-  }
-  if (session.transcriptPath && !(await fileExists(session.transcriptPath))) {
-    return {
-      resumeContext: { sessionId: session.claudeSessionId },
-      fallbackReason: undefined,
-    };
-  }
-  return {
-    resumeContext: {
-      sessionId: session.claudeSessionId,
-      transcriptPath: session.transcriptPath,
-    },
-    fallbackReason: undefined,
-  };
-}
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function promptDedupKey(agentType: string, prompt: string, intent: Task['launchIntent']): string {
