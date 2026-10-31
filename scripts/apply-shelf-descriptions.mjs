@@ -15,7 +15,12 @@
 //      a not-yet-created shelf is skipped with a warning, not created.
 //   2. A human may have written a better description. So we describe only a shelf
 //      that currently has NO `# desc:` line; an existing one is left untouched.
-// Idempotent: a second run is a no-op. Run with --dry-run to preview.
+// Idempotent: a second run is a no-op. One failing `nb describe` is isolated and
+// does not abort the rest of the run. Run with --dry-run to preview.
+//
+// The seeding logic (`hasDescription`, `applyDescriptions`) is exported so it can
+// be unit-tested against a temp store with a stubbed `describe`; the CLI block at
+// the bottom runs only when this file is executed directly.
 //
 // Usage: node scripts/apply-shelf-descriptions.mjs [--dry-run] [--manifest <path>]
 import { execFileSync } from 'node:child_process';
@@ -23,27 +28,10 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const argv = process.argv.slice(2);
-const dryRun = argv.includes('--dry-run');
-const manifestIdx = argv.indexOf('--manifest');
-const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const manifestPath =
-  manifestIdx >= 0 && argv[manifestIdx + 1]
-    ? argv[manifestIdx + 1]
-    : join(repoRoot, 'plugin', 'notebooks', 'shelves.json');
-
-/** Resolve the notebooks directory from the `nb` CLI (honors NB_DIR / the kookr shim). */
-function notebooksDir() {
-  try {
-    return execFileSync('nb', ['path'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
-  } catch {
-    console.error('apply-shelf-descriptions: `nb` is not on PATH — nothing applied (fail-open).');
-    process.exit(0);
-  }
-}
-
-function hasDescription(file) {
-  // The `# desc:` line is a leading comment in the <shelf>.md file.
+/** True if the <shelf>.md file already carries a `# desc:` trigger. */
+export function hasDescription(file) {
+  // The `# desc:` line is a leading comment in the <shelf>.md file. Scan the
+  // header block (comment + blank lines) and stop at the first real lesson line.
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
     if (line.startsWith('# desc:')) return true;
     if (line.trim() !== '' && !line.startsWith('#')) break; // past the header block
@@ -51,39 +39,93 @@ function hasDescription(file) {
   return false;
 }
 
-const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
-const shelves = manifest.shelves ?? {};
-const dir = notebooksDir();
-
-let described = 0;
-let skippedAbsent = 0;
-let skippedDescribed = 0;
-for (const [shelf, desc] of Object.entries(shelves)) {
-  const file = join(dir, `${shelf}.md`);
-  if (!existsSync(file)) {
-    // Pre-flight: never let `nb describe` create an orphan for a shelf that does
-    // not exist yet. It will be described the next time this runs after the shelf
-    // earns its first lesson.
-    console.log(`  skip (absent)     ${shelf}`);
-    skippedAbsent++;
-    continue;
+/**
+ * Apply `shelves` (name → trigger) into the notebook store at `dir`.
+ * Describes only a shelf that already exists on disk and has no `# desc:` yet.
+ * `describe(shelf, text)` performs the write (injectable for tests); `log` sinks
+ * progress lines. Returns a summary of what happened.
+ */
+export function applyDescriptions({ dir, shelves, dryRun = false, describe, log = () => {} }) {
+  let described = 0;
+  let skippedAbsent = 0;
+  let skippedDescribed = 0;
+  const failed = [];
+  for (const [shelf, desc] of Object.entries(shelves)) {
+    const file = join(dir, `${shelf}.md`);
+    if (!existsSync(file)) {
+      // Pre-flight: never let `describe` create an orphan for a shelf that does
+      // not exist yet. It is described the next run after it earns a first lesson.
+      log(`  skip (absent)     ${shelf}`);
+      skippedAbsent++;
+      continue;
+    }
+    if (hasDescription(file)) {
+      log(`  skip (has desc)   ${shelf}`);
+      skippedDescribed++;
+      continue;
+    }
+    if (dryRun) {
+      log(`  would describe    ${shelf} :: ${desc}`);
+      described++;
+      continue;
+    }
+    try {
+      describe(shelf, desc);
+      log(`  described         ${shelf}`);
+      described++;
+    } catch (err) {
+      // Isolate a single failure (e.g. a transient write) so the rest still run.
+      log(`  FAILED            ${shelf}: ${err?.message ?? err}`);
+      failed.push(shelf);
+    }
   }
-  if (hasDescription(file)) {
-    console.log(`  skip (has desc)   ${shelf}`);
-    skippedDescribed++;
-    continue;
-  }
-  if (dryRun) {
-    console.log(`  would describe    ${shelf} :: ${desc}`);
-  } else {
-    execFileSync('nb', ['describe', shelf, desc], { stdio: ['ignore', 'ignore', 'inherit'] });
-    console.log(`  described         ${shelf}`);
-  }
-  described++;
+  return { described, skippedDescribed, skippedAbsent, failed, total: Object.keys(shelves).length };
 }
 
-console.log(
-  `\napply-shelf-descriptions: ${dryRun ? 'would describe' : 'described'} ${described}, ` +
-    `skipped ${skippedDescribed} already-described, ${skippedAbsent} not-yet-created ` +
-    `(of ${Object.keys(shelves).length} in the manifest) in ${dir}`,
-);
+/** Resolve the notebooks directory from the `nb` CLI (honors NB_DIR / the kookr shim). */
+function notebooksDir() {
+  return execFileSync('nb', ['path'], { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+}
+
+function main(argv) {
+  const dryRun = argv.includes('--dry-run');
+  const manifestIdx = argv.indexOf('--manifest');
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
+  const manifestPath =
+    manifestIdx >= 0 && argv[manifestIdx + 1]
+      ? argv[manifestIdx + 1]
+      : join(repoRoot, 'plugin', 'notebooks', 'shelves.json');
+
+  let dir;
+  try {
+    dir = notebooksDir();
+  } catch {
+    console.error('apply-shelf-descriptions: `nb` is not on PATH — nothing applied (fail-open).');
+    process.exit(0);
+  }
+
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+  const r = applyDescriptions({
+    dir,
+    shelves: manifest.shelves ?? {},
+    dryRun,
+    describe: (shelf, desc) =>
+      execFileSync('nb', ['describe', shelf, desc], { stdio: ['ignore', 'ignore', 'inherit'] }),
+    log: (line) => console.log(line),
+  });
+
+  console.log(
+    `\napply-shelf-descriptions: ${dryRun ? 'would describe' : 'described'} ${r.described}, ` +
+      `skipped ${r.skippedDescribed} already-described, ${r.skippedAbsent} not-yet-created ` +
+      `(of ${r.total} in the manifest) in ${dir}`,
+  );
+  if (r.failed.length) {
+    console.error(`apply-shelf-descriptions: ${r.failed.length} failed: ${r.failed.join(', ')}`);
+    process.exit(1);
+  }
+}
+
+// Run the CLI only when executed directly, not when imported by a test.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main(process.argv.slice(2));
+}
