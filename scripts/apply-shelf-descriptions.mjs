@@ -28,13 +28,23 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** True if the <shelf>.md file already carries a `# desc:` trigger. */
+// Agent Notebook's own metadata-line grammar (agent-notebook notebook.js
+// `META_RE`). Mirror it EXACTLY so "already described?" means the same thing to
+// us as to `nb`: nb accepts `#desc:`, `#  desc:`, and `#\tdesc:` as the `desc`
+// key, not only the canonical `# desc: `. Detecting with a bare
+// `startsWith('# desc:')` would miss a human's non-canonically-spaced line and
+// then overwrite it — the exact hazard property #2 forbids.
+const META_RE = /^#\s*([a-z][a-z0-9_-]*):\s?(.*)$/;
+
+/** True if the <shelf>.md file already carries a non-empty `desc` metadata line. */
 export function hasDescription(file) {
-  // The `# desc:` line is a leading comment in the <shelf>.md file. Scan the
-  // header block (comment + blank lines) and stop at the first real lesson line.
+  // Scan the leading header block (metadata + blank lines); stop at the first
+  // real lesson line. A `desc` key with a non-empty value means "described".
   for (const line of readFileSync(file, 'utf-8').split('\n')) {
-    if (line.startsWith('# desc:')) return true;
-    if (line.trim() !== '' && !line.startsWith('#')) break; // past the header block
+    const m = META_RE.exec(line);
+    if (m && m[1] === 'desc' && m[2].trim() !== '') return true;
+    if (line.trim() === '' || line.startsWith('#')) continue; // blank or any header line
+    break; // first non-blank, non-header line = a lesson → past the header block
   }
   return false;
 }

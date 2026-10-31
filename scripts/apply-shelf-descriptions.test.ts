@@ -69,6 +69,17 @@ describe('hasDescription', () => {
   test('true when `# desc:` follows other `# key:` metadata', () => {
     expect(hasDescription(write('# role: s\n# desc: trigger\n+1\tlesson\n'))).toBe(true);
   });
+  // nb's META_RE accepts non-canonical spacing; these are real descriptions to nb
+  // and MUST be seen as such, else the seeder overwrites a human-edited one.
+  test.each(['#desc: trigger', '#  desc: trigger', '#\tdesc: trigger'])(
+    'true for nb-valid non-canonical spacing: %j',
+    (header) => {
+      expect(hasDescription(write(`${header}\n+1\tlesson\n`))).toBe(true);
+    },
+  );
+  test('false when the desc value is empty (a cleared description)', () => {
+    expect(hasDescription(write('# desc:\n+1\tlesson\n'))).toBe(false);
+  });
   test('false when there is no description, only lessons', () => {
     expect(hasDescription(write('+1\ta lesson line\n+2\tanother\n'))).toBe(false);
   });
@@ -83,7 +94,9 @@ describe('applyDescriptions', () => {
 
   function store() {
     dir = mkdtempSync(join(tmpdir(), 'nbstore-'));
-    writeFileSync(join(dir, 'described.md'), '# desc: human wrote this\n+1\tlesson\n');
+    // Non-canonical spacing on purpose: nb treats `#desc:` as a real description,
+    // so the seeder must NOT overwrite it (regression pin for the META_RE fix).
+    writeFileSync(join(dir, 'described.md'), '#desc: human wrote this\n+1\tlesson\n');
     writeFileSync(join(dir, 'undescribed.md'), '+1\tlesson\n');
     // 'absent' intentionally not created
     return dir;
@@ -103,7 +116,7 @@ describe('applyDescriptions', () => {
     expect(calls).toEqual([['undescribed', 'auto-B']]);
     expect(r).toMatchObject({ described: 1, skippedDescribed: 1, skippedAbsent: 1, failed: [] });
     expect(existsSync(join(dir, 'absent.md'))).toBe(false); // orphan NOT created
-    expect(readFileSync(join(dir, 'described.md'), 'utf-8')).toContain('# desc: human wrote this'); // not overwritten
+    expect(readFileSync(join(dir, 'described.md'), 'utf-8')).toContain('#desc: human wrote this'); // not overwritten (non-canonical spacing preserved)
   });
 
   test('is idempotent — a second run describes nothing', () => {
