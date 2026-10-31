@@ -1,0 +1,32 @@
+{
+  "_comment": "Versioned seed of situational `# desc:` triggers for the well-known Agent Notebook shelves (RFC docs/rfc/rfc-notebook-shelf-reorg.md, Slice C). A shelf's description is the 'open me when…' trigger an agent reads from the `nb list` index to choose a shelf; without it the index row falls back to the shelf's top lesson (`(auto)`) and is hard to choose deliberately. scripts/apply-shelf-descriptions.mjs applies these idempotently: it describes only a shelf that ALREADY EXISTS and has no description yet (a typo cannot create a described orphan, and a human-written description is never overwritten). Keep each trigger a situation, not a summary of the shelf's lessons, and <=200 chars.",
+  "shelves": {
+    "code-review": "reviewing a diff for correctness, edge cases, conventions, and test coverage",
+    "change-verifier": "verifying a change is actually done before claiming complete: tests pass, scope contained, nothing unrelated slipped in",
+    "patch-author": "writing a focused, minimal fix against a known reproduction and explicit acceptance criteria",
+    "repro-builder": "turning a vague bug report into a minimal, deterministic failing reproduction before a fix",
+    "repo-cartographer": "mapping an unfamiliar repo: where things live, how to build/test/lint, and the conventions a change must follow",
+    "test-fixer": "fixing failing unit tests in a single file: assertion drift, mock gaps, missing fields, vitest quirks",
+    "test-quality-reviewer": "reviewing test code for tautologies, implementation coupling, missing edge cases, and weak assertions",
+    "boundary-critic": "reviewing an RFC or design for responsibility segregation, coupling, dependency direction, and abstraction boundaries",
+    "design-minimalist": "reviewing an RFC or design for KISS/YAGNI, over-abstraction, and accidental complexity",
+    "ambition-amplifier": "checking an RFC, roadmap, or deferred-feature list for scope capped to dodge the hard part",
+    "delivery-pragmatist": "reviewing an RFC or design for sequencing, rollback safety, blast radius, and incremental migration",
+    "socratic-challenger": "stress-testing an RFC or design with probing questions that expose gaps and simpler alternatives",
+    "failure-mode-analyst": "stress-testing a plan, design, or change for hidden assumptions, edge cases, and what could go wrong",
+    "design-experimenter": "empirically validating a load-bearing design claim by running real code, not debating it further",
+    "assumption-archaeologist": "checking whether an assumption inherited from a referenced ADR or RFC is still valid",
+    "operability-reviewer": "reviewing an RFC or design affecting daemons, workers, or recovery for observability and runtime diagnosability",
+    "module-interface-auditor": "auditing a module's public API for narrowness, leaky abstractions, and mixed abstraction levels",
+    "api-surface-auditor": "auditing HTTP routes and WebSocket message types for consistency, type safety, and test coverage",
+    "dependency-graph-analyzer": "analyzing the TypeScript import graph for layering violations, cycles, and god modules",
+    "architecture-drift-detector": "detecting architecture drift: stale docs vs code, and structural drift in the dependency graph",
+    "architecture-smell-scanner": "scanning a codebase for architecture smells: god modules, scattered features, dense coupling",
+    "state-machine-verifier": "comparing documented state machines against the implementation for undocumented states or transitions",
+    "clear-writing-reviewer": "reviewing technical prose or code documentation for cold-reader clarity",
+    "macos-compat-reviewer": "reviewing a diff for macOS / cross-platform breakage: GNU-only flags, bash-4 syntax, /proc assumptions",
+    "kookr-task-supervisor": "supervising a running Kookr worker task end-to-end, driving it to completion",
+    "product-owner": "assessing whether a repo is shippable to a first-time user and drafting onboarding issues",
+    "user-test-simulator": "simulating a first-time user's install → configure → first-run journey from the product's docs"
+  }
+}
