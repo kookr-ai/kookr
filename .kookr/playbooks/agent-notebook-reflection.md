@@ -75,7 +75,7 @@ Put each observed problem into exactly **one** bucket, each backed by on-disk / 
 
 - **A — upstream by design**: the latest docs show this is intended behavior (e.g. reject-not-truncate on >200 chars; positive-only votes offset by staleness decay; a full shelf being normal). → Not an issue.
 - **B — already fixed in a newer release than installed**: the CHANGELOG fixes it above our version. → Upgrade, do not re-file.
-- **C — harness misconfiguration**: the latest docs recommend a wiring this harness does not have (e.g. the janitor is not scheduled; the injected contract omits vote-by-id or the ≤200-char rule; `NB_SESSION` unset). → Issue in `{{harnessRepo}}`.
+- **C — harness misconfiguration**: the latest docs recommend a wiring this harness does not have (e.g. the injected contract omits vote-by-id or the ≤200-char rule; `NB_SESSION` unset). → Issue in `{{harnessRepo}}`. (The "janitor is not scheduled" gap this bucket used to cite is now wired for kookr — see `docs/reference/nb-janitor-schedule.md` and `.kookr/playbooks/nb-janitor.md`; do not re-file it.)
 - **D — genuine upstream gap**: a real defect/missing feature in the latest agent-notebook, not already tracked in its open issues. → Issue in `{{toolRepo}}`.
 
 ### Phase 5 — Produce the report
