@@ -51,7 +51,7 @@ The repo ships VS Code debug presets in `.vscode/launch.json` for the dev server
 To attach to a server you started manually, run:
 
 ```bash
-pnpm build:dtach && KOOKR_PORT=4801 node --inspect=9229 --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters src/server/start.ts
+pnpm build:dtach && KOOKR_PORT=4801 node --inspect=9229 --import tsx --watch-path=src/server --watch-path=src/core --watch-path=src/adapters --watch-path=src/shared --watch-path=src/remote --watch-path=src/integrations src/server/start.ts
 ```
 
 Then pick **Kookr: Attach to dev server** in VS Code. Use **Kookr: Debug current Vitest file** from a test file to run that file under the debugger. JetBrains IDEs can use the same `node --import tsx ... src/server/start.ts` and `node node_modules/vitest/vitest.mjs run <test file>` entrypoints.
