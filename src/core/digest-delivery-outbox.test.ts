@@ -402,6 +402,37 @@ describe('reconcile', () => {
     expect(byKey.has(stale.record.key)).toBe(false);
     expect(byKey.has(fresh.record.key)).toBe(true);
   });
+
+  test('prunes a terminal record whose updatedAt no longer parses', async () => {
+    const dir = await tempSpoolDir();
+    const contentHash = computeContentHash(CONTENT);
+    const key = deliveryKey({ reportDay: DAY, channel: CHANNEL, contentHash });
+    // A terminal `posted` record whose updatedAt rotted to an unparseable
+    // value. It passes isValidRecord (updatedAt is still a string), so without
+    // the drop it would survive every prune forever — the immortal-record bug.
+    const rotted: DigestDeliveryRecord = {
+      schemaVersion: DIGEST_OUTBOX_SCHEMA,
+      key,
+      reportDay: DAY,
+      channel: CHANNEL,
+      contentHash,
+      content: CONTENT,
+      state: 'posted',
+      attemptCount: 1,
+      createdAt: '2026-08-23T00:00:00.000Z',
+      updatedAt: 'not-a-date',
+      messageId: 'm',
+    };
+    await writeFile(
+      digestOutboxRecordsPath(dir),
+      JSON.stringify({ schemaVersion: DIGEST_OUTBOX_SCHEMA, records: [rotted] }),
+      'utf8',
+    );
+
+    const pruned = await pruneTerminalRecords(dir, { now: new Date('2026-08-28T00:00:00Z') });
+    expect(pruned).toBe(1);
+    expect((await readDigestRecords(dir)).has(key)).toBe(false);
+  });
 });
 
 describe('defaultDigestOutboxDir', () => {
