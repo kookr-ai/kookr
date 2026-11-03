@@ -110,6 +110,12 @@ interface Props {
    * the status-bar 24h completed chip already uses.
    */
   onExpandCompleted?: () => void;
+  /**
+   * Expand the Healthy rail from the overview running overflow (issue #3406).
+   * Threads App's `expandHealthyRail` opener — the sibling nonce of
+   * {@link onExpandCompleted}.
+   */
+  onExpandHealthy?: () => void;
   onRequestComplete: () => void;
   detailPaneMode?: DetailPaneMode;
   wideDetailActive?: boolean;
@@ -398,7 +404,7 @@ function DetailMetadataMenu({
   );
 }
 
-export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
+export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
   const [showHookSettings, setShowHookSettings] = useState(false);
@@ -698,6 +704,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
           onCheckSetup={onCheckSetup}
           onOpenCostComparison={onOpenCostComparison}
           onExpandCompleted={onExpandCompleted}
+          onExpandHealthy={onExpandHealthy}
           shortcutBindings={shortcutBindings}
         />
       </div>

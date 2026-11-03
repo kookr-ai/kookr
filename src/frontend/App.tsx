@@ -396,6 +396,17 @@ export function App() {
     setMobileTab('findings');
     setExpandCompletedNonce((n) => n + 1);
   }, []);
+  // Sibling of expandCompletedRail for the overview "+N more in Healthy"
+  // overflow (#3406). FindingsPanel watches this nonce to expand the Healthy
+  // rail (if collapsed) and scroll it into view; the control is a no-op in
+  // isolated tests that omit the opener. Switch to the findings tab first so
+  // the bump lands on a mounted rail on mobile (the Task tab unmounts it).
+  const [expandHealthyNonce, setExpandHealthyNonce] = useState(0);
+  const consumedExpandHealthyNonceRef = useRef(0);
+  const expandHealthyRail = useCallback(() => {
+    setMobileTab('findings');
+    setExpandHealthyNonce((n) => n + 1);
+  }, []);
   // Non-modal surfaces that legitimately co-exist with a modal and with each
   // other, so they keep their own state instead of joining `activeModal`: the
   // diagnostics popover, the inline coordinator-findings pane, and the command
@@ -1422,6 +1433,8 @@ export function App() {
       onLaunch={() => openBlankLaunch('findings_empty')}
       expandCompletedNonce={expandCompletedNonce}
       consumedExpandNonceRef={consumedExpandNonceRef}
+      expandHealthyNonce={expandHealthyNonce}
+      consumedExpandHealthyNonceRef={consumedExpandHealthyNonceRef}
     />
   );
 
@@ -1436,6 +1449,7 @@ export function App() {
       onCheckSetup={() => setShowOperations(true)}
       onOpenCostComparison={() => openModal('costComparison')}
       onExpandCompleted={expandCompletedRail}
+      onExpandHealthy={expandHealthyRail}
       onRequestComplete={() => {
         if (!selectedAgent?.taskId) return;
         openCompleteConfirmation({
