@@ -165,6 +165,20 @@ interface Props {
    * a per-instance ref.
    */
   consumedExpandNonceRef?: { current: number };
+  /**
+   * Nonce bumped by the overview "+N more in Healthy" overflow (issue #3406).
+   * Each increase expands the Healthy rail (if it was collapsed) and scrolls
+   * it into view. Unchanged values, including the default 0, are ignored so a
+   * count refresh never pops the section open. Sibling of
+   * {@link expandCompletedNonce}.
+   */
+  expandHealthyNonce?: number;
+  /**
+   * App-owned high-water for {@link expandHealthyNonce}, mirroring
+   * {@link consumedExpandNonceRef}. Isolated tests may omit it; they get a
+   * per-instance ref.
+   */
+  consumedExpandHealthyNonceRef?: { current: number };
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -200,6 +214,8 @@ export function FindingsPanel({
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
   expandCompletedNonce = 0,
   consumedExpandNonceRef,
+  expandHealthyNonce = 0,
+  consumedExpandHealthyNonceRef,
 }: Props) {
   const { standalone, groups } = useMemo(() => groupHealthyAgents(healthy), [healthy]);
   const archivedAgents = useKookrStore((s) => s.archivedAgents);
@@ -264,7 +280,7 @@ export function FindingsPanel({
     observer.observe(panel);
     return () => observer.disconnect();
   }, []);
-  const [healthyCollapsed, toggleHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
+  const [healthyCollapsed, toggleHealthy, expandHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
   const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
   const [completedCollapsed, toggleCompleted, expandCompleted] = usePersistedCollapsed(COMPLETED_SECTION_COLLAPSED_KEY, true);
@@ -291,6 +307,22 @@ export function FindingsPanel({
     }, 0);
     return () => window.clearTimeout(timer);
   }, [expandCompletedNonce, expandCompleted, consumedNonceRef]);
+  const healthySectionRef = useRef<HTMLDivElement>(null);
+  const fallbackConsumedExpandHealthyNonceRef = useRef(0);
+  const consumedHealthyNonceRef = consumedExpandHealthyNonceRef ?? fallbackConsumedExpandHealthyNonceRef;
+  // Overview "+N more in Healthy" overflow click (#3406): expand immediately,
+  // then scroll after paint. Mirrors the Completed effect above, including the
+  // StrictMode-safe deferred high-water mark. Healthy defaults to expanded, so
+  // most clicks only scroll; `expandHealthy` never collapses the section.
+  useEffect(() => {
+    if (!expandHealthyNonce || expandHealthyNonce <= consumedHealthyNonceRef.current) return;
+    expandHealthy();
+    const timer = window.setTimeout(() => {
+      consumedHealthyNonceRef.current = expandHealthyNonce;
+      healthySectionRef.current?.scrollIntoView?.({ block: 'nearest' });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [expandHealthyNonce, expandHealthy, consumedHealthyNonceRef]);
   const [selectedFindingTypes, toggleFindingType, clearFindingTypes] = useFindingTypeFilter();
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
@@ -579,7 +611,7 @@ export function FindingsPanel({
         {hasBottomSections && (
           <>
           {healthy.length > 0 && (
-            <div className="healthy-section">
+            <div className="healthy-section" ref={healthySectionRef}>
               <SectionToggleButton
                 collapsed={healthyCollapsed}
                 label="Healthy"

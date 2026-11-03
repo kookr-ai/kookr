@@ -201,6 +201,14 @@ interface Props {
    * non-interactive overflow line.
    */
   onExpandCompleted?: () => void;
+  /**
+   * Expand and scroll the Healthy rail when the "+N more in Healthy"
+   * overflow is clicked (issue #3406). Sibling of {@link onExpandCompleted}:
+   * bumps an App-owned nonce so the app expands Healthy if it was collapsed
+   * and scrolls that section into view. Optional so isolated overview tests
+   * keep today's non-interactive overflow line.
+   */
+  onExpandHealthy?: () => void;
   shortcutBindings?: ShortcutBindingMap;
 }
 
@@ -220,6 +228,7 @@ export function OverviewEmptyState({
   onCheckSetup,
   onOpenCostComparison,
   onExpandCompleted,
+  onExpandHealthy,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
 }: Props) {
   const selectAgent = useKookrStore((s) => s.selectAgent);
@@ -401,9 +410,21 @@ export function OverviewEmptyState({
               })}
             </ul>
             {runningCount > OVERVIEW_RUNNING_LIMIT && (
-              <p className="overview-waiting-more">
-                +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
-              </p>
+              onExpandHealthy ? (
+                <button
+                  type="button"
+                  className="overview-waiting-more"
+                  data-testid="overview-running-overflow"
+                  aria-label={`+${runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy. Show healthy agents`}
+                  onClick={onExpandHealthy}
+                >
+                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
+                </button>
+              ) : (
+                <p className="overview-waiting-more">
+                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
+                </p>
+              )
             )}
           </div>
         )}

@@ -316,6 +316,41 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).not.toContain('more in Healthy');
   });
 
+  test('running overflow is a button that calls onExpandHealthy when more than six running tasks exist (issue #3406)', () => {
+    const onExpandHealthy = vi.fn();
+    render({
+      running: Array.from({ length: OVERVIEW_RUNNING_LIMIT + 1 }, (_, i) =>
+        makeRunningAgent(`run-${i}`, `Live task ${i}`),
+      ),
+      onExpandHealthy,
+    });
+
+    const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-running-overflow"]');
+    expect(overflow?.tagName).toBe('BUTTON');
+    expect(overflow?.textContent).toBe('+1 more in Healthy');
+    expect(overflow?.getAttribute('aria-label')).toBe('+1 more in Healthy. Show healthy agents');
+
+    act(() => {
+      overflow!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(onExpandHealthy).toHaveBeenCalledOnce();
+  });
+
+  test('does not render the running overflow control when six or fewer running tasks exist, even with an opener (issue #3406)', () => {
+    const onExpandHealthy = vi.fn();
+    render({
+      running: Array.from({ length: OVERVIEW_RUNNING_LIMIT }, (_, i) =>
+        makeRunningAgent(`run-${i}`, `Live task ${i}`),
+      ),
+      onExpandHealthy,
+    });
+
+    expect(container.querySelector('[data-testid="overview-running-overflow"]')).toBeNull();
+    expect(container.textContent).not.toContain('more in Healthy');
+    expect(onExpandHealthy).not.toHaveBeenCalled();
+  });
+
   test('omits the running duration when startedAt is missing', () => {
     render({
       running: [makeRunningAgent('run-1', 'Watch logs', { startedAt: undefined })],
