@@ -44,7 +44,10 @@ process.stdout.write(
     `column) and apply what they say. If the work turns up a new kind of problem, check the ` +
     `index again and open another shelf.\n` +
     `At the end you will be asked for a short retrospective on the shelves you opened — vote the ` +
-    `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none).\n\n` +
+    `lessons that helped, \`nb rm\` any that were wrong, and \`nb add\` at most one new lesson (or none). ` +
+    `Vote by the \`<id>\` \`nb show\` prints at the start of each line, not a fuzzy text query (a ` +
+    `non-unique query errors; the tool then prints the candidate ids). A new lesson is one line, ≤200 ` +
+    `characters — an over-length \`nb add\` is rejected, not truncated.\n\n` +
     index +
     '\n',
 );

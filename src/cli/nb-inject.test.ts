@@ -54,6 +54,12 @@ describe('nb-inject SessionStart hook', () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain('## Your agent-notebook index');
     expect(r.out).toContain('nb show <shelf>'); // the instruction
+    // The two operational rules from agent-notebook's AGENTS.md contract (#3472):
+    // vote by the printed <id> (not fuzzy text), and the one-line ≤200-char cap.
+    expect(r.out).toContain('Vote by the `<id>`');
+    expect(r.out).toContain('not a fuzzy text query'); // the vote-by-id rationale
+    expect(r.out).toContain('one line, ≤200 characters'); // tight: not satisfied by e.g. ≤2000
+    expect(r.out).toContain('rejected, not truncated');
     expect(r.out).toContain('code-review'); // the index itself, from `nb list`
     expect(r.out).toContain('patch-author');
     expect(r.out).toContain('review a diff'); // the description surfaces
