@@ -54,6 +54,7 @@ reachable only over a phone.
 - [Unattended recovery runbook](unattended-recovery-runbook.md) — the full symptom → health field → action map.
 - [Lucy prod update watchdog](lucy-prod-update-watchdog.md) — spec for the daily schedule that redeploys lucy (a separate project Kookr supervises) and must prove the deploy converged before reporting green.
 - [Kookr self-batch schedule](kookr-self-batch-schedule.md) — spec for the schedule that drains Kookr's own issue backlog through the `parallel-issue-batch` pipeline.
+- [Agent-notebook janitor schedule](nb-janitor-schedule.md) — spec for the weekly, read-only, fail-open schedule that runs the shipped agent-notebook janitor over `NB_DIR` and surfaces its hygiene report to the operator.
 
 ## Sharing a session with someone else
 
