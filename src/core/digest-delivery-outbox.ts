@@ -438,10 +438,11 @@ export async function reconcile(
 }
 
 /**
- * Drop terminal records older than the retention window: `posted` records (kept
+ * Drop terminal records older than the retention window — `posted` records (kept
  * only long enough to keep deduping re-saves) and `failed` records that have
- * spent their whole attempt budget (dead). Non-terminal records are always
- * kept — they still need action. Returns how many were pruned.
+ * spent their whole attempt budget (dead) — plus any terminal record whose
+ * `updatedAt` is unparseable, which could otherwise never age out. Non-terminal
+ * records are always kept — they still need action. Returns how many were pruned.
  */
 export async function pruneTerminalRecords(
   spoolDir: string,
@@ -457,9 +458,12 @@ export async function pruneTerminalRecords(
     const isDead = r.state === 'failed' && r.attemptCount >= maxAttempts;
     const isTerminal = r.state === 'posted' || isDead;
     if (!isTerminal) continue;
+    // Drop a terminal record whose updatedAt no longer parses: it can never
+    // satisfy the retention test, so keeping it would make it immortal and let
+    // records.json grow without bound. This mirrors signal-outbox, which treats
+    // an unparseable timestamp as a reason to drop the entry rather than keep it.
     const updated = Date.parse(r.updatedAt);
-    if (!Number.isFinite(updated)) continue;
-    if (nowMs - updated > maxAgeMs) {
+    if (!Number.isFinite(updated) || nowMs - updated > maxAgeMs) {
       byKey.delete(key);
       pruned += 1;
     }
