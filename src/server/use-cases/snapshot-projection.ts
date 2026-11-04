@@ -273,7 +273,13 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   state.description = meta.displayPrompt;
   state.cwd = meta.cwd;
   state.agentType = meta.agentType;
-  state.startedAt = meta.createdAt.toISOString();
+  const sessionCreatedAt = validDateIso(meta.createdAt);
+  if (sessionCreatedAt) {
+    state.startedAt = sessionCreatedAt;
+    state.sessionCreatedAt = sessionCreatedAt;
+  }
+  const taskCreatedAt = validDateIso(task.createdAt);
+  if (taskCreatedAt) state.taskCreatedAt = taskCreatedAt;
   state.playbookId = meta.playbookId;
   state.playbookSource = meta.playbookSource;
   state.playbookParameterValues = meta.playbookParameterValues;
@@ -312,6 +318,7 @@ function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
 
 function buildPendingTaskEntry(task: Task): AgentState {
   const displayPrompt = displayPromptForTask(task);
+  const taskCreatedAt = validDateIso(task.createdAt);
   return {
     agentId: `pending-${task.id}`,
     events: [],
@@ -320,6 +327,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     taskId: task.id,
     taskName: task.name ?? promptTitle(displayPrompt),
     taskStatus: 'pending',
+    ...(taskCreatedAt ? { taskCreatedAt } : {}),
     parentTaskId: task.parentTaskId,
     childTaskIds: task.childTaskIds,
     blocks: task.blocks,
@@ -327,7 +335,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     description: displayPrompt,
     cwd: task.cwd,
     agentType: task.agentType,
-    startedAt: task.createdAt.toISOString(),
+    ...(taskCreatedAt ? { startedAt: taskCreatedAt } : {}),
     playbookId: task.playbookId,
     playbookSource: task.playbookSource,
     playbookParameterValues: task.playbookParameterValues,
@@ -344,8 +352,10 @@ function buildPendingTaskEntry(task: Task): AgentState {
 
 function buildTerminalTaskEntry(task: Task): AgentState {
   const displayPrompt = displayPromptForTask(task);
-  const lastSession = task.sessions[task.sessions.length - 1];
+  const lastSession = latestSession(task.sessions);
+  const terminalTime = terminalTimestamp(task, lastSession);
   const finishedAt = terminalFinishedAt(task, lastSession);
+  const taskCreatedAt = validDateIso(task.createdAt);
   return {
     agentId: lastSession?.tmuxSession ?? `done-${task.id}`,
     events: [],
@@ -354,6 +364,10 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     taskId: task.id,
     taskName: task.name ?? promptTitle(displayPrompt),
     taskStatus: task.status,
+    ...(taskCreatedAt ? { taskCreatedAt } : {}),
+    ...(lastSession && validDateIso(lastSession.createdAt) ? { sessionCreatedAt: validDateIso(lastSession.createdAt)! } : {}),
+    terminalAt: terminalTime.at,
+    terminalAtSource: terminalTime.source,
     parentTaskId: task.parentTaskId,
     childTaskIds: task.childTaskIds,
     blocks: task.blocks,
@@ -361,7 +375,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     description: displayPrompt,
     cwd: lastSession?.cwd ?? task.cwd,
     agentType: lastSession?.agentType ?? task.agentType,
-    startedAt: task.createdAt.toISOString(),
+    ...(taskCreatedAt ? { startedAt: taskCreatedAt } : {}),
     finishedAt,
     playbookId: task.playbookId,
     playbookSource: task.playbookSource,
@@ -387,6 +401,35 @@ function buildTerminalTaskEntry(task: Task): AgentState {
   };
 }
 
+function latestSession(sessions: Task['sessions']): Task['sessions'][number] | undefined {
+  return sessions.reduce<Task['sessions'][number] | undefined>((latest, session) =>
+    validDateIso(session.createdAt) && (!latest || Date.parse(validDateIso(session.createdAt)!) > Date.parse(validDateIso(latest.createdAt)!)) ? session : latest, undefined);
+}
+
+function validDateIso(value: Date | string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : undefined;
+}
+
+function terminalTimestamp(
+  task: Task,
+  lastSession: Task['sessions'][number] | undefined,
+): { at: string; source: NonNullable<AgentState['terminalAtSource']> } {
+  if (task.terminalReceipt?.at) return { at: task.terminalReceipt.at, source: 'terminal_receipt' };
+  if (task.finishedAt) return { at: task.finishedAt.toISOString(), source: 'finished_at' };
+  if (task.terminatedAt) return { at: task.terminatedAt.toISOString(), source: 'terminated_at' };
+  if (typeof lastSession?.lastEventAt === 'number' && Number.isFinite(lastSession.lastEventAt)) {
+    return { at: new Date(lastSession.lastEventAt).toISOString(), source: 'last_session_activity' };
+  }
+  if (typeof lastSession?.lastEventAt === 'string') {
+    const parsed = new Date(lastSession.lastEventAt);
+    if (Number.isFinite(parsed.getTime())) return { at: parsed.toISOString(), source: 'last_session_activity' };
+  }
+  return { at: task.updatedAt.toISOString(), source: 'task_updated_at' };
+}
+
+/** Legacy completed-history timestamp retained for compact rows. */
 function terminalFinishedAt(task: Task, lastSession: Task['sessions'][number] | undefined): string {
   if (task.finishedAt) return task.finishedAt.toISOString();
   if (task.terminatedAt) return task.terminatedAt.toISOString();

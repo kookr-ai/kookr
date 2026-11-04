@@ -75,6 +75,14 @@ describe('transcript-store', () => {
     expect(meta?.vendor?.sizeBytes).toBe((await stat(vendor)).size);
   });
 
+  it('retains provider timestamps in stored conversation messages', async () => {
+    await writeFile(vendor, `${JSON.stringify({ type: 'assistant', timestamp: '2026-11-04T11:30:00Z', message: { content: 'dated answer' } })}\n`);
+    await cap();
+    expect(await readStoredTranscript(dir, 'task1', 'sess1')).toEqual([
+      { kind: 'text', role: 'assistant', text: 'dated answer', timestamp: '2026-11-04T11:30:00.000Z' },
+    ]);
+  });
+
   it('is idempotent when the vendor fingerprint is unchanged', async () => {
     await cap();
     const before = await readFile(join(dir, 'task1', 'sess1.jsonl.gz'));

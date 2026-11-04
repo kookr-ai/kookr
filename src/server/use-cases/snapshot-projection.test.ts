@@ -159,6 +159,8 @@ describe('snapshot projection', () => {
       taskId: task.id,
       taskName: 'Fix auth token refresh in the login flow',
       taskStatus: 'inProgress',
+      taskCreatedAt: task.createdAt.toISOString(),
+      sessionCreatedAt: sessionCreatedAt.toISOString(),
       cwd: '/workspace/webapp',
       agentType: 'claude-code',
       startedAt: sessionCreatedAt.toISOString(),
@@ -208,6 +210,9 @@ describe('snapshot projection', () => {
       turnState: 'completed_turn',
       events: [stopEvent('Done.', 1)],
     })]);
+    const terminalAgent = snapshot.find((agent) => agent.taskId === task.id);
+    expect(terminalAgent?.terminalAt).toBe(task.terminalReceipt?.at);
+    expect(terminalAgent?.terminalAtSource).toBe('terminal_receipt');
 
     expect(snapshot.find((state) => state.taskId === task.id)?.latestCompletionSignal).toBeUndefined();
   });

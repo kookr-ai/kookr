@@ -773,7 +773,11 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
       taskName: 'Ship archive UI',
       taskStatus: 'cancelled',
       agentType: 'codex-cli',
+      taskCreatedAt: '2026-08-01T10:00:00.000Z',
       finishedAt: '2026-08-01T12:00:00.000Z',
+      terminalAt: '2026-08-01T12:00:00.000Z',
+      terminalAtSource: 'finished_at',
+      archivedAt: '2026-08-01T00:00:00.000Z',
     });
   });
 

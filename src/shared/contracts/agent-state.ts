@@ -52,6 +52,16 @@ export interface AgentState {
   taskId?: string;
   taskName?: string;
   taskStatus?: TaskStatus;
+  /** Task creation time; distinct from a later Kookr session registration. */
+  taskCreatedAt?: string;
+  /** Creation time of the latest Kookr session, not guaranteed provider process start. */
+  sessionCreatedAt?: string;
+  /** Best available time the current terminal status was recorded. */
+  terminalAt?: string;
+  /** Evidence source for terminalAt. */
+  terminalAtSource?: 'terminal_receipt' | 'finished_at' | 'terminated_at' | 'last_session_activity' | 'task_updated_at' | 'archive_last_activity';
+  /** Time this task record was moved into the archive. */
+  archivedAt?: string;
   priority?: TaskPriority;
   parentTaskId?: string;
   childTaskIds?: string[];

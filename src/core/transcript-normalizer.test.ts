@@ -3,6 +3,26 @@ import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } f
 import type { AgentEvent } from './types.js';
 
 describe('normalizeVendorLines', () => {
+  test('preserves a valid source timestamp on every message expanded from an entry', () => {
+    const lines = [JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-11-04T11:30:00.000Z',
+      message: { content: [
+        { type: 'text', text: 'Working' },
+        { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
+      ] },
+    })];
+    expect(normalizeVendorLines(lines)).toEqual([
+      { kind: 'text', role: 'assistant', text: 'Working', timestamp: '2026-11-04T11:30:00.000Z' },
+      { kind: 'tool_call', name: 'Bash', input: '{"command":"pwd"}', timestamp: '2026-11-04T11:30:00.000Z' },
+    ]);
+  });
+
+  test('drops invalid source timestamps instead of inventing one', () => {
+    const lines = [JSON.stringify({ type: 'user', timestamp: 'not-a-time', content: 'hello' })];
+    expect(normalizeVendorLines(lines)).toEqual([{ kind: 'text', role: 'user', text: 'hello' }]);
+  });
+
   test('maps user, assistant text, tool_use and tool_result; skips junk', () => {
     const lines = [
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }),
