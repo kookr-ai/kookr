@@ -62,8 +62,24 @@ the first run of this loop) — match its format and depth.
 
 Drive classic workflows end to end, focusing on **{{focus_area}}** if given.
 Launch real, useful tasks only in: {{target_projects}} (default: the three
-private projects). Good task seeds: README-vs-code consistency audit, dead-code
-scan, bug hunt in a subsystem, playbook/skill improvement suggestions.
+private projects). Prioritise the repos that feed Kookr's own self-recursive
+improvement — `knowledge-base-mcp-server`, `local-research-agent`,
+`reason-at-home` — so the work you trigger is genuinely useful, not throwaway.
+Good task seeds: README-vs-code consistency audit, dead-code scan, bug hunt in a
+subsystem, playbook/skill improvement suggestions.
+
+**Gather context before you launch.** Spend the first few minutes mining what
+the system has recently done — it tells you what to try and often surfaces UX
+regressions directly:
+- Recently-merged PRs in the target repos (`gh pr list --repo <r> --state merged
+  --limit 20`, or the project card's PR link) — a just-shipped change is the
+  best place to look for a follow-up task *and* for UX that regressed.
+- Recently-completed tasks (`GET /api/tasks`, or the overview's "Recently
+  completed") — their prompts and outcomes seed realistic new tasks and reveal
+  which flows users actually run.
+- Use that context to pick a task that a real operator would plausibly run next,
+  then watch the full launch → live-terminal → signaled-complete → reply →
+  complete-with-rating lifecycle end to end.
 
 Cover at minimum:
 - API surface as a scripter would (`/api/projects`, `/api/tasks`, `/api/snapshot`)
