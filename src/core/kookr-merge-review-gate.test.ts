@@ -220,6 +220,41 @@ echo "fake-gh: unhandled: $args" >&2; exit 99
     expect(res.stdout).not.toContain('FAKE-GH-MERGED');
   });
 
+  test('a re-poll PASS on an already-BLOCKed head is refused as sticky-block (#435/#2940)', () => {
+    // BLOCK then PASS on the *same* head: the jq gate must treat the block as
+    // sticky and never reach the merge, mirroring evaluateMergeReviewGate.
+    setView(
+      gateView({
+        headOid: 'abc123',
+        comments: [
+          { body: verdictBody('block', 'abc123'), createdAt: '2026-11-01T10:00:00Z' },
+          { body: verdictBody('pass', 'abc123'), createdAt: '2026-11-01T10:30:00Z' },
+        ],
+      }),
+    );
+    const res = run();
+    expect(res.status).toBe(4);
+    expect(res.stdout + res.stderr).toMatch(/sticky-block/i);
+    expect(res.stdout).not.toContain('FAKE-GH-MERGED');
+  });
+
+  test('a fix pushed after a same-head block (new head PASS) still merges', () => {
+    // BLOCK on the old head, PASS on the new current head: no block is bound to
+    // the new head, so the sticky guard does not fire and the merge proceeds.
+    setView(
+      gateView({
+        headOid: 'newhead1',
+        comments: [
+          { body: verdictBody('block', 'oldhead0'), createdAt: '2026-11-01T10:00:00Z' },
+          { body: verdictBody('pass', 'newhead1'), createdAt: '2026-11-01T11:00:00Z' },
+        ],
+      }),
+    );
+    const res = run();
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('FAKE-GH-MERGED');
+  });
+
   test('a stale PASS plus the timeout label is still refused', () => {
     setView(
       gateView({

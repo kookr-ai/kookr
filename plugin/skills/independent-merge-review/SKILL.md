@@ -100,8 +100,12 @@ On a **hard-gate** repo, the merge wrapper depends on:
 - **`kookr-review-verdict: pass`** with a `review-head-sha` matching the PR's
   current head ⇒ merge allowed. A missing or older binding is refused — re-run
   the reviewer after any new commit.
-- The **latest** verdict comment wins, so the fix-and-re-review loop is honored:
-  block → fix → post a fresh `pass` for the new head.
+- A **`block` is sticky for the exact head it reviewed**: a later `pass` bound to
+  that same `review-head-sha` (a re-poll of identical content) does **not** clear
+  it — the merge is refused (`sticky-block`). Only a **new commit** with its own
+  fresh `pass` clears a block.
+- The **latest** verdict comment wins **across heads**, so the fix-and-re-review
+  loop is honored: block → fix (new commit) → post a fresh `pass` for the new head.
 
 On an **advisory** repo those lines are evidence. Post them when the reviewer
 returns; do not refuse merge or stall the task if they are missing, stale, or
