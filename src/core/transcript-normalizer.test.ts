@@ -31,7 +31,7 @@ describe('normalizeVendorLines', () => {
         { type: 'text', text: 'working' },
         { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
       ] } }),
-      JSON.stringify({ type: 'user', message: { content: [
+      JSON.stringify({ type: 'user', timestamp: '2026-11-04T11:31:00.000Z', message: { content: [
         { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'a.txt' }] },
       ] } }),
       JSON.stringify({ type: 'system', content: 'ignored' }),
@@ -40,7 +40,7 @@ describe('normalizeVendorLines', () => {
       { kind: 'text', role: 'user', text: 'hello' },
       { kind: 'text', role: 'assistant', text: 'working' },
       { kind: 'tool_call', name: 'Bash', input: '{"command":"ls"}' },
-      { kind: 'tool_result', name: 'Bash', text: 'a.txt' },
+      { kind: 'tool_result', name: 'Bash', text: 'a.txt', timestamp: '2026-11-04T11:31:00.000Z' },
     ]);
   });
 

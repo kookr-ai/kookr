@@ -804,6 +804,7 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
   });
 
   test.each([
+    [{ terminalReceipt: { at: '2026-08-01T11:00:00.000Z' }, finishedAt: '2026-08-01T12:00:00.000Z' }, 'terminal_receipt', '2026-08-01T11:00:00.000Z'],
     [{ terminatedAt: '2026-08-01T12:00:00.000Z' }, 'terminated_at', '2026-08-01T12:00:00.000Z'],
     [{ updatedAt: '2026-08-01T13:00:00.000Z' }, 'task_updated_at', '2026-08-01T13:00:00.000Z'],
     [{}, 'archive_last_activity', '2026-08-01T14:00:00.000Z'],
