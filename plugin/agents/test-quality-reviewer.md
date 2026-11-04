@@ -126,9 +126,23 @@ Test passes → Good.
 
 ---
 
+## Empirical Mutation Check (when static reasoning is inconclusive)
+
+Static reasoning about "what wrong result would still pass this assertion?" is reliable for obvious tautologies, but it is error-prone for **loose bounds** — `< N`, `>= 0`, `toContain(...)`, `.length > 0`, off-by-one caps, truncation thresholds. Do not guess whether such a test catches the bug: **prove it by mutation.**
+
+1. Copy the source file(s) under test to a scratch location (e.g. a tmp dir) — never edit the files under review.
+2. Inject the *specific* bug the test claims to guard against: flip the comparison, return a wrong constant, drop the guard clause, shift the cap by one.
+3. Run only that test against the mutated copy.
+4. Confirm it **fails**. If the test still passes, the mutant *survived* — the test does not actually catch that regression, and that survival is your finding (cite the exact mutation you applied).
+5. Discard the scratch copy.
+
+A loose `< N` bound or a single oversized-input truncation test very often survives an off-by-one mutant that an exact `toBe` / exact-cap-and-cap+1 pair would have killed. When a cheap mutation run is available, prefer it over a confident-sounding static verdict.
+
+---
+
 ## Constraints
 
-- **Read-only** — do NOT modify any files. Report findings only.
+- **Read-only on the files under review** — do NOT modify any file in the repo being reviewed. The mutation check above works on a throwaway *copy*; the originals are never touched. Report findings only.
 - **Be specific** — reference exact test names, line numbers, and the specific problem.
 - **Provide fix direction** — for each finding, briefly say what a better test would look like (1 sentence).
 - **Don't nitpick style** — naming conventions, formatting, import order are irrelevant.
