@@ -672,6 +672,34 @@ describe('snapshot use cases', () => {
     });
   });
 
+  // The `: 0` fallback (project-summary.ts) is taken whenever there is no
+  // GitHub-reference overlay — here because `getTaskGithubReferences` is not
+  // supplied, so `buildGithubTaskOverlay` never runs, even though an agent is
+  // active. Pre-change this serialized as `undefined`/absent.
+  it('reports 0 (not undefined) tied counts when there is no github-reference overlay', () => {
+    const summaries = getProjectSummaries({
+      monitor: {
+        getSnapshot: () => [{
+          agentId: 'a-1', taskId: 'task-1', taskName: 'Fix #42', taskStatus: 'inProgress',
+          projectId: 'github.com/octo/cat', cwd: '/repo', events: [], anomaly: null,
+          summary: '', summarizedAt: null, lastActivityAt: 0,
+        }] as any,
+      } as any,
+      ledgerAnalytics: {
+        getTodayCount: () => 0, getWeekCount: () => 0, getAttemptsByProjectRecent: () => [],
+        getTodayCountsByProject: () => new Map(), getWeekCountsByProject: () => new Map(),
+        getAttemptsByProjectMap: () => new Map(), getProjects: () => [], getTodayBlockedEntries: () => [],
+      } as any,
+      projectConfigStore: {
+        getConfig: () => undefined, getRateLimit: () => undefined, getAllConfigs: () => [],
+        getEffectiveDailyLimit: () => undefined,
+      } as any,
+    });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].openIssuesTiedToActiveTasks).toBe(0);
+    expect(summaries[0].openPrsTiedToActiveTasks).toBe(0);
+  });
+
   it('aggregates project summaries over the non-cloning full task view (issue #2411)', () => {
     const taskStore = new TaskStore();
     const monitor = new Monitor(taskStore, new AttentionQueue());
