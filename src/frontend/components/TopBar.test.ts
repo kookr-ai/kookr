@@ -443,6 +443,24 @@ describe('TopBar all-time spend Cost Comparison opener (issue #3398)', () => {
     expect(onCommandPalette).not.toHaveBeenCalled();
   });
 
+  test('non-zero spend shows a visible all-time scope label outside the figure', () => {
+    useKookrStore.setState({ totalSpendUsd: 12.3 });
+    render({ onOpenCostComparison: vi.fn() });
+
+    const scope = container.querySelector('.topbar-spend-scope');
+    expect(scope).not.toBeNull();
+    expect(scope?.textContent).toBe('all-time');
+    expect(scope?.getAttribute('aria-hidden')).toBeNull();
+    // Label is a sibling of the figure, so the figure text stays exactly the cost.
+    expect(container.querySelector('.topbar-spend')?.textContent).toBe('$12.30');
+  });
+
+  test('zero spend renders no scope label', () => {
+    useKookrStore.setState({ totalSpendUsd: 0 });
+    render();
+    expect(container.querySelector('.topbar-spend-scope')).toBeNull();
+  });
+
   test('isolated TopBar without the opener still renders a span', () => {
     useKookrStore.setState({ totalSpendUsd: 12.3 });
     render();
