@@ -75,7 +75,7 @@ describe('TranscriptView', () => {
       '2026-11-04T11:31:00.000Z',
       '2026-11-04T11:32:00.000Z',
     ]);
-    expect(times[0]?.textContent).toContain('4');
+    expect(times[0]?.textContent).toContain(new Date('2026-11-04T11:30:00.000Z').toLocaleString());
     expect(container.textContent).toContain('Dated answer');
     expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('First shown');
     expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('Last shown');
