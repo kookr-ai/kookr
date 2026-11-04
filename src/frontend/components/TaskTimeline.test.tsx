@@ -3,7 +3,7 @@
 import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { AgentState } from '../../shared/contracts/agent-state.js';
 import { TaskTimeline } from './TaskTimeline.js';
 
@@ -50,5 +50,38 @@ describe('TaskTimeline', () => {
     expect(container.textContent).toContain('Execution runtime');
     expect(container.textContent).toContain('Unavailable — no session end time recorded');
     expect(container.querySelectorAll('time')).toHaveLength(1);
+  });
+
+  test.each([
+    ['last_session_activity', 'Last observed hook activity'],
+    ['task_updated_at', 'Task record updated'],
+  ] as const)('labels %s as evidence, not a known status transition', (source, label) => {
+    const agent: AgentState = {
+      agentId: 'done-t3', taskId: 't3', taskStatus: 'terminated', events: [], anomaly: null,
+      taskCreatedAt: '2026-11-04T10:00:00.000Z',
+      terminalAt: '2026-11-04T10:30:00.000Z', terminalAtSource: source,
+    };
+    act(() => root.render(<TaskTimeline agent={agent} />));
+    expect(container.textContent).toContain(label);
+    expect(container.textContent).toContain('Task age at last recorded evidence');
+    expect(container.textContent).toContain('Unavailable — no session end time recorded');
+  });
+
+  test('updates the running task and session ages as the clock advances', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-11-04T10:02:00.000Z'));
+    const agent: AgentState = {
+      agentId: 'live-t4', taskId: 't4', taskStatus: 'running', events: [], anomaly: null,
+      taskCreatedAt: '2026-11-04T10:00:00.000Z', sessionCreatedAt: '2026-11-04T10:01:00.000Z',
+    };
+    try {
+      act(() => root.render(<TaskTimeline agent={agent} />));
+      expect(container.textContent).toContain('2m');
+      act(() => { vi.advanceTimersByTime(60_000); });
+      expect(container.textContent).toContain('3m');
+      expect(container.textContent).toContain('Session age');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
