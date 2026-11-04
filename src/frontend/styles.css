@@ -415,6 +415,15 @@ kbd {
   font-variant-numeric: tabular-nums;
 }
 .topbar-spend-placeholder { visibility: hidden; }
+/* Visible scope cue: the header figure is all-time spend, not current burn. */
+.topbar-spend-group { gap: 4px; }
+.topbar-spend-scope {
+  color: var(--text-muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
 /* Issue #3398: the all-time spend figure is a button when App supplies the Cost
    Comparison opener. Reset native button chrome so it stays a compact metric. */
 button.topbar-spend {

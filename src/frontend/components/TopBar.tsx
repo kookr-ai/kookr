@@ -581,6 +581,9 @@ export function TopBar({
               {spendLabel}
             </span>
           )}
+          {totalSpendUsd > 0 && (
+            <span className="topbar-spend-scope" title={spendTitle}>all-time</span>
+          )}
         </div>
         <div className="metric-group">
           <FollowPill shortcutBindings={shortcutBindings} />
