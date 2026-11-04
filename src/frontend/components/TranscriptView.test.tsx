@@ -62,16 +62,24 @@ describe('TranscriptView', () => {
   test('renders source message timestamps as semantic local times', async () => {
     stubTranscript({
       taskId: 't1', source: 'vendor',
-      messages: [{ kind: 'text', role: 'assistant', text: 'Dated answer', timestamp: '2026-11-04T11:30:00.000Z' }],
+      messages: [
+        { kind: 'text', role: 'assistant', text: 'Dated answer', timestamp: '2026-11-04T11:30:00.000Z' },
+        { kind: 'tool_call', name: 'Bash', input: '{"command":"pwd"}', timestamp: '2026-11-04T11:31:00.000Z' },
+        { kind: 'tool_result', name: 'Bash', text: 'done', timestamp: '2026-11-04T11:32:00.000Z' },
+      ],
     });
     await render(<TranscriptView taskId="t1" />);
-    const time = container.querySelector('time.transcript-msg-time');
-    expect(time?.getAttribute('datetime')).toBe('2026-11-04T11:30:00.000Z');
-    expect(time?.textContent).toContain('4');
+    const times = Array.from(container.querySelectorAll('time.transcript-msg-time'));
+    expect(times.map((time) => time.getAttribute('datetime'))).toEqual([
+      '2026-11-04T11:30:00.000Z',
+      '2026-11-04T11:31:00.000Z',
+      '2026-11-04T11:32:00.000Z',
+    ]);
+    expect(times[0]?.textContent).toContain('4');
     expect(container.textContent).toContain('Dated answer');
     expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('First shown');
     expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('Last shown');
-    expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('Elapsed: <1m');
+    expect(container.querySelector('[data-testid="transcript-time-range"]')?.textContent).toContain('Elapsed: 2m');
   });
 
   test.each([
