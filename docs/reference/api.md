@@ -333,8 +333,7 @@ terminal task, `terminalAt` is the best available time evidence; consumers must
 use `terminalAtSource` to label it correctly: `terminal_receipt`, `finished_at`,
 and `terminated_at` identify status-transition fields, while
 `last_session_activity`, `task_updated_at`, and `archive_last_activity` are
-fallback evidence, not a proven process or conversation end. Live tasks can use
-`task_updated_at` when no stronger source exists. `archivedAt` appears on rows
+fallback evidence, not a proven process or conversation end. `archivedAt` appears on rows
 projected from archived task records and marks archival separately. Missing
 timestamps remain absent rather than synthesized.
 
