@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, Suspense } from 'react';
+import { lazyWithReload } from '../lazy-with-reload.js';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -58,7 +59,7 @@ import { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
 
 export { SAMPLE_LAUNCH_PROMPTS } from './sample-launch-prompts.js';
 
-const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
+const VoiceInputButton = lazyWithReload(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
 // Singleton so all dialog instances share the same MRU list
 const recentPaths = new RecentPaths();

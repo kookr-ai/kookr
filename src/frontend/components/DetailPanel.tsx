@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useCallback, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useCallback, Suspense } from 'react';
+import { lazyWithReload } from '../lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
 import { useKookrStore } from '../store/useStore.js';
 import type { AgentState, ClientMessage, PermissionRequestBinding } from '../../shared/protocol.js';
@@ -43,14 +44,14 @@ function pickLazyExport<T>(module: unknown, exportName: string): T {
   return (lazyModule[exportName] ?? lazyModule.default?.[exportName]) as T;
 }
 
-const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: pickLazyExport<typeof m.VoiceInputButton>(m, 'VoiceInputButton') })));
-const TerminalPanel = lazy(() => import('./TerminalPanel.js').then((m) => ({ default: pickLazyExport<typeof m.TerminalPanel>(m, 'TerminalPanel') })));
-const GitHubPanel = lazy(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
-const ActivityPanel = lazy(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
-const DiffPane = lazy(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
-const EvolutionPanel = lazy(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
-const FileViewerPane = lazy(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
-const EffectiveHookSettingsModal = lazy(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
+const VoiceInputButton = lazyWithReload(() => import('./VoiceInputButton.js').then(m => ({ default: pickLazyExport<typeof m.VoiceInputButton>(m, 'VoiceInputButton') })));
+const TerminalPanel = lazyWithReload(() => import('./TerminalPanel.js').then((m) => ({ default: pickLazyExport<typeof m.TerminalPanel>(m, 'TerminalPanel') })));
+const GitHubPanel = lazyWithReload(() => import('./GitHubPanel.js').then((m) => ({ default: pickLazyExport<typeof m.GitHubPanel>(m, 'GitHubPanel') })));
+const ActivityPanel = lazyWithReload(() => import('./ActivityPanel.js').then((m) => ({ default: pickLazyExport<typeof m.ActivityPanel>(m, 'ActivityPanel') })));
+const DiffPane = lazyWithReload(() => import('./DiffPane.js').then((m) => ({ default: pickLazyExport<typeof m.DiffPane>(m, 'DiffPane') })));
+const EvolutionPanel = lazyWithReload(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
+const FileViewerPane = lazyWithReload(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
+const EffectiveHookSettingsModal = lazyWithReload(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
 const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 /** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
 const REPLY_MAX_HEIGHT_PX = 140;

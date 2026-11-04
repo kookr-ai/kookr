@@ -1,4 +1,5 @@
-import React, { lazy, Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
+import React, { Suspense, useState, useEffect, useMemo, useCallback, useReducer, useRef } from 'react';
+import { lazyWithReload } from './lazy-with-reload.js';
 import { useShallow } from 'zustand/react/shallow';
 import type { AgentState, ClientMessage, ProjectSummary } from '../shared/protocol.js';
 import type { OutcomeLedgerProjectOption } from './components/OutcomeLedgerPanel.js';
@@ -100,18 +101,18 @@ function pickLazyExport<T>(module: unknown, exportName: string): T {
   return (lazyModule[exportName] ?? lazyModule.default?.[exportName]) as T;
 }
 
-const LaunchTaskDialog = lazy(() => import('./components/LaunchTaskDialog.js').then((m) => ({ default: pickLazyExport<typeof m.LaunchTaskDialog>(m, 'LaunchTaskDialog') })));
-const QuickLaunch = lazy(() => import('./components/QuickLaunch.js').then((m) => ({ default: pickLazyExport<typeof m.QuickLaunch>(m, 'QuickLaunch') })));
-const ShortcutsHelp = lazy(() => import('./components/ShortcutsHelp.js').then((m) => ({ default: pickLazyExport<typeof m.ShortcutsHelp>(m, 'ShortcutsHelp') })));
-const AchievementsPanel = lazy(() => import('./components/AchievementsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.AchievementsPanel>(m, 'AchievementsPanel') })));
-const ProjectSidebarManager = lazy(() => import('./components/ProjectSidebarManager.js').then((m) => ({ default: pickLazyExport<typeof m.ProjectSidebarManager>(m, 'ProjectSidebarManager') })));
-const SettingsDialog = lazy(() => import('./components/SettingsDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SettingsDialog>(m, 'SettingsDialog') })));
-const SchedulesDialog = lazy(() => import('./components/SchedulesDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SchedulesDialog>(m, 'SchedulesDialog') })));
-const ContributionWorkspace = lazy(() => import('./components/ContributionWorkspace.js').then((m) => ({ default: pickLazyExport<typeof m.ContributionWorkspace>(m, 'ContributionWorkspace') })));
-const OssProductivityView = lazy(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
-const CostComparisonPanel = lazy(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
-const OperationsPanel = lazy(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
-const DebugTimelinePanel = lazy(() => (
+const LaunchTaskDialog = lazyWithReload(() => import('./components/LaunchTaskDialog.js').then((m) => ({ default: pickLazyExport<typeof m.LaunchTaskDialog>(m, 'LaunchTaskDialog') })));
+const QuickLaunch = lazyWithReload(() => import('./components/QuickLaunch.js').then((m) => ({ default: pickLazyExport<typeof m.QuickLaunch>(m, 'QuickLaunch') })));
+const ShortcutsHelp = lazyWithReload(() => import('./components/ShortcutsHelp.js').then((m) => ({ default: pickLazyExport<typeof m.ShortcutsHelp>(m, 'ShortcutsHelp') })));
+const AchievementsPanel = lazyWithReload(() => import('./components/AchievementsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.AchievementsPanel>(m, 'AchievementsPanel') })));
+const ProjectSidebarManager = lazyWithReload(() => import('./components/ProjectSidebarManager.js').then((m) => ({ default: pickLazyExport<typeof m.ProjectSidebarManager>(m, 'ProjectSidebarManager') })));
+const SettingsDialog = lazyWithReload(() => import('./components/SettingsDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SettingsDialog>(m, 'SettingsDialog') })));
+const SchedulesDialog = lazyWithReload(() => import('./components/SchedulesDialog.js').then((m) => ({ default: pickLazyExport<typeof m.SchedulesDialog>(m, 'SchedulesDialog') })));
+const ContributionWorkspace = lazyWithReload(() => import('./components/ContributionWorkspace.js').then((m) => ({ default: pickLazyExport<typeof m.ContributionWorkspace>(m, 'ContributionWorkspace') })));
+const OssProductivityView = lazyWithReload(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
+const CostComparisonPanel = lazyWithReload(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
+const OperationsPanel = lazyWithReload(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
+const DebugTimelinePanel = lazyWithReload(() => (
   (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true
     ? import('./components/DebugTimelinePanel.js').then((m) => ({ default: pickLazyExport<typeof m.DebugTimelinePanel>(m, 'DebugTimelinePanel') }))
     : Promise.resolve({ default: (() => null) as React.ComponentType<{ onExport: () => void }> })
