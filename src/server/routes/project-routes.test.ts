@@ -1,7 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OssAttemptStore } from '../../core/oss-attempt-store.js';
 import { LedgerAnalytics } from '../../core/ledger-analytics.js';
@@ -9,7 +9,8 @@ import { ProjectConfigStore } from '../../core/project-config-store.js';
 import { TaskStore } from '../../core/tasks.js';
 import { AttentionQueue } from '../../core/attention-queue.js';
 import { Monitor } from '../../core/monitor.js';
-import { registerProjectRoutes } from './project-routes.js';
+import { registerProjectRoutes, filterDeadLocalProjects, isUnderDir } from './project-routes.js';
+import type { ProjectSummary } from '../../core/project-summary.js';
 import type { RouteDeps } from './shared.js';
 
 function mkApp(deps: Partial<RouteDeps>): Hono {
@@ -279,8 +280,8 @@ describe('GET /api/projects', () => {
   });
 
   test('tracked=true returns explicitly tracked and local projects only', async () => {
-    const liveLocalPath = join(tempDir, 'live-local-work');
-    mkdirSync(liveLocalPath);
+    // Must live outside the OS temp dir: temp-dir local projects are pruned as junk.
+    const liveLocalPath = process.cwd();
     projectConfigStore.setConfig('github.com/acme/tracked', { tracked: true });
     projectConfigStore.setConfig('github.com/acme/notes-only', { notes: 'config row, not tracked' });
     projectConfigStore.setConfig('local/live-local-work', { notes: 'local checkout', localPath: liveLocalPath });
@@ -310,8 +311,8 @@ describe('GET /api/projects', () => {
   });
 
   test('omits dead local projects by default', async () => {
-    const liveLocalPath = join(tempDir, 'live-local-work');
-    mkdirSync(liveLocalPath);
+    // Must live outside the OS temp dir: temp-dir local projects are pruned as junk.
+    const liveLocalPath = process.cwd();
     projectConfigStore.setConfig('local/live-local-work', { notes: 'live checkout', localPath: liveLocalPath });
     projectConfigStore.setConfig('local/dead-local-work', {
       notes: 'deleted checkout',
@@ -330,5 +331,55 @@ describe('GET /api/projects', () => {
     expect(res.status).toBe(200);
     const body = await res.json() as Array<{ project: string }>;
     expect(body.map((project) => project.project).sort()).toEqual(['local/live-local-work']);
+  });
+});
+
+describe('filterDeadLocalProjects junk pruning', () => {
+  const mk = (project: string, localPath: string | null | undefined, active = false) => ({
+    project,
+    localPath,
+    recentTasks: active ? [{ taskId: 't', name: 'n', status: 'inProgress' }] : [],
+  }) as unknown as ProjectSummary;
+  const names = async (list: ProjectSummary[]) => (await filterDeadLocalProjects(list)).map((s) => s.project);
+
+  test('drops a local project pointing at /tmp', async () => {
+    expect(await names([mk('local/tmp', '/tmp')])).toEqual([]);
+  });
+
+  test('drops a local project under os.tmpdir()', async () => {
+    expect(await names([mk('local/x', join(tmpdir(), 'whatever'))])).toEqual([]);
+  });
+
+  test('drops a local project with null or empty localPath', async () => {
+    expect(await names([mk('local/a', null), mk('local/b', ''), mk('local/c', undefined)])).toEqual([]);
+  });
+
+  test('keeps a junk-path local project that has an active task', async () => {
+    expect(await names([mk('local/tmp', '/tmp', true), mk('local/n', null, true)])).toEqual(['local/tmp', 'local/n']);
+  });
+
+  test('keeps non-local projects and live non-temp local paths', async () => {
+    expect(await names([
+      mk('github.com/a/b', null),
+      mk('local/live', process.cwd()),
+    ])).toEqual(['github.com/a/b', 'local/live']);
+  });
+});
+
+describe('isUnderDir path boundary', () => {
+  // The single most error-prone line in the temp-prune: a naive
+  // `startsWith('/tmp')` would wrongly classify `/tmpfoo` as under `/tmp`.
+  test('a sibling whose name shares the prefix is NOT under the dir', () => {
+    expect(isUnderDir('/tmpfoo', '/tmp')).toBe(false);
+    expect(isUnderDir('/tmp-backup', '/tmp')).toBe(false);
+  });
+  test('the dir itself and its descendants ARE under it', () => {
+    expect(isUnderDir('/tmp', '/tmp')).toBe(true);
+    expect(isUnderDir('/tmp/project', '/tmp')).toBe(true);
+    expect(isUnderDir(`${join('/tmp', 'a', 'b')}`, '/tmp')).toBe(true);
+  });
+  test('a trailing separator on the dir is handled', () => {
+    expect(isUnderDir('/tmp/x', `/tmp${sep}`)).toBe(true);
+    expect(isUnderDir('/tmpfoo', `/tmp${sep}`)).toBe(false);
   });
 });

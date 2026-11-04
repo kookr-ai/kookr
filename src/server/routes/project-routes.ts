@@ -1,5 +1,7 @@
 import type { Hono } from 'hono';
 import { access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { resolve, sep } from 'node:path';
 import { ProjectConfigLimitError, type ProjectConfig } from '../../core/project-config-store.js';
 import { configSeedsMembership, type ProjectSummary } from '../../core/project-summary.js';
 import { getProjectSummaries } from '../use-cases/get-snapshot.js';
@@ -228,10 +230,28 @@ function isTrackedOrLocalProject(summary: ProjectSummary): boolean {
   return summary.tracked === true || summary.project.startsWith('local/');
 }
 
-async function filterDeadLocalProjects(summaries: ProjectSummary[]): Promise<ProjectSummary[]> {
+// Exported for direct unit testing of the path-boundary logic (the
+// `base + sep` guard is the one line a naive `startsWith` would get wrong,
+// e.g. `/tmpfoo` must NOT count as under `/tmp`).
+export function isUnderDir(path: string, dir: string): boolean {
+  const base = resolve(dir);
+  const target = resolve(path);
+  return target === base || target.startsWith(base.endsWith(sep) ? base : base + sep);
+}
+
+/** Transient test cwds (os.tmpdir() or a literal /tmp) are never real projects. */
+function isTempPath(path: string): boolean {
+  return isUnderDir(path, tmpdir()) || isUnderDir(path, '/tmp');
+}
+
+export async function filterDeadLocalProjects(summaries: ProjectSummary[]): Promise<ProjectSummary[]> {
   const checks = await Promise.all(summaries.map(async (summary) => {
-    if (!summary.project.startsWith('local/') || !summary.localPath || hasActiveTask(summary)) {
+    if (!summary.project.startsWith('local/') || hasActiveTask(summary)) {
       return { summary, keep: true };
+    }
+    // No path to verify, or a path in the temp dir: junk, not a project.
+    if (!summary.localPath?.trim() || isTempPath(summary.localPath)) {
+      return { summary, keep: false };
     }
     try {
       await access(summary.localPath);

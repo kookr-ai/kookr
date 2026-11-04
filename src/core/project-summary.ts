@@ -102,7 +102,7 @@ export interface ProjectSummary {
    * from the agents + GitHub state stores; a reference only counts once
    * GitHub has confirmed the issue open (closed/unfetched/nonexistent refs
    * are excluded), so this can never exceed `repoHealth.openIssues` modulo
-   * cache staleness. Absent when no active task touches the repo.
+   * cache staleness. 0 when no active task touches the repo.
    */
   openIssuesTiedToActiveTasks?: number;
   /**
@@ -419,8 +419,8 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       prLessonsRawLines: prLessons?.rawLearningsLines,
       localPath: config?.localPath,
       repoHealth: repoHealthCache?.get(projectId),
-      openIssuesTiedToActiveTasks: overlay ? overlay.tiedOpenIssueNumbers.size : undefined,
-      openPrsTiedToActiveTasks: overlay ? overlay.tiedOpenPrNumbers.size : undefined,
+      openIssuesTiedToActiveTasks: overlay ? overlay.tiedOpenIssueNumbers.size : 0,
+      openPrsTiedToActiveTasks: overlay ? overlay.tiedOpenPrNumbers.size : 0,
       activeTaskGithubLinks: overlay && overlay.links.length > 0 ? overlay.links : undefined,
     });
   }
