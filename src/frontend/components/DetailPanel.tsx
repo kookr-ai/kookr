@@ -1116,7 +1116,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
           )}
         </div>
       </div>
-      {agent.taskId && <TaskTimeline agent={agent} />}
       {showSignalBanner && agent.taskId && (
         <div
           className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
@@ -1278,20 +1277,23 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
                   </Suspense>
                 ) : (
-                  <Suspense fallback={null}>
-                    <ActivityPanel
-                      agentId={agent.agentId}
-                      events={agent.events}
-                      description={agent.description}
-                      cwd={agent.cwd}
-                      anomalyExplanation={agent.anomaly?.explanation}
-                      onOpenDiff={handleOpenDiff}
-                      activityMeta={agent.activityMeta}
-                      taskId={agent.taskId}
-                      isActive={agent.turnState === 'running'}
-                      userInputDeliveries={agent.userInputDeliveries}
-                    />
-                  </Suspense>
+                  <>
+                    {agent.taskId && <TaskTimeline agent={agent} />}
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        agentId={agent.agentId}
+                        events={agent.events}
+                        description={agent.description}
+                        cwd={agent.cwd}
+                        anomalyExplanation={agent.anomaly?.explanation}
+                        onOpenDiff={handleOpenDiff}
+                        activityMeta={agent.activityMeta}
+                        taskId={agent.taskId}
+                        isActive={agent.turnState === 'running'}
+                        userInputDeliveries={agent.userInputDeliveries}
+                      />
+                    </Suspense>
+                  </>
                 )}
               </div>}
 
