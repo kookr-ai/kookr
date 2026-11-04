@@ -3,6 +3,14 @@ import { createRoot } from 'react-dom/client';
 import { App } from './App.js';
 import { bootstrapAuthSession } from './auth-session.js';
 import { AppErrorBoundary } from './components/AppErrorBoundary.js';
+import { installPreloadErrorReload } from './lazy-with-reload.js';
+
+// A long-lived client holds the old hashed module graph after a server rebuild.
+// If a `<link rel="modulepreload">` for a now-deleted chunk fails, Vite fires
+// `vite:preloadError`; pull the fresh index with a single guarded reload rather
+// than letting the stale preload surface as a panel crash. (Dynamic
+// `import()`s inside lazy boundaries are covered separately by lazyWithReload.)
+installPreloadErrorReload();
 
 const root = createRoot(document.getElementById('root')!);
 

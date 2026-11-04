@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo, useReducer, lazy, Suspense } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useReducer, Suspense } from 'react';
+import { lazyWithReload } from '../lazy-with-reload.js';
 import {
   buildAgentSelectionOptions,
   shouldDisableLaunchForGrokAuth,
@@ -41,7 +42,7 @@ import { DictationCorpusStatus } from './DictationCorpusStatus.js';
 import { appendDictation } from '../append-dictation.js';
 import { looksLikeAbsoluteClipboardPath, readClipboardText } from '../clipboard.js';
 
-const VoiceInputButton = lazy(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
+const VoiceInputButton = lazyWithReload(() => import('./VoiceInputButton.js').then(m => ({ default: m.VoiceInputButton })));
 
 const recentPaths = new RecentPaths();
 
