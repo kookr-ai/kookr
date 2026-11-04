@@ -108,6 +108,7 @@ export type MergeReviewGateCode =
   | 'blocked-finding'
   | 'stale-verdict'
   | 'unbound-verdict'
+  | 'sticky-block'
   | 'no-verdict';
 
 export interface MergeReviewGateInput {
@@ -134,15 +135,23 @@ export interface MergeReviewGateResult {
  * `scripts/kookr-merge.sh` (`require_review_verdict`) — bash cannot import this
  * module. This function is the executable *specification* of that decision
  * table: it is what the unit tests pin, and the two must agree branch-for-branch
- * (`pass` / `block` / `stale-verdict` / `unbound-verdict` / `timeout-label` / `no-verdict` /
- * `disabled`). When you change one, change the other and update both suites.
+ * (`pass` / `block` / `sticky-block` / `stale-verdict` / `unbound-verdict` /
+ * `timeout-label` / `no-verdict` / `disabled`). When you change one, change the
+ * other and update both suites.
  *
  * Precedence:
  *  1. Gate disabled → allow.
  *  2. Latest verdict is `block` → refuse (an explicit block is never overridden
  *     by the timeout label).
- *  3. Latest verdict is `pass` bound to the current head SHA → allow.
- *  4. A missing head binding, stale verdict, timeout label, or no verdict → refuse.
+ *  3. Latest verdict is `pass` bound to the current head SHA, AND no earlier
+ *     verdict `block`ed that same head → allow.
+ *  4. Latest verdict is `pass` bound to the current head SHA, but an earlier
+ *     verdict `block`ed that exact head → refuse (`sticky-block`): a BLOCK is
+ *     sticky for the commit it reviewed, so a re-review `pass` on *identical*
+ *     content (a non-deterministic re-poll flip) cannot clear it. Only a new
+ *     commit (a different head) with its own `pass` clears the block — which is
+ *     the fix-and-re-review path and is still allowed.
+ *  5. A missing head binding, stale verdict, timeout label, or no verdict → refuse.
  */
 export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeReviewGateResult {
   const requireReview = input.requireReview ?? true;
@@ -177,6 +186,23 @@ export function evaluateMergeReviewGate(input: MergeReviewGateInput): MergeRevie
     }
     const stale = verdict.headSha !== headSha;
     if (!stale) {
+      // Sticky-block guard: a BLOCK is bound to the exact commit it reviewed. If
+      // this current head was ever BLOCKed, a later PASS on the *same* head is a
+      // re-poll flip on identical content, not a fix — it must not clear the
+      // block. A genuine fix pushes a new commit (a different head), whose own
+      // PASS lands in the `!stale` branch with no block bound to it.
+      const headWasBlocked = input.comments.some((comment) => {
+        const parsed = parseVerdictComment(comment.body);
+        return parsed?.verdict === 'block' && parsed.headSha === headSha;
+      });
+      if (headWasBlocked) {
+        return {
+          allowed: false,
+          code: 'sticky-block',
+          reason: `independent-review BLOCK for the current head (${headSha}) is sticky — a re-review PASS on the same commit cannot clear it; push a fix (a new commit) and re-run the reviewer`,
+          verdict,
+        };
+      }
       return {
         allowed: true,
         code: 'pass',

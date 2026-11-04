@@ -137,7 +137,13 @@ require_review_verdict() {
         | ( $sline | ascii_downcase | ltrimstr("review-head-sha:") | strip ) as $sha
         | { ts: ($ts // ""), verdict: $verdict, sha: $sha } ];
     ([ .labels[]?.name | ascii_downcase ] | index($tlabel)) as $hasLabel
-    | ( verdicts | sort_by(.ts) | last ) as $v
+    | verdicts as $vs
+    | ( $vs | sort_by(.ts) | last ) as $v
+    # A BLOCK is sticky for the exact head it reviewed: once this current head is
+    # blocked, a later same-head PASS is a re-poll flip on identical content and
+    # cannot clear it. A fix pushes a new commit (different head), so its PASS is
+    # not caught here. Mirrors the evaluateMergeReviewGate sticky-block branch.
+    | ( [ $vs[] | select(.verdict == "block" and .sha != "" and .sha == $head) ] | length > 0 ) as $blockedThisHead
     | if $v == null then
         (if $hasLabel then "block:timeout-label" else "block:no-verdict" end)
       elif $v.verdict == "block" then
@@ -146,6 +152,8 @@ require_review_verdict() {
         "block:unbound-verdict"
       elif $v.sha != $head then
         "block:stale-verdict"
+      elif $blockedThisHead then
+        "block:sticky-block"
       else
         "allow:pass"
       end
