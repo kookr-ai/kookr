@@ -1,43 +1,16 @@
 ---
 name: Goal Supervisor
-description: >-
-  Keeps a set of operator-stated GOALS progressing all day with no operator in
-  the loop. Every run it (1) snapshots the Kookr task fleet, (2) UNBLOCKS tasks
-  waiting on input/permission/questions by deciding the safe forward answer,
-  (2b) VERIFIES DELIVERY LANDED by sweeping each goal repo's own open-PR list and
-  spawning a merge/rebase child for any self-authored (computer-account) PR left
-  open with no owning task — merging only its own account's PRs, never external
-  contributors' PRs — so PRs never pile up unmerged, (3) SPAWNS work toward each
-  goal when there is free capacity — weighted across goals — picking ready unowned
-  issues that fit the goal's charter, (3b) when a goal has no implementable leaf
-  auto-triggers idea-scout so the goal keeps generating its own next steps
-  (scout -> file -> implement -> benchmark), and (4) records + briefs. It drives
-  and decides every TECHNICAL choice itself; it does not implement, merge, or
-  deploy *itself*. Spawned children on the operator's own repos MUST merge when
-  safe. It NEVER makes billing/quota/subscription/payment decisions and NEVER
-  auto-approves destructive or irreversible actions — those are the only two
-  things it escalates to the human. Time-bound and cadence are schedule-level
-  (cron + maxTriggers); kill anytime by disabling the schedule or engaging SAFE MODE.
+description: "Keeps a set of operator-stated GOALS progressing all day with no operator in the loop. Every run it (1) snapshots the Kookr task fleet, (2) UNBLOCKS tasks waiting on input/permission/questions by deciding the safe forward answer, (2b) VERIFIES DELIVERY LANDED by sweeping each goal repo's own open-PR list and spawning a merge/rebase child for any self-authored (computer-account) PR left open with no owning task — merging only its own account's PRs, never external contributors' PRs — so PRs never pile up unmerged, (3) SPAWNS work toward each goal when there is free capacity (weighted across goals) picking ready unowned issues that fit the goal's charter, (3b) when a goal has no implementable leaf auto-triggers idea-scout so the goal keeps generating its own next steps (scout to file to implement to benchmark), and (4) records + briefs. It drives and decides every TECHNICAL choice itself; it does not implement, merge, or deploy itself. Spawned children on the operator's own repos MUST merge when safe. It NEVER makes billing/quota/subscription/payment decisions and NEVER auto-approves destructive or irreversible actions — those are the only two things it escalates to the human. Time-bound and cadence are schedule-level (cron + maxTriggers); kill anytime by disabling the schedule or engaging SAFE MODE."
 repo-tags: [github]
 tags: [workflow, orchestration]
 deliveryPreAuthorized: true
 autoCloseOnSignal: true
 parameters:
   - name: goals
-    description: >-
-      JSON array of the goals to drive, priority order. Each item:
-      {"id","repo":"owner/name","localPath","charter","weightPct"}. `charter` is
-      one or two sentences stating what "progress" means for that goal and what
-      kinds of work count (so the supervisor spends every technical decision on
-      goal-fit, not guesswork). `weightPct` is that goal's target share of
-      autonomous effort (the array should sum to ~100). Example value is the
-      three seed goals; override per operator.
+    description: 'JSON array of the goals to drive, priority order. Each item: {"id","repo":"owner/name","localPath","charter","weightPct"}. charter is one or two sentences stating what progress means for that goal and what kinds of work count (so the supervisor spends every technical decision on goal-fit, not guesswork). weightPct is that goal target share of autonomous effort (the array should sum to ~100). Example value is the three seed goals; override per operator.'
     required: false
     type: textarea
-    default: >-
-      [{"id":"local-research-agent/distillation","repo":"jeanibarz/local-research-agent","localPath":"$HOME/git/local-research-agent","weightPct":34,"charter":"Improve the local research agent's distillation: tighter/cheaper distilled policies that preserve or raise answer quality. Scouting distillation ideas, implementing them, and measuring quality deltas all count."},
-      {"id":"agent-notebook/reliability","repo":"jeanibarz/agent-notebook","localPath":"$HOME/git/agent-notebook","weightPct":33,"charter":"Make the agent notebook more reliable AND more useful: fewer lost/garbled lessons, better retrieval and dedup, clearer shelf UX. Reliability fixes, usefulness features, and hardening tests all count."},
-      {"id":"knowledge-base-mcp/performance","repo":"jeanibarz/knowledge-base-mcp-server","localPath":"$HOME/git/knowledge-base-mcp-server","weightPct":33,"charter":"Improve the knowledge-base MCP server: scout ideas, implement them, and raise retrieval performance against well-known IR/RAG benchmarks. Benchmark-harness work, indexing/retrieval improvements, and measured score deltas all count."}]
+    default: '[{"id":"local-research-agent/distillation","repo":"jeanibarz/local-research-agent","localPath":"$HOME/git/local-research-agent","weightPct":34,"charter":"Improve the local research agent distillation: tighter/cheaper distilled policies that preserve or raise answer quality. Scouting distillation ideas, implementing them, and measuring quality deltas all count."},{"id":"agent-notebook/reliability","repo":"jeanibarz/agent-notebook","localPath":"$HOME/git/agent-notebook","weightPct":33,"charter":"Make the agent notebook more reliable AND more useful: fewer lost/garbled lessons, better retrieval and dedup, clearer shelf UX. Reliability fixes, usefulness features, and hardening tests all count."},{"id":"knowledge-base-mcp/performance","repo":"jeanibarz/knowledge-base-mcp-server","localPath":"$HOME/git/knowledge-base-mcp-server","weightPct":33,"charter":"Improve the knowledge-base MCP server: scout ideas, implement them, and raise retrieval performance against well-known IR/RAG benchmarks. Benchmark-harness work, indexing/retrieval improvements, and measured score deltas all count."}]'
   - name: maxSpawnPerRun
     description: 'Max NEW implementation tasks to spawn per run (drive cap).'
     required: false
@@ -59,11 +32,7 @@ parameters:
     required: false
     default: '6'
   - name: ciDisabledRepos
-    description: >-
-      Comma-separated repos whose CI/GitHub-Actions is operator-disabled by
-      design, so a red check / Actions-billing condition on them is NOT a blocker
-      and must never be escalated. Blank = treat every repo's CI as live (a
-      genuinely failing required check IS a blocker there).
+    description: "Comma-separated repos whose CI/GitHub-Actions is operator-disabled by design, so a red check / Actions-billing condition on them is NOT a blocker and must never be escalated. Blank = treat every repo CI as live (a genuinely failing required check IS a blocker there)."
     required: false
     default: ''
   - name: controlRoomBase
@@ -76,8 +45,10 @@ parameters:
     default: 'false'
     type: select
     options:
-      - { label: 'Drive (spawn + unblock)', value: 'false' }
-      - { label: 'Dry run (observe only)', value: 'true' }
+      - label: "Drive (spawn + unblock)"
+        value: "false"
+      - label: "Dry run (observe only)"
+        value: "true"
 ---
 
 # Goal Supervisor
