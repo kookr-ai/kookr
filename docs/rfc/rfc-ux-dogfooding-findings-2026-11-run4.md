@@ -1,6 +1,6 @@
 # RFC: UX Dogfooding Findings — November 2026 (run 4)
 
-- **Status**: Draft (living document, written during the dogfooding session)
+- **Status**: Draft (living document — Phase 4 implementation fan-out complete; push/PR pending user decision)
 - **Author**: Claude (Opus 4.8), dogfooding session driven as a "classical user" / scripter
 - **Date**: 2026-11-06
 - **Base**: `origin/main` @ `8508ccac` (worktree `kookr-dogfood-202611-run4`)
@@ -165,6 +165,47 @@ metric) rather than `0`.
    (`task-routes.ts:1659`). Small, same family (don't render partial/absent as real).
 5. **Client-side cwd check (R1-F6).** Warn (don't block) on a nonexistent cwd in the
    Launch dialog; still the cheapest way to stop bad-cwd launches from seeding junk rows.
+
+## Implementation (Phase 4)
+
+Fan-out chosen for high-confidence, backend-testable fixes; three items deferred for a
+product/contract decision rather than auto-implemented.
+
+**Implemented (one worktree per cluster, based on `origin/main@8508ccac`, not pushed):**
+
+- **Cluster 1 — `fix/project-sidebar-trust-signals`** (`kookr-r4-sidebar-trust`,
+  commit `060b3df5`): R3-F2 (widen the gone-`localPath` exclusion in `project-summary.ts`
+  beyond `local/*`, keeping null-localPath projects untouched) + R4-F1 (new optional
+  `costPartial` on `ProjectSummary`, set only when `costUsd > 0` and ≥1 agent ran un-priced;
+  ProjectSidebar tooltip shows `~$X (partial)`) + R3-F1 (both `getTaskLoad` call sites:
+  `stalledAgents ?? findingCount` → `?? 0`). `project-summary.test.ts`: **53 passed**,
+  `tsc --noEmit` clean. *Caveat:* `TokenUsage.costUsd` is typed `number`, so the un-priced
+  case is a runtime-defensive guard (the test casts to simulate it) — kept because the
+  blast radius is a wrong **money** total shown against a budget. *Residual (minor):* a
+  project where *every* agent is un-priced still reports no cost and no partial flag
+  (`costUsd` stays `undefined`), same as before — fully-unknown spend looks like no spend.
+- **Cluster 2 — `fix/stuck-flag-terminal-clear`** (`kookr-r4-stuck-flag`, commit `1fe29ff7`):
+  R4-F2 — clear `clearWaitingOnInputTracking(agentId)` on the terminal-status early-return
+  path in `attachStuckReason` (`task-routes.ts`). Regression test in `task-routes.test.ts`
+  drives the real `/api/tasks` route and is **mutation-verified** (without the fix: fresh
+  episode dedup-suppressed, `suppressed=1≠2`, 1 failed; with it: **203 passed**),
+  `tsc --noEmit` clean.
+
+**Deferred (need a decision, not auto-shipped):**
+
+- **R2-F1 default-flip** — making `/api/tasks` lean by default is a documented
+  backward-compatibility contract change ("Default remains the full list for backward
+  compatibility", `task-routes.ts:222`); the `?view=compact` opt-in already exists, so the
+  question is whether to break the default. Owner call.
+- **R1-F3 raw-space id** — sanitising `local/ferox capital`'s id changes a project's
+  identity key (config, history, task↔project edges). A rename/migration, not a one-liner.
+- **R1-F6 client cwd check** — the browser can't `stat` the filesystem; a real existence
+  check needs a new validation endpoint (or wiring the known-cwd list), i.e. a small design,
+  not a guard tweak.
+- **R4-F3 phantom-zero** — `activeFindingCount` is a **required** field on the snapshot
+  type, so `?? 0` only fires on an out-of-contract payload; a meaningful regression test
+  would have to fabricate a type-violating snapshot. Kept as a documented low-severity note
+  rather than a worktree.
 
 ## Session log
 
