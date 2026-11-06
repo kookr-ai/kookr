@@ -524,6 +524,12 @@ export function formatCompactDateTime(timestamp: Date | string | undefined, now:
   return `${datePart}, ${pad2(date.getHours())}:${pad2(date.getMinutes())}`;
 }
 
+/** Full local date and time for timeline details; empty when the value is invalid. */
+export function formatAbsoluteDateTime(timestamp: Date | string | undefined): string {
+  const date = parseValidDate(timestamp);
+  return date ? date.toLocaleString() : '';
+}
+
 /**
  * Compact relative age for title text where exact date is already visible.
  */
@@ -630,14 +636,29 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
   if (!taskId) return null;
 
   const sessions = Array.isArray(task.sessions) ? task.sessions : [];
-  const lastSession = lastObject(sessions);
-  const cwd = asNonEmptyString(lastSession?.cwd) ?? asNonEmptyString(task.cwd);
+  const lastSession = sessions
+    .map((session) => ({ session, createdAt: toIsoTimestamp(session.createdAt) }))
+    .filter((entry): entry is { session: Record<string, unknown>; createdAt: string } => Boolean(entry.createdAt))
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  const session = lastSession?.session ?? lastObject(sessions);
+  const cwd = asNonEmptyString(session?.cwd) ?? asNonEmptyString(task.cwd);
   const displayPrompt = asString(task.userPrompt) || asString(task.prompt);
-  const startedAt = toIsoTimestamp(task.createdAt) ?? toIsoTimestamp(record.lastActivityMs);
+  const taskCreatedAt = toIsoTimestamp(task.createdAt);
+  const terminalReceiptAt = isRecord(task.terminalReceipt) ? toIsoTimestamp(task.terminalReceipt.at) : undefined;
   const finishedAt = toIsoTimestamp(task.finishedAt)
     ?? toIsoTimestamp(task.terminatedAt)
+    ?? toIsoTimestamp(session?.lastEventAt)
+    ?? toIsoTimestamp(task.updatedAt)
     ?? toIsoTimestamp(record.lastActivityMs);
-  const agentType = asAgentType(lastSession?.agentType) ?? asAgentType(task.agentType);
+  const terminalAt = terminalReceiptAt ?? finishedAt;
+  const terminalAtSource: NonNullable<AgentState['terminalAtSource']> = terminalReceiptAt
+    ? 'terminal_receipt'
+    : toIsoTimestamp(task.finishedAt) ? 'finished_at'
+    : toIsoTimestamp(task.terminatedAt) ? 'terminated_at'
+    : toIsoTimestamp(session?.lastEventAt) ? 'last_session_activity'
+    : toIsoTimestamp(task.updatedAt) ? 'task_updated_at'
+    : 'archive_last_activity';
+  const agentType = asAgentType(session?.agentType) ?? asAgentType(task.agentType);
   const agent: AgentState = {
     agentId: `done-${taskId}`,
     events: [],
@@ -648,8 +669,13 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
     taskStatus: asTerminalTaskStatus(task.status),
     description: displayPrompt || undefined,
     cwd,
-    startedAt,
+    startedAt: taskCreatedAt ?? toIsoTimestamp(record.lastActivityMs),
+    taskCreatedAt,
+    ...(lastSession ? { sessionCreatedAt: lastSession.createdAt } : {}),
     finishedAt,
+    terminalAt,
+    terminalAtSource,
+    archivedAt: record.archivedAt,
     projectId: asNonEmptyString(task.projectId),
     projectDisplayLabel: cwd ? projectLabel(cwd) : undefined,
   };
@@ -661,11 +687,11 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
   }
   const tokenUsage = asTokenUsage(task.tokenUsage);
   if (tokenUsage) agent.tokenUsage = tokenUsage;
-  const gitBranch = asNonEmptyString(lastSession?.gitBranch);
+  const gitBranch = asNonEmptyString(session?.gitBranch);
   if (gitBranch) agent.gitBranch = gitBranch;
-  const gitCommit = asNonEmptyString(lastSession?.gitCommit);
+  const gitCommit = asNonEmptyString(session?.gitCommit);
   if (gitCommit) agent.gitCommit = gitCommit;
-  if (typeof lastSession?.gitIsWorktree === 'boolean') agent.gitIsWorktree = lastSession.gitIsWorktree;
+  if (typeof session?.gitIsWorktree === 'boolean') agent.gitIsWorktree = session.gitIsWorktree;
   const parentTaskId = asNonEmptyString(task.parentTaskId);
   if (parentTaskId) agent.parentTaskId = parentTaskId;
   if (task.unattended === true) agent.unattended = true;

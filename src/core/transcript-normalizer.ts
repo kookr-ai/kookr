@@ -15,6 +15,12 @@ export interface NormalizeLimits {
   maxMessageBytes?: number;
 }
 
+function sourceTimestamp(value: unknown): string | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : undefined;
+}
+
 function stringify(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value === 'string') return value;
@@ -124,7 +130,7 @@ export function normalizeVendorLines(lines: string[], limits?: NormalizeLimits):
     if (out.full) break;
     const trimmed = line.trim();
     if (!trimmed) continue;
-    let entry: { type?: string; role?: string; message?: { role?: string; content?: unknown }; content?: unknown };
+    let entry: { type?: string; role?: string; timestamp?: unknown; message?: { role?: string; content?: unknown }; content?: unknown };
     try {
       entry = JSON.parse(trimmed);
     } catch {
@@ -133,9 +139,10 @@ export function normalizeVendorLines(lines: string[], limits?: NormalizeLimits):
     const type = entry.type ?? entry.role;
     if (type !== 'user' && type !== 'assistant') continue;
     const role: 'user' | 'assistant' = type;
+    const timestamp = sourceTimestamp(entry.timestamp);
     const content = entry.message?.content ?? entry.content;
     if (typeof content === 'string') {
-      if (content.trim()) out.push((clip) => ({ kind: 'text', role, text: clip(content) }));
+      if (content.trim()) out.push((clip) => ({ kind: 'text', role, text: clip(content), ...(timestamp ? { timestamp } : {}) }));
       continue;
     }
     if (!Array.isArray(content)) continue;
@@ -143,17 +150,17 @@ export function normalizeVendorLines(lines: string[], limits?: NormalizeLimits):
       if (!raw || typeof raw !== 'object') continue;
       if (raw.type === 'text' && typeof raw.text === 'string' && raw.text.trim()) {
         const text = raw.text;
-        out.push((clip) => ({ kind: 'text', role, text: clip(text) }));
+        out.push((clip) => ({ kind: 'text', role, text: clip(text), ...(timestamp ? { timestamp } : {}) }));
       } else if (raw.type === 'tool_use') {
         const name = raw.name ?? 'unknown';
         const id = (raw as { id?: string }).id;
         if (id) toolNames.set(id, name);
         const input = stringify(raw.input);
-        out.push((clip) => ({ kind: 'tool_call', name, ...(input !== undefined ? { input: clip(input) } : {}) }));
+        out.push((clip) => ({ kind: 'tool_call', name, ...(input !== undefined ? { input: clip(input) } : {}), ...(timestamp ? { timestamp } : {}) }));
       } else if (raw.type === 'tool_result') {
         const text = blockText(raw.content);
         const name = toolNames.get((raw as { tool_use_id?: string }).tool_use_id ?? '');
-        out.push((clip) => ({ kind: 'tool_result', ...(name ? { name } : {}), text: clip(text) }));
+        out.push((clip) => ({ kind: 'tool_result', ...(name ? { name } : {}), text: clip(text), ...(timestamp ? { timestamp } : {}) }));
       }
     }
   }

@@ -79,7 +79,7 @@ export function toStoredMessages(messages: TranscriptMessage[]): TranscriptMessa
   return messages.map((m): TranscriptMessage => {
     switch (m.kind) {
       case 'text':
-        return { kind: 'text', role: m.role, text: redactTranscriptText(m.text) };
+        return { kind: 'text', role: m.role, text: redactTranscriptText(m.text), ...(m.timestamp ? { timestamp: m.timestamp } : {}) };
       case 'tool_call':
         return {
           kind: 'tool_call',
@@ -87,9 +87,10 @@ export function toStoredMessages(messages: TranscriptMessage[]): TranscriptMessa
           ...(m.input !== undefined
             ? { input: redactTranscriptLine(m.input.slice(0, STORED_TOOL_INPUT_MAX_CHARS)) }
             : {}),
+          ...(m.timestamp ? { timestamp: m.timestamp } : {}),
         };
       case 'tool_result':
-        return { kind: 'tool_result', ...(m.name ? { name: m.name } : {}), text: TOOL_RESULT_PLACEHOLDER, truncated: true };
+        return { kind: 'tool_result', ...(m.name ? { name: m.name } : {}), text: TOOL_RESULT_PLACEHOLDER, truncated: true, ...(m.timestamp ? { timestamp: m.timestamp } : {}) };
       case 'truncation_marker':
         return { kind: 'truncation_marker', note: redactTranscriptLine(m.note) };
     }

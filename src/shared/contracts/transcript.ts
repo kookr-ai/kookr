@@ -5,9 +5,9 @@
  */
 
 export type TranscriptMessage =
-  | { kind: 'text'; role: 'user' | 'assistant'; text: string }
-  | { kind: 'tool_call'; name: string; input?: string }
-  | { kind: 'tool_result'; name?: string; text: string; truncated?: boolean }
+  | { kind: 'text'; role: 'user' | 'assistant'; text: string; timestamp?: string }
+  | { kind: 'tool_call'; name: string; input?: string; timestamp?: string }
+  | { kind: 'tool_result'; name?: string; text: string; truncated?: boolean; timestamp?: string }
   | { kind: 'truncation_marker'; note: string };
 
 export type TranscriptUnavailableReason =

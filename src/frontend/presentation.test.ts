@@ -773,8 +773,49 @@ describe('archivedTaskToAgentState (issue #2760)', () => {
       taskName: 'Ship archive UI',
       taskStatus: 'cancelled',
       agentType: 'codex-cli',
+      taskCreatedAt: '2026-08-01T10:00:00.000Z',
       finishedAt: '2026-08-01T12:00:00.000Z',
+      terminalAt: '2026-08-01T12:00:00.000Z',
+      terminalAtSource: 'finished_at',
+      archivedAt: '2026-08-01T00:00:00.000Z',
     });
+  });
+
+  test('selects the latest dated session and labels the terminal-time fallback source', () => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-03T00:00:00.000Z',
+      lastActivityMs: Date.parse('2026-08-03T12:00:00.000Z'),
+      task: {
+        id: 'task-sessions',
+        status: 'terminated',
+        sessions: [
+          { tmuxSession: 'old', createdAt: '2026-08-01T10:00:00.000Z', cwd: '/old' },
+          { tmuxSession: 'new', createdAt: '2026-08-02T10:00:00.000Z', cwd: '/new', lastEventAt: '2026-08-02T11:00:00.000Z' },
+        ],
+      },
+    });
+
+    expect(agent).toMatchObject({
+      cwd: '/new',
+      sessionCreatedAt: '2026-08-02T10:00:00.000Z',
+      terminalAt: '2026-08-02T11:00:00.000Z',
+      terminalAtSource: 'last_session_activity',
+    });
+  });
+
+  test.each([
+    [{ terminalReceipt: { at: '2026-08-01T11:00:00.000Z' }, finishedAt: '2026-08-01T12:00:00.000Z' }, 'terminal_receipt', '2026-08-01T11:00:00.000Z'],
+    [{ terminatedAt: '2026-08-01T12:00:00.000Z' }, 'terminated_at', '2026-08-01T12:00:00.000Z'],
+    [{ updatedAt: '2026-08-01T13:00:00.000Z' }, 'task_updated_at', '2026-08-01T13:00:00.000Z'],
+    [{}, 'archive_last_activity', '2026-08-01T14:00:00.000Z'],
+  ] as const)('labels terminal time from %s', (taskFields, source, at) => {
+    const agent = archivedTaskToAgentState({
+      archivedAt: '2026-08-01T15:00:00.000Z',
+      lastActivityMs: Date.parse('2026-08-01T14:00:00.000Z'),
+      task: { id: 'task-time-source', status: 'cancelled', ...taskFields },
+    });
+
+    expect(agent).toMatchObject({ terminalAt: at, terminalAtSource: source });
   });
 
   test('drops a completionDigest that has no bullets array', () => {

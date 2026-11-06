@@ -7,7 +7,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatDuration, formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import { formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -36,6 +36,7 @@ import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
 import { appendDictation } from '../append-dictation.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
 import { TranscriptView, TranscriptToggle } from './TranscriptView.js';
+import { TaskTimeline } from './TaskTimeline.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -1056,7 +1057,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
             </span>
           )}
-          {agent.startedAt && <span>{formatDuration(agent.startedAt, agent.finishedAt)}</span>}
           <DetailMetadataMenu
             agent={agent}
             provider={agentProvider}
@@ -1278,20 +1278,23 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
                   </Suspense>
                 ) : (
-                  <Suspense fallback={null}>
-                    <ActivityPanel
-                      agentId={agent.agentId}
-                      events={agent.events}
-                      description={agent.description}
-                      cwd={agent.cwd}
-                      anomalyExplanation={agent.anomaly?.explanation}
-                      onOpenDiff={handleOpenDiff}
-                      activityMeta={agent.activityMeta}
-                      taskId={agent.taskId}
-                      isActive={agent.turnState === 'running'}
-                      userInputDeliveries={agent.userInputDeliveries}
-                    />
-                  </Suspense>
+                  <>
+                    {agent.taskId && <TaskTimeline agent={agent} />}
+                    <Suspense fallback={null}>
+                      <ActivityPanel
+                        agentId={agent.agentId}
+                        events={agent.events}
+                        description={agent.description}
+                        cwd={agent.cwd}
+                        anomalyExplanation={agent.anomaly?.explanation}
+                        onOpenDiff={handleOpenDiff}
+                        activityMeta={agent.activityMeta}
+                        taskId={agent.taskId}
+                        isActive={agent.turnState === 'running'}
+                        userInputDeliveries={agent.userInputDeliveries}
+                      />
+                    </Suspense>
+                  </>
                 )}
               </div>}
 

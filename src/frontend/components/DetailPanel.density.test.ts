@@ -37,6 +37,7 @@ vi.mock('./TerminalPanel.js', () => ({
   },
 }));
 vi.mock('./DiffPane.js', () => ({ DiffPane: () => React.createElement('div', { 'data-testid': 'diff-pane' }) }));
+vi.mock('./TaskTimeline.js', () => ({ TaskTimeline: () => React.createElement('div', { 'data-testid': 'task-timeline' }) }));
 vi.mock('./SnoozeDialog.js', () => ({ SnoozeDialog: () => null }));
 vi.mock('./EffectiveHookSettingsModal.js', () => ({ EffectiveHookSettingsModal: () => null }));
 
@@ -268,6 +269,33 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-left')).toBeNull();
     expect(container.querySelector('.detail-tabs-narrow')).toBeNull();
     expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
+  });
+
+  test('keeps task timeline in Activity and hides it on the GitHub pane', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    const timeline = container.querySelector('[data-testid="task-timeline"]');
+    expect(timeline).not.toBeNull();
+    expect(timeline?.parentElement?.classList.contains('detail-split-left')).toBe(true);
+
+    act(() => useKookrStore.getState().handleGitHubUpdate('task-1', [], [
+      {
+        ref: {
+          type: 'issue', owner: 'kookr-ai', repo: 'kookr', number: 1257,
+          url: 'https://github.com/kookr-ai/kookr/issues/1257',
+          detectedAt: new Date('2026-07-03T00:00:00.000Z'), detectedFrom: 'test', taskId: 'task-1',
+        },
+        title: 'Timeline pane switch', status: 'open', author: 'jeanibarz', labels: [],
+        commentCount: 0, lastFetchedAt: new Date('2026-07-03T00:00:00.000Z'),
+      },
+    ], []));
+    await flush();
+    act(() => useKookrStore.getState().setLeftPane('github'));
+    await flush();
+
+    expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
   });
 
   test('narrow detail tabs expose the active pane with aria-pressed', () => {

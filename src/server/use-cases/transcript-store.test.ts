@@ -75,6 +75,24 @@ describe('transcript-store', () => {
     expect(meta?.vendor?.sizeBytes).toBe((await stat(vendor)).size);
   });
 
+  it('retains provider timestamps in stored conversation messages', async () => {
+    await writeFile(vendor, [
+      JSON.stringify({ type: 'assistant', timestamp: '2026-11-04T11:30:00Z', message: { content: [
+        { type: 'text', text: 'dated answer' },
+        { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+      ] } }),
+      JSON.stringify({ type: 'user', timestamp: '2026-11-04T11:31:00Z', message: { content: [
+        { type: 'tool_result', tool_use_id: 'tool-1', content: 'done' },
+      ] } }),
+    ].join('\n') + '\n');
+    await cap();
+    expect(await readStoredTranscript(dir, 'task1', 'sess1')).toEqual([
+      { kind: 'text', role: 'assistant', text: 'dated answer', timestamp: '2026-11-04T11:30:00.000Z' },
+      { kind: 'tool_call', name: 'Bash', input: '{"command":"pwd"}', timestamp: '2026-11-04T11:30:00.000Z' },
+      { kind: 'tool_result', name: 'Bash', text: '[tool result omitted]', truncated: true, timestamp: '2026-11-04T11:31:00.000Z' },
+    ]);
+  });
+
   it('is idempotent when the vendor fingerprint is unchanged', async () => {
     await cap();
     const before = await readFile(join(dir, 'task1', 'sess1.jsonl.gz'));

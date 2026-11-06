@@ -37,6 +37,7 @@ export interface ArchivedTaskJson {
   updatedAt?: unknown;
   finishedAt?: unknown;
   terminatedAt?: unknown;
+  terminalReceipt?: unknown;
   agentType?: unknown;
   projectId?: unknown;
   playbookId?: unknown;

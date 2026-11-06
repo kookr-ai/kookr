@@ -3,6 +3,26 @@ import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } f
 import type { AgentEvent } from './types.js';
 
 describe('normalizeVendorLines', () => {
+  test('preserves a valid source timestamp on every message expanded from an entry', () => {
+    const lines = [JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-11-04T11:30:00.000Z',
+      message: { content: [
+        { type: 'text', text: 'Working' },
+        { type: 'tool_use', name: 'Bash', input: { command: 'pwd' } },
+      ] },
+    })];
+    expect(normalizeVendorLines(lines)).toEqual([
+      { kind: 'text', role: 'assistant', text: 'Working', timestamp: '2026-11-04T11:30:00.000Z' },
+      { kind: 'tool_call', name: 'Bash', input: '{"command":"pwd"}', timestamp: '2026-11-04T11:30:00.000Z' },
+    ]);
+  });
+
+  test('drops invalid source timestamps instead of inventing one', () => {
+    const lines = [JSON.stringify({ type: 'user', timestamp: 'not-a-time', content: 'hello' })];
+    expect(normalizeVendorLines(lines)).toEqual([{ kind: 'text', role: 'user', text: 'hello' }]);
+  });
+
   test('maps user, assistant text, tool_use and tool_result; skips junk', () => {
     const lines = [
       JSON.stringify({ type: 'user', message: { role: 'user', content: 'hello' } }),
@@ -11,7 +31,7 @@ describe('normalizeVendorLines', () => {
         { type: 'text', text: 'working' },
         { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } },
       ] } }),
-      JSON.stringify({ type: 'user', message: { content: [
+      JSON.stringify({ type: 'user', timestamp: '2026-11-04T11:31:00.000Z', message: { content: [
         { type: 'tool_result', tool_use_id: 't1', content: [{ type: 'text', text: 'a.txt' }] },
       ] } }),
       JSON.stringify({ type: 'system', content: 'ignored' }),
@@ -20,7 +40,7 @@ describe('normalizeVendorLines', () => {
       { kind: 'text', role: 'user', text: 'hello' },
       { kind: 'text', role: 'assistant', text: 'working' },
       { kind: 'tool_call', name: 'Bash', input: '{"command":"ls"}' },
-      { kind: 'tool_result', name: 'Bash', text: 'a.txt' },
+      { kind: 'tool_result', name: 'Bash', text: 'a.txt', timestamp: '2026-11-04T11:31:00.000Z' },
     ]);
   });
 
