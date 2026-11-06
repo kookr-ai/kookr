@@ -68,6 +68,21 @@ improvement — `knowledge-base-mcp-server`, `local-research-agent`,
 Good task seeds: README-vs-code consistency audit, dead-code scan, bug hunt in a
 subsystem, playbook/skill improvement suggestions.
 
+**Mature same-month reruns (run 3+).** When prior runs this month already drove
+the UI and found it polished, net-new *UI* findings are scarce and re-driving the
+same launch→terminal→triage paths is low-value (and launching tasks seeds the
+junk `local/*` rows earlier runs flagged). Shift the pass to **reconciliation +
+code-rooted latent hazards**: confirm which prior findings are still open on the
+*current* `origin/main` (cite `file:line`; delegate this to a read-only Explore
+agent), promote resolved ones to the keep-list, and mine new findings from
+`?? 0` / `?? fallback` coercions that render a partial-or-absent value as an
+authoritative total (these are invisible to a live API cross-check on fully
+populated data). Prefer read-only API + code evidence over new task launches, and
+say in the session log that you made this scope choice. When you then implement,
+*defer* (don't auto-ship) findings that need a product/contract decision — a
+backward-compat default change, a project-identity rename, a guard against a
+field the type says is always present — and surface them to the operator instead.
+
 **Gather context before you launch.** Spend the first few minutes mining what
 the system has recently done — it tells you what to try and often surfaces UX
 regressions directly:
