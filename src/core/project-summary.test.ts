@@ -164,6 +164,65 @@ describe('computeProjectSummaries', () => {
     expect(summaries[0].costUsd).toBeCloseTo(4.0, 5);
   });
 
+  test('flags costPartial when an agent ran but has no costUsd', () => {
+    const agents: AgentState[] = [
+      makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/repo',
+        taskId: 'task-1',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1.5 },
+      }),
+      makeAgent({
+        agentId: 'a2',
+        projectId: 'github.com/org/repo',
+        taskId: 'task-2',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0 } as AgentState['tokenUsage'],
+      }),
+      // Never ran (no tokenUsage): not unpriced.
+      makeAgent({ agentId: 'a3', projectId: 'github.com/org/repo', taskId: 'task-3' }),
+    ];
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+    expect(summaries[0].costUsd).toBeCloseTo(1.5, 5);
+    expect(summaries[0].costPartial).toBe(true);
+  });
+
+  test('flags costPartial and keeps a finite total when an agent cost is NaN (unknown pricing)', () => {
+    // Persisted records can carry a non-finite costUsd (unknown pricing); it
+    // must count as unpriced AND not poison the sum into NaN.
+    const agents: AgentState[] = [
+      makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/repo',
+        taskId: 'task-1',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 2.0 },
+      }),
+      makeAgent({
+        agentId: 'a2',
+        projectId: 'github.com/org/repo',
+        taskId: 'task-2',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: NaN } as AgentState['tokenUsage'],
+      }),
+    ];
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+    expect(summaries[0].costUsd).toBeCloseTo(2.0, 5);
+    expect(Number.isFinite(summaries[0].costUsd)).toBe(true);
+    expect(summaries[0].costPartial).toBe(true);
+  });
+
+  test('omits costPartial when every agent with usage is priced', () => {
+    const agents: AgentState[] = [
+      makeAgent({
+        agentId: 'a1',
+        projectId: 'github.com/org/repo',
+        taskId: 'task-1',
+        tokenUsage: { inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 1.5 },
+      }),
+      makeAgent({ agentId: 'a2', projectId: 'github.com/org/repo', taskId: 'task-2' }),
+    ];
+    const summaries = computeProjectSummaries({ agents, ledgerAnalytics, configStore });
+    expect(summaries[0].costPartial).toBeUndefined();
+  });
+
   test('omits costUsd when the project has no agent spend', () => {
     const agents: AgentState[] = [
       makeAgent({ agentId: 'a1', projectId: 'github.com/org/repo', taskStatus: 'inProgress', taskId: 'task-1' }),
@@ -437,7 +496,7 @@ describe('computeProjectSummaries', () => {
       expect(summaries.map((s) => s.project)).toEqual(['local/unknown-path']);
     });
 
-    test('never filters github.com projects on the local-path check', () => {
+    test('excludes a github.com project whose set localPath is missing and has no active tasks', () => {
       configStore.setConfig('github.com/octo/cat', { tracked: true, localPath: '/tmp/gone/cat' });
       const summaries = computeProjectSummaries({
         agents: [],
@@ -445,7 +504,18 @@ describe('computeProjectSummaries', () => {
         configStore,
         localPathChecker: missingChecker,
       });
-      expect(summaries.map((s) => s.project)).toEqual(['github.com/octo/cat']);
+      expect(summaries).toHaveLength(0);
+    });
+
+    test('keeps a github.com project with a null localPath (never cloned)', () => {
+      configStore.setConfig('github.com/octo/dog', { tracked: true });
+      const summaries = computeProjectSummaries({
+        agents: [],
+        ledgerAnalytics,
+        configStore,
+        localPathChecker: { isMissing: () => true },
+      });
+      expect(summaries.map((s) => s.project)).toEqual(['github.com/octo/dog']);
     });
 
     test('also filters sidebar-seeded dead local projects', () => {

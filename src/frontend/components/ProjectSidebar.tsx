@@ -175,7 +175,13 @@ function ProjectIcon({
   const letter = (orgChar + repoChar).toUpperCase() || '?';
   const hasFindings = summary.findingCount > 0;
   const isActive = summary.activeAgents > 0;
-  const taskLoad = getTaskLoad(summary.activeAgents, summary.stalledAgents ?? summary.findingCount);
+  const taskLoad = getTaskLoad(summary.activeAgents, summary.stalledAgents ?? 0);
+
+  // `~` + "(partial)" marks a total that omits un-priced agents, so a missing
+  // price is distinguishable from a real $0.
+  const spendText = summary.costPartial
+    ? `~${formatCost(summary.costUsd ?? 0)} (partial)`
+    : formatCost(summary.costUsd ?? 0);
 
   const tooltipText = [
     summary.displayName,
@@ -192,8 +198,8 @@ function ProjectIcon({
       : `PRs today: ${summary.todayPrCount}`,
     summary.costUsd !== undefined || (summary.budgetWarnUsd !== undefined && summary.budgetWarnUsd > 0)
       ? (summary.budgetWarnUsd !== undefined && summary.budgetWarnUsd > 0
-        ? `Spend: ${formatCost(summary.costUsd ?? 0)}/${formatCost(summary.budgetWarnUsd)}`
-        : `Spend: ${formatCost(summary.costUsd ?? 0)}`)
+        ? `Spend: ${spendText}/${formatCost(summary.budgetWarnUsd)}`
+        : `Spend: ${spendText}`)
       : null,
   ].filter((part): part is string => Boolean(part)).join(' · ');
 
@@ -463,7 +469,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
       (total, summary) => {
         const projectTaskLoad = getTaskLoad(
           summary.activeAgents,
-          summary.stalledAgents ?? summary.findingCount,
+          summary.stalledAgents ?? 0,
         );
         return getTaskLoad(
           total.activeAgents + projectTaskLoad.activeAgents,

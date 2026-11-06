@@ -63,6 +63,12 @@ export interface ProjectSummary {
    */
   costUsd?: number;
   /**
+   * True when `costUsd` is surfaced but at least one agent has token usage with
+   * no recorded cost (un-priced model / cost not yet computed), so the total
+   * under-states spend. Omitted when every agent with usage is priced.
+   */
+  costPartial?: boolean;
+  /**
    * Contribution attempts currently in the `pr_open` state in Kookr's OSS
    * attempt ledger. This is scoped to agent attempts, not repo-wide GitHub PRs;
    * use `repoHealth.openPullRequests` for the repository denominator.
@@ -146,13 +152,15 @@ export interface ProjectSummaryDeps {
    */
   githubTaskOverlay?: ReadonlyMap<string, GithubTaskOverlayEntry>;
   /**
-   * Existence checker for `local/*` project checkout paths. Defaults to the
-   * process-wide {@link defaultLocalPathChecker}; injectable for tests. A
-   * `local/*` project whose configured `localPath` is confirmed missing and
-   * that has no in-progress task is excluded from the listing — dead test
-   * artifacts (e.g. `local/test_launch_*` pointing at deleted /tmp dirs)
-   * stop occupying first-class sidebar rows. Config rows are NOT deleted, so
-   * recreating the path brings the project back.
+   * Existence checker for a project's recorded checkout path. Defaults to the
+   * process-wide {@link defaultLocalPathChecker}; injectable for tests. Any
+   * project (not just `local/*`) whose configured `localPath` is confirmed
+   * missing and that has no in-progress task is excluded from the listing —
+   * dead test artifacts (e.g. `local/test_launch_*` pointing at deleted /tmp
+   * dirs) and `github.com/*` rows whose clone was deleted stop occupying
+   * first-class sidebar rows. A project with no `localPath` (never cloned) is
+   * never excluded. Config rows are NOT deleted, so recreating the path brings
+   * the project back.
    */
   localPathChecker?: Pick<LocalPathHealthChecker, 'isMissing'>;
 }
@@ -332,14 +340,15 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
   for (const [projectId, agentList] of projectAgents) {
     const config = configStore.getConfig(projectId);
 
-    // Hide dead local test artifacts: a `local/*` project whose checkout path
+    // Hide stale-pointer checkouts: any project (`local/*` test artifacts or a
+    // `github.com/*` row whose clone was deleted) whose recorded `localPath`
     // is confirmed gone and that has no in-progress task is a stale row, not
-    // a project. The existence check is async-cached (never stats inline) and
-    // optimistic, so a project only disappears after a real stat. The config
-    // row is untouched — this is presentation-level filtering only.
+    // a project. Projects with a null/undefined `localPath` (never cloned) are
+    // intentionally unaffected. The existence check is async-cached (never
+    // stats inline) and optimistic, so a project only disappears after a real
+    // stat. The config row is untouched — presentation-level filtering only.
     if (
-      projectId.startsWith('local/')
-      && config?.localPath
+      config?.localPath
       && localPathChecker.isMissing(config.localPath)
       && !agentList.some((a) => a.taskStatus === 'inProgress')
     ) {
@@ -366,8 +375,21 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       (a) => a.anomaly !== null && !a.snoozedUntil && a.taskStatus !== 'pending',
     ).length;
 
-    // Accumulated project spend: sum each agent's already-computed cost.
-    const costUsd = agentList.reduce((sum, a) => sum + (a.tokenUsage?.costUsd ?? 0), 0);
+    // Accumulated project spend: sum each agent's already-computed cost. Guard
+    // with Number.isFinite so a persisted NaN/Infinity cost (unknown pricing)
+    // cannot poison the total — a NaN sum would fail `costUsd > 0` below and
+    // hide the spend line *and* suppress the partial flag, the exact
+    // under-reporting this surfaces. Such agents are counted as unpriced below.
+    const costUsd = agentList.reduce(
+      (sum, a) => sum + (Number.isFinite(a.tokenUsage?.costUsd) ? (a.tokenUsage!.costUsd as number) : 0),
+      0,
+    );
+    // An agent that has token usage but no recorded cost ran un-priced; it adds
+    // $0 to the sum, so flag the total as partial. No usage at all = never ran.
+    const unpricedAgentCount = agentList.filter(
+      (a) => a.tokenUsage !== undefined && a.tokenUsage !== null
+        && (typeof a.tokenUsage.costUsd !== 'number' || !Number.isFinite(a.tokenUsage.costUsd)),
+    ).length;
 
     const recentTasks: TaskSummary[] = agentList
       .filter((a) => a.taskId)
@@ -407,6 +429,7 @@ export function computeProjectSummaries(deps: ProjectSummaryDeps): ProjectSummar
       effectiveZeroDrainIssueLimit,
       zeroDrainIssueLimitMax,
       costUsd: costUsd > 0 ? costUsd : undefined,
+      ...(costUsd > 0 && unpricedAgentCount > 0 ? { costPartial: true } : {}),
       openContributionAttempts,
       lastContribution: lastContrib,
       recentTasks,
