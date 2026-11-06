@@ -603,6 +603,31 @@ describe('stuckReason projection (issue #1526 Phase B)', () => {
     expect(getStuckFlagPrecision()).toMatchObject({ flags: 0, suppressed: 1 });
   });
 
+  test('#1653: a needs_input agent that goes straight to terminal has its tracking cleared, so a later episode on the same agent id is counted', async () => {
+    const taskStore = new TaskStore();
+    const task = seedInProgressTask(taskStore, 'kookr-term');
+    const queue = new AttentionQueue();
+    queue.enqueue('kookr-term', anomaly({ agentId: 'kookr-term', type: 'needs_input' }));
+    const deps = mkLoopDeps(taskStore);
+    deps.queue = queue;
+    const watchdog = new Watchdog();
+    watchdog.registerAgent('kookr-term', Date.now());
+    deps.watchdog = watchdog;
+    const app = mkApp(deps);
+
+    await app.request('/api/tasks');
+    expect(getStuckFlagPrecision()).toMatchObject({ flags: 0, suppressed: 1 });
+
+    // Straight to terminal: projected once as completed, never as non-needs_input inProgress.
+    taskStore.completeTask(task.id);
+    await app.request('/api/tasks');
+
+    // A new task reusing the same agent id starts a fresh needs_input episode.
+    seedInProgressTask(taskStore, 'kookr-term');
+    await app.request('/api/tasks');
+    expect(getStuckFlagPrecision()).toMatchObject({ flags: 0, suppressed: 2 });
+  });
+
   test('queued permission_blocked anomaly → stuckReason permission_blocked', async () => {
     const taskStore = new TaskStore();
     const task = seedInProgressTask(taskStore, 'kookr-perm');

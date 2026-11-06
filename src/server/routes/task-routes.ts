@@ -1648,6 +1648,11 @@ function attachAggregateTokenUsage(task: ApiTask, store: TaskStore): ApiTask {
  * waiting on input, or permission-blocked). Additive-optional: omitted
  * entirely for anything not `inProgress`, so existing consumers of this
  * response shape are byte-identical when nothing is stuck.
+ *
+ * Side effect: maintains the per-agent `needs_input` precision-telemetry
+ * tracking — records the outcome while `inProgress`, and clears the entry
+ * otherwise (including on the terminal early-return path), so a later episode
+ * reusing the same agent id isn't dedup-suppressed.
  */
 function attachStuckReason<
   T extends { status: Task['status']; pendingSignal?: Task['pendingSignal']; sessions: Array<{ tmuxSession: string }> },
@@ -1656,7 +1661,14 @@ function attachStuckReason<
   deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress'> },
   now: number,
 ): T & { stuckReason?: TaskStuckReason } {
-  if (task.status !== 'inProgress') return task;
+  const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
+  if (task.status !== 'inProgress') {
+    // A needs_input agent can jump straight to a terminal status without an
+    // intervening inProgress projection; drop its tracking entry here too so
+    // it doesn't linger and dedup-suppress a later episode reusing the id.
+    if (agentId) clearWaitingOnInputTracking(agentId);
+    return task;
+  }
   const { hungSuspect, queuedAnomalyType, providerPaused, liveness } = resolveTaskAttentionSignals(task, deps, now);
   const stuckReason = deriveStuckReason({
     status: task.status,
@@ -1675,7 +1687,6 @@ function attachStuckReason<
   // projection isn't counted repeatedly) so the fix's effect on precision is
   // observable in diagnostics. Otherwise the agent is not in a needs_input
   // episode, so forget it — a later re-entry is a fresh episode.
-  const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
   if (agentId) {
     if (
       queuedAnomalyType === 'needs_input' &&
