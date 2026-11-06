@@ -10,7 +10,12 @@ import { execFileSync } from 'node:child_process';
 
 // The .gitignore the host setup writes into the notebook repo so only the
 // lesson files are versioned (not the churny usage ring / retro sentinels).
-const NOTEBOOK_GITIGNORE = '.nb-usage.log\n.nb-usage.log.tmp\n.retro-*\n.nb.lock\n*.tmp\n';
+// `.nb-usage.log*` (glob) covers the append-only log AND its runtime sidecars —
+// the atomic-write `.nb-usage.log.tmp` and the row/byte-count state file
+// `.nb-usage.log.count` (agent-notebook #135). Matching the tool's own
+// git-versioning gitignore (agent-notebook #213) keeps a no-op mutation from
+// staging the sidecar and producing a spurious backup commit.
+const NOTEBOOK_GITIGNORE = '.nb-usage.log*\n.retro-*\n.nb.lock\n*.tmp\n';
 
 // Strip inherited GIT_* vars so this test's own `git -C <tmpdir>` calls target
 // the temp repo and can never leak into the real repo — notably under the

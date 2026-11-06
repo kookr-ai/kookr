@@ -82,7 +82,7 @@ To enable it (one-time host setup):
 ```sh
 cd ~/.kookr/notebooks
 git init && git branch -M main
-printf '.nb-usage.log\n.nb-usage.log.tmp\n.nb-backup.log*\n.retro-*\n.nb.lock\n*.tmp\n' > .gitignore
+printf '.nb-usage.log*\n.nb-backup.log*\n.retro-*\n.nb.lock\n*.tmp\n' > .gitignore
 git add -A && git commit -m "init agent notebooks"
 gh repo create <you>/agent-notebooks --private --source=. --remote=origin --push
 # daily push at 03:10 (after the 03:00 KB backup). Adjust the script path to
