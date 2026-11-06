@@ -1,8 +1,8 @@
 import { access } from 'node:fs/promises';
 
 /**
- * Sync-read / async-refresh existence cache for `local/*` project checkout
- * paths.
+ * Sync-read / async-refresh existence cache for a project's recorded checkout
+ * path (any project with a `localPath`, not only `local/*`).
  *
  * Project summaries are computed synchronously and on a hot path (every
  * snapshot broadcast and WS connect), so we never stat inline. Instead,
