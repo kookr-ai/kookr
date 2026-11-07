@@ -8,16 +8,6 @@ import type { DeployRouteDeps } from './shared.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { getToolkitSymlinkStatus, type ToolkitSymlinkStatus } from '../toolkit-symlink-status.js';
 import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-version-status.js';
-import { PluginMutationService } from '../plugin-manager/mutation-service.js';
-import {
-  marketplaceNameFromPluginId,
-  pluginUpdateCommands,
-  pluginInstallCommands,
-  TOOLKIT_MARKETPLACE_SLUG,
-  type PluginUpdateError,
-  type PluginUpdateResult,
-  type PluginInstallResult,
-} from '../../shared/contracts/plugin-version.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -291,37 +281,12 @@ function commandFailureMessage(err: unknown): string {
   return String(err);
 }
 
-async function readPluginStatusForUpdate(
-  deps: DeployRouteDeps,
-  hookHomeDir: string,
-): Promise<PluginVersionStatus | undefined> {
-  let prodDir: string | null = null;
-  try {
-    const candidate = resolveProdDir(deps);
-    await access(candidate);
-    prodDir = candidate;
-  } catch {
-    // Plugin updates do not require a production worktree; fall back to the
-    // running server checkout for available-version discovery.
-  }
-  return await readPluginVersionStatus(prodDir, deps.serverCwd, hookHomeDir);
-}
-
 export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
   const prodUpdateScript = resolveProdUpdateScript(deps.serverCwd);
   const runningPort = deps.serverPort;
   const hookHomeDir = deps.hookHomeDir ?? homedir();
   let deploying = false;
   let toolkitRefreshing = false;
-  /**
-   * Single shared lock + backup for all operations that mutate
-   * ~/.claude/plugins/. Owned by a module-level service (RFC Layer 0 / R8) so
-   * the deploy routes, the plugin routes, and the Layer-4 runner serialize
-   * through one lock. A private instance is constructed when none is injected,
-   * preserving the historical single-router behaviour.
-   */
-  const pluginMutation = deps.pluginMutationService ?? new PluginMutationService();
-  const pluginUpdateBin = deps.pluginUpdateBin ?? process.env.KOOKR_AGENT_BIN ?? 'claude';
 
   app.get('/api/deploy/status', async (c) => {
     // lastRestart is best-effort (issue #1973): never 500 if the metrics file
@@ -518,161 +483,5 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
     } finally {
       toolkitRefreshing = false;
     }
-  });
-
-  app.post('/api/deploy/plugin-update', async (c) => {
-    if (pluginMutation.isLocked) {
-      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-      const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
-      const marketplace = marketplaceNameFromPluginId(pluginId);
-      return c.json<PluginUpdateError>({
-        error: 'Plugin update already in progress',
-        commands: pluginUpdateCommands(pluginId, marketplace),
-        ...(pluginStatus ? { plugin: pluginStatus } : {}),
-      }, 409);
-    }
-
-    return await pluginMutation.withLock('plugin-update', async () => {
-     try {
-      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-      if (!pluginStatus) {
-        const marketplace = marketplaceNameFromPluginId(DEFAULT_PLUGIN_ID);
-        return c.json<PluginUpdateError>({
-          error: 'Could not determine toolkit plugin status',
-          commands: pluginUpdateCommands(DEFAULT_PLUGIN_ID, marketplace),
-        }, 500);
-      }
-
-      const marketplace = marketplaceNameFromPluginId(pluginStatus.pluginId);
-      const commands = pluginUpdateCommands(pluginStatus.pluginId, marketplace);
-      if (pluginStatus.installedVersion === null) {
-        return c.json<PluginUpdateError>({
-          error: 'Toolkit plugin is not installed yet',
-          commands,
-          plugin: pluginStatus,
-        }, 400);
-      }
-
-      await execFileAsync(pluginUpdateBin, ['plugin', 'marketplace', 'update', marketplace], {
-        cwd: deps.serverCwd,
-        timeout: 120_000,
-        env: { ...gitEnv, HOME: hookHomeDir },
-      });
-      await execFileAsync(pluginUpdateBin, ['plugin', 'update', pluginStatus.pluginId], {
-        cwd: deps.serverCwd,
-        timeout: 120_000,
-        env: { ...gitEnv, HOME: hookHomeDir },
-      });
-      const plugin = await readPluginStatusForUpdate(deps, hookHomeDir) ?? pluginStatus;
-      return c.json<PluginUpdateResult>({ status: 'updated', plugin, commands });
-    } catch (err) {
-      console.error(
-        `[deploy] plugin update failed bin=${pluginUpdateBin} home=${hookHomeDir}: ${commandFailureMessage(err)}`,
-      );
-      const plugin = await readPluginStatusForUpdate(deps, hookHomeDir);
-      const pluginId = plugin?.pluginId ?? DEFAULT_PLUGIN_ID;
-      const marketplace = marketplaceNameFromPluginId(pluginId);
-      return c.json<PluginUpdateError>({
-        error: commandFailureMessage(err),
-        commands: pluginUpdateCommands(pluginId, marketplace),
-        ...(plugin ? { plugin } : {}),
-      }, 500);
-     }
-    });
-  });
-
-  app.post('/api/deploy/plugin-install', async (c) => {
-    if (pluginMutation.isLocked) {
-      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-      const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
-      return c.json<PluginUpdateError>({
-        error: 'Plugin install already in progress',
-        commands: pluginInstallCommands(pluginId, TOOLKIT_MARKETPLACE_SLUG),
-        ...(pluginStatus ? { plugin: pluginStatus } : {}),
-      }, 409);
-    }
-
-    return await pluginMutation.withLock('plugin-install', async () => {
-      const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-      if (!pluginStatus) {
-        return c.json<PluginUpdateError>({
-          error: 'Could not determine toolkit plugin status',
-          commands: pluginInstallCommands(DEFAULT_PLUGIN_ID, TOOLKIT_MARKETPLACE_SLUG),
-        }, 500);
-      }
-
-      const commands = pluginInstallCommands(pluginStatus.pluginId, TOOLKIT_MARKETPLACE_SLUG);
-
-      if (pluginStatus.installedVersion !== null) {
-        return c.json<PluginUpdateError>({
-          error: 'Toolkit plugin is already installed',
-          commands,
-          plugin: pluginStatus,
-        }, 400);
-      }
-
-      // --- Back up the plugins directory before any mutation (R8) ---
-      const pluginsDir = join(resolve(hookHomeDir), '.claude', 'plugins');
-      const backup = await pluginMutation.backupPluginsDir(pluginsDir);
-
-      // --- Run the two install commands ---
-      try {
-        await execFileAsync(pluginUpdateBin, ['plugin', 'marketplace', 'add', TOOLKIT_MARKETPLACE_SLUG], {
-          cwd: deps.serverCwd,
-          timeout: 120_000,
-          env: { ...gitEnv, HOME: hookHomeDir },
-        });
-        await execFileAsync(pluginUpdateBin, ['plugin', 'install', pluginStatus.pluginId], {
-          cwd: deps.serverCwd,
-          timeout: 120_000,
-          env: { ...gitEnv, HOME: hookHomeDir },
-        });
-
-        // --- Verify the install succeeded (retry up to 3 times, ~150ms apart) ---
-        let verifiedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-        if (!verifiedStatus || verifiedStatus.installedVersion === null) {
-          for (let attempt = 1; attempt <= 3; attempt++) {
-            await new Promise<void>((res) => setTimeout(res, 150));
-            verifiedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-            if (verifiedStatus?.installedVersion !== null) break;
-          }
-        }
-
-        if (!verifiedStatus || verifiedStatus.installedVersion === null) {
-          const restoreResult = await backup.restore();
-          const recoveryNote = restoreResult.ok
-            ? ''
-            : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
-          console.error(
-            `[deploy] plugin install verification failed bin=${pluginUpdateBin} home=${hookHomeDir}: installedVersion is still null after install`,
-          );
-          return c.json<PluginUpdateError>({
-            error: `Plugin install command succeeded but the plugin does not appear to be installed. Check Claude Code manually.${recoveryNote}`,
-            commands,
-            plugin: verifiedStatus ?? pluginStatus,
-          }, 500);
-        }
-
-        // --- Success: delete backup ---
-        await backup.discard();
-
-        const plugin = verifiedStatus;
-        return c.json<PluginInstallResult>({ status: 'installed', plugin, commands });
-      } catch (err) {
-        const restoreResult = await backup.restore();
-        const recoveryNote = restoreResult.ok
-          ? ''
-          : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
-        console.error(
-          `[deploy] plugin install failed bin=${pluginUpdateBin} home=${hookHomeDir}: ${commandFailureMessage(err)}`,
-        );
-        const refreshedStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
-        return c.json<PluginUpdateError>({
-          error: `${commandFailureMessage(err)}${recoveryNote}`,
-          commands,
-          ...(refreshedStatus ? { plugin: refreshedStatus } : { plugin: pluginStatus }),
-        }, 500);
-      }
-    });
   });
 }

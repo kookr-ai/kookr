@@ -42,6 +42,14 @@ export interface ManagedPlugin {
 
 export interface PluginsReadModel {
   plugins: ManagedPlugin[];
+  /**
+   * Toolkit install/stale projection for the install banner + TopBar badge,
+   * sourced from the same read model (installed version from the registry,
+   * available version git-sourced from origin/main). Present even when the
+   * toolkit is NOT installed (installedVersion null + availableVersion known)
+   * so the banner can nudge a first-time install. Null when it can't be read.
+   */
+  toolkit: import('./plugin-version.js').PluginVersionStatus | null;
 }
 
 /** Success body for `POST /api/plugins/:id/update`. */

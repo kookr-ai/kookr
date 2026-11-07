@@ -160,10 +160,6 @@ export const INTERNAL_API_ROUTES: ReadonlySet<string> = new Set([
   'GET /api/finding-evidence-review-sampler',
   'POST /api/finding-evidence-review',
 
-  // Deploy plugin install/update (ops; toolkit-refresh is documented).
-  'POST /api/deploy/plugin-install',
-  'POST /api/deploy/plugin-update',
-
   // Hosted / self-hosted relay connection management (runbook-documented elsewhere).
   'GET /api/relay-connection',
   'POST /api/relay-connection/connect',

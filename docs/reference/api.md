@@ -1148,6 +1148,7 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
 | `GET /api/plugins` | Fleet inventory for the Plugin Manager: every installed Claude Code plugin with id, installed/available version, tri-state `enablement` (enabled/disabled/default), `staleness` (state + source + `observedAt`), `loadSource`, best-effort always-on `alwaysOnTokens`, and `uninstallGuard`. Degrades to an empty list rather than erroring. |
 | `POST /api/plugins/:id/update` | Update one plugin via `claude plugin update <id> -y --json` through the shared mutation lock + backup (R8). 409 (naming the lock holder) when a mutation is already in flight; no update-all. |
+| `POST /api/plugins/install` | Install the kookr-toolkit marketplace plugin (first-run nudge; marketplace add + install) through the shared mutation lock, backing up `~/.claude/plugins` and restoring on failure. Replaces the removed `POST /api/deploy/plugin-install`. |
 
 #### Agent blacklist
 

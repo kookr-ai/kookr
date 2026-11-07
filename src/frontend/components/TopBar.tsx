@@ -16,6 +16,7 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import {
   getDeployStatus,
+  getToolkitStatus,
   triggerDeploy as requestDeploy,
   refreshToolkitLinks as requestToolkitRefresh,
   updateToolkitPlugin as requestPluginUpdate,
@@ -150,7 +151,16 @@ export function TopBar({
     try {
       const { ok, body: data } = await getDeployStatus();
       if (ok) {
-        setDeployStatus(data);
+        // Toolkit install/stale status now comes from the plugin read model
+        // (/api/plugins), not the deploy-status `plugin` field (slice 1d).
+        let toolkitPlugin = data.plugin;
+        try {
+          const toolkit = await getToolkitStatus();
+          if (toolkit) toolkitPlugin = toolkit;
+        } catch {
+          // Plugin read model unreachable — fall back to the deploy-status field.
+        }
+        setDeployStatus({ ...data, plugin: toolkitPlugin });
         if (data.deploying) {
           setDeploying(true);
         } else if (useKookrStore.getState().deploying) {
@@ -244,7 +254,7 @@ export function TopBar({
     setPluginUpdateMessage(null);
     setPluginUpdateError(null);
     try {
-      const { ok, body: data } = await requestPluginUpdate();
+      const { ok, body: data } = await requestPluginUpdate(pluginId);
       if (ok) {
         setDeployStatus((prev) => prev ? { ...prev, plugin: data?.plugin } : prev);
         setPluginUpdateMessage('Toolkit plugin updated. Restart Claude Code sessions to load it.');

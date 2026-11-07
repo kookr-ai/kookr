@@ -25,6 +25,14 @@ sub="$2"
 case "$sub" in
   list) cat "$HOME/.kookr-fake/list.json" 2>/dev/null || echo "[]";;
   details) echo "Always-on:   ~100 tok";;
+  marketplace) exit 0;;
+  install)
+    mkdir -p "$HOME/.claude/plugins"
+    echo partial > "$HOME/.claude/plugins/partial-marker"
+    if [ -f "$HOME/.kookr-fake/install-fail" ]; then echo "simulated install failure" >&2; exit 1; fi
+    # Simulate a successful install: write the registry entry the verify reads.
+    printf '{"version":2,"plugins":{"kookr-toolkit@kookr":[{"scope":"user","version":"0.16.81"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"
+    exit 0;;
   update)
     mkdir -p "$HOME/.claude/plugins"
     echo partial > "$HOME/.claude/plugins/partial-marker"
@@ -167,5 +175,54 @@ describe('POST /api/plugins/:id/update', () => {
     await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
     // The original registry file survives the restore.
     await access(join(env.home, '.claude', 'plugins', 'installed_plugins.json'));
+  });
+});
+
+describe('POST /api/plugins/install (toolkit, slice 1d)', () => {
+  let env: Env;
+  afterEach(async () => env?.cleanup());
+
+  /** Fresh HOME with NO toolkit installed (empty registry) so the install gate passes. */
+  async function setupNotInstalled(): Promise<Env> {
+    const e = await setup([]);
+    await rm(join(e.home, '.claude', 'plugins', 'installed_plugins.json'), { force: true });
+    return e;
+  }
+
+  it('installs the toolkit and returns the install projection', async () => {
+    env = await setupNotInstalled();
+    const res = await makeApp(env).request('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; plugin: { pluginId: string; installedVersion: string | null } };
+    expect(body.status).toBe('installed');
+    expect(body.plugin.pluginId).toBe(TOOLKIT);
+    expect(body.plugin.installedVersion).toBe('0.16.81');
+  });
+
+  it('returns 400 when the toolkit is already installed', async () => {
+    env = await setup([{ id: TOOLKIT, version: '0.16.81' }]); // registry already has it
+    const res = await makeApp(env).request('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 409 when a mutation already holds the lock', async () => {
+    env = await setupNotInstalled();
+    const app = makeApp(env);
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => (release = r));
+    const holding = env.mutation.withLock('plugin-update', () => held);
+    const res = await app.request('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(409);
+    release?.();
+    await holding;
+  });
+
+  it('restores the plugins dir from backup when the install fails (R8)', async () => {
+    env = await setupNotInstalled();
+    await writeFile(join(env.home, '.kookr-fake', 'install-fail'), '1');
+    const res = await makeApp(env).request('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(500);
+    // Fake wrote partial-marker then failed; restore removed it (dir did not exist before).
+    await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
   });
 });

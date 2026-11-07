@@ -75,6 +75,16 @@ export class ClaudePluginCli {
   async update(id: string): Promise<void> {
     await this.runner.run(['plugin', 'update', id, '-y', '--json']);
   }
+
+  /** `claude plugin marketplace add <source>`. Throws on non-zero exit. */
+  async marketplaceAdd(source: string): Promise<void> {
+    await this.runner.run(['plugin', 'marketplace', 'add', source]);
+  }
+
+  /** `claude plugin install <id>`. Throws on non-zero exit. */
+  async install(id: string): Promise<void> {
+    await this.runner.run(['plugin', 'install', id]);
+  }
 }
 
 /** Parse the output of `claude plugin list --json` (array or `{installed}` wrapper). Exported for tests. */

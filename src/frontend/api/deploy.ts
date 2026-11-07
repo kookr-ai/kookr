@@ -1,10 +1,5 @@
 import { apiFetch, fetchResult, type ApiResult } from './client.js';
-import type {
-  PluginInstallResult,
-  PluginUpdateError,
-  PluginUpdateResult,
-  PluginVersionStatus,
-} from '../../shared/contracts/plugin-version.js';
+import type { PluginVersionStatus } from '../../shared/contracts/plugin-version.js';
 
 export interface ToolkitStatus {
   stale: boolean;
@@ -100,10 +95,3 @@ export function refreshToolkitLinks(): Promise<ApiResult<ToolkitRefreshBody | nu
   return fetchResult<ToolkitRefreshBody>('/api/deploy/toolkit-refresh', { method: 'POST' });
 }
 
-export function updateToolkitPlugin(): Promise<ApiResult<PluginUpdateResult | PluginUpdateError | null>> {
-  return fetchResult<PluginUpdateResult | PluginUpdateError>('/api/deploy/plugin-update', { method: 'POST' });
-}
-
-export function installToolkitPlugin(): Promise<ApiResult<PluginInstallResult | PluginUpdateError | null>> {
-  return fetchResult<PluginInstallResult | PluginUpdateError>('/api/deploy/plugin-install', { method: 'POST' });
-}
