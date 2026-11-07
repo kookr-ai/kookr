@@ -120,7 +120,7 @@ exists. The boundaries that matter are kept without the indirection:
   `unreachable`, `auth`); `-32001`, `INPUT_REQUIRED` and `FAILED` are mapped there. The
   fake A2A HTTP server used in tests is the seam.
 - `registry.ts` owns **worker registration**: a pure `validateWorkerRegistry(config)` that
-  enforces distinct tokens, rejects the known `hx.sh` default token, requires an explicit
+  enforces distinct tokens, rejects any token shared by more than one worker and any token on a built-in denylist of known weak defaults (stored as hashes, so no credential value appears in the repository), requires an explicit
   `operatorAttestedLeaf: true`, and requires operator-supplied URLs; plus a pure
   `pickWorker(records, workers)` (least in-flight, tag filter). `service.ts` receives only
   validated configuration.
@@ -192,7 +192,7 @@ Kookr does not start or stop containers.
 `POST /api/delegations` returns an id; `GET /api/delegations/:id` reports state. The HTTP API
 is asynchronous only. The CLI:
 
-- `kookr delegate "<job>"` submits and waits by polling for at most ~100 s per invocation
+- `kookr delegate --kind <triage|test_audit> --project <id> [--issue <n>] [--key <k>]` submits a *typed* request (free text is rejected: the server assembles the prompt, §10) and waits by polling for at most ~100 s per invocation
   (an agent's shell tool times out around 120 s). If the job is still running it prints the
   id and `still working — run: kookr delegate wait <id>`. `--timeout` means *stop waiting*,
   never *cancel*. If the parent never collects, the delegation still completes and stays
@@ -205,17 +205,19 @@ is asynchronous only. The CLI:
   a retry after `timed_out` or `pool_busy` works. Re-delegating after a parent is relaunched
   under a new task id is a known duplicate risk in v1 and is revisited in slice 2.
 - Results are capped at 64 KB and returned inside a delimited, labelled block. A reply over the cap is `failed/invalid_result` (a truncated structured verdict is never applied).
-- When disabled the API returns a typed `delegation_disabled` naming the missing flag or
-  configuration, and startup logs the decision.
+- **Disabled is observable, not a 404.** The `/api/delegations` routes are always registered; when delegation is off or unusable every request returns HTTP 503 `{error: "delegation_disabled", reason}` with `reason` one of `flag_off`, `no_config`, `invalid_config`, `store_corrupt`, `not_accepting`. No worker is contacted and no state is read in that case. Startup logs the decision (never secrets).
 
 ### 6. Slice-1 invariants (explicit)
 
 Write-ahead record; restart reconcile (§3.3); deadline timer; global `maxDelegations` and
 per-worker `maxInFlight` caps; result cap and envelope; flag gating; `schemaVersion` with a
 tolerant reader; passive health; leaked-work accounting; the registry validation of §1; and
-the ordered-disable procedure: set the flag to reject new dispatch, wait for them to finish (cancel is slice 2)
-in-flight delegations, then unset the flag and keep or archive the state file. Deleting the
-state file with jobs in flight orphans them.
+the ordered-disable procedure. Slice 1 has a config setting `acceptingNewDelegations` (default
+true, re-read on every submit): set it to false and new submits get `delegation_disabled`
+(`not_accepting`) while in-flight delegations keep running to a terminal state (each has a
+deadline; there is no `cancel` until slice 2); wait until `kookr delegate list` shows none
+non-terminal, then unset the flag and keep or archive the state file. Deleting the state file
+with jobs in flight orphans them.
 
 ### 7. Observability before any UI
 
@@ -244,25 +246,25 @@ corrupt store) are slice 2. Until then the store keeps at most N terminal record
 - Accepted residual risk: a worker with web and code-execution tools holding a mounted repo
   can exfiltrate it after prompt injection. Since v4 *every* delegation has repository access and
   reads third-party issue text, so this is the default case (not an exception) and P4 is in the enable gate.
-- Flag: `KOOKR_HERMES_DELEGATION=1` plus at least one attested worker; either missing ⇒ no
-  routes.
+- Flag: `KOOKR_HERMES_DELEGATION=1` plus at least one attested worker; either missing ⇒ the
+  API answers `delegation_disabled` (§5) and does nothing else.
 
 ### 9. Cross-repo prerequisites (hermes-fleet) and the enable gate
 
 These are not Kookr code; each needs a hermes-fleet issue and an owner. The first merge of
-slice 1 does not require them; **enabling the flag outside development does**.
+slice 1 does not require them; **enabling the flag in production or on a shared host does**.
 
 | # | Prerequisite | Why (measured) | Needed for |
 |---|---|---|---|
 | P1 | Distinct per-agent bearer token; no shared default *(done in hermes-fleet#22)* | One shared default token across the fleet | enabling slice 1 |
-| P2 | Publish only on loopback (`-p 127.0.0.1:PORT:9900`) *(done in hermes-fleet#22)* | The launcher published on all interfaces; workers publish nothing by default, so Kookr cannot reach them | enabling slice 1 |
+| P2 | Publish only on loopback (`-p 127.0.0.1:PORT:9900`) *(done in hermes-fleet#22)* | The launcher published on all interfaces, and an unpublished worker is unreachable from the host; so each worker Kookr uses needs an explicit loopback-only published port | enabling slice 1 |
 | P3 | Pass `A2A_REPLY_TIMEOUT` through `hx.sh up` | `hx.sh` cannot set it; default 300 s | jobs longer than ~5 min |
 | P4 | Block worker→Kookr (`host.docker.internal`) and worker→worker traffic | Both measured reachable; the Kookr API is unauthenticated | enabling slice 1 (leaf rule) |
 | P5 | Refuse `--workspace` paths outside a dedicated directory; stop `chmod -R 0777` | A mistaken path altered ~72 000 files | any file-touching worker |
 | P6 | A worker-side per-job turn/budget cap | Cancel and timeout leave work running | bounding leaked spend |
 | P7 *(v4)* | A **read-only** workspace mount option (`--workspace-ro`) for a snapshots root (Kookr creates per-commit snapshot directories under it, §10) | `hx.sh --workspace` mounts read-write; analysis jobs must not be able to modify the repo | slice 1 (triage, audit) |
 
-**Enable gate (checklist, all must hold before the flag is set in production):** P1, P2, P4
+**Enable gate (checklist, all must hold before the flag is set in production or on a shared host):** P1, P2, P4
 and P7 done (P3 as well before the audit kind is enabled); a named owner for snapshot creation
 and cleanup, with `baseSha` recorded on every delegation; each worker's `operatorAttestedLeaf` set by someone who has read the deployment; a live
 smoke test against two scratch agents with distinct tokens passes (fake-server tests built
@@ -326,9 +328,9 @@ verdict is untrusted input to the effect step as well as to the parent LLM:
 - the effect is performed by Kookr or the playbook, never by the worker.
 
 **Playbook hook.** The triage playbook step calls `kookr delegate` when delegation is enabled and
-healthy; on `delegation_disabled`, `pool_busy`, `pool_unavailable`, `needs_input`,
-`worker_failed`, `worker_lost`, `worker_unreachable`, `timed_out` or `invalid_result` it falls back to doing the triage itself (delegation is an
-optimisation, never a dependency). Revert order: remove the playbook step first, then run the
+healthy; on `delegation_disabled`, `pool_busy`, `pool_unavailable`, or **any delegation outcome
+other than `completed`** (every failure reason, `timed_out`, `cancelled`) or any API error, it
+falls back to doing the triage itself (delegation is an optimisation, never a dependency). Revert order: remove the playbook step first, then run the
 ordered disable.
 
 ## Files to change (by slice)
@@ -336,7 +338,8 @@ ordered disable.
 | Slice | Files |
 |---|---|
 | 1a | `src/server/delegation/{service,a2a-client,store,routes,registry}.ts`, `src/shared/contracts/delegation.ts` only if a second TypeScript consumer appears (otherwise types live beside the writer), `config.ts`, `.env.example`, bootstrap wiring under `src/server/bootstrap/`, fake-A2A-server test fixture |
-| 1a+ | `src/server/delegation/{snapshots,prompts,results,apply}.ts` (snapshot lifecycle, versioned prompt templates, per-kind result schemas, allow-listed effect step with idempotency marker) |
+| 1a (modules) | `src/server/delegation/{snapshots,prompts,results}.ts` (snapshot lifecycle, versioned prompt templates, per-kind result schemas) |
+| 1b (apply) | `src/server/delegation/apply.ts` (allow-listed effect step with an idempotency marker) |
 | 1b | `bin/kookr-delegate.js` + `kookr` dispatcher, the triage playbook step with its fallback, docs (`api.md`, `environment-variables.md`, `architecture.md`) |
 | 2a | `src/core/ports/task-terminal-notifier.ts`, one optional fire-and-forget try/catch-wrapped dependency called from the terminal path in `agent-lifecycle.ts` (callbacks, not an event bus — none exists), periodic parent-liveness sweep |
 | 2b | worker probe/breaker, `draining`, `workers` and `cancel` verbs, gauges and counters, retention, runbook, an architecture-boundary rule that `delegation/` is imported only from bootstrap |
@@ -404,17 +407,17 @@ defined base ref, and P5 resolved on the Hermes side.
    - **1-triage (ships first):** short jobs that fit the default reply timeout; blocking `wait`
      is enough; no P3 dependency.
      - **1a (API):** service, store, A2A client, registry (workers ↔ projects, attested
-       `workspaceMode`/`replyTimeoutSec`), snapshots, prompts, result schema and apply step,
+       `workspaceMode`/`replyTimeoutSec`), snapshots, prompts, result schema,
        routes, wiring, behind the flag; fake-server tests plus the live two-agent smoke test as
        the exit criterion.
-     - **1b (CLI + playbook):** `delegate`, `wait`, `status`, `list --parent`, and the triage
-       playbook step with its fallback.
-   - **1-audit (after 1-triage):** long jobs. Needs P3, the per-worker `replyTimeoutSec`
-     attestation, `tasks/get`/`tasks/subscribe` collection, and the delivery-shape decision
+     - **1b (CLI + apply + playbook):** `delegate`, `wait`, `status`, `list --parent`, the
+       allow-listed apply step, and the triage playbook step with its fallback.
+   - **1-audit (after 1-triage):** long jobs. Needs P3 (the attested `replyTimeoutSec` field is
+     already in 1a), `tasks/get`/`tasks/subscribe` collection, and the delivery-shape decision
      (blocking `wait` vs completion callback, Alternative 9). If a callback is chosen it pulls in
      the slice-2a notifier and parent-liveness sweep, so that decision is made before 1-audit
      starts, not during it.
-   *Revert:* remove the playbook step, run the ordered disable, then remove the additive modules
+   *Revert (applies to the whole of slice 1):* remove the playbook step, run the ordered disable, then remove the additive modules
    and the snapshot directories (nothing references them once no delegation is non-terminal);
    in-flight Hermes jobs keep running until they finish or the worker is restarted.
 2. **Safety and health.**
@@ -496,12 +499,7 @@ accepted for slice 1.
   `invalid_result`, and path verification; allow-listed, marker-idempotent effect step; long-job
   transport via `tasks/get`/`tasks/subscribe`; playbook fallback and revert order; stale
   "text-only" statements reconciled; the value test is now an explicit gate.
-- *v4 (not panel-reviewed):* the operator answered the decision gate (triage, implementation,
-  test-quality audits). Slice 1 re-scoped to read-only-workspace analysis, implementation
-  promoted to slice 4 with its own RFC, supervisor-performs-side-effects stated as a principle,
-  P7 added, and the value test recorded. These edits follow directly from the operator's
-  answer; they have not been through the critic panel and should be reviewed before
-  implementation starts.
+- *v4:* the operator answered the decision gate (triage, implementation, test-quality audits); slice 1 was re-scoped to read-only-workspace analysis, implementation promoted to slice 4 with its own RFC, supervisor-performs-side-effects stated as a principle, P7 added, and the value test recorded. These edits were then covered by the focused delivery review incorporated in v5 above (not by a full critic-panel round).
 - `ambition-amplifier`, `assumption-archaeologist`: not invoked.
 - Adversarial pair (design-minimalist vs boundary-critic) disagreed on ports: the author sided
   with the minimalist for v1 because the architecture-boundary checker already forbids the

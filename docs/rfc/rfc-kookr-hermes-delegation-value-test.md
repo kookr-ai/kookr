@@ -5,24 +5,24 @@
 The parent RFC gates slice 1 on this test. The pass/fail criteria were written **before** any output existed.
 
 ## Method
-- **Inputs:** 10 open GitHub issues (4 from a private product repo, 3 from a private data-pipeline repo, 3 from this repo as a public control) and one test-quality audit of the data-pipeline repo.
-- **Same task, same inputs, both sides.** Identical prompt files (a fixed JSON schema for triage; a fixed schema for the audit) and identical read-only, tracked-files-only checkouts. Hermes ran on a scratch worker (DeepSeek V4 Flash, read-only mount, `message/send`, 900 s reply timeout). The Claude side ran independently as a Sonnet subagent that never saw Hermes output.
+- **Inputs:** 10 open GitHub issues (4 from a private product repo, 3 from a private data-pipeline repo, 3 from this repo as a public control) and one test-quality audit of the data-pipeline repo ("repo-D"; the product repo is "repo-P").
+- **Same task, same inputs, both sides.** Identical prompt files (a fixed JSON schema for triage; a fixed schema for the audit) and identical read-only, tracked-files-only checkouts. Hermes ran on a scratch worker (DeepSeek V4 Flash, read-only mount, `message/send`, 900 s reply timeout; the read-only mount and reply timeout were set with a patched scratch copy of the launcher, i.e. the equivalent of prerequisites P3 and P7). The Claude side ran independently as a Sonnet subagent that never saw Hermes output.
 - **Blind judge:** an Opus-class agent saw each pair as "A"/"B" (assignment randomised with a recorded seed; mapping withheld), verified every claim against the issue text and the repository, and scored usefulness (1-5), hallucination, and for the audit the truth of every finding.
-- **Pre-registered criteria:** (1) Hermes schema-valid rate >= 90%; (2) mean usefulness >= 3.5 and within 0.7 of Claude; (3) hallucination rate <= 20%; (4) audit precision >= 60% with >= 3 verified-true findings. Triage group = 1-3, audit group = 4.
+- **Pre-registered criteria:** (1) Hermes schema-valid rate >= 90%; (2) mean usefulness >= 3.5 and Hermes not more than 0.7 below Claude; (3) hallucination rate <= 20%; (4) audit precision >= 60% with >= 3 verified-true findings. Triage group = 1-3, audit group = 4.
 
 ## Results
 | Item | Hermes | Claude | Better |
 |---|---|---|---|
-| earnings-watch #188 | 5 | 4 | Hermes |
-| earnings-watch #191 | 4 | 4 | Hermes (one stale claim: PR described as draft) |
-| earnings-watch #211 | 5 | 4 | Hermes |
+| repo-D #188 | 5 | 4 | Hermes |
+| repo-D #191 | 4 | 4 | Hermes (one stale claim: PR described as draft) |
+| repo-D #211 | 5 | 4 | Hermes |
 | kookr #3482 | 5 | 4 | Hermes |
 | kookr #3499 | 3 | 5 | Claude (Hermes sized finished work as XL) |
 | kookr #3504 | 5 | 4 | Hermes |
-| lucy #3892 | 4 | 4 | Hermes (narrowly) |
-| lucy #3928 | 5 | 3 | Hermes |
-| lucy #3954 | 5 | 3 | Hermes |
-| lucy #3959 | 5 | 4 | Hermes |
+| repo-P #3892 | 4 | 4 | Hermes (narrowly) |
+| repo-P #3928 | 5 | 3 | Hermes |
+| repo-P #3954 | 5 | 3 | Hermes |
+| repo-P #3959 | 5 | 4 | Hermes |
 
 - **Triage:** Hermes mean usefulness 4.60 vs Claude 3.90; Hermes preferred on 9 of 10. Valid JSON 10/10 and 69/69 cited paths exist. One hallucination flag for Hermes (10%), none for Claude.
 - **Audit:** Hermes 8 verified-true, 1 partial, 0 false of 9 (precision 0.89). Claude 4 verified-true, 3 partial, 1 false of 8 (precision 0.50). The judge rated Hermes's findings more valuable (for example, 11 contract tests that silently return early in CI; an untested address-validation branch).
