@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1272,20 +1272,37 @@ describe('startTelegramTrigger — answer-a-task reply loop (buttons + reply rou
     };
   }
 
-  it('routes an Approve button click to approveTaskPermission', async () => {
+  it('routes an Approve button (with prompt id) to approveTaskPermission', async () => {
+    const approveTaskPermission = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([cb('approve:task-xyz:abc123def456')]);
+    handle = await startTelegramTrigger(deps({ approveTaskPermission }));
+    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', 'abc123def456'));
+    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text === '✅ Approved task task-xyz.')).toBe(true));
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => a.text === 'Approved')).toBe(true));
+  });
+
+  it('routes an Approve button without a prompt id (undefined expectedPromptId)', async () => {
     const approveTaskPermission = vi.fn(async () => ({ ok: true }));
     fake.queueUpdates([cb('approve:task-xyz')]);
     handle = await startTelegramTrigger(deps({ approveTaskPermission }));
-    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz'));
-    await waitFor(() => expect(fake.outbound.answerCallbackQuery.length).toBeGreaterThan(0));
-    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => /Approved/.test(e.text))).toBe(true));
+    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz', undefined));
   });
 
-  it('routes a Continue button click to replyToTask with "continue"', async () => {
+  it('routes a Continue button click to replyToTask and renders success', async () => {
     const replyToTask = vi.fn(async () => ({ ok: true }));
     fake.queueUpdates([cb('reply:task-xyz:continue')]);
     handle = await startTelegramTrigger(deps({ replyToTask }));
     await waitFor(() => expect(replyToTask).toHaveBeenCalledWith('task-xyz', 'continue'));
+    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => e.text === '▶️ Told task task-xyz to continue.')).toBe(true));
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => a.text === 'Sent')).toBe(true));
+  });
+
+  it('rejects an unknown reply preset instead of sending it to the agent', async () => {
+    const replyToTask = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([cb('reply:task-xyz:rm-rf')]);
+    handle = await startTelegramTrigger(deps({ replyToTask }));
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => a.text === 'Unknown action')).toBe(true));
+    expect(replyToTask).not.toHaveBeenCalled();
   });
 
   it('ignores a quick-reply button from a non-allowlisted user', async () => {
@@ -1301,5 +1318,48 @@ describe('startTelegramTrigger — answer-a-task reply loop (buttons + reply rou
     fake.queueUpdates([cb('approve:task-xyz')]);
     handle = await startTelegramTrigger(deps({ approveTaskPermission }));
     await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => /no longer waiting/.test(a.text ?? ''))).toBe(true));
+  });
+
+  it('routes a plain-text reply to the correlated task (seeded correlation)', async () => {
+    // Seed a sent-notification correlation for message_id 100 in this chat.
+    mkdirSync(join(tmp, 'telegram'), { recursive: true });
+    writeFileSync(join(tmp, 'telegram', 'state.json'), JSON.stringify({
+      offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {},
+      sentNotifications: { '100': { taskId: 'task-corr', at: Date.now(), chatId: USER } },
+    }));
+    const replyToTask = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([{
+      update_id: 1,
+      message: { message_id: 200, from: { id: USER }, chat: { id: USER, type: 'private' }, text: 'do X instead', reply_to_message: { message_id: 100, chat: { id: USER, type: 'private' } } },
+    } as any]);
+    handle = await startTelegramTrigger(deps({ replyToTask }));
+    await waitFor(() => expect(replyToTask).toHaveBeenCalledWith('task-corr', 'do X instead'));
+    await waitFor(() => expect(fake.outbound.sendMessage.some((s) => /Sent to task task-corr/.test(s.text))).toBe(true));
+  });
+
+  it('does NOT route a reply from a different chat (message_id is per-chat)', async () => {
+    mkdirSync(join(tmp, 'telegram'), { recursive: true });
+    writeFileSync(join(tmp, 'telegram', 'state.json'), JSON.stringify({
+      offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {},
+      sentNotifications: { '100': { taskId: 'task-corr', at: Date.now(), chatId: 55555 } }, // other chat
+    }));
+    const replyToTask = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([{
+      update_id: 1,
+      message: { message_id: 200, from: { id: USER }, chat: { id: USER, type: 'private' }, text: 'hello', reply_to_message: { message_id: 100, chat: { id: USER, type: 'private' } } },
+    } as any]);
+    handle = await startTelegramTrigger(deps({ replyToTask }));
+    await sleep(250);
+    expect(replyToTask).not.toHaveBeenCalled();
+  });
+
+  it('is read-only (no agent action) when reply deps are not wired', async () => {
+    const base = deps();
+    const readOnly: StartTelegramTriggerDeps = { ...base };
+    delete (readOnly as Partial<StartTelegramTriggerDeps>).replyToTask;
+    delete (readOnly as Partial<StartTelegramTriggerDeps>).approveTaskPermission;
+    fake.queueUpdates([cb('approve:task-xyz')]);
+    handle = await startTelegramTrigger(readOnly);
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => /approval not available/.test(a.text ?? ''))).toBe(true));
   });
 });

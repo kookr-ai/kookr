@@ -4,6 +4,12 @@ export type TelegramTaskOutcome =
   | { kind: 'failed' }
   | { kind: 'cancelled' };
 
+/** Result of routing an operator's Telegram reply/decision back to a task. */
+export interface TelegramReplyResult {
+  ok: boolean;
+  reason?: string;
+}
+
 export interface TelegramHandle {
   stop(): Promise<void>;
   /**

@@ -11,7 +11,7 @@ import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchOpts, LaunchResult } from '../../shared/contracts/launch.js';
 import { dashboardTaskUrl } from '../../shared/dashboard-task-url.js';
-import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
+import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
 import {
   TelegramApiClient,
   TelegramApiError,
@@ -101,8 +101,10 @@ export interface StartTelegramTriggerDeps {
    * current permission prompt (anti-stale, keystroke-based). When unset, the
    * bot behaves exactly as before (notifications are read-only).
    */
-  replyToTask?: (taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>;
-  approveTaskPermission?: (taskId: string) => Promise<{ ok: boolean; reason?: string }>;
+  replyToTask?: (taskId: string, text: string) => Promise<TelegramReplyResult>;
+  approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
+  /** Short identity of a task's current permission prompt (for the Approve button). */
+  permissionPromptId?: (taskId: string) => string | null;
 }
 
 /**
@@ -275,12 +277,18 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   const dailyCap = new DailyCap(deps.maxSpawnsPerDay ?? 50, state);
   const api = new TelegramApiClient(deps.token);
 
+  // Reply-routing constants (used by notification senders, the callback handler,
+  // and the correlation GC — declared once, up front).
+  const SENT_NOTIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+  /** callback_data namespaces (kept distinct from the spawn `hash:y|n` shape). */
+  const CB_APPROVE = 'approve:'; // approve:<taskId>[:<promptId>]
+  const CB_REPLY = 'reply:'; // reply:<taskId>:continue
+
   // Initial GC pass; schedule periodic GC.
-  const SENT_NOTIFICATION_GC_MS = 24 * 60 * 60 * 1000;
   const pruneSentNotificationState = async (): Promise<void> => {
     const current = state.get().sentNotifications;
     if (!current || Object.keys(current).length === 0) return;
-    const pruned = pruneSentNotifications(current, Date.now(), SENT_NOTIFICATION_GC_MS);
+    const pruned = pruneSentNotifications(current, Date.now(), SENT_NOTIFICATION_TTL_MS);
     if (Object.keys(pruned).length !== Object.keys(current).length) {
       await state.update((s) => { s.sentNotifications = pruned; });
     }
@@ -467,11 +475,18 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     // deliver the text to that running agent instead of treating it as a new
     // task request. Unmatched replies fall through to the normal flow.
     const replyToId = m.reply_to_message?.message_id;
-    if (replyToId !== undefined && deps.replyToTask && !isHelpCommand(text)) {
+    // A reply that is itself a command (/tasks, /agent, …) is executed, not sent
+    // to the agent — only route genuine free-text replies.
+    if (replyToId !== undefined && deps.replyToTask && !text.startsWith('/')) {
       const mapped = state.get().sentNotifications?.[String(replyToId)];
-      if (mapped) {
+      // message_id is unique only per chat — only route when the reply came from
+      // the chat the notification was sent to (correctness finding #2).
+      if (mapped && mapped.chatId === m.chat.id) {
         const result = await deps.replyToTask(mapped.taskId, text);
         if (result.ok) {
+          // Keep the operator subscribed to this task's alerts after answering
+          // (a completion_ready had cleared its origin — finding #3).
+          await state.update((s) => { s.origin[mapped.taskId] = m.chat.id; });
           audit({ kind: 'reply_routed', taskId: mapped.taskId, sender: userId, via: 'text' });
           await sendMessageSafe(m.chat.id, `✅ Sent to task ${mapped.taskId}.`);
         } else {
@@ -664,9 +679,14 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       }
 
       if (data.startsWith(CB_APPROVE)) {
-        const taskId = data.slice(CB_APPROVE.length);
+        // `approve:<taskId>[:<promptId>]` — taskId is a uuid (no colon), so the
+        // first ':' separates the optional prompt-identity token.
+        const payload = data.slice(CB_APPROVE.length);
+        const ci = payload.indexOf(':');
+        const taskId = ci >= 0 ? payload.slice(0, ci) : payload;
+        const expectedPromptId = ci >= 0 ? payload.slice(ci + 1) : undefined;
         const result = deps.approveTaskPermission
-          ? await deps.approveTaskPermission(taskId)
+          ? await deps.approveTaskPermission(taskId, expectedPromptId)
           : { ok: false, reason: 'approval not available' };
         if (result.ok) {
           audit({ kind: 'permission_decision_sent', taskId, sender: cb.from.id });
@@ -681,16 +701,23 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
         return;
       }
 
-      // CB_REPLY — `reply:<taskId>:<preset>`
+      // CB_REPLY — `reply:<taskId>:<preset>` (only `continue` is accepted).
       const rest = data.slice(CB_REPLY.length);
       const sep = rest.lastIndexOf(':');
       const taskId = sep >= 0 ? rest.slice(0, sep) : rest;
       const preset = sep >= 0 ? rest.slice(sep + 1) : 'continue';
-      const presetText = preset === 'continue' ? 'continue' : preset;
+      if (preset !== 'continue') {
+        audit({ kind: 'reply_route_failed', taskId, sender: cb.from.id, via: 'button', reason: `unknown preset: ${preset}` });
+        await api.answerCallbackQuery(cb.id, 'Unknown action').catch(() => undefined);
+        return;
+      }
       const result = deps.replyToTask
-        ? await deps.replyToTask(taskId, presetText)
+        ? await deps.replyToTask(taskId, 'continue')
         : { ok: false, reason: 'reply not available' };
       if (result.ok) {
+        // Resuming a completed task re-subscribes the operator to its alerts
+        // (completion_ready had cleared its origin — finding #3).
+        await state.update((s) => { s.origin[taskId] = cb.from.id; });
         audit({ kind: 'reply_routed', taskId, sender: cb.from.id, via: 'button' });
         if (cb.message) {
           await api.editMessageText(cb.message.chat.id, cb.message.message_id, `▶️ Told task ${taskId} to continue.`).catch(() => undefined);
@@ -809,17 +836,16 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   // so a plain-text reply can be delivered to the running agent.
   // -------------------------------------------------------------------------
 
-  const SENT_NOTIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
-  /** callback_data namespaces (kept distinct from the spawn `hash:y|n` shape). */
-  const CB_APPROVE = 'approve:'; // approve:<taskId>
-  const CB_REPLY = 'reply:'; // reply:<taskId>:continue
-
-  async function recordSentNotification(messageId: number | undefined, taskId: string): Promise<void> {
+  async function recordSentNotification(
+    messageId: number | undefined,
+    taskId: string,
+    chatId: number,
+  ): Promise<void> {
     // Only worth storing when replies can actually be routed back.
     if (messageId === undefined || !deps.replyToTask) return;
     await state.update((s) => {
       const map = s.sentNotifications ?? {};
-      map[String(messageId)] = { taskId, at: Date.now() };
+      map[String(messageId)] = { taskId, at: Date.now(), chatId };
       s.sentNotifications = pruneSentNotifications(map, Date.now(), SENT_NOTIFICATION_TTL_MS);
     });
   }
@@ -846,14 +872,18 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     const replyHint = deps.approveTaskPermission || canReply
       ? '\nTap ✅ to approve, or reply to this message to instruct the agent.'
       : '';
+    // Bind the Approve button to THIS prompt's identity so a stale button can't
+    // approve a different prompt that appeared since (correctness finding #1).
+    const promptId = deps.permissionPromptId?.(taskId) ?? null;
+    const approveData = promptId ? `${CB_APPROVE}${taskId}:${promptId}` : `${CB_APPROVE}${taskId}`;
     const markup = deps.approveTaskPermission
-      ? { inline_keyboard: [[{ text: '✅ Approve', callback_data: `${CB_APPROVE}${taskId}` }]] }
+      ? { inline_keyboard: [[{ text: '✅ Approve', callback_data: approveData }]] }
       : undefined;
     void sendMessageSafe(chatId, `Task ${taskId} blocked: ${safe}\nApprove: ${url}${replyHint}`, markup)
       .then(async (sent) => {
         if (sent) {
           audit({ kind: 'block_alert_sent', taskId, chatId });
-          await recordSentNotification(sent.message_id, taskId);
+          await recordSentNotification(sent.message_id, taskId, chatId);
         }
       })
       .catch((err) => audit({ kind: 'spawn_failed', reason: `block_alert: ${String(err)}` }));
@@ -896,7 +926,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
       if (sent) {
         audit({ kind: 'task_outcome_sent', taskId, chatId, outcome: outcome.kind });
         if (outcome.kind === 'completion_ready') {
-          await recordSentNotification(sent.message_id, taskId);
+          await recordSentNotification(sent.message_id, taskId, chatId);
         }
       }
     } catch (err) {

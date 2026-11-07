@@ -332,6 +332,7 @@ Speech and Telegram integrations are optional. They are disabled unless configur
 
 - Speech-to-text and text-to-speech can run as bundled Docker Compose stacks or point at external services.
 - Telegram remote chat requires a bot token plus explicit user and project allowlists.
+- You can also answer a task from Telegram: reply to a notification to send the text to the running agent, or tap **Approve** on a permission block / **Continue** on a finished task — no need to open the dashboard. Approve only acts on the exact prompt the message was about.
 
 See [Configuration](configuration.md) for setup notes.
 

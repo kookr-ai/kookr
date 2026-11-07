@@ -485,6 +485,7 @@ kookr/
 │   │   ├── hook-watcher.ts                # Tail per-session hook JSONL files
 │   │   ├── reconciliation.ts              # Startup reconciliation of tasks vs live backend sessions
 │   │   ├── session-bridge.ts              # Bridge xterm.js ↔ TerminalBackend byte stream
+│   │   ├── telegram-task-bridge.ts        # Telegram → running-agent reply/approve bridge (sendText, approvePermission)
 │   │   ├── fake-terminal-bridge.ts        # Fake terminal for E2E / demo mode
 │   │   ├── agent-lifecycle.ts             # Agent launch/stop/cleanup + pending-task promotion
 │   │   ├── agent-preflight.ts             # Agent binary availability/version preflight
@@ -562,6 +563,7 @@ kookr/
 │   │   ├── shadow-report.ts               # Offline shadow report generator
 │   │   ├── self-diagnostic.ts             # Runtime self-diagnostic
 │   │   ├── turn-state.ts                  # Current-turn state derivation
+│   │   ├── background-parked.ts           # Shared "Stop parked on background work" predicate (turn-state + anomaly-detector)
 │   │   ├── activity-ledger.ts             # Persistent activity log
 │   │   ├── attention-miss-review.ts       # Attention miss review helpers
 │   │   ├── finding-evidence-audit.ts      # Evidence audit model

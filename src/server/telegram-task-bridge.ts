@@ -18,24 +18,31 @@ import type { AttentionQueue } from '../core/attention-queue.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 import type { Watchdog } from '../core/watchdog.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
+import type { TelegramReplyResult } from '../shared/contracts/telegram.js';
 import { RemotePermissionBroker } from '../remote/permission-broker.js';
 import {
   buildPermissionRequestBinding,
   latestPermissionRequestEvent,
 } from './permission-request-binding.js';
 
-export interface TelegramReplyResult {
-  ok: boolean;
-  reason?: string;
-}
+/** Length of the short prompt identity embedded in the Approve button. */
+const PROMPT_ID_LEN = 12;
 
 export interface TelegramTaskBridge {
   /** Deliver a free-text instruction to the task's live agent session. */
   sendText(taskId: string, text: string): Promise<TelegramReplyResult>;
-  /** Approve the task's current permission prompt (keystroke '1'), anti-stale. */
-  approvePermission(taskId: string): Promise<TelegramReplyResult>;
-  /** True when the task's live session is currently permission-blocked. */
-  isPermissionBlocked(taskId: string): boolean;
+  /**
+   * Approve the task's current permission prompt (keystroke '1'), anti-stale.
+   * When `expectedPromptId` is given (from the button that was shown), refuses
+   * if the live prompt is no longer that one — so a stale Approve button cannot
+   * approve a *different* prompt that appeared since.
+   */
+  approvePermission(taskId: string, expectedPromptId?: string): Promise<TelegramReplyResult>;
+  /**
+   * A short identity for the task's current permission prompt (or null when not
+   * blocked). Embedded in the Approve button so a tap approves only that prompt.
+   */
+  permissionPromptId(taskId: string): string | null;
 }
 
 export interface TelegramTaskBridgeDeps {
@@ -75,6 +82,15 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
     return latestLiveSession(task)?.tmuxSession ?? null;
   }
 
+  /** requestId of the live permission prompt for `sessionId`, or null. */
+  function livePromptRequestId(sessionId: string): string | null {
+    if (!deps.monitor.isPermissionBlocked(sessionId)) return null;
+    const anomaly = deps.queue.getAnomaly(sessionId);
+    const event = latestPermissionRequestEvent(deps.monitor.getAgentEvents(sessionId));
+    if (!anomaly || anomaly.type !== 'permission_blocked' || !event) return null;
+    return buildPermissionRequestBinding({ sessionId, event, detectedAt: anomaly.detectedAt }).requestId;
+  }
+
   return {
     async sendText(taskId, text): Promise<TelegramReplyResult> {
       const trimmed = text.trim();
@@ -89,7 +105,7 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
       }
     },
 
-    async approvePermission(taskId): Promise<TelegramReplyResult> {
+    async approvePermission(taskId, expectedPromptId): Promise<TelegramReplyResult> {
       const sessionId = resolveSession(taskId);
       if (!sessionId) return { ok: false, reason: 'no live session for this task' };
       if (!deps.monitor.isPermissionBlocked(sessionId)) {
@@ -107,6 +123,11 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
         event,
         detectedAt: anomaly.detectedAt,
       });
+      // Identity guard: if the operator tapped a button shown for a *different*
+      // prompt than the one live now, refuse — don't approve the wrong thing.
+      if (expectedPromptId && permissionRequest.requestId.slice(0, PROMPT_ID_LEN) !== expectedPromptId) {
+        return { ok: false, reason: 'the prompt changed since this message — open the dashboard to review' };
+      }
       try {
         await broker.approve(sessionId, '1', 'telegram', { permissionRequest });
         return { ok: true };
@@ -115,9 +136,11 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
       }
     },
 
-    isPermissionBlocked(taskId): boolean {
+    permissionPromptId(taskId): string | null {
       const sessionId = resolveSession(taskId);
-      return sessionId ? deps.monitor.isPermissionBlocked(sessionId) : false;
+      if (!sessionId) return null;
+      const requestId = livePromptRequestId(sessionId);
+      return requestId ? requestId.slice(0, PROMPT_ID_LEN) : null;
     },
   };
 }
