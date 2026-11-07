@@ -48,13 +48,11 @@ first draft of this RFC disagreed, these results win.
 | Concurrency | **Parallel** on one agent. | `maxInFlight` is a load choice, not a Hermes limit. |
 | Task states seen | `SUBMITTED, WORKING, COMPLETED, CANCELED, INPUT_REQUIRED, REJECTED`, plus `FAILED` (reply timeout, client disconnect, dispatch failure, agent failure). `INPUT_REQUIRED` is triggered by a literal reply prefix, so a worker that read hostile content can be pushed into it. | Map all of them; treat `needs_input` text as untrusted. |
 | Text rewriting | Outbound replies pass through `redact_outbound` (e-mail addresses → `[redacted-email]`, credential patterns scrubbed). | Results are post-redaction; byte-exact payloads (patches) are unsafe without a hash/encoding. |
-| Reachability | A worker reaches **peer workers** (same network, one shared bearer token across the fleet; `hx.sh` default `sbxtoken`). A worker also reaches **Kookr's API** through `host.docker.internal:4800` (Docker Desktop's host proxy), and `GET /api/tasks` answered with no credentials. | The default deployment provides no leaf isolation, and every Hermes agent today can call the Kookr API. |
+| Reachability | A worker reaches **peer workers** (same network, one shared bearer token across the fleet, taken from a fixed default in the launcher script at the time of testing). A worker also reaches **Kookr's API** through `host.docker.internal:4800` (Docker Desktop's host proxy), and `GET /api/tasks` answered with no credentials. | The default deployment provided no leaf isolation, and any container on Docker Desktop can reach services bound to the host's loopback (including Kookr's unauthenticated loopback API). |
 | Agent card | Tools are listed even when disabled; `url` is a Docker-DNS name unusable from the host. | Never gate on the card; use configured URLs. |
 | Files on a mounted workspace | Created as uid:gid `10000:10000`; host `git clean -fdx` hits `EACCES`; `hx.sh up --workspace` runs `chmod -R 0777` on the directory it is given (this recursively altered ~72 000 files under `/tmp` when a probe passed `/tmp` by mistake; the dtach directory was restored to `0700`). | Kookr must not run git cleanup on worker-writable trees; `hx.sh` needs a guard. |
 
-**Operational findings outside this RFC's code:** the live `hx-alpha` uses the default shared
-token and publishes `0.0.0.0:9900`; and every Hermes agent can reach the unauthenticated
-Kookr API via `host.docker.internal`.
+**Operational findings outside this RFC's code (addressed in hermes-fleet#22):** the launcher's default shared token and its all-interfaces port publishing have been removed; the Kookr-API reachability from containers (P4) remains open and is an enable-gate item.
 
 ## Decision: the first use cases (v4, resolved by the operator)
 
@@ -84,15 +82,7 @@ What that changes:
 - **Read-and-reason only.** A read-only snapshot means an audit cannot run tests or a build; its
   value claim is limited to what static reading can establish.
 
-**Value test before building (recommended, needs operator approval).** Whether Hermes
-(DeepSeek V4 Flash) produces triage and audit output good enough to be worth routing to is
-unmeasured. Alternative 2 (`hx.sh bridge` from a shell, zero Kookr code) can answer that
-cheaply: run ~10 real, closed issues and one project audit through a scratch worker and compare
-against Claude's output. The catch is that it sends repository content to the model provider
-(Baseten or DeepInfra), so it must be done only on repositories the operator is willing to
-send, and only with explicit approval. If Hermes is clearly worse at these tasks, the right
-conclusion is to keep Claude subagents and use Hermes where it is cheaper, not to build the
-integration.
+**Value test — done (2026-11-07).** Whether Hermes (DeepSeek) produces triage and audit output worth routing to was measured before any build, with criteria fixed in advance, on open issues of three repositories and one test-quality audit, against a Claude baseline, judged blind. Result: both criteria groups pass (see `rfc-kookr-hermes-delegation-value-test.md`), so slice 1 may start. The test sent repository content to the operator's configured model provider with the operator's explicit authorization.
 
 ## Requirements
 
@@ -104,7 +94,7 @@ integration.
 - **R3 — Many workers, no head-of-line blocking.** A busy worker does not block a second
   job: jobs spread across workers, and each worker runs several concurrently up to a cap.
 - **R4 — Bounded recursion.** A delegated worker is a leaf. This is **enforced by the
-  deployment** (prerequisites P1–P4) and **attested by the operator**; Kookr cannot verify
+  deployment** (prerequisites P1, P2, P4 and P7) and **attested by the operator**; Kookr cannot verify
   it. Until the prerequisites hold, the feature must not be enabled in production.
 - **R5 — Honest after restarts.** A Kookr restart loses no job; a Hermes restart ends the job
   with a truthful reason; a corrupt store never silently reads as "no jobs".
@@ -214,7 +204,7 @@ is asynchronous only. The CLI:
   delegation, checked and inserted atomically. Terminal failures permit a fresh dispatch, so
   a retry after `timed_out` or `pool_busy` works. Re-delegating after a parent is relaunched
   under a new task id is a known duplicate risk in v1 and is revisited in slice 2.
-- Results are capped at 64 KB and returned inside a delimited, labelled block.
+- Results are capped at 64 KB and returned inside a delimited, labelled block. A reply over the cap is `failed/invalid_result` (a truncated structured verdict is never applied).
 - When disabled the API returns a typed `delegation_disabled` naming the missing flag or
   configuration, and startup logs the decision.
 
@@ -223,7 +213,7 @@ is asynchronous only. The CLI:
 Write-ahead record; restart reconcile (§3.3); deadline timer; global `maxDelegations` and
 per-worker `maxInFlight` caps; result cap and envelope; flag gating; `schemaVersion` with a
 tolerant reader; passive health; leaked-work accounting; the registry validation of §1; and
-the ordered-disable procedure: set the flag to reject new dispatch, wait for or cancel
+the ordered-disable procedure: set the flag to reject new dispatch, wait for them to finish (cancel is slice 2)
 in-flight delegations, then unset the flag and keep or archive the state file. Deleting the
 state file with jobs in flight orphans them.
 
@@ -264,8 +254,8 @@ slice 1 does not require them; **enabling the flag outside development does**.
 
 | # | Prerequisite | Why (measured) | Needed for |
 |---|---|---|---|
-| P1 | Distinct `HX_A2A_TOKEN` per agent; remove the `sbxtoken` default | One shared default token across the fleet | enabling slice 1 |
-| P2 | Publish only on loopback (`-p 127.0.0.1:PORT:9900`) | `hx-alpha` is on `0.0.0.0`; workers publish nothing, so Kookr cannot reach them | enabling slice 1 |
+| P1 | Distinct per-agent bearer token; no shared default *(done in hermes-fleet#22)* | One shared default token across the fleet | enabling slice 1 |
+| P2 | Publish only on loopback (`-p 127.0.0.1:PORT:9900`) *(done in hermes-fleet#22)* | The launcher published on all interfaces; workers publish nothing by default, so Kookr cannot reach them | enabling slice 1 |
 | P3 | Pass `A2A_REPLY_TIMEOUT` through `hx.sh up` | `hx.sh` cannot set it; default 300 s | jobs longer than ~5 min |
 | P4 | Block worker→Kookr (`host.docker.internal`) and worker→worker traffic | Both measured reachable; the Kookr API is unauthenticated | enabling slice 1 (leaf rule) |
 | P5 | Refuse `--workspace` paths outside a dedicated directory; stop `chmod -R 0777` | A mistaken path altered ~72 000 files | any file-touching worker |
@@ -337,7 +327,7 @@ verdict is untrusted input to the effect step as well as to the parent LLM:
 
 **Playbook hook.** The triage playbook step calls `kookr delegate` when delegation is enabled and
 healthy; on `delegation_disabled`, `pool_busy`, `pool_unavailable`, `needs_input`,
-`worker_failed` or `invalid_result` it falls back to doing the triage itself (delegation is an
+`worker_failed`, `worker_lost`, `worker_unreachable`, `timed_out` or `invalid_result` it falls back to doing the triage itself (delegation is an
 optimisation, never a dependency). Revert order: remove the playbook step first, then run the
 ordered disable.
 
@@ -361,7 +351,7 @@ ordered disable.
   other's replies (Hermes resolves oldest-pending per context).
 - **Worker asks a question / is pushed into `INPUT_REQUIRED`:** terminal `needs_input`, text
   untrusted.
-- **Result exceeds the cap:** truncated and marked; never executed.
+- **Result exceeds the cap or fails its schema:** `failed/invalid_result`; never repaired, truncated-and-applied, or executed.
 - **Eviction:** `-32001` reports `restarted_or_evicted`; it is not proof the worker restarted.
 - **Parent ends first:** in v1 the delegation runs to its deadline (documented); slice 2a
   cancels as bookkeeping and the leaked work still counts against the worker.
@@ -393,7 +383,7 @@ ordered disable.
    (spawn/resume a task on completion) and a richer idempotency story. The consensus attack
    noted Alternative 5 was dismissed on a label ("inverts supervisor/worker") when this
    related shape — Kookr still dispatches and supervises, only delivery is asynchronous — was
-   never weighed. It should be evaluated once the first use case is known.
+   never weighed. The first use cases are now known (see *Decision*); it is evaluated before slice 1-audit starts.
 
 ## Constraints for code-changing delegations (future RFC, not this one)
 
@@ -430,13 +420,13 @@ defined base ref, and P5 resolved on the Hermes side.
 2. **Safety and health.**
    - **2a:** `TaskTerminalNotifier` port, the lifecycle hook, parent-liveness sweep,
      cancel-on-parent-end, and an explicit decision on relaunch (re-parent via lineage vs
-     cancel). The only change outside `delegation/`. *Revert:* remove the optional dependency.
+     cancel). The only change in `core/`. *Revert:* remove the optional dependency.
    - **2b:** probe, breaker, `draining`, `workers`/`cancel`, metrics, retention, runbook.
 3. **Monitor rows** with task/project scoping; de-duplication against the observed lane is
    deferred (both may show a job; the delegation record is authoritative). *Revert:* drop the
    message type and the client slice together, or ship a client that ignores unknown types.
 4. **Issue implementation** *(v4: promoted from deferred)*: patch return, hardened apply,
-   review-gate integration. Needs its own RFC, P5, and the constraints list below; depends on
+   review-gate integration. Needs its own RFC, P5, and the constraints list above (*Constraints for code-changing delegations*); depends on
    slice 1 proving the plumbing and on the value test.
 5. **Deferred:** bounded queue, scale hook, per-task launch credentials, correlation id in
    observed pulses.
@@ -497,7 +487,7 @@ accepted for slice 1.
 - `general-purpose` 2026-11-07: consensus-attack — **finding**: the panel never validated the
   use case (text-only, ≤5 min, result into a live parent) against the alternatives a Claude
   subagent or `hx.sh bridge` already provides, and never weighed push delivery. Triaged once:
-  incorporated as the *Decision gate* section and Alternative 9; no further review round, per
+  incorporated as the *Decision* section and Alternative 9; no further review round, per
   the one-attack bound. It is a product question for the operator, not a design defect.
 - *v5 (focused delivery review of v4, incorporated):* slice 1 split into triage and audit; P7
   and P3 added to the enable gate; immutable per-commit snapshots owned by Kookr with `baseSha`;

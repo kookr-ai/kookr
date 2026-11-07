@@ -6,7 +6,7 @@ The parent RFC gates slice 1 on this test. The pass/fail criteria were written *
 
 ## Method
 - **Inputs:** 10 open GitHub issues (4 from a private product repo, 3 from a private data-pipeline repo, 3 from this repo as a public control) and one test-quality audit of the data-pipeline repo.
-- **Same task, same inputs, both sides.** Identical prompt files (a fixed JSON schema for triage; a fixed schema for the audit) and identical read-only, tracked-files-only checkouts. Hermes ran on a scratch worker (DeepSeek V4.1 Flash, read-only mount, `message/send`, 900 s reply timeout). The Claude side ran independently as a Sonnet subagent that never saw Hermes output.
+- **Same task, same inputs, both sides.** Identical prompt files (a fixed JSON schema for triage; a fixed schema for the audit) and identical read-only, tracked-files-only checkouts. Hermes ran on a scratch worker (DeepSeek V4 Flash, read-only mount, `message/send`, 900 s reply timeout). The Claude side ran independently as a Sonnet subagent that never saw Hermes output.
 - **Blind judge:** an Opus-class agent saw each pair as "A"/"B" (assignment randomised with a recorded seed; mapping withheld), verified every claim against the issue text and the repository, and scored usefulness (1-5), hallucination, and for the audit the truth of every finding.
 - **Pre-registered criteria:** (1) Hermes schema-valid rate >= 90%; (2) mean usefulness >= 3.5 and within 0.7 of Claude; (3) hallucination rate <= 20%; (4) audit precision >= 60% with >= 3 verified-true findings. Triage group = 1-3, audit group = 4.
 
@@ -25,14 +25,14 @@ The parent RFC gates slice 1 on this test. The pass/fail criteria were written *
 | lucy #3959 | 5 | 4 | Hermes |
 
 - **Triage:** Hermes mean usefulness 4.60 vs Claude 3.90; Hermes preferred on 9 of 10. Valid JSON 10/10 and 69/69 cited paths exist. One hallucination flag for Hermes (10%), none for Claude.
-- **Audit:** Hermes 8 verified-true, 1 partial, 0 false of 9 (precision 0.89). Claude 4 verified-true, 3 partial, 1 false of 8 (precision 0.50). The judge rated Hermes's findings more valuable (for example, 11 contract tests that silently return early in CI; an untested SSRF-relevant IPv6 check).
+- **Audit:** Hermes 8 verified-true, 1 partial, 0 false of 9 (precision 0.89). Claude 4 verified-true, 3 partial, 1 false of 8 (precision 0.50). The judge rated Hermes's findings more valuable (for example, 11 contract tests that silently return early in CI; an untested address-validation branch).
 - **Criteria:** 1-3 PASS, 4 PASS. **Decision: build slice 1.**
 
 ## Operational findings (not gating, but they shape the build)
 - **Concurrency:** 10 jobs in three batches took 891 s wall-clock vs 1413 s summed (1.6x); the clean batch of 4 reached 2.7x. Two batches were held up by approval stalls.
-- **Approval stall:** `hx.sh` seeded `approvals.mode: auto`, which is not a valid value in this Hermes build, so it behaved as `manual`: any dangerous-looking command waited 300 s for a human. It caused 4 stalls (600 s of the audit's 1072 s). Fixed in jeanibarz/hermes-fleet#22 (valid modes; `smart` for read-only workers, verified with no stall).
+- **Approval stall:** `hx.sh` seeded `approvals.mode: auto`, which is not a valid value in this Hermes build, so it behaved as `manual`: any dangerous-looking command waited 300 s for a human. It caused 4 stalls of 300 s each across the run (two of them inside the audit, 600 s of its 1072 s). Fixed in jeanibarz/hermes-fleet#22 (valid modes; `smart` for read-only workers, verified with no stall).
 - **Audit timed out at 900 s** for that reason; the agent kept running and its answer was recovered from the worker's session store. A long-job design must not rely on the held request (parent RFC section 10).
-- **Cost:** about USD 0.18 for all 12 Hermes sessions. No text rewriting by outbound redaction was observed.
+- **Cost:** about USD 0.18 for all 12 Hermes sessions (a smoke test, 10 triage jobs and the audit). No text rewriting by outbound redaction was observed.
 
 ## Caveats
 - **n = 10 issues and one audit**, taken in order from the open list, not randomly. Small sample.
