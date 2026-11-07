@@ -1,6 +1,6 @@
 # RFC: Delegating Kookr Work to the Hermes Fleet over A2A
 
-**Status:** Accepted for slice 1-triage (value test passed; v5 — operator named the first use cases (v4); a focused delivery review of v4 is incorporated (v5). Sections marked *v4*/*v5* were edited after the full panel rounds)
+**Status:** Accepted for slice 1-triage (value test passed; v5 — operator named the first use cases (v4); a focused delivery review of v4 is incorporated (v5). Sections marked *v4*/*v5*, the value-test paragraph and Open question 0 were edited after the full panel rounds)
 **Date:** 2026-11-07
 **Author:** Jean Ibarz (with Claude)
 **Related:** `rfc-hermes-observed-activity-bridge.md` (the one-way Hermes→Kookr observation lane, shipped), jeanibarz/hermes-fleet#15, `rfc-self-improving-agent-fleet-evidence.md`
@@ -189,7 +189,7 @@ Kookr does not start or stop containers.
 
 ### 5. Caller interface
 
-`POST /api/delegations` returns an id; `GET /api/delegations/:id` reports state. The HTTP API
+`POST /api/delegations` returns an id; `GET /api/delegations/:id` reports state; `GET /api/delegations?parent=<taskId>` lists (available from slice 1a, so the ordered disable works before the CLI exists, using plain HTTP). The HTTP API
 is asynchronous only. The CLI:
 
 - `kookr delegate --kind <triage|test_audit> --project <id> [--issue <n>] [--key <k>]` submits a *typed* request (free text is rejected: the server assembles the prompt, §10) and waits by polling for at most ~100 s per invocation
@@ -201,11 +201,11 @@ is asynchronous only. The CLI:
   and `workers` arrive in slice 2.
 - **Idempotency is owned by the service, not the CLI.** A caller may pass a key; a request
   matching a **non-terminal** delegation with the same `(parent, key)` returns that
-  delegation, checked and inserted atomically. Terminal failures permit a fresh dispatch, so
+  delegation, checked and inserted atomically. Any terminal delegation (failed, timed out, cancelled, or completed) permits a fresh dispatch with the same key, so
   a retry after `timed_out` or `pool_busy` works. Re-delegating after a parent is relaunched
   under a new task id is a known duplicate risk in v1 and is revisited in slice 2.
 - Results are capped at 64 KB and returned inside a delimited, labelled block. A reply over the cap is `failed/invalid_result` (a truncated structured verdict is never applied).
-- **Disabled is observable, not a 404.** The `/api/delegations` routes are always registered; when delegation is off or unusable every request returns HTTP 503 `{error: "delegation_disabled", reason}` with `reason` one of `flag_off`, `no_config`, `invalid_config`, `store_corrupt`, `not_accepting`. No worker is contacted and no state is read in that case. Startup logs the decision (never secrets).
+- **Disabled is observable, not a 404.** The `/api/delegations` routes are always registered; when delegation is off or unusable every request returns HTTP 503 `{error: "delegation_disabled", reason}` with `reason` one of `flag_off`, `no_config`, `invalid_config`, `store_corrupt` — in those four cases nothing is served: no worker is contacted and no state is read. `not_accepting` is different: it refuses only new submissions (`POST /api/delegations`); `GET /api/delegations`, `GET /api/delegations/:id`, in-flight work, collection and reconcile keep working, which is what the ordered disable below relies on. Startup logs the decision (never secrets).
 
 ### 6. Slice-1 invariants (explicit)
 
@@ -273,7 +273,7 @@ passes.
 
 ### 10. Slice-1 contract (v5): jobs, checkouts, results, and applying them
 
-**Typed submit body.** `POST /api/delegations` takes `{kind, projectId, issueRef?, key?}` with
+**Typed submit body.** `POST /api/delegations` takes `{kind, projectId, issueRef?, key?, parentTaskId?}` (`parentTaskId` is self-declared by the caller — the CLI fills it from the agent's `KOOKR_TASK_ID` — with the same trust level as `kookr spawn`, §8) with
 `kind ∈ {triage, test_audit}`, not free text. The **server** assembles the prompt from a
 versioned template (`promptVersion` is stored on the record). For `triage` Kookr itself fetches
 the issue (title, labels, body, and a bounded number of comments) with its own GitHub
@@ -302,7 +302,7 @@ recreating its container, which fails its in-flight jobs, so the rollout order i
 worker, then register it.
 
 **Record additions** (added now, while `schemaVersion` is 1 and there is no data): `kind`,
-`projectId`, `baseSha`, `promptVersion`.
+`projectId`, `issueRef`, `key`, `baseSha`, `promptVersion`.
 
 **Long-job transport.** Triage fits a held `message/send`. For anything longer than a few
 minutes the service does not rely on the held response: it resolves the task id with
@@ -340,7 +340,7 @@ ordered disable.
 | 1a | `src/server/delegation/{service,a2a-client,store,routes,registry}.ts`, `src/shared/contracts/delegation.ts` only if a second TypeScript consumer appears (otherwise types live beside the writer), `config.ts`, `.env.example`, bootstrap wiring under `src/server/bootstrap/`, fake-A2A-server test fixture |
 | 1a (modules) | `src/server/delegation/{snapshots,prompts,results}.ts` (snapshot lifecycle, versioned prompt templates, per-kind result schemas) |
 | 1b (apply) | `src/server/delegation/apply.ts` (allow-listed effect step with an idempotency marker) |
-| 1b | `bin/kookr-delegate.js` + `kookr` dispatcher, the triage playbook step with its fallback, docs (`api.md`, `environment-variables.md`, `architecture.md`) |
+| 1b | `bin/kookr-delegate.js` + `kookr` dispatcher, the triage playbook step with its fallback, docs (`docs/reference/api.md`, `docs/reference/environment-variables.md`, `docs/architecture.md`) |
 | 2a | `src/core/ports/task-terminal-notifier.ts`, one optional fire-and-forget try/catch-wrapped dependency called from the terminal path in `agent-lifecycle.ts` (callbacks, not an event bus — none exists), periodic parent-liveness sweep |
 | 2b | worker probe/breaker, `draining`, `workers` and `cancel` verbs, gauges and counters, retention, runbook, an architecture-boundary rule that `delegation/` is imported only from bootstrap |
 | 3 | `delegations.snapshot` message + schema + frontend slice, task/project scoped (unlike the owner-only lane pattern) |
@@ -417,6 +417,7 @@ defined base ref, and P5 resolved on the Hermes side.
      (blocking `wait` vs completion callback, Alternative 9). If a callback is chosen it pulls in
      the slice-2a notifier and parent-liveness sweep, so that decision is made before 1-audit
      starts, not during it.
+
    *Revert (applies to the whole of slice 1):* remove the playbook step, run the ordered disable, then remove the additive modules
    and the snapshot directories (nothing references them once no delegation is non-terminal);
    in-flight Hermes jobs keep running until they finish or the worker is restarted.

@@ -24,14 +24,14 @@ The parent RFC gates slice 1 on this test. The pass/fail criteria were written *
 | repo-P #3954 | 5 | 3 | Hermes |
 | repo-P #3959 | 5 | 4 | Hermes |
 
-- **Triage:** Hermes mean usefulness 4.60 vs Claude 3.90; Hermes preferred on 9 of 10. Valid JSON 10/10 and 69/69 cited paths exist. One hallucination flag for Hermes (10%), none for Claude.
+- **Triage:** Hermes mean usefulness 4.60 vs Claude 3.90; Hermes preferred on 9 of 10. Schema-valid JSON 10/10 (no repair needed) and 69/69 cited paths exist. One hallucination flag for Hermes (10%), none for Claude.
 - **Audit:** Hermes 8 verified-true, 1 partial, 0 false of 9 (precision 0.89). Claude 4 verified-true, 3 partial, 1 false of 8 (precision 0.50). The judge rated Hermes's findings more valuable (for example, 11 contract tests that silently return early in CI; an untested address-validation branch).
 - **Criteria:** 1-3 PASS, 4 PASS. **Decision: build slice 1.**
 
 ## Operational findings (not gating, but they shape the build)
 - **Concurrency:** 10 jobs in three batches took 891 s wall-clock vs 1413 s summed (1.6x); the clean batch of 4 reached 2.7x. Two batches were held up by approval stalls.
 - **Approval stall:** `hx.sh` seeded `approvals.mode: auto`, which is not a valid value in this Hermes build, so it behaved as `manual`: any dangerous-looking command waited 300 s for a human. It caused 4 stalls of 300 s each across the run (two of them inside the audit, 600 s of its 1072 s). Fixed in jeanibarz/hermes-fleet#22 (valid modes; `smart` for read-only workers, verified with no stall).
-- **Audit timed out at 900 s** for that reason; the agent kept running and its answer was recovered from the worker's session store. A long-job design must not rely on the held request (parent RFC section 10).
+- **Audit timed out at 900 s** (under the RFC's own design that run would have ended `worker_failed`; criterion 4 concerns precision, which was measured on the recovered answer) for that reason; the agent kept running and its answer was recovered from the worker's session store. A long-job design must not rely on the held request (parent RFC section 10).
 - **Cost:** about USD 0.18 for all 12 Hermes sessions (a smoke test, 10 triage jobs and the audit). No text rewriting by outbound redaction was observed.
 
 ## Caveats
