@@ -332,6 +332,18 @@ The task coordinator adds relationship-aware supervision on top of the main find
 
 ---
 
+### F18: Delegating analysis jobs to Hermes workers (experimental, off by default)
+
+Kookr can hand a bounded, read-only analysis job to a sandboxed Hermes worker and collect a structured result, so cheaper models can take over work like issue triage while Kookr stays in charge (RFC `rfc-kookr-hermes-delegation`). Slice 1a ships the HTTP API only; the CLI and the playbook hook come later. It does nothing unless `KOOKR_HERMES_DELEGATION=1` and a valid worker configuration file exist.
+
+| ID | Feature | Description |
+|----|---------|-------------|
+| F18.1 | **Typed, server-built jobs** | `POST /api/delegations` takes `{kind, projectId, issueRef, key?, parentTaskId?}`. For `triage`, Kookr fetches the issue itself and builds a versioned prompt; the worker fetches nothing and holds no GitHub credential. |
+| F18.2 | **Read-only snapshots** | Each job reads an immutable per-commit snapshot of the project (tracked files only) mounted read-only, recorded as `baseSha` on the delegation. |
+| F18.3 | **Honest outcomes** | Every delegation ends in a stated state: completed with a schema-validated verdict, or failed / timed out with a reason (worker unreachable, worker lost, worker failed, rejected, needs input, invalid result). A job whose worker may still be running says so. |
+| F18.4 | **Restart-safe** | A write-ahead record lets Kookr re-attach to, or truthfully fail, every unfinished job after a restart. A corrupt store disables delegation with an error naming the file rather than reading as empty. |
+| F18.5 | **Bounded and fail-closed** | Per-worker and global caps, distinct per-worker tokens (the shared default token is refused), loopback-or-allow-listed worker URLs, and untrusted-by-default treatment of everything the worker returns. |
+
 ### Local voice dictation
 
 When speech-to-text is enabled, microphone buttons in task launch, quick launch,

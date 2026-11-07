@@ -385,6 +385,14 @@ export interface RouteDeps {
   /** Durable-last-state store for the observed lane; never touches the activity ledger or a Task. */
   observedActivityStore?: import('../observed-activity-store.js').ObservedActivityStore;
   /**
+   * Kookr->Hermes delegation service (RFC `rfc-kookr-hermes-delegation`, slice 1a).
+   * Present only when `KOOKR_HERMES_DELEGATION` is on AND a valid worker configuration
+   * loaded; when absent, `registerDelegationRoutes` answers 503 `delegation_disabled`.
+   */
+  delegationService?: import('../delegation/service.js').DelegationService;
+  /** Why delegation is not running; used only when `delegationService` is absent. */
+  delegationDisabled?: import('../delegation/routes.js').DelegationDisabledInfo;
+  /**
    * Optional clock for the GET `/api/health` body-cache TTL (issue #2429).
    * Production omits this and uses `Date.now()`. Tests inject a controllable
    * clock so expiry assertions do not depend on real time or leaked fake timers.

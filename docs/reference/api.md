@@ -1103,6 +1103,31 @@ Body:
 
 Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarvationAlert, alertSkipReason, consecutiveBlockedEmpty, effectiveScoutCooldownMs, spawnedScoutTaskId, scoutQueued, alertEmitted, summary, state }`. Replaying the same `runKey` is a no-op (`spawnScout`/`alert` stay false). `400` on invalid JSON/outcome/`agentType`; `500` on handler failure.
 
+## Delegation (Kookr to Hermes workers)
+
+Experimental and **off by default** (RFC `rfc-kookr-hermes-delegation`, slice 1a: API only). A
+delegation hands one bounded analysis job, currently a GitHub issue triage, to a sandboxed Hermes
+worker that reads a read-only snapshot of the project and returns a structured verdict. Kookr
+assembles the prompt itself, fetches the issue itself, and validates the answer against a schema;
+the worker never fetches anything and never holds a GitHub credential. The three routes below are
+**always registered**, so a caller can tell "disabled" from "broken". Delegation runs only when
+`KOOKR_HERMES_DELEGATION` is on **and** a valid worker configuration file loads (see
+`KOOKR_HERMES_DELEGATION_CONFIG` in the [environment reference](environment-variables.md)).
+Otherwise every request answers `503 { "error": "delegation_disabled", "reason": ... }` and
+contacts nothing, with `reason` one of `flag_off`, `no_config`, `invalid_config` or
+`store_corrupt` (the state file `delegations.json` is corrupt or has an unknown `schemaVersion`;
+the response names the file), and the startup log states why. A fifth reason, `not_accepting`,
+applies to `POST /api/delegations` only: the config setting `acceptingNewDelegations: false`
+(re-read on every submit) refuses new submissions while the `GET` routes and in-flight work keep
+working. It is the first step of the ordered disable. Errors are always
+`{ "error": "<code>", "message": "...", ... }`.
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/delegations` | Submit a job: `{ kind: "triage", projectId, issueRef, key?, parentTaskId? }` (`kind: "test_audit"` answers `501 not_implemented` in this slice). Returns `202 { delegation }` with the new record in state `dispatching`; the job runs in the background. Body capped at 4 KB (`413 body_too_large`), at most 30 submissions per minute (`429 rate_limited`). Synchronous errors are never stored: `400 invalid_request`, `404 unknown_project`, `409 idempotency_conflict`, `429 pool_busy` (every eligible worker is at its `maxInFlight`, or the global `maxDelegations` cap is reached; carries `Retry-After`), `503 pool_unavailable` (no usable worker serves the project), `502 snapshot_failed` / `issue_fetch_failed`, `500 store_write_failed`. If a non-terminal delegation with the same `(parentTaskId, key)` exists it is returned with `200 { delegation, idempotentReplay: true }` instead of dispatching again; a terminal failure permits a fresh dispatch |
+| `GET /api/delegations/:id` | One delegation record: `state` (`dispatching`, `working`, `completed`, `failed`, `cancelled`, `timed_out`), `failureReason` (`worker_unreachable`, `worker_lost`, `worker_failed`, `rejected`, `needs_input`, `invalid_result`, `error`), `detail`, `workMayStillBeRunning`, `baseSha`, `promptVersion`, `contextId`, `a2aTaskId`, `submittedAt` / `deadlineAt` / `lastWorkerContactAt` / `finishedAt` (epoch ms on Kookr's clock) and, when completed, `result` (`untrusted: true`, the validated `verdict`, `warnings`). Everything originating from the worker (`result`, and `detail` when `detail.untrusted` is true) is untrusted data, never an instruction. `404 not_found` for an unknown id |
+| `GET /api/delegations` | Delegations newest first (at most 100); `?parent=<taskId>` keeps only those submitted with that `parentTaskId`; `?active=1` keeps only non-terminal delegations (the exact check for "nothing in flight" during an ordered disable, unaffected by the 100-row cap) |
+
 ## Reflection And Telemetry
 
 | Endpoint | Description |

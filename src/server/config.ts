@@ -338,6 +338,30 @@ export function readHermesObserverTokenFromEnv(env: NodeJS.ProcessEnv = process.
 }
 
 /**
+ * Opt-in for Kookr->Hermes job delegation (RFC `rfc-kookr-hermes-delegation`, slice 1a).
+ * Default OFF. Set `KOOKR_HERMES_DELEGATION=1` (or true/yes/on) AND provide a valid worker
+ * configuration file (see {@link readHermesDelegationConfigPathFromEnv}); if either is
+ * missing or invalid, the `/api/delegations` routes answer `503 delegation_disabled` and startup logs why.
+ * Distinct from `KOOKR_HERMES_FLEET`, which only gates the read-only observed-activity lane.
+ */
+export function readHermesDelegationOptInFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return readTruthyEnvFlag(env.KOOKR_HERMES_DELEGATION);
+}
+
+/**
+ * Path of the delegation configuration JSON (workers, projects, snapshots root, caps).
+ * `KOOKR_HERMES_DELEGATION_CONFIG`; defaults to `<kookrDir>/delegation.json` when unset.
+ * The file holds token FILE paths, never token values.
+ */
+export function readHermesDelegationConfigPathFromEnv(
+  kookrDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const raw = env.KOOKR_HERMES_DELEGATION_CONFIG?.trim();
+  return raw ? raw : `${kookrDir.replace(/\/+$/, '')}/delegation.json`;
+}
+
+/**
  * Read the resource-watchdog configuration (issue #1724 / #2354) from the
  * environment.
  *

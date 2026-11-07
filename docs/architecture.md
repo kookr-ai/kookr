@@ -311,6 +311,47 @@ The split exists so that silent session deaths — WSL glitches, OOM kills, the 
 
 Capacity and launch-dependency diagnostics separate launchable pending work, dependency-parked backlog, confirmed degradation, and unknown evidence. Dependency-blocked/no-slot parked tasks do not expire through the ordinary pending TTL or the schedule staleness gate and do not suppress unrelated idle-capacity refill; `half_open_waiting_for_capacity` remains launchable pending work and retains the ordinary TTL.
 
+### Kookr to Hermes delegation (`KOOKR_HERMES_DELEGATION`)
+
+RFC `rfc-kookr-hermes-delegation` (slice 1a, API only, ships dark). A Kookr task can hand one
+bounded analysis job (today: triage of a GitHub issue) to a sandboxed Hermes worker and read the
+result back. This is a supervisor/worker pattern layered on top of, and independent from, the
+read-only observed-activity lane above: a delegation is **not** a `Task`, not an `AgentAdapter`,
+and never touches the activity ledger.
+
+Everything lives in `src/server/delegation/`, one directory with one owner per concern:
+
+- `service.ts` is the only mutator of delegation state (states `dispatching`, `working`,
+  `completed`, `failed`, `cancelled`, `timed_out`, each terminal state with a stated
+  `failureReason`). It validates a typed request, picks a worker, creates the snapshot, **writes the
+  `dispatching` record ahead of contacting the worker**, then runs the job in a detached task.
+  Idempotency, the global and per-worker caps, the deadline timer, passive worker health and the
+  startup reconcile all live here.
+- `a2a-client.ts` is the only file that knows the A2A protocol. It dispatches with `message/send`
+  only (a dropped `message/stream` fails the task on Hermes), and returns normalized outcomes
+  (`accepted`, `completed`, `needs_input`, `worker_failed`, `rejected`, `cancelled`, `not_found`,
+  `unreachable`, `auth`, `error`). The test seam is a fake A2A HTTP server that reproduces the shapes
+  measured against a real Hermes.
+- `store.ts` is the single serialized, atomic (temp file, fsync, rename; mode 0600) writer of
+  `<kookrDir>/delegations.json` (`schemaVersion: 1`, tolerant reader). A missing file is an empty
+  store; an unparseable one or an unknown schema version disables delegation with a typed error
+  naming the file, and is never treated as empty.
+- `registry.ts` holds two pure functions: `validateWorkerRegistry` (distinct tokens compared by hash,
+  the known default token refused, operator-attested leaf and read-only workspace, loopback or
+  allow-listed URLs) and `pickWorker` (project filter, skip unreachable workers, least in-flight,
+  honour `maxInFlight`, count recently timed-out or failed jobs as still running).
+- `snapshots.ts` creates immutable per-commit snapshots under a read-only snapshots root
+  (`git archive | tar -x`, tracked files only, no `.git`) and removes ones no unfinished
+  delegation references. `prompts.ts` builds versioned prompts (Kookr fetches the issue with `gh`;
+  issue text is delimited as untrusted data). `results.ts` validates the worker's reply against a
+  zod schema (one bare or single-fenced JSON object; nothing is repaired) and checks cited paths
+  against the snapshot. `routes.ts` is the HTTP surface (`/api/delegations`).
+
+Wiring: `bootstrap/create-delegation-runtime.ts` decides at startup. Delegation runs only when the
+flag is on and a valid worker configuration loads; otherwise the routes (always registered) answer
+`503 delegation_disabled` with a reason code and the decision is logged. Worker output is always treated as untrusted data; the supervisor, never the
+worker, performs every privileged side effect (a later slice).
+
 ### Issue-ownership claims (`KOOKR_ISSUE_CLAIMS`)
 
 RFC `rfc-issue-ownership-lock` (PR 1a). An in-process `IssueClaimRegistry`
