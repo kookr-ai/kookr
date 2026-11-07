@@ -1,12 +1,14 @@
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
 import type { PluginVersionStatus } from '../shared/contracts/plugin-version.js';
+import {
+  compareVersions,
+  readInstalledVersionFromRegistry,
+} from './plugin-manager/registry.js';
 
 export type { PluginVersionStatus };
 
-interface InstalledPluginRecord {
-  version?: unknown;
-}
+// Re-exported for compatibility: the canonical implementation now lives in the
+// shared plugin registry reader (RFC Layer 0 — one version-extraction path).
+export { compareVersions };
 
 /**
  * Compare the marketplace-installed kookr-toolkit plugin version against the
@@ -23,7 +25,7 @@ export async function getPluginVersionStatus(options: {
   pluginId: string;
   availableVersion: string | null;
 }): Promise<PluginVersionStatus> {
-  const installedVersion = await readInstalledVersion(options.homeDir, options.pluginId);
+  const installedVersion = await readInstalledVersionFromRegistry(options.homeDir, options.pluginId);
   const stale =
     installedVersion !== null &&
     options.availableVersion !== null &&
@@ -36,54 +38,3 @@ export async function getPluginVersionStatus(options: {
   };
 }
 
-async function readInstalledVersion(homeDir: string, pluginId: string): Promise<string | null> {
-  const registryPath = join(resolve(homeDir), '.claude', 'plugins', 'installed_plugins.json');
-  let raw: string;
-  try {
-    raw = await readFile(registryPath, 'utf8');
-  } catch {
-    return null; // no registry / not installed via the marketplace
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-  const records = extractRecords(parsed, pluginId);
-  // A plugin may carry multiple install records (one per scope). Treat the
-  // highest installed version as effective: if any install is current, the
-  // user is not behind.
-  const versions = records
-    .map((r) => (typeof r.version === 'string' ? r.version : null))
-    .filter((v): v is string => v !== null);
-  if (versions.length === 0) return null;
-  return versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max));
-}
-
-function extractRecords(parsed: unknown, pluginId: string): InstalledPluginRecord[] {
-  if (typeof parsed !== 'object' || parsed === null) return [];
-  const plugins = (parsed as { plugins?: unknown }).plugins;
-  if (typeof plugins !== 'object' || plugins === null) return [];
-  const entry = (plugins as Record<string, unknown>)[pluginId];
-  if (!Array.isArray(entry)) return [];
-  return entry.filter((r): r is InstalledPluginRecord => typeof r === 'object' && r !== null);
-}
-
-/**
- * Compare dotted numeric versions (e.g. "0.4.1" vs "0.7.4"). Returns <0 if
- * a<b, 0 if equal, >0 if a>b. Missing segments compare as 0. Deliberately
- * small — plugin versions are simple `major.minor.patch` integers with no
- * pre-release tags.
- */
-export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.');
-  const pb = b.split('.');
-  const len = Math.max(pa.length, pb.length);
-  for (let i = 0; i < len; i++) {
-    const na = parseInt(pa[i] ?? '0', 10) || 0;
-    const nb = parseInt(pb[i] ?? '0', 10) || 0;
-    if (na !== nb) return na - nb;
-  }
-  return 0;
-}

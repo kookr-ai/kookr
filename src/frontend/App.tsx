@@ -39,6 +39,7 @@ import { DetailPanel } from './components/DetailPanel.js';
 import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
+import { PluginManagerDialog } from './components/PluginManagerDialog.js';
 import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
 import { DrainModeBanner } from './components/DrainModeBanner.js';
 import { SafeModeBanner } from './components/SafeModeBanner.js';
@@ -1553,6 +1554,7 @@ export function App() {
       ? [{ id: 'sweep', label: 'Sweep merged worktrees', section: 'tools' as const, keywords: ['worktree', 'cleanup', 'git', 'squash'], run: () => openModal('sweepConfirm') }]
       : []),
     { id: 'cost', label: 'Cost comparison', section: 'tools', keywords: ['claude', 'codex', 'price', 'spend'], run: () => openModal('costComparison') },
+    { id: 'plugins', label: 'Manage plugins & skills', section: 'tools', keywords: ['plugin', 'skill', 'toolkit', 'marketplace', 'update'], run: () => openModal('pluginManager') },
     {
       id: 'dnd',
       // Label reflects what the toggle will do (it flips the manual layer), so
@@ -1639,6 +1641,7 @@ export function App() {
         onLaunch={() => openBlankLaunch('button')}
         readOnly={isViewer}
         onCommandPalette={() => setShowCommandPalette(true)}
+        onOpenPluginManager={() => openModal('pluginManager')}
         scheduleHintActive={scheduleHintActive}
         onOperations={toggleOperations}
         operationsOpen={showOperations}
@@ -1955,6 +1958,9 @@ export function App() {
             onOpenTask={openCostComparisonTask}
           />
         </Suspense>
+      )}
+      {activeModal === 'pluginManager' && (
+        <PluginManagerDialog isOpen onClose={closeModal} />
       )}
       {activeModal === 'settings' && (
         <Suspense fallback={null}>

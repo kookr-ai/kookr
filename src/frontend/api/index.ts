@@ -16,6 +16,7 @@ export {
 } from './client.js';
 
 export * from './deploy.js';
+export * from './plugins.js';
 export * from './settings.js';
 export * from './reflection.js';
 export * from './sharing.js';

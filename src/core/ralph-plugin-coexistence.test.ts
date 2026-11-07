@@ -6,6 +6,7 @@ import {
   detectStandalonePlugin,
   settingsFilePaths,
 } from './ralph-plugin-coexistence.js';
+import { ClaudeSettingsStore, defaultScopeFiles } from './claude-settings/settings-store.js';
 
 async function makeFakeHome(): Promise<{ home: string; cwd: string; cleanup: () => Promise<void> }> {
   const root = await mkdtemp(join(tmpdir(), 'ralph-coexistence-'));
@@ -165,5 +166,62 @@ describe('detectStandalonePlugin', () => {
     );
     const result = await detectStandalonePlugin(env.cwd, env.home);
     expect(result.detected).toBe(false);
+  });
+});
+
+/**
+ * RFC P1 slice 1b: Ralph detection is deliberately NOT migrated onto the new
+ * `ClaudeSettingsStore`. Its "any scope true" + Stop-hook-signal semantics
+ * differ from the store's precedence-first `enabledPlugins` resolution, and the
+ * RFC forbids silently changing Ralph detection. These tests pin the divergence
+ * so a future migration cannot flip Ralph from "detected/refuses" to
+ * "double-firing" without a failing test.
+ */
+describe('ralph detection stays on its own reader (P1 1b)', () => {
+  let env: { home: string; cwd: string; cleanup: () => Promise<void> };
+
+  beforeEach(async () => {
+    env = await makeFakeHome();
+  });
+
+  afterEach(async () => {
+    await env.cleanup();
+  });
+
+  it('detects any-scope-true even when a higher-precedence scope sets it false', async () => {
+    // Higher precedence (project) disables; lower precedence (user) enables.
+    await writeFile(
+      join(env.cwd, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'ralph-wiggum@claude-code-plugins': false } }),
+    );
+    await writeFile(
+      join(env.home, '.claude', 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'ralph-wiggum@claude-code-plugins': true } }),
+    );
+
+    // Ralph's own reader: ANY scope `true` → detected (refuse to co-fire).
+    const ralph = await detectStandalonePlugin(env.cwd, env.home);
+    expect(ralph.detected).toBe(true);
+
+    // The store would resolve the SAME config as `disabled` (precedence-first).
+    // Proving they are not interchangeable is exactly why Ralph is not migrated.
+    const store = new ClaudeSettingsStore(defaultScopeFiles(env.cwd, env.home));
+    expect((await store.resolveEnablement('ralph-wiggum@claude-code-plugins')).state).toBe(
+      'disabled',
+    );
+  });
+
+  it('matches the Stop-hook signal, which the store does not model at all', async () => {
+    await writeFile(
+      join(env.home, '.claude', 'settings.json'),
+      JSON.stringify({
+        hooks: { Stop: [{ hooks: [{ type: 'command', command: '/x/ralph-wiggum/run.sh' }] }] },
+      }),
+    );
+    const ralph = await detectStandalonePlugin(env.cwd, env.home);
+    expect(ralph.detected).toBe(true);
+    // The store only knows enabledPlugins; the hook is invisible to it → default.
+    const store = new ClaudeSettingsStore(defaultScopeFiles(env.cwd, env.home));
+    expect((await store.resolveEnablement('ralph-wiggum@claude-code-plugins')).state).toBe('default');
   });
 });

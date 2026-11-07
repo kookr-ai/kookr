@@ -16,6 +16,7 @@ import {
 } from '../../shared/contracts/shortcut-bindings.js';
 import {
   getDeployStatus,
+  getToolkitStatus,
   triggerDeploy as requestDeploy,
   refreshToolkitLinks as requestToolkitRefresh,
   updateToolkitPlugin as requestPluginUpdate,
@@ -39,6 +40,8 @@ interface Props {
    *  previously lived as their own top-bar icons (Schedules, Settings, Help,
    *  OSS, Bug report, Terminal focus, Cost comparison, …). */
   onCommandPalette: () => void;
+  /** Open the Plugin Manager dialog directly (the "+" surface, RFC Layer 1). */
+  onOpenPluginManager: () => void;
   onOperations: () => void;
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
@@ -86,6 +89,7 @@ export function TopBar({
   compact = false,
   onLaunch,
   onCommandPalette,
+  onOpenPluginManager,
   onOperations,
   operationsOpen = false,
   onCoordinatorFindings,
@@ -147,7 +151,16 @@ export function TopBar({
     try {
       const { ok, body: data } = await getDeployStatus();
       if (ok) {
-        setDeployStatus(data);
+        // Toolkit install/stale status now comes from the plugin read model
+        // (/api/plugins), not the deploy-status `plugin` field (slice 1d).
+        let toolkitPlugin = data.plugin;
+        try {
+          const toolkit = await getToolkitStatus();
+          if (toolkit) toolkitPlugin = toolkit;
+        } catch {
+          // Plugin read model unreachable — fall back to the deploy-status field.
+        }
+        setDeployStatus({ ...data, plugin: toolkitPlugin });
         if (data.deploying) {
           setDeploying(true);
         } else if (useKookrStore.getState().deploying) {
@@ -241,7 +254,7 @@ export function TopBar({
     setPluginUpdateMessage(null);
     setPluginUpdateError(null);
     try {
-      const { ok, body: data } = await requestPluginUpdate();
+      const { ok, body: data } = await requestPluginUpdate(pluginId);
       if (ok) {
         setDeployStatus((prev) => prev ? { ...prev, plugin: data?.plugin } : prev);
         setPluginUpdateMessage('Toolkit plugin updated. Restart Claude Code sessions to load it.');
@@ -588,6 +601,16 @@ export function TopBar({
         <div className="metric-group">
           <FollowPill shortcutBindings={shortcutBindings} />
           <DndPill />
+          <button
+            type="button"
+            className="btn-icon plugin-manager-trigger"
+            onClick={onOpenPluginManager}
+            title="Manage plugins & skills"
+            aria-label="Manage plugins and skills"
+            data-testid="plugin-manager-trigger"
+          >
+            <span aria-hidden="true">＋</span>
+          </button>
           <button
             type="button"
             className={`command-trigger${compact ? ' command-trigger--compact' : ''}${scheduleHintActive ? ' schedule-hint-spotlight' : ''}`}

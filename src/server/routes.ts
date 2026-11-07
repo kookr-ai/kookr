@@ -8,6 +8,8 @@ import { registerMetricsRoutes } from './routes/metrics-routes.js';
 import { registerAdminRoutes } from './routes/admin-routes.js';
 import { registerProjectRoutes } from './routes/project-routes.js';
 import { registerDeployRoutes } from './routes/deploy-routes.js';
+import { registerPluginRoutes } from './routes/plugin-routes.js';
+import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
 import { registerOrchestrationRoutes } from './routes/orchestration-routes.js';
@@ -117,6 +119,10 @@ export function createRoutes(deps: RouteDeps): Hono {
     // the same assemblyMs / cacheAgeMs (issue #2497). Diagnostics records on
     // each assembly; metrics only reads.
     healthBodyCacheStats: deps.healthBodyCacheStats ?? new HealthBodyCacheStats(),
+    // One module-owned lock + backup shared by the plugin routes and the
+    // Layer-4 auto-update runner so no two mutation paths touch ~/.claude/plugins
+    // concurrently (RFC Layer 0 / R8).
+    pluginMutationService: deps.pluginMutationService ?? new PluginMutationService(),
   };
 
   // #804: browser cookie-exchange endpoint (POST /api/auth/session). Allow-listed
@@ -188,6 +194,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);
   registerDeployRoutes(app, sharedDeps);
+  registerPluginRoutes(app, sharedDeps);
   registerContactShareRoutes(app, sharedDeps);
   registerShareRoutes(app, sharedDeps);
   registerRelayConnectionRoutes(app, sharedDeps);

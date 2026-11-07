@@ -5,7 +5,7 @@ import {
   type PluginUpdateError,
   type PluginVersionStatus,
 } from '../../shared/contracts/plugin-version.js';
-import { getDeployStatus, installToolkitPlugin } from '../api/index.js';
+import { getToolkitStatus, installToolkitPlugin } from '../api/index.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
 
@@ -161,9 +161,8 @@ export function PluginInstallBanner() {
     let cancelled = false;
     (async () => {
       try {
-        const { ok, body } = await getDeployStatus();
-        if (!ok) return;
-        if (!cancelled && body.plugin) setPlugin(body.plugin);
+        const toolkit = await getToolkitStatus();
+        if (!cancelled && toolkit) setPlugin(toolkit);
       } catch {
         // Dashboard backend unreachable — nothing to nudge.
       }
