@@ -10,7 +10,31 @@ import {
   PendingStore,
   StateStore,
   ensureIntegrationDir,
+  pruneSentNotifications,
 } from './safety.js';
+
+describe('pruneSentNotifications', () => {
+  it('drops records older than maxAgeMs and keeps recent ones', () => {
+    const now = 1_000_000;
+    const maxAge = 1000;
+    const out = pruneSentNotifications({
+      old: { taskId: 'a', at: now - 2000, chatId: 1 },
+      fresh: { taskId: 'b', at: now - 100, chatId: 1 },
+    }, now, maxAge);
+    expect(Object.keys(out).sort()).toEqual(['fresh']);
+  });
+
+  it('caps the map at 500, evicting the oldest by `at`', () => {
+    const now = 10_000_000;
+    const map: Record<string, { taskId: string; at: number; chatId: number }> = {};
+    for (let i = 0; i < 600; i++) map[`m${i}`] = { taskId: `t${i}`, at: now - i, chatId: 1 };
+    const out = pruneSentNotifications(map, now, 24 * 60 * 60 * 1000);
+    expect(Object.keys(out)).toHaveLength(500);
+    // Newest (smallest i → largest `at`) kept; oldest (m599) evicted.
+    expect(out['m0']).toBeDefined();
+    expect(out['m599']).toBeUndefined();
+  });
+});
 
 describe('createTokenBucket', () => {
   it('allows up to N requests per minute', () => {

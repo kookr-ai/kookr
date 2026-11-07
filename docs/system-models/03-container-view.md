@@ -67,7 +67,7 @@ flowchart LR
 | **tasks.sqlite** | Embedded SQLite DB on disk (WAL) | Task lifecycle state, description, completion criteria, and inline agent session metadata (dtach session name — field still historically named `tmuxSession`, agent type, transcript path, hook output path, last known status) per task (ADR-008 — persistence layer now dtach per ADR-014). Default backend since #1755; a pre-existing `tasks.json` is imported once and renamed `.pre-sqlite-*`. `KOOKR_TASK_STORE=json` selects the legacy JSON file |
 | **~/.kookr state files** | JSON files on disk | Settings, schedules, OSS contribution attempts, workspace attempt records, snoozed findings, and related operational state owned by the backend |
 | **hooks/** | Per-session JSONL files (`~/.kookr/hooks/`) | Append-only hook output from the active agent (Claude Code or Codex CLI). Full `HookEventName` set — see `src/core/hook-events.ts` — one file per agent session (ADR-008) |
-| **Speech / Telegram helpers** | Optional local service + integration modules | STT/TTS managers and Telegram integration support voice/text task ingress when configured; they are not required for the core attention-router loop |
+| **Speech / Telegram helpers** | Optional local service + integration modules | STT/TTS managers and Telegram integration support voice/text task ingress, task read-back, and reply/approve routing back to a running agent (`src/server/telegram-task-bridge.ts`) when configured; they are not required for the core attention-router loop |
 
 ## Data And Control Ownership Notes
 

@@ -235,10 +235,40 @@ export interface IntegrationState {
   origin: Record<string, number>;
   /** Telegram sender id string → default agent for future task confirmations. */
   agentDefaultsByUser: Record<string, AgentType>;
+  /**
+   * Sent notification message_id (as string) → the task it was about and the
+   * chat it went to, so a plain-text reply to that message can be routed back
+   * to the running agent (and only for the chat that received it). Bounded +
+   * age-GC'd (see `pruneSentNotifications`).
+   */
+  sentNotifications?: Record<string, SentNotification>;
+}
+
+export interface SentNotification {
+  taskId: string;
+  at: number;
+  chatId: number;
 }
 
 function emptyState(): IntegrationState {
-  return { offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {} };
+  return { offset: 0, spawnsByMs: [], origin: {}, agentDefaultsByUser: {}, sentNotifications: {} };
+}
+
+/** Max correlation records kept; oldest-by-`at` evicted past this. */
+const MAX_SENT_NOTIFICATIONS = 500;
+
+/** Drop reply-correlation records older than `maxAgeMs` and cap total count. */
+export function pruneSentNotifications(
+  map: Record<string, SentNotification>,
+  now: number,
+  maxAgeMs: number,
+): Record<string, SentNotification> {
+  const cutoff = now - maxAgeMs;
+  let entries = Object.entries(map).filter(([, v]) => v.at >= cutoff);
+  if (entries.length > MAX_SENT_NOTIFICATIONS) {
+    entries = entries.sort((a, b) => b[1].at - a[1].at).slice(0, MAX_SENT_NOTIFICATIONS);
+  }
+  return Object.fromEntries(entries);
 }
 
 export class StateStore {
@@ -262,6 +292,9 @@ export class StateStore {
               : {},
           ).filter(([, value]) => isAgentType(value)),
         ) as Record<string, AgentType>,
+        sentNotifications: typeof parsed.sentNotifications === 'object' && parsed.sentNotifications !== null
+          ? parsed.sentNotifications as Record<string, SentNotification>
+          : {},
       };
     } catch (err) {
       const code = (err as NodeJS.ErrnoException).code;

@@ -115,8 +115,9 @@ The system SHALL detect when a managed agent is waiting for developer input.
 - Severity: `info` for Stop events, `warning` for AskUserQuestion (higher urgency since the agent is explicitly asking)
 - AskUserQuestion anomaly is cleared when a subsequent `tool_result` event is received (question was answered)
 - A Stop-derived `needs_input` state remains active when trailing bookkeeping or overlay events arrive after the Stop, including `SubagentStop` and `Notification(idle_prompt)`, until real user input, new tool activity, or session end changes the agent state
+- A Stop whose payload reports a non-zero `activeBackgroundTaskCount` or `activeSessionCronCount` does **not** produce `needs_input`: the agent ended its turn only to wait on its own background work (a `run_in_background` shell or a scheduled wakeup), so it is not asking the operator. This mirrors `turn-state.ts` classifying the same Stop as `running`; both sites share the `isBackgroundParked` predicate so they cannot drift.
 
-**Evidence:** `src/core/hook-parser.ts` (Stop → stop event, PreToolUse → tool_use event), `src/core/anomaly-detector.ts` (needs_input via detectNeedsInput + detectAskUserQuestion), `src/core/monitor.ts` (event → queue), `src/core/monitor.test.ts` ("Stop event enters attention queue as needs_input", "Stop followed by SubagentStop and idle notification remains queued as needs_input", "AskUserQuestion tool enters queue as needs_input with warning severity"). Validated by [PoC 001](poc/001-hook-mechanism-validation.md).
+**Evidence:** `src/core/hook-parser.ts` (Stop → stop event, PreToolUse → tool_use event), `src/core/anomaly-detector.ts` (needs_input via detectNeedsInput + detectAskUserQuestion), `src/core/background-parked.ts` (`isBackgroundParked`, shared with `turn-state.ts`), `src/core/monitor.ts` (event → queue), `src/core/monitor.test.ts` ("Stop event enters attention queue as needs_input", "Stop followed by SubagentStop and idle notification remains queued as needs_input", "AskUserQuestion tool enters queue as needs_input with warning severity"). Validated by [PoC 001](poc/001-hook-mechanism-validation.md).
 
 ### R2.2: Detect Stuck Loops [F2.2] — SHOULD — `deferred`
 
@@ -773,6 +774,21 @@ The system SHOULD let authorized Telegram users read the state of active tasks w
 **Rationale:** After spawning work from a phone, the remote surface was spawn-only; an operator had to open the dashboard to learn whether an agent was blocked. `/tasks` closes that read-back gap while keeping the same allowlist/rate-limit/redaction guards as the rest of the integration.
 
 **Evidence:** `src/integrations/telegram/tasks-command.ts` (parse/select/format/fetch), `src/integrations/telegram/index.ts` (`/tasks` dispatch + project scoping + help text), `src/integrations/telegram/audit.ts` (`tasks_replied`/`tasks_query_failed` events), tests in `src/integrations/telegram/tasks-command.test.ts` and `src/integrations/telegram/index.test.ts`.
+
+### R4b.5c: Telegram Task Reply & Quick-Approve [F6.8] — SHOULD — `done`
+
+The system SHOULD let an authorized Telegram user answer a running task and approve its current permission prompt from Telegram, without opening the dashboard.
+
+**Acceptance criteria:**
+- A plain-text reply to a Kookr notification about a task is delivered to that task's live agent session (`directReply`). A reply that matches no known notification, or comes from a different chat than the one notified, falls through to normal task-spawn handling; a reply that is itself a command (`/…`) is executed, not forwarded.
+- Permission-blocked notifications carry a quick-reply **Approve** button; completion-ready notifications carry a **Continue** button. Buttons are allowlist-checked and rate-limited.
+- Approve is bound to the specific prompt it was shown for (a short prompt-identity token in the button) and re-derives the permission-request binding from the live prompt (anti-stale): it refuses if the task is no longer permission-blocked or if the live prompt is a different one.
+- Reply routing is active only when the server supplies the task bridge; otherwise notifications remain read-only and the bot is unchanged.
+- Answering a task (text reply or Continue) re-subscribes the operator to that task's notifications. Correlation records (message_id → task, per chat) are age-bounded (24h) and count-bounded (≤500).
+
+**Rationale:** Remote operators received notifications but had to return to the dashboard to act. Closing the loop — answer or approve from the phone — removes that round-trip while keeping the integration's allowlist, rate-limit, redaction, and anti-stale permission guards.
+
+**Evidence:** `src/integrations/telegram/index.ts` (buttons, callback routing, reply routing), `src/integrations/telegram/safety.ts` (`sentNotifications`, `pruneSentNotifications`), `src/server/telegram-task-bridge.ts` (`sendText`/`approvePermission`/`permissionPromptId`), `src/integrations/telegram/audit.ts` (`reply_routed`/`reply_route_failed`/`permission_decision_*`), tests in `src/server/telegram-task-bridge.test.ts` and `src/integrations/telegram/index.test.ts`.
 
 ### R4b.6: Looped Playbook Conflict Guidance [F6.7] — SHOULD — `done`
 
@@ -2276,6 +2292,7 @@ See [speech recognition usage](reference/speech-recognition.md).
 | R4b.5 | — | SHOULD | done | telegram/index, telegram/rephrase, launch-service |
 | R4b.5a | — | SHOULD | done | settings-store, launch-service, SettingsDialog |
 | R4b.5b | — | SHOULD | done | telegram/tasks-command, telegram/index |
+| R4b.5c | F6.8 | SHOULD | done | telegram/index, server/telegram-task-bridge |
 | R4b.6 | F6.7 | SHOULD | done | looped-playbook-launch, PlaybookBrowser |
 | R4b.7 | — | SHALL | done | launch-service, ralph-loop-service, implement-github-issue playbook |
 | R4b.8 | F6.2, F6.6 | SHALL | done | LaunchTaskDialog, PlaybookBrowser, playbook-launch, task-routes |

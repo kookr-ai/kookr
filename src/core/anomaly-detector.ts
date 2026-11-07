@@ -1,4 +1,5 @@
 import type { AgentEvent, Anomaly, AnomalySeverity, AnomalyType } from './types.js';
+import { isBackgroundParked } from './background-parked.js';
 import type { AnomalyDetectorConfig } from './detection-stats.js';
 import type {
   AnomalyReconciliation,
@@ -369,6 +370,12 @@ function detectNeedsInput(events: AgentEvent[], agentId: string): Anomaly | null
 
   const last = events[events.length - 1];
   if (last.type !== 'stop') return null;
+
+  // The agent ended its turn only to wait on its own background work
+  // (a `run_in_background` shell or a scheduled wakeup). That is not a request
+  // for the operator — mirror the check `turn-state.ts` already uses so a
+  // 20-minute sleep never surfaces as `needs_input`. (RFC R3.)
+  if (isBackgroundParked(last)) return null;
 
   return {
     agentId,

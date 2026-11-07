@@ -1,4 +1,5 @@
 import type { AgentEvent, TurnState } from './types.js';
+import { isBackgroundParked } from './background-parked.js';
 
 /**
  * Trailing events that are bookkeeping overlays, not turn-state transitions.
@@ -57,10 +58,7 @@ export function deriveTurnStateDetails(events: AgentEvent[]): DerivedTurnState {
       // the difference is that background-task/cron counts are intrinsic to the
       // Stop event, so they belong in this pure derivation rather than needing
       // cross-event tracking in the caller.
-      if (
-        (last.activeBackgroundTaskCount ?? 0) > 0
-        || (last.activeSessionCronCount ?? 0) > 0
-      ) {
+      if (isBackgroundParked(last)) {
         return { turnState: 'running', effectiveEvent: last, effectiveEventIndex };
       }
       // Normal end-of-turn: a final assistant message was emitted and the

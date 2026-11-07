@@ -40,6 +40,12 @@ export type AuditEvent =
   | { kind: 'spawned'; taskId: string; chatId: number; dryRun: boolean }
   | { kind: 'spawn_failed'; reason: string }
   | { kind: 'block_alert_sent'; taskId: string; chatId: number }
+  // Reply routing + quick-reply buttons — route an operator reply/click back
+  // into the running task (rfc-telegram-attention-notifications reply loop).
+  | { kind: 'reply_routed'; taskId: string; sender: number; via: 'text' | 'button' }
+  | { kind: 'reply_route_failed'; taskId: string; sender: number; via: 'text' | 'button'; reason: string }
+  | { kind: 'permission_decision_sent'; taskId: string; sender: number }
+  | { kind: 'permission_decision_failed'; taskId: string; sender: number; reason: string }
   | { kind: 'task_outcome_sent'; taskId: string; chatId: number; outcome: 'completion_ready' | 'completed' | 'failed' | 'cancelled' }
   | { kind: 'handle_failed'; updateId: number; err: string }
   | { kind: 'offset_persist_failed'; err: string }

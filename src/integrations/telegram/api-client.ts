@@ -38,6 +38,9 @@ export interface TelegramMessage {
   forward_origin?: unknown;
   forward_from?: unknown;
   forward_from_chat?: unknown;
+  /** Present when this message is a reply to another — used to route an
+   * operator's reply back to the task the original notification was about. */
+  reply_to_message?: TelegramMessage;
 }
 
 /**

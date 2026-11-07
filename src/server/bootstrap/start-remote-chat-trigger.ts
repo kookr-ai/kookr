@@ -1,6 +1,7 @@
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
-import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
+import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
+import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -18,6 +19,9 @@ export interface TelegramTriggerModule {
     whisperUrl?: string;
     transcriptionModel?: string;
     lifecycleSignal?: AbortSignal;
+    replyToTask?: (taskId: string, text: string) => Promise<TelegramReplyResult>;
+    approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
+    permissionPromptId?: (taskId: string) => string | null;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
     | { ok: true; modelCount: number | null }
@@ -33,6 +37,8 @@ export interface RemoteChatTriggerDeps {
   launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
   llmClient: LlmClient | null;
   lifecycleSignal?: AbortSignal;
+  /** When set, enables answering a task from Telegram (reply routing + approve). */
+  taskBridge?: TelegramTaskBridge;
   env?: Env;
   loadTelegramModule?: () => Promise<TelegramTriggerModule>;
   log?: (message: string) => void;
@@ -143,6 +149,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       return { handle: null };
     }
 
+    const bridge = deps.taskBridge;
     const handle = await telegramModule.startTelegramTrigger({
       token,
       allowedUserIds,
@@ -157,6 +164,13 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       transcriptionModel: deps.sttTranscription && sameSpeechEndpoint(env.KOOKR_STT_WHISPER_URL, deps.sttTranscription.url)
         ? deps.sttTranscription.model : undefined,
       lifecycleSignal: deps.lifecycleSignal,
+      ...(bridge
+        ? {
+          replyToTask: (taskId: string, text: string) => bridge.sendText(taskId, text),
+          approveTaskPermission: (taskId: string, expectedPromptId?: string) => bridge.approvePermission(taskId, expectedPromptId),
+          permissionPromptId: (taskId: string) => bridge.permissionPromptId(taskId),
+        }
+        : {}),
     });
 
     log(
