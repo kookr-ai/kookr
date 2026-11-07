@@ -13,6 +13,7 @@ import { SessionReaperService } from './session-reaper.js';
 import { createStaleProcessSummaryCache } from './stale-dtach-pressure.js';
 import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv, readHermesFleetOptInFromEnv, readHermesObserverTokenFromEnv } from './config.js';
 import { ObservedActivityStore, DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS } from './observed-activity-store.js';
+import { createDelegationRuntime } from './bootstrap/create-delegation-runtime.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import { readTrailingFileBytes } from './resource-watchdog-log-tail.js';
@@ -2740,7 +2741,14 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     observedActivityBroadcastTimer.unref?.();
   }
 
+  // Kookr->Hermes delegation (RFC rfc-kookr-hermes-delegation, slice 1a). Ships dark:
+  // a service exists only when KOOKR_HERMES_DELEGATION is on AND a valid worker config
+  // loads; otherwise the routes answer 503 delegation_disabled and the decision is logged.
+  const delegationRuntime = await createDelegationRuntime({ kookrDir });
+
   const app = createRoutes({
+    delegationService: delegationRuntime.service,
+    ...(delegationRuntime.disabled ? { delegationDisabled: delegationRuntime.disabled } : {}),
     hermesFleetOptIn,
     hermesObserverToken: readHermesObserverTokenFromEnv(),
     observedActivityStore,
@@ -4181,6 +4189,8 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     // Stop the observed-lane broadcast cadence early so it can't fire mid-shutdown
     // (hermes-fleet#15 slice 2).
     if (observedActivityBroadcastTimer) clearInterval(observedActivityBroadcastTimer);
+    // Stop delegation timers/calls; unfinished records are reconciled on the next start.
+    delegationRuntime.stop();
 
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
