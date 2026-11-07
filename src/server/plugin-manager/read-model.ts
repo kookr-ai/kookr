@@ -1,7 +1,13 @@
 import type { ManagedPlugin } from '../../shared/contracts/plugins.js';
+import { pluginMarketplaceFromId } from '../../shared/contracts/plugins.js';
 import type { ClaudePluginCli } from './cli.js';
 import type { ClaudeSettingsStore } from '../../core/claude-settings/settings-store.js';
-import { readInstalledPlugins, highestInstalledVersion, compareVersions } from './registry.js';
+import {
+  readInstalledPlugins,
+  readKnownMarketplaces,
+  highestInstalledVersion,
+  compareVersions,
+} from './registry.js';
 import { gitStaleness, catalogStalenessUnknown } from './version-source.js';
 
 /**
@@ -61,6 +67,14 @@ export async function assembleManagedPlugins(
 
   const toolkitId = sources.toolkitAvailable?.pluginId ?? null;
 
+  // Registered marketplaces (null = couldn't read; then we never degrade a row).
+  const knownMarketplaces = await readKnownMarketplaces(sources.homeDir);
+  const isMarketplaceRegistered = (id: string): boolean => {
+    if (knownMarketplaces === null) return true; // conservative: don't degrade on "couldn't check"
+    const marketplace = pluginMarketplaceFromId(id);
+    return marketplace === null ? false : knownMarketplaces.has(marketplace);
+  };
+
   // Assemble rows in parallel: per-plugin enablement (4 scoped file reads) and
   // the optional `claude plugin details` spawn would otherwise serialize across
   // the whole fleet.
@@ -88,6 +102,7 @@ export async function assembleManagedPlugins(
         loadSource: 'marketplace' as const,
         alwaysOnTokens,
         uninstallGuard: isUninstallGuarded(id),
+        marketplaceRegistered: isMarketplaceRegistered(id),
       } satisfies ManagedPlugin;
     }),
   );

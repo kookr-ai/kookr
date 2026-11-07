@@ -551,8 +551,13 @@ is the only lever that reaches Kookr's bypass-mode agents.)
   plugins, keyed off `loadSource`.
 - **`alwaysOnTokens` trust.** Is `claude plugin details`' figure stable enough to
   drive a "disable this plugin to save ~N tokens" promise, or informational only?
-- **Group metadata governance.** Who assigns `group` to each of the 65 skills, and
-  does `validate-skills.ts` enforce that every skill has exactly one?
+- **Group metadata governance. — RESOLVED (P3).** Every shipped `plugin/skills` skill
+  declares exactly one `group` (a single string, never a list) in its `SKILL.md`
+  frontmatter. The closed vocabulary is `plugin.json`'s top-level `groups` array (12
+  groups). `scripts/validate-skills.ts` enforces presence, single-value, and
+  declared-existence (plus `groups` entry shape/uniqueness). Dev-local `.claude/skills`
+  are exempt. `pre-pr-review` and `pr-contribution-excellence` carry
+  `toggleExempt: true` so a future per-skill toggle layer can never target them.
 - **Loadout storage shape. — RESOLVED (P2, slice 2a).** Kookr-owned loadouts live in a
   single versioned JSON file `<kookrDir>/plugin-loadouts.json` (`LoadoutStore`), with a
   map per scope level (`task-type` / `playbook` / `project`) and an explicit top-level

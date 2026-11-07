@@ -1,5 +1,6 @@
 ---
 name: error-handling-patterns
+group: engineering-patterns
 description: Error handling best practices - cause chaining, boundary validation, structured errors, fire-and-forget safety, retry discipline
 keywords: error handling, catch, throw, cause chaining, Zod validation, fire-and-forget, Promise.all, circuit breaker, retry, backoff, jitter, structured logging, silent failure, empty catch, SQL injection, parameterized query, discriminated union, Result type
 related: testing-patterns, monorepo-architecture, typescript-type-safety, domain-driven-design, websocket-dashboard, safe-refactoring, logging-design-patterns, dependency-injection-patterns, event-driven-messaging-patterns, async-flow-control, process-lifecycle-patterns, state-machine-workflow-patterns

@@ -9,7 +9,14 @@ import { assembleManagedPlugins } from '../plugin-manager/read-model.js';
 import { readInstalledVersionFromRegistry } from '../plugin-manager/registry.js';
 import { getPluginVersionStatus } from '../plugin-version-status.js';
 import { LoadoutStore } from '../plugin-manager/loadout-store.js';
-import { ClaudeSettingsStore, defaultScopeFiles } from '../../core/claude-settings/settings-store.js';
+import { ConfigEpochStore } from '../plugin-manager/config-epoch.js';
+import { OwnSessionAssist, OwnSessionMutationError } from '../plugin-manager/own-session.js';
+import {
+  ClaudeSettingsStore,
+  ConcurrentSettingsWriteError,
+  defaultScopeFiles,
+  type SettingsScope,
+} from '../../core/claude-settings/settings-store.js';
 import {
   TOOLKIT_MARKETPLACE_SLUG,
   pluginInstallCommands,
@@ -25,8 +32,19 @@ import type {
   LoadoutLevel,
   LoadoutDesiredState,
   LoadoutSpawnMode,
+  OwnSessionScope,
+  OwnSessionEnablementRequest,
+  OwnSessionEnablementResult,
+  OwnSessionMarketplaceRequest,
+  OwnSessionInstallRequest,
+  OwnSessionActionResult,
+  OwnSessionActionError,
+  PluginEnablement,
 } from '../../shared/contracts/plugins.js';
-import { LOADOUT_LEVELS_MOST_SPECIFIC_FIRST } from '../../shared/contracts/plugins.js';
+import {
+  LOADOUT_LEVELS_MOST_SPECIFIC_FIRST,
+  OWN_SESSION_BLAST_RADIUS,
+} from '../../shared/contracts/plugins.js';
 
 /** Strip GIT_DIR/GIT_WORK_TREE so `claude` subprocesses run against the user's home, not the parent repo. */
 const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
@@ -38,6 +56,72 @@ function pluginCliFor(deps: DeployRouteDeps, hookHomeDir: string): ClaudePluginC
 
 function settingsStoreFor(deps: DeployRouteDeps, hookHomeDir: string): ClaudeSettingsStore {
   return new ClaudeSettingsStore(defaultScopeFiles(deps.serverCwd, hookHomeDir));
+}
+
+/** The config-epoch store (RFC "Surfacing reload drift"), bumped on every own-session mutation. */
+function epochStoreFor(deps: DeployRouteDeps): ConfigEpochStore {
+  return new ConfigEpochStore(deps.kookrDir ?? deps.serverCwd);
+}
+
+/** Own-session assist (RFC G3/R4): install/add-marketplace/enable-disable for the operator's OWN sessions. */
+function ownSessionAssistFor(
+  deps: DeployRouteDeps,
+  hookHomeDir: string,
+  mutation: PluginMutationService,
+): OwnSessionAssist {
+  return new OwnSessionAssist({
+    cli: pluginCliFor(deps, hookHomeDir),
+    settings: settingsStoreFor(deps, hookHomeDir),
+    mutation,
+    epoch: epochStoreFor(deps),
+    pluginsDir: join(resolve(hookHomeDir), '.claude', 'plugins'),
+    // The CLI can exit 0 without the install landing; verify against the
+    // registry (short retry — the registry lags the CLI), mirroring the toolkit
+    // install route's verification.
+    verifyInstalled: async (pluginId) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if ((await readInstalledVersionFromRegistry(hookHomeDir, pluginId)) !== null) return true;
+        await new Promise<void>((res) => setTimeout(res, 150));
+      }
+      return (await readInstalledVersionFromRegistry(hookHomeDir, pluginId)) !== null;
+    },
+  });
+}
+
+const OWN_SESSION_SCOPES: readonly OwnSessionScope[] = ['user', 'userLocal', 'project', 'projectLocal'];
+
+/** Validate an untrusted scope, defaulting to `user` when omitted. Returns null when invalid. */
+function normalizeOwnSessionScope(value: unknown): SettingsScope | null {
+  if (value === undefined || value === null) return 'user';
+  return (OWN_SESSION_SCOPES as readonly string[]).includes(value as string)
+    ? (value as SettingsScope)
+    : null;
+}
+
+/** Map an own-session mutation failure to the right HTTP status + body. */
+function ownSessionErrorResponse(
+  c: import('hono').Context,
+  err: unknown,
+): Response {
+  if (err instanceof PluginMutationBusyError) {
+    return c.json<OwnSessionActionError>(
+      { error: 'Plugin mutation already in progress', lockHolder: err.holder },
+      409,
+    );
+  }
+  if (err instanceof ConcurrentSettingsWriteError) {
+    return c.json<OwnSessionActionError>(
+      { error: `${err.message}. Retry after reviewing the file.` },
+      409,
+    );
+  }
+  if (err instanceof OwnSessionMutationError) {
+    const note = err.restoredOk
+      ? ''
+      : ` Your previous Claude config is preserved at ${err.backupPath}`;
+    return c.json<OwnSessionActionError>({ error: `${err.message}${note}` }, 500);
+  }
+  return c.json<OwnSessionActionError>({ error: errorMessage(err) }, 500);
 }
 
 /**
@@ -254,6 +338,12 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
           return c.json<PluginActionError>({ error: `${errorMessage(err)}${note}`, pluginId: id }, 500);
         }
 
+        // A successful update is a Kookr plugin change — advance the config epoch
+        // so Kookr-managed sessions started before it surface as reload-drift.
+        await epochStoreFor(deps).bump().catch((err) => {
+          console.warn(`[plugins] epoch bump after update failed id=${id}: ${errorMessage(err)}`);
+        });
+
         const plugins = await buildReadModel(deps, hookHomeDir, true);
         const plugin = plugins.find((p) => p.id === id);
         if (!plugin) {
@@ -351,6 +441,111 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
     } catch (err) {
       console.error(`[plugins] loadout resolve failed: ${errorMessage(err)}`);
       return c.json({ error: errorMessage(err) }, 500);
+    }
+  });
+
+  // --- Own-session assist (RFC "Own-session assist (G3)" / R4) ---------------
+  // Mutating the operator's OWN interactive sessions (distinct from loadouts,
+  // which target spawned agents). The UI shows the blast-radius + /reload-plugins
+  // disclosure BEFORE calling these (single source: OWN_SESSION_BLAST_RADIUS).
+  // Every action serializes through the shared lock, is backed up + reversible
+  // (R8), and bumps the config epoch on success.
+
+  // Enable / disable / reset a plugin for the operator's own sessions, by an
+  // inverse single-key edit of `enabledPlugins` at the chosen scope (default user).
+  app.post('/api/plugins/own-session/enablement', async (c) => {
+    let body: OwnSessionEnablementRequest;
+    try {
+      body = (await c.req.json()) as OwnSessionEnablementRequest;
+    } catch {
+      return c.json<OwnSessionActionError>({ error: 'Invalid JSON body' }, 400);
+    }
+    const pluginId = typeof body?.pluginId === 'string' ? body.pluginId : '';
+    if (!pluginId.includes('@')) {
+      return c.json<OwnSessionActionError>({ error: 'Invalid plugin id (expected <name>@<marketplace>)' }, 400);
+    }
+    if (!(body.value === true || body.value === false || body.value === null)) {
+      return c.json<OwnSessionActionError>({ error: 'value must be true, false, or null (reset)' }, 400);
+    }
+    const scope = normalizeOwnSessionScope(body.scope);
+    if (scope === null) {
+      return c.json<OwnSessionActionError>({ error: `Invalid scope: ${String(body.scope)}` }, 400);
+    }
+    const assist = ownSessionAssistFor(deps, hookHomeDir, pluginMutation);
+    try {
+      const value = body.value === null ? undefined : body.value;
+      const res = await assist.setEnablement(pluginId, value, scope);
+      const enablement: PluginEnablement = value === undefined ? 'default' : value ? 'enabled' : 'disabled';
+      return c.json<OwnSessionEnablementResult>({
+        status: 'applied',
+        pluginId,
+        scope: scope as OwnSessionScope,
+        enablement,
+        previousValue: res.previousValue ?? null,
+        backupPath: res.backupPath,
+        epoch: res.epoch,
+      });
+    } catch (err) {
+      console.error(`[plugins] own-session enablement failed id=${pluginId}: ${errorMessage(err)}`);
+      return ownSessionErrorResponse(c, err);
+    }
+  });
+
+  // Add a marketplace for the operator's own sessions.
+  app.post('/api/plugins/own-session/marketplace', async (c) => {
+    let body: OwnSessionMarketplaceRequest;
+    try {
+      body = (await c.req.json()) as OwnSessionMarketplaceRequest;
+    } catch {
+      return c.json<OwnSessionActionError>({ error: 'Invalid JSON body' }, 400);
+    }
+    const source = typeof body?.source === 'string' ? body.source.trim() : '';
+    if (!source) {
+      return c.json<OwnSessionActionError>({ error: 'source is required' }, 400);
+    }
+    const assist = ownSessionAssistFor(deps, hookHomeDir, pluginMutation);
+    try {
+      const { epoch } = await assist.addMarketplace(source);
+      return c.json<OwnSessionActionResult>({ status: 'applied', epoch, note: OWN_SESSION_BLAST_RADIUS });
+    } catch (err) {
+      console.error(`[plugins] own-session add-marketplace failed source=${source}: ${errorMessage(err)}`);
+      return ownSessionErrorResponse(c, err);
+    }
+  });
+
+  // Install a plugin for the operator's own sessions (combined plugins+settings
+  // op, R8-ordered with reverse undo). Optionally adds a marketplace first and
+  // enables the plugin after install.
+  app.post('/api/plugins/own-session/install', async (c) => {
+    let body: OwnSessionInstallRequest;
+    try {
+      body = (await c.req.json()) as OwnSessionInstallRequest;
+    } catch {
+      return c.json<OwnSessionActionError>({ error: 'Invalid JSON body' }, 400);
+    }
+    const pluginId = typeof body?.pluginId === 'string' ? body.pluginId : '';
+    if (!pluginId.includes('@')) {
+      return c.json<OwnSessionActionError>({ error: 'Invalid plugin id (expected <name>@<marketplace>)' }, 400);
+    }
+    const scope = normalizeOwnSessionScope(body.scope);
+    if (scope === null) {
+      return c.json<OwnSessionActionError>({ error: `Invalid scope: ${String(body.scope)}` }, 400);
+    }
+    const marketplaceSource =
+      typeof body.marketplaceSource === 'string' && body.marketplaceSource.trim()
+        ? body.marketplaceSource.trim()
+        : undefined;
+    const assist = ownSessionAssistFor(deps, hookHomeDir, pluginMutation);
+    try {
+      const { epoch } = await assist.installPlugin(pluginId, {
+        ...(marketplaceSource ? { marketplaceSource } : {}),
+        enableAfterInstall: body.enableAfterInstall === true,
+        scope,
+      });
+      return c.json<OwnSessionActionResult>({ status: 'applied', epoch, note: OWN_SESSION_BLAST_RADIUS });
+    } catch (err) {
+      console.error(`[plugins] own-session install failed id=${pluginId}: ${errorMessage(err)}`);
+      return ownSessionErrorResponse(c, err);
     }
   });
 }

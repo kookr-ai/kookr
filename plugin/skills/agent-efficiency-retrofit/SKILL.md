@@ -1,5 +1,6 @@
 ---
 name: agent-efficiency-retrofit
+group: agent-automation
 description: Analyze recent Claude Code and Codex CLI conversations for repeated inefficient tool calls, token waste, retry loops, avoidable errors, and recurring setup friction; rank improvements by benefit/ease, then implement the smallest durable guardrail after user approval.
 keywords: efficiency, token waste, tool calls, reduce tool calls, reduce tokens, Claude Code, Codex CLI, conversations, transcripts, sessions, history, retry loops, repeated errors, inefficient calls, hooks, skills, CLAUDE.md, playbook, self reflection, subagents
 related: token-efficiency, self-reflect, placement-picker

@@ -1,5 +1,6 @@
 ---
 name: autonomous-watch-loop
+group: agent-automation
 description: >
   Run a long-lived watch/janitor task that polls a system on an interval and
   acts on what it finds. Use for "monitor X all day and do Y", task sweepers,

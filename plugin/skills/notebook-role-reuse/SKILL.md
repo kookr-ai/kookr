@@ -1,5 +1,6 @@
 ---
 name: notebook-role-reuse
+group: claude-code
 description: >
   Spawn an agent so it REUSES an existing Agent Notebook shelf (a "role" in the
   nb CLI's own terms) — loading that shelf's accumulated lessons at the start and

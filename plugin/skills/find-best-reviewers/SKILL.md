@@ -1,5 +1,6 @@
 ---
 name: find-best-reviewers
+group: code-review
 description: Find the best code reviewers in a GitHub repository or for specific file paths — uses GraphQL to analyze PR review history, filters bots, weights review states, surfaces domain specialists
 keywords: reviewer, review, code review, who reviews, CODEOWNERS, PR, pull request, maintainer, contributor, domain expert, github
 related: [oss-repo-recon, github-trending-repos, pr-lifecycle]

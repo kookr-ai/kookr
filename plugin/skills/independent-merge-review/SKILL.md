@@ -1,5 +1,6 @@
 ---
 name: independent-merge-review
+group: agent-automation
 description: Before an autonomous self-merge, spawn a fresh-context reviewer (Codex lane, Claude fallback) that posts a machine-readable exact-head PR verdict. Hard merge gate on kookr-ai/kookr; advisory evidence on repos that document review as advisory.
 keywords: independent review, merge gate, self-merge, reviewer verdict, codex reviewer, claude fallback, review-skipped-timeout, before merge, autonomous merge, advisory review
 related: pre-pr-review, pr-review-triage, git-commit-discipline

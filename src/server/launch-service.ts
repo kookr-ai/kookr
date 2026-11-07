@@ -59,6 +59,7 @@ import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardra
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
 import { LoadoutStore, replayRecordedLoadout, resolveOrReplayLoadout } from './plugin-manager/loadout-store.js';
+import { ConfigEpochStore, stampSessionConfigEpoch } from './plugin-manager/config-epoch.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
@@ -152,6 +153,12 @@ export interface LaunchServiceDeps {
    * resume/relaunch replay the loadout already recorded on the task.
    */
   loadoutStore?: LoadoutStore;
+  /**
+   * Config-epoch store (RFC "Surfacing reload drift"). Optional: when absent
+   * (tests / feature unwired) sessions are not stamped and the drift surface
+   * stays empty. Only a FIRST spawn stamps it; resume/relaunch keep the original.
+   */
+  configEpochStore?: ConfigEpochStore;
   /** Optional live session probe used to keep dedup from trusting stale inProgress records. */
   terminalBackend?: Pick<TerminalBackend, 'isAlive'>;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
@@ -2361,6 +2368,13 @@ async function launchTaskCore(
   // No-op and byte-identical to today when the feature is off / nothing attached.
   const loadoutFields = await resolveOrReplayLoadout(
     { loadoutStore: deps.loadoutStore, taskStore: deps.taskStore },
+    task,
+  );
+  // Stamp this Kookr-managed Claude session with the config epoch it starts under
+  // (RFC "Surfacing reload drift"). No-op off the claude adapter / when unwired /
+  // on a resume (already stamped).
+  await stampSessionConfigEpoch(
+    { configEpochStore: deps.configEpochStore, taskStore: deps.taskStore },
     task,
   );
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {

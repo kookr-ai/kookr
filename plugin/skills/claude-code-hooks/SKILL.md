@@ -1,5 +1,6 @@
 ---
 name: claude-code-hooks
+group: claude-code
 description: Claude Code hook system — all 25 event types, payloads, matchers, state machine, and integration patterns for agent monitoring
 triggers:
   - hook

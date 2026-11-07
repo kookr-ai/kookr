@@ -1,5 +1,6 @@
 ---
 name: state-machine-workflow-patterns
+group: engineering-patterns
 description: State machine discipline, saga compensation, event-sourced persistence, workflow orchestration. Use when state transitions, workflow steps, saga, compensation, event sourcing, or state machine testing.
 keywords: state machine, FSM, XState, state transition, saga, compensation, event sourcing, workflow orchestration, choreography, transition guard, append-only, replay, discriminated union, optimistic locking, heartbeat, timeout, model-based testing
 related: error-handling-patterns, async-flow-control, process-lifecycle-patterns, event-driven-messaging-patterns, domain-driven-design

@@ -1,5 +1,6 @@
 ---
 name: codex-pr-distill
+group: codex-pr-lessons
 description: Distillation phase for codex-pr-lessons playbook — compress raw learnings into patterns and update skills
 keywords: codex, pr, distill, patterns, generalize, skill, synthesis
 related: [codex-pr-threshold, codex-pr-state, codex-pr-critic]

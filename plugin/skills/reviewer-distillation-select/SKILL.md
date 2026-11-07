@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-select
+group: reviewer-distillation
 description: Select merged PRs with substantive human reviews for reviewer distillation experiment
 keywords: [reviewer, distillation, select, pr, graphql]
 related: [reviewer-distillation-prepare, find-best-reviewers]

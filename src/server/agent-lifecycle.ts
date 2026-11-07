@@ -20,6 +20,7 @@ import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
 import { resolveOrReplayLoadout, type LoadoutStore } from './plugin-manager/loadout-store.js';
+import { stampSessionConfigEpoch, type ConfigEpochStore } from './plugin-manager/config-epoch.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
@@ -80,6 +81,12 @@ export interface AgentLifecycleDeps {
    * (tests / feature off) means no loadout, byte-identical to today.
    */
   loadoutStore?: LoadoutStore;
+  /**
+   * Config-epoch store (RFC "Surfacing reload drift"). Carried alongside
+   * `loadoutStore` so promotion (a parked task's first spawn) stamps the epoch
+   * it started under. Optional — absent (tests / feature off) means no stamp.
+   */
+  configEpochStore?: ConfigEpochStore;
   /**
    * Optional project-config store. When supplied, the lifecycle stamps
    * ProjectConfig.localPath on first task start so the launch dialog can
@@ -1147,6 +1154,12 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // task parked under load would silently never get its loadout applied.
       const loadoutFields = await resolveOrReplayLoadout(
         { loadoutStore: deps.lifecycleDeps.loadoutStore, taskStore },
+        pending,
+      );
+      // Stamp the config epoch this promoted session starts under (RFC
+      // "Surfacing reload drift"). No-op off claude / when unwired / on replay.
+      await stampSessionConfigEpoch(
+        { configEpochStore: deps.lifecycleDeps.configEpochStore, taskStore },
         pending,
       );
       const adapterOpts = {

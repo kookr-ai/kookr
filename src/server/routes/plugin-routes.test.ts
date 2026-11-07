@@ -316,3 +316,114 @@ describe('loadout authoring + dry-run (RFC Layer 2 / slice 2a)', () => {
     expect(store.levels.project.proj).toBeUndefined();
   });
 });
+
+describe('own-session assist routes (RFC G3/R4)', () => {
+  let env: Env;
+  afterEach(async () => env?.cleanup());
+
+  async function readUserSettings(): Promise<Record<string, unknown>> {
+    const { readFile } = await import('node:fs/promises');
+    return JSON.parse(await readFile(join(env.home, '.claude', 'settings.json'), 'utf8'));
+  }
+
+  it('enable/disable writes enabledPlugins at the chosen scope and bumps the epoch', async () => {
+    env = await setup([]);
+    await writeFile(join(env.home, '.claude', 'settings.json'), JSON.stringify({ model: 'opus' }));
+    const app = makeApp(env);
+    const res = await app.request('/api/plugins/own-session/enablement', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: 'stripe@anthropic-plugin-directory', value: false }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; enablement: string; epoch: number };
+    expect(body).toMatchObject({ status: 'applied', enablement: 'disabled', epoch: 1 });
+    const settings = await readUserSettings();
+    expect(settings.enabledPlugins).toEqual({ 'stripe@anthropic-plugin-directory': false });
+    expect(settings.model).toBe('opus'); // unrelated key preserved (inverse single-key edit)
+  });
+
+  it('rejects an invalid plugin id and an invalid value', async () => {
+    env = await setup([]);
+    const app = makeApp(env);
+    const badId = await app.request('/api/plugins/own-session/enablement', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: 'no-at-sign', value: true }),
+    });
+    expect(badId.status).toBe(400);
+    const badValue = await app.request('/api/plugins/own-session/enablement', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: 'x@m', value: 'yes' }),
+    });
+    expect(badValue.status).toBe(400);
+  });
+
+  it('add-marketplace runs the CLI and returns the blast-radius note', async () => {
+    env = await setup([]);
+    const res = await makeApp(env).request('/api/plugins/own-session/marketplace', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'owner/repo' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; note?: string };
+    expect(body.status).toBe('applied');
+    expect(body.note).toMatch(/reload-plugins/);
+  });
+
+  it('install mutates plugins then enables, bumping the epoch', async () => {
+    env = await setup([]);
+    const res = await makeApp(env).request('/api/plugins/own-session/install', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: TOOLKIT, marketplaceSource: 'kookr-ai/kookr', enableAfterInstall: true }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; epoch: number };
+    expect(body).toMatchObject({ status: 'applied', epoch: 1 });
+    const settings = await readUserSettings();
+    expect((settings.enabledPlugins as Record<string, boolean>)[TOOLKIT]).toBe(true);
+  });
+
+  it('returns 409 naming the lock holder when a mutation is already in flight', async () => {
+    env = await setup([]);
+    const app = makeApp(env);
+    let release: (() => void) | undefined;
+    const held = new Promise<void>((r) => (release = r));
+    const holding = env.mutation.withLock('plugin-update', () => held);
+    const res = await app.request('/api/plugins/own-session/enablement', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: 'x@m', value: false }),
+    });
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; lockHolder?: { operation: string } };
+    expect(body.lockHolder?.operation).toBe('plugin-update');
+    release?.();
+    await holding;
+  });
+
+  it('install verify-fail rolls back (reverse undo) and returns 500 without bumping the epoch', async () => {
+    env = await setup([]);
+    await writeFile(join(env.home, '.claude', 'settings.json'), JSON.stringify({ model: 'opus' }));
+    // The fake `claude install` exits 0 but never writes the registry entry, so
+    // the route's verifyInstalled poll fails → reverse undo → 500.
+    await writeFile(join(env.home, '.kookr-fake', 'install-no-registry'), '1');
+    const res = await makeApp(env).request('/api/plugins/own-session/install', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pluginId: 'ghost@mkt', enableAfterInstall: true }),
+    });
+    expect(res.status).toBe(500);
+    // The settings enable was reverted; the plugins partial was restored away.
+    expect(await readUserSettings()).toEqual({ model: 'opus' });
+    await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
+    // Epoch not advanced on a rolled-back op.
+    const { readFile } = await import('node:fs/promises');
+    await expect(readFile(join(env.serverCwd, 'plugin-config-epoch.json'), 'utf8')).rejects.toBeTruthy();
+  });
+
+  it('a successful plugin update bumps the config epoch', async () => {
+    env = await setup([{ id: 'stripe@anthropic-plugin-directory', version: '0.11.40' }]);
+    const res = await makeApp(env).request('/api/plugins/stripe@anthropic-plugin-directory/update', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const { readFile } = await import('node:fs/promises');
+    const epoch = JSON.parse(await readFile(join(env.serverCwd, 'plugin-config-epoch.json'), 'utf8'));
+    expect(epoch.epoch).toBe(1);
+  });
+});

@@ -1,5 +1,6 @@
 ---
 name: oss-pr-plan
+group: oss-contribution
 description: Plan phase for oss-pr-lessons playbook — load state, determine next batch of PRs to analyze for any repository
 keywords: oss, pr, plan, batch, pagination, state, open source, contribution, analyze
 related: [oss-pr-critic, oss-pr-state, oss-pr-threshold, oss-pr-distill]

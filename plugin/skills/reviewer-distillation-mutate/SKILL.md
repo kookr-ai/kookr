@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-mutate
+group: reviewer-distillation
 description: Spawn a mutator subagent to improve the reviewer skill based on judge feedback
 keywords: [reviewer, distillation, mutate, improve, skill]
 related: [reviewer-distillation-judge, reviewer-distillation-predict]

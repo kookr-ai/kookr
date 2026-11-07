@@ -99,6 +99,25 @@ export function highestInstalledVersion(records: InstalledPluginRecord[]): strin
   return versions.reduce((max, v) => (compareVersions(v, max) > 0 ? v : max));
 }
 
+function knownMarketplacesPath(homeDir: string): string {
+  return join(resolve(homeDir), '.claude', 'plugins', 'known_marketplaces.json');
+}
+
+/**
+ * The set of marketplace names registered in `known_marketplaces.json`, or
+ * `null` when the file is missing/unreadable (so a caller can tell "not
+ * registered" apart from "couldn't check"). A plugin whose marketplace is NOT in
+ * this set cannot be acted on by marketplace-scoped commands and should degrade
+ * to "open in `/plugin`" rather than erroring (RFC Edge cases — real for
+ * `stripe@anthropic-plugin-directory`). Single owner of this file, like the
+ * installed-plugins reader.
+ */
+export async function readKnownMarketplaces(homeDir: string): Promise<Set<string> | null> {
+  const parsed = await readJson(knownMarketplacesPath(homeDir));
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  return new Set(Object.keys(parsed as Record<string, unknown>));
+}
+
 /** Convenience: highest installed version for a single plugin id (registry fallback). */
 export async function readInstalledVersionFromRegistry(
   homeDir: string,

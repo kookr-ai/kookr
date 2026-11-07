@@ -1,5 +1,6 @@
 ---
 name: codex-pr-critic
+group: codex-pr-lessons
 description: Critic phase for codex-pr-lessons playbook — analyze a PR and extract quality signals
 keywords: codex, pr, critic, review, analysis, signals, quality
 related: [codex-pr-plan, codex-pr-state, codex-pr-threshold, codex-pr-distill]

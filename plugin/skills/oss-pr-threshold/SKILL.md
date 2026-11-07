@@ -1,5 +1,6 @@
 ---
 name: oss-pr-threshold
+group: oss-contribution
 description: Threshold verification for oss-pr-lessons playbook — determine if distillation should trigger for any repository
 keywords: oss, pr, threshold, distillation, trigger, line count, open source
 related: [oss-pr-state, oss-pr-distill]

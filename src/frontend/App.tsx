@@ -40,6 +40,7 @@ import { StatusBar } from './components/StatusBar.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { PluginManagerDialog } from './components/PluginManagerDialog.js';
+import { relaunchFromAgent } from './relaunch-from-agent.js';
 import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
 import { DrainModeBanner } from './components/DrainModeBanner.js';
 import { SafeModeBanner } from './components/SafeModeBanner.js';
@@ -464,6 +465,9 @@ export function App() {
   const destructiveTimersRef = useRef<Map<string, number>>(new Map());
   const destructiveActionSeqRef = useRef(0);
   const sendRef = useRef(send);
+  // Restart action for the Plugin Manager's reload-drift surface: reuse the
+  // existing relaunch flow (prefill Launch from the drifted session's agent).
+  const setRelaunchTask = useKookrStore((s) => s.setRelaunchTask);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const shortcutBindings = useMemo(
     () => resolveShortcutBindings(shortcutPlatform, shortcutOverrides),
@@ -1960,7 +1964,17 @@ export function App() {
         </Suspense>
       )}
       {activeModal === 'pluginManager' && (
-        <PluginManagerDialog isOpen onClose={closeModal} />
+        <PluginManagerDialog
+          isOpen
+          onClose={closeModal}
+          onRestartSession={(taskId) => {
+            const agent = agents.find((a) => a.taskId === taskId);
+            if (agent) {
+              void relaunchFromAgent(agent, setRelaunchTask);
+              closeModal();
+            }
+          }}
+        />
       )}
       {activeModal === 'settings' && (
         <Suspense fallback={null}>

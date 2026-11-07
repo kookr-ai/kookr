@@ -1,5 +1,6 @@
 ---
 name: shell-subprocess-safety
+group: engineering-patterns
 description: Shell subprocess safety patterns - execFileSync over execSync, array arguments, shell feature replacements, static analysis guards. Use when spawning child processes, running git/docker/system commands, or reviewing code that calls execSync.
 keywords: execSync, execFileSync, spawnSync, shell injection, command injection, child_process, CWE-78, shellQuote, escapeShellArg, template literal, subprocess, git command, docker command
 related: error-handling-patterns, process-lifecycle-patterns, testing-patterns

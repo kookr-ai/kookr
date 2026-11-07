@@ -1,5 +1,6 @@
 ---
 name: communication-quality-review
+group: communication
 description: Review a scientific paper, article, or long-form technical document as an expert first reader and science-communication editor, through ONE assigned communication lens, and return prioritized, concrete, rigor-preserving feedback. Built to be fanned out across many subagents — each on a different (deliberately overlapping) lens — to iterate a document toward expert-quality communication that is clear and skimmable for a non-expert, yet still precise, honest, and concise. Use when a paper, article, or report must be made excellent to read without weakening a single claim.
 keywords: scientific writing, science communication, paper review, first reader, readability, clarity, concision, narrative, structure, cohesion, jargon, notation, figures, abstract, plain language, cold reader, editing, manuscript, rigor, honest hedging, communication lens
 related: clear-technical-writing, rfc-iterative-review, clear-writing-reviewer

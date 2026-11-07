@@ -1,5 +1,6 @@
 ---
 name: tdd-workflow
+group: testing
 description: Implement features using TDD workflow with requirements-first approach. Use when implementing new features, adding functionality, or when user asks to build something.
 keywords: tdd, test-driven, red-green-refactor, requirements, feature implementation
 related: testing-patterns, safe-refactoring

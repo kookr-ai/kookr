@@ -1,5 +1,6 @@
 ---
 name: autonomous-review-loop
+group: agent-automation
 description: Run bounded autonomous implementation and independent-review correction cycles with durable accounting, exact-head merge safety, and periodic quality-preserving reflection.
 keywords: autonomous review loop, correction cycle, iteration cap, exact head, self-reflection, anti-reward-hacking
 related: independent-merge-review, reviewer-distillation-meta, self-continuation-task

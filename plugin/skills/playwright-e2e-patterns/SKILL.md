@@ -1,5 +1,6 @@
 ---
 name: playwright-e2e-patterns
+group: testing
 description: Playwright E2E testing patterns. Use when playwright, E2E test, toBeVisible, route mock, modal, flaky test, or selector issues.
 keywords: playwright, e2e, toBeVisible, route-mock, modal, flaky-test, firefox, selector, data-testid, storageState, serial
 related: testing-patterns

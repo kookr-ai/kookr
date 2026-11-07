@@ -1,5 +1,6 @@
 ---
 name: self-continuation-task
+group: agent-automation
 description: >
   Build a Ralph-like sequential Kookr task chain where each task completes one
   independent unit, records durable state, and spawns the next task with the

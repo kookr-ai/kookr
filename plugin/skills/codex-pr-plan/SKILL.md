@@ -1,5 +1,6 @@
 ---
 name: codex-pr-plan
+group: codex-pr-lessons
 description: Plan phase for codex-pr-lessons playbook — load state, determine next batch of PRs to analyze
 keywords: codex, pr, plan, batch, pagination, state
 related: [codex-pr-critic, codex-pr-state, codex-pr-threshold, codex-pr-distill]

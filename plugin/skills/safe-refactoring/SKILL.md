@@ -1,5 +1,6 @@
 ---
 name: safe-refactoring
+group: engineering-patterns
 description: Safe refactoring patterns - code smell detection thresholds, baby-step refactoring, characterization tests, Expand-Migrate-Contract, Strangler Fig, primitive obsession, value objects
 keywords: refactoring, code smell, extract method, extract class, long method, god class, primitive obsession, value object, branded type, parallel change, expand contract, strangler fig, characterization test, feature flag, safe migration
 related: monorepo-architecture, tdd-workflow, error-handling-patterns, typescript-type-safety, domain-driven-design

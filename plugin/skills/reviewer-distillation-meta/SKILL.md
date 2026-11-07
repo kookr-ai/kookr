@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-meta
+group: reviewer-distillation
 description: Meta-mutation — improve the mutator or judge skills when the reviewer improvement loop stalls
 keywords: [reviewer, distillation, meta, mutator, judge, stall]
 related: [reviewer-distillation-mutate, reviewer-distillation-judge]

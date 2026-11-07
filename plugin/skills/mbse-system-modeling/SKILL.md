@@ -1,5 +1,6 @@
 ---
 name: mbse-system-modeling
+group: design-analysis
 description: "Explore the current system and generate or update multi-level architecture documentation using an MBSE-lite approach: system context, capability map, containers, runtime sequences, state machines, subsystem decompositions, and boundary-smell analysis."
 keywords:
   - mbse

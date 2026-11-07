@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-predict
+group: reviewer-distillation
 description: Spawn an isolated reviewer subagent to blindly predict PR review comments
 keywords: [reviewer, distillation, predict, blind, review]
 related: [reviewer-distillation-prepare, reviewer-distillation-judge]

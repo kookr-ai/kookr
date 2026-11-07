@@ -38,6 +38,15 @@ export interface ManagedPlugin {
   alwaysOnTokens: number | null;
   /** Server-set: true for plugins Kookr depends on (kookr-toolkit) — never one-click uninstall. */
   uninstallGuard: boolean;
+  /**
+   * Whether this plugin's marketplace is registered in `known_marketplaces.json`.
+   * `false` (real for `stripe@anthropic-plugin-directory`) means marketplace-scoped
+   * actions (update / own-session install) must degrade to "open in `/plugin`"
+   * rather than erroring (RFC Edge cases). `true` when the marketplace is present
+   * OR when Kookr could not read the file (conservative: do not degrade on an
+   * unknown — only when the file is readable and the marketplace is genuinely absent).
+   */
+  marketplaceRegistered: boolean;
 }
 
 export interface PluginsReadModel {
@@ -163,4 +172,119 @@ export function pluginNameFromId(id: string): string {
 export function pluginMarketplaceFromId(id: string): string | null {
   const at = id.indexOf('@');
   return at === -1 ? null : id.slice(at + 1);
+}
+
+// ---------------------------------------------------------------------------
+// Own-session assist (RFC "Own-session assist (G3)" / R4) — mutating the
+// operator's OWN interactive Claude Code sessions (distinct from P2 loadouts,
+// which target Kookr-SPAWNED agents). Parity with native `/plugin`: all config
+// format knowledge lives in the P1 Layer-0 seams (ClaudeSettingsStore,
+// ClaudePluginCli), never here.
+// ---------------------------------------------------------------------------
+
+/**
+ * The blast-radius disclosure shown BEFORE any own-session mutation applies
+ * (R4). A single source of truth so the UI and any copy stay consistent. New
+ * sessions pick up the edit automatically; running ones need `/reload-plugins`
+ * (there is no supported programmatic reload — a Non-Goal).
+ */
+export const OWN_SESSION_BLAST_RADIUS =
+  'This affects all of your Claude Code sessions. New sessions pick it up automatically; run /reload-plugins in any session that is already running.';
+
+/**
+ * Kookr cannot see the operator's own Claude Code sessions in external
+ * terminals — the drift surface states this rather than implying coverage
+ * (RFC "Surfacing reload drift": "external TUIs are invisible to Kookr").
+ */
+export const EXTERNAL_TUI_COVERAGE_NOTE =
+  'Kookr only tracks the sessions it manages. Your own Claude Code sessions in external terminals are invisible to Kookr — restart those yourself (or run /reload-plugins in them).';
+
+/** The scope an own-session enable/disable targets. Mirrors ClaudeSettingsStore scopes; default `user`. */
+export type OwnSessionScope = 'user' | 'userLocal' | 'project' | 'projectLocal';
+
+/** Request to enable/disable/reset a plugin for the operator's own sessions. */
+export interface OwnSessionEnablementRequest {
+  pluginId: string;
+  /** true = enable, false = disable, null = reset to native default (remove the key). */
+  value: boolean | null;
+  /** Default `user` when omitted. */
+  scope?: OwnSessionScope;
+}
+
+/** Result of an own-session enable/disable (carries the inverse-undo value + new epoch). */
+export interface OwnSessionEnablementResult {
+  status: 'applied';
+  pluginId: string;
+  scope: OwnSessionScope;
+  enablement: PluginEnablement;
+  /** The value before the edit, for an inverse single-key undo; null means it was at native default. */
+  previousValue: boolean | null;
+  /** Where the pre-write settings backup landed, or null when the file did not exist. */
+  backupPath: string | null;
+  /** The config epoch after this change (bumped on every own-session mutation). */
+  epoch: number;
+}
+
+/** Request to add a marketplace for the operator's own sessions. */
+export interface OwnSessionMarketplaceRequest {
+  /** A `claude plugin marketplace add` source (e.g. `owner/repo` or `owner/repo#ref`). */
+  source: string;
+}
+
+/** Request to install a plugin for the operator's own sessions (combined plugins+settings op, R8). */
+export interface OwnSessionInstallRequest {
+  /** Full plugin id `<name>@<marketplace>`. */
+  pluginId: string;
+  /** Optional marketplace source to add first (degrade to "open in /plugin" when unknown). */
+  marketplaceSource?: string;
+  /** When true, also write `enabledPlugins[pluginId]=true` at `scope` after install. */
+  enableAfterInstall?: boolean;
+  /** Scope for the post-install enable (default `user`). */
+  scope?: OwnSessionScope;
+}
+
+/** Generic success body for own-session marketplace/install actions. */
+export interface OwnSessionActionResult {
+  status: 'applied';
+  epoch: number;
+  /** Advisory note, e.g. the blast-radius reminder or a degraded-path hint. */
+  note?: string;
+}
+
+/** Error body for own-session actions (409 carries the lock holder). */
+export interface OwnSessionActionError {
+  error: string;
+  /** Present when the action degraded instead of mutating (e.g. unknown marketplace → open in /plugin). */
+  degraded?: boolean;
+  lockHolder?: { operation: string; startedAt: string };
+}
+
+// ---------------------------------------------------------------------------
+// Config-epoch drift surface (RFC "Surfacing reload drift"). A config epoch is a
+// counter bumped on any Kookr plugin/settings change; each Kookr-managed session
+// is stamped with the epoch it started under. The dashboard surfaces the
+// sessions that started before the latest change, with a restart action.
+// ---------------------------------------------------------------------------
+
+/** One Kookr-managed session that started under an older config epoch. */
+export interface DriftedSession {
+  taskId: string;
+  /** The config epoch this session was stamped with at its first spawn. */
+  startedEpoch: number;
+  /** ISO-8601 time the session started (for ordering/display). */
+  startedAt: string;
+  /** Human title, when known. */
+  title?: string;
+}
+
+/** The reload-drift surface (RFC "Surfacing reload drift"). */
+export interface ConfigDriftSurface {
+  /** The current config epoch (the number new sessions are stamped with). */
+  currentEpoch: number;
+  /** Non-terminal Kookr-managed sessions whose start epoch is behind `currentEpoch`, newest first. */
+  staleSessions: DriftedSession[];
+  /** `staleSessions.length`, for a quick "N sessions started before your last change". */
+  staleCount: number;
+  /** Always set: Kookr's external-TUI blind spot, stated rather than implied. */
+  externalCoverageNote: string;
 }

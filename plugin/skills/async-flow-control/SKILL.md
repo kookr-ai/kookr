@@ -1,5 +1,6 @@
 ---
 name: async-flow-control
+group: engineering-patterns
 description: Async flow control patterns - AbortController cancellation, async iterators for large datasets, worker thread selection, Promise combinator choice, stream backpressure in async pipelines
 keywords: AbortController, AbortSignal, cancellation, async iterator, async generator, cursor pagination, stream processing, worker_threads, child_process, cluster, Promise.allSettled, Promise.all, concurrency, backpressure, p-limit, p-queue, drain, pipeline
 related: error-handling-patterns, process-lifecycle-patterns, state-machine-workflow-patterns

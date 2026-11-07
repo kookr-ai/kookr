@@ -228,6 +228,77 @@ description: Plan skill.
     }
   });
 
+  describe('group governance', () => {
+    const manifest = JSON.stringify({
+      name: 'kookr-toolkit',
+      version: '0.0.1',
+      groups: [{ id: 'testing', label: 'Testing', description: 'Tests.' }],
+    });
+    const skillWith = (extra: string): string =>
+      `---\nname: sample-skill\n${extra}description: A skill.\n---\n\n# Sample\n`;
+    const run = (files: Record<string, string | null>) => {
+      const root = makeRepo(files);
+      try {
+        return validateSkills(root).errors.map((e) => e.message);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    };
+    const shipped = (extra: string) => ({
+      'plugin/.claude-plugin/plugin.json': manifest,
+      'plugin/skills/sample-skill/SKILL.md': skillWith(extra),
+    });
+
+    it('accepts a shipped skill with a declared group', () => {
+      expect(run(shipped('group: testing\n'))).toEqual([]);
+    });
+
+    it('rejects a shipped skill missing group', () => {
+      expect(run(shipped(''))).toEqual([
+        'frontmatter field `group` must be a non-empty string naming a declared group',
+      ]);
+    });
+
+    it('rejects an undeclared group', () => {
+      expect(run(shipped('group: nope\n'))).toEqual([
+        '`group` "nope" is not declared in plugin.json groups',
+      ]);
+    });
+
+    it('rejects a group given as a list', () => {
+      expect(run(shipped('group: [testing]\n'))).toEqual([
+        'frontmatter field `group` must be a single string, not a list',
+      ]);
+    });
+
+    it('exempts dev-local .claude/skills from the group requirement', () => {
+      expect(
+        run({
+          'plugin/.claude-plugin/plugin.json': manifest,
+          '.claude/skills/sample-skill/SKILL.md': GOOD_SKILL,
+        }),
+      ).toEqual([]);
+    });
+
+    it('accepts boolean toggleExempt and rejects a non-boolean', () => {
+      expect(run(shipped('group: testing\ntoggleExempt: true\n'))).toEqual([]);
+      expect(run(shipped('group: testing\ntoggleExempt: "yes"\n'))).toEqual([
+        'frontmatter field `toggleExempt` must be a boolean',
+      ]);
+    });
+
+    it('rejects a plugin.json groups entry without an id', () => {
+      const messages = run({
+        'plugin/.claude-plugin/plugin.json': JSON.stringify({
+          name: 'kookr-toolkit',
+          groups: [{ label: 'No Id' }],
+        }),
+        'plugin/skills/sample-skill/SKILL.md': skillWith('group: testing\n'),
+      });
+      expect(messages).toContain('groups[0].id must be a non-empty string');
+    });
+  });
+
   it('CLI exits 0 on a well-formed skill directory', () => {
     const root = makeRepo({
       'plugin/skills/sample-skill/SKILL.md': GOOD_SKILL,

@@ -1,5 +1,6 @@
 ---
 name: ui-mockup-variants
+group: meta-workflow
 description: >
   Before implementing any user-facing UI/visual change, proactively offer design
   mockup variants for the user to pick from — via a single multiple-choice prompt.

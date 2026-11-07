@@ -1,5 +1,6 @@
 ---
 name: oss-fork-manager
+group: oss-contribution
 description: Fork lifecycle management for open-source contributions — fork creation, clone, upstream sync, feature branches, PR creation targeting upstream
 keywords: fork, clone, upstream, sync, rebase, feature branch, open source, oss, remote, push, PR, pull request, contribution
 related: [oss-repo-recon, oss-issue-scout, pr-lifecycle]

@@ -1313,6 +1313,7 @@ function createPromotionDeps(
   taskStore: TaskStore,
   adapter: AgentAdapter,
   loadoutStore?: AgentLifecycleDeps['loadoutStore'],
+  configEpochStore?: AgentLifecycleDeps['configEpochStore'],
 ): PromotionDeps {
   return {
     taskStore,
@@ -1329,6 +1330,7 @@ function createPromotionDeps(
       autoNameTask: vi.fn(),
       flushTasks: vi.fn().mockResolvedValue(undefined),
       ...(loadoutStore ? { loadoutStore } : {}),
+      ...(configEpochStore ? { configEpochStore } : {}),
     },
     broadcastToAll: vi.fn(),
     serverCwd: '/tmp',
@@ -1373,6 +1375,25 @@ describe('promotePendingTasks (integration)', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  test('stamps the config epoch on a parked task FIRST promotion (real TaskStore, RFC reload-drift)', async () => {
+    // A parked task's promotion is its first spawn, so it must be stamped with
+    // the epoch it started under — exercising the real TaskStore.setConfigEpochAtStart.
+    const configEpochStore = { current: vi.fn().mockResolvedValue(7) } as unknown as AgentLifecycleDeps['configEpochStore'];
+    const d = createPromotionDeps(taskStore, adapter, undefined, configEpochStore);
+    const task = taskStore.createTask('needs epoch', '/cwd');
+    taskStore.pendTask(task.id);
+
+    expect(await promotePendingTasks(d)).toBe(1);
+    expect(taskStore.getTask(task.id)!.configEpochAtStart).toBe(7);
+  });
+
+  test('a promotion without a config-epoch store leaves the session unstamped', async () => {
+    const task = taskStore.createTask('no epoch wiring', '/cwd');
+    taskStore.pendTask(task.id);
+    await promotePendingTasks(deps); // deps has no configEpochStore
+    expect(taskStore.getTask(task.id)!.configEpochAtStart).toBeUndefined();
   });
 
   test('respects MAX_ACTIVE_TASKS=2 concurrency limit', async () => {

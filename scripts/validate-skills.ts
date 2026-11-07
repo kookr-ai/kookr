@@ -58,9 +58,11 @@ export function validateSkills(repoRoot: string = process.cwd()): SkillValidatio
     validateSkillRootShape(join(repoRoot, root), errors);
   }
 
+  const declaredGroups = readDeclaredGroups(repoRoot);
+
   for (const root of SKILL_ROOTS) {
     for (const file of collectSkillFiles(join(repoRoot, root))) {
-      validateSkill(file, repoRoot, pluginTargets, localTargets, errors, warn);
+      validateSkill(file, repoRoot, pluginTargets, localTargets, declaredGroups, errors, warn);
     }
   }
 
@@ -72,6 +74,7 @@ export function validateSkills(repoRoot: string = process.cwd()): SkillValidatio
 
   validatePluginReadmeInventory(repoRoot, errors);
   validatePluginManifestCounts(repoRoot, errors);
+  validatePluginGroups(repoRoot, errors);
 
   return { root: repoRoot, errors, warnings };
 }
@@ -369,6 +372,7 @@ function validateSkill(
   repoRoot: string,
   pluginTargets: Set<string>,
   localTargets: Set<string>,
+  declaredGroups: Set<string> | null,
   errors: SkillIssue[],
   warn: (issue: SkillIssue) => void,
 ): void {
@@ -397,6 +401,10 @@ function validateSkill(
     errors.push({ file, message: 'frontmatter field `description` must be a non-empty string' });
   }
 
+  if (isShipped(file, repoRoot)) {
+    validateGroupMetadata(file, parsed, declaredGroups, errors);
+  }
+
   for (const target of relatedEntries(parsed?.related)) {
     checkReference(file, target, 'related:', repoRoot, pluginTargets, localTargets, warn);
   }
@@ -410,6 +418,75 @@ function validateSkill(
   }
 
   validateReferences(file, content, repoRoot, pluginTargets, localTargets, warn);
+}
+
+// Group governance (RFC plugin-skill-manager, P3): every shipped skill declares
+// exactly one `group`, drawn from plugin.json's `groups` vocabulary. Dev-local
+// .claude/skills are exempt. `declaredGroups === null` means no vocabulary exists
+// (temp fixtures, pre-P3 manifests), so enforcement is skipped.
+function validateGroupMetadata(
+  file: string,
+  parsed: Record<string, unknown> | null | undefined,
+  declaredGroups: Set<string> | null,
+  errors: SkillIssue[],
+): void {
+  if (declaredGroups !== null) {
+    const group = parsed?.group;
+    if (Array.isArray(group)) {
+      errors.push({ file, message: 'frontmatter field `group` must be a single string, not a list' });
+    } else if (!isNonEmptyString(group)) {
+      errors.push({
+        file,
+        message: 'frontmatter field `group` must be a non-empty string naming a declared group',
+      });
+    } else if (!declaredGroups.has(group)) {
+      errors.push({ file, message: `\`group\` "${group}" is not declared in plugin.json groups` });
+    }
+  }
+  if (parsed?.toggleExempt !== undefined && typeof parsed.toggleExempt !== 'boolean') {
+    errors.push({ file, message: 'frontmatter field `toggleExempt` must be a boolean' });
+  }
+}
+
+// Declared group ids from plugin.json, or null when the manifest or its `groups`
+// array is absent/unreadable (structural problems are reported by validatePluginGroups).
+function readDeclaredGroups(repoRoot: string): Set<string> | null {
+  const manifest = readJsonObject(join(repoRoot, PLUGIN_MANIFEST), []);
+  if (!manifest || !Array.isArray(manifest.groups)) return null;
+  const ids = new Set<string>();
+  for (const entry of manifest.groups) {
+    const id = (entry as { id?: unknown } | null)?.id;
+    if (isNonEmptyString(id)) ids.add(id);
+  }
+  return ids;
+}
+
+function validatePluginGroups(repoRoot: string, errors: SkillIssue[]): void {
+  const file = join(repoRoot, PLUGIN_MANIFEST);
+  const groups = readJsonObject(file, [])?.groups;
+  if (groups === undefined) return;
+  if (!Array.isArray(groups)) {
+    errors.push({ file, message: '`groups` must be an array' });
+    return;
+  }
+  const seen = new Set<string>();
+  groups.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      errors.push({ file, message: `groups[${index}] must be an object` });
+      return;
+    }
+    const { id, label } = entry as { id?: unknown; label?: unknown };
+    if (!isNonEmptyString(id)) {
+      errors.push({ file, message: `groups[${index}].id must be a non-empty string` });
+    } else if (seen.has(id)) {
+      errors.push({ file, message: `groups[${index}].id "${id}" is duplicated` });
+    } else {
+      seen.add(id);
+    }
+    if (!isNonEmptyString(label)) {
+      errors.push({ file, message: `groups[${index}].label must be a non-empty string` });
+    }
+  });
 }
 
 // Checks shared between skills and playbooks: [[wiki-links]], repo-relative

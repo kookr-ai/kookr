@@ -1,5 +1,6 @@
 ---
 name: pr-review-triage
+group: code-review
 description: Triage, fix, and resolve PR review comments end-to-end — fetch comments, assess relevance, implement fixes, push, and resolve GitHub threads. Used by post-push when feedback arrives.
 keywords: PR review, code review, codex, review comments, resolve thread, github, pull request, triage, review findings, fix review, address feedback
 related: git-commit-discipline, post-push, pr-lifecycle

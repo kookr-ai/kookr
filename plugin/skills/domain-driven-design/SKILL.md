@@ -1,5 +1,6 @@
 ---
 name: domain-driven-design
+group: engineering-patterns
 description: DDD strategic and tactical patterns - bounded contexts, aggregates, value objects, domain events, ubiquitous language, context mapping, subdomain classification. Use when modeling domain logic, designing aggregates, or deciding where to invest in rich models vs simple CRUD.
 keywords: DDD, domain-driven design, bounded context, aggregate, value object, domain event, ubiquitous language, context mapping, anti-corruption layer, subdomain, core domain, entity, consistency boundary, aggregate root, event storming
 related: monorepo-architecture, error-handling-patterns, typescript-type-safety, dependency-injection-patterns, state-machine-workflow-patterns
