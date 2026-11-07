@@ -295,6 +295,14 @@ export interface DeployRouteDeps {
   /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
   pluginUpdateBin?: string;
   /**
+   * Shared, module-owned lock + backup for every operation that mutates
+   * `~/.claude/plugins/` (RFC Layer 0 / R8). Injected so the deploy routes, the
+   * plugin routes, and the Layer-4 auto-update runner all serialize through one
+   * lock. Optional — `registerDeployRoutes` constructs a private instance when
+   * absent, which preserves the pre-extraction single-router behaviour in tests.
+   */
+  pluginMutationService?: import('../plugin-manager/mutation-service.js').PluginMutationService;
+  /**
    * Worktree registry — surfaced to deploy-routes so `resolveProdDir` can
    * locate the production runtime via the `.kookr-protected` marker rather
    * than the legacy `kookr-prod` basename heuristic. Optional so tests and
@@ -357,6 +365,12 @@ export interface RouteDeps {
   serverPort: number;
   /** Claude Code binary used for marketplace plugin maintenance. Defaults to KOOKR_AGENT_BIN or `claude`. */
   pluginUpdateBin?: string;
+  /**
+   * Shared, module-owned lock + backup for every `~/.claude/plugins/` mutation
+   * (RFC Layer 0 / R8). Threaded to both the deploy routes and the plugin
+   * routes so they serialize through one lock.
+   */
+  pluginMutationService?: import('../plugin-manager/mutation-service.js').PluginMutationService;
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
   /**

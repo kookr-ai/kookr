@@ -1,13 +1,14 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { resolve, basename, join } from 'node:path';
-import { access, readFile, cp, rm, rename } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import type { Hono } from 'hono';
 import type { DeployRouteDeps } from './shared.js';
 import { isProtectedWorktreePath } from '../../adapters/worktree-marker.js';
 import { getToolkitSymlinkStatus, type ToolkitSymlinkStatus } from '../toolkit-symlink-status.js';
 import { getPluginVersionStatus, type PluginVersionStatus } from '../plugin-version-status.js';
+import { PluginMutationService } from '../plugin-manager/mutation-service.js';
 import {
   marketplaceNameFromPluginId,
   pluginUpdateCommands,
@@ -287,8 +288,14 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
   const hookHomeDir = deps.hookHomeDir ?? homedir();
   let deploying = false;
   let toolkitRefreshing = false;
-  /** Single shared lock for all operations that mutate ~/.claude/plugins/. */
-  let pluginMutating = false;
+  /**
+   * Single shared lock + backup for all operations that mutate
+   * ~/.claude/plugins/. Owned by a module-level service (RFC Layer 0 / R8) so
+   * the deploy routes, the plugin routes, and the Layer-4 runner serialize
+   * through one lock. A private instance is constructed when none is injected,
+   * preserving the historical single-router behaviour.
+   */
+  const pluginMutation = deps.pluginMutationService ?? new PluginMutationService();
   const pluginUpdateBin = deps.pluginUpdateBin ?? process.env.KOOKR_AGENT_BIN ?? 'claude';
 
   app.get('/api/deploy/status', async (c) => {
@@ -489,7 +496,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
   });
 
   app.post('/api/deploy/plugin-update', async (c) => {
-    if (pluginMutating) {
+    if (pluginMutation.isLocked) {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
       const marketplace = marketplaceNameFromPluginId(pluginId);
@@ -500,8 +507,8 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
       }, 409);
     }
 
-    pluginMutating = true;
-    try {
+    return await pluginMutation.withLock('plugin-update', async () => {
+     try {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       if (!pluginStatus) {
         const marketplace = marketplaceNameFromPluginId(DEFAULT_PLUGIN_ID);
@@ -545,13 +552,12 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         commands: pluginUpdateCommands(pluginId, marketplace),
         ...(plugin ? { plugin } : {}),
       }, 500);
-    } finally {
-      pluginMutating = false;
-    }
+     }
+    });
   });
 
   app.post('/api/deploy/plugin-install', async (c) => {
-    if (pluginMutating) {
+    if (pluginMutation.isLocked) {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       const pluginId = pluginStatus?.pluginId ?? DEFAULT_PLUGIN_ID;
       return c.json<PluginUpdateError>({
@@ -561,8 +567,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
       }, 409);
     }
 
-    pluginMutating = true;
-    try {
+    return await pluginMutation.withLock('plugin-install', async () => {
       const pluginStatus = await readPluginStatusForUpdate(deps, hookHomeDir);
       if (!pluginStatus) {
         return c.json<PluginUpdateError>({
@@ -581,59 +586,9 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         }, 400);
       }
 
-      // --- Back up the plugins directory before any mutation ---
+      // --- Back up the plugins directory before any mutation (R8) ---
       const pluginsDir = join(resolve(hookHomeDir), '.claude', 'plugins');
-      const ts = Date.now();
-      const rand = Math.random().toString(36).slice(2, 7);
-      const backupDir = `${pluginsDir}.kookr-install-backup-${ts}-${process.pid}-${rand}`;
-      let pluginsDirExistedBefore = false;
-      try {
-        await access(pluginsDir);
-        pluginsDirExistedBefore = true;
-        await cp(pluginsDir, backupDir, { recursive: true });
-      } catch {
-        // plugins dir doesn't exist yet — no backup needed; record that fact
-        pluginsDirExistedBefore = false;
-      }
-
-      /**
-       * Atomically restore the plugins dir on failure.
-       *
-       * Returns `{ ok: true }` on success, or `{ ok: false, backupPath }` when
-       * the original config could not be fully restored (caller should surface
-       * `backupPath` in the HTTP 500 body so the user can recover manually).
-       */
-      const restoreOnFailure = async (): Promise<{ ok: boolean; backupPath?: string }> => {
-        if (!pluginsDirExistedBefore) {
-          // Dir did not exist before the install — just remove what was created.
-          await rm(pluginsDir, { recursive: true, force: true });
-          return { ok: true };
-        }
-
-        // Dir existed before: move the partial aside first, THEN restore the backup.
-        const partialTs = Date.now();
-        const partialDir = `${pluginsDir}.kookr-failed-${partialTs}`;
-        try {
-          // Step 1: move the failed/partial install out of the way (if it exists)
-          try {
-            await rename(pluginsDir, partialDir);
-          } catch {
-            // pluginsDir may not exist at all (install errored before creating it) — that's fine
-          }
-
-          // Step 2: restore the backup into the canonical location
-          await rename(backupDir, pluginsDir);
-
-          // Step 3: remove the partial (best-effort, backup is already restored)
-          await rm(partialDir, { recursive: true, force: true });
-
-          return { ok: true };
-        } catch (restoreErr) {
-          console.error(`[deploy] plugin install backup restore failed: ${String(restoreErr)}`);
-          // The original config is still in backupDir — tell the caller.
-          return { ok: false, backupPath: backupDir };
-        }
-      };
+      const backup = await pluginMutation.backupPluginsDir(pluginsDir);
 
       // --- Run the two install commands ---
       try {
@@ -659,7 +614,7 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         }
 
         if (!verifiedStatus || verifiedStatus.installedVersion === null) {
-          const restoreResult = await restoreOnFailure();
+          const restoreResult = await backup.restore();
           const recoveryNote = restoreResult.ok
             ? ''
             : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
@@ -674,18 +629,12 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
         }
 
         // --- Success: delete backup ---
-        if (pluginsDirExistedBefore) {
-          try {
-            await rm(backupDir, { recursive: true, force: true });
-          } catch {
-            // Best-effort cleanup
-          }
-        }
+        await backup.discard();
 
         const plugin = verifiedStatus;
         return c.json<PluginInstallResult>({ status: 'installed', plugin, commands });
       } catch (err) {
-        const restoreResult = await restoreOnFailure();
+        const restoreResult = await backup.restore();
         const recoveryNote = restoreResult.ok
           ? ''
           : ` Your previous Claude plugin config is preserved at ${restoreResult.backupPath}`;
@@ -699,8 +648,6 @@ export function registerDeployRoutes(app: Hono, deps: DeployRouteDeps): void {
           ...(refreshedStatus ? { plugin: refreshedStatus } : { plugin: pluginStatus }),
         }, 500);
       }
-    } finally {
-      pluginMutating = false;
-    }
+    });
   });
 }
