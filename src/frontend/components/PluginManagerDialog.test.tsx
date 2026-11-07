@@ -138,18 +138,22 @@ describe('PluginManagerDialog', () => {
   function routingFetch(handlers: {
     plugins: PluginsReadModel;
     drift?: unknown;
+    autoUpdate?: unknown;
     onPost?: (url: string, init?: RequestInit) => Response;
     calls?: string[];
   }) {
     return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       handlers.calls?.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.includes('/api/plugins/auto-update') && (init?.method ?? 'GET') === 'GET') {
+        return jsonResponse(handlers.autoUpdate ?? { plugins: [], recentDecisions: [], applyEnabled: false });
+      }
       if (url.includes('/api/plugins/config-drift')) {
         return jsonResponse(
           handlers.drift ?? { currentEpoch: 0, staleSessions: [], staleCount: 0, externalCoverageNote: 'n/a' },
         );
       }
-      if (init?.method === 'POST') {
+      if (init?.method === 'POST' || init?.method === 'PUT') {
         return handlers.onPost?.(url, init) ?? jsonResponse({ status: 'applied', epoch: 1 });
       }
       return jsonResponse(handlers.plugins);
@@ -246,5 +250,91 @@ describe('PluginManagerDialog', () => {
     await act(async () => buttonByText('Apply').click());
     await act(async () => {});
     expect(calls.some((c) => c.startsWith('POST /api/plugins/own-session/install'))).toBe(true);
+  });
+
+  // --- P4: fleet-aware auto-update ---
+
+  function auView(overrides: Record<string, unknown> = {}) {
+    return { pluginId: 'x@m', policy: 'off', lastDecision: null, banner: null, rollbackAvailable: false, ...overrides };
+  }
+
+  test('policy select reflects the current policy and changing it posts', async () => {
+    const calls: string[] = [];
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', uninstallGuard: false })] },
+      autoUpdate: { plugins: [auView({ policy: 'notify' })], recentDecisions: [], applyEnabled: true },
+      onPost: () => jsonResponse({ status: 'ok', plugin: auView({ policy: 'apply-when-idle' }) }),
+      calls,
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    const select = container.querySelector('select[aria-label="Auto-update policy for x"]') as HTMLSelectElement;
+    expect(select.value).toBe('notify');
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(select, 'apply-when-idle');
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await act(async () => {});
+    expect(calls.some((c) => c === 'PUT /api/plugins/x%40m/auto-update')).toBe(true);
+    expect((container.querySelector('select[aria-label="Auto-update policy for x"]') as HTMLSelectElement).value).toBe('apply-when-idle');
+  });
+
+  test('a verify-failed banner renders and Dismiss calls the dismiss route', async () => {
+    const calls: string[] = [];
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', uninstallGuard: false })] },
+      autoUpdate: {
+        plugins: [
+          auView({
+            banner: { pluginId: 'x@m', kind: 'verify-failed', message: 'Verification failed after update', raisedAt: '2026-11-07T12:00:00.000Z' },
+            lastDecision: { pluginId: 'x@m', evaluatedAt: '2026-11-07T12:00:00.000Z', policy: 'apply-when-idle', state: 'skipped', reason: 'busy', busyTaskIds: ['a', 'b'] },
+          }),
+        ],
+        recentDecisions: [],
+        applyEnabled: true,
+      },
+      onPost: () => jsonResponse({ status: 'ok', plugin: auView() }),
+      calls,
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    expect(text()).toContain('Verification failed after update');
+    expect(text()).toContain('busy: 2 tasks');
+    await act(async () => buttonByText('Dismiss').click());
+    await act(async () => {});
+    expect(calls.some((c) => c.startsWith('POST') && c.includes('dismiss'))).toBe(true);
+    expect(text()).not.toContain('Verification failed after update');
+  });
+
+  test('Rollback stages the confirm panel and applies on confirm', async () => {
+    const calls: string[] = [];
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', uninstallGuard: false })] },
+      autoUpdate: { plugins: [auView({ rollbackAvailable: true })], recentDecisions: [], applyEnabled: true },
+      onPost: () => jsonResponse({ status: 'ok', plugin: auView({ rollbackAvailable: false }) }),
+      calls,
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    await act(async () => buttonByText('Rollback').click());
+    expect(text()).toContain('needs a restart');
+    expect(calls.some((c) => c.startsWith('POST') && c.includes('rollback'))).toBe(false);
+    await act(async () => buttonByText('Apply').click());
+    await act(async () => {});
+    expect(calls.some((c) => c.startsWith('POST') && c.includes('rollback'))).toBe(true);
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Rollback')).toBe(false);
+  });
+
+  test('shows the audit trail and a notify-only note when apply is disabled', async () => {
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', uninstallGuard: false })] },
+      autoUpdate: {
+        plugins: [],
+        recentDecisions: [{ pluginId: 'x@m', evaluatedAt: '2026-11-07T12:00:00.000Z', policy: 'notify', state: 'skipped', reason: 'busy' }],
+        applyEnabled: false,
+      },
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    expect(text()).toContain('Recent auto-update activity');
+    expect(text()).toContain('KOOKR_PLUGIN_AUTO_UPDATE');
+    expect(text()).toContain('x@m · skipped · busy');
   });
 });

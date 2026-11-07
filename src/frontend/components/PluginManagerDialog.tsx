@@ -8,6 +8,11 @@ import {
   type PluginStaleness,
   type ConfigDriftSurface,
   type OwnSessionScope,
+  AUTO_UPDATE_POLICIES,
+  type AutoUpdatePolicy,
+  type AutoUpdateSurface,
+  type AutoUpdatePluginView,
+  type AutoUpdateDecision,
 } from '../../shared/contracts/plugins.js';
 import {
   getPlugins,
@@ -15,6 +20,10 @@ import {
   getConfigDrift,
   ownSessionSetEnablement,
   ownSessionInstall,
+  getAutoUpdateSurface,
+  setAutoUpdatePolicy,
+  rollbackAutoUpdate,
+  dismissAutoUpdateBanner,
 } from '../api/index.js';
 import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useEscapeToClose } from '../hooks/useEscapeToClose.js';
@@ -53,6 +62,19 @@ function stalenessLabel(s: PluginStaleness): string {
   return 'Unknown';
 }
 
+function decisionSummary(d: AutoUpdateDecision): string {
+  let out = d.state as string;
+  if (d.reason) {
+    out += ` · ${d.reason}`;
+    if (d.reason === 'busy' && d.busyTaskIds) {
+      const n = d.busyTaskIds.length;
+      out += `: ${n} task${n === 1 ? '' : 's'}`;
+    }
+  }
+  if (d.fromVersion || d.toVersion) out += ` · v${d.fromVersion ?? '—'} → v${d.toVersion ?? '—'}`;
+  return out;
+}
+
 /** A mutating own-session action staged behind the blast-radius disclosure (R4). */
 interface PendingAction {
   title: string;
@@ -83,6 +105,7 @@ export function PluginManagerDialog({ isOpen, onClose, onRestartSession }: Plugi
   const [drift, setDrift] = useState<ConfigDriftSurface | null>(null);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [autoUpdate, setAutoUpdate] = useState<AutoUpdateSurface | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -109,10 +132,78 @@ export function PluginManagerDialog({ isOpen, onClose, onRestartSession }: Plugi
     }
   }, []);
 
+  const loadAutoUpdate = useCallback(async () => {
+    try {
+      const surface = await getAutoUpdateSurface();
+      setAutoUpdate({
+        plugins: Array.isArray(surface?.plugins) ? surface.plugins : [],
+        recentDecisions: Array.isArray(surface?.recentDecisions) ? surface.recentDecisions : [],
+        applyEnabled: Boolean(surface?.applyEnabled),
+      });
+    } catch {
+      setAutoUpdate(null); // advisory — never block the dialog on it
+    }
+  }, []);
+
   useEffect(() => {
     void load();
     void loadDrift();
-  }, [load, loadDrift]);
+    void loadAutoUpdate();
+  }, [load, loadDrift, loadAutoUpdate]);
+
+  const autoUpdateViews = new Map<string, AutoUpdatePluginView>(
+    (autoUpdate?.plugins ?? []).map((v) => [v.pluginId, v]),
+  );
+
+  function applyAutoUpdateView(view: AutoUpdatePluginView) {
+    setAutoUpdate((prev) => {
+      const base = prev ?? { plugins: [], recentDecisions: [], applyEnabled: false };
+      const exists = base.plugins.some((v) => v.pluginId === view.pluginId);
+      return {
+        ...base,
+        plugins: exists
+          ? base.plugins.map((v) => (v.pluginId === view.pluginId ? view : v))
+          : [...base.plugins, view],
+      };
+    });
+  }
+
+  /** Run an auto-update route and fold the returned view into state. Returns an error message on failure. */
+  async function runAutoUpdate(
+    id: string,
+    call: Promise<{ ok: boolean; body: unknown }>,
+    fallback: string,
+  ): Promise<string | null> {
+    clearRowError(id);
+    try {
+      const { ok, body } = await call;
+      const b = body as { status?: string; plugin?: AutoUpdatePluginView; error?: string } | null;
+      if (ok && b && b.status === 'ok' && b.plugin) {
+        applyAutoUpdateView(b.plugin);
+        return null;
+      }
+      const message = b?.error ?? fallback;
+      setRowError((prev) => ({ ...prev, [id]: message }));
+      return message;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRowError((prev) => ({ ...prev, [id]: message }));
+      return message;
+    }
+  }
+
+  function stageRollback(id: string) {
+    setPending({
+      title: `Roll back ${pluginNameFromId(id)} to its pre-update snapshot`,
+      extraNote:
+        'Sessions started after the update keep running the newer version — rolling back after new sessions started needs a restart of those sessions.',
+      run: async () => {
+        const error = await runAutoUpdate(id, rollbackAutoUpdate(id), 'Rollback failed.');
+        void loadDrift(); // a rollback bumps the config epoch
+        if (error) return { error };
+      },
+    });
+  }
 
   function clearRowError(id: string) {
     setRowError((prev) => {
@@ -345,6 +436,10 @@ export function PluginManagerDialog({ isOpen, onClose, onRestartSession }: Plugi
               const marketplace = pluginMarketplaceFromId(p.id);
               const behind = p.staleness.state === 'behind';
               const isBusy = busyId === p.id;
+              const auView = autoUpdateViews.get(p.id);
+              const auPolicy: AutoUpdatePolicy = auView?.policy ?? 'off';
+              const auLast = auView?.lastDecision ?? null;
+              const auBanner = auView?.banner ?? null;
               return (
                 <li
                   key={p.id}
@@ -390,6 +485,78 @@ export function PluginManagerDialog({ isOpen, onClose, onRestartSession }: Plugi
                         {stalenessLabel(p.staleness)}
                       </span>
                     </div>
+                    {p.marketplaceRegistered && (
+                      <div className="plugin-auto-update" style={{ marginTop: 6, fontSize: 12 }}>
+                        <label style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                          <span style={{ color: 'var(--text-secondary)' }}>Auto-update</span>
+                          <select
+                            aria-label={`Auto-update policy for ${name}`}
+                            value={auPolicy}
+                            disabled={Boolean(busyId) || Boolean(pending)}
+                            onChange={(e) =>
+                              void runAutoUpdate(p.id, setAutoUpdatePolicy(p.id, e.target.value as AutoUpdatePolicy), 'Could not change auto-update policy.')
+                            }
+                          >
+                            {AUTO_UPDATE_POLICIES.map((pol) => (
+                              <option key={pol} value={pol}>
+                                {pol}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        {auView && (
+                          <span
+                            style={{ marginLeft: 8, color: 'var(--text-secondary)' }}
+                            title="Whether Claude Code's own updater is active for this plugin's marketplace (Kookr pins it off while it manages the plugin)"
+                          >
+                            · Claude&rsquo;s updater: {auView.nativeAutoUpdate ? 'on' : 'off'}
+                          </span>
+                        )}
+                        {auView?.rollbackAvailable && (
+                          <button
+                            className="linkish"
+                            style={{ marginLeft: 8 }}
+                            disabled={Boolean(busyId) || Boolean(pending)}
+                            onClick={() => stageRollback(p.id)}
+                            title="Restore the snapshot taken before the last auto-update"
+                          >
+                            Rollback
+                          </button>
+                        )}
+                        {auLast && (
+                          <div style={{ marginTop: 2, color: 'var(--text-secondary)' }} title={`Evaluated ${auLast.evaluatedAt}`}>
+                            Last: {decisionSummary(auLast)}
+                          </div>
+                        )}
+                        {auBanner && (
+                          <div
+                            className="plugin-auto-update-banner"
+                            role={auBanner.kind === 'post-session' ? 'status' : 'alert'}
+                            style={{
+                              marginTop: 4,
+                              padding: '6px 8px',
+                              borderRadius: 6,
+                              border: `1px solid ${auBanner.kind === 'post-session' ? 'var(--yellow, #e0b000)' : 'var(--red)'}`,
+                              color: auBanner.kind === 'post-session' ? 'var(--yellow, #e0b000)' : 'var(--red)',
+                            }}
+                          >
+                            <div>{auBanner.message}</div>
+                            {auBanner.kind === 'post-session' && (
+                              <div style={{ marginTop: 2 }}>
+                                Sessions on the newer version need a restart — see the panel above.
+                              </div>
+                            )}
+                            <button
+                              className="linkish"
+                              style={{ marginTop: 2 }}
+                              onClick={() => void runAutoUpdate(p.id, dismissAutoUpdateBanner(p.id), 'Could not dismiss banner.')}
+                            >
+                              Dismiss
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                     {rowError[p.id] && (
                       <div style={{ fontSize: 12, color: 'var(--red)', marginTop: 4 }} role="alert">
                         {rowError[p.id]}
@@ -439,6 +606,30 @@ export function PluginManagerDialog({ isOpen, onClose, onRestartSession }: Plugi
               );
             })}
           </ul>
+        )}
+
+        {/* Read-only auto-update audit trail. */}
+        {!loading && !loadError && autoUpdate && (
+          <div className="plugin-auto-update-activity" style={{ marginTop: 14, borderTop: '1px solid var(--border, #333)', paddingTop: 10, fontSize: 12 }}>
+            <div style={{ fontWeight: 600 }}>Recent auto-update activity</div>
+            {!autoUpdate.applyEnabled && (
+              <div role="status" style={{ marginTop: 4, color: 'var(--text-secondary)' }}>
+                Automatic applying is disabled (KOOKR_PLUGIN_AUTO_UPDATE is off) — policies are advisory / notify-only.
+              </div>
+            )}
+            {autoUpdate.recentDecisions.length === 0 ? (
+              <div style={{ marginTop: 4, color: 'var(--text-secondary)' }}>No recent activity.</div>
+            ) : (
+              <ul style={{ listStyle: 'none', padding: 0, margin: '4px 0 0', color: 'var(--text-secondary)' }}>
+                {autoUpdate.recentDecisions.slice(0, 10).map((d, i) => (
+                  <li key={`${d.pluginId}-${d.evaluatedAt}-${i}`}>
+                    {d.pluginId} · {d.state}
+                    {d.reason ? ` · ${d.reason}` : ''} · {d.evaluatedAt}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         )}
 
         {/* Add a plugin for your own sessions (own-session install). */}

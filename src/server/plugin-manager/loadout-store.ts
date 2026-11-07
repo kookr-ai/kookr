@@ -34,6 +34,59 @@ import {
 import { LOADOUT_LEVELS_MOST_SPECIFIC_FIRST } from '../../shared/contracts/plugins.js';
 import type { Task } from '../../core/task-read-model.js';
 import type { TaskStore } from '../../core/tasks.js';
+import { PluginMutationBusyError, type PluginMutationService } from './mutation-service.js';
+import { autoUpdateApplyEnabled } from './auto-update-flags.js';
+
+/**
+ * Whether the spawn gate is active — i.e. whether a Layer-4 updater could be
+ * running, so the loadout record must serialize with it. True when either plugin
+ * loadouts or auto-update apply is enabled. When neither is on, the gate is a
+ * no-op and the launch path is byte-identical to before.
+ */
+export function spawnGateActive(env: NodeJS.ProcessEnv = process.env): boolean {
+  return pluginLoadoutsEnabled(env) || autoUpdateApplyEnabled(env);
+}
+
+/**
+ * Run the loadout RECORD step under the shared `PluginMutationService` lock so a
+ * concurrent Layer-4 auto-update cannot interleave its idle-check-and-update with
+ * a task committing a dependency on a plugin (RFC Layer 4 — "the spawn path
+ * re-checks under the lock"). The updater holds the same lock across its whole
+ * idle-check → update, so this record either lands before the updater's in-lock
+ * task read (⇒ the updater sees the task as busy) or after the update completes
+ * (⇒ the task launches against the new version).
+ *
+ * The lock is fail-fast, so a spawn waits for an in-flight mutation by retrying
+ * for up to `timeoutMs` (a running update SHOULD block a new launch that might
+ * use the plugin); past the deadline it proceeds WITHOUT the gate (a rare,
+ * logged degradation) rather than failing the spawn. A no-op when `mutation` is
+ * absent or the gate is inactive.
+ */
+export async function withSpawnGate<T>(
+  mutation: PluginMutationService | undefined,
+  active: boolean,
+  fn: () => Promise<T>,
+  opts: { timeoutMs?: number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<T> {
+  if (!mutation || !active) return fn();
+  const timeoutMs = opts.timeoutMs ?? 5000;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      return await mutation.withLock('spawn-loadout-record', fn);
+    } catch (err) {
+      if (!(err instanceof PluginMutationBusyError)) throw err;
+      if (Date.now() >= deadline) {
+        console.warn(
+          '[spawn-gate] plugin mutation lock busy past the deadline; proceeding without the gate',
+        );
+        return fn();
+      }
+      await sleep(50);
+    }
+  }
+}
 
 /** The adapter-launch-option fields a loadout contributes. Merged into opts at every launch site. */
 export interface LoadoutLaunchOptionFields {

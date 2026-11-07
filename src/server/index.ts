@@ -89,6 +89,9 @@ import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { LoadoutStore } from './plugin-manager/loadout-store.js';
 import { ConfigEpochStore } from './plugin-manager/config-epoch.js';
+import { PluginMutationService } from './plugin-manager/mutation-service.js';
+import { buildAutoUpdateService } from './plugin-manager/auto-update-wiring.js';
+import { autoUpdateApplyEnabled, autoUpdateSweepIntervalMs } from './plugin-manager/auto-update-flags.js';
 import { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
@@ -1706,11 +1709,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   };
   const loadoutStore = new LoadoutStore(kookrDir);
   const configEpochStore = new ConfigEpochStore(kookrDir);
+  // One shared plugin mutation lock (RFC Layer 0 / Layer 4): the plugin routes,
+  // the own-session assist, the Layer-4 auto-update runner, and the spawn gate
+  // all serialize through THIS instance so no two paths mutate `~/.claude/plugins`
+  // (or race an update against a spawn) concurrently.
+  const pluginMutationService = new PluginMutationService();
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
     loadoutStore,
     configEpochStore,
+    pluginMutationService,
     terminalInputCoordinator,
     getCleanupWorktreeOnComplete,
     reflectWorktreesDir,
@@ -1796,6 +1805,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     lifecycleDeps,
     loadoutStore,
     configEpochStore,
+    pluginMutationService,
     launchDependencyAdmission,
     getMaxActiveTasks,
     getDefaultAgentType,
@@ -2736,6 +2746,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     taskTailStore,
     githubScanner, githubStateStore, buildInfo, serverStartedAt,
     serverCwd, serverPort: port, pluginUpdateBin: agentBin, kookrDir, frontendDir, broadcastToAll,
+    pluginMutationService,
     // #2096: Ralph HTTP mutates share the event-pipeline coalesce/shed path
     // instead of rebuilding full snapshots synchronously on every success.
     requestSnapshotBroadcast,
@@ -3004,6 +3015,41 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       },
     },
   });
+
+  // Layer-4 auto-update background sweep (RFC Layer 4). Only runs when the
+  // default-off apply gate (KOOKR_PLUGIN_AUTO_UPDATE) is enabled, so the fleet
+  // view's `notify` and the UI cost nothing by default. Each tick evaluates
+  // `apply-when-idle` plugins (idle-gated, under the shared lock), detects
+  // external version changes, and prunes expired rollback snapshots.
+  let autoUpdateSweepTimer: ReturnType<typeof setInterval> | undefined;
+  if (autoUpdateApplyEnabled()) {
+    const autoUpdateSweepMs = autoUpdateSweepIntervalMs();
+    const runAutoUpdateSweep = async (): Promise<void> => {
+      try {
+        const { service } = await buildAutoUpdateService({
+          serverCwd,
+          serverPort: port,
+          kookrDir,
+          pluginUpdateBin: agentBin,
+          pluginMutationService,
+          worktreeRegistry,
+          taskStore,
+        });
+        const { decisions, externalChanges } = await service.runSweep();
+        const applied = decisions.filter((d) => d.state === 'applied').length;
+        if (applied > 0 || externalChanges > 0) {
+          console.log(
+            `[auto-update] sweep: ${applied} applied, ${decisions.length} evaluated, ${externalChanges} external change(s)`,
+          );
+        }
+      } catch (err) {
+        console.warn(`[auto-update] sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    autoUpdateSweepTimer = setInterval(() => void runAutoUpdateSweep(), autoUpdateSweepMs);
+    autoUpdateSweepTimer.unref?.();
+    console.log(`[auto-update] apply-when-idle sweep enabled (every ${Math.round(autoUpdateSweepMs / 60000)}m)`);
+  }
 
   const {
     leaseService,
@@ -4035,6 +4081,11 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     if (envBlockerHeartbeatTimer) {
       clearInterval(envBlockerHeartbeatTimer);
       envBlockerHeartbeatTimer = undefined;
+    }
+
+    if (autoUpdateSweepTimer) {
+      clearInterval(autoUpdateSweepTimer);
+      autoUpdateSweepTimer = undefined;
     }
 
     inventPriorityHealth.stop();
