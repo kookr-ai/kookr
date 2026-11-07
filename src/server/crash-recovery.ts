@@ -8,6 +8,7 @@ import {
   type AgentAdapter,
 } from '../adapters/agent-adapter.js';
 import { buildResumeContext } from './resume-context.js';
+import { replayRecordedLoadout } from './plugin-manager/loadout-store.js';
 import type { ReconciliationResult } from './reconciliation.js';
 import { hashPrompt } from './hash-prompt.js';
 import {
@@ -402,6 +403,10 @@ export async function recoverCrashedSessions(
           : undefined;
         const launchOptions = {
           ...buildRecoveryLaunchOptions(task.id, originalCwd, intent.intent),
+          // Replay the loadout recorded at the original spawn (RFC Layer 2 /
+          // slice 2b): a resumed agent MUST keep the capabilities it was
+          // spawned with, so this is never re-resolved.
+          ...replayRecordedLoadout(task),
           signal: launchAbort.signal,
           onSessionCreated: (sessionId: string) => {
             const lateCleanup = noteLaunchSession(

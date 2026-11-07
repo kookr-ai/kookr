@@ -3160,3 +3160,32 @@ describe('launch reservations (#700)', () => {
     }
   });
 });
+
+describe('TaskStore.setLoadout (RFC Layer 2 / slice 2a)', () => {
+  test('records a cloned loadout and clears on undefined', () => {
+    const store = new TaskStore();
+    const task = store.createTask('loadout owner', '/cwd');
+    const record = {
+      resolved: { enabledOverrides: { 'kookr-toolkit@kookr': false }, deniedSkills: [] as string[] },
+      winningLevel: 'project' as const,
+      mode: 'bypass' as const,
+      settingsHash: null,
+      settingsPath: null,
+      recordedAt: new Date().toISOString(),
+    };
+    store.setLoadout(task.id, record);
+    const stored = store.getTask(task.id)!.loadout!;
+    expect(stored.resolved.enabledOverrides).toEqual({ 'kookr-toolkit@kookr': false });
+    // structuredClone isolation: mutating the source does not mutate the stored copy
+    record.resolved.enabledOverrides['kookr-toolkit@kookr'] = true;
+    expect(store.getTask(task.id)!.loadout!.resolved.enabledOverrides['kookr-toolkit@kookr']).toBe(false);
+
+    store.setLoadout(task.id, undefined);
+    expect(store.getTask(task.id)!.loadout).toBeUndefined();
+  });
+
+  test('throws for an unknown task id', () => {
+    const store = new TaskStore();
+    expect(() => store.setLoadout('nope', undefined)).toThrow(/Task not found/);
+  });
+});

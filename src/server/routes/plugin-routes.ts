@@ -8,6 +8,7 @@ import { ClaudePluginCli, execFilePluginCliRunner } from '../plugin-manager/cli.
 import { assembleManagedPlugins } from '../plugin-manager/read-model.js';
 import { readInstalledVersionFromRegistry } from '../plugin-manager/registry.js';
 import { getPluginVersionStatus } from '../plugin-version-status.js';
+import { LoadoutStore } from '../plugin-manager/loadout-store.js';
 import { ClaudeSettingsStore, defaultScopeFiles } from '../../core/claude-settings/settings-store.js';
 import {
   TOOLKIT_MARKETPLACE_SLUG,
@@ -21,7 +22,11 @@ import type {
   PluginsReadModel,
   PluginUpdateOutcome,
   PluginActionError,
+  LoadoutLevel,
+  LoadoutDesiredState,
+  LoadoutSpawnMode,
 } from '../../shared/contracts/plugins.js';
+import { LOADOUT_LEVELS_MOST_SPECIFIC_FIRST } from '../../shared/contracts/plugins.js';
 
 /** Strip GIT_DIR/GIT_WORK_TREE so `claude` subprocesses run against the user's home, not the parent repo. */
 const gitEnv = { ...process.env, GIT_DIR: undefined, GIT_WORK_TREE: undefined };
@@ -33,6 +38,34 @@ function pluginCliFor(deps: DeployRouteDeps, hookHomeDir: string): ClaudePluginC
 
 function settingsStoreFor(deps: DeployRouteDeps, hookHomeDir: string): ClaudeSettingsStore {
   return new ClaudeSettingsStore(defaultScopeFiles(deps.serverCwd, hookHomeDir));
+}
+
+/**
+ * The loadout store for authoring/dry-run routes (RFC Layer 2 / slice 2a).
+ * Points at the SAME `<kookrDir>/plugin-loadouts.json` the launcher reads, so an
+ * authored loadout is visible to the next spawn. Falls back to `serverCwd` when
+ * `kookrDir` is absent (matching the other route-side stores).
+ */
+function loadoutStoreFor(deps: DeployRouteDeps): LoadoutStore {
+  return new LoadoutStore(deps.kookrDir ?? deps.serverCwd);
+}
+
+function isLoadoutLevel(value: string): value is LoadoutLevel {
+  return (LOADOUT_LEVELS_MOST_SPECIFIC_FIRST as readonly string[]).includes(value);
+}
+
+/** Coerce an untrusted request body into a plugin-level desired state (plugin id → boolean). */
+function parseDesiredState(body: unknown): LoadoutDesiredState | null {
+  if (typeof body !== 'object' || body === null) return null;
+  const plugins = (body as { plugins?: unknown }).plugins;
+  if (typeof plugins !== 'object' || plugins === null) return null;
+  const clean: Record<string, boolean> = {};
+  for (const [id, v] of Object.entries(plugins as Record<string, unknown>)) {
+    if (typeof v !== 'boolean') return null; // reject malformed rather than silently drop
+    if (!id.includes('@')) return null; // ids are `<name>@<marketplace>`
+    clean[id] = v;
+  }
+  return { plugins: clean };
 }
 
 /**
@@ -240,6 +273,84 @@ export function registerPluginRoutes(app: Hono, deps: DeployRouteDeps): void {
       }
       console.error(`[plugins] update errored id=${id}: ${errorMessage(err)}`);
       return c.json<PluginActionError>({ error: errorMessage(err), pluginId: id }, 500);
+    }
+  });
+
+  // --- Loadout authoring + dry-run (RFC Layer 2 / slice 2a) -----------------
+  // Plugin-level only (R3a: no per-skill fields). The adapter is untouched by
+  // these routes — they only read/write Kookr-owned desired state and preview a
+  // resolution; injection onto the spawn path is slice 2b, behind its flag.
+
+  app.get('/api/plugins/loadouts', async (c) => {
+    try {
+      const data = await loadoutStoreFor(deps).read();
+      return c.json(data);
+    } catch (err) {
+      console.error(`[plugins] loadout read failed: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
+    }
+  });
+
+  // Author the desired state at one scope key. An empty `plugins` map removes
+  // the entry (back to no opinion at that level).
+  app.put('/api/plugins/loadouts/:level/:key', async (c) => {
+    const level = c.req.param('level');
+    const key = c.req.param('key');
+    if (!isLoadoutLevel(level)) {
+      return c.json({ error: `Invalid loadout level: ${level}` }, 400);
+    }
+    if (!key) {
+      return c.json({ error: 'Missing loadout key' }, 400);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+    const state = parseDesiredState(body);
+    if (!state) {
+      return c.json(
+        { error: 'Body must be { plugins: { "<name>@<marketplace>": boolean, ... } }' },
+        400,
+      );
+    }
+    try {
+      const data = await loadoutStoreFor(deps).setLevelState(level, key, state);
+      return c.json(data);
+    } catch (err) {
+      console.error(`[plugins] loadout write failed level=${level} key=${key}: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
+    }
+  });
+
+  // Dry-run resolve: preview the loadout a launch context would get, WITHOUT
+  // spawning (RFC Layer 2 operability — "a dry-run resolve lets the operator
+  // preview a loadout before spawning"). Defaults to bypass mode, the mode Kookr
+  // spawns its own agents in.
+  app.post('/api/plugins/loadouts/resolve', async (c) => {
+    let body: { projectId?: unknown; playbookId?: unknown; taskType?: unknown; mode?: unknown };
+    try {
+      body = (await c.req.json()) as typeof body;
+    } catch {
+      return c.json({ error: 'Invalid JSON body' }, 400);
+    }
+    const mode: LoadoutSpawnMode = body?.mode === 'normal' ? 'normal' : 'bypass';
+    const asString = (v: unknown): string | undefined =>
+      typeof v === 'string' && v.length > 0 ? v : undefined;
+    try {
+      const result = await loadoutStoreFor(deps).resolveForLaunch(
+        {
+          projectId: asString(body?.projectId),
+          playbookId: asString(body?.playbookId),
+          taskType: asString(body?.taskType),
+        },
+        { mode },
+      );
+      return c.json(result);
+    } catch (err) {
+      console.error(`[plugins] loadout resolve failed: ${errorMessage(err)}`);
+      return c.json({ error: errorMessage(err) }, 500);
     }
   });
 }

@@ -286,14 +286,16 @@ deliverable is plugin-granularity enable/disable, not skill curation.
 - **The `--plugin-dir` interaction — an open, must-probe gap (round-2, flagged by all
   three critics).** The adapter force-loads `kookr-toolkit` via `--plugin-dir`
   (`claude-code-adapter.ts:311`), and `--plugin-dir` is **not** governed by
-  `enabledPlugins`. So `enabledOverrides['kookr-toolkit@kookr']=false` may **not**
-  remove the toolkit for Kookr agents, and the one budget lever may not work for the
-  very plugin we ship. This was *not* covered by the P2/P3 probes. **Phase 2 is gated
-  on a probe of `--plugin-dir` × `enabledPlugins:false`**; until it passes, the UI
-  must show `loadSource` and must not promise a budget saving for a `plugin-dir`-loaded
-  plugin. If the probe shows dir-loaded plugins can't be disabled by settings, the
-  toolkit's budget lever becomes "point `--plugin-dir` elsewhere / don't pass it,"
-  recorded as the real mechanism.
+  `enabledPlugins`. **RESOLVED by the P2 probe**
+  (`docs/rfc/rfc-plugin-skill-manager-p2-probe.md`, recorded on umbrella #3499): a
+  dir-loaded plugin **can** be disabled by the per-session `--settings`
+  `enabledPlugins` map, but **only under the synthetic `<name>@inline` id** it reports
+  in `init.plugins[].source` — `enabledOverrides['kookr-toolkit@kookr']=false` is a
+  silent no-op, while `kookr-toolkit@inline:false` removes it. So the toolkit's budget
+  lever is real and stays `enabledPlugins`; the resolver/adapter rewrite an override
+  that targets a `plugin-dir`-loaded plugin (matched by name, from `loadSource`) onto
+  its `@inline` id. The UI still shows `loadSource` so an operator sees why a key is
+  rewritten.
 - **Injection & dependency direction (round-2 F5).** The **launcher**
   (`use-cases/*launch*`, which already has project/playbook/task-type context)
   resolves the loadout and passes a plain typed `ResolvedLoadout` through
@@ -538,16 +540,24 @@ is the only lever that reaches Kookr's bypass-mode agents.)
 - **Loadout scope precedence UX.** task-type → playbook → project is proposed; is
   per-project the right *default* for own agents, given global's blast radius?
   Decide with usage once Phase 2 lands.
-- **`--plugin-dir` × `enabledPlugins:false` (must-probe before Phase 2b).** Does
-  disabling a `--plugin-dir`-loaded plugin via settings actually remove it, or does the
-  dir force-load win? Decides whether the toolkit's budget lever is `enabledPlugins` or
-  "stop passing `--plugin-dir`." Not covered by the round-1 probes.
+- **`--plugin-dir` × `enabledPlugins:false` (must-probe before Phase 2b). — RESOLVED
+  (P2, `docs/rfc/rfc-plugin-skill-manager-p2-probe.md`, recorded on umbrella #3499).**
+  A `--plugin-dir`-loaded plugin **can** be disabled via the per-session `--settings`
+  `enabledPlugins` map — the dir force-load does not unconditionally win — **but only
+  under the synthetic `<name>@inline` id** it reports in `init.plugins[].source`, never
+  its real marketplace id. So the toolkit's budget lever is
+  `enabledPlugins:{"kookr-toolkit@inline":false}` (not `@kookr`, and not "stop passing
+  `--plugin-dir`"); the resolver/adapter apply the `@inline` rewrite for dir-loaded
+  plugins, keyed off `loadSource`.
 - **`alwaysOnTokens` trust.** Is `claude plugin details`' figure stable enough to
   drive a "disable this plugin to save ~N tokens" promise, or informational only?
 - **Group metadata governance.** Who assigns `group` to each of the 65 skills, and
   does `validate-skills.ts` enforce that every skill has exactly one?
-- **Loadout storage shape.** Where Kookr-owned loadouts live (per-project file vs a
-  store table) and how they version — to be settled in slice 2a.
+- **Loadout storage shape. — RESOLVED (P2, slice 2a).** Kookr-owned loadouts live in a
+  single versioned JSON file `<kookrDir>/plugin-loadouts.json` (`LoadoutStore`), with a
+  map per scope level (`task-type` / `playbook` / `project`) and an explicit top-level
+  `version` field — one store, not per-project files scattered under each checkout, so a
+  future shape change is a migration rather than a guess.
 - **Does anyone want per-skill behavior gating? (the question the review avoided.)**
   Once the budget rationale died (P2), no one re-asked whether denying a *specific*
   skill to a *specific* spawned agent is wanted for any reason. Until an R3a case is
