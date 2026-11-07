@@ -370,9 +370,9 @@ Delivers the operator's literal "apply updates automatically," safely.
 - **Audit state machine (round-2 operability).** Every evaluation writes a decision
   record — including skips — with a reason (`busy[task-ids]` / `no-update` /
   `policy-off` / `check-failed`) and, when it runs, an outcome
-  (`applied` / `failed` / `verify-failed` / `rolled-back`). After applying, a
-  verification step confirms the new version loads; on failure it restores, drops the
-  plugin to `notify`, and raises a persistent banner.
+  (`applied` / `failed` / `verify-failed` / `rolled-back` / `rollback-failed`).
+  After applying, a verification step confirms the new version loads; on failure it
+  restores, drops the plugin to `notify`, and raises a persistent banner.
 - **Scoped, retained rollback (round-2 delivery + operability).** Today's install
   route `rm`s its backup on success (`deploy-routes.ts:676-679`) — incompatible with
   "keep it for rollback." Layer 4 instead retains the pre-update snapshot for a stated
@@ -471,8 +471,11 @@ slice leaves two writers racing one directory.
   (independent; see Open question 4). Settings undo defined as an inverse single-key
   edit. **Per-skill toggles (Layer 3) are NOT in this slice** — they ship separately
   only when an R3a demand case is recorded.
-- **4 — Layer 4 `apply-when-idle`.** Build only after the idle predicate, audit state
-  machine, retention window, scoped rollback, and `autoUpdate:false`-revert are pinned.
+- **4 — Layer 4 `apply-when-idle`. — SHIPPED (P4, PR landing against #3499).** Built
+  after the idle predicate, audit state machine, retention window, scoped rollback, and
+  `autoUpdate:false`-revert were pinned. Gated by `KOOKR_PLUGIN_AUTO_UPDATE` (default off);
+  the per-marketplace `autoUpdate` write/revert tracks ownership so it never clobbers an
+  operator's own explicit flag.
 
 Slices are independently shippable and revertible. (Note the inversion from v1: the
 per-session mechanism is phase 2, not a deferred tail, because the checkpoint showed it

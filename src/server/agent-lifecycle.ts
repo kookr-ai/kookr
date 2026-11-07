@@ -19,7 +19,8 @@ import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
-import { resolveOrReplayLoadout, type LoadoutStore } from './plugin-manager/loadout-store.js';
+import { resolveOrReplayLoadout, withSpawnGate, spawnGateActive, type LoadoutStore } from './plugin-manager/loadout-store.js';
+import type { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { stampSessionConfigEpoch, type ConfigEpochStore } from './plugin-manager/config-epoch.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
@@ -87,6 +88,12 @@ export interface AgentLifecycleDeps {
    * it started under. Optional — absent (tests / feature off) means no stamp.
    */
   configEpochStore?: ConfigEpochStore;
+  /**
+   * Shared plugin mutation lock (RFC Layer 4 spawn gate). When present and the
+   * gate is active, a promoted task's loadout record commits under this lock so a
+   * concurrent auto-update cannot interleave. Optional — absent means no-op gate.
+   */
+  pluginMutationService?: PluginMutationService;
   /**
    * Optional project-config store. When supplied, the lifecycle stamps
    * ProjectConfig.localPath on first task start so the launch dialog can
@@ -1152,9 +1159,14 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // resolve-or-replay the loadout (RFC Layer 2 / slice 2b): replay a
       // recorded loadout verbatim, else resolve fresh and record — otherwise a
       // task parked under load would silently never get its loadout applied.
-      const loadoutFields = await resolveOrReplayLoadout(
-        { loadoutStore: deps.lifecycleDeps.loadoutStore, taskStore },
-        pending,
+      const loadoutFields = await withSpawnGate(
+        deps.lifecycleDeps.pluginMutationService,
+        spawnGateActive(),
+        () =>
+          resolveOrReplayLoadout(
+            { loadoutStore: deps.lifecycleDeps.loadoutStore, taskStore },
+            pending,
+          ),
       );
       // Stamp the config epoch this promoted session starts under (RFC
       // "Surfacing reload drift"). No-op off claude / when unwired / on replay.

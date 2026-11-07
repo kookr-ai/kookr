@@ -58,7 +58,8 @@ import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
-import { LoadoutStore, replayRecordedLoadout, resolveOrReplayLoadout } from './plugin-manager/loadout-store.js';
+import { LoadoutStore, replayRecordedLoadout, resolveOrReplayLoadout, withSpawnGate, spawnGateActive } from './plugin-manager/loadout-store.js';
+import type { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { ConfigEpochStore, stampSessionConfigEpoch } from './plugin-manager/config-epoch.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
@@ -159,6 +160,13 @@ export interface LaunchServiceDeps {
    * stays empty. Only a FIRST spawn stamps it; resume/relaunch keep the original.
    */
   configEpochStore?: ConfigEpochStore;
+  /**
+   * Shared plugin mutation lock (RFC Layer 4). When present and the spawn gate is
+   * active (loadouts or auto-update enabled), the loadout record commits under
+   * this lock so a concurrent auto-update cannot interleave with a task recording
+   * a plugin dependency. Absent in tests / when neither feature is on (no-op).
+   */
+  pluginMutationService?: PluginMutationService;
   /** Optional live session probe used to keep dedup from trusting stale inProgress records. */
   terminalBackend?: Pick<TerminalBackend, 'isAlive'>;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
@@ -2366,9 +2374,14 @@ async function launchTaskCore(
     : undefined;
   // Resolve (or replay) the plugin loadout for this spawn (RFC Layer 2 / 2b).
   // No-op and byte-identical to today when the feature is off / nothing attached.
-  const loadoutFields = await resolveOrReplayLoadout(
-    { loadoutStore: deps.loadoutStore, taskStore: deps.taskStore },
-    task,
+  const loadoutFields = await withSpawnGate(
+    deps.pluginMutationService,
+    spawnGateActive(),
+    () =>
+      resolveOrReplayLoadout(
+        { loadoutStore: deps.loadoutStore, taskStore: deps.taskStore },
+        task,
+      ),
   );
   // Stamp this Kookr-managed Claude session with the config epoch it starts under
   // (RFC "Surfacing reload drift"). No-op off the claude adapter / when unwired /

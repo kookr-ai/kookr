@@ -10,6 +10,10 @@ import type {
   OwnSessionActionResult,
   OwnSessionActionError,
   ConfigDriftSurface,
+  AutoUpdatePolicy,
+  AutoUpdateSurface,
+  AutoUpdateActionResult,
+  AutoUpdateActionError,
 } from '../../shared/contracts/plugins.js';
 import type {
   PluginInstallResult,
@@ -86,6 +90,54 @@ export async function getToolkitStatus(): Promise<PluginVersionStatus | null> {
   const { ok, body } = await getPlugins();
   if (!ok) return null;
   return body.toolkit;
+}
+
+// --- Fleet-aware auto-update (RFC Layer 4 / R6) ---------------------------
+
+/** Read the fleet auto-update surface (per-plugin policy + audit trail + banners). */
+export function getAutoUpdateSurface(): Promise<AutoUpdateSurface> {
+  return getJson<AutoUpdateSurface>('/api/plugins/auto-update');
+}
+
+/** Set a plugin's auto-update policy (`off | notify | apply-when-idle`). */
+export function setAutoUpdatePolicy(
+  pluginId: string,
+  policy: AutoUpdatePolicy,
+): Promise<ApiResult<AutoUpdateActionResult | AutoUpdateActionError | null>> {
+  return fetchResult<AutoUpdateActionResult | AutoUpdateActionError>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/auto-update`,
+    { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ policy }) },
+  );
+}
+
+/** Evaluate a plugin for auto-update right now (operator-triggered "run now"). */
+export function evaluateAutoUpdate(
+  pluginId: string,
+): Promise<ApiResult<AutoUpdateActionResult | AutoUpdateActionError | null>> {
+  return fetchResult<AutoUpdateActionResult | AutoUpdateActionError>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/auto-update/evaluate`,
+    { method: 'POST' },
+  );
+}
+
+/** Roll a plugin back to its retained pre-update snapshot (scoped rollback). */
+export function rollbackAutoUpdate(
+  pluginId: string,
+): Promise<ApiResult<AutoUpdateActionResult | AutoUpdateActionError | null>> {
+  return fetchResult<AutoUpdateActionResult | AutoUpdateActionError>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/auto-update/rollback`,
+    { method: 'POST' },
+  );
+}
+
+/** Dismiss a plugin's persistent auto-update banner (operator acknowledged it). */
+export function dismissAutoUpdateBanner(
+  pluginId: string,
+): Promise<ApiResult<AutoUpdateActionResult | AutoUpdateActionError | null>> {
+  return fetchResult<AutoUpdateActionResult | AutoUpdateActionError>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/auto-update/dismiss-banner`,
+    { method: 'POST' },
+  );
 }
 
 /** Install the kookr-toolkit plugin via `POST /api/plugins/install` (slice 1d). */

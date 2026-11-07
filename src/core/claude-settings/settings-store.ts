@@ -118,6 +118,45 @@ export function applyEnabledPluginEdit(
   return next;
 }
 
+/**
+ * Apply an inverse single-key edit to `extraKnownMarketplaces[marketplace]
+ * .autoUpdate`: set the boolean when `value` is a boolean, or remove just the
+ * `autoUpdate` key when `value` is `undefined` (restoring the native default).
+ * Every OTHER field on the marketplace entry, and every other marketplace, is
+ * preserved untouched; an entry that becomes empty, and an
+ * `extraKnownMarketplaces` that becomes empty, are pruned. Returns a NEW object;
+ * never mutates the input (R8: never a whole-file rewrite of unrelated keys).
+ * Pure — exported for tests.
+ */
+export function applyAutoUpdateEdit(
+  current: SettingsFileData,
+  marketplace: string,
+  value: boolean | undefined,
+): SettingsFileData {
+  const next: SettingsFileData = { ...current };
+  const markets: Record<string, Record<string, unknown>> = {};
+  for (const [k, v] of Object.entries(current.extraKnownMarketplaces ?? {})) {
+    markets[k] = { ...(v as Record<string, unknown>) };
+  }
+  const entry: Record<string, unknown> = { ...(markets[marketplace] ?? {}) };
+  if (value === undefined) {
+    delete entry.autoUpdate;
+  } else {
+    entry.autoUpdate = value;
+  }
+  if (Object.keys(entry).length === 0) {
+    delete markets[marketplace];
+  } else {
+    markets[marketplace] = entry;
+  }
+  if (Object.keys(markets).length === 0) {
+    delete next.extraKnownMarketplaces;
+  } else {
+    next.extraKnownMarketplaces = markets as Record<string, { autoUpdate?: unknown }>;
+  }
+  return next;
+}
+
 function parseSettings(raw: string): SettingsFileData | null {
   let parsed: unknown;
   try {
@@ -251,6 +290,51 @@ export class ClaudeSettingsStore {
       }
 
       const next = applyEnabledPluginEdit(current, pluginId, value);
+      await atomicWriteJson(path, next);
+      return { path, previousValue, backupPath };
+    });
+  }
+
+  /**
+   * Inverse single-key write of `extraKnownMarketplaces[marketplace].autoUpdate`
+   * at the given scope — the dual-writer guard for Layer-4 auto-update (R6):
+   * Kookr writes `false` for a plugin it holds in `apply-when-idle` so Claude
+   * Code's own updater and Kookr never both move it, and REVERTS (writes
+   * `undefined` → removes the key → native default) when the policy returns to
+   * `off`. Same lock-agnostic, back-up-then-TOCTOU-guard-then-atomic-write
+   * sequence as {@link writeEnablement}. Returns the previous boolean (or
+   * `undefined` when absent) so the caller knows whether a write/revert was even
+   * needed.
+   */
+  async writeAutoUpdate(
+    marketplace: string,
+    value: boolean | undefined,
+    opts: { scope: SettingsScope; withLock: <T>(fn: () => Promise<T>) => Promise<T> },
+  ): Promise<WriteEnablementResult> {
+    const target = this.scopeFiles.find((s) => s.scope === opts.scope);
+    if (!target) {
+      throw new Error(`Unknown settings scope: ${opts.scope}`);
+    }
+    const path = target.path;
+    const before = await readTarget(path);
+
+    return opts.withLock(async () => {
+      const guard = await readTarget(path);
+      if (guard.hash !== before.hash) {
+        throw new ConcurrentSettingsWriteError(path);
+      }
+
+      const current = guard.data ?? {};
+      const previousRaw = current.extraKnownMarketplaces?.[marketplace]?.autoUpdate;
+      const previousValue = typeof previousRaw === 'boolean' ? previousRaw : undefined;
+
+      let backupPath: string | null = null;
+      if (guard.exists) {
+        backupPath = `${path}.kookr-settings-backup-${Date.now()}-${process.pid}`;
+        await copyFile(path, backupPath);
+      }
+
+      const next = applyAutoUpdateEdit(current, marketplace, value);
       await atomicWriteJson(path, next);
       return { path, previousValue, backupPath };
     });

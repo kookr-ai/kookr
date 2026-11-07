@@ -288,3 +288,175 @@ export interface ConfigDriftSurface {
   /** Always set: Kookr's external-TUI blind spot, stated rather than implied. */
   externalCoverageNote: string;
 }
+
+// ---------------------------------------------------------------------------
+// Fleet-aware, idle-gated, safe auto-update (RFC Layer 4 / R6). Per-plugin
+// policy `off | notify | apply-when-idle`; `apply-when-idle` runs
+// `claude plugin update <id>` through the shared PluginMutationService lock +
+// backup ONLY when no non-terminal task depends on the plugin, verifies the new
+// version, bumps the config epoch on success, and rolls back (scoped, not
+// whole-dir) on a verify failure. R3a still holds everywhere: no per-skill
+// toggles, `deniedSkills` stays empty.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-plugin auto-update policy. `off` (the default when unset) never touches
+ * the plugin. `notify` only surfaces staleness in the fleet view (the P1 read
+ * model already computes it) — it is NOT evaluated by the auto-update runner.
+ * `apply-when-idle` auto-applies an available update when the idle predicate
+ * holds, through the shared lock + backup.
+ */
+export type AutoUpdatePolicy = 'off' | 'notify' | 'apply-when-idle';
+export const AUTO_UPDATE_POLICIES: readonly AutoUpdatePolicy[] = ['off', 'notify', 'apply-when-idle'];
+/** The policy a plugin has when it carries no stored entry. */
+export const DEFAULT_AUTO_UPDATE_POLICY: AutoUpdatePolicy = 'off';
+
+/** Why an auto-update evaluation did NOT apply (the audit skip reasons). */
+export type AutoUpdateSkipReason = 'busy' | 'no-update' | 'policy-off' | 'check-failed';
+
+/**
+ * Terminal state of one auto-update evaluation (the audit state machine's
+ * accepting states). `skipped` carries a {@link AutoUpdateSkipReason}; the rest
+ * are apply outcomes. `verify-failed` always transitions to a rollback
+ * (`rolled-back` or `rollback-failed`); it is recorded on its own first so the
+ * audit trail shows the verify failure distinctly from its recovery.
+ */
+export type AutoUpdateEvalState =
+  | 'skipped'
+  | 'applied'
+  | 'failed'
+  | 'verify-failed'
+  | 'rolled-back'
+  | 'rollback-failed';
+
+/** One durable auto-update decision record (written for every evaluation, incl. skips). */
+export interface AutoUpdateDecision {
+  pluginId: string;
+  /** ISO-8601 time the evaluation finished. */
+  evaluatedAt: string;
+  /** The policy in force at evaluation time. */
+  policy: AutoUpdatePolicy;
+  /** The evaluation's terminal state. */
+  state: AutoUpdateEvalState;
+  /** Present when `state === 'skipped'`: why it skipped. */
+  reason?: AutoUpdateSkipReason;
+  /** For `reason === 'busy'`: the non-terminal task ids that hold the plugin busy. */
+  busyTaskIds?: string[];
+  /** Installed version before an apply ran (for `applied`/`failed`/`verify-failed`/rollback states). */
+  fromVersion?: string | null;
+  /** Installed version after a successful apply, or the version the apply targeted. */
+  toVersion?: string | null;
+  /** Human detail (an error message, the verify failure, a rollback note). */
+  detail?: string;
+}
+
+/** A persistent operator-facing banner raised by the auto-updater (survives restarts until dismissed). */
+export interface AutoUpdateBanner {
+  pluginId: string;
+  /**
+   * `verify-failed`: the applied update did not load; it was rolled back and the
+   * policy dropped to `notify`. `rollback-failed`: the rollback itself failed —
+   * the retained snapshot path is named for manual recovery. `post-session`: a
+   * rollback ran after sessions had already started on the new version — they
+   * need a restart (surfaced via the config-epoch drift surface).
+   */
+  kind: 'verify-failed' | 'rollback-failed' | 'post-session';
+  message: string;
+  raisedAt: string;
+  /** For `rollback-failed`: where the pre-update snapshot is preserved. */
+  snapshotPath?: string;
+}
+
+/** Metadata for a retained, scoped pre-update snapshot (the plugin's own install dir only). */
+export interface AutoUpdateSnapshotMeta {
+  pluginId: string;
+  /** The plugin's install dir that was snapshotted (scoped — NOT the whole plugins dir). */
+  installPath: string;
+  /** Where the snapshot copy lives. */
+  snapshotPath: string;
+  /** Installed version at snapshot time (what a rollback restores to). */
+  fromVersion: string | null;
+  takenAt: string;
+  /** ISO-8601 time after which the snapshot is eligible for pruning (the stated retention window). */
+  retainUntil: string;
+}
+
+/**
+ * Records that Kookr has taken over the native per-marketplace `autoUpdate`
+ * flag, with the value it found BEFORE taking over so release restores EXACTLY
+ * that (never clobbering an operator's own explicit flag). Presence of a key ⇒
+ * Kookr currently owns the flag for that marketplace.
+ */
+export interface AutoUpdateFlagOwnership {
+  /** The `autoUpdate` value present before Kookr took over: `null` = the key was absent. */
+  previousValue: boolean | null;
+}
+
+/** On-disk shape of the per-plugin auto-update store (versioned JSON, `<kookrDir>/plugin-auto-update.json`). */
+export interface AutoUpdateStoreData {
+  version: number;
+  /** pluginId → policy. Absent ⇒ {@link DEFAULT_AUTO_UPDATE_POLICY}. */
+  policies: Record<string, AutoUpdatePolicy>;
+  /** pluginId → the last installed version Kookr observed (external-change detection baseline). */
+  observed: Record<string, string | null>;
+  /** pluginId → persistent banner (verify-failure / rollback-failure / post-session restart). */
+  banners: Record<string, AutoUpdateBanner>;
+  /** pluginId → retained pre-update snapshot metadata (for a scoped rollback within the window). */
+  snapshots: Record<string, AutoUpdateSnapshotMeta>;
+  /** marketplace → Kookr's `autoUpdate` takeover record (dual-writer ownership provenance). */
+  autoUpdateOwnership: Record<string, AutoUpdateFlagOwnership>;
+}
+
+/** A logged external-version-change event (the installed version moved with no Kookr action). */
+export interface AutoUpdateExternalChange {
+  pluginId: string;
+  fromVersion: string | null;
+  toVersion: string | null;
+  detectedAt: string;
+}
+
+/** Request to set a plugin's auto-update policy (`PUT /api/plugins/:id/auto-update`). */
+export interface AutoUpdatePolicyRequest {
+  policy: AutoUpdatePolicy;
+}
+
+/** Per-plugin auto-update view the dialog renders (policy + last decision + banner). */
+export interface AutoUpdatePluginView {
+  pluginId: string;
+  policy: AutoUpdatePolicy;
+  /** The most recent decision for this plugin, when one exists. */
+  lastDecision: AutoUpdateDecision | null;
+  /** A persistent banner for this plugin, when raised. */
+  banner: AutoUpdateBanner | null;
+  /** Whether a retained snapshot is available to roll back to right now. */
+  rollbackAvailable: boolean;
+  /**
+   * The EFFECTIVE native `autoUpdate` for this plugin's marketplace — the
+   * explicit flag when a scope sets one, else the documented default (ON for
+   * official/claude.ai, OFF otherwise), read NOT assumed. Shows the operator
+   * whether Claude Code's own updater is active for the plugin.
+   */
+  nativeAutoUpdate: boolean;
+}
+
+/** `GET /api/plugins/auto-update` body: the fleet auto-update surface. */
+export interface AutoUpdateSurface {
+  plugins: AutoUpdatePluginView[];
+  /** The recent audit trail (most recent first, capped). */
+  recentDecisions: AutoUpdateDecision[];
+  /** Whether the auto-apply runner is enabled for this process (the default-off env gate). */
+  applyEnabled: boolean;
+}
+
+/** Success body for setting a policy / running an evaluation / rolling back. */
+export interface AutoUpdateActionResult {
+  status: 'ok';
+  plugin: AutoUpdatePluginView;
+}
+
+/** Error body for auto-update routes (409 carries the lock holder). */
+export interface AutoUpdateActionError {
+  error: string;
+  pluginId?: string;
+  lockHolder?: { operation: string; startedAt: string };
+}
