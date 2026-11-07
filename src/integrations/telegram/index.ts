@@ -134,6 +134,8 @@ function agentLabel(agentType: AgentType): string {
       return 'Codex CLI';
     case 'grok-build':
       return 'Grok Build';
+    case 'hermes-fleet':
+      return 'Hermes fleet';
   }
 }
 

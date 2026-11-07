@@ -442,7 +442,7 @@ The system SHALL allow launching a new agent from the GUI with a task descriptio
 - When launch admission permits, the agent is started in a managed dtach session in interactive mode (see [ADR-014](adr/014-local-dtach-backend.md)); confirmed degradation follows R4b.12 and starts no session
 - Claude Code launched with `--settings` flag pointing to Kookr-generated hook settings
 - Hook settings are additive to user's existing settings
-- Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`
+- Launch, relaunch, and playbook messages accept every concrete agent type advertised by the server, including `grok-build`. The identity-only `hermes-fleet` type (jeanibarz/hermes-fleet#15) passes `z.enum(AGENT_TYPES)` schema validation but is never advertised or launchable (no adapter registered); the launch and relaunch boundaries reject it (`agent_not_launchable` / `malformed_launch_intent`) via `isIdentityOnlyAgentType`
 - WebSocket client and server schemas validate concrete agent types consistently with the shared `AgentType` contract
 - An admitted task is created as `open` and transitions to `inProgress` on agent start; a confirmed-degraded task is persisted as `pending` until R4b.12 recovery admission succeeds
 - The initial prompt is delivered only once the agent TUI is genuinely accepting input, and is then verified against the agent's own `UserPromptSubmit` report; a launch whose agent received fewer characters than were delivered fails and its session is reaped, rather than proceeding on a truncated brief ([#2977](https://github.com/kookr-ai/kookr/issues/2977))

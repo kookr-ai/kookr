@@ -28,6 +28,9 @@ import {
   CODEX_CLI_MODEL_IDS,
   ALL_MODEL_IDS,
   isValidEffortForAgent,
+  isAgentType,
+  isIdentityOnlyAgentType,
+  AGENT_TYPES,
 } from './agent-types.js';
 
 describe('normalizeAgentType', () => {
@@ -528,5 +531,52 @@ describe('advertisedAgentTypes (issue #3025)', () => {
         ['claude-code'],
       ).map((item) => item.type),
     ).toEqual(['codex-cli', 'grok-build']);
+  });
+});
+
+describe('hermes-fleet AgentType identity (jeanibarz/hermes-fleet#15)', () => {
+  test('is a recognized concrete agent type', () => {
+    expect(AGENT_TYPES).toContain('hermes-fleet');
+    expect(isAgentType('hermes-fleet')).toBe(true);
+  });
+
+  test('normalizes itself and the "hermes" alias', () => {
+    expect(normalizeAgentType('hermes-fleet')).toBe('hermes-fleet');
+    expect(normalizeAgentType('hermes')).toBe('hermes-fleet');
+  });
+
+  test('has a non-empty selection hint', () => {
+    expect(AGENT_SELECTION_HINTS['hermes-fleet'].length).toBeGreaterThan(0);
+    expect(agentSelectionHint('hermes-fleet')).toBe(AGENT_SELECTION_HINTS['hermes-fleet']);
+  });
+
+  test('exposes NO Kookr-side effort or model levels (locked by its own harness)', () => {
+    expect(effortLevelsForAgent('hermes-fleet')).toEqual([]);
+    expect(modelsForAgent('hermes-fleet')).toEqual([]);
+    expect(isValidEffortForAgent('hermes-fleet', 'high')).toBe(false);
+    expect(isValidModelForAgent('hermes-fleet', 'anything')).toBe(false);
+  });
+
+  test('is identity-only: NOT advertised as a launchable agent', () => {
+    // Deliberately absent from AVAILABLE_AGENT_TYPES so it never appears in the
+    // picker, round-robin, or remote allowlist until a launch adapter exists.
+    expect(AVAILABLE_AGENT_TYPES.map((a) => a.type)).not.toContain('hermes-fleet');
+    // Even if an adapter were somehow registered, advertisement derives from
+    // AVAILABLE ∩ registry, so it stays hidden.
+    expect(advertisedAgentTypes(['hermes-fleet']).map((a) => a.type)).not.toContain('hermes-fleet');
+    // Round-robin only rotates over AVAILABLE, so it can never select it.
+    expect(resolveRoundRobinAgent(0, ['hermes-fleet'])).toBe(DEFAULT_AGENT_TYPE);
+  });
+
+  test('isIdentityOnlyAgentType flags hermes-fleet but not the launchable catalog', () => {
+    expect(isIdentityOnlyAgentType('hermes-fleet')).toBe(true);
+    for (const launchable of ['claude-code', 'codex-cli', 'grok-build'] as const) {
+      expect(isIdentityOnlyAgentType(launchable)).toBe(false);
+    }
+    // The predicate's set is exactly AGENT_TYPES minus AVAILABLE_AGENT_TYPES.
+    const advertised = new Set(AVAILABLE_AGENT_TYPES.map((a) => a.type));
+    for (const t of AGENT_TYPES) {
+      expect(isIdentityOnlyAgentType(t)).toBe(!advertised.has(t));
+    }
   });
 });

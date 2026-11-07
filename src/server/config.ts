@@ -310,6 +310,21 @@ function readTruthyEnvFlagDefaultTrue(raw: string | undefined): boolean {
 }
 
 /**
+ * Opt-in for the Hermes fleet integration (jeanibarz/hermes-fleet#15). Default OFF, like every
+ * other feature gate (`readTruthyEnvFlag` returns false when unset). Set
+ * `KOOKR_HERMES_FLEET=1` (or true/yes/on) to opt in. Tranche 1 lands the
+ * `hermes-fleet` AgentType identity — so the activity ledger and independent-
+ * review verdicts can name Hermes as a first-class provider instead of a
+ * placeholder — and logs the opt-in at startup; no launch adapter is registered
+ * (Hermes is a batch do→judge→learn loop, not an interactive agent). The
+ * ledger-observation bridge this flag gates ships in a follow-up slice. OFF =
+ * zero runtime effect.
+ */
+export function readHermesFleetOptInFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return readTruthyEnvFlag(env.KOOKR_HERMES_FLEET);
+}
+
+/**
  * Read the resource-watchdog configuration (issue #1724 / #2354) from the
  * environment.
  *

@@ -1,4 +1,4 @@
-import { isAgentType, type AgentType } from '../shared/contracts/agent-types.js';
+import { isAgentType, isIdentityOnlyAgentType, type AgentType } from '../shared/contracts/agent-types.js';
 import {
   isValidEffortForAgent,
   isValidModelForAgent,
@@ -95,6 +95,17 @@ export function validatePersistedLaunchIntent(
       ok: false,
       reason: 'malformed_launch_intent',
       detail: `launch intent agent ${candidate.agentType} does not match task agent ${task.agentType}`,
+    };
+  }
+  // Fail closed on an identity-only agent type (jeanibarz/hermes-fleet#15: hermes-fleet). It is
+  // a valid AgentType but not launchable (no adapter), so a persisted intent
+  // naming it can never be relaunched. Reject here BEFORE resolveModelTier,
+  // which throws for such types — a relaunch guard must return, not throw.
+  if (isIdentityOnlyAgentType(candidate.agentType)) {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: `launch intent names a non-launchable identity-only agent type: ${candidate.agentType}`,
     };
   }
   if (

@@ -13,6 +13,7 @@ import {
   resolvePinnedAgentFallback,
   excludeBlacklistedAgents,
   isAgentType,
+  isIdentityOnlyAgentType,
   isValidEffortForAgent,
   effortLevelsForAgent,
   isValidModelForAgent,
@@ -530,6 +531,30 @@ export class AgentBlacklistedError extends Error {
 /** Type guard for {@link AgentBlacklistedError}, for callers mapping to 403. */
 export function isAgentBlacklistedError(err: unknown): err is AgentBlacklistedError {
   return err instanceof AgentBlacklistedError;
+}
+
+/**
+ * Thrown when a launch explicitly pins an identity-only agent type (jeanibarz/hermes-fleet#15:
+ * `hermes-fleet`) — a valid {@link AgentType} that exists for ledger/verdict
+ * interop but registers no adapter and is absent from `AVAILABLE_AGENT_TYPES`.
+ * Distinct from an absent codex/grok binary (which IS advertised and may reach
+ * the adapter for a proper auth/absent error) and from {@link AgentBlacklistedError}
+ * (an operator ban). The API maps this to HTTP 400 with the `agent_not_launchable`
+ * code. No task record is created.
+ */
+export class AgentNotLaunchableError extends Error {
+  readonly code = 'agent_not_launchable';
+  readonly agentType: AgentType;
+  constructor(agentType: AgentType) {
+    super(`Agent "${agentType}" is an identity-only provider (jeanibarz/hermes-fleet#15) and cannot be launched`);
+    this.name = 'AgentNotLaunchableError';
+    this.agentType = agentType;
+  }
+}
+
+/** Type guard for {@link AgentNotLaunchableError}, for callers mapping to 400. */
+export function isAgentNotLaunchableError(err: unknown): err is AgentNotLaunchableError {
+  return err instanceof AgentNotLaunchableError;
 }
 
 /**
@@ -1478,6 +1503,14 @@ async function launchTaskCore(
   }
   if (blacklistedTypes.includes(agentType)) {
     throw new AgentBlacklistedError(agentType);
+  }
+  // Reject an explicit pin to an identity-only agent type (jeanibarz/hermes-fleet#15:
+  // hermes-fleet) cleanly here — before model-tier resolution (which throws for
+  // such types) and adapter dispatch (which would throw a cryptic "Unknown
+  // agent type"). Round-robin never yields one (not in AVAILABLE_AGENT_TYPES),
+  // so only an explicit pin reaches this.
+  if (isIdentityOnlyAgentType(agentType)) {
+    throw new AgentNotLaunchableError(agentType);
   }
   if (opts.modelTier !== undefined && !isModelTier(opts.modelTier)) {
     throw new ModelTierValidationError(

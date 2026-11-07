@@ -23,6 +23,7 @@ const AGENT_LABELS: Record<AgentType, string> = {
   'claude-code': 'Claude Code',
   'codex-cli': 'Codex CLI',
   'grok-build': 'Grok Build',
+  'hermes-fleet': 'Hermes fleet',
 };
 
 export interface WorktreeState {

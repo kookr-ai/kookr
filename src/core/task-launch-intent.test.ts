@@ -34,6 +34,22 @@ describe('task launch intent', () => {
     });
   });
 
+  it('fails closed (returns, does not throw) on an identity-only hermes-fleet intent (jeanibarz/hermes-fleet#15)', () => {
+    // resolveModelTier throws for hermes-fleet; a relaunch guard must REJECT,
+    // not throw (a thrown record would abort an unguarded recovery sweep).
+    const call = () =>
+      validatePersistedLaunchIntent({
+        agentType: 'hermes-fleet',
+        launchIntent: {
+          schemaVersion: 'task-launch-intent.v1',
+          agentType: 'hermes-fleet',
+          modelTier: 'small',
+        },
+      });
+    expect(call).not.toThrow();
+    expect(call()).toMatchObject({ ok: false, reason: 'malformed_launch_intent' });
+  });
+
   it('keeps model and effort as independent pins in fingerprints and adapter fields', () => {
     const intent = buildTaskLaunchIntent('claude-code', {
       model: 'claude-fable-5',

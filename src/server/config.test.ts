@@ -23,6 +23,7 @@ import {
   readResourceWatchdogConfigFromEnv,
   readRingFleetBudgetBytesFromEnv,
   readSessionReapConfigFromEnv,
+  readHermesFleetOptInFromEnv,
 } from './config.js';
 
 describe('readOperationalAlertConfigFromEnv', () => {
@@ -279,5 +280,24 @@ describe('readSessionReapConfigFromEnv (issues #1720 / #2081)', () => {
 
   test('KOOKR_REAP_ORPHAN_SESSIONS=false disables reaping', () => {
     expect(readSessionReapConfigFromEnv({ KOOKR_REAP_ORPHAN_SESSIONS: 'false' }).enabled).toBe(false);
+  });
+});
+
+describe('readHermesFleetOptInFromEnv (jeanibarz/hermes-fleet#15)', () => {
+  test('defaults OFF when the variable is unset or empty', () => {
+    expect(readHermesFleetOptInFromEnv({})).toBe(false);
+    expect(readHermesFleetOptInFromEnv({ KOOKR_HERMES_FLEET: '' })).toBe(false);
+  });
+
+  test('enables on 1/true/yes/on (case- and whitespace-insensitive)', () => {
+    for (const raw of ['1', 'true', 'TRUE', 'yes', 'on', ' On ']) {
+      expect(readHermesFleetOptInFromEnv({ KOOKR_HERMES_FLEET: raw })).toBe(true);
+    }
+  });
+
+  test('stays OFF on 0/false/no/off and any other value', () => {
+    for (const raw of ['0', 'false', 'no', 'off', 'enabled', 'maybe']) {
+      expect(readHermesFleetOptInFromEnv({ KOOKR_HERMES_FLEET: raw })).toBe(false);
+    }
   });
 });

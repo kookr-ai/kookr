@@ -1,5 +1,16 @@
-/** Every concrete agent type accepted by persisted and runtime contracts. */
-export const AGENT_TYPES = ['claude-code', 'codex-cli', 'grok-build'] as const;
+/**
+ * Every concrete agent type accepted by persisted and runtime contracts.
+ *
+ * `hermes-fleet` (jeanibarz/hermes-fleet#15) is a first-class *identity* used for cross-system
+ * interop — the activity-ledger envelope's `provider` and the independent-review
+ * verdict lane — so Hermes activity no longer needs a placeholder provider. It is
+ * deliberately NOT in {@link AVAILABLE_AGENT_TYPES}: Hermes is a batch do→judge→
+ * learn bash loop, not an interactive agent, so Tranche 1 registers no launch
+ * adapter. It therefore never appears in the agent picker or round-robin (both
+ * derive from AVAILABLE ∩ registry). A launchable integration, if ever wanted,
+ * is a separate opt-in slice (gated by `KOOKR_HERMES_FLEET`).
+ */
+export const AGENT_TYPES = ['claude-code', 'codex-cli', 'grok-build', 'hermes-fleet'] as const;
 
 export type AgentType = (typeof AGENT_TYPES)[number];
 
@@ -47,6 +58,24 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
 ];
 
 /**
+ * True for a concrete {@link AgentType} that exists only as an interop identity
+ * — an activity-ledger `provider` and an independent-review verdict lane — and
+ * is NOT launchable: absent from {@link AVAILABLE_AGENT_TYPES}, registering no
+ * adapter. `hermes-fleet` (jeanibarz/hermes-fleet#15) is the first such type.
+ *
+ * A valid `AgentType` can still arrive at the launch boundary via an explicit
+ * pin (it passes the WS `z.enum(AGENT_TYPES)` schema) or a persisted relaunch
+ * intent, so launch/relaunch callers reject an identity-only type here —
+ * BEFORE model/effort resolution or adapter dispatch — instead of surfacing a
+ * cryptic "Unknown agent type" / model-tier error. Distinct from an absent
+ * codex/grok binary, which IS advertised and may legitimately reach the adapter
+ * for a proper auth/absent error.
+ */
+export function isIdentityOnlyAgentType(type: AgentType): boolean {
+  return !AVAILABLE_AGENT_TYPES.some((entry) => entry.type === type);
+}
+
+/**
  * One-line identity copy for the Launch agent picker (#2608). Factual only —
  * does not rank runtimes or name a preferred agent. Kept as a map so the
  * snapshot `availableAgentTypes` contract stays type+label.
@@ -55,6 +84,7 @@ export const AGENT_SELECTION_HINTS: { readonly [K in AgentSelection]: string } =
   'claude-code': 'Anthropic Claude; native Kookr hooks and the bundled toolkit plugin',
   'codex-cli': "OpenAI Codex (Kookr's Claude-compatible fork)",
   'grok-build': 'xAI Grok, using the signed-in subscription session',
+  'hermes-fleet': 'Hermes fleet (DeepSeek via bash harness); ledger/verdict interop identity, not a launchable agent',
   'round-robin': 'Spreads launches across whatever runtimes are available',
 };
 
@@ -103,13 +133,21 @@ export const CODEX_GPT_6_ASTRA_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'
  * the adapter never emits an effort flag.
  */
 export const GROK_BUILD_EFFORT_LEVELS = [] as const;
+/**
+ * Hermes fleet exposes NO Kookr-side effort levels: its reasoning model is
+ * locked by its own bash harness (`bin/model-guard.sh`), not selected by Kookr.
+ * Empty (not Claude inheritance) mirrors the grok pattern and keeps the
+ * exhaustive per-agent map honest. Identity-only in Tranche 1 (jeanibarz/hermes-fleet#15).
+ */
+export const HERMES_FLEET_EFFORT_LEVELS = [] as const;
 
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_LEVELS)[number];
 export type CodexCliEffort = (typeof CODEX_CLI_EFFORT_LEVELS)[number];
 export type GrokBuildEffort = (typeof GROK_BUILD_EFFORT_LEVELS)[number];
+export type HermesFleetEffort = (typeof HERMES_FLEET_EFFORT_LEVELS)[number];
 
 /** Any effort token. Validity is agent-specific — see {@link isValidEffortForAgent}. */
-export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort;
+export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort | HermesFleetEffort;
 
 /**
  * Per-agent-type effort defaults, as persisted in kookr settings (`agentEffort`).
@@ -139,6 +177,8 @@ export function effortLevelsForAgent(agent: AgentType, model?: string): readonly
         : CODEX_CLI_EFFORT_LEVELS;
     case 'grok-build':
       return GROK_BUILD_EFFORT_LEVELS;
+    case 'hermes-fleet':
+      return HERMES_FLEET_EFFORT_LEVELS;
     default:
       return assertNeverAgentType(agent);
   }
@@ -169,6 +209,7 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
     ...CLAUDE_CODE_EFFORT_LEVELS,
     ...CODEX_CLI_EFFORT_LEVELS,
     ...GROK_BUILD_EFFORT_LEVELS,
+    ...HERMES_FLEET_EFFORT_LEVELS,
   ]),
 ];
 
@@ -198,13 +239,16 @@ export const CLAUDE_CODE_MODEL_IDS = [
 ] as const;
 export const CODEX_CLI_MODEL_IDS = ['gpt-6-astra'] as const;
 export const GROK_BUILD_MODEL_IDS = [] as const;
+/** Hermes pins its own model in its harness; Kookr accepts no per-task pin. */
+export const HERMES_FLEET_MODEL_IDS = [] as const;
 
 export type ClaudeCodeModel = (typeof CLAUDE_CODE_MODEL_IDS)[number];
 export type CodexCliModel = (typeof CODEX_CLI_MODEL_IDS)[number];
 export type GrokBuildModel = (typeof GROK_BUILD_MODEL_IDS)[number];
+export type HermesFleetModel = (typeof HERMES_FLEET_MODEL_IDS)[number];
 
 /** Any model id. Validity is agent-specific — see {@link isValidModelForAgent}. */
-export type ModelId = ClaudeCodeModel | CodexCliModel | GrokBuildModel | string;
+export type ModelId = ClaudeCodeModel | CodexCliModel | GrokBuildModel | HermesFleetModel | string;
 
 /**
  * The allowed model ids for a given agent type. Exhaustive switch so a new
@@ -218,6 +262,8 @@ export function modelsForAgent(agent: AgentType): readonly string[] {
       return CODEX_CLI_MODEL_IDS;
     case 'grok-build':
       return GROK_BUILD_MODEL_IDS;
+    case 'hermes-fleet':
+      return HERMES_FLEET_MODEL_IDS;
     default:
       return assertNeverAgentType(agent);
   }
@@ -245,6 +291,7 @@ export const ALL_MODEL_IDS: readonly string[] = [
     ...CLAUDE_CODE_MODEL_IDS,
     ...CODEX_CLI_MODEL_IDS,
     ...GROK_BUILD_MODEL_IDS,
+    ...HERMES_FLEET_MODEL_IDS,
   ]),
 ];
 
@@ -272,6 +319,9 @@ export function normalizeAgentType(value: string | undefined | null): AgentType 
     case 'grok':
     case 'grok-build':
       return 'grok-build';
+    case 'hermes':
+    case 'hermes-fleet':
+      return 'hermes-fleet';
     default:
       return DEFAULT_AGENT_TYPE;
   }

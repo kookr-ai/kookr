@@ -6,7 +6,7 @@ import { join, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, AgentNotLaunchableError, isAgentNotLaunchableError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -610,6 +610,34 @@ describe('launchTask', () => {
       })).rejects.toThrow(AgentBlacklistedError);
       expect(store.listTasks()).toHaveLength(0);
       expect(deps.adapterRegistry.get('claude-code').launch).not.toHaveBeenCalled();
+    });
+
+    it('refuses an explicit pin to the identity-only hermes-fleet type and creates no task (jeanibarz/hermes-fleet#15)', async () => {
+      await expect(launchTask(deps, {
+        prompt: 'pin hermes',
+        cwd: '/tmp',
+        agentType: 'hermes-fleet',
+      })).rejects.toThrow(AgentNotLaunchableError);
+      expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('refuses an identity-only pin even WITH a modelTier (no uncaught model-tier throw) (jeanibarz/hermes-fleet#15)', async () => {
+      try {
+        await launchTask(deps, {
+          prompt: 'pin hermes + tier',
+          cwd: '/tmp',
+          agentType: 'hermes-fleet',
+          modelTier: 'small',
+        });
+        expect.unreachable('expected AgentNotLaunchableError');
+      } catch (err) {
+        // The guard fires BEFORE resolveModelTier, so this is the clean 400-mapped
+        // error, not the cryptic "no Kookr-resolvable model tier" throw.
+        expect(isAgentNotLaunchableError(err)).toBe(true);
+        expect((err as AgentNotLaunchableError).code).toBe('agent_not_launchable');
+        expect((err as AgentNotLaunchableError).agentType).toBe('hermes-fleet');
+      }
+      expect(store.listTasks()).toHaveLength(0);
     });
 
     it('surfaces code agent_blacklisted on the refusal', async () => {
