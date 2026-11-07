@@ -70,7 +70,7 @@ demand test before the expensive work, and a stop condition:
 | The merged slice 1a mounts one shared snapshots root into every worker, and project consent, visibility and provider checks do not exist in the service. | Code. |
 | `createTask` has no spawn-depth guard. | Code. |
 | The activity ledger is keyed by session and pruned by age once the session is terminal; the observed-activity RFC keeps its own lane's data out of it for the same reason, and the same reasoning applies here. | Code, related RFC. |
-| `gitExecEnv` and the slice 1a `cleanGitEnv` each strip variables the other does not (`GIT_CEILING_DIRECTORIES` vs `GIT_NAMESPACE`/`GIT_QUARANTINE_PATH`/`GIT_CONFIG_KEY_n`). The two other test files spawning git without a scrubber only run read-only commands. | Code. |
+| `gitExecEnv` and the slice 1a `cleanGitEnv` each strip variables the other does not (`GIT_CEILING_DIRECTORIES` vs `GIT_NAMESPACE`/`GIT_QUARANTINE_PATH`/`GIT_CONFIG_KEY_n`). Test files that spawn git without the shared scrubber exist; the one examined runs read-only commands, and the leak that mattered came from `init`/`commit` calls in the new delegation tests. | Code. |
 
 ## Requirements
 
@@ -92,7 +92,7 @@ demand test before the expensive work, and a stop condition:
 
 **Delegation workers are new, dedicated agents** (not the demo agents), created on the internal network. The demo agents stay where they are, so there is no cutover of existing uses and no "old mode" to keep alive: delegation is dark and simply cannot pass the gate until a worker is on the isolated network.
 
-**The acceptance check** is a versioned script in the deployment tooling. A full table of cases runs at W1-0, at deploy, and on every worker or gateway restart; a short recurring subset runs daily. Every negative is paired with a positive control in the same invocation; failures are classified (`refused`, `no-route`, `timeout`, `dns-fail`); addresses are discovered at run time; the proxy's access log is read for allow/deny; output is JSON with versions and timestamps.
+**The acceptance check** is a versioned script in the deployment tooling. A full table of cases runs at W1-0, at deploy, and on every worker or gateway restart; a short recurring subset runs daily. Every negative is paired with a positive control in the same invocation; failures are classified (`refused`, `no-route`, `timeout`, `dns-fail`); addresses are discovered at run time; the proxy's access log is read for allow/deny; output is JSON with versions and timestamps. **A case marked "added by X" belongs to the table only once X has landed, and a slice's finish predicate covers the cases that exist when it finishes.**
 
 | Group | Cases (all expected blocked) | Recurring subset |
 |---|---|---|
@@ -101,18 +101,18 @@ demand test before the expensive work, and a stop condition:
 | Internet | A public host directly; via the proxy: non-allow-listed name, IP literals incl. IPv6 and IPv4-mapped, private ranges, wrong port, lookalike name, privately-resolving allowed name, SNI mismatch | direct internet; one proxy deny/allow pair |
 | DNS | External name resolution; a DNS sink sees nothing | (full run only) |
 | Worker filesystem | Mount is read-only; no Docker socket; *(added by W2-0b)* a project the worker does not serve is absent | (full run only) |
-| Worker state | The worker's data volume carries a marker written at creation naming its audience, and it matches the audience registered in Kookr (a reused volume fails) | (full run only) |
+| Worker state *(added by W2-0a; evaluated once the worker is registered)* | The worker's data volume carries a marker written at creation naming its audience, and it matches the audience registered in Kookr (a reused volume fails) | (full run only) |
 | Positive | The model provider through the proxy (this is also the canary); the worker reachable from Kookr through its forward | both |
 
 **The gate.** Kookr reads the latest check result from `isolationCheckFile` and refuses to dispatch unless: the file parses and has a known `schemaVersion`; it is a pass; it covers every configured worker **by forward port and container identity** (a malformed, missing or partial file is `failed`); and it is younger than `isolationMaxAgeHours` (default 24). Status is shown as `isolation: verified | stale | failed`. The recurring check also runs when any new port is published on the machine; the 24 h window is the stated exposure for a wildcard listener started after a pass, and the check's port scan is what catches it.
 
-**Merge order.** (1) hermes-fleet: gate-file JSON schema v1 and the check script; (2) Kookr: the gate reads it (delegation stays dark: the file does not exist yet); (3) hermes-fleet: gateway tooling and one new dedicated worker on the isolated network; (4) run the full check; (5) register the worker in Kookr. Each step is independently revertible.
+**Merge order.** (1) hermes-fleet: gate-file JSON schema v1 and the check script; (2) Kookr: the gate reads it (delegation stays dark: the file does not exist yet); (3) hermes-fleet: gateway tooling and two new dedicated workers on the isolated network (the peer cases need a second one); (4) register both workers in Kookr with their audience (dark: the gate has no passing check yet, so nothing can dispatch); (5) run the full check, including the worker-state case, and write the gate file. Each step is independently revertible.
 
 **Operational facts.** A gateway outage looks like a hung task (Hermes retries for minutes), so Kookr's deadline must be shorter than Hermes's retry cycles and the recovery grace must exceed a gateway restart (config value, 120 s). Restarting the gateway during jobs is a destructive event for streaming jobs; Kookr already uses `message/send` plus `tasks/get`.
 
 ### W2. Governance, and a usable CLI
 
-**W2-0, three ordered sub-slices, before any hook or sweep runs.** Revert is safe only while the delegation store is empty, i.e. until the first delegation of any kind is submitted (W2-0c is the sub-slice that introduces schema version 2): record schema moves to version 2 with a reader that accepts 1 and 2, and downgrade after real records exist is not supported.
+**W2-0, three ordered sub-slices, before any hook or sweep runs.** Revert is safe only while the delegation store is empty, i.e. until the first delegation of any kind is submitted (W2-0c is the sub-slice that introduces **store** schema version 2): the delegation record schema moves to version 2 with a reader that accepts 1 and 2, and downgrade after real records exist is not supported.
 
 - **W2-0a (Kookr).** Per project: `audience` (a string; `public` for public repositories) and `allowedProviders`. A worker declares its `provider` and its `audience`. The service refuses (`external_model_not_allowed`) any submission where the project does not allow the worker's provider or the audiences differ, **for every caller**, re-reading consent on every submit and **refusing if it cannot be read**. Project visibility is checked against `gh repo view` at submit (cached an hour), so a repository labelled public that is private is refused. A worker serves exactly one audience because **worker state persists between jobs**; moving a worker to another audience requires a fresh data volume.
 - **W2-0b (hermes-fleet).** A worker mounts, read-only, only the per-project directories of the projects it serves (the snapshot layout `<root>/<project>/<sha>` stays; Kookr creates `<root>/<project>` at startup so the mount target exists). W2-0b adds the check's "unserved project is absent" case and passes it; W1 finishes without it, since before W2-0b workers still mount the shared root. No change to snapshot keys or the submit path.
@@ -126,7 +126,7 @@ demand test before the expensive work, and a stop condition:
 
 1. lists open **issues only** (pull requests are filtered out) whose `updatedAt` is newer than what the outcome log has already seen, skipping an issue that already has a terminal record at the same `updatedAt`; an issue that fails three sweeps in a row is quarantined and shown in the coverage header, so it cannot stall or re-bill every run;
 2. delegates triage through the service (so W2-0a governance applies; runs use at most half the global cap, leaving room for interactive callers; delegation keys are `sweep:<run>:<issue>` so an interrupted run resumes);
-3. builds the digest **in deterministic code** from the validated results. Triage schema v2 adds `likely_done` (with evidence drawn from the issue text, its comments and the snapshot) and drops free-form related issues; there is no `duplicate_of` (the worker sees one issue and would invent one). Any worker-derived text in the digest, and in the short summary sent to the operator, has URLs, images and HTML stripped, and the summary is sent with link previews disabled (a rendered image or preview fetched by a third party is an exfiltration channel the proxy cannot see);
+3. builds the digest **in deterministic code** from the validated results. Triage-result schema v2 adds `likely_done` (with evidence drawn from the issue text, its comments and the snapshot) and drops free-form related issues; there is no `duplicate_of` (the worker sees one issue and would invent one). Any worker-derived text in the digest, and in the short summary sent to the operator, has URLs, images and HTML stripped, and the summary is sent with link previews disabled (a rendered image or preview fetched by a third party is an exfiltration channel the proxy cannot see);
 4. stores the digest with a **coverage header** ("covered 3/5 projects, 41/47 issues; not covered: X (why)"), and a failed or skipped run is recorded with its reason. The failure policy is skip, never fall back to another provider.
 
 Nothing is written to GitHub, so the self-triggering and staleness problems of an apply step do not exist in this phase.
@@ -137,7 +137,7 @@ Nothing is written to GitHub, so the self-triggering and staleness problems of a
 |---|---|
 | Step 0 (no infrastructure) | A one-off Claude triage of the current backlog is delivered as one digest; the operator reads it and says what they would act on. Stop condition above if not |
 | Dry run (manual, **outside Kookr's delegation path**, no gate bypass) | The value-test script run once by hand on a project whose issues are all operator-authored; the pipeline works end to end and the acceptance clock can start |
-| Digest-only | After W1 passes, with the first sweep also triaged by Claude on the same issues and reviewed blind (A/B labels): ≥ 40 proposals reviewed across ≥ 2 projects and ≥ 3 sweeps (the first sweep is a backlog catch-up; later sweeps add a few each, so realistically 4 weeks); unreviewed rate ≤ 30%, with items reviewed in random order; acceptance per (unique issue, field) with a **Wilson 95% interval**; a field with n < 15 is not judged |
+| Digest-only | After W1, W2-0 and W2-1 are done (the sequence table's gate), with the first sweep also triaged by Claude on the same issues and reviewed blind (A/B labels): ≥ 40 proposals reviewed across ≥ 2 projects and ≥ 3 sweeps (the first sweep is a backlog catch-up; later sweeps add a few each, so realistically 4 weeks); unreviewed rate ≤ 30%, with items reviewed in random order; acceptance per (unique issue, field) with a **Wilson 95% interval**; a field with n < 15 is not judged |
 | Entry to the apply RFC | A field whose interval lower bound is ≥ 60% with point estimate ≥ 80%, and agreement of the operator's review on at least 15 accepted items re-checked blind |
 
 Nothing switches off automatically; the operator reads the numbers and decides.
@@ -152,7 +152,7 @@ Nothing switches off automatically; the operator reads the numbers and decides.
 |---|---|---|---|
 | 0 | Step 0: one-off Claude backlog digest | none | the operator has read it and stated what they would act on (or the stop condition fires) |
 | 1 | W1-0 (a throwaway run of the check cases by hand against a scratch gateway, before the check script exists); W2-0a; W4 PRs | none (kept even if Step 0 stops the build) | committed probe log with pass/fail per case; consent/audience/visibility tests; suite green |
-| 2 | W1 build per the merge order | W1-0 pass **and** Step 0 not stopped | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
+| 2 | W1 build per the merge order (a switch to the audit proving job re-enters here) | W1-0 pass, W2-0a landed (workers must declare an audience), **and** Step 0 not stopped | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
 | 3 | W2-0b, then W2-0c | Step 0 not stopped; W1 build underway | the check's "unserved project is absent" case passes (added to the check by W2-0b); outcome-log tests; revert note present |
 | 4 | W2-1 (CLI, `review`, `sweep`), schema v2, digest | W2-0 done, W1 verified | end-to-end test; skip-not-fall-back test; URL-stripping test |
 | 5 | W3 digest-only (the manual dry run can happen any time after Step 0; it is outside delegation) | W1, W2-0, W2-1 done | stage predicates above |
@@ -169,7 +169,7 @@ Nothing switches off automatically; the operator reads the numbers and decides.
 
 ## Amendments to the merged delegation RFC
 
-This RFC supersedes two statements there: "several workers can share one snapshots root" (workers mount only the project directories they serve) and the single `operatorAttestedLeaf` attestation (the isolation gate is added alongside it). It also clarifies the fall-back rule: the playbook hook's "fall back to doing it yourself" applies to interactive callers, where the caller is an agent the operator already uses; sweeps have no caller to fall back to and skip.
+This RFC supersedes two statements there: "several workers can share one snapshots root" (workers mount only the project directories they serve) and the single `operatorAttestedLeaf` attestation (the isolation gate is added alongside it). It also clarifies the fall-back rule: the playbook hook's "falls back to doing the triage itself" applies to interactive callers, where the caller is an agent the operator already uses; sweeps have no caller to fall back to and skip.
 
 ## Files to change (summary)
 
