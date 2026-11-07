@@ -325,6 +325,19 @@ export function readHermesFleetOptInFromEnv(env: NodeJS.ProcessEnv = process.env
 }
 
 /**
+ * Observer token for the Hermes observed-activity bridge (jeanibarz/hermes-fleet#15,
+ * RFC `rfc-hermes-observed-activity-bridge`, slice 1). Required to authenticate
+ * every observed-activity request, INCLUDING on loopback (loopback is not trusted
+ * on a shared/prod host). When `KOOKR_HERMES_FLEET` is on but this is unset, the
+ * observed-activity routes fail closed (not registered). Returns `undefined` when
+ * unset/blank.
+ */
+export function readHermesObserverTokenFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = env.KOOKR_HERMES_OBSERVER_TOKEN?.trim();
+  return raw ? raw : undefined;
+}
+
+/**
  * Read the resource-watchdog configuration (issue #1724 / #2354) from the
  * environment.
  *

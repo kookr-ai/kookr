@@ -11,7 +11,8 @@ import type { TaskSqliteStore } from '../core/task-sqlite-store.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
 import { createStaleProcessSummaryCache } from './stale-dtach-pressure.js';
-import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv, readHermesFleetOptInFromEnv } from './config.js';
+import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv, readHermesFleetOptInFromEnv, readHermesObserverTokenFromEnv } from './config.js';
+import { ObservedActivityStore } from './observed-activity-store.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import { readTrailingFileBytes } from './resource-watchdog-log-tail.js';
@@ -2704,7 +2705,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // constructed after createRoutes, so /api/health reads its status() through a
   // holder the getter closes over. Absent (unconfigured) ⇒ health omits the block.
   let signalDeliveryServiceHolder: SignalDeliveryService | undefined;
+  // Hermes observed-activity bridge (jeanibarz/hermes-fleet#15, slice 1). The
+  // store is built only when opted in; it loads its durable last-state file
+  // (eager fire-and-forget; reads also lazy-load) so the observed lane survives
+  // a restart without blanking. It never touches the activity ledger or a Task.
+  const hermesFleetOptIn = readHermesFleetOptInFromEnv();
+  const observedActivityStore = hermesFleetOptIn ? new ObservedActivityStore(kookrDir) : undefined;
+  if (observedActivityStore) void observedActivityStore.load();
+
   const app = createRoutes({
+    hermesFleetOptIn,
+    hermesObserverToken: readHermesObserverTokenFromEnv(),
+    observedActivityStore,
     costComparisonScanner: config.costComparisonScanner,
     environmentBlockerRegistry,
     pipelineStarvation,
@@ -4193,6 +4205,15 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       await activityLedger.flush();
     } catch (err) {
       console.error('Error flushing activity ledger on shutdown:', err);
+    }
+
+    // Persist the Hermes observed lane's last-known state so a clean restart
+    // reloads it instead of blanking (jeanibarz/hermes-fleet#15, R7). Best-effort
+    // and guarded — never blocks the mandatory lock release below.
+    try {
+      await observedActivityStore?.flush();
+    } catch (err) {
+      console.error('Error flushing Hermes observed-activity store on shutdown:', err);
     }
 
     // Release the R27 single-writer pid lock last, after all writes are done.

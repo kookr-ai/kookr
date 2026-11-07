@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { Hono } from 'hono';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { registerDiagnosticsRoutes } from './routes/diagnostics-routes.js';
+import { registerObservedActivityRoutes } from './routes/observed-activity-routes.js';
 import { registerMetricsRoutes } from './routes/metrics-routes.js';
 import { registerAdminRoutes } from './routes/admin-routes.js';
 import { registerProjectRoutes } from './routes/project-routes.js';
@@ -138,6 +139,9 @@ export function createRoutes(deps: RouteDeps): Hono {
   });
 
   registerDiagnosticsRoutes(app, sharedDeps);
+  // Hermes observed-activity bridge (jeanibarz/hermes-fleet#15). Self-gates on
+  // `hermesFleetOptIn` + a configured observer token; registers nothing otherwise.
+  registerObservedActivityRoutes(app, sharedDeps);
   registerMetricsRoutes(app, sharedDeps);
   registerAdminRoutes(app, sharedDeps);
   registerSettingsRoutes(app, sharedDeps);
