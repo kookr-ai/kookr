@@ -69,7 +69,7 @@ demand test before the expensive work, and a stop condition:
 | Scheduled jobs in Kookr launch agent tasks (`schedule-runner.ts` → `launch-service`). | Code. |
 | The merged slice 1a mounts one shared snapshots root into every worker, and project consent, visibility and provider checks do not exist in the service. | Code. |
 | `createTask` has no spawn-depth guard. | Code. |
-| The activity ledger is keyed by session and pruned by age once the session is terminal; the observed-activity RFC keeps its own lane's data out of it for the same reason, and the same reasoning applies here. | Code, related RFC. |
+| The activity ledger is keyed by session and pruned by age once the session is terminal; the observed-activity RFC keeps its own lane's data out of it for a related reason (it is load-bearing for stuck detection and recovery), and the same caution applies here. | Code, related RFC. |
 | `gitExecEnv` and the slice 1a `cleanGitEnv` each strip variables the other does not (`GIT_CEILING_DIRECTORIES` vs `GIT_NAMESPACE`/`GIT_QUARANTINE_PATH`/`GIT_CONFIG_KEY_n`). Test files that spawn git without the shared scrubber exist; the one examined runs read-only commands, and the leak that mattered came from `init`/`commit` calls in the new delegation tests. | Code. |
 
 ## Requirements
@@ -80,7 +80,7 @@ demand test before the expensive work, and a stop condition:
 - **R4 — Measured with numbers written in advance,** an interval, a named method, and a record that survives record pruning.
 - **R5 — Staged and reversible.** Each workstream ships independently; each job type goes Step 0 → dry run → digest-only → (later) apply.
 - **R6 — No exploit detail in public documents.** Risks are described generically; addresses and configurations live in the private deployment.
-- **Non-goals (this phase):** applying anything to GitHub; test audits; worker-written code; routing decided by software; a measurement framework; a general multi-agent mesh.
+- **Non-goals (this phase):** applying anything to GitHub; test audits as a committed workstream (they enter this sequence only through the audit branch of Step 0's stop condition, at row 2); worker-written code; routing decided by software; a measurement framework; a general multi-agent mesh.
 
 ## Workstreams
 
@@ -115,7 +115,7 @@ demand test before the expensive work, and a stop condition:
 **W2-0, three ordered sub-slices, before any hook or sweep runs.** Revert is safe only while the delegation store is empty, i.e. until the first delegation of any kind is submitted (W2-0c is the sub-slice that introduces **store** schema version 2): the delegation record schema moves to version 2 with a reader that accepts 1 and 2, and downgrade after real records exist is not supported.
 
 - **W2-0a (Kookr).** Per project: `audience` (a string; `public` for public repositories) and `allowedProviders`. A worker declares its `provider` and its `audience`. The service refuses (`external_model_not_allowed`) any submission where the project does not allow the worker's provider or the audiences differ, **for every caller**, re-reading consent on every submit and **refusing if it cannot be read**. Project visibility is checked against `gh repo view` at submit (cached an hour), so a repository labelled public that is private is refused. A worker serves exactly one audience because **worker state persists between jobs**; moving a worker to another audience requires a fresh data volume.
-- **W2-0b (hermes-fleet).** A worker mounts, read-only, only the per-project directories of the projects it serves (the snapshot layout `<root>/<project>/<sha>` stays; Kookr creates `<root>/<project>` at startup so the mount target exists). W2-0b adds the check's "unserved project is absent" case and passes it; W1 finishes without it, since before W2-0b workers still mount the shared root. No change to snapshot keys or the submit path.
+- **W2-0b (hermes-fleet, plus one small Kookr change).** A worker mounts, read-only, only the per-project directories of the projects it serves (the snapshot layout `<root>/<project>/<sha>` stays; Kookr creates `<root>/<project>` at startup so the mount target exists). W2-0b adds the check's "unserved project is absent" case and passes it; W1 finishes without it, since before W2-0b workers still mount the shared root. No change to snapshot keys or the submit path.
 - **W2-0c (Kookr).** An append-only **outcome log** (its own file, not the activity ledger, kept at least 30 days) with one line per delegation: id, project, audience, provider and model, snapshot sha, issue number, `promptVersion`, a copy of the validated verdict, and later the operator's review. This is also the egress record; the statement is made honestly: the whole tracked tree at that sha is assumed sent, and so is the issue text; there is no per-file or per-byte accounting.
 
 **W2-1 (Kookr).** The CLI: `kookr delegate` as in the delegation RFC, plus `kookr delegate review <id> accept|reject [field]` that records the operator's judgement into the outcome log (the dataset for R4), and `kookr delegate sweep <project>`. The merged RFC's apply step is **not** part of this phase (see Future work).
@@ -144,7 +144,7 @@ Nothing switches off automatically; the operator reads the numbers and decides.
 
 ### W4. Hygiene, as plain PRs
 
-(1) Make one git-environment scrubber: add to `gitExecEnv` only the strip-list entries it lacks, have `snapshots.ts` call it, and keep `GIT_TERMINAL_PROMPT=0` local to the snapshot code (adding it to the shared helper would change behaviour for the 18 other files that import it, and for every default call through `runGit`). (2) Unset repository-redirecting `GIT_*` variables once in the shared vitest setup so no test can leak them however it spawns git (this replaces the proposed scan-for-spawns guard). `pnpm merge` exiting non-zero after a successful remote merge is filed as a separate bug.
+(1) Make one git-environment scrubber: add to `gitExecEnv` only the strip-list entries it lacks, have `snapshots.ts` call it, and keep `GIT_TERMINAL_PROMPT=0` local to the snapshot code (adding it to the shared helper would change behaviour for the 18 other files that import it, and for every default call through the git helpers such as `runGitIn`). (2) Unset repository-redirecting `GIT_*` variables once in the shared vitest setup so no test can leak them however it spawns git (this replaces the proposed scan-for-spawns guard). `pnpm merge` exiting non-zero after a successful remote merge is filed as a separate bug.
 
 ## Sequence and gates
 
@@ -152,10 +152,10 @@ Nothing switches off automatically; the operator reads the numbers and decides.
 |---|---|---|---|
 | 0 | Step 0: one-off Claude backlog digest | none | the operator has read it and stated what they would act on (or the stop condition fires) |
 | 1 | W1-0 (a throwaway run of the check cases by hand against a scratch gateway, before the check script exists); W2-0a; W4 PRs | none (kept even if Step 0 stops the build) | committed probe log with pass/fail per case; consent/audience/visibility tests; suite green |
-| 2 | W1 build per the merge order (a switch to the audit proving job re-enters here) | W1-0 pass, W2-0a landed (workers must declare an audience), **and** Step 0 not stopped | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
-| 3 | W2-0b, then W2-0c | Step 0 not stopped; W1 build underway | the check's "unserved project is absent" case passes (added to the check by W2-0b); outcome-log tests; revert note present |
+| 2 | W1 build per the merge order (a switch to the audit proving job re-enters here) | W1-0 pass, W2-0a landed (workers must declare an audience), **and** (Step 0 not stopped, **or** the operator chose the audit proving job and its random-sample replication is done) | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
+| 3 | W2-0b, then W2-0c | Step 0 not stopped, **or** the operator chose the audit proving job and its random-sample replication is done; W1 build underway | the check's "unserved project is absent" case passes (added to the check by W2-0b); outcome-log tests; revert note present |
 | 4 | W2-1 (CLI, `review`, `sweep`), schema v2, digest | W2-0 done, W1 verified | end-to-end test; skip-not-fall-back test; URL-stripping test |
-| 5 | W3 digest-only (the manual dry run can happen any time after Step 0; it is outside delegation) | W1, W2-0, W2-1 done | stage predicates above |
+| 5 | W3 digest-only (the manual dry run happens before it, any time after Step 0 is not stopped; it is outside delegation) | W1, W2-0, W2-1 done, and the dry run done | stage predicates above |
 | 6 | Apply RFC | digest-only exit met | its own RFC |
 
 ## Future work (not committed; entry criteria recorded)
@@ -202,7 +202,7 @@ hermes-fleet (private): gateway container and tooling (`squid` and `socat` confi
 ## Open questions
 
 1. After Step 0: does the operator want triage digests at all, and if not, is audits the proving job?
-2. Which projects does the operator opt in first, and which audience labels do they get?
+2. Which projects does the operator opt in first, and which audience labels do they get? (Answered before W1 step 3, because a worker's data-volume marker names its audience.)
 3. Is the host-address port scan enough on native Linux, where a host service bound to a wildcard address is more exposed? (Untested.)
 4. Does Hermes expose a way to wipe worker state other than recreating the volume?
 5. Telegram: summary only, or also a per-proposal callback (relevant only once apply exists)?
