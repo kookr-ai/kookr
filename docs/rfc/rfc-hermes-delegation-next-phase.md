@@ -12,7 +12,7 @@
 The delegation plumbing is merged and switched off. Three things stand between it and useful work:
 
 1. **It cannot be turned on safely.** The delegation RFC makes worker isolation a condition for enabling it, but that condition is enforced only by operator attestation, and the default worker network can reach services on the host (including the Kookr API, which has no authentication on a loopback bind).
-2. **Nothing uses it.** Slice 1a is the server half: no command, no job that runs by itself. The value test (Hermes preferred on 9 of 10 triage items at about a tenth of the cost) is not being collected.
+2. **Nothing uses it.** Slice 1a is the server half: no command, no job that runs by itself. The value test (Hermes preferred on 9 of 10 triage items, at about a cent and a half per issue) is not being collected.
 3. **Sending repository content to an external model provider is governed by worker configuration**, not by a per-project, per-provider decision that Kookr enforces, and a worker's persistent state can carry content between projects.
 
 This RFC says what to do next, in what order, what must be true first, and how each step is measured.
@@ -40,14 +40,18 @@ demand test before the expensive work, and a stop condition:
 
 - **Step 0 (before W1 build): a one-off Claude pass over the current backlog** (about 60 issues, a few
   dollars), delivered as one digest, with no new infrastructure. If the operator does not read it or act
-  on it, triage is the wrong proving job and this RFC stops at W1-0 and W2-0a; the audit comparison (the
-  stronger Hermes result: precision 0.89 against 0.50, but n=1) becomes the candidate proving job
-  instead, after a random-sample replication.
+  on it, triage is the wrong proving job. W1-0 (the throwaway probe run), W2-0a (governance in the
+  service) and the W4 PRs are cheap and independent and are kept either way; the W1 build, W2-0b, W2-0c,
+  W2-1 and W3 do **not** start on triage's account. The operator then chooses between switching the
+  proving job to test audits (the stronger Hermes result: precision 0.89 against 0.50, but n=1, so
+  after a random-sample replication; the infrastructure then proceeds unchanged because audits use the
+  same base) and pausing the Hermes worker work altogether.
 - **The first Hermes sweep is reviewed blind against a Claude triage of the same issues,** so the
   acceptance numbers compare Hermes with the free alternative on the operator's own judgement, not with
   nothing.
-- The infrastructure in W1 and W2-0 is justified by reason 1 on its own, independent of whether triage
-  survives; it is not wasted if triage is dropped.
+- The infrastructure in W1 and W2-0 is justified by reason 1, not by triage in particular: it serves
+  any read-only job, so a failed Step 0 changes the proving job, not the case for the base. It is wasted
+  only if the operator drops the Hermes worker aim altogether, which is what the "pause" option covers.
 
 ## Evidence
 
@@ -62,10 +66,10 @@ demand test before the expensive work, and a stop condition:
 | Other containers on the machine can reach loopback-published ports through the host proxy; the worker bearer token (401 without it) is then the only gate. The agent card is public. | Isolation probe. |
 | Hermes workers persist state between jobs (a worker saved skills into its own volume during the value test). | Value-test log. |
 | Triage of one real issue cost about USD 0.015; the value test (12 sessions) about USD 0.18; the open backlog across five projects is about 60 issues. | `hx.sh cost`, `gh issue list`. |
-| Scheduled jobs in Kookr launch agent tasks (`schedule-runner.ts` → `launch-service`). | Code (verified by three reviewers). |
+| Scheduled jobs in Kookr launch agent tasks (`schedule-runner.ts` → `launch-service`). | Code. |
 | The merged slice 1a mounts one shared snapshots root into every worker, and project consent, visibility and provider checks do not exist in the service. | Code. |
 | `createTask` has no spawn-depth guard. | Code. |
-| The activity ledger is keyed by session and pruned by age; the observed-activity RFC says new data must not go into it. | Code, related RFC. |
+| The activity ledger is keyed by session and pruned by age once the session is terminal; the observed-activity RFC keeps its own lane's data out of it for the same reason, and the same reasoning applies here. | Code, related RFC. |
 | `gitExecEnv` and the slice 1a `cleanGitEnv` each strip variables the other does not (`GIT_CEILING_DIRECTORIES` vs `GIT_NAMESPACE`/`GIT_QUARANTINE_PATH`/`GIT_CONFIG_KEY_n`). The two other test files spawning git without a scrubber only run read-only commands. | Code. |
 
 ## Requirements
@@ -74,7 +78,7 @@ demand test before the expensive work, and a stop condition:
 - **R2 — Consent per project, per provider, per audience, enforced in the service for every caller.**
 - **R3 — The supervisor acts, deterministically.** Workers propose; digests are built by code from schema-validated results, never by an agent reading worker text; nothing in this phase writes to GitHub.
 - **R4 — Measured with numbers written in advance,** an interval, a named method, and a record that survives record pruning.
-- **R5 — Staged and reversible.** Each workstream ships independently; each job type goes observe → digest-only → (later) apply.
+- **R5 — Staged and reversible.** Each workstream ships independently; each job type goes Step 0 → dry run → digest-only → (later) apply.
 - **R6 — No exploit detail in public documents.** Risks are described generically; addresses and configurations live in the private deployment.
 - **Non-goals (this phase):** applying anything to GitHub; test audits; worker-written code; routing decided by software; a measurement framework; a general multi-agent mesh.
 
@@ -96,7 +100,8 @@ demand test before the expensive work, and a stop condition:
 | Peers | Another worker's A2A port directly and via the gateway; another worker's forward port from the wrong network | peer forward |
 | Internet | A public host directly; via the proxy: non-allow-listed name, IP literals incl. IPv6 and IPv4-mapped, private ranges, wrong port, lookalike name, privately-resolving allowed name, SNI mismatch | direct internet; one proxy deny/allow pair |
 | DNS | External name resolution; a DNS sink sees nothing | (full run only) |
-| Worker filesystem | Mount is read-only; a project the worker does not serve is absent; no Docker socket | (full run only) |
+| Worker filesystem | Mount is read-only; no Docker socket; *(added by W2-0b)* a project the worker does not serve is absent | (full run only) |
+| Worker state | The worker's data volume carries a marker written at creation naming its audience, and it matches the audience registered in Kookr (a reused volume fails) | (full run only) |
 | Positive | The model provider through the proxy (this is also the canary); the worker reachable from Kookr through its forward | both |
 
 **The gate.** Kookr reads the latest check result from `isolationCheckFile` and refuses to dispatch unless: the file parses and has a known `schemaVersion`; it is a pass; it covers every configured worker **by forward port and container identity** (a malformed, missing or partial file is `failed`); and it is younger than `isolationMaxAgeHours` (default 24). Status is shown as `isolation: verified | stale | failed`. The recurring check also runs when any new port is published on the machine; the 24 h window is the stated exposure for a wildcard listener started after a pass, and the check's port scan is what catches it.
@@ -107,10 +112,10 @@ demand test before the expensive work, and a stop condition:
 
 ### W2. Governance, and a usable CLI
 
-**W2-0, three ordered sub-slices, before any hook or sweep runs.** Revert is safe only while the delegation store is empty (before the first sweep): record schema moves to version 2 with a reader that accepts 1 and 2, and downgrade after real records exist is not supported.
+**W2-0, three ordered sub-slices, before any hook or sweep runs.** Revert is safe only while the delegation store is empty, i.e. until the first delegation of any kind is submitted (W2-0c is the sub-slice that introduces schema version 2): record schema moves to version 2 with a reader that accepts 1 and 2, and downgrade after real records exist is not supported.
 
 - **W2-0a (Kookr).** Per project: `audience` (a string; `public` for public repositories) and `allowedProviders`. A worker declares its `provider` and its `audience`. The service refuses (`external_model_not_allowed`) any submission where the project does not allow the worker's provider or the audiences differ, **for every caller**, re-reading consent on every submit and **refusing if it cannot be read**. Project visibility is checked against `gh repo view` at submit (cached an hour), so a repository labelled public that is private is refused. A worker serves exactly one audience because **worker state persists between jobs**; moving a worker to another audience requires a fresh data volume.
-- **W2-0b (hermes-fleet).** A worker mounts, read-only, only the per-project directories of the projects it serves (the snapshot layout `<root>/<project>/<sha>` stays; Kookr creates `<root>/<project>` at startup so the mount target exists). The check's "unserved project is absent" case covers it. No change to snapshot keys or the submit path.
+- **W2-0b (hermes-fleet).** A worker mounts, read-only, only the per-project directories of the projects it serves (the snapshot layout `<root>/<project>/<sha>` stays; Kookr creates `<root>/<project>` at startup so the mount target exists). W2-0b adds the check's "unserved project is absent" case and passes it; W1 finishes without it, since before W2-0b workers still mount the shared root. No change to snapshot keys or the submit path.
 - **W2-0c (Kookr).** An append-only **outcome log** (its own file, not the activity ledger, kept at least 30 days) with one line per delegation: id, project, audience, provider and model, snapshot sha, issue number, `promptVersion`, a copy of the validated verdict, and later the operator's review. This is also the egress record; the statement is made honestly: the whole tracked tree at that sha is assumed sent, and so is the issue text; there is no per-file or per-byte accounting.
 
 **W2-1 (Kookr).** The CLI: `kookr delegate` as in the delegation RFC, plus `kookr delegate review <id> accept|reject [field]` that records the operator's judgement into the outcome log (the dataset for R4), and `kookr delegate sweep <project>`. The merged RFC's apply step is **not** part of this phase (see Future work).
@@ -130,8 +135,8 @@ Nothing is written to GitHub, so the self-triggering and staleness problems of a
 
 | Stage | Exit predicate |
 |---|---|
-| Dry run (manual, **outside Kookr's delegation path**, no gate bypass) | The value-test script run once by hand on a project whose issues are all operator-authored; the pipeline works end to end and the acceptance clock can start |
 | Step 0 (no infrastructure) | A one-off Claude triage of the current backlog is delivered as one digest; the operator reads it and says what they would act on. Stop condition above if not |
+| Dry run (manual, **outside Kookr's delegation path**, no gate bypass) | The value-test script run once by hand on a project whose issues are all operator-authored; the pipeline works end to end and the acceptance clock can start |
 | Digest-only | After W1 passes, with the first sweep also triaged by Claude on the same issues and reviewed blind (A/B labels): ≥ 40 proposals reviewed across ≥ 2 projects and ≥ 3 sweeps (the first sweep is a backlog catch-up; later sweeps add a few each, so realistically 4 weeks); unreviewed rate ≤ 30%, with items reviewed in random order; acceptance per (unique issue, field) with a **Wilson 95% interval**; a field with n < 15 is not judged |
 | Entry to the apply RFC | A field whose interval lower bound is ≥ 60% with point estimate ≥ 80%, and agreement of the operator's review on at least 15 accepted items re-checked blind |
 
@@ -139,18 +144,18 @@ Nothing switches off automatically; the operator reads the numbers and decides.
 
 ### W4. Hygiene, as plain PRs
 
-(1) Make one git-environment scrubber: add to `gitExecEnv` only the strip-list entries it lacks, have `snapshots.ts` call it, and keep `GIT_TERMINAL_PROMPT=0` local to the snapshot code (adding it to the shared helper would change behaviour for 19 other callers). (2) Unset repository-redirecting `GIT_*` variables once in the shared vitest setup so no test can leak them however it spawns git (this replaces the proposed scan-for-spawns guard). `pnpm merge` exiting non-zero after a successful remote merge is filed as a separate bug.
+(1) Make one git-environment scrubber: add to `gitExecEnv` only the strip-list entries it lacks, have `snapshots.ts` call it, and keep `GIT_TERMINAL_PROMPT=0` local to the snapshot code (adding it to the shared helper would change behaviour for the 18 other files that import it, and for every default call through `runGit`). (2) Unset repository-redirecting `GIT_*` variables once in the shared vitest setup so no test can leak them however it spawns git (this replaces the proposed scan-for-spawns guard). `pnpm merge` exiting non-zero after a successful remote merge is filed as a separate bug.
 
 ## Sequence and gates
 
 | Order | Work | Gate to start | Predicate to finish |
 |---|---|---|---|
 | 0 | Step 0: one-off Claude backlog digest | none | the operator has read it and stated what they would act on (or the stop condition fires) |
-| 1 | W1-0: run the full check cases once; W4 PRs | Step 0 not stopped | committed probe log with pass/fail per case; suite green |
-| 2 | W1 build per the merge order | W1-0 pass | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
-| 3 | W2-0a, W2-0b, W2-0c in that order | slice 1a merged (done) | consent/audience/visibility tests; mount case in the check; outcome-log tests; revert note present |
+| 1 | W1-0 (a throwaway run of the check cases by hand against a scratch gateway, before the check script exists); W2-0a; W4 PRs | none (kept even if Step 0 stops the build) | committed probe log with pass/fail per case; consent/audience/visibility tests; suite green |
+| 2 | W1 build per the merge order | W1-0 pass **and** Step 0 not stopped | check JSON from the last 24 h, all cases pass, ports and container ids match; `isolation: verified` |
+| 3 | W2-0b, then W2-0c | Step 0 not stopped; W1 build underway | the check's "unserved project is absent" case passes (added to the check by W2-0b); outcome-log tests; revert note present |
 | 4 | W2-1 (CLI, `review`, `sweep`), schema v2, digest | W2-0 done, W1 verified | end-to-end test; skip-not-fall-back test; URL-stripping test |
-| 5 | W3 dry run → digest-only | W1, W2-0, W2-1 done | stage predicates above |
+| 5 | W3 digest-only (the manual dry run can happen any time after Step 0; it is outside delegation) | W1, W2-0, W2-1 done | stage predicates above |
 | 6 | Apply RFC | digest-only exit met | its own RFC |
 
 ## Future work (not committed; entry criteria recorded)
@@ -183,7 +188,7 @@ hermes-fleet (private): gateway container and tooling (`squid` and `socat` confi
 ## Alternatives considered
 
 1. **A secret scan on snapshots and issue text.** Cut: the RFC's own assumption is that the whole tree is sent, a regex scan catches tokens but not the proprietary code that is the real concern, and it adds a rule set to maintain. Per-project consent is the control; a one-off check with an existing tool at opt-in time is recommended.
-2. **Per-worker snapshot trees.** Rejected: it changes the snapshot key, the prompt path, cleanup and the worker choice made inside the submit transaction; mounting only the served project directories gives the same isolation with no Kookr change.
+2. **Per-worker snapshot trees.** Rejected: it changes the snapshot key, the prompt path, cleanup and the worker choice made inside the submit transaction; mounting only the served project directories gives the same isolation with no change to snapshot keys or the submit path (Kookr only creates `<root>/<project>` at startup).
 3. **One internal network per worker.** Deferred: tokens already gate peers; a probe case re-tests it.
 4. **Hostname override, or an in-container firewall.** The first does not work (measured); the second needs a capability the workers drop.
 5. **Sweeps as a scheduled playbook.** Rejected: launches an agent that holds a slot and reads untrusted worker text.
@@ -209,7 +214,7 @@ hermes-fleet (private): gateway container and tooling (`squid` and `socat` confi
 Intent-preservation check: the operator's load-bearing aims are compounding experiments with useful work on their own projects, and not being asked for decisions. Both are kept: W3 produces real, cheap output on their projects, and the RFC decides what it can and lists only genuine questions.
 
 - *Incorporated, round 1:* sweeps are not an agent task (scheduled playbooks launch agents) and the digest is built by code; governance (consent, visibility, scope of what a worker can read) before any hook; the isolation gate enforced in code with checkable predicates; hardening of the gateway, the proxy's bypass classes, DNS and the discovered hole at the network's gateway address; numeric stage predicates with an interval; the apply step can never close.
-- *Incorporated, round 2:* the bridge-gateway hole is now checked by a full port scan and stated as a residual exposure, not "closed"; the dry run no longer contradicts the gate (it is a manual script outside delegation); per-worker snapshot trees replaced by per-project read-only mounts; **worker state persists, so a worker serves one audience** (new finding); visibility is verified, not declared; consent is re-read per submit and fails closed; links/images stripped from worker-derived text and previews disabled; a dedicated outcome log instead of the activity ledger (which is pruned by session and reserved by the observed-activity RFC) and the verdict is copied so it outlives record pruning; poison-issue quarantine, PR filtering, `duplicate_of` removed; the circular apply predicate removed by moving apply out of this phase; Wilson interval named, random review order, unique (issue, field) counting; check bound to forward ports and container identity and R1 restated as an anti-mistake control; W2-0 split into ordered sub-slices with a stated revert boundary; W1 given a merge order; amendments to the merged RFC listed; public-document detail reduced.
+- *Incorporated, round 2:* the bridge-gateway hole is now checked by a full port scan and stated as a residual exposure, not "closed"; the dry run no longer contradicts the gate (it is a manual script outside delegation); per-worker snapshot trees replaced by per-project read-only mounts; **worker state persists, so a worker serves one audience** (new finding); visibility is verified, not declared; consent is re-read per submit and fails closed; links/images stripped from worker-derived text and previews disabled; a dedicated outcome log instead of the activity ledger (which is pruned by age once a session is terminal, and whose use for new data the observed-activity RFC argues against for its own lane) and the verdict is copied so it outlives record pruning; poison-issue quarantine, PR filtering, `duplicate_of` removed; the circular apply predicate removed by moving apply out of this phase; Wilson interval named, random review order, unique (issue, field) counting; check bound to forward ports and container identity and R1 restated as an anti-mistake control; W2-0 split into ordered sub-slices with a stated revert boundary; W1 given a merge order; amendments to the merged RFC listed; public-document detail reduced.
 - *Adversarial pair `design-minimalist` vs `ambition-amplifier`:* the author sided with the minimalist for this phase. Cut: secret scan, egress ledger as a separate store, per-worker trees, per-worker provider ACLs, W1b loopback auth in the RFC (now an issue), apply machinery and its token, audits, the measurement harness, the notify helper, the 10% blind audit, the 30-day reversal window, and part of the recurring check. The ambition reviewer's ideas are kept as future work with entry criteria: loopback auth, earned-field auto-apply and routing, shadow patches, a second job type.
 - *Rejected / reduced with reason:* an attested bypass mode for the dry run (permanent footgun); host firewall rules inside the Docker VM as a W1 requirement (not available on Docker Desktop; replaced by the port-scan check and the stated residual); a new always-on sweep service (hand-run or timer-run command first).
 - `design-experimenter` 2026-11-07 (isolation probe): confirmed `HTTPS_PROXY`, squid policy, DNS, forwarding and restart behaviour; found the gateway-address hole, that denied CONNECTs look like TLS errors, and two proxy traps (kept in the private deployment notes per R6).
