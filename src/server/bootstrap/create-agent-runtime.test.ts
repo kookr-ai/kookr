@@ -221,3 +221,49 @@ describe('createAgentRuntime — codex-cli registration policy', () => {
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('codex-cli binary unreachable'));
   });
 });
+
+describe('createAgentRuntime — hermes-fleet opt-in (jeanibarz/hermes-fleet#15)', () => {
+  let settingsDir: string;
+  let logger: { log: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn>; error: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    settingsDir = mkdtempSync(join(tmpdir(), 'agent-runtime-hermes-'));
+    logger = { log: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  });
+  afterEach(() => {
+    rmSync(settingsDir, { recursive: true, force: true });
+  });
+
+  function hermesDeps(overrides: Partial<AgentRuntimeDeps> = {}): AgentRuntimeDeps {
+    return {
+      terminalBackend: new FakeTerminalBackend(),
+      taskStore: new TaskStore(),
+      hooksDir: settingsDir,
+      settingsDir,
+      serverPort: 0,
+      agentBin: '/bin/echo',
+      codexBin: '/bin/echo',
+      codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
+      preflightLogger: logger,
+      preflightOnFatal: ((): never => {
+        throw new Error('fatal preflight');
+      }) as AgentRuntimeDeps['preflightOnFatal'],
+      ...overrides,
+    };
+  }
+
+  test('defaults off: runtime reports disabled and logs no opt-in line', async () => {
+    const runtime = await createAgentRuntime(hermesDeps());
+    expect(runtime.hermesFleetOptIn).toBe(false);
+    expect(logger.log).not.toHaveBeenCalledWith(expect.stringContaining('hermes-fleet: opt-in ENABLED'));
+  });
+
+  test('opted in: logs the opt-in but registers NO launch adapter (identity-only)', async () => {
+    const runtime = await createAgentRuntime(hermesDeps({ hermesFleetOptIn: true }));
+    expect(runtime.hermesFleetOptIn).toBe(true);
+    // Identity-only: hermes-fleet must never enter the registry (and thus never
+    // the agent picker or round-robin), even with the opt-in on.
+    expect(runtime.adapterRegistry.getTypes()).not.toContain('hermes-fleet');
+    expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('hermes-fleet: opt-in ENABLED'));
+  });
+});

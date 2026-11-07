@@ -57,6 +57,13 @@ export interface AgentRuntimeDeps {
    * adapter-specific.
    */
   getAgentEffort?: () => AgentEffortMap;
+  /**
+   * Opt-in for the Hermes fleet integration (jeanibarz/hermes-fleet#15, `KOOKR_HERMES_FLEET`).
+   * Tranche 1 is identity-only: when true, the opt-in is logged at startup and
+   * surfaced on the returned runtime; NO launch adapter is registered, because
+   * Hermes is a batch loop rather than an interactive agent. Defaults false.
+   */
+  hermesFleetOptIn?: boolean;
 }
 
 export interface AgentRuntime {
@@ -68,6 +75,8 @@ export interface AgentRuntime {
   adapterRegistry: AdapterRegistry;
   adapter: AgentAdapter;
   agentPreflight: Record<string, AgentPreflightSnapshot>;
+  /** Resolved Hermes fleet opt-in (jeanibarz/hermes-fleet#15). Identity-only in Tranche 1. */
+  hermesFleetOptIn: boolean;
 }
 
 export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentRuntime> {
@@ -202,6 +211,19 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     );
   }
 
+  // Hermes fleet integration opt-in (jeanibarz/hermes-fleet#15). Identity-only in Tranche 1: the
+  // `hermes-fleet` AgentType exists for ledger/verdict interop, but Kookr
+  // registers no launch adapter for it (Hermes is a batch loop). Log the opt-in
+  // so the operator can confirm the lever is live; the ledger-observation bridge
+  // this gates lands in a follow-up slice.
+  const hermesFleetOptIn = deps.hermesFleetOptIn ?? false;
+  if (hermesFleetOptIn) {
+    logger.log(
+      '[startup] hermes-fleet: opt-in ENABLED (KOOKR_HERMES_FLEET). AgentType identity ' +
+        'active for activity-ledger / review-verdict interop; no launch adapter registered (jeanibarz/hermes-fleet#15).',
+    );
+  }
+
   return {
     claudeCodeAdapter,
     codexCliAdapter,
@@ -209,5 +231,6 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     adapterRegistry,
     adapter,
     agentPreflight,
+    hermesFleetOptIn,
   };
 }

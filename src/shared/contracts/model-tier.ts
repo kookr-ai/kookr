@@ -25,6 +25,16 @@ export function resolveModelTier(
       return { model: 'gpt-5.6-luna', effort: 'high' };
     case 'grok-build':
       return { model: 'grok-4.6' };
+    case 'hermes-fleet':
+      // hermes-fleet is identity-only (jeanibarz/hermes-fleet#15): Kookr never launches it, so it
+      // never resolves a tier model. Its reasoning model is locked inside its
+      // own bash harness, not selected by Kookr. Defense-in-depth: the launch
+      // and relaunch boundaries reject identity-only agent types
+      // (`isIdentityOnlyAgentType`) BEFORE tier resolution, so this throw is
+      // unreachable through those paths — but failing loud here (rather than
+      // inventing a model Kookr cannot launch) keeps the exhaustive switch
+      // honest if a new caller forgets to gate. Pinned by a test.
+      throw new Error('hermes-fleet has no Kookr-resolvable model tier (model locked by its own harness)');
     default:
       return assertNever(agentType, tier);
   }

@@ -1,4 +1,5 @@
 import { describe, test, expect, vi } from 'vitest';
+import { AGENT_TYPES } from '../shared/contracts/agent-types.js';
 import { agentProviderPresentation, anomalyTypeLabel, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitAgent, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
@@ -234,6 +235,19 @@ describe('agentProviderPresentation', () => {
     expect(agentProviderPresentation('grok-build').iconPath).toMatch(/^M.+Z$/);
     // Not the old placeholder X glyph
     expect(agentProviderPresentation('grok-build').iconPath).not.toContain('M3 3h3l6 8');
+  });
+
+  test('covers EVERY AGENT_TYPES member — the map is a total Record<AgentType> (jeanibarz/hermes-fleet#15)', () => {
+    // tsconfig excludes src/frontend, so a new AgentType that is not added here
+    // compiles but derefs undefined at render. This iterates the source of truth
+    // so adding a type without its presentation entry fails loudly here.
+    for (const type of AGENT_TYPES) {
+      const p = agentProviderPresentation(type);
+      expect(p, `missing AGENT_PROVIDER_PRESENTATION entry for ${type}`).toBeDefined();
+      expect(p.label.length).toBeGreaterThan(0);
+      expect(p.provider.length).toBeGreaterThan(0);
+      expect(p.iconPath).toMatch(/^M.+Z$/);
+    }
   });
 });
 

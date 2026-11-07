@@ -18,6 +18,7 @@ import {
   launchTask,
   DrainModeError,
   isAgentBlacklistedError,
+  isAgentNotLaunchableError,
   isGrokAuthUnavailableError,
   isCwdValidationError,
   isEffortValidationError,
@@ -967,6 +968,15 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
           code: err.code,
           agentType: err.agentType,
         }, 403);
+      }
+      if (isAgentNotLaunchableError(err)) {
+        // Identity-only agent type explicitly pinned (jeanibarz/hermes-fleet#15: hermes-fleet).
+        // Client error: the type is valid for interop but not launchable.
+        return c.json({
+          error: err.message,
+          code: err.code,
+          agentType: err.agentType,
+        }, 400);
       }
       if (isGrokAuthUnavailableError(err)) {
         // Recoverable provider readiness (issue #3178): expired/missing Grok

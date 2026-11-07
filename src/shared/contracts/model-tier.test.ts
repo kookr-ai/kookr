@@ -14,4 +14,12 @@ describe('small model tier', () => {
     expect(isModelTier(undefined)).toBe(false);
   });
 
+  it('throws for the identity-only hermes-fleet type — defense-in-depth (jeanibarz/hermes-fleet#15)', () => {
+    // hermes-fleet has no Kookr-resolvable model (locked in its own harness) and
+    // is never launched. Launch/relaunch boundaries gate it out first via
+    // isIdentityOnlyAgentType; this throw is the exhaustive-switch backstop if a
+    // new caller forgets to gate — so it must stay a loud throw, not a bogus model.
+    expect(() => resolveModelTier('hermes-fleet', 'small')).toThrow(/no Kookr-resolvable model tier/);
+  });
+
 });

@@ -11,7 +11,7 @@ import type { TaskSqliteStore } from '../core/task-sqlite-store.js';
 import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from './reconciliation.js';
 import { SessionReaperService } from './session-reaper.js';
 import { createStaleProcessSummaryCache } from './stale-dtach-pressure.js';
-import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv } from './config.js';
+import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv, readHermesFleetOptInFromEnv } from './config.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import { readTrailingFileBytes } from './resource-watchdog-log-tail.js';
@@ -803,6 +803,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     preflightOnFatal,
     preflightLogger,
     getAgentEffort,
+    hermesFleetOptIn: readHermesFleetOptInFromEnv(),
   });
   const userInputDeliveries = new UserInputDeliveryService({
     adapter,
