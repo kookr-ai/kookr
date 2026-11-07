@@ -19,10 +19,10 @@ import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.
 import type { Watchdog } from '../core/watchdog.js';
 import type { DeferredInteractionLogWriter } from '../core/interaction-log.js';
 import type { TelegramReplyResult } from '../shared/contracts/telegram.js';
-import { RemotePermissionBroker } from '../remote/permission-broker.js';
 import {
   buildPermissionRequestBinding,
   latestPermissionRequestEvent,
+  validatePermissionApprovalBinding,
 } from './permission-request-binding.js';
 
 /** Length of the short prompt identity embedded in the Approve button. */
@@ -67,14 +67,11 @@ function latestLiveSession(task: Task): Task['sessions'][number] | undefined {
 }
 
 export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): TelegramTaskBridge {
-  const broker = new RemotePermissionBroker({
-    adapter: deps.adapter,
-    monitor: deps.monitor,
-    queue: deps.queue,
-    ...(deps.watchdog ? { watchdog: deps.watchdog } : {}),
-    ...(deps.interactionLog ? { interactionLog: deps.interactionLog } : {}),
-    ...(deps.now ? { now: deps.now } : {}),
-  });
+  // Once-only guard so a double-tapped Approve cannot keystroke twice for the
+  // same prompt (mirrors RemotePermissionBroker, kept server-local because the
+  // src/remote broker must not be statically imported into the server bundle).
+  const consumedApprovals = new Set<string>();
+  const now = (): Date => (deps.now ? deps.now() : new Date());
 
   function resolveSession(taskId: string): string | null {
     const task = deps.taskStore.getTask(taskId);
@@ -128,12 +125,38 @@ export function createTelegramTaskBridge(deps: TelegramTaskBridgeDeps): Telegram
       if (expectedPromptId && permissionRequest.requestId.slice(0, PROMPT_ID_LEN) !== expectedPromptId) {
         return { ok: false, reason: 'the prompt changed since this message — open the dashboard to review' };
       }
+      // Anti-stale validation (TTL + prompt identity re-derivation), same server
+      // helper the dashboard's permissionChoice path uses.
+      const validation = validatePermissionApprovalBinding({
+        sessionId,
+        events: deps.monitor.getAgentEvents(sessionId),
+        anomaly,
+        payload: { permissionRequest },
+        now: now(),
+      });
+      if (!validation.ok) return { ok: false, reason: validation.reason };
+      const consumeKey = `${sessionId}\u0000${validation.binding.requestId}`;
+      if (consumedApprovals.has(consumeKey)) {
+        return { ok: false, reason: 'this prompt was already approved' };
+      }
+      consumedApprovals.add(consumeKey);
       try {
-        await broker.approve(sessionId, '1', 'telegram', { permissionRequest });
-        return { ok: true };
+        await deps.adapter.sendKeystroke(sessionId, '1');
       } catch (err) {
+        consumedApprovals.delete(consumeKey);
         return { ok: false, reason: err instanceof Error ? err.message : String(err) };
       }
+      if (deps.monitor.markInputReceived(sessionId)) {
+        deps.watchdog?.recordInputReceived(sessionId);
+      }
+      deps.queue.respondAndAdvance(sessionId);
+      await deps.interactionLog?.append({
+        type: 'user_input',
+        agentId: sessionId,
+        content: '[telegram approve: 1]',
+        timestamp: new Date().toISOString(),
+      });
+      return { ok: true };
     },
 
     permissionPromptId(taskId): string | null {
