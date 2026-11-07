@@ -1,5 +1,6 @@
 ---
 name: self-reflect
+group: meta-workflow
 description: Reflect on a mistake or unnecessary user correction — root-cause why it happened, then propose and implement structural fixes (skills, hooks, CLAUDE.md, memory, scripts). Use after the user corrects behavior, repeats guidance, or points out an avoidable error.
 keywords: reflect, mistake, feedback, correction, self-improve, root-cause, meta, why, should have, remember, told you, wrong approach, improve
 related: placement-picker, token-efficiency, testing-patterns, pre-pr-review, automation-design

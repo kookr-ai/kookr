@@ -1,5 +1,6 @@
 ---
 name: git-commit-discipline
+group: engineering-patterns
 description: Git commit hygiene for AI agents - atomic commits, Conventional Commits, secret scanning, branch safety, history protection
 keywords: git commit, commit message, atomic commit, conventional commits, git add, gitignore, secret scan, force push, branch protection, commit hygiene, monolithic commit, commit discipline
 ---

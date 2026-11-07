@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-prepare
+group: reviewer-distillation
 description: Prepare isolated context files and fetch ground-truth reviews for selected PRs
 keywords: [reviewer, distillation, prepare, context, isolation]
 related: [reviewer-distillation-select, reviewer-distillation-predict]

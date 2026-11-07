@@ -1,5 +1,7 @@
 ---
 name: pr-contribution-excellence
+group: oss-contribution
+toggleExempt: true
 description: Patterns for excellent open-source PR contributions, distilled from analyzing real PRs across repositories
 keywords: pr, contribution, review, open source, pull request, code review, upstream, fork
 ---

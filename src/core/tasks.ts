@@ -1158,6 +1158,21 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /**
+   * Stamp the plugin/settings config epoch this Kookr-managed session started
+   * under (RFC "Surfacing reload drift"). Set once at first spawn; resume and
+   * relaunch leave the original value so a resumed session keeps the epoch it
+   * truly started under.
+   */
+  setConfigEpochAtStart(id: string, epoch: number): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.configEpochAtStart = epoch;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   /** Clear or replace the advisory text paired with launch-health findings. */
   setLaunchNote(id: string, note: string | undefined): Task {
     const task = this.tasks.get(id);

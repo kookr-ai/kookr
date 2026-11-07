@@ -24,6 +24,7 @@ function plugin(overrides: Partial<ManagedPlugin> = {}): ManagedPlugin {
     loadSource: 'marketplace',
     alwaysOnTokens: 8994,
     uninstallGuard: true,
+    marketplaceRegistered: true,
     ...overrides,
   };
 }
@@ -129,5 +130,121 @@ describe('PluginManagerDialog', () => {
   test('shows a retry affordance when the load fails', async () => {
     await renderWith({ plugins: [] }, vi.fn(async () => jsonResponse({ error: 'nope' }, 500)));
     expect(text()).toContain('Could not load plugins');
+  });
+
+  // --- P3: own-session assist + drift surface ---
+
+  /** Route a fetch by path so each endpoint answers independently. */
+  function routingFetch(handlers: {
+    plugins: PluginsReadModel;
+    drift?: unknown;
+    onPost?: (url: string, init?: RequestInit) => Response;
+    calls?: string[];
+  }) {
+    return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      handlers.calls?.push(`${init?.method ?? 'GET'} ${url}`);
+      if (url.includes('/api/plugins/config-drift')) {
+        return jsonResponse(
+          handlers.drift ?? { currentEpoch: 0, staleSessions: [], staleCount: 0, externalCoverageNote: 'n/a' },
+        );
+      }
+      if (init?.method === 'POST') {
+        return handlers.onPost?.(url, init) ?? jsonResponse({ status: 'applied', epoch: 1 });
+      }
+      return jsonResponse(handlers.plugins);
+    });
+  }
+
+  test('enable/disable shows the blast-radius disclosure before applying, then posts', async () => {
+    const calls: string[] = [];
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', enablement: 'enabled', uninstallGuard: false })] },
+      onPost: () => jsonResponse({ status: 'applied', pluginId: 'x@m', scope: 'user', enablement: 'disabled', previousValue: true, backupPath: null, epoch: 2 }),
+      calls,
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+
+    await act(async () => buttonByText('Disable').click());
+    // Disclosure shown; nothing posted yet.
+    expect(text()).toContain('affects all of your Claude Code sessions');
+    expect(text()).toContain('/reload-plugins');
+    expect(calls.some((c) => c.startsWith('POST /api/plugins/own-session/enablement'))).toBe(false);
+
+    await act(async () => buttonByText('Apply').click());
+    await act(async () => {});
+    expect(calls.some((c) => c.startsWith('POST /api/plugins/own-session/enablement'))).toBe(true);
+    expect(text()).toContain('Disabled');
+  });
+
+  test('uninstall-guarded plugin adds an extra confirmation note (never one-click)', async () => {
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'kookr-toolkit@kookr', enablement: 'enabled', uninstallGuard: true })] },
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    await act(async () => buttonByText('Disable').click());
+    expect(text()).toContain('Kookr depends on');
+  });
+
+  test('degrades marketplace-scoped action to "open in /plugin" when the marketplace is unregistered', async () => {
+    const fetchMock = routingFetch({
+      plugins: {
+        plugins: [
+          plugin({
+            id: 'stripe@anthropic-plugin-directory',
+            installedVersion: '1.0.0',
+            availableVersion: '2.0.0',
+            staleness: { state: 'behind', source: 'catalog', observedAt: 'x' },
+            marketplaceRegistered: false,
+            uninstallGuard: false,
+          }),
+        ],
+      },
+    });
+    await renderWith({ plugins: [] }, fetchMock);
+    expect(text()).toContain('Open in');
+    expect(Array.from(container.querySelectorAll('button')).some((b) => b.textContent === 'Update')).toBe(false);
+  });
+
+  test('surfaces reload drift with a restart action', async () => {
+    const onRestart = vi.fn();
+    const fetchMock = routingFetch({
+      plugins: { plugins: [plugin({ id: 'x@m', uninstallGuard: false })] },
+      drift: {
+        currentEpoch: 3,
+        staleSessions: [{ taskId: 't-1', startedEpoch: 1, startedAt: '2026-11-07T10:00:00.000Z', title: 'My session' }],
+        staleCount: 1,
+        externalCoverageNote: 'External TUIs are invisible to Kookr.',
+      },
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    await act(async () => {
+      root.render(React.createElement(PluginManagerDialog, { isOpen: true, onClose: vi.fn(), onRestartSession: onRestart }));
+    });
+    await act(async () => {});
+    expect(text()).toContain('1 session started before your last change');
+    expect(text()).toContain('External TUIs are invisible to Kookr.');
+    await act(async () => buttonByText('Restart').click());
+    expect(onRestart).toHaveBeenCalledWith('t-1');
+  });
+
+  test('installing a plugin for own sessions posts after the disclosure', async () => {
+    const calls: string[] = [];
+    const fetchMock = routingFetch({ plugins: { plugins: [] }, calls });
+    await renderWith({ plugins: [] }, fetchMock);
+
+    await act(async () => buttonByText('+ Add a plugin').click());
+    const idInput = container.querySelector('input[aria-label="Plugin id"]') as HTMLInputElement;
+    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      nativeSetter.call(idInput, 'foo@bar');
+      idInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => buttonByText('Install').click());
+    // Disclosure first.
+    expect(text()).toContain('affects all of your Claude Code sessions');
+    await act(async () => buttonByText('Apply').click());
+    await act(async () => {});
+    expect(calls.some((c) => c.startsWith('POST /api/plugins/own-session/install'))).toBe(true);
   });
 });

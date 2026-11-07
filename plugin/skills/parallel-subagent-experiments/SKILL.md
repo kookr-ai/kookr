@@ -1,5 +1,6 @@
 ---
 name: parallel-subagent-experiments
+group: design-analysis
 description: >
   For a HARD, OPEN research or design problem — one where the right mechanism is unknown or the design
   is underdetermined, so a single attempt is a guess — run several subagents IN PARALLEL, each pursuing

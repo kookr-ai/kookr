@@ -1,5 +1,6 @@
 ---
 name: placement-picker
+group: meta-workflow
 description: >
   Decide where to place a new rule, skill, hook, KB entry, agent, CLAUDE.md
   rule, memory, or context artifact. Use when choosing among user, project,

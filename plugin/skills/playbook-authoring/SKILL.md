@@ -1,5 +1,6 @@
 ---
 name: playbook-authoring
+group: claude-code
 description: Create or revise Kookr playbooks and scheduled orchestration, including parameters, project identity, idempotency, model policy, and launch integration
 keywords: playbook, playbooks, write playbook, author playbook, orchestration, schedule, scheduled task, recurring task, task template, kookr, launch, model tier, small model, tracked-projects, project, source
 related: self-continuation-task, automation-design

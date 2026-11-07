@@ -1,6 +1,6 @@
 {
   "name": "kookr-toolkit",
-  "version": "0.16.81",
+  "version": "0.16.82",
   "description": "Curated skills and subagents for AI-assisted development. 70 skills and 25 subagents for TypeScript, async, error handling, DI, DDD, TDD, git hygiene, OSS contribution, reviewer distillation, iterative RFC review, communication-quality paper review, and product-onboarding assessment (product-owner + user-test-simulator).",
   "author": {
     "name": "Jean Ibarz",
@@ -17,5 +17,67 @@
     "tdd",
     "oss-contribution",
     "rfc"
+  ],
+  "groups": [
+    {
+      "id": "engineering-patterns",
+      "label": "Engineering Patterns",
+      "description": "Language, runtime, and architecture craft: types, async, DI, DDD, errors, logging, refactoring, state machines, messaging, git hygiene."
+    },
+    {
+      "id": "testing",
+      "label": "Testing",
+      "description": "Test strategy and authoring: TDD, unit/integration, Playwright, agent E2E."
+    },
+    {
+      "id": "design-analysis",
+      "label": "Design & Analysis",
+      "description": "RFC drafting/critique, multi-agent analysis, and system/architecture modeling."
+    },
+    {
+      "id": "code-review",
+      "label": "Code Review",
+      "description": "Reviewing changes and preparing/triaging pull requests."
+    },
+    {
+      "id": "oss-contribution",
+      "label": "OSS Contribution",
+      "description": "Contributing to external open-source repos: fork lifecycle, OSS PR lesson loop, GitHub issue/label/trending workflows."
+    },
+    {
+      "id": "codex-pr-lessons",
+      "label": "Codex PR Lessons",
+      "description": "Phases of the codex-pr-lessons learning playbook."
+    },
+    {
+      "id": "reviewer-distillation",
+      "label": "Reviewer Distillation",
+      "description": "Phases of the reviewer-distillation experiment loop."
+    },
+    {
+      "id": "rust-contribution",
+      "label": "Rust Contribution",
+      "description": "rust-lang/rust-specific contribution conventions."
+    },
+    {
+      "id": "claude-code",
+      "label": "Claude Code",
+      "description": "Claude Code internals: hooks, permissions, metrics, playbook authoring, notebook reuse."
+    },
+    {
+      "id": "agent-automation",
+      "label": "Agent Automation",
+      "description": "Designing and running autonomous agent workflows and merge/review loops."
+    },
+    {
+      "id": "communication",
+      "label": "Communication",
+      "description": "Writing and explaining: findings, technical prose, paper review."
+    },
+    {
+      "id": "meta-workflow",
+      "label": "Meta & Workflow",
+      "description": "Agent self-improvement and workflow meta: reflection, placement, token economy, UI mockups."
+    }
   ]
 }

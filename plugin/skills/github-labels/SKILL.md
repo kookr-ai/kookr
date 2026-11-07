@@ -1,5 +1,6 @@
 ---
 name: github-labels
+group: oss-contribution
 description: GitHub label taxonomy for kookr-ai/kookr. Use when creating issues, PRs, or triaging work to apply correct labels.
 user_invocable: false
 related: github-issue-workflow

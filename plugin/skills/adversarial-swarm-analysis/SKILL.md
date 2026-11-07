@@ -1,5 +1,6 @@
 ---
 name: adversarial-swarm-analysis
+group: design-analysis
 description: Analyze an open question by casting 3-5 deliberately conflicting expert roles, running them in parallel and blind to each other, sharpening them in a debate round, attacking their consensus with a devil's advocate, then synthesizing a verdict that preserves disagreement instead of averaging it. Use for decisions, strategy, idea generation, hypothesis triage, experiment post-mortems, or any question where a single lens would return "it depends".
 keywords: swarm, debate, devil's advocate, multi-agent analysis, decision, should we, tradeoff, pros and cons, stress test, red team, second opinion, brainstorm, strategy, hypotheses, post-mortem, judgment call
 related: rfc-iterative-review, requirements-engineering, placement-picker

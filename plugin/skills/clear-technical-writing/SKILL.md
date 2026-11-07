@@ -1,5 +1,6 @@
 ---
 name: clear-technical-writing
+group: communication
 description: Write clear technical prose everywhere — code documentation (docstrings, comments, module/API/reference docs, config comments), design docs and READMEs, PR bodies/changelogs/summaries, AND explanations of genuinely hard ideas (novel algorithms, subtle failure modes, non-obvious tradeoffs). Plain-language intent first, jargon defined, identifiers only after the human explanation; for hard ideas, build intuition with analogies that carry the real mechanism. Use for any writing a human must understand cold.
 keywords: technical writing, code documentation, docstring, code comment, API docs, README, design doc, PR description, changelog, explaining hard ideas, analogy, intuition, clarity, jargon, plain language, cold reader, concise vs cryptic
 related: pre-pr-review, git-commit-discipline, pr-contribution-excellence, pr-review-triage

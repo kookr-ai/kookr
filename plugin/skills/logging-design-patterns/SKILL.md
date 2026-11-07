@@ -1,5 +1,6 @@
 ---
 name: logging-design-patterns
+group: engineering-patterns
 description: Structured logging best practices - Pino JSON output, log levels, correlation IDs, PII redaction, sampling, async context, canonical log lines
 keywords: logging, pino, structured logging, log levels, correlation ID, trace context, redaction, PII, sampling, canonical log lines, AsyncLocalStorage, metrics, observability
 related: error-handling-patterns

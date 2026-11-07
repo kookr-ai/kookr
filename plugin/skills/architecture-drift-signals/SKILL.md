@@ -1,5 +1,6 @@
 ---
 name: architecture-drift-signals
+group: design-analysis
 description: Detect AI-induced architecture drift by measuring file-size distribution, layer-boundary violations, and dependency-graph corruption. Use to score structural health, spot drift hotspots, and produce a drift report.
 keywords: architecture drift, AI-generated code, layer boundary, circular dependency, god module, file size distribution, drift ratio, structural entropy, dependency graph, AI chaos index, local optimization, fan-in, fan-out, oversized file, LOC threshold
 related: monorepo-architecture, safe-refactoring, dependency-injection-patterns, domain-driven-design

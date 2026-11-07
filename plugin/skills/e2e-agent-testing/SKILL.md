@@ -1,5 +1,6 @@
 ---
 name: e2e-agent-testing
+group: testing
 description: Strategy for mocking Claude Code agents in E2E tests with canary validation against real behavior.
 keywords: e2e, mock, agent, claude code, haiku, canary test, FakeTerminalBackend, hook event, end-to-end, integration, cost
 related: testing-patterns, playwright-e2e-patterns

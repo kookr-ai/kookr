@@ -1,5 +1,6 @@
 ---
 name: monorepo-architecture
+group: engineering-patterns
 description: TypeScript monorepo structure - module boundaries, dependency direction, god objects, abstraction discipline, configuration management, interface design. Use when creating packages, refactoring cross-package imports, or reviewing architecture.
 keywords: monorepo, module boundaries, circular dependency, barrel file, god object, feature envy, abstraction, Rule of Three, composition over inheritance, configuration, dependency management, workspace protocol, interface design, options object, Clean Architecture, SOLID
 related: error-handling-patterns, typescript-type-safety, domain-driven-design, safe-refactoring, dependency-injection-patterns

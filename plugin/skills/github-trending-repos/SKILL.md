@@ -1,5 +1,6 @@
 ---
 name: github-trending-repos
+group: oss-contribution
 description: Find and rank trending GitHub repositories by real activity signals (commit velocity, PR throughput, contributor growth) — filters out non-code repos and scores for contribution opportunity
 keywords: github, trending, stars, repos, popular, contribute, open source, ranking, activity, performance optimization, contribution
 related: [pr-lifecycle, pre-pr-review]

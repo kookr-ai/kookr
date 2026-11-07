@@ -1,9 +1,15 @@
-import { apiFetch, fetchResult, type ApiResult } from './client.js';
+import { apiFetch, fetchResult, getJson, type ApiResult } from './client.js';
 import type {
   ManagedPlugin,
   PluginsReadModel,
   PluginUpdateOutcome,
   PluginActionError,
+  OwnSessionEnablementRequest,
+  OwnSessionEnablementResult,
+  OwnSessionInstallRequest,
+  OwnSessionActionResult,
+  OwnSessionActionError,
+  ConfigDriftSurface,
 } from '../../shared/contracts/plugins.js';
 import type {
   PluginInstallResult,
@@ -29,6 +35,37 @@ export function updatePlugin(
     `/api/plugins/${encodeURIComponent(id)}/update`,
     { method: 'POST' },
   );
+}
+
+// --- Own-session assist (RFC G3/R4) ---------------------------------------
+// The caller MUST show the blast-radius disclosure (OWN_SESSION_BLAST_RADIUS)
+// before invoking any of these — they mutate the operator's own sessions.
+
+const JSON_HEADERS = { 'content-type': 'application/json' } as const;
+
+/** Enable/disable/reset a plugin for the operator's own sessions. */
+export function ownSessionSetEnablement(
+  req: OwnSessionEnablementRequest,
+): Promise<ApiResult<OwnSessionEnablementResult | OwnSessionActionError | null>> {
+  return fetchResult<OwnSessionEnablementResult | OwnSessionActionError>(
+    '/api/plugins/own-session/enablement',
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(req) },
+  );
+}
+
+/** Install a plugin for the operator's own sessions. */
+export function ownSessionInstall(
+  req: OwnSessionInstallRequest,
+): Promise<ApiResult<OwnSessionActionResult | OwnSessionActionError | null>> {
+  return fetchResult<OwnSessionActionResult | OwnSessionActionError>(
+    '/api/plugins/own-session/install',
+    { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(req) },
+  );
+}
+
+/** Read the config-epoch reload-drift surface (RFC "Surfacing reload drift"). */
+export function getConfigDrift(): Promise<ConfigDriftSurface> {
+  return getJson<ConfigDriftSurface>('/api/plugins/config-drift');
 }
 
 /** Project a fleet `ManagedPlugin` row down to the toolkit badge's `PluginVersionStatus`. */

@@ -1,5 +1,6 @@
 ---
 name: token-efficiency
+group: meta-workflow
 description: Reduce token waste — avoid redundant reads, duplicate searches, unnecessary tool calls. Use when planning tool usage or when context is getting large.
 keywords: tokens, efficiency, context, optimization, redundant, duplicate, waste, tool calls, performance, cost
 related: testing-patterns

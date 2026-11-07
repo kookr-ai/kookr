@@ -1,5 +1,6 @@
 ---
 name: oss-pr-distill
+group: oss-contribution
 description: Distillation phase for oss-pr-lessons playbook — compress raw learnings into repo-specific patterns and update shared general skill
 keywords: oss, pr, distill, patterns, generalize, skill, synthesis, open source
 related: [oss-pr-threshold, oss-pr-state, oss-pr-critic]

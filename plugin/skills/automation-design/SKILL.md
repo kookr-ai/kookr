@@ -1,5 +1,6 @@
 ---
 name: automation-design
+group: agent-automation
 description: >
   Design, simplify, and improve autonomous workflows, supervisors, scheduled
   jobs, and recovery loops across projects. Use when automation needs repeated

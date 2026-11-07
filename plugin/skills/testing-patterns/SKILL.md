@@ -1,5 +1,6 @@
 ---
 name: testing-patterns
+group: testing
 description: Choose and implement unit/integration/E2E tests that catch real regressions in this monorepo.
 keywords: testing, integration tests, route registration test, sql template assertion, reproduction first, env parity, flaky test, vitest bun
 related: tdd-workflow

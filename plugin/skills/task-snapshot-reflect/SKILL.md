@@ -1,5 +1,6 @@
 ---
 name: task-snapshot-reflect
+group: meta-workflow
 description: "Anytime task reflection workflow triggered from a live or terminal Kookr task. Reads an immutable snapshot bundle, analyzes what went well and what went wrong, then asks the user to validate the diagnosis and choose positive reinforcement, negative reinforcement, both, or observation only before making any changes."
 keywords: task snapshot, reflect, self-reflect, positive reinforcement, negative reinforcement, anytime reflection, session analysis, diagnosis, user validation
 related: task-feedback-reflect, self-reflect, placement-picker

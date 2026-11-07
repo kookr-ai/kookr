@@ -1,5 +1,6 @@
 ---
 name: dependency-injection-patterns
+group: engineering-patterns
 description: Dependency injection best practices - constructor injection, composition root, lifetime management, testability, circular dependency prevention, framework independence
 keywords: dependency injection, DI, constructor injection, composition root, service locator, singleton, scoped, transient, lifetime, circular dependency, mock injection, vi.mock, testability, IoC container, tsyringe, NestJS, InversifyJS, framework independence
 related: monorepo-architecture, testing-patterns, error-handling-patterns, safe-refactoring, domain-driven-design

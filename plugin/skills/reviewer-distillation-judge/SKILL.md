@@ -1,5 +1,6 @@
 ---
 name: reviewer-distillation-judge
+group: reviewer-distillation
 description: Spawn an isolated judge subagent to evaluate reviewer predictions against real human reviews
 keywords: [reviewer, distillation, judge, evaluate, score]
 related: [reviewer-distillation-predict, reviewer-distillation-mutate]

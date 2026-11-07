@@ -88,6 +88,7 @@ import { gitIn } from '../core/git-helpers.js';
 import { resolveDefaultBranch } from '../core/repo-policy-resolver.js';
 import { launchFreshTaskSession, launchTask, type LaunchServiceDeps } from './launch-service.js';
 import { LoadoutStore } from './plugin-manager/loadout-store.js';
+import { ConfigEpochStore } from './plugin-manager/config-epoch.js';
 import { PlanQuotaBindingCache } from '../core/plan-quota-binding-cache.js';
 import { buildCapacityLedger } from '../core/capacity-ledger.js';
 import { SpawnRateLimiter } from '../core/spawn-rate-limiter.js';
@@ -1704,10 +1705,12 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     await flushTasksForLaunch();
   };
   const loadoutStore = new LoadoutStore(kookrDir);
+  const configEpochStore = new ConfigEpochStore(kookrDir);
   const lifecycleDeps: AgentLifecycleDeps = {
     monitor, watchdog, hookWatcher, interactionLog, githubScanner, autoNameTask, taskStore,
     projectConfigStore,
     loadoutStore,
+    configEpochStore,
     terminalInputCoordinator,
     getCleanupWorktreeOnComplete,
     reflectWorktreesDir,
@@ -1792,6 +1795,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     adapterRegistry,
     lifecycleDeps,
     loadoutStore,
+    configEpochStore,
     launchDependencyAdmission,
     getMaxActiveTasks,
     getDefaultAgentType,

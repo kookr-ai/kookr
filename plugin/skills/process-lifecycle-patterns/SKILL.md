@@ -1,5 +1,6 @@
 ---
 name: process-lifecycle-patterns
+group: engineering-patterns
 description: Process lifecycle and graceful shutdown - signal handling, connection draining, health probes, resource cleanup ordering, worker management, zero-downtime deploys
 keywords: SIGTERM, SIGINT, graceful shutdown, connection draining, health check, liveness, readiness, startup probe, resource cleanup, PID 1, dumb-init, tini, zero-downtime, rolling update, process manager, worker process, uncaught exception, unhandled rejection, shutdown timeout
 related: error-handling-patterns, async-flow-control

@@ -1,5 +1,6 @@
 ---
 name: codex-pr-threshold
+group: codex-pr-lessons
 description: Threshold verification for codex-pr-lessons playbook — determine if distillation should trigger
 keywords: codex, pr, threshold, distillation, trigger, line count
 related: [codex-pr-state, codex-pr-distill]

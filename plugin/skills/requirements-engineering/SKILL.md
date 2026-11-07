@@ -1,5 +1,6 @@
 ---
 name: requirements-engineering
+group: engineering-patterns
 description: Writing precise, testable, structured requirements - SHALL/SHOULD/MAY phrasing, INVEST stories, acceptance criteria, ubiquitous language, prioritization
 keywords: requirements, user stories, acceptance criteria, INVEST, MoSCoW, WSJF, Gherkin, SHALL, SHOULD, MAY, RFC 2119, functional requirements, non-functional requirements, NFR, glossary, ubiquitous language, prioritization, specification
 related: mbse-system-modeling, domain-driven-design, state-machine-workflow-patterns

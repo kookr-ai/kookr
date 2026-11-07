@@ -175,6 +175,15 @@ export interface Task {
    * or no loadout is attached (then settings are byte-identical to today).
    */
   loadout?: TaskLoadoutRecord;
+  /**
+   * The plugin/settings **config epoch** (RFC "Surfacing reload drift") this
+   * Kookr-managed Claude session started under. Stamped once at first spawn;
+   * resume/relaunch KEEP the original (a resumed session did not start fresh
+   * under the current config). Absent for non-claude-code sessions, legacy
+   * records, and when the feature is unwired. Drives the dashboard's "N sessions
+   * started before your last change" restart surface.
+   */
+  configEpochAtStart?: number;
   /** Advisory launch diagnostics. Does not affect duplicate detection. */
   launchHealthSummary?: TaskLaunchHealthSummary;
   /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */

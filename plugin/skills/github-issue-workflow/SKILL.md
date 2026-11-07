@@ -1,5 +1,6 @@
 ---
 name: github-issue-workflow
+group: oss-contribution
 description: Standard workflow for creating GitHub issues with assignment and worktree branch creation for immediate implementation. Includes branch strategy and worktree conventions.
 keywords: issue, github, workflow, worktree, branch, assign, implementation, create issue, new issue, bug report, feature request, staging
 related: git-commit-discipline, pre-push, post-push, pr-lifecycle

@@ -1,5 +1,6 @@
 ---
 name: oss-pr-critic
+group: oss-contribution
 description: Analyze a PR from any repository and extract quality signals — description, reviews, scope, tests, CI, guidelines, outcome
 keywords: oss, pr, critic, review, analysis, signals, quality, open source, contribution
 related: [oss-pr-plan, oss-pr-state, oss-pr-threshold, oss-pr-distill]

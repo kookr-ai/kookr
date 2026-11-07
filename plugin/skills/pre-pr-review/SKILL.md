@@ -1,5 +1,7 @@
 ---
 name: pre-pr-review
+group: code-review
+toggleExempt: true
 description: Self-review checklist before creating a PR — repo checks, diff review, reviewer specialists, and gate state creation before gh pr create.
 keywords: review, self-review, pre-PR, checklist, before PR, quality, validation, before merge, before submit
 related: pre-push, pr-lifecycle, git-commit-discipline, testing-patterns, pr-review-triage, clear-technical-writing

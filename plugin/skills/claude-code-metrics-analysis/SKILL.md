@@ -1,5 +1,6 @@
 ---
 name: claude-code-metrics-analysis
+group: claude-code
 description: Analyze Claude Code telemetry, stats-cache, and history data from ~/.claude to identify UX friction, performance issues, workflow inefficiencies, and improvement opportunities.
 keywords: metrics, telemetry, UX, friction, performance, usage, analytics, stats, session, tool, rate-limit, stall, cost
 related: session-reflect, token-efficiency
