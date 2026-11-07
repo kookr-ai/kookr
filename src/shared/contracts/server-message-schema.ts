@@ -192,6 +192,15 @@ const coordinatorSnapshotMessage = z.object({
   coordinator: jsonObject,
 });
 
+const observedSnapshotMessage = z.object({
+  type: z.literal('observed.snapshot'),
+  observed: z.object({
+    sessions: z.array(jsonObject),
+    counters: jsonObject,
+    now: z.number(),
+  }),
+});
+
 const dashboardSelectionMessage = z.object({
   type: z.literal('dashboardSelection'),
   selectedTaskId: z.string().nullable(),
@@ -472,6 +481,7 @@ const ServerMessageSchemaImpl = z.union([
   suggestionMessage,
   projectSummariesMessage,
   coordinatorSnapshotMessage,
+  observedSnapshotMessage,
   dashboardSelectionMessage,
   emptyEnterDecisionMessage,
   contributionWarningMessage,

@@ -80,6 +80,25 @@ const serverMessageCases = [
   }),
   serverMessageCase({ type: 'projectSummaries', projects: [] }),
   serverMessageCase({ type: 'coordinator.snapshot', coordinator: { outputs: [], chips: [], findings: [], chains: {} } }),
+  serverMessageCase({
+    type: 'observed.snapshot',
+    observed: {
+      sessions: [
+        {
+          sessionId: 'hermes-obs-a',
+          state: 'working',
+          label: 'reviewing PR #1',
+          receivedAt: 1000,
+          firstSeen: 500,
+          pulseCount: 3,
+          effectiveState: 'working',
+          ageMs: 1200,
+        },
+      ],
+      counters: { accepted: 3, deduped: 0, rejected: {}, lastAcceptedAt: 1000, lastRejectAt: null, startedAt: 0 },
+      now: 2200,
+    },
+  }),
   serverMessageCase({ type: 'dashboardSelection', selectedTaskId: 'task-1', selectedSessionId: 'session-1', selectionVersion: 1 }),
   serverMessageCase({
     type: 'emptyEnterDecision',
@@ -344,6 +363,14 @@ describe('ServerMessageSchema', () => {
     {
       name: 'diagnosticReport without required report fields',
       message: { type: 'diagnosticReport', report: { id: 'report-1' } },
+    },
+    {
+      name: 'observed.snapshot missing the required now timestamp',
+      message: { type: 'observed.snapshot', observed: { sessions: [], counters: {} } },
+    },
+    {
+      name: 'observed.snapshot with a non-array sessions',
+      message: { type: 'observed.snapshot', observed: { sessions: {}, counters: {}, now: 1 } },
     },
   ])('rejects malformed outbound payloads: $name', ({ message }) => {
     const result = ServerMessageSchema.safeParse(message);

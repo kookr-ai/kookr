@@ -216,6 +216,10 @@ export function useWebSocket() {
       },
       onLost: () => {
         useKookrStore.getState().setConnected(false);
+        // Hermes lane: drop the last frame so a frozen "working" lane never
+        // outlives the connection. A flag-on server re-sends within ~2s of
+        // reconnect; a flag-off server sends nothing, so the lane stays hidden.
+        useKookrStore.getState().clearObservedActivity();
         hasHydratedProjectSidebarRef.current = false;
         if (disconnectedAtRef.current === null) {
           disconnectedAtRef.current = Date.now();
@@ -334,6 +338,9 @@ export function useWebSocket() {
               break;
             case 'coordinator.snapshot':
               dispatchCoordinatorSnapshotMessageForClient(msg);
+              break;
+            case 'observed.snapshot':
+              store.handleObservedActivity(msg.observed);
               break;
             case 'dashboardSelection':
               store.handleDashboardSelection({

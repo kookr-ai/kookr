@@ -36,6 +36,7 @@ import type {
   TaskRelation,
   PlaybookSourceIdentity,
 } from '../../shared/protocol.js';
+import type { ObservedActivitySnapshot } from '../../shared/contracts/observed-activity.js';
 import type {
   ProjectSidebarCatalogEntry,
   ProjectSidebarPrefs,
@@ -844,6 +845,19 @@ export interface CompletedHistorySlice {
   loadOlderHistory: () => Promise<void>;
 }
 
+/**
+ * Hermes observed-activity lane (jeanibarz/hermes-fleet#15, slice 2). A pure
+ * sink for the latest `observed.snapshot` frame; `null` until the first frame
+ * arrives, which (server only broadcasts when the flag is on) doubles as the
+ * frontend's "lane enabled" signal. Never keyed by `taskId` — operator-global.
+ */
+export interface ObservedLaneSlice {
+  observedActivity: ObservedActivitySnapshot | null;
+  handleObservedActivity: (snapshot: ObservedActivitySnapshot) => void;
+  /** Drop the last frame (connection lost) so a stale lane never shows as live. */
+  clearObservedActivity: () => void;
+}
+
 export type KookrStore =
   & TransportSessionSlice
   & TriageNavigationSlice
@@ -854,7 +868,8 @@ export type KookrStore =
   & SystemStatusSlice
   & AutoAdvanceSlice
   & WorktreeCleanupSlice
-  & CompletedHistorySlice;
+  & CompletedHistorySlice
+  & ObservedLaneSlice;
 
 export type StoreSet = (
   partial: Partial<KookrStore> | ((state: KookrStore) => Partial<KookrStore>),
