@@ -8,6 +8,7 @@ import { registerMetricsRoutes } from './routes/metrics-routes.js';
 import { registerAdminRoutes } from './routes/admin-routes.js';
 import { registerProjectRoutes } from './routes/project-routes.js';
 import { registerDeployRoutes } from './routes/deploy-routes.js';
+import { registerPluginRoutes } from './routes/plugin-routes.js';
 import { PluginMutationService } from './plugin-manager/mutation-service.js';
 import { registerScheduleRoutes } from './routes/schedule-routes.js';
 import { registerSettingsRoutes } from './routes/settings-routes.js';
@@ -193,6 +194,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerOssAttemptRoutes(app, sharedDeps);
   registerScheduleRoutes(app, sharedDeps);
   registerDeployRoutes(app, sharedDeps);
+  registerPluginRoutes(app, sharedDeps);
   registerContactShareRoutes(app, sharedDeps);
   registerShareRoutes(app, sharedDeps);
   registerRelayConnectionRoutes(app, sharedDeps);

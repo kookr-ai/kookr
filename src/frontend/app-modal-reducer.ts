@@ -27,7 +27,8 @@ export type ActiveModal =
   | 'costComparison'
   | 'bugReport'
   | 'shareViewer'
-  | 'sweepConfirm';
+  | 'sweepConfirm'
+  | 'pluginManager';
 
 export type ModalAction =
   | { type: 'open'; modal: ActiveModal }

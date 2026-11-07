@@ -1146,6 +1146,8 @@ Success `200` returns `{ ok, applicable, spawnScout, spawnSkipReason, emitStarva
 | `GET /api/deploy/status` | Production-update job status, toolkit/plugin freshness, and optional `lastRestart` phase timings from the last successful `prod:restart` |
 | `POST /api/deploy/trigger` | Trigger a `pnpm prod:update` job. On success, broadcasts WebSocket `deployLifecycle` with `phase: "starting"` before the child process starts (issue #1980). |
 | `POST /api/deploy/toolkit-refresh` | Reinstall user-global Kookr hooks/toolkit symlinks from the production worktree |
+| `GET /api/plugins` | Fleet inventory for the Plugin Manager: every installed Claude Code plugin with id, installed/available version, tri-state `enablement` (enabled/disabled/default), `staleness` (state + source + `observedAt`), `loadSource`, best-effort always-on `alwaysOnTokens`, and `uninstallGuard`. Degrades to an empty list rather than erroring. |
+| `POST /api/plugins/:id/update` | Update one plugin via `claude plugin update <id> -y --json` through the shared mutation lock + backup (R8). 409 (naming the lock holder) when a mutation is already in flight; no update-all. |
 
 #### Agent blacklist
 

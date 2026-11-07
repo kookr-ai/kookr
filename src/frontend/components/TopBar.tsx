@@ -39,6 +39,8 @@ interface Props {
    *  previously lived as their own top-bar icons (Schedules, Settings, Help,
    *  OSS, Bug report, Terminal focus, Cost comparison, …). */
   onCommandPalette: () => void;
+  /** Open the Plugin Manager dialog directly (the "+" surface, RFC Layer 1). */
+  onOpenPluginManager: () => void;
   onOperations: () => void;
   operationsOpen?: boolean;
   onCoordinatorFindings: () => void;
@@ -86,6 +88,7 @@ export function TopBar({
   compact = false,
   onLaunch,
   onCommandPalette,
+  onOpenPluginManager,
   onOperations,
   operationsOpen = false,
   onCoordinatorFindings,
@@ -588,6 +591,16 @@ export function TopBar({
         <div className="metric-group">
           <FollowPill shortcutBindings={shortcutBindings} />
           <DndPill />
+          <button
+            type="button"
+            className="btn-icon plugin-manager-trigger"
+            onClick={onOpenPluginManager}
+            title="Manage plugins & skills"
+            aria-label="Manage plugins and skills"
+            data-testid="plugin-manager-trigger"
+          >
+            <span aria-hidden="true">＋</span>
+          </button>
           <button
             type="button"
             className={`command-trigger${compact ? ' command-trigger--compact' : ''}${scheduleHintActive ? ' schedule-hint-spotlight' : ''}`}

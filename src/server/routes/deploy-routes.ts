@@ -252,6 +252,31 @@ async function readPluginVersionStatus(
   }
 }
 
+/**
+ * Resolve the toolkit plugin's id + latest available version (git-sourced from
+ * origin/main, falling back to on-disk manifests). Exported for the fleet read
+ * model (`GET /api/plugins`) so the toolkit's git-based staleness is computed
+ * from the same source the deploy status uses — no second available-version
+ * path. Never throws; returns a null available version when it can't be read.
+ */
+export async function resolveToolkitAvailable(
+  deps: DeployRouteDeps,
+): Promise<{ pluginId: string; availableVersion: string | null }> {
+  let prodDir: string | null = null;
+  try {
+    const candidate = resolveProdDir(deps);
+    await access(candidate);
+    prodDir = candidate;
+  } catch {
+    // No prod worktree — fall back to the running server checkout.
+  }
+  try {
+    return await resolveAvailablePlugin(prodDir, deps.serverCwd);
+  } catch {
+    return { pluginId: DEFAULT_PLUGIN_ID, availableVersion: null };
+  }
+}
+
 function commandFailureMessage(err: unknown): string {
   if (err instanceof Error) {
     const details: string[] = [err.message];
