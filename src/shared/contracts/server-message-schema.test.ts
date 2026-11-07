@@ -364,6 +364,14 @@ describe('ServerMessageSchema', () => {
       name: 'diagnosticReport without required report fields',
       message: { type: 'diagnosticReport', report: { id: 'report-1' } },
     },
+    {
+      name: 'observed.snapshot missing the required now timestamp',
+      message: { type: 'observed.snapshot', observed: { sessions: [], counters: {} } },
+    },
+    {
+      name: 'observed.snapshot with a non-array sessions',
+      message: { type: 'observed.snapshot', observed: { sessions: {}, counters: {}, now: 1 } },
+    },
   ])('rejects malformed outbound payloads: $name', ({ message }) => {
     const result = ServerMessageSchema.safeParse(message);
     expect(result.success).toBe(false);

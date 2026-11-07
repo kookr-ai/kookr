@@ -1578,6 +1578,7 @@ delta sequence number.
 | `suggestion` | Suggest operator replies or quick actions for an agent. | `agentId`, `suggestionId`, `suggestions`, `quickActions` |
 | `projectSummaries` | Update the project sidebar summary list. | `projects` |
 | `coordinator.snapshot` | Update coordinator findings, chips, outputs, and chains. | `coordinator` |
+| `observed.snapshot` | Hermes observed-activity lane (hermes-fleet#15). Only broadcast when `KOOKR_HERMES_FLEET` is on; owner/full-scope viewers only. Never task-bound. | `observed` |
 | `dashboardSelection` | Acknowledge or broadcast the active dashboard selection for this connection. | `selectedTaskId`, `selectedSessionId`, `selectionVersion` |
 | `emptyEnterDecision` | Return the server decision for an empty terminal Enter intent. | `decision` |
 | `contributionWarning` | Warn that a project's contribution attempt budget is near or past a limit. | `project`, `message`, `severity` |
