@@ -140,6 +140,7 @@ const DEBUG_MESSAGE_TYPES = new Set([
   'suggestion',
   'projectSummaries',
   'coordinator.snapshot',
+  'observed.snapshot',
   'dashboardSelection',
   'emptyEnterDecision',
   'contributionWarning',

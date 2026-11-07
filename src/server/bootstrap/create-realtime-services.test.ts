@@ -52,6 +52,7 @@ async function createTestRealtimeServices(
     ossAttemptStore?: OssAttemptStore;
     serverEpoch?: string;
     enableWsDelta?: boolean;
+    getObservedActivitySnapshot?: RealtimeServicesDeps['getObservedActivitySnapshot'];
   } & SnapshotPayloadTestOverrides = {},
 ) {
   const taskStore = overrides.taskStore ?? new TaskStore();
@@ -79,6 +80,9 @@ async function createTestRealtimeServices(
     getDefaultAgentType: () => 'claude-code',
     ...(overrides.serverEpoch !== undefined ? { serverEpoch: overrides.serverEpoch } : {}),
     ...(overrides.enableWsDelta !== undefined ? { enableWsDelta: overrides.enableWsDelta } : {}),
+    ...(overrides.getObservedActivitySnapshot !== undefined
+      ? { getObservedActivitySnapshot: overrides.getObservedActivitySnapshot }
+      : {}),
     ...(overrides.snapshotPayloadWarnBytes !== undefined
       ? { snapshotPayloadWarnBytes: overrides.snapshotPayloadWarnBytes }
       : {}),
@@ -484,6 +488,98 @@ describe('createRealtimeServices', () => {
       const frames = sent.filter((m) => m.type === 'snapshot' || m.type === 'delta');
       expect(frames.every((m) => m.type === 'snapshot')).toBe(true);
       expect(frames).toHaveLength(2);
+    });
+  });
+
+  describe('broadcastObservedActivity (hermes-fleet#15 slice 2)', () => {
+    const sampleSnapshot = () => ({
+      sessions: [
+        {
+          sessionId: 'hermes-obs-a',
+          state: 'working' as const,
+          label: 'reviewing PR #1',
+          receivedAt: 1000,
+          firstSeen: 500,
+          pulseCount: 7,
+          effectiveState: 'working' as const,
+          ageMs: 1200,
+        },
+      ],
+      counters: {
+        accepted: 7,
+        deduped: 0,
+        rejected: {},
+        lastAcceptedAt: 1000,
+        lastRejectAt: null,
+        startedAt: 0,
+      },
+      now: 2200,
+    });
+
+    test('emits an observed.snapshot frame to an owner socket when the source yields one', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        getObservedActivitySnapshot: () => sampleSnapshot(),
+      });
+      const sent: ServerMessage[] = [];
+      addDashboardSocket(realtime, openSocket((data) => sent.push(JSON.parse(data) as ServerMessage)));
+
+      await realtime.broadcastObservedActivity();
+
+      const observed = sent.filter((m) => m.type === 'observed.snapshot');
+      expect(observed).toHaveLength(1);
+      expect(observed[0]).toMatchObject({
+        type: 'observed.snapshot',
+        observed: { sessions: [{ sessionId: 'hermes-obs-a', effectiveState: 'working' }] },
+      });
+    });
+
+    test('is a no-op when the flag is off (no snapshot source wired)', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir); // getObservedActivitySnapshot omitted
+      const sent: ServerMessage[] = [];
+      addDashboardSocket(realtime, openSocket((data) => sent.push(JSON.parse(data) as ServerMessage)));
+
+      await realtime.broadcastObservedActivity();
+
+      expect(sent.filter((m) => m.type === 'observed.snapshot')).toHaveLength(0);
+    });
+
+    test('is a no-op when the source resolves undefined (store present, nothing to show)', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        getObservedActivitySnapshot: () => undefined,
+      });
+      const sent: ServerMessage[] = [];
+      addDashboardSocket(realtime, openSocket((data) => sent.push(JSON.parse(data) as ServerMessage)));
+
+      await realtime.broadcastObservedActivity();
+
+      expect(sent.filter((m) => m.type === 'observed.snapshot')).toHaveLength(0);
+    });
+
+    test('a project-scoped viewer never receives the operator-global lane', async () => {
+      tempDir = mkdtempSync(join(tmpdir(), 'kookr-realtime-'));
+      const realtime = await createTestRealtimeServices(tempDir, {
+        getObservedActivitySnapshot: () => sampleSnapshot(),
+      });
+      const ownerSent: ServerMessage[] = [];
+      const viewerSent: ServerMessage[] = [];
+      realtime.registry.register(
+        openSocket((data) => ownerSent.push(JSON.parse(data) as ServerMessage)),
+        { kind: 'owner' },
+        'dashboard',
+      );
+      realtime.registry.register(
+        openSocket((data) => viewerSent.push(JSON.parse(data) as ServerMessage)),
+        { kind: 'viewer', grantId: 'g1', scope: { kind: 'projects', projectIds: ['p1'] } },
+        'dashboard',
+      );
+
+      await realtime.broadcastObservedActivity();
+
+      expect(ownerSent.filter((m) => m.type === 'observed.snapshot')).toHaveLength(1);
+      expect(viewerSent.filter((m) => m.type === 'observed.snapshot')).toHaveLength(0);
     });
   });
 });

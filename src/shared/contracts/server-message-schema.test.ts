@@ -80,6 +80,25 @@ const serverMessageCases = [
   }),
   serverMessageCase({ type: 'projectSummaries', projects: [] }),
   serverMessageCase({ type: 'coordinator.snapshot', coordinator: { outputs: [], chips: [], findings: [], chains: {} } }),
+  serverMessageCase({
+    type: 'observed.snapshot',
+    observed: {
+      sessions: [
+        {
+          sessionId: 'hermes-obs-a',
+          state: 'working',
+          label: 'reviewing PR #1',
+          receivedAt: 1000,
+          firstSeen: 500,
+          pulseCount: 3,
+          effectiveState: 'working',
+          ageMs: 1200,
+        },
+      ],
+      counters: { accepted: 3, deduped: 0, rejected: {}, lastAcceptedAt: 1000, lastRejectAt: null, startedAt: 0 },
+      now: 2200,
+    },
+  }),
   serverMessageCase({ type: 'dashboardSelection', selectedTaskId: 'task-1', selectedSessionId: 'session-1', selectionVersion: 1 }),
   serverMessageCase({
     type: 'emptyEnterDecision',

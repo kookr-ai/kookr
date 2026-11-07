@@ -58,6 +58,18 @@ export interface RealtimeServicesDeps {
   getRegistryActiveProjects: () => string[];
   getRegistryActiveRepos: () => string[];
   ossAttemptStore: OssAttemptStore;
+  /**
+   * Snapshot source for the Hermes observed-activity lane (jeanibarz/hermes-fleet#15,
+   * slice 2). Returns the current lane snapshot, or `undefined` when the
+   * `KOOKR_HERMES_FLEET` flag is off (no store) — in which case
+   * {@link RealtimeServices.broadcastObservedActivity} is a no-op and no
+   * `observed.snapshot` frame is ever emitted. Async because the store may
+   * lazy-load its durable last-state file.
+   */
+  getObservedActivitySnapshot?: () =>
+    | Promise<import('../../shared/contracts/observed-activity.js').ObservedActivitySnapshot | undefined>
+    | import('../../shared/contracts/observed-activity.js').ObservedActivitySnapshot
+    | undefined;
   getDefaultAgentType: () => AgentSelection;
   /** Operator blacklist (issue #3025). Hidden from the snapshot picker list. */
   getBlacklistedAgentTypes?: () => readonly AgentType[];
@@ -147,6 +159,15 @@ export interface RealtimeServices {
   broadcastToAll: (msg: ServerMessage) => void;
   broadcastProjectSummaries: () => void;
   broadcastOssAttempts: () => void;
+  /**
+   * Broadcast one `observed.snapshot` frame for the Hermes lane (slice 2).
+   * Flag-gated at the source: a no-op (no frame sent) when
+   * `getObservedActivitySnapshot` is unwired or returns `undefined`. Routed
+   * through {@link broadcastToAll}, so the broadcaster's non-snapshot
+   * default-deny scope filter applies — project-scoped viewers never receive
+   * the operator-global lane; owners and full-scope viewers do.
+   */
+  broadcastObservedActivity: () => Promise<void>;
   getWsBroadcastCount: () => number;
   /**
    * Current delta-protocol stream position `(epoch, seq)` for re-base frames
@@ -384,12 +405,21 @@ export async function createRealtimeServices(deps: RealtimeServicesDeps): Promis
     });
   }
 
+  async function broadcastObservedActivity(): Promise<void> {
+    // Flag-gated at the source: off ⇒ `getObservedActivitySnapshot` unwired or
+    // resolves `undefined`, so nothing is ever sent (the lane stays inert).
+    const observed = await deps.getObservedActivitySnapshot?.();
+    if (!observed) return;
+    broadcastToAll({ type: 'observed.snapshot', observed });
+  }
+
   return {
     registry,
     achievementWatcher,
     broadcastToAll,
     broadcastProjectSummaries,
     broadcastOssAttempts,
+    broadcastObservedActivity,
     getWsBroadcastCount: () => wsBroadcastCount,
     getStreamPosition: () => sequencer?.current(),
     setScheduleStore: (store) => {

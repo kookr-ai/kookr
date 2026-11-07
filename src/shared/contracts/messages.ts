@@ -16,6 +16,7 @@ import type { QuotaStatus } from './quota.js';
 import type { ScheduleResponse, ScheduleStatusSnapshot } from './schedule.js';
 import type { CollaborationCapabilities } from './speech.js';
 import type { CoordinatorSnapshotState } from './coordinator.js';
+import type { ObservedActivitySnapshot } from './observed-activity.js';
 import type { TaskCompletionFeedback, TaskMetadataIntent, TaskPriorityUpdate } from './task.js';
 import type { TaskRelation } from './task-relations.js';
 import type { TelemetryEvent } from './telemetry.js';
@@ -426,6 +427,17 @@ export type ServerMessage =
   | { type: 'projectSummaries'; projects: ProjectSummary[] }
   | { type: 'coordinator.snapshot'; coordinator: CoordinatorSnapshotState }
   | {
+      /**
+       * Hermes observed-activity lane (jeanibarz/hermes-fleet#15, slice 2). Its
+       * OWN wire frame — never a ride-along on the task snapshot's `agents[]`,
+       * which is task-keyed and actively sweeps `taskId`-less state as ghost
+       * agents. Flag-gated and broadcast only to owner / full-scope viewers
+       * (the lane is operator-global and exposes operator context in labels).
+       */
+      type: 'observed.snapshot';
+      observed: ObservedActivitySnapshot;
+    }
+  | {
       type: 'dashboardSelection';
       selectedTaskId: string | null;
       selectedSessionId: string | null;
@@ -684,6 +696,7 @@ export const SERVER_MESSAGE_TYPES = [
   'suggestion',
   'projectSummaries',
   'coordinator.snapshot',
+  'observed.snapshot',
   'dashboardSelection',
   'emptyEnterDecision',
   'contributionWarning',

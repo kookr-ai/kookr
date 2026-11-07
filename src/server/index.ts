@@ -12,7 +12,7 @@ import { reconcile, reconcileStaleOpenLaunches, type ReconciliationResult } from
 import { SessionReaperService } from './session-reaper.js';
 import { createStaleProcessSummaryCache } from './stale-dtach-pressure.js';
 import { readSessionReapConfigFromEnv, readResourceWatchdogConfigFromEnv, readHermesFleetOptInFromEnv, readHermesObserverTokenFromEnv } from './config.js';
-import { ObservedActivityStore } from './observed-activity-store.js';
+import { ObservedActivityStore, DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS } from './observed-activity-store.js';
 import { createResourceWatchdogService } from './resource-watchdog-service.js';
 import { createResourceWatchdogHostSampler } from './resource-watchdog-sampler.js';
 import { readTrailingFileBytes } from './resource-watchdog-log-tail.js';
@@ -1030,6 +1030,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     getRegistryActiveProjects,
     getRegistryActiveRepos,
     ossAttemptStore,
+    // slice 2 (hermes-fleet#15): snapshot source for the observed lane's
+    // `observed.snapshot` broadcast. Deferred closure — `observedActivityStore`
+    // is constructed later in setup; `undefined` (flag off) ⇒ broadcast no-op.
+    getObservedActivitySnapshot: () => observedActivityStore?.snapshot(),
     getDefaultAgentType,
     getBlacklistedAgentTypes: () => currentSettings.blacklistedAgentTypes,
     bypassAllPermissions,
@@ -1066,6 +1070,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     broadcastToAll,
     broadcastProjectSummaries,
     broadcastOssAttempts,
+    broadcastObservedActivity,
   } = realtime;
   const selectionController = new DashboardSelectionController({
     getAgents: () => getSnapshotAgentsForClient({ monitor }),
@@ -2711,7 +2716,22 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // a restart without blanking. It never touches the activity ledger or a Task.
   const hermesFleetOptIn = readHermesFleetOptInFromEnv();
   const observedActivityStore = hermesFleetOptIn ? new ObservedActivityStore(kookrDir) : undefined;
-  if (observedActivityStore) void observedActivityStore.load();
+  let observedActivityBroadcastTimer: ReturnType<typeof setInterval> | undefined;
+  if (observedActivityStore) {
+    void observedActivityStore.load();
+    // slice 2 (hermes-fleet#15): push the observed lane on a short cadence so a
+    // `working`→`stale` decay transition and fresh pulses surface within
+    // seconds, and a just-connected owner sees the lane without waiting on a
+    // task-snapshot flush. Flag-gated: the timer is armed only when the store
+    // exists. `broadcastObservedActivity` is itself a no-op when the snapshot
+    // source yields nothing. `unref()` so it never keeps the process alive.
+    void broadcastObservedActivity();
+    observedActivityBroadcastTimer = setInterval(
+      () => void broadcastObservedActivity(),
+      DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS,
+    );
+    observedActivityBroadcastTimer.unref?.();
+  }
 
   const app = createRoutes({
     hermesFleetOptIn,
@@ -4206,6 +4226,9 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } catch (err) {
       console.error('Error flushing activity ledger on shutdown:', err);
     }
+
+    // Stop the observed-lane broadcast cadence before the final flush (slice 2).
+    if (observedActivityBroadcastTimer) clearInterval(observedActivityBroadcastTimer);
 
     // Persist the Hermes observed lane's last-known state so a clean restart
     // reloads it instead of blanking (jeanibarz/hermes-fleet#15, R7). Best-effort

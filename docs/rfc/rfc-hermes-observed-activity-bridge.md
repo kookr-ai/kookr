@@ -1,6 +1,6 @@
 # RFC: Hermes Observed-Activity Bridge
 
-**Status:** Accepted — slice 1 (backend) implemented in this PR; slice 2 (monitor lane) pending (v3 — post-consensus-attack; symmetric-error fix + honest slice-2 cost)
+**Status:** Accepted — slice 1 (backend) and slice 2 (monitor lane) both IMPLEMENTED (v3 — post-consensus-attack; symmetric-error fix + honest slice-2 cost)
 **Date:** 2026-11-07
 **Author:** Jean Ibarz (with Claude)
 
@@ -302,16 +302,23 @@ observed session with that PR's task; **the design forbids it.** PR context is a
    reserved-prefix rejection + all backend tests. Delivers value (operator can
    `curl` the status route and see pulses survive a restart) with **no UI**. Fully
    behind the flag; revert = delete additive modules + the one small durable file.
-2. **Slice 2 — monitor lane (a full-stack vertical slice, not "just UI").** Honest
-   scope, per the consensus attack: because the grid suppresses non-task state,
-   this slice adds a **new `ServerMessage` type** (schema + exhaustiveness entries
-   in `shared/contracts/messages.ts`), a **server broadcast cadence**, a
-   **viewer-scope filter**, a **frontend store slice**, and the **render path** —
-   following the `projectSummaries` / `coordinator.snapshot` precedent. **UI
-   mockups first.** A snapshot-shape contract test is necessary but **not
-   sufficient** to de-risk this slice; budget it as full-stack. The UI hides
-   itself when the backend is flag-off/404 and never renders through the task grid.
-   Droppable with zero backend side effects.
+2. **Slice 2 — monitor lane (a full-stack vertical slice, not "just UI"). (IMPLEMENTED.)**
+   Honest scope, per the consensus attack: because the grid suppresses non-task
+   state, this slice adds a **new `ServerMessage` type** `observed.snapshot`
+   (schema in `server-message-schema.ts` + exhaustiveness entries in
+   `shared/contracts/messages.ts`; the wire shapes live in
+   `shared/contracts/observed-activity.ts` so the frontend never imports from
+   `server/`), a **server broadcast cadence** (a flag-gated 2s interval in
+   `index.ts` calling `broadcastObservedActivity`), a **viewer-scope filter**
+   (routed through `broadcastToAll` → the broadcaster's non-snapshot default-deny,
+   so project-scoped share viewers never receive the operator-global lane), a
+   **frontend store slice** (`observed-lane-slice.ts`), and the **render path**
+   (`HermesFleetObservedLane.tsx` — a self-contained pill↔lane overlay, NOT a task
+   grid section). UI mockups were taken first (combined header-pill + popover lane,
+   neutral hexagon, collapse state persisted per-viewer in `localStorage`). The UI
+   renders nothing until an `observed.snapshot` frame arrives (its proxy for
+   flag-on) and never renders through the task grid. Droppable with zero backend
+   side effects.
 
 Stopping points: after slice 1 the operator has a usable, revertible, restart-safe
 API; slice 2 is independently approvable/rejectable and is the larger of the two —

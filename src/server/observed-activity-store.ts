@@ -1,5 +1,25 @@
 import { join } from 'node:path';
 import { atomicWriteFile, readJsonFile } from '../core/persistence-utils.js';
+import type {
+  ObservedState,
+  ObservedEffectiveState,
+  ObservedSessionRecord,
+  ObservedSessionView,
+  ObservedActivityCounters,
+  ObservedActivitySnapshot,
+} from '../shared/contracts/observed-activity.js';
+
+// The pure wire shapes live in the shared contract so the frontend lane can
+// consume them without importing from `server/`. Re-exported here so existing
+// `server/` importers (routes, diagnostics) keep their import site unchanged.
+export type {
+  ObservedState,
+  ObservedEffectiveState,
+  ObservedSessionRecord,
+  ObservedSessionView,
+  ObservedActivityCounters,
+  ObservedActivitySnapshot,
+} from '../shared/contracts/observed-activity.js';
 
 /**
  * Hermes observed-activity bridge — slice 1 store (jeanibarz/hermes-fleet#15,
@@ -23,50 +43,6 @@ import { atomicWriteFile, readJsonFile } from '../core/persistence-utils.js';
  * (RFC R5/R6): integrity is preserved by construction, not by exclusion logic.
  */
 
-/** Self-reported Hermes state. Deliberately minimal (RFC §Design 3). */
-export type ObservedState = 'working' | 'idle' | 'done';
-
-/**
- * Effective state after server-side decay. `stale` is derived (never reported by
- * the producer) when a `working` session misses its heartbeat window — it is the
- * "stale-while-working" signal, distinct from a self-reported `idle`/`done`.
- */
-export type ObservedEffectiveState = ObservedState | 'stale';
-
-export interface ObservedSessionRecord {
-  sessionId: string;
-  state: ObservedState;
-  label?: string;
-  /** Server clock at last accepted pulse (ms). Decay is computed from THIS. */
-  receivedAt: number;
-  /** Server clock at first accepted pulse (ms). */
-  firstSeen: number;
-  pulseCount: number;
-}
-
-export interface ObservedSessionView extends ObservedSessionRecord {
-  /** `state` after `receivedAt`-based decay — what the monitor renders. */
-  effectiveState: ObservedEffectiveState;
-  /** Age of the last pulse in ms, at snapshot time. */
-  ageMs: number;
-}
-
-export interface ObservedActivityCounters {
-  accepted: number;
-  deduped: number;
-  rejected: Record<string, number>;
-  lastAcceptedAt: number | null;
-  lastRejectAt: number | null;
-  /** Server start time (ms) — lets the UI say "no pulses since boot at HH:MM". */
-  startedAt: number;
-}
-
-export interface ObservedActivitySnapshot {
-  sessions: ObservedSessionView[];
-  counters: ObservedActivityCounters;
-  now: number;
-}
-
 export interface ObservedActivityRecordInput {
   sessionId: string;
   state: ObservedState;
@@ -88,6 +64,13 @@ export const OBSERVED_PROVIDER = 'hermes-fleet' as const;
 export const DEFAULT_MAX_SESSIONS = 256;
 export const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000; // 24h: evict long-idle sessions
 export const DEFAULT_STALE_MS = 90_000; // a `working` session is `stale` after 90s silence
+/**
+ * Cadence (ms) at which the observed lane is re-broadcast to the monitor (slice
+ * 2). Short so a `working`→`stale` decay transition and new pulses surface
+ * within seconds; far below {@link DEFAULT_STALE_MS} so a stale flip is never
+ * missed. Only armed when the Hermes flag is on.
+ */
+export const DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS = 2_000;
 export const DEFAULT_RATE_LIMIT = 120; // accepted pulses per window
 export const DEFAULT_RATE_WINDOW_MS = 60_000;
 export const OBSERVED_LABEL_MAX = 200;

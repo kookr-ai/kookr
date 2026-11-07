@@ -335,6 +335,9 @@ export function useWebSocket() {
             case 'coordinator.snapshot':
               dispatchCoordinatorSnapshotMessageForClient(msg);
               break;
+            case 'observed.snapshot':
+              store.handleObservedActivity(msg.observed);
+              break;
             case 'dashboardSelection':
               store.handleDashboardSelection({
                 selectedTaskId: msg.selectedTaskId,

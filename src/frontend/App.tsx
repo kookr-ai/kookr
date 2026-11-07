@@ -45,6 +45,7 @@ import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
 import { DrainModeBanner } from './components/DrainModeBanner.js';
 import { SafeModeBanner } from './components/SafeModeBanner.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
+import { HermesFleetObservedLane } from './components/HermesFleetLane/HermesFleetObservedLane.js';
 import { BugReportDialog } from './components/BugReportDialog.js';
 import { ShareViewerDialog } from './components/ShareViewerDialog.js';
 import { ReadOnlyBanner } from './components/ReadOnlyBanner.js';
@@ -1661,6 +1662,7 @@ export function App() {
         shortcutBindings={shortcutBindings}
         onOpenCostComparison={() => openModal('costComparison')}
       />
+      <HermesFleetObservedLane />
       {showOperations && (
         <div className="operations-popover-shell" ref={operationsPopoverRef}>
           <Suspense fallback={null}>
