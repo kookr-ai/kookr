@@ -43,6 +43,11 @@ class FakeWebSocket {
     this.onopen?.();
   }
 
+  emitClose(code = 1006): void {
+    this.readyState = 3;
+    this.onclose?.({ code });
+  }
+
   emit(message: unknown): void {
     this.onmessage?.({ data: JSON.stringify(message) });
   }
@@ -114,5 +119,29 @@ describe('useWebSocket observed.snapshot dispatch', () => {
     });
 
     expect(useKookrStore.getState().observedActivity).toEqual(observed);
+  });
+
+  it('clears the lane when the connection is lost, so a stale "working" never lingers', async () => {
+    await mountHook();
+    const socket = FakeWebSocket.instances[0];
+    socket.emitOpen();
+    // The connection counts as established on the first message.
+    await act(async () => {
+      socket.emit({
+        type: 'observed.snapshot',
+        observed: {
+          sessions: [],
+          counters: { accepted: 1, deduped: 0, rejected: {}, lastAcceptedAt: 1, lastRejectAt: null, startedAt: 0 },
+          now: 1,
+        },
+      });
+    });
+    expect(useKookrStore.getState().observedActivity).not.toBeNull();
+
+    await act(async () => {
+      socket.emitClose();
+    });
+
+    expect(useKookrStore.getState().observedActivity).toBeNull();
   });
 });

@@ -45,4 +45,11 @@ describe('observed-lane-slice', () => {
     store.getState().handleObservedActivity(snapshot({ now: 2 }));
     expect(store.getState().observedActivity?.now).toBe(2);
   });
+
+  test('clearObservedActivity drops the frame back to null (lane disabled)', () => {
+    const store = createKookrStore();
+    store.getState().handleObservedActivity(snapshot());
+    store.getState().clearObservedActivity();
+    expect(store.getState().observedActivity).toBeNull();
+  });
 });

@@ -2719,17 +2719,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   let observedActivityBroadcastTimer: ReturnType<typeof setInterval> | undefined;
   if (observedActivityStore) {
     void observedActivityStore.load();
+  }
+  // The broadcast is armed only when the routes are also registered (flag AND
+  // token): flag-on with no token fails closed, so the lane must not render an
+  // eternal "awaiting first pulse" for a bridge that can never receive one.
+  if (observedActivityStore && readHermesObserverTokenFromEnv()) {
     // slice 2 (hermes-fleet#15): push the observed lane on a short cadence so a
     // `working`→`stale` decay transition and fresh pulses surface within
     // seconds, and a just-connected owner sees the lane without waiting on a
     // task-snapshot flush. Flag-gated: the timer is armed only when the store
     // exists. `broadcastObservedActivity` is itself a no-op when the snapshot
     // source yields nothing. `unref()` so it never keeps the process alive.
-    void broadcastObservedActivity();
-    observedActivityBroadcastTimer = setInterval(
-      () => void broadcastObservedActivity(),
-      DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS,
-    );
+    const tickObservedBroadcast = () => {
+      broadcastObservedActivity().catch((err) => {
+        console.warn('[hermes-fleet] observed-activity broadcast failed', err);
+      });
+    };
+    tickObservedBroadcast();
+    observedActivityBroadcastTimer = setInterval(tickObservedBroadcast, DEFAULT_OBSERVED_BROADCAST_INTERVAL_MS);
     observedActivityBroadcastTimer.unref?.();
   }
 
@@ -4171,6 +4178,10 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
 
     await remoteRelayRuntime?.stop();
 
+    // Stop the observed-lane broadcast cadence early so it can't fire mid-shutdown
+    // (hermes-fleet#15 slice 2).
+    if (observedActivityBroadcastTimer) clearInterval(observedActivityBroadcastTimer);
+
     // Stop hook watchers and trackers
     hookWatcher.stopAll();
     ossRegistryWatcher.close();
@@ -4226,9 +4237,6 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     } catch (err) {
       console.error('Error flushing activity ledger on shutdown:', err);
     }
-
-    // Stop the observed-lane broadcast cadence before the final flush (slice 2).
-    if (observedActivityBroadcastTimer) clearInterval(observedActivityBroadcastTimer);
 
     // Persist the Hermes observed lane's last-known state so a clean restart
     // reloads it instead of blanking (jeanibarz/hermes-fleet#15, R7). Best-effort

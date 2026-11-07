@@ -17,5 +17,9 @@ export function createObservedLaneSlice(set: StoreSet): ObservedLaneSlice {
     handleObservedActivity: (snapshot) => {
       set({ observedActivity: snapshot });
     },
+
+    clearObservedActivity: () => {
+      set({ observedActivity: null });
+    },
   };
 }

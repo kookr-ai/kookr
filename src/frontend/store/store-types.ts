@@ -854,6 +854,8 @@ export interface CompletedHistorySlice {
 export interface ObservedLaneSlice {
   observedActivity: ObservedActivitySnapshot | null;
   handleObservedActivity: (snapshot: ObservedActivitySnapshot) => void;
+  /** Drop the last frame (connection lost) so a stale lane never shows as live. */
+  clearObservedActivity: () => void;
 }
 
 export type KookrStore =
