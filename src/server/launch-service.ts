@@ -58,6 +58,7 @@ import { normalizePromptFileReferences } from './prompt-file-paths.js';
 import { applyWorktreeGuardrails, type DeliveryPolicy } from './worktree-guardrails.js';
 import { autoSyncCheckoutForManualLaunch } from './checkout-auto-sync.js';
 import type { IdempotencyLedger } from '../core/idempotency-ledger.js';
+import { LoadoutStore, replayRecordedLoadout, resolveOrReplayLoadout } from './plugin-manager/loadout-store.js';
 import { isTerminalStatus } from '../core/task-status.js';
 import { buildCapacityLedger, isReservedSlotLaunch, type CapacityLedger } from '../core/capacity-ledger.js';
 import { spawnBudgetKey, type SpawnRateLimiter, type SpawnRateVerdict } from '../core/spawn-rate-limiter.js';
@@ -144,6 +145,13 @@ export interface LaunchServiceDeps {
   taskStore: TaskStore;
   adapterRegistry: AdapterRegistry;
   lifecycleDeps: AgentLifecycleDeps;
+  /**
+   * Plugin-loadout store (RFC Layer 2 / slice 2a). Optional: when absent (tests,
+   * or the default-off feature), a fresh launch resolves no loadout and the
+   * written settings are byte-identical to today. Only a FIRST spawn reads it;
+   * resume/relaunch replay the loadout already recorded on the task.
+   */
+  loadoutStore?: LoadoutStore;
   /** Optional live session probe used to keep dedup from trusting stale inProgress records. */
   terminalBackend?: Pick<TerminalBackend, 'isAlive'>;
   /** Live getter for max concurrent tasks. Falls back to static default if not provided. */
@@ -2349,6 +2357,12 @@ async function launchTaskCore(
     && dependencyAdmissionDecision.probe
     ? allocateLaunchSessionId()
     : undefined;
+  // Resolve (or replay) the plugin loadout for this spawn (RFC Layer 2 / 2b).
+  // No-op and byte-identical to today when the feature is off / nothing attached.
+  const loadoutFields = await resolveOrReplayLoadout(
+    { loadoutStore: deps.loadoutStore, taskStore: deps.taskStore },
+    task,
+  );
   const adapterOpts: import('../adapters/agent-adapter.js').AdapterLaunchOptions = {
     onPhase: (phase) => phaseTracker.enter(phase),
     signal: launchAbort.signal,
@@ -2370,6 +2384,7 @@ async function launchTaskCore(
     ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
     ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
+    ...loadoutFields,
   };
 
   // #700 defense-in-depth: reserve the just-created task for this launch so a
@@ -3051,6 +3066,10 @@ export async function launchFreshTaskSession(
           ...callerOpts,
           ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
           ...(pins.model !== undefined ? { model: pins.model } : {}),
+          // Replay the loadout recorded at the original spawn (RFC Layer 2 /
+          // slice 2b) so a Ralph relaunch keeps the exact capabilities; never
+          // re-resolved.
+          ...replayRecordedLoadout(task),
           signal,
           onSessionCreated: (sessionId) => {
             try {

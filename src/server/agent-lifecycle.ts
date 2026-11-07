@@ -19,6 +19,7 @@ import { isMissingWorktreeHealth } from '../core/worktree-health.js';
 import { displayPromptForTask } from '../core/prompt-display.js';
 import type { ProjectConfigStore } from '../core/project-config-store.js';
 import { createSnapshotMessage } from './use-cases/get-snapshot.js';
+import { resolveOrReplayLoadout, type LoadoutStore } from './plugin-manager/loadout-store.js';
 import { removeReflectWorktree } from './use-cases/request-task-reflect.js';
 import type { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { evaluateCriteriaVerdict } from '../core/criteria-verdict.js';
@@ -71,6 +72,14 @@ export interface AgentLifecycleDeps {
   githubScanner: GitHubScannerService;
   autoNameTask: (taskId: string, prompt: string, cwd: string, criteria?: string) => void;
   taskStore?: TaskStore;
+  /**
+   * Plugin-loadout store (RFC Layer 2 / slice 2b). Carried here so every
+   * `promotePendingTasks` caller threads it uniformly. Promotion is a parked
+   * task's FIRST spawn, so it resolve-or-replays (unlike crash-recovery / Ralph
+   * relaunch, which only replay an already-recorded loadout). Optional — absent
+   * (tests / feature off) means no loadout, byte-identical to today.
+   */
+  loadoutStore?: LoadoutStore;
   /**
    * Optional project-config store. When supplied, the lifecycle stamps
    * ProjectConfig.localPath on first task start so the launch dialog can
@@ -1132,8 +1141,17 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       expectedProbeSessionId = dependencyAdmission?.admit && dependencyAdmission.probe
         ? allocateLaunchSessionId()
         : undefined;
+      // Promotion is an admission-parked task's FIRST spawn, so it must
+      // resolve-or-replay the loadout (RFC Layer 2 / slice 2b): replay a
+      // recorded loadout verbatim, else resolve fresh and record — otherwise a
+      // task parked under load would silently never get its loadout applied.
+      const loadoutFields = await resolveOrReplayLoadout(
+        { loadoutStore: deps.lifecycleDeps.loadoutStore, taskStore },
+        pending,
+      );
       const adapterOpts = {
         ...pins,
+        ...loadoutFields,
         signal: launchAbort.signal,
         onSessionCreated: (sessionId: string) => {
           const lateCleanup = noteLaunchSession(

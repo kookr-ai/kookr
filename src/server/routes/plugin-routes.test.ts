@@ -240,3 +240,79 @@ describe('POST /api/plugins/install (toolkit, slice 1d)', () => {
     await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
   });
 });
+
+describe('loadout authoring + dry-run (RFC Layer 2 / slice 2a)', () => {
+  let env: Env;
+  afterEach(async () => env?.cleanup());
+
+  it('PUT authors a level, GET reads it back, POST /resolve previews with precedence', async () => {
+    env = await setup([]);
+    const app = makeApp(env);
+
+    const put = await app.request('/api/plugins/loadouts/project/proj', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'kookr-toolkit@kookr': true, 'stripe@mkt': true } }),
+    });
+    expect(put.status).toBe(200);
+
+    await app.request('/api/plugins/loadouts/playbook/pb', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'stripe@mkt': false } }),
+    });
+
+    const get = await app.request('/api/plugins/loadouts');
+    const store = (await get.json()) as { version: number; levels: Record<string, Record<string, unknown>> };
+    expect(store.version).toBe(1);
+    expect(store.levels.project.proj).toEqual({ plugins: { 'kookr-toolkit@kookr': true, 'stripe@mkt': true } });
+
+    const resolve = await app.request('/api/plugins/loadouts/resolve', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ projectId: 'proj', playbookId: 'pb', mode: 'bypass' }),
+    });
+    const resolved = (await resolve.json()) as {
+      loadout: { enabledOverrides: Record<string, boolean>; enabledSet?: string[] };
+      provenance: { winningLevel: string; mode: string };
+    };
+    // playbook (more specific) overrides project for stripe; project value kept for toolkit.
+    expect(resolved.loadout.enabledOverrides).toEqual({ 'kookr-toolkit@kookr': true, 'stripe@mkt': false });
+    expect(resolved.loadout.enabledSet).toEqual(['kookr-toolkit@kookr']);
+    expect(resolved.provenance).toEqual({ winningLevel: 'playbook', mode: 'bypass' });
+  });
+
+  it('rejects an invalid level and a malformed body', async () => {
+    env = await setup([]);
+    const app = makeApp(env);
+    const badLevel = await app.request('/api/plugins/loadouts/nonsense/k', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: {} }),
+    });
+    expect(badLevel.status).toBe(400);
+
+    const badBody = await app.request('/api/plugins/loadouts/project/p', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'no-marketplace-id': true } }),
+    });
+    expect(badBody.status).toBe(400);
+  });
+
+  it('empty plugins map removes an entry', async () => {
+    env = await setup([]);
+    const app = makeApp(env);
+    await app.request('/api/plugins/loadouts/project/proj', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: { 'a@m': false } }),
+    });
+    await app.request('/api/plugins/loadouts/project/proj', {
+      method: 'PUT', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ plugins: {} }),
+    });
+    const get = await app.request('/api/plugins/loadouts');
+    const store = (await get.json()) as { levels: Record<string, Record<string, unknown>> };
+    expect(store.levels.project.proj).toBeUndefined();
+  });
+});

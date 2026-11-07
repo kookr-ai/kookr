@@ -8,6 +8,7 @@ import type { TaskStatus, TerminationReason } from './task-status.js';
 import type { TokenUsage } from './usage-types.js';
 import type { RalphLoopState } from '../shared/contracts/ralph.js';
 import type { PlaybookSourceIdentity } from '../shared/contracts/playbook.js';
+import type { TaskLoadoutRecord } from '../shared/contracts/plugins.js';
 import type { LaunchPhaseTimings } from './launch-phase-timings.js';
 import type { DeliveryAuthorization, TaskDependencyEdge, TaskDisposition, TaskLaunchAdmission, TaskLaunchIntent, TaskLaunchSource, TaskMetadata, TaskPriority, TaskProvenance, TaskRelaunchDisposition, TaskTerminalReceipt } from '../shared/contracts/task.js';
 
@@ -164,6 +165,16 @@ export interface Task {
   playbookSource?: PlaybookSourceIdentity;
   /** Original playbook parameter values, for relaunch pre-fill. */
   playbookParameterValues?: Record<string, string>;
+  /**
+   * The plugin loadout resolved and applied at this task's FIRST spawn
+   * (RFC Layer 2 / slice 2a answerability). Carries the resolved loadout
+   * (intent), which scope level won, the spawn mode, and a hash + link of the
+   * written per-session settings file. Set once; resume/relaunch REPLAY this
+   * record verbatim rather than re-resolving, so a resumed agent keeps the
+   * capabilities it was spawned with. Absent when the loadout feature is off
+   * or no loadout is attached (then settings are byte-identical to today).
+   */
+  loadout?: TaskLoadoutRecord;
   /** Advisory launch diagnostics. Does not affect duplicate detection. */
   launchHealthSummary?: TaskLaunchHealthSummary;
   /** Warning text prepended to the actual launch prompt, but not part of `prompt`. */

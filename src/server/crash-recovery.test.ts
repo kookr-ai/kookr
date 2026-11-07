@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, vi } from 'vitest';
-import { mkdtemp, mkdir, writeFile, access, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, access, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
@@ -92,6 +92,38 @@ describe('Crash Recovery', () => {
     const newSession = updatedTask.sessions.find((s) => s.tmuxSession !== deadSessionId)!;
     expect(newSession.relaunchCount).toBe(1);
     expect(newSession.lastRelaunchedAt).toBeGreaterThan(0);
+  });
+
+  test('replays a recorded loadout into the relaunched session settings (RFC P2 resume-replay)', async () => {
+    vi.stubEnv('KOOKR_PLUGIN_LOADOUTS', '1');
+    try {
+      const cwd = join(tempDir, 'loadout-recovery');
+      const task = await setupCrashedTask('Fix the bug', cwd);
+      const deadSessionId = task.sessions[0].tmuxSession;
+      // A loadout recorded at the ORIGINAL spawn must be replayed verbatim on
+      // relaunch (never re-resolved), or the resumed agent silently changes caps.
+      taskStore.setLoadout(task.id, {
+        resolved: { enabledOverrides: { 'stripe@mkt': false }, deniedSkills: [] },
+        winningLevel: 'project',
+        mode: 'bypass',
+        settingsHash: 'orig',
+        settingsPath: '/orig.json',
+        recordedAt: new Date().toISOString(),
+      });
+
+      const reconcileResult = await reconcile(taskStore, terminal);
+      const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
+      expect(result.relaunched).toHaveLength(1);
+
+      // Read the NEW session's written --settings; the recorded loadout must have
+      // reached enabledPlugins (would be absent if the resume-site spread were dropped).
+      const updated = taskStore.getTaskForMutation(task.id)!;
+      const newSession = updated.sessions.find((s) => s.tmuxSession !== deadSessionId)!;
+      const raw = await readFile(join(settingsDir, `${newSession.tmuxSession}.json`), 'utf-8');
+      expect(JSON.parse(raw).enabledPlugins).toEqual({ 'stripe@mkt': false });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   test('replays the durable guarded prompt while retaining raw intent identity', async () => {

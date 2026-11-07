@@ -3,6 +3,7 @@ import type { AgentType } from '../core/agent-types.js';
 import type { LaunchPhase } from '../core/launch-phase-timings.js';
 import type { AgentInteractionPort } from '../core/ports/agent-interaction-port.js';
 import type { InstalledBinaryIdentity, ProbePath } from './probe-agent-binary.js';
+import type { ResolvedLoadout } from '../shared/contracts/plugins.js';
 
 /**
  * Handler signature for adapter hook events. The optional third argument is
@@ -122,6 +123,24 @@ export interface AdapterLaunchOptions {
    * `addSession` after it has fired — stop/cleanup the terminal instead.
    */
   signal?: AbortSignal;
+  /**
+   * Resolved plugin loadout to render into the spawned agent's per-session
+   * `--settings` file (RFC Layer 2 / slice 2b). The launcher resolves this from
+   * Kookr-owned desired state (fresh on a first spawn, REPLAYED verbatim from
+   * the task record on resume) and the claude adapter RENDERS it into
+   * `enabledPlugins`; other adapters ignore it. A typed Kookr object, not a
+   * `Partial<HookSettings>`, so the on-disk settings shape stays private to the
+   * claude adapter. Absent / empty / flag-off → settings byte-identical to today.
+   */
+  resolvedLoadout?: ResolvedLoadout;
+  /**
+   * Answerability callback (RFC Layer 2). The claude adapter invokes it once,
+   * after writing the session settings, ONLY when a loadout actually rendered
+   * into `enabledPlugins`, with a hash of the written file and its path. The
+   * launcher records these on the task's loadout record on a first spawn. Never
+   * throws back into the adapter.
+   */
+  onLoadoutApplied?: (applied: { settingsHash: string; settingsPath: string }) => void;
 }
 
 /**

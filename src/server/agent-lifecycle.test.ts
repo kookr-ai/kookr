@@ -1309,7 +1309,11 @@ describe('promotePendingTasks', () => {
 // promotePendingTasks — integration tests with real TaskStore
 // ---------------------------------------------------------------------------
 
-function createPromotionDeps(taskStore: TaskStore, adapter: AgentAdapter): PromotionDeps {
+function createPromotionDeps(
+  taskStore: TaskStore,
+  adapter: AgentAdapter,
+  loadoutStore?: AgentLifecycleDeps['loadoutStore'],
+): PromotionDeps {
   return {
     taskStore,
     adapterRegistry: createAdapterRegistry(adapter),
@@ -1324,6 +1328,7 @@ function createPromotionDeps(taskStore: TaskStore, adapter: AgentAdapter): Promo
       githubScanner: { isActive: vi.fn(() => false) } as any,
       autoNameTask: vi.fn(),
       flushTasks: vi.fn().mockResolvedValue(undefined),
+      ...(loadoutStore ? { loadoutStore } : {}),
     },
     broadcastToAll: vi.fn(),
     serverCwd: '/tmp',
@@ -1339,6 +1344,35 @@ describe('promotePendingTasks (integration)', () => {
     taskStore = new TaskStore();
     adapter = createMockAdapter(taskStore);
     deps = createPromotionDeps(taskStore, adapter);
+  });
+
+  test('resolves + records a loadout on a parked task FIRST promotion (flag on) — not replay-only (RFC P2 / correctness fix)', async () => {
+    vi.stubEnv('KOOKR_PLUGIN_LOADOUTS', '1');
+    try {
+      // A parked task never reached the direct-launch resolution; promotion is
+      // its FIRST adapter.launch, so it must resolve-or-replay, not replay-only.
+      const fakeStore = {
+        resolveForLaunch: vi.fn().mockResolvedValue({
+          loadout: { enabledOverrides: { 'stripe@mkt': false }, deniedSkills: [] },
+          provenance: { winningLevel: 'project', mode: 'bypass' },
+        }),
+      } as unknown as AgentLifecycleDeps['loadoutStore'];
+      const d = createPromotionDeps(taskStore, adapter, fakeStore);
+      const task = taskStore.createTask('needs loadout', '/cwd');
+      taskStore.pendTask(task.id);
+
+      const promoted = await promotePendingTasks(d);
+      expect(promoted).toBe(1);
+
+      // The resolved loadout reached the adapter (would be undefined if promotion
+      // were replay-only, since the parked task recorded nothing).
+      const opts = (adapter.launch as any).mock.calls.at(-1)?.[4];
+      expect(opts?.resolvedLoadout?.enabledOverrides).toEqual({ 'stripe@mkt': false });
+      // And the intent was recorded on the task.
+      expect(taskStore.getTask(task.id)!.loadout?.winningLevel).toBe('project');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   test('respects MAX_ACTIVE_TASKS=2 concurrency limit', async () => {

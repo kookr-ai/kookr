@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { randomUUID, createHash } from 'node:crypto';
+import { access, readFile } from 'node:fs/promises';
 import type { TerminalBackend } from './terminal-backend.js';
 import {
   asTerminalInputWriterPort,
@@ -53,6 +53,8 @@ import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolve
 import { withTimeout } from '../core/with-timeout.js';
 import { normalizeUserPromptNewlines } from '../shared/contracts/user-prompt-text.js';
 import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
+import { renderEnabledPlugins, pluginLoadoutsEnabled } from '../core/claude-settings/loadout.js';
+import type { ResolvedLoadout } from '../shared/contracts/plugins.js';
 
 const textDecoder = new TextDecoder('utf-8', { fatal: false });
 
@@ -68,6 +70,15 @@ export interface HookSettings {
      */
     deny?: string[];
   };
+  /**
+   * Plugin loadout injection (RFC Layer 2 / slice 2b). A `plugin@marketplace`
+   * (or `plugin@inline` for `--plugin-dir`-loaded plugins) → enabled map
+   * rendered from the task's {@link ResolvedLoadout}. OMITTED entirely when the
+   * loadout feature is off, the loadout is empty, or resolution errored — so
+   * the written settings file stays byte-identical to today (the byte-identity
+   * contract). Keyed last so its presence never reorders the pre-existing keys.
+   */
+  enabledPlugins?: Record<string, boolean>;
 }
 
 export interface ClaudeCodeAdapterOptions {
@@ -231,6 +242,13 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private agentBinConfiguredVia: 'env' | 'default';
   private bypassAllPermissions: boolean;
   private pluginDir?: string;
+  /**
+   * Names of the plugins force-loaded via `--plugin-dir`, resolved lazily from
+   * each dir's `.claude-plugin/plugin.json` and cached. Used to rewrite a
+   * loadout override onto the `<name>@inline` id — the only id that actually
+   * disables a dir-loaded plugin (P2 probe). `undefined` until first resolved.
+   */
+  private dirLoadedPluginNames?: readonly string[];
   private probeExec?: ProbeExecRunner;
   private loadAgents: (cwd: string) => Record<string, InlineAgentDef>;
   private promptBracketedPaste: boolean;
@@ -301,6 +319,17 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       sessionName: tmuxName,
     });
 
+    // Resolve the loadout to render into this session's settings (RFC Layer 2 /
+    // slice 2b). The launcher passes an already-resolved `ResolvedLoadout`
+    // (fresh for a first spawn, REPLAYED from the task record on resume) via
+    // `opts.resolvedLoadout`; the adapter only renders it. Gated to the claude
+    // adapter and behind the default-off flag — when either is absent the
+    // written file is byte-identical to today.
+    const loadoutForRender =
+      opts?.resolvedLoadout && pluginLoadoutsEnabled()
+        ? { resolved: opts.resolvedLoadout, dirLoadedPluginNames: await this.resolveDirLoadedPluginNames() }
+        : undefined;
+
     // Generate hook settings. Unattended spawns also carry interactive-tool
     // deny rules (issue #1562) from the launch context.
     const settings = this.generateSettings(
@@ -308,13 +337,32 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       this.hooksDir,
       launchContext.permissionAllowlist,
       launchContext.permissionDenylist,
+      loadoutForRender,
     );
     this.settingsMap.set(tmuxName, settings);
 
     // Write settings file to disk if writeFile is available (production)
     const settingsPath = `${this.settingsDir}/${tmuxName}.json`;
+    const settingsJson = JSON.stringify(settings, null, 2);
     if (this.writeFile) {
-      await this.writeFile(settingsPath, JSON.stringify(settings, null, 2));
+      await this.writeFile(settingsPath, settingsJson);
+    }
+
+    // Report the applied loadout's settings-file hash + path for answerability
+    // (RFC Layer 2 operability). Fires only when a loadout actually rendered
+    // into `enabledPlugins`; the launcher records it on the task on a first
+    // spawn and ignores it on replay. Hash covers the WHOLE written file so a
+    // later drift of any key is detectable.
+    if (settings.enabledPlugins && opts?.onLoadoutApplied) {
+      const settingsHash = createHash('sha256').update(settingsJson).digest('hex');
+      try {
+        opts.onLoadoutApplied({ settingsHash, settingsPath });
+      } catch (err) {
+        console.warn(
+          `[claude-code-adapter] onLoadoutApplied callback threw for ${tmuxName}: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
 
     // Decide resume vs fresh. Resume requires a sessionId; if a transcriptPath
@@ -938,11 +986,38 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     };
   }
 
+  /**
+   * Resolve (and cache) the names of plugins force-loaded via `--plugin-dir`,
+   * read best-effort from each dir's `.claude-plugin/plugin.json`. Returns `[]`
+   * when no plugin dir is configured or the manifest can't be read — in which
+   * case a loadout override keeps its authored id (no `@inline` rewrite). The
+   * cache is populated once; a parse failure caches `[]` so we don't re-read on
+   * every spawn.
+   */
+  private async resolveDirLoadedPluginNames(): Promise<readonly string[]> {
+    if (this.dirLoadedPluginNames !== undefined) return this.dirLoadedPluginNames;
+    const names: string[] = [];
+    if (this.pluginDir) {
+      try {
+        const raw = await readFile(`${this.pluginDir}/.claude-plugin/plugin.json`, 'utf8');
+        const parsed = JSON.parse(raw) as { name?: unknown };
+        if (typeof parsed.name === 'string' && parsed.name.length > 0) {
+          names.push(parsed.name);
+        }
+      } catch {
+        // Best-effort: an unreadable manifest just means no rewrite.
+      }
+    }
+    this.dirLoadedPluginNames = names;
+    return names;
+  }
+
   private generateSettings(
     tmuxName: string,
     hookOutputDir: string,
     permissionAllowlist: string[],
     permissionDenylist: string[] = [],
+    loadout?: { resolved: ResolvedLoadout; dirLoadedPluginNames: readonly string[] },
   ): HookSettings {
     const hookFile = `${hookOutputDir}/${tmuxName}.jsonl`;
 
@@ -976,6 +1051,27 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       ? [cmd, { type: 'command', command: buildStopNudgeCommand({ nudgePath }) }]
       : [cmd];
 
+    // Loadout injection (RFC Layer 2 / slice 2b). Rendered ONLY when the
+    // feature flag is on AND a non-empty loadout was passed; any render error
+    // (or an empty result) leaves `enabledPlugins` unset so the file is
+    // byte-identical to today (the kill-switch / byte-identity contract). The
+    // flag is re-checked here so the adapter is the authoritative guard even if
+    // a caller passes a loadout with the flag off.
+    let enabledPlugins: Record<string, boolean> | undefined;
+    if (loadout && pluginLoadoutsEnabled()) {
+      try {
+        enabledPlugins = renderEnabledPlugins(loadout.resolved, {
+          dirLoadedPluginNames: loadout.dirLoadedPluginNames,
+        });
+      } catch (err) {
+        console.warn(
+          `[claude-code-adapter] loadout render failed for ${tmuxName}; leaving enabledPlugins unset: ` +
+            `${err instanceof Error ? err.message : String(err)}`,
+        );
+        enabledPlugins = undefined;
+      }
+    }
+
     return {
       hooks: {
         // Tool-name matchers — '*' matches all tool names
@@ -1004,6 +1100,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
               ...(permissionDenylist.length > 0 ? { deny: permissionDenylist } : {}),
             }
           : undefined,
+      // Spread so the key is entirely ABSENT when no loadout applies — keeping
+      // JSON.stringify byte-identical to pre-2b output.
+      ...(enabledPlugins ? { enabledPlugins } : {}),
     };
   }
 }

@@ -1143,6 +1143,21 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /**
+   * Record (or clear) the plugin loadout applied at this task's first spawn
+   * (RFC Layer 2 / slice 2a). Resume/relaunch read this back and replay it
+   * rather than re-resolving. Idempotent-friendly: callers set it once at the
+   * first spawn and otherwise leave it untouched.
+   */
+  setLoadout(id: string, loadout: Task['loadout'] | undefined): Task {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error(`Task not found: ${id}`);
+    task.loadout = loadout ? structuredClone(loadout) : undefined;
+    task.updatedAt = new Date();
+    this.markTaskDirty(id);
+    return cloneTask(task);
+  }
+
   /** Clear or replace the advisory text paired with launch-health findings. */
   setLaunchNote(id: string, note: string | undefined): Task {
     const task = this.tasks.get(id);
