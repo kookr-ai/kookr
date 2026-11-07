@@ -80,7 +80,17 @@ describe('TopBar plugin update UX', () => {
       availableVersion: '0.7.4',
       stale: true,
     };
-    const currentPlugin = { ...stalePlugin, installedVersion: '0.7.4', stale: false };
+    // The toolkit install/stale status now comes from /api/plugins (slice 1d).
+    const updatedManaged = {
+      id: 'kookr-toolkit@kookr',
+      installedVersion: '0.7.4',
+      availableVersion: '0.7.4',
+      enablement: 'enabled',
+      staleness: { state: 'current', source: 'git', observedAt: '2026-11-07T00:00:00.000Z' },
+      loadSource: 'marketplace',
+      alwaysOnTokens: null,
+      uninstallGuard: true,
+    };
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url === '/api/deploy/status') {
@@ -89,18 +99,13 @@ describe('TopBar plugin update UX', () => {
           available: false,
           runningPort: 4800,
           prodPort: 4800,
-          plugin: stalePlugin,
         }));
       }
-      if (url === '/api/deploy/plugin-update' && init?.method === 'POST') {
-        return Promise.resolve(fetchResponse({
-          status: 'updated',
-          plugin: currentPlugin,
-          commands: {
-            slash: ['/plugin marketplace update kookr', '/plugin update kookr-toolkit@kookr'],
-            cli: ['claude plugin marketplace update kookr', 'claude plugin update kookr-toolkit@kookr'],
-          },
-        }));
+      if (url === '/api/plugins' && (init?.method ?? 'GET') === 'GET') {
+        return Promise.resolve(fetchResponse({ plugins: [], toolkit: stalePlugin }));
+      }
+      if (url === '/api/plugins/kookr-toolkit%40kookr/update' && init?.method === 'POST') {
+        return Promise.resolve(fetchResponse({ status: 'updated', plugin: updatedManaged }));
       }
       return Promise.resolve(fetchResponse({}, false, 404));
     });
@@ -123,7 +128,7 @@ describe('TopBar plugin update UX', () => {
     });
     await flush();
 
-    expect(fetchMock).toHaveBeenCalledWith('/api/deploy/plugin-update', { method: 'POST' });
+    expect(fetchMock).toHaveBeenCalledWith('/api/plugins/kookr-toolkit%40kookr/update', { method: 'POST' });
     expect(container.textContent).toContain('Toolkit plugin updated. Restart Claude Code sessions to load it.');
     expect(container.textContent).toContain('claude plugin update kookr-toolkit@kookr');
   });

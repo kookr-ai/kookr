@@ -14,11 +14,12 @@ interface PluginPayload {
 }
 
 function mockDeployStatus(plugin: PluginPayload | undefined): void {
+  // The banner now reads the toolkit status from /api/plugins (slice 1d).
   vi.stubGlobal(
     'fetch',
     vi.fn(async (url: string) => {
-      if (String(url).includes('/api/deploy/status')) {
-        return { ok: true, json: async () => (plugin ? { plugin } : {}) };
+      if (String(url).includes('/api/plugins')) {
+        return { ok: true, json: async () => ({ plugins: [], toolkit: plugin ?? null }) };
       }
       return { ok: false, json: async () => ({}) };
     }),
@@ -160,15 +161,7 @@ describe('PluginInstallBanner', () => {
       stale: false,
     };
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/api/deploy/status')) {
-        return {
-          ok: true,
-          json: async () => ({
-            plugin: { pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: '0.7.4', stale: false },
-          }),
-        };
-      }
-      if (String(url).includes('/api/deploy/plugin-install')) {
+      if (String(url).includes('/api/plugins/install')) {
         return {
           ok: true,
           json: async () => ({
@@ -178,6 +171,15 @@ describe('PluginInstallBanner', () => {
               slash: ['/plugin marketplace add kookr-ai/kookr', '/plugin install kookr-toolkit@kookr'],
               cli: ['claude plugin marketplace add kookr-ai/kookr', 'claude plugin install kookr-toolkit@kookr'],
             },
+          }),
+        };
+      }
+      if (String(url).includes('/api/plugins')) {
+        return {
+          ok: true,
+          json: async () => ({
+            plugins: [],
+            toolkit: { pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: '0.7.4', stale: false },
           }),
         };
       }
@@ -203,21 +205,13 @@ describe('PluginInstallBanner', () => {
     // Plugin is now installed so banner hides
     expect(container.querySelector('.plugin-install-banner')).toBeNull();
     // install endpoint was called
-    const installCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('plugin-install'));
+    const installCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/api/plugins/install'));
     expect(installCalls).toHaveLength(1);
   });
 
   test('on install error shows error message and manual commands inside dialog', async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/api/deploy/status')) {
-        return {
-          ok: true,
-          json: async () => ({
-            plugin: { pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: '0.7.4', stale: false },
-          }),
-        };
-      }
-      if (String(url).includes('/api/deploy/plugin-install')) {
+      if (String(url).includes('/api/plugins/install')) {
         return {
           ok: false,
           json: async () => ({
@@ -227,6 +221,15 @@ describe('PluginInstallBanner', () => {
               cli: ['claude plugin marketplace add kookr-ai/kookr', 'claude plugin install kookr-toolkit@kookr'],
             },
             plugin: { pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: '0.7.4', stale: false },
+          }),
+        };
+      }
+      if (String(url).includes('/api/plugins')) {
+        return {
+          ok: true,
+          json: async () => ({
+            plugins: [],
+            toolkit: { pluginId: 'kookr-toolkit@kookr', installedVersion: null, availableVersion: '0.7.4', stale: false },
           }),
         };
       }
@@ -400,11 +403,17 @@ describe('PluginInstallBanner dialog focus management', () => {
     // Hang the install request so the dialog stays open with all actions disabled.
     let resolveInstall: ((value: unknown) => void) | undefined;
     const fetchMock = vi.fn(async (url: string) => {
-      if (String(url).includes('/api/deploy/status')) {
+      if (String(url).includes('/api/plugins/install')) {
+        return new Promise((resolve) => {
+          resolveInstall = resolve;
+        });
+      }
+      if (String(url).includes('/api/plugins')) {
         return {
           ok: true,
           json: async () => ({
-            plugin: {
+            plugins: [],
+            toolkit: {
               pluginId: 'kookr-toolkit@kookr',
               installedVersion: null,
               availableVersion: '0.7.4',
@@ -412,11 +421,6 @@ describe('PluginInstallBanner dialog focus management', () => {
             },
           }),
         };
-      }
-      if (String(url).includes('/api/deploy/plugin-install')) {
-        return new Promise((resolve) => {
-          resolveInstall = resolve;
-        });
       }
       return { ok: false, json: async () => ({}) };
     });
