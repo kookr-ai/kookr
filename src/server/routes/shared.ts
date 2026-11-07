@@ -296,10 +296,11 @@ export interface DeployRouteDeps {
   pluginUpdateBin?: string;
   /**
    * Shared, module-owned lock + backup for every operation that mutates
-   * `~/.claude/plugins/` (RFC Layer 0 / R8). Injected so the deploy routes, the
-   * plugin routes, and the Layer-4 auto-update runner all serialize through one
-   * lock. Optional — `registerDeployRoutes` constructs a private instance when
-   * absent, which preserves the pre-extraction single-router behaviour in tests.
+   * `~/.claude/plugins/` (RFC Layer 0 / R8). Constructed once in `routes.ts` and
+   * threaded here so the plugin routes (which type their deps as
+   * `DeployRouteDeps`) and the Layer-4 auto-update runner serialize through one
+   * lock. Optional — the plugin routes construct a private instance when absent,
+   * which keeps their unit tests self-contained.
    */
   pluginMutationService?: import('../plugin-manager/mutation-service.js').PluginMutationService;
   /**

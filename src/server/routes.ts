@@ -119,9 +119,9 @@ export function createRoutes(deps: RouteDeps): Hono {
     // the same assemblyMs / cacheAgeMs (issue #2497). Diagnostics records on
     // each assembly; metrics only reads.
     healthBodyCacheStats: deps.healthBodyCacheStats ?? new HealthBodyCacheStats(),
-    // One module-owned lock + backup shared by the deploy routes, the plugin
-    // routes, and the Layer-4 auto-update runner so no two mutation paths touch
-    // ~/.claude/plugins concurrently (RFC Layer 0 / R8).
+    // One module-owned lock + backup shared by the plugin routes and the
+    // Layer-4 auto-update runner so no two mutation paths touch ~/.claude/plugins
+    // concurrently (RFC Layer 0 / R8).
     pluginMutationService: deps.pluginMutationService ?? new PluginMutationService(),
   };
 

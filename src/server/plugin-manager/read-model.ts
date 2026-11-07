@@ -60,28 +60,37 @@ export async function assembleManagedPlugins(
   }
 
   const toolkitId = sources.toolkitAvailable?.pluginId ?? null;
-  const rows: ManagedPlugin[] = [];
-  for (const [id, installedVersion] of installed) {
-    const enablement = (await sources.settings.resolveEnablement(id)).state;
-    const alwaysOnTokens = sources.fetchTokens ? (await sources.cli.details(id)).alwaysOnTokens : null;
 
-    const isToolkit = toolkitId !== null && id === toolkitId;
-    const availableVersion = isToolkit ? (sources.toolkitAvailable?.availableVersion ?? null) : null;
-    const staleness = isToolkit
-      ? gitStaleness(installedVersion, availableVersion, observedAt)
-      : catalogStalenessUnknown(observedAt);
+  // Assemble rows in parallel: per-plugin enablement (4 scoped file reads) and
+  // the optional `claude plugin details` spawn would otherwise serialize across
+  // the whole fleet.
+  const rows = await Promise.all(
+    [...installed].map(async ([id, installedVersion]) => {
+      const [resolution, alwaysOnTokens] = await Promise.all([
+        sources.settings.resolveEnablement(id),
+        sources.fetchTokens
+          ? sources.cli.details(id).then((d) => d.alwaysOnTokens)
+          : Promise.resolve<number | null>(null),
+      ]);
 
-    rows.push({
-      id,
-      installedVersion,
-      availableVersion,
-      enablement,
-      staleness,
-      loadSource: 'marketplace',
-      alwaysOnTokens,
-      uninstallGuard: isUninstallGuarded(id),
-    });
-  }
+      const isToolkit = toolkitId !== null && id === toolkitId;
+      const availableVersion = isToolkit ? (sources.toolkitAvailable?.availableVersion ?? null) : null;
+      const staleness = isToolkit
+        ? gitStaleness(installedVersion, availableVersion, observedAt)
+        : catalogStalenessUnknown(observedAt);
+
+      return {
+        id,
+        installedVersion,
+        availableVersion,
+        enablement: resolution.state,
+        staleness,
+        loadSource: 'marketplace' as const,
+        alwaysOnTokens,
+        uninstallGuard: isUninstallGuarded(id),
+      } satisfies ManagedPlugin;
+    }),
+  );
 
   rows.sort((a, b) => a.id.localeCompare(b.id));
   return rows;

@@ -114,6 +114,23 @@ describe('PluginMutationService backup', () => {
     await expect(access(backup.backupPath as string)).rejects.toBeTruthy();
   });
 
+  it('restore returns {ok:false, backupPath} when it cannot put the backup back', async () => {
+    await mkdir(pluginsDir, { recursive: true });
+    await writeFile(join(pluginsDir, 'original.json'), '{"keep":true}');
+
+    const svc = new PluginMutationService();
+    const backup = await svc.backupPluginsDir(pluginsDir);
+    expect(backup.backupPath).not.toBeNull();
+
+    // Make the restore's `rename(backupPath → pluginsDir)` fail by deleting the
+    // backup copy out from under it. The route surfaces backupPath in its 500.
+    await rm(backup.backupPath as string, { recursive: true, force: true });
+
+    const result = await backup.restore();
+    expect(result.ok).toBe(false);
+    expect(result.backupPath).toBe(backup.backupPath);
+  });
+
   it('discard removes the backup after a successful mutation', async () => {
     await mkdir(pluginsDir, { recursive: true });
     await writeFile(join(pluginsDir, 'original.json'), '{"keep":true}');

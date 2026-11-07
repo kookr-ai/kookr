@@ -42,10 +42,6 @@ function registryPath(homeDir: string): string {
   return join(resolve(homeDir), '.claude', 'plugins', 'installed_plugins.json');
 }
 
-function marketplacesPath(homeDir: string): string {
-  return join(resolve(homeDir), '.claude', 'plugins', 'known_marketplaces.json');
-}
-
 async function readJson(path: string): Promise<unknown | null> {
   let raw: string;
   try {
@@ -112,19 +108,4 @@ export async function readInstalledVersionFromRegistry(
   const records = all.get(pluginId);
   if (!records) return null;
   return highestInstalledVersion(records);
-}
-
-/**
- * The set of marketplace names registered in `known_marketplaces.json`. A
- * plugin whose marketplace is absent here (real for `stripe`) must still render
- * — the caller degrades marketplace-scoped actions rather than erroring.
- */
-export async function readKnownMarketplaces(homeDir: string): Promise<Set<string>> {
-  const out = new Set<string>();
-  const parsed = await readJson(marketplacesPath(homeDir));
-  if (typeof parsed !== 'object' || parsed === null) return out;
-  for (const name of Object.keys(parsed as Record<string, unknown>)) {
-    out.add(name);
-  }
-  return out;
 }

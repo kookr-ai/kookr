@@ -30,6 +30,8 @@ case "$sub" in
     mkdir -p "$HOME/.claude/plugins"
     echo partial > "$HOME/.claude/plugins/partial-marker"
     if [ -f "$HOME/.kookr-fake/install-fail" ]; then echo "simulated install failure" >&2; exit 1; fi
+    # Simulate the CLI "lying": exit 0 but never make the plugin appear installed.
+    if [ -f "$HOME/.kookr-fake/install-no-registry" ]; then exit 0; fi
     # Simulate a successful install: write the registry entry the verify reads.
     printf '{"version":2,"plugins":{"kookr-toolkit@kookr":[{"scope":"user","version":"0.16.81"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"
     exit 0;;
@@ -223,6 +225,18 @@ describe('POST /api/plugins/install (toolkit, slice 1d)', () => {
     const res = await makeApp(env).request('/api/plugins/install', { method: 'POST' });
     expect(res.status).toBe(500);
     // Fake wrote partial-marker then failed; restore removed it (dir did not exist before).
+    await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
+  });
+
+  it('500s and restores when install exits 0 but the plugin never appears installed', async () => {
+    env = await setupNotInstalled();
+    // CLI exits 0 but never writes the registry → verify retries then gives up.
+    await writeFile(join(env.home, '.kookr-fake', 'install-no-registry'), '1');
+    const res = await makeApp(env).request('/api/plugins/install', { method: 'POST' });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/does not appear to be installed/i);
+    // The partial install was rolled back.
     await expect(access(join(env.home, '.claude', 'plugins', 'partial-marker'))).rejects.toBeTruthy();
   });
 });

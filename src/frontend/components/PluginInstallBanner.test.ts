@@ -153,7 +153,7 @@ describe('PluginInstallBanner', () => {
     expect(confirmBtn?.textContent).toContain('Back up & install');
   });
 
-  test('confirming install POSTs to /api/deploy/plugin-install and on success hides the banner', async () => {
+  test('confirming install POSTs to /api/plugins/install and on success hides the banner', async () => {
     const installedPlugin: PluginPayload = {
       pluginId: 'kookr-toolkit@kookr',
       installedVersion: '0.7.4',
