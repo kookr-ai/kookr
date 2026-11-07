@@ -1,6 +1,7 @@
 import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
 import type { TelegramHandle, TelegramTaskOutcome } from '../../shared/contracts/telegram.js';
+import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -18,6 +19,8 @@ export interface TelegramTriggerModule {
     whisperUrl?: string;
     transcriptionModel?: string;
     lifecycleSignal?: AbortSignal;
+    replyToTask?: (taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>;
+    approveTaskPermission?: (taskId: string) => Promise<{ ok: boolean; reason?: string }>;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
     | { ok: true; modelCount: number | null }
@@ -33,6 +36,8 @@ export interface RemoteChatTriggerDeps {
   launchTask: (opts: LaunchOpts) => Promise<LaunchResult>;
   llmClient: LlmClient | null;
   lifecycleSignal?: AbortSignal;
+  /** When set, enables answering a task from Telegram (reply routing + approve). */
+  taskBridge?: TelegramTaskBridge;
   env?: Env;
   loadTelegramModule?: () => Promise<TelegramTriggerModule>;
   log?: (message: string) => void;
@@ -157,6 +162,12 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       transcriptionModel: deps.sttTranscription && sameSpeechEndpoint(env.KOOKR_STT_WHISPER_URL, deps.sttTranscription.url)
         ? deps.sttTranscription.model : undefined,
       lifecycleSignal: deps.lifecycleSignal,
+      ...(deps.taskBridge
+        ? {
+          replyToTask: (taskId: string, text: string) => deps.taskBridge!.sendText(taskId, text),
+          approveTaskPermission: (taskId: string) => deps.taskBridge!.approvePermission(taskId),
+        }
+        : {}),
     });
 
     log(

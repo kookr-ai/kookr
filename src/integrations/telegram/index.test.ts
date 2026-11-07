@@ -1228,3 +1228,78 @@ describe('startTelegramTrigger — end-to-end with fake Telegram', () => {
     }
   });
 });
+
+describe('startTelegramTrigger — answer-a-task reply loop (buttons + reply routing)', () => {
+  const USER = 97531;
+  const PROJECT_R = { name: 'kookr', cwd: '/tmp/kookr-reply-test' };
+  let tmp: string;
+  let fake: FakeTelegramServer;
+  let handle: TelegramHandle | null = null;
+  const originalUrl = process.env.KOOKR_TELEGRAM_API_URL;
+
+  beforeEach(async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'kookr-tg-reply-'));
+    fake = await startFakeTelegram();
+    process.env.KOOKR_TELEGRAM_API_URL = fake.baseUrl;
+  });
+  afterEach(async () => {
+    if (handle) { await handle.stop(); handle = null; }
+    await fake.stop();
+    if (originalUrl === undefined) delete process.env.KOOKR_TELEGRAM_API_URL;
+    else process.env.KOOKR_TELEGRAM_API_URL = originalUrl;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  function deps(over: Partial<StartTelegramTriggerDeps> = {}): StartTelegramTriggerDeps {
+    return {
+      token: 'test-token',
+      allowedUserIds: new Set([USER]),
+      allowedProjects: [PROJECT_R],
+      dataDir: tmp,
+      dryRun: false,
+      dashboardBaseUrl: 'http://localhost:4800',
+      launchTask: vi.fn(async () => ({ task: { id: 't' }, queued: false } as unknown as LaunchResult)),
+      llmClient: null,
+      replyToTask: vi.fn(async () => ({ ok: true })),
+      approveTaskPermission: vi.fn(async () => ({ ok: true })),
+      ...over,
+    };
+  }
+  function cb(data: string, update_id = 1): any {
+    return {
+      update_id,
+      callback_query: { id: `cb-${update_id}`, from: { id: USER }, data, message: { message_id: 50, chat: { id: USER, type: 'private' } } },
+    };
+  }
+
+  it('routes an Approve button click to approveTaskPermission', async () => {
+    const approveTaskPermission = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([cb('approve:task-xyz')]);
+    handle = await startTelegramTrigger(deps({ approveTaskPermission }));
+    await waitFor(() => expect(approveTaskPermission).toHaveBeenCalledWith('task-xyz'));
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.length).toBeGreaterThan(0));
+    await waitFor(() => expect(fake.outbound.editMessageText.some((e) => /Approved/.test(e.text))).toBe(true));
+  });
+
+  it('routes a Continue button click to replyToTask with "continue"', async () => {
+    const replyToTask = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([cb('reply:task-xyz:continue')]);
+    handle = await startTelegramTrigger(deps({ replyToTask }));
+    await waitFor(() => expect(replyToTask).toHaveBeenCalledWith('task-xyz', 'continue'));
+  });
+
+  it('ignores a quick-reply button from a non-allowlisted user', async () => {
+    const approveTaskPermission = vi.fn(async () => ({ ok: true }));
+    fake.queueUpdates([{ update_id: 1, callback_query: { id: 'cb-x', from: { id: 999 }, data: 'approve:task-xyz', message: { message_id: 50, chat: { id: 999, type: 'private' } } } } as any]);
+    handle = await startTelegramTrigger(deps({ approveTaskPermission }));
+    await sleep(250);
+    expect(approveTaskPermission).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed approval to the user without throwing', async () => {
+    const approveTaskPermission = vi.fn(async () => ({ ok: false, reason: 'no longer waiting for approval' }));
+    fake.queueUpdates([cb('approve:task-xyz')]);
+    handle = await startTelegramTrigger(deps({ approveTaskPermission }));
+    await waitFor(() => expect(fake.outbound.answerCallbackQuery.some((a) => /no longer waiting/.test(a.text ?? ''))).toBe(true));
+  });
+});

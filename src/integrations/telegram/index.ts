@@ -33,6 +33,7 @@ import {
   ensureIntegrationDir,
   LockBusyError,
   PendingStore,
+  pruneSentNotifications,
   StateStore,
   type LockHandle,
   type RateLimiter,
@@ -92,6 +93,16 @@ export interface StartTelegramTriggerDeps {
   fetchTasksSummary?: (baseUrl: string) => Promise<TaskSummaryRow[]>;
   /** Server-lifecycle abort signal — see `VoiceWarmupOpts.lifecycleSignal` and issue #188. */
   lifecycleSignal?: AbortSignal;
+  /**
+   * Reply routing (optional). When set, the operator can answer a task from
+   * Telegram — a plain-text reply to a notification, or a quick-reply button,
+   * is delivered to the running agent without opening the dashboard.
+   * `replyToTask` sends free text; `approveTaskPermission` approves the task's
+   * current permission prompt (anti-stale, keystroke-based). When unset, the
+   * bot behaves exactly as before (notifications are read-only).
+   */
+  replyToTask?: (taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>;
+  approveTaskPermission?: (taskId: string) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 /**
@@ -265,9 +276,20 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   const api = new TelegramApiClient(deps.token);
 
   // Initial GC pass; schedule periodic GC.
+  const SENT_NOTIFICATION_GC_MS = 24 * 60 * 60 * 1000;
+  const pruneSentNotificationState = async (): Promise<void> => {
+    const current = state.get().sentNotifications;
+    if (!current || Object.keys(current).length === 0) return;
+    const pruned = pruneSentNotifications(current, Date.now(), SENT_NOTIFICATION_GC_MS);
+    if (Object.keys(pruned).length !== Object.keys(current).length) {
+      await state.update((s) => { s.sentNotifications = pruned; });
+    }
+  };
   await pending.gc(24 * 60 * 60 * 1000);
+  await pruneSentNotificationState();
   const gcTimer = setInterval(() => {
     void pending.gc(24 * 60 * 60 * 1000);
+    void pruneSentNotificationState();
   }, 60 * 60 * 1000);
   // Don't keep Kookr alive just for the GC timer.
   if (typeof gcTimer.unref === 'function') gcTimer.unref();
@@ -441,6 +463,25 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     audit({ kind: 'message_received', sender: userId, text, len: text.length });
 
+    // Reply routing: if this is a reply to a notification we sent about a task,
+    // deliver the text to that running agent instead of treating it as a new
+    // task request. Unmatched replies fall through to the normal flow.
+    const replyToId = m.reply_to_message?.message_id;
+    if (replyToId !== undefined && deps.replyToTask && !isHelpCommand(text)) {
+      const mapped = state.get().sentNotifications?.[String(replyToId)];
+      if (mapped) {
+        const result = await deps.replyToTask(mapped.taskId, text);
+        if (result.ok) {
+          audit({ kind: 'reply_routed', taskId: mapped.taskId, sender: userId, via: 'text' });
+          await sendMessageSafe(m.chat.id, `✅ Sent to task ${mapped.taskId}.`);
+        } else {
+          audit({ kind: 'reply_route_failed', taskId: mapped.taskId, sender: userId, via: 'text', reason: result.reason ?? 'unknown' });
+          await sendMessageSafe(m.chat.id, `Could not deliver: ${result.reason ?? 'unknown error'}.`);
+        }
+        return;
+      }
+    }
+
     if (isHelpCommand(text)) {
       audit({ kind: 'help_replied', sender: userId });
       await sendMessageSafe(m.chat.id, helpText(deps.allowedProjects));
@@ -606,6 +647,62 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
   async function handleCallback(cb: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
     const data = cb.data ?? '';
+
+    // Quick-reply buttons on notifications (approve a block / continue a task).
+    // These drive a LIVE agent, so they are allowlist-checked and rate-limited
+    // (the spawn-confirmation path below has its own cap instead).
+    if (data.startsWith(CB_APPROVE) || data.startsWith(CB_REPLY)) {
+      if (!deps.allowedUserIds.has(cb.from.id)) {
+        audit({ kind: 'dropped_unauthorized' });
+        await api.answerCallbackQuery(cb.id).catch(() => undefined);
+        return;
+      }
+      if (!limiter.allow(cb.from.id)) {
+        audit({ kind: 'rate_limited', sender: cb.from.id });
+        await api.answerCallbackQuery(cb.id, 'Rate limited. Try again in a minute.').catch(() => undefined);
+        return;
+      }
+
+      if (data.startsWith(CB_APPROVE)) {
+        const taskId = data.slice(CB_APPROVE.length);
+        const result = deps.approveTaskPermission
+          ? await deps.approveTaskPermission(taskId)
+          : { ok: false, reason: 'approval not available' };
+        if (result.ok) {
+          audit({ kind: 'permission_decision_sent', taskId, sender: cb.from.id });
+          if (cb.message) {
+            await api.editMessageText(cb.message.chat.id, cb.message.message_id, `✅ Approved task ${taskId}.`).catch(() => undefined);
+          }
+          await api.answerCallbackQuery(cb.id, 'Approved').catch(() => undefined);
+        } else {
+          audit({ kind: 'permission_decision_failed', taskId, sender: cb.from.id, reason: result.reason ?? 'unknown' });
+          await api.answerCallbackQuery(cb.id, result.reason ?? 'Could not approve').catch(() => undefined);
+        }
+        return;
+      }
+
+      // CB_REPLY — `reply:<taskId>:<preset>`
+      const rest = data.slice(CB_REPLY.length);
+      const sep = rest.lastIndexOf(':');
+      const taskId = sep >= 0 ? rest.slice(0, sep) : rest;
+      const preset = sep >= 0 ? rest.slice(sep + 1) : 'continue';
+      const presetText = preset === 'continue' ? 'continue' : preset;
+      const result = deps.replyToTask
+        ? await deps.replyToTask(taskId, presetText)
+        : { ok: false, reason: 'reply not available' };
+      if (result.ok) {
+        audit({ kind: 'reply_routed', taskId, sender: cb.from.id, via: 'button' });
+        if (cb.message) {
+          await api.editMessageText(cb.message.chat.id, cb.message.message_id, `▶️ Told task ${taskId} to continue.`).catch(() => undefined);
+        }
+        await api.answerCallbackQuery(cb.id, 'Sent').catch(() => undefined);
+      } else {
+        audit({ kind: 'reply_route_failed', taskId, sender: cb.from.id, via: 'button', reason: result.reason ?? 'unknown' });
+        await api.answerCallbackQuery(cb.id, result.reason ?? 'Could not deliver').catch(() => undefined);
+      }
+      return;
+    }
+
     const m = data.match(/^([0-9a-f]{32}):(y|n)$/);
     if (!m) {
       audit({ kind: 'callback_invalid', data });
@@ -708,6 +805,26 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   }
 
   // -------------------------------------------------------------------------
+  // Reply routing — correlate a sent notification's message_id back to its task
+  // so a plain-text reply can be delivered to the running agent.
+  // -------------------------------------------------------------------------
+
+  const SENT_NOTIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
+  /** callback_data namespaces (kept distinct from the spawn `hash:y|n` shape). */
+  const CB_APPROVE = 'approve:'; // approve:<taskId>
+  const CB_REPLY = 'reply:'; // reply:<taskId>:continue
+
+  async function recordSentNotification(messageId: number | undefined, taskId: string): Promise<void> {
+    // Only worth storing when replies can actually be routed back.
+    if (messageId === undefined || !deps.replyToTask) return;
+    await state.update((s) => {
+      const map = s.sentNotifications ?? {};
+      map[String(messageId)] = { taskId, at: Date.now() };
+      s.sentNotifications = pruneSentNotifications(map, Date.now(), SENT_NOTIFICATION_TTL_MS);
+    });
+  }
+
+  // -------------------------------------------------------------------------
   // R16 callback exposed to wireEventPipeline.
   // -------------------------------------------------------------------------
 
@@ -722,9 +839,23 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     // be silently dropped by the truncate, hiding the redaction signal.
     const safe = truncate(redactCredentials(promptText), 200);
     const url = dashboardTaskUrl(deps.dashboardBaseUrl, taskId);
-    void api
-      .sendMessage(chatId, `Task ${taskId} blocked: ${safe}\nApprove: ${url}`)
-      .then(() => audit({ kind: 'block_alert_sent', taskId, chatId }))
+    // Quick-reply: an Approve button (one tap) when approval routing is wired.
+    // The operator can also just reply to this message to tell the agent what
+    // to do instead.
+    const canReply = Boolean(deps.replyToTask);
+    const replyHint = deps.approveTaskPermission || canReply
+      ? '\nTap ✅ to approve, or reply to this message to instruct the agent.'
+      : '';
+    const markup = deps.approveTaskPermission
+      ? { inline_keyboard: [[{ text: '✅ Approve', callback_data: `${CB_APPROVE}${taskId}` }]] }
+      : undefined;
+    void sendMessageSafe(chatId, `Task ${taskId} blocked: ${safe}\nApprove: ${url}${replyHint}`, markup)
+      .then(async (sent) => {
+        if (sent) {
+          audit({ kind: 'block_alert_sent', taskId, chatId });
+          await recordSentNotification(sent.message_id, taskId);
+        }
+      })
       .catch((err) => audit({ kind: 'spawn_failed', reason: `block_alert: ${String(err)}` }));
   };
 
@@ -754,9 +885,19 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
 
     try {
       await state.update((s) => { delete s.origin[taskId]; });
-      const sent = await sendMessageSafe(chatId, formatTaskOutcomeMessage(taskId, outcome));
+      // `completion_ready` means the agent declared done and is still live,
+      // awaiting the operator. Offer a one-tap "Continue" (keep working) and
+      // let a plain reply reach the agent. Fully terminal outcomes get no
+      // buttons (no live session to route to).
+      const markup = outcome.kind === 'completion_ready' && deps.replyToTask
+        ? { inline_keyboard: [[{ text: '▶️ Continue', callback_data: `${CB_REPLY}${taskId}:continue` }]] }
+        : undefined;
+      const sent = await sendMessageSafe(chatId, formatTaskOutcomeMessage(taskId, outcome), markup);
       if (sent) {
         audit({ kind: 'task_outcome_sent', taskId, chatId, outcome: outcome.kind });
+        if (outcome.kind === 'completion_ready') {
+          await recordSentNotification(sent.message_id, taskId);
+        }
       }
     } catch (err) {
       audit({ kind: 'spawn_failed', reason: `task_outcome: ${String(err)}` });

@@ -282,6 +282,7 @@ import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js
 import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
+import { createTelegramTaskBridge } from './telegram-task-bridge.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -4077,6 +4078,17 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // see the tracked-record count and (once broadcast) the snapshot size.
   console.log(formatPayloadDietLogLine(getPayloadDietStats()));
 
+  // Reply bridge: lets the operator answer a task from Telegram (free-text
+  // reply + quick-reply buttons) without opening the dashboard.
+  const telegramTaskBridge = createTelegramTaskBridge({
+    taskStore,
+    monitor,
+    queue,
+    adapter,
+    submitMessage: (sessionId, text, source) => userInputDeliveries.submitMessage(sessionId, text, source),
+    watchdog,
+    interactionLog,
+  });
   const remoteChatTrigger = await startRemoteChatTrigger({
     sttTranscription: config.sttTranscription,
     host,
@@ -4085,6 +4097,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     launchTask: (opts) => launchTask(launchServiceDeps, opts),
     llmClient,
     lifecycleSignal,
+    taskBridge: telegramTaskBridge,
   });
   const telegramHandle = remoteChatTrigger.handle;
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
