@@ -375,6 +375,16 @@ export interface RouteDeps {
   /** Stable Kookr state directory, normally `~/.kookr`. */
   kookrDir: string;
   /**
+   * Hermes observed-activity bridge (jeanibarz/hermes-fleet#15, RFC
+   * `rfc-hermes-observed-activity-bridge`). `KOOKR_HERMES_FLEET` opt-in: when
+   * falsy, `registerObservedActivityRoutes` registers nothing (endpoints 404).
+   */
+  hermesFleetOptIn?: boolean;
+  /** `KOOKR_HERMES_OBSERVER_TOKEN`. Required even on loopback; absent-while-opted-in ⇒ routes fail closed. */
+  hermesObserverToken?: string;
+  /** Durable-last-state store for the observed lane; never touches the activity ledger or a Task. */
+  observedActivityStore?: import('../observed-activity-store.js').ObservedActivityStore;
+  /**
    * Optional clock for the GET `/api/health` body-cache TTL (issue #2429).
    * Production omits this and uses `Date.now()`. Tests inject a controllable
    * clock so expiry assertions do not depend on real time or leaked fake timers.

@@ -51,6 +51,7 @@ import type { RouteDeps } from './shared.js';
 import { isCrashLoopSkipReason, type CrashRecoveryResult } from '../crash-recovery.js';
 import type { PostRestartRecoverySummary } from '../post-restart-recovery.js';
 import type { HookIngestionDiagnosticsSnapshot } from '../hook-ingestion.js';
+import { OBSERVED_SESSION_PREFIX } from '../observed-activity-store.js';
 import type { HookWatcherHealthSnapshot } from '../hook-watcher.js';
 import { getAuthThrottleSnapshot } from '../auth.js';
 import { DELIVERY_TRACE_SCHEMA_VERSION, type DeliveryTraceFilter } from '../../shared/contracts/delivery-trace.js';
@@ -209,6 +210,18 @@ export const HEALTH_COMPONENT_BUDGET_MS = 1_500;
  * single-flight assembly keeps running so the next poll recovers to live data.
  */
 export const HEALTH_ASSEMBLY_DEADLINE_MS = 2_500;
+
+/**
+ * The Hermes observed-lane namespace (`hermes-obs-`) is reserved AWAY from the
+ * public `POST /api/hook-event/:sessionId` route (jeanibarz/hermes-fleet#15):
+ * it is reachable only through the token-gated observed-activity route, so this
+ * unauthenticated-on-loopback route rejects it. (Replay sessions, by contrast,
+ * are DESIGNED to flow through this route via `scripts/replay-hooks.ts`, so the
+ * `kookr-replay-` prefix is NOT rejected here.) Exported for direct unit testing.
+ */
+export function isReservedObservedSessionId(sessionId: string): boolean {
+  return sessionId.startsWith(OBSERVED_SESSION_PREFIX);
+}
 
 export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
   const { taskStore, queue, adapter, interactionLog, githubScanner, githubStateStore, buildInfo, serverStartedAt } = deps;
@@ -1902,6 +1915,14 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
     const sessionId = c.req.param('sessionId');
     if (!SESSION_ID_RE.test(sessionId)) {
       return c.json({ error: 'Invalid session id' }, 400);
+    }
+    // Defense-in-depth (jeanibarz/hermes-fleet#15, RFC §Design): the Hermes
+    // observed lane is reachable ONLY via the token-gated /api/observed-activity
+    // route, never through this route (unauthenticated on loopback). Rejecting
+    // its reserved prefix keeps the auth boundary and the visibility boundary the
+    // same boundary. (Replay sessions legitimately use this route, so they pass.)
+    if (isReservedObservedSessionId(sessionId)) {
+      return c.json({ error: 'Reserved session id prefix' }, 400);
     }
     const body = await c.req.text();
     if (!body.trim()) return c.json({ status: 'empty' }, 400);

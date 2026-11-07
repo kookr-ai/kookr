@@ -6922,6 +6922,24 @@ describe('diagnostics routes', () => {
       }));
     });
 
+    test('rejects the reserved hermes-obs- namespace before dispatching (defense-in-depth, #15)', async () => {
+      const harness = mkHookRouteHarness();
+      const fixture = readFileSync('src/__fixtures__/hook-session-start.json', 'utf8');
+
+      const res = await harness.app.request('/api/hook-event/hermes-obs-alpha', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: fixture,
+      });
+
+      // The Hermes observed lane is reachable ONLY via the token-gated
+      // /api/observed-activity route; this unauthenticated-on-loopback route must
+      // refuse the reserved prefix. Deleting the guard makes this assert 200.
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Reserved session id prefix' });
+      expect(harness.calls).toHaveLength(0);
+    });
+
     test('returns 200 and records arrival when body is non-empty', async () => {
       const arrivals: Array<{ tmux: string; body: string }> = [];
       const httpPushTracker = {
