@@ -1555,8 +1555,53 @@ Exit codes: `0` success (launched, or brief printed), `2` user error (bad flags 
 `--until`, unknown/terminal ref, `ALREADY_SUPERVISED`), `3` no server reachable, `4` server/HTTP
 error (including a rejected or uncertain launch), `5` ambiguous port or ambiguous ref.
 
-Until the server-side wake ships, the playbook keeps the supervisor alive with a
-self-armed background timer (a clearly marked temporary section of the playbook).
+**Wakes and the watchdog (server side).** Once launched, the server's supervision
+service (every 60 s, and once at startup) wakes the supervisor: a one-line heartbeat
+at least every 45 minutes (`KOOKR_SUPERVISION_HEARTBEAT_MIN`) while the mandate is
+active, one wake at the deadline, and one "targets finished" wake when every target is
+terminal. A wake is typed only when the supervisor sits at its prompt and not on a
+choice dialog (the same guard as `kookr reply`). A busy supervisor is retried every tick
+and is never restarted or cancelled; if a due wake stays undeliverable and it shows no
+new hook events for 30 minutes it is `degraded:possibly-hung` and the operator is alerted
+once. Only a **crash** (a termination that is not an operator action, or a task with no live
+session) starts a fresh supervisor episode from the brief (at most 3 per mandate, at least
+30 minutes apart; the `supervises` edges move to the new task); the operator is alerted only
+when the limit is reached or a launch fails. A supervisor that completes, signals
+completion-ready, or is cancelled/terminated by an operator ends the mandate and is never
+revived. A `kookr supervise` whose launch never recorded a supervisor is adopted from its
+idempotency key `supervise-<id>`, else ended `launch-failed` with an alert. Alerts go through the
+existing operator-signal channel (dashboard plus Telegram/Discord). Nothing actuates until startup recovery has completed (plus a 60 s settle), so a supervisor that
+crash recovery is about to relaunch is never replaced; a recoverable termination in the last 2
+minutes is also left alone. Wakes and replacement
+launches stop under `KOOKR_SUPERVISION_WAKE_DISABLED=1`, SAFE MODE, drain, or a paused
+supervisor project; one `wakes-disabled` alert is raised, and the playbook then has the
+supervisor keep its own single background timer (it checks `kookr supervision status <id>
+--json` for `wakesEnabled`).
+
+## `kookr supervision status` and `end`
+
+Read-only view of attached supervisions, from `GET /api/supervisions`.
+
+```bash
+kookr supervision status               # every supervision
+kookr supervision status sup-1a2b3c    # one (exact id or unique prefix)
+kookr supervision status --json
+kookr supervision end sup-1a2b3c       # end the mandate; cancels no task
+```
+
+Per supervision it prints the health (`healthy`, `degraded:undeliverable`, `dead` when the
+supervisor crashed right now, or `ended` with the reason `deadline`, `targets-terminal`, `supervisor-finished`, `operator` or `launch-failed`),
+the supervisor task and number of fresh episodes used, the deadline, the next scheduled
+wake (heartbeat or deadline), the last delivered wake, a banner when wakes are disabled by
+the kill switch, and each target's status. With `--json` the envelope is
+`{ ok, code, message, details: { supervisions } }` (or `details: { supervision }` when an
+id is given). Instance discovery matches `kookr supervise`.
+
+`end <id>` marks the supervision ended by the operator (the server stops waking and never
+restarts it); it cancels neither the supervisor nor any target.
+
+Exit codes: `0` success, `2` user error (bad flags, missing subcommand or id, unknown id), `3`
+no server reachable, `4` server/HTTP error, `5` ambiguous port or id prefix.
 
 ## `kookr peek`
 

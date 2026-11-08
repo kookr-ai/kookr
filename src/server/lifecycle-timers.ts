@@ -136,6 +136,13 @@ import {
 } from './server-log-rotation.js';
 
 export interface TimerDeps {
+  /**
+   * Attached-task-supervision watchdog (RFC attachable-task-supervisor, P2a).
+   * `run` fires once shortly after boot and then every `intervalMs`; it never
+   * throws and ignores overlapping calls. Not subject to the non-critical
+   * pressure gate: it is the watchdog that notices a dead supervisor.
+   */
+  supervisionTick?: { intervalMs: number; run: () => Promise<void> };
   monitor: Monitor;
   taskStore: TaskStore;
   queue: AttentionQueue;
@@ -669,6 +676,9 @@ export interface TimerHandles {
   hostStaleDtachReapStartupTimer: ReturnType<typeof setTimeout> | null;
   /** Null unless the reflect-worktree orphan sweep (issue #1860) was configured. */
   reflectWorktreeSweepInterval: ReturnType<typeof setInterval> | null;
+  /** Null unless the supervision watchdog tick was configured. */
+  supervisionInterval?: ReturnType<typeof setInterval> | null;
+  supervisionStartupTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 /** Config for the mid-process `server.log` size-cap timer (issue #1991). */
@@ -2581,6 +2591,22 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     }, intervalMs);
   }
 
+  // --- Supervision watchdog tick (RFC attachable-task-supervisor P2a), optional ---
+  // Level-triggered: each run recomputes from supervision files + task state, so
+  // the startup run and the periodic runs are the same function. The startup run
+  // is delayed 5 s so boot reconciliation settles first.
+  let supervisionInterval: ReturnType<typeof setInterval> | null = null;
+  let supervisionStartupTimer: ReturnType<typeof setTimeout> | null = null;
+  const supervisionTick = deps.supervisionTick;
+  if (supervisionTick) {
+    timerHealth?.register('supervision', supervisionTick.intervalMs);
+    supervisionStartupTimer = setTimeout(() => void supervisionTick.run(), 5_000);
+    supervisionInterval = setInterval(() => {
+      timerHealth?.recordFire('supervision', supervisionTick.intervalMs);
+      void supervisionTick.run();
+    }, supervisionTick.intervalMs);
+  }
+
   // --- Hourly prod smoke tick (issue #1593), optional ---
   // A cheap in-process liveness check: runs the same bounded smoke suite the
   // deploy gate uses against the live instance, on the tick's own cadence, and
@@ -2694,6 +2720,8 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
     hostStaleDtachReapInterval,
     hostStaleDtachReapStartupTimer,
     reflectWorktreeSweepInterval,
+    supervisionInterval,
+    supervisionStartupTimer,
   };
 }
 
@@ -2733,4 +2761,6 @@ export function clearAllTimers(handles: TimerHandles): void {
   if (handles.hostStaleDtachReapInterval) clearInterval(handles.hostStaleDtachReapInterval);
   if (handles.hostStaleDtachReapStartupTimer) clearTimeout(handles.hostStaleDtachReapStartupTimer);
   if (handles.reflectWorktreeSweepInterval) clearInterval(handles.reflectWorktreeSweepInterval);
+  if (handles.supervisionInterval) clearInterval(handles.supervisionInterval);
+  if (handles.supervisionStartupTimer) clearTimeout(handles.supervisionStartupTimer);
 }

@@ -334,6 +334,23 @@ describe('runSuperviseCli', () => {
     expect(t.requests.filter((r) => r.url.endsWith('/api/tasks') && r.method === 'POST')).toHaveLength(1);
   });
 
+  it('marks state.json ended launch-failed on a definite 4xx rejection so the server never adopts or restarts it', async () => {
+    const t = setup(['aaaaaaaa-1111'], { launchSeq: [400] });
+    expect(await t.run()).toBe(4);
+    const state = JSON.parse(readFileSync(join(t.dataDir, 'supervisions', 'sup-test', 'state.json'), 'utf8'));
+    expect(state).toMatchObject({ endedReason: 'launch-failed', health: 'ended', supervisorTaskId: null });
+    expect(state.endedAt).toBe(NOW.toISOString());
+  });
+
+  it('leaves state.json adoptable (not ended) when the launch outcome is uncertain', async () => {
+    const t = setup(['aaaaaaaa-1111'], { launchSeq: [503] });
+    expect(await t.run()).toBe(4);
+    const state = JSON.parse(readFileSync(join(t.dataDir, 'supervisions', 'sup-test', 'state.json'), 'utf8'));
+    expect(state.endedAt).toBeUndefined();
+    expect(state.endedReason).toBeUndefined();
+    expect(state.supervisorTaskId).toBeNull();
+  });
+
   it('exits 2 for a bad --until and when no ref is given', async () => {
     expect(await setup(['aaaaaaaa-1111', '--until', 'soon']).run()).toBe(2);
     expect(await setup([]).run()).toBe(2);
@@ -355,8 +372,17 @@ describe('task-supervisor playbook', () => {
     expect(pb.parameters.find((p) => p.name === 'prompt')?.required).toBe(true);
     expect(pb.body).not.toMatch(/\{\{(targets|goals|until)\}\}/);
     expect(pb.body).toContain('{{prompt}}');
-    for (const needle of ['kookr peek', 'INPUT_REFUSED', '/compact', 'NEVER buy', 'completion-ready', 'run_in_background', 'TEMPORARY']) {
+    for (const needle of ['kookr peek', 'INPUT_REFUSED', '/compact', 'NEVER buy', 'completion-ready', 'Kookr wakes you', 'fresh episode']) {
       expect(pb.body).toContain(needle);
     }
+    // P2a: the temporary self-wake section is gone; the playbook forbids self-arming instead.
+    expect(pb.body).not.toContain('TEMPORARY');
+    expect(pb.body).not.toContain('SELF-WAKE');
+    expect(pb.body).toMatch(/do NOT arm `Monitor`, `sleep` loops, background timers or `ScheduleWakeup`/i);
+    // Conditional fallback: only when the server reports wakes are gated.
+    expect(pb.body).toContain('kookr supervision status <id> --json');
+    expect(pb.body).toContain('wakesEnabled');
+    expect(pb.body).toContain('run_in_background: true');
+    expect(pb.body).toContain('exactly one');
   });
 });

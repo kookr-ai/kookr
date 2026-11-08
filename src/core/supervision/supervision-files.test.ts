@@ -84,3 +84,33 @@ describe('writeFileAtomic', () => {
     expect(calls[0]).toMatch(/^rm \/d\/state\.json\.tmp-/);
   });
 });
+
+describe('reading supervisions (P2a)', () => {
+  it('lists and reads states, tolerating P1 files and garbage', async () => {
+    const { mkdtempSync, mkdirSync, rmSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { listSupervisionStates, readSupervisionState, writeSupervisionFiles } = await import('./supervision-files.js');
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-sup-read-'));
+    try {
+      const p1 = {
+        supervisionId: 'sup-a',
+        targets: [{ taskId: 't', name: 'n' }],
+        goals: [],
+        deadlineAt: '2026-11-08T14:00:00.000Z',
+        createdAt: '2026-11-08T10:00:00.000Z',
+        supervisorTaskId: null,
+      };
+      writeSupervisionFiles(dir, p1, 'brief');
+      mkdirSync(join(dir, 'supervisions', 'broken'), { recursive: true });
+      writeFileSync(join(dir, 'supervisions', 'broken', 'state.json'), '{not json');
+      expect(listSupervisionStates(dir)).toEqual([p1]);
+      expect(readSupervisionState(dir, 'sup-a')).toEqual(p1);
+      expect(readSupervisionState(dir, '../sup-a')).toBeUndefined();
+      expect(readSupervisionState(dir, 'missing')).toBeUndefined();
+      expect(listSupervisionStates(join(dir, 'nowhere'))).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

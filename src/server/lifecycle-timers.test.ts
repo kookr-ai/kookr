@@ -2650,6 +2650,37 @@ describe('startLifecycleTimers maintenance prune scheduling', () => {
     }
   });
 
+  // --- Supervision watchdog tick (RFC attachable-task-supervisor P2a) ---
+  test('runs the supervision tick once shortly after boot and then on its interval; clearAllTimers stops it', async () => {
+    vi.useFakeTimers();
+    const run = vi.fn(async () => undefined);
+    const handles = startLifecycleTimers(baseTimerDeps({
+      supervisionTick: { intervalMs: 60_000, run },
+    }) as any);
+    try {
+      expect(run).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5_100);
+      expect(run).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(run).toHaveBeenCalledTimes(2);
+    } finally {
+      clearAllTimers(handles);
+    }
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(run).toHaveBeenCalledTimes(2);
+  });
+
+  test('omitting supervisionTick leaves the supervision timers off', () => {
+    vi.useFakeTimers();
+    const handles = startLifecycleTimers(baseTimerDeps({}) as any);
+    try {
+      expect(handles.supervisionInterval).toBeNull();
+      expect(handles.supervisionStartupTimer).toBeNull();
+    } finally {
+      clearAllTimers(handles);
+    }
+  });
+
   // --- Reflect-worktree orphan sweep wiring (issue #1860) ---
   test('fires the scheduled reflect-worktree sweep on its interval with fake clock', async () => {
     vi.useFakeTimers();

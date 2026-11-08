@@ -30,6 +30,7 @@ import { registerFileRoutes } from './routes/file-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
 import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
+import { registerSupervisionRoutes } from './routes/supervision-routes.js';
 import { registerRalphRoutes } from './ralph/routes.js';
 import { registerOssAttemptRoutes } from './routes/oss-attempts-routes.js';
 import { registerShareRoutes } from './routes/share-routes.js';
@@ -174,6 +175,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   });
   registerFileRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
+  registerSupervisionRoutes(app, sharedDeps);
   if (sharedDeps.issueClaims) registerIssueClaimRoutes(app, sharedDeps.issueClaims);
   if (sharedDeps.environmentBlockerRegistry) {
     registerEnvironmentBlockerRoutes(app, { registry: sharedDeps.environmentBlockerRegistry });

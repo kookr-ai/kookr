@@ -511,7 +511,19 @@ export async function runSuperviseCli(argv: string[], io: SuperviseCliIo = {}): 
       } else if (launch.status >= 500) {
         lastFailure = `HTTP ${launch.status}`;
       } else {
-        // Definitive rejection (4xx, 429 backpressure): nothing was created.
+        // Definitive rejection (4xx, 429 backpressure): nothing was created. Mark the files
+        // ended so the server's wake service never adopts or restarts a supervisor for them.
+        // (LAUNCH_UNCERTAIN below leaves them adoptable by the `supervise-<id>` idempotency key.)
+        try {
+          writeSupervisionFiles(
+            dataDir,
+            { ...state, endedAt: now.toISOString(), endedReason: 'launch-failed', health: 'ended' },
+            undefined,
+            io.fs,
+          );
+        } catch {
+          // best effort; the server also ends a never-launched supervision after its grace window
+        }
         const message = typeof lb.error === 'string' ? lb.error : `launching the supervisor failed (HTTP ${launch.status}).`;
         return failWith('SERVER_ERROR', message, EXIT_SERVER_ERROR, { status: launch.status, supervisionId });
       }

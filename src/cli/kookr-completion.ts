@@ -108,6 +108,13 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--goal', '--until', '--print-brief', '--json', '-h', '--help'],
   },
   {
+    // Server-built status of attached supervisions (RFC P2a); keep in sync with
+    // src/cli/kookr-supervision.ts.
+    name: 'supervision',
+    subcommands: ['status', 'end'],
+    flags: ['--json', '-h', '--help'],
+  },
+  {
     // Read-only run-state + full last assistant message. Positional is the
     // taskId|name; keep in sync with src/cli/kookr-peek.ts.
     name: 'peek',
@@ -448,6 +455,8 @@ function renderBashCompletion(): string {
   const replyFlags = flagsFor('reply');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
+  const supervisionSubcommands = subcommandsFor('supervision');
+  const supervisionFlags = flagsFor('supervision');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -592,6 +601,13 @@ _kookr()
       ;;
     supervise)
       COMPREPLY=( $(compgen -W "${superviseFlags}" -- "\${cur}") )
+      ;;
+    supervision)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${supervisionSubcommands} ${supervisionFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${supervisionFlags}" -- "\${cur}") )
+      fi
       ;;
     signal)
       if [[ "\${COMP_CWORD}" == 2 ]]; then
@@ -806,6 +822,8 @@ function renderZshCompletion(): string {
   const replyFlags = flagsFor('reply');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
+  const supervisionSubcommands = subcommandsFor('supervision');
+  const supervisionFlags = flagsFor('supervision');
   const signalKinds = positionalValuesFor('signal');
   const signalFlags = flagsFor('signal');
   const doctorFlags = flagsFor('doctor');
@@ -906,6 +924,13 @@ _kookr()
       ;;
     supervise)
       compadd -- ${superviseFlags}
+      ;;
+    supervision)
+      if (( CURRENT == 3 )); then
+        compadd -- ${supervisionSubcommands} ${supervisionFlags}
+      else
+        compadd -- ${supervisionFlags}
+      fi
       ;;
     signal)
       if (( CURRENT == 3 )); then
