@@ -127,8 +127,8 @@ describe('renderCompletion', () => {
   it('renders a bash completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('bash');
     expect(script).toContain('complete -F _kookr kookr');
-    expect(script).toContain('spawn stop abort open reply supervise peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
-    expect(script).toContain('compgen -W "spawn stop abort open reply supervise peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
+    expect(script).toContain('spawn stop abort open reply supervise supervision peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion');
+    expect(script).toContain('compgen -W "spawn stop abort open reply supervise supervision peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion -h --help -v --version"');
     expect(script).toContain('compgen -W "--json --fail-on --require-ready -h --help"');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.
@@ -137,6 +137,9 @@ describe('renderCompletion', () => {
     expect(script).toContain('compgen -W "outcome"');
     expect(script).toContain('status pause resume cancel');
     expect(script).toContain('list claim release owner');
+    // RFC attachable-task-supervisor P2a: `kookr supervision status`.
+    expect(script).toContain('supervision)');
+    expect(getRootCompletionCommands()).toContain('supervision');
     expect(script).toContain('verify doctor');
     expect(script).toContain('status drain remember yield');
     expect(script).toContain('compgen -W "--json --days --kookr-dir -h --help"');
@@ -158,7 +161,7 @@ describe('renderCompletion', () => {
   it('renders a zsh completion with root commands, subcommands, and flags', () => {
     const script = renderCompletion('zsh');
     expect(script).toContain('#compdef kookr');
-    expect(script).toContain('root_commands=(spawn stop abort open reply supervise peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
+    expect(script).toContain('root_commands=(spawn stop abort open reply supervise supervision peek signal issue doctor status ops github logs command ralph schedule playbook drain resume orchestration migrate maintenance lesson effort-split emission value-density queue-feeder retro-verify reflect pr-checklist context-pack signal-emit push completion)');
     expect(script).toContain('compadd -- --json --fail-on --require-ready -h --help');
     // #2562: --offline is a live ops digest flag; keep it next to --json.
     // #2639: `timers` is a sibling verb of `digest`.

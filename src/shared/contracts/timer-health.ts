@@ -22,6 +22,7 @@ export const LIFECYCLE_TIMER_NAMES = [
   'relayOrphanSweep',
   'hostStaleDtachReap',
   'reflectWorktreeSweep',
+  'supervision',
 ] as const;
 
 export type LifecycleTimerName = (typeof LIFECYCLE_TIMER_NAMES)[number];

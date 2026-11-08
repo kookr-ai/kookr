@@ -14,6 +14,7 @@ Usage:
   kookr open [taskId] [--json]  Open the running dashboard in your browser (deep-link to a task).
   kookr reply <taskId|name> "<text>" [--json]  Deliver a terminal reply to a task's live agent.
   kookr supervise <taskRef...> [--goal <text>]... [--until <+Nh|HH:MM>] [--print-brief] [--json]  Attach a supervisor task to running tasks.
+  kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
   kookr peek <taskId|name> [--max-chars N] [--json]  Show a task's run-state and its FULL last assistant message.
   kookr stop|abort <taskId>... [--reason <text>]  Abort (terminate) running task(s).
   kookr doctor [--json]         Run launch preflight checks (human table or JSON).
@@ -51,7 +52,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, open, reply, supervise, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, open, reply, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -123,6 +124,12 @@ async function main({
   // Attach a supervisor task to running tasks (RFC attachable-task-supervisor P1).
   if (command === 'supervise') {
     await runSuperviseCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Server-built supervision status (RFC attachable-task-supervisor P2a).
+  if (command === 'supervision') {
+    await runSupervisionCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -602,6 +609,21 @@ async function runSuperviseCommand(argv, { env = process.env, out = console, err
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runSuperviseCli(argv, { env, out, err });
+}
+
+async function runSupervisionCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-supervision.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-supervision.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] supervision module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runSupervisionCli(argv, { env, out, err });
 }
 
 async function runPeekCommand(argv, { env = process.env, out = console, err = console } = {}) {

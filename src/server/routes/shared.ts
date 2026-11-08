@@ -333,6 +333,8 @@ export interface DeployRouteDeps {
 }
 
 export interface RouteDeps {
+  /** Attached-task-supervision status (RFC attachable-task-supervisor, P2a). Absent in minimal harnesses. */
+  supervisionService?: import('../supervision-service.js').SupervisionService;
   /**
    * Issue-ownership claim route deps (RFC rfc-issue-ownership-lock).
    * Absent when KOOKR_ISSUE_CLAIMS is off — the routes are then not

@@ -35,7 +35,8 @@ export interface SafeModeStatus {
  * Launch sources that count as autonomous actuation for the kill-switch.
  * Schedule fires, the idle-slot idea refinery (issue #2144), post-recovery
  * queue fill (issue #2899), and resource-watchdog investigation / meta-reflection
- * (issue #3224) are the first-class autonomous spawn paths; other sources
+ * (issue #3224) and the supervision watchdog's fresh-episode restart
+ * (RFC attachable-task-supervisor, P2a) are the first-class autonomous spawn paths; other sources
  * (api/ui/cli/websocket/remote) are operator- or human-driven and stay accepted
  * in SAFE MODE.
  */
@@ -45,7 +46,8 @@ export function isAutonomousLaunchSource(
   return launchSource === 'schedule'
     || launchSource === 'idle-refinery'
     || launchSource === 'post-recovery'
-    || launchSource === 'resource-watchdog';
+    || launchSource === 'resource-watchdog'
+    || launchSource === 'supervision';
 }
 
 /**

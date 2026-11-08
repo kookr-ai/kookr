@@ -71,24 +71,33 @@ the absolute deadline.
 - Workers never commit in the main checkout and never self-merge harness or tooling
   changes; enforce the delivery rules the repo already states.
 
-## SELF-WAKE (TEMPORARY: remove when the server-side wake ships in P2a)
+## Kookr wakes you
 
-Until Kookr itself wakes supervisors, you must wake yourself. A background command that
-exits re-invokes you; nothing else is reliable.
+Kookr normally wakes you; you do not wake yourself.
 
-- Before ending ANY turn while the mandate is active, ensure **exactly one** background
-  timer is armed: run the Bash tool with `run_in_background: true` and a command such as
-  `sleep 1500; echo wake`. Do not arm a second one if one is already pending.
-- On every wake, re-read the targets, act, and **re-arm** the timer before ending the turn.
-- Do NOT rely on a `Monitor` with a timeout, or on `ScheduleWakeup` alone. A supervisor
-  that did went idle one hour into a four-hour mandate and never came back.
+- Kookr types a one-line wake into your prompt on a heartbeat (about every 45 minutes while the
+  mandate is active) and once at the deadline. A wake looks like
+  `[kookr supervision <id>] mandate until HH:MM · N targets · brief: <path>`. On every wake,
+  re-read the brief and the targets (`kookr peek`), act on what needs you, then end your turn.
+- The supervision id is in the brief ("Supervision id") and in every wake line. **On each turn, run
+  `kookr supervision status <id> --json`** and read `details.supervision.wakesEnabled`.
+  - `true`: do NOT arm `Monitor`, `sleep` loops, background timers or `ScheduleWakeup`, and end your
+    turn when there is nothing to do. An idle prompt is how Kookr knows it can wake you. A supervisor
+    that armed its own timers went idle one hour into a four-hour mandate and never came back.
+  - `false` (the operator paused wakes: kill switch, SAFE MODE or drain): Kookr will NOT wake you, so
+    wake yourself. Before ending the turn keep **exactly one** background timer armed: run the Bash
+    tool with `run_in_background: true` and a command such as `sleep 1500; echo wake`. Do not arm a
+    second one while one is pending. Re-check `wakesEnabled` on every wake and stop arming timers once
+    it is `true` again.
+- If you are a fresh episode (the brief starts with "You are a fresh episode of supervision"), the
+  previous supervisor stopped: re-read every target before acting, since you carry none of its memory.
 
 ## Deadline and finish
 
 - At the mandate deadline (the absolute time in the brief), stop steering. Write a short,
   honest recap: what each target delivered, what is unfinished, any skipped step or failed
   gate with its evidence, and what needs the operator.
-- Then run `kookr signal completion-ready` and stop arming timers.
+- Then run `kookr signal completion-ready` and stop.
 - If every target reaches a verified end state before the deadline, recap and signal early.
 
 ## Notebook

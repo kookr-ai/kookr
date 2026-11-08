@@ -63,6 +63,13 @@ describe('isAutonomousLaunchSource', () => {
     expect(isAutonomousLaunchSource('resource-watchdog')).toBe(true);
   });
 
+  it('treats the supervision watchdog restart as autonomous (RFC attachable-task-supervisor P2a)', () => {
+    expect(isAutonomousLaunchSource('supervision')).toBe(true);
+    expect(mayAutonomousActuate({ source: 'supervision', projectId: undefined, globalEnabled: false, pausedProjectIds: new Set() })).toBe('safe_mode');
+    expect(mayAutonomousActuate({ source: 'supervision', projectId: 'p', globalEnabled: true, pausedProjectIds: new Set(['p']) })).toBe('project_paused');
+    expect(mayAutonomousActuate({ source: 'supervision', projectId: 'p', globalEnabled: true, pausedProjectIds: new Set() })).toBe('allow');
+  });
+
   it('treats operator-driven sources as non-autonomous', () => {
     for (const source of ['api', 'ui', 'cli', 'websocket', 'remote-chat-telegram', 'remote-relay'] as const) {
       expect(isAutonomousLaunchSource(source)).toBe(false);

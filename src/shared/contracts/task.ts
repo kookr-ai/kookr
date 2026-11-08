@@ -49,6 +49,7 @@ export type TaskLaunchSource =
   | 'idle-refinery'
   | 'post-recovery'
   | 'resource-watchdog'
+  | 'supervision'
   | 'remote-chat-telegram'
   | 'remote-relay';
 export type TaskPriority = 'high';

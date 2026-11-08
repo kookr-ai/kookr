@@ -201,6 +201,8 @@ import { readMaxHostLoadPerCpuFromEnv } from './config.js';
 import { LessonSpoolService } from './lesson-spool-service.js';
 import { defaultSpoolDir } from '../core/lesson-write-spool.js';
 import { SignalOutboxService } from './signal-outbox-service.js';
+import { SUPERVISION_TICK_INTERVAL_MS, SupervisionService } from './supervision-service.js';
+import { preparePlaybookLaunchWithMetadata } from './use-cases/playbook-launch.js';
 import {
   createProviderTransientRetryHandler,
   createProviderTransientAlertHandler,
@@ -2219,6 +2221,73 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     ? (msg) => { broadcastToAll(msg); emitOperationalSignal(msg); }
     : broadcastToAll;
 
+  // Attached task supervision (RFC attachable-task-supervisor, P2a): heartbeat +
+  // deadline wakes, watchdog and fresh-episode self-healing. Operator alerts reuse
+  // detectorBroadcast (dashboard + operator-signal outbox -> Telegram/Discord).
+  // Autonomous actuation is gated like other autonomous actors (SAFE MODE, paused
+  // project, drain) plus KOOKR_SUPERVISION_WAKE_DISABLED.
+  const supervisionService = new SupervisionService({
+    dataDir: kookrDir,
+    taskStore,
+    monitor,
+    adapter,
+    defaultCwd: serverCwd,
+    alert: detectorBroadcast,
+    // Nothing actuates until startup recovery (reattach, hook replay, crash relaunch) is done,
+    // or a supervisor that recovery is about to relaunch would be replaced as "crashed".
+    getStartupReadyAtMs: () => {
+      if (startupReadiness.getPhase() !== 'ready') return undefined;
+      const readyAt = startupReadiness.getProgress().readyAt;
+      return readyAt ? Date.parse(readyAt) : undefined;
+    },
+    isAccepting: () => drainController.isAccepting(),
+    isAutomationEnabled: () => !currentSettings.automationKillSwitch && !settingsLoadError,
+    getPausedProjectIds: () => projectConfigStore.getPausedProjectIds(),
+    // Gate on the SUPERVISOR task's project (its cwd), not the server's.
+    getProjectId: (cwd) => getProjectId(cwd),
+    launchSupervisor: async ({ prompt, cwd, idempotencyKey }) => {
+      const prepared = await preparePlaybookLaunchWithMetadata({
+        cwd,
+        playbookSourceCwd: cwd,
+        taskTargetCwd: cwd,
+        taskTargetCwdExplicit: true,
+        playbookPath: 'task-supervisor.md',
+        scope: 'plugin',
+        parameterValues: { prompt },
+      });
+      const automationProjectId = await getProjectId(cwd);
+      const result = await launchTask(
+        launchServiceDeps,
+        {
+          ...prepared.launchOpts,
+          launchSource: 'supervision',
+          launchActorId: 'kookr',
+          idempotencyKey,
+        },
+        { deliveryPolicy: prepared.deliveryPolicy, automationProjectId },
+      );
+      return { taskId: result.task.id };
+    },
+    abortTask: (taskId) => cancelTask(taskId, {
+      adapter,
+      monitor,
+      taskStore,
+      interactionLog,
+      hookWatcher,
+      watchdog,
+      shadowRegistry,
+      tokenTracker,
+      suppressionTracker,
+      terminalInputCoordinator,
+      onTaskOutcome: (id, outcome) => {
+        onTaskOutcomeHolder?.(id, outcome);
+      },
+      getCleanupWorktreeOnComplete,
+      reflectWorktreesDir,
+      ...(issueClaimServices ? { issueClaimRegistry: issueClaimServices.registry } : {}),
+    }),
+  });
+
   // hungSuspect residual page after TTL reclaim (issue #1993). Page-only;
   // uses detectorBroadcast so fire/clear edges spool to Discord.
   const hungSuspectResidualAlerter = new HungSuspectResidualAlerter({
@@ -2749,6 +2818,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const delegationRuntime = await createDelegationRuntime({ kookrDir });
 
   const app = createRoutes({
+    supervisionService,
     delegationService: delegationRuntime.service,
     ...(delegationRuntime.disabled ? { delegationDisabled: delegationRuntime.disabled } : {}),
     hermesFleetOptIn,
@@ -3700,6 +3770,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     scheduledWorktreeReclaimRunner,
     umbrellaChainAdvancer,
     timerDeps: {
+      supervisionTick: { intervalMs: SUPERVISION_TICK_INTERVAL_MS, run: () => supervisionService.tick() },
       monitor, taskStore, queue, adapter, adapterRegistry, tokenTracker, watchdog,
       hookWatcher, terminalBackend, hooksDir, tasksFile, serverCwd,
       saveIntervalMs, livenessIntervalMs, broadcastToAll,
