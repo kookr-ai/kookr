@@ -1490,6 +1490,74 @@ failed, was rejected, or returned an unexpected body), `5` ambiguous — either 
 instances reachable (`AMBIGUOUS_PORT`; set `KOOKR_PORT`) or more than one live agent
 matched the reference (`AMBIGUOUS_AGENT`).
 
+## `kookr supervise`
+
+Attach a **supervisor task** to one or more running tasks, from the shell. The
+supervisor is launched from the `task-supervisor` plugin playbook
+(`plugin/playbooks/task-supervisor.md`): it reads each target with `kookr peek`,
+keeps it moving with `kookr reply`, makes technical calls itself, demands measured
+verification from the worker, never buys or subscribes to anything, escalates only
+on a dead end, a destructive or irreversible action, spending money, or a
+credential wall, and at the deadline writes a recap and runs
+`kookr signal completion-ready`.
+
+```bash
+kookr supervise <taskRef...> [--goal <text>]... [--until <+Nh|HH:MM>] [--print-brief] [--json]
+kookr supervise 3f9a1c2e "my-worker" --goal "land the PR" --until +6h
+kookr supervise 3f9a1c2e --print-brief       # print the brief, launch nothing
+```
+
+**Task resolution.** Each `<taskRef>` must resolve to exactly one **live** task via
+`GET /api/tasks`: an exact `taskId`, an exact task name (a live task wins over a
+finished one of the same name), or a unique `taskId` prefix of at least 8
+characters. An unknown ref, an ambiguous ref (the message names every candidate),
+or a ref that is already terminal is a user error and nothing is
+launched (an ambiguous ref exits `5` with `AMBIGUOUS_TASK`, the others exit `2`).
+A target that already has a live supervisor (an active `supervises` relation from a
+non-terminal task) is refused with `ALREADY_SUPERVISED` (exit `2`): one live
+supervisor per target. Repeated refs to the same task collapse to one target.
+
+**Options.**
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--goal <text>` | drive each target to completion | What you want achieved. Repeatable. |
+| `--until <when>` | `+4h` | Mandate end: `+Nh` (1 to 168 hours from now) or `HH:MM` (local time; rolls to tomorrow if already past). The brief states the absolute local time. |
+| `--print-brief` | off | Print the rendered markdown brief (exact ids, names, run-state, goals, deadline, operator rules) and exit `0`. Launches nothing and writes no files, so you can paste it into a plain Claude session. Such a session gets the brief but no server wake. |
+| `--json` | off | One `{ ok, code, message, details }` envelope. |
+
+**What a launch does.**
+
+1. Writes `~/.kookr/supervisions/<supervisionId>/brief.md` and `state.json`
+   (`{ supervisionId, targets, goals, deadlineAt, createdAt, supervisorTaskId }`),
+   each atomically (temp file plus rename). The directory follows the server
+   the command talked to (`~/.kookr` for port 4800, `~/.kookr-<port>` otherwise),
+   because the server, not the CLI, reads these files later; `KOOKR_DIR` is ignored.
+2. Launches the supervisor with `POST /api/tasks` (the same contract as
+   `kookr spawn --playbook task-supervisor.md --playbook-scope plugin`), the brief
+   as the prompt, and the idempotency key `supervise-<supervisionId>`. The task runs
+   in the current working directory. A timeout, network error or 5xx is retried
+   (3 attempts, short backoff) with the identical body and idempotency key, so it can
+   never create two supervisors; if the outcome stays unknown the command exits `4`
+   with `LAUNCH_UNCERTAIN` and prints the `supervisionId` and idempotency key.
+3. Records one `supervises` relation per target (supervisor to target, `source: api`,
+   confidence `1`) with `POST /api/task-relations`, then records the supervisor task
+   id in `state.json`.
+
+If a relation write fails after the supervisor launched, the command prints a
+warning (and `details.warnings` in `--json`) and still exits `0`: the supervisor
+works without the edge, which only drives the dashboard tree.
+
+Instance discovery and authorization match `kookr reply` (`KOOKR_API_BASE_URL`,
+`KOOKR_PORT`, `KOOKR_SUPERVISOR_TOKEN`, `KOOKR_API_TOKEN`).
+
+Exit codes: `0` success (launched, or brief printed), `2` user error (bad flags or
+`--until`, unknown/terminal ref, `ALREADY_SUPERVISED`), `3` no server reachable, `4` server/HTTP
+error (including a rejected or uncertain launch), `5` ambiguous port or ambiguous ref.
+
+Until the server-side wake ships, the playbook keeps the supervisor alive with a
+self-armed background timer (a clearly marked temporary section of the playbook).
+
 ## `kookr peek`
 
 Answer "**what is this task actually doing, and what did it last say?**" from the
