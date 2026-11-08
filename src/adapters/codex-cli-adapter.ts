@@ -1,3 +1,5 @@
+import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
+import { writeComposerInput } from './composer-input.js';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, readFile, realpath } from 'node:fs/promises';
@@ -42,7 +44,7 @@ import { LaunchAbortedError, throwIfLaunchAborted } from './launch-abort.js';
 import { buildAgentLaunchContext, DEFAULT_PROMPT_SUBMIT_DELAY_MS } from './agent-launch-context.js';
 import { ensureCodexWorkspaceTrusted } from './codex-config.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
-import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
+import { translateKeystroke } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { buildHookCommand, resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
@@ -641,7 +643,7 @@ export class CodexCliAdapter implements AgentAdapter {
     return tmuxName;
   }
 
-  async sendInput(tmuxName: string, text: string): Promise<void> {
+  async sendInput(tmuxName: string, text: string, opts?: SendInputOptions): Promise<void> {
     // Lead with Ctrl-U (clear line): keystrokes typed into the dashboard's
     // terminal panel but never submitted sit on the Codex composer line, and
     // without the clear they would be fused onto the front of this message
@@ -653,10 +655,8 @@ export class CodexCliAdapter implements AgentAdapter {
     // paste-burst heuristic. The trailing Enter is still delayed and sent as
     // its own payload, making it an unambiguous submit keystroke even when a
     // busy TUI drains the preceding bytes in one batch (#935).
-    await this.inputWriter.writeInputSequence(tmuxName, [CLEAR_LINE_BYTES, encodeBracketedPaste(text), ENTER_BYTES], {
-      reason: 'adapter-send-input',
-      interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS,
-    });
+    // `opts.beforeSubmit` re-checks right before Enter (issue #3513).
+    await writeComposerInput(this.inputWriter, tmuxName, text, DEFAULT_PROMPT_SUBMIT_DELAY_MS, opts);
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {

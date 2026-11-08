@@ -1,3 +1,4 @@
+import { InputSubmitAbortedError } from '../core/ports/agent-interaction-port.js';
 import { fork, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
@@ -84,7 +85,17 @@ export class TerminalHostBackend implements TerminalBackend {
         ? structuredClone(this.inputSnapshots.get(id)) : null,
       getWriteMetrics: () => this.latest?.inputMetrics ?? { pendingWrites: 0, maxPendingWrites: 0 },
       writeInput: (...args) => this.request('input.writeInput', args),
-      writeInputSequence: (...args) => this.request('input.writeInputSequence', args),
+      writeInputSequence: async (sessionId, payloads, meta) => {
+        // Functions cannot cross the host IPC (structured clone). Evaluate the
+        // issue #3513 pre-Enter check here, before the whole sequence, and send
+        // the rest of the meta without it. This is weaker than the in-process
+        // in-queue check, which runs after the delay; accepted for this opt-in mode.
+        const { beforeFinalPayload, ...wireMeta } = meta ?? {};
+        if (beforeFinalPayload && !(await beforeFinalPayload())) {
+          throw new InputSubmitAbortedError(sessionId);
+        }
+        return this.request('input.writeInputSequence', [sessionId, payloads, wireMeta]);
+      },
       markUserPromptSubmitted: (...args) => this.serializeInputControl(args[0], () => this.request('input.markUserPromptSubmitted', args)),
       markToolStarted: (...args) => this.serializeInputControl(args[0], () => this.request('input.markToolStarted', args)),
       markPermissionBlocked: (...args) => this.serializeInputControl(args[0], () => this.request('input.markPermissionBlocked', args)),

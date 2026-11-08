@@ -1,3 +1,4 @@
+import { InputSubmitAbortedError } from '../core/ports/agent-interaction-port.js';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -227,6 +228,42 @@ describe('TerminalInputCoordinator', () => {
       maxPendingWrites: 2,
     });
     writeSpy.mockRestore();
+  });
+
+  it('checks beforeFinalPayload inside the queue, after the delay, and skips Enter on a veto (issue #3513)', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const order: string[] = [];
+    const sleepFn = vi.fn(async () => { order.push('sleep'); });
+    const coordinator = new TerminalInputCoordinator(backend, sleepFn);
+    coordinator.registerSession('s1');
+
+    const beforeFinalPayload = vi.fn(() => { order.push('check'); return false; });
+    await expect(coordinator.writeInputSequence(
+      's1',
+      [Uint8Array.of(0x15), encoder.encode('reply'), Uint8Array.of(0x0d)],
+      { reason: 'test-submit', interPayloadDelayMs: 500, beforeFinalPayload },
+    )).rejects.toBeInstanceOf(InputSubmitAbortedError);
+
+    expect(beforeFinalPayload).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['sleep', 'sleep', 'check']); // checked only before the final payload
+    expect(backend.getWrittenText('s1')).not.toContain('\r');
+    expect(coordinator.getWriteMetrics().pendingWrites).toBe(0);
+  });
+
+  it('writes the final payload when beforeFinalPayload approves', async () => {
+    const backend = new FakeTerminalBackend();
+    await backend.createSession({ id: 's1', command: 'agent', args: [] });
+    const coordinator = new TerminalInputCoordinator(backend, vi.fn(async () => undefined));
+    coordinator.registerSession('s1');
+
+    await coordinator.writeInputSequence(
+      's1',
+      [encoder.encode('reply'), Uint8Array.of(0x0d)],
+      { reason: 'test-submit', interPayloadDelayMs: 500, beforeFinalPayload: () => true },
+    );
+
+    expect(backend.getWrittenText('s1')).toBe('reply\r');
   });
 
   it('delays sequence payloads while keeping the session write in-flight', async () => {

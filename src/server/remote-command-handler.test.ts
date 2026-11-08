@@ -219,6 +219,65 @@ describe('configureRemoteCommandHandler', () => {
     }
   });
 
+  test('refuses a remote preset reply while the agent is on a choice dialog (issue #3513)', async () => {
+    let commandHandler: ((command: CommandEnvelope) => Promise<CommandResult>) | null = null;
+    const sendInput = vi.fn(async () => undefined);
+    await configureRemoteCommandHandler({
+      runtime: {
+        executeWithPipeline: async ({ handler, request }) => ({
+          commandId: request.commandId,
+          action: request.action,
+          outcome: 'accepted',
+          result: await handler.execute(request),
+        }),
+        grantForRemoteCommandAction: vi.fn(),
+        RemotePermissionBroker: vi.fn(),
+        evaluateGrantById: vi.fn(),
+        isPresetReplyId: vi.fn(() => true),
+        // The real sendPresetReply just types the preset text through the adapter.
+        sendPresetReply: async (adapter: { sendInput: (id: string, text: string) => Promise<void> }, id: string) => {
+          await adapter.sendInput(id, 'yes');
+          return { text: 'yes' };
+        },
+      } as unknown as RemoteCommandHandlerDeps['runtime'],
+      remoteNodeClient: {
+        setCommandHandler: (handler) => { commandHandler = handler; },
+      } as unknown as RemoteCommandHandlerDeps['remoteNodeClient'],
+      commandJournal: {} as unknown as RemoteCommandHandlerDeps['commandJournal'],
+      adapter: { sendInput } as unknown as RemoteCommandHandlerDeps['adapter'],
+      monitor: {
+        isAwaitingChoice: vi.fn(() => true),
+        markInputReceived: vi.fn(() => true),
+      } as unknown as RemoteCommandHandlerDeps['monitor'],
+      queue: { getAnomaly: vi.fn(), respondAndAdvance: vi.fn() } as unknown as RemoteCommandHandlerDeps['queue'],
+      interactionLog: { append: vi.fn() } as unknown as RemoteCommandHandlerDeps['interactionLog'],
+      abortPendingSuggestion: vi.fn(),
+      taskStore: {
+        findTaskBySession: vi.fn(() => ({ id: 'task-1', sessions: [{ tmuxSession: 'session-1' }] })),
+      } as unknown as RemoteCommandHandlerDeps['taskStore'],
+      remotePolicyCache: null,
+      markDone: vi.fn(),
+      remoteInputAdapter: { submit: vi.fn() } as unknown as RemoteCommandHandlerDeps['remoteInputAdapter'],
+      controllerLeaseManager: null,
+    });
+
+    await expect(commandHandler!({
+      commandId: 'cmd-preset',
+      actorId: LOCAL_OWNER_ID,
+      clientId: 'client-1',
+      nodeId: 'node-1',
+      nodeEpoch: '1',
+      sessionId: 'session-1',
+      sessionEpoch: '1',
+      grantId: 'owner-local:node-1',
+      idempotencyKey: 'idem-preset',
+      action: 'presetReply',
+      baseRevision: 1,
+      payload: { presetId: 'yes' },
+    } as unknown as CommandEnvelope)).rejects.toMatchObject({ name: 'AgentInputRefusedError' });
+    expect(sendInput).not.toHaveBeenCalled();
+  });
+
   test('logs finding resolutions for remote preset replies and submitted messages', async () => {
     let commandHandler: ((command: CommandEnvelope) => Promise<CommandResult>) | null = null;
     const append = vi.fn(async () => {});

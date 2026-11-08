@@ -1,3 +1,4 @@
+import { asInputRefusal, guardChoiceDialog, type AwaitingChoiceProbe } from '../core/choice-dialog-guard.js';
 import { randomUUID } from 'node:crypto';
 import type { AgentAdapter } from '../adapters/agent-adapter.js';
 import { isPaneBusyOrAwaitingDialog } from '../adapters/agent-launch-context.js';
@@ -12,6 +13,8 @@ import type {
 
 interface UserInputDeliveryServiceDeps {
   adapter: Pick<AgentAdapter, 'sendInput'>;
+  /** Refuse free text while the agent is on a choice dialog (issue #3513). */
+  isAwaitingChoice?: AwaitingChoiceProbe;
   interactionLog?: DeferredInteractionLogWriter;
   retry?: UserInputDeliveryRetryDeps;
   now?: () => Date;
@@ -82,11 +85,19 @@ export class UserInputDeliveryService {
     text: string,
     source: UserInputDeliverySource,
   ): Promise<UserInputDeliverySnapshot> {
+    // Throws AgentInputRefusedError before anything is recorded or typed.
+    const sendOpts = guardChoiceDialog(sessionId, this.deps.isAwaitingChoice);
     const delivery = this.createDelivery(sessionId, text, source);
     this.appendDelivery(delivery);
 
     try {
-      await this.deps.adapter.sendInput(sessionId, text);
+      try {
+        await (sendOpts
+          ? this.deps.adapter.sendInput(sessionId, text, sendOpts)
+          : this.deps.adapter.sendInput(sessionId, text));
+      } catch (sendErr) {
+        throw asInputRefusal(sendErr, sessionId);
+      }
       const acceptedAt = this.nowIso();
       const current = this.getDelivery(sessionId, delivery.deliveryId);
       if (current.status !== 'queued' || current.terminalReason) {

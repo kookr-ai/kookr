@@ -1,3 +1,5 @@
+import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
+import { writeComposerInput } from './composer-input.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { access, readFile } from 'node:fs/promises';
 import type { TerminalBackend } from './terminal-backend.js';
@@ -46,7 +48,7 @@ import {
 import { ensureClaudeWorkspaceTrusted } from './claude-config.js';
 import { dismissClaudeStartupDialog, isClaudeStartupDialogBlocking } from './claude-readiness.js';
 import type { PromptDeliveryHealth } from '../core/session-read-model.js';
-import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
+import { translateKeystroke } from './keystroke.js';
 import { effectiveHookSettingsPath, readPersistedHookSettings } from './effective-hook-settings.js';
 import { loadFileBasedAgents, type InlineAgentDef } from './file-based-agents.js';
 import { buildHookCommand, buildStopNudgeCommand, resolveHookWriterPath, resolveStopNudgePath } from '../core/hook-writer-paths.js';
@@ -641,7 +643,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   }
 
   /** Send developer input (text + Enter) to an agent's session. */
-  async sendInput(tmuxName: string, text: string): Promise<void> {
+  async sendInput(tmuxName: string, text: string, opts?: SendInputOptions): Promise<void> {
     // Lead with Ctrl-U (clear line): keystrokes typed into the dashboard's
     // terminal panel but never submitted sit on the agent CLI's input line,
     // and without the clear they would be fused onto the front of this
@@ -656,11 +658,9 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     // heuristic is timing-based; when the TUI is busy it can drain text and
     // Enter together and absorb Enter as paste content. Explicit paste
     // markers keep the delayed trailing Enter an unambiguous submit key.
-    await this.inputWriter.writeInputSequence(tmuxName, [
-      CLEAR_LINE_BYTES,
-      encodeBracketedPaste(text),
-      ENTER_BYTES,
-    ], { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS });
+    //
+    // `opts.beforeSubmit` re-checks right before Enter (issue #3513).
+    await writeComposerInput(this.inputWriter, tmuxName, text, DEFAULT_PROMPT_SUBMIT_DELAY_MS, opts);
   }
 
   /** Send a single keystroke without trailing Enter (for permission prompts). */

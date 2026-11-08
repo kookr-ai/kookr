@@ -1,6 +1,6 @@
 import type { Hono } from 'hono';
 import { createSnapshotMessage, getAgentStateProjected } from '../use-cases/get-snapshot.js';
-import { sendDirectAgentInput } from '../use-cases/agent-input.js';
+import { AgentInputRefusedError, sendDirectAgentInput } from '../use-cases/agent-input.js';
 import { ACTOR_HEADER, resolveLifecycleActor } from '../actor-attribution.js';
 import type { AgentRouteDeps } from './shared.js';
 
@@ -120,11 +120,16 @@ export function registerAgentRoutes(app: Hono, deps: AgentRouteDeps): void {
       await sendDirectAgentInput({
         adapter,
         interactionLog,
+        isAwaitingChoice: (id) => monitor.isAwaitingChoice(id),
       }, agentId, body.input, actor.actorId);
 
       broadcastToAll(createSnapshotMessage({ monitor, serverCwd, activityMetaProvider: hookIngestion, ...(deps.taskStore ? { relationTaskStore: deps.taskStore } : {}) }));
       return c.json({ ok: true, agentId, delivered: true });
     } catch (err) {
+      if (err instanceof AgentInputRefusedError) {
+        // 409: the agent's current screen makes typed input unsafe (issue #3513).
+        return c.json({ error: err.message, code: err.code }, 409);
+      }
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }

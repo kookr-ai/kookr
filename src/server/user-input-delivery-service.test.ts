@@ -467,3 +467,32 @@ describe('UserInputDeliveryService submit-retry races (#935)', () => {
     expect(delivery).not.toHaveProperty('enterRetries');
   });
 });
+
+describe('UserInputDeliveryService — choice-dialog guard (issue #3513)', () => {
+  it('refuses dashboard/Telegram free text while the agent is on a choice dialog, recording nothing', async () => {
+    const sendInput = vi.fn(async () => undefined);
+    const service = new UserInputDeliveryService({
+      adapter: { sendInput },
+      isAwaitingChoice: () => true,
+      idGenerator: () => 'delivery-1',
+    });
+
+    await expect(service.submitMessage('s1', 'yes go ahead', 'directReply'))
+      .rejects.toMatchObject({ name: 'AgentInputRefusedError', code: 'awaiting_choice' });
+    expect(sendInput).not.toHaveBeenCalled();
+    expect(service.getSnapshot('s1')).toEqual([]);
+  });
+
+  it('passes the pre-Enter re-check to the adapter when the agent is free', async () => {
+    const sendInput = vi.fn(async () => undefined);
+    const service = new UserInputDeliveryService({
+      adapter: { sendInput },
+      isAwaitingChoice: () => false,
+      idGenerator: () => 'delivery-1',
+    });
+
+    await service.submitMessage('s1', 'continue', 'directReply');
+
+    expect(sendInput).toHaveBeenCalledWith('s1', 'continue', expect.objectContaining({ beforeSubmit: expect.any(Function) }));
+  });
+});

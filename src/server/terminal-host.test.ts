@@ -1,3 +1,4 @@
+import { InputSubmitAbortedError } from '../core/ports/agent-interaction-port.js';
 import { execFileSync, fork, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -57,6 +58,30 @@ describe('NFR-TERM-001: native isolated terminal ownership', () => {
     await expect.poll(() => controls.some((frame) => frame.type === 'seed-end')).toBe(true);
     return { ws, registry, controls, output, url: `ws://127.0.0.1:${address.port}/ws/terminal/shell` };
   }
+
+  it('evaluates the pre-Enter check in the parent instead of cloning it across IPC (issue #3513)', async () => {
+    const backend = await start();
+    backend.inputCoordinator.registerSession('shell');
+    const encoder = new TextEncoder();
+
+    const executed = (marker: string) => async () =>
+      new RegExp(`(^|[\\r\\n])${marker}`).test(new TextDecoder().decode(await backend.captureBytes('shell')));
+
+    await expect(backend.inputCoordinator.writeInputSequence(
+      'shell',
+      [encoder.encode("printf 'VETOED_MARKER\\n'"), encoder.encode('\r')],
+      { reason: 'test', interPayloadDelayMs: 10, beforeFinalPayload: () => false },
+    )).rejects.toBeInstanceOf(InputSubmitAbortedError);
+
+    // Ctrl-U clears the un-submitted line before the allowed command.
+    await backend.inputCoordinator.writeInputSequence(
+      'shell',
+      [Uint8Array.of(0x15), encoder.encode("printf 'ALLOWED_MARKER\\n'"), encoder.encode('\r')],
+      { reason: 'test', interPayloadDelayMs: 10, beforeFinalPayload: () => true },
+    );
+    await expect.poll(executed('ALLOWED_MARKER')).toBe(true);
+    expect(await executed('VETOED_MARKER')()).toBe(false);
+  });
 
   it('owns writes, readiness, captures and graceful persistence in one child', async () => {
     const backend = await start();

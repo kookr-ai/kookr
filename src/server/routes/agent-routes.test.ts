@@ -81,6 +81,7 @@ describe('POST /api/agents/:id/message (issue #1526 Phase B actor attribution)',
     const interactionLog = { append: vi.fn().mockResolvedValue(undefined) };
     const monitor = {
       getSnapshot: vi.fn(() => [{ agentId: 'agent-1', events: [], anomaly: null }]),
+      isAwaitingChoice: vi.fn(() => false),
     };
     const adapter = { sendInput: vi.fn().mockResolvedValue(undefined) };
     const deps: Partial<AgentRouteDeps> = {
@@ -122,5 +123,49 @@ describe('POST /api/agents/:id/message (issue #1526 Phase B actor attribution)',
     expect(interactionLog.append).toHaveBeenCalledWith(expect.objectContaining({
       actor: 'unattributed',
     }));
+  });
+});
+
+describe('POST /api/agents/:id/message — choice-dialog guard (issue #3513)', () => {
+  function mkGuardedDeps(awaitingChoice: boolean) {
+    const adapter = { sendInput: vi.fn().mockResolvedValue(undefined) };
+    const monitor = {
+      getSnapshot: vi.fn(() => [{ agentId: 'agent-1', events: [], anomaly: null }]),
+      isAwaitingChoice: vi.fn(() => awaitingChoice),
+    };
+    const deps: Partial<AgentRouteDeps> = {
+      monitor: monitor as never,
+      adapter: adapter as never,
+      interactionLog: { append: vi.fn().mockResolvedValue(undefined) } as never,
+      broadcastToAll: vi.fn(),
+      serverCwd: '/repo',
+    };
+    return { deps, adapter, monitor };
+  }
+
+  test('answers 409 awaiting_choice instead of pressing Enter on a choice dialog', async () => {
+    const { deps, adapter, monitor } = mkGuardedDeps(true);
+    const res = await mkApp(deps).request('/api/agents/agent-1/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'please continue' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'awaiting_choice' });
+    expect(monitor.isAwaitingChoice).toHaveBeenCalledWith('agent-1');
+    expect(adapter.sendInput).not.toHaveBeenCalled();
+  });
+
+  test('delivers normally when the agent is not on a choice dialog', async () => {
+    const { deps, adapter } = mkGuardedDeps(false);
+    const res = await mkApp(deps).request('/api/agents/agent-1/message', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ input: 'next slice' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(adapter.sendInput).toHaveBeenCalledTimes(1);
   });
 });

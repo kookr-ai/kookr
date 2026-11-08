@@ -290,6 +290,22 @@ describe('runReplyCli — resolution and delivery', () => {
     expect(code).toBe(4);
     expect(JSON.parse(io.logs[0])).toMatchObject({ ok: false, code: 'SERVER_ERROR', message: 'Agent not found: agent-1' });
   });
+
+  it('reports INPUT_REFUSED (exit 2) when the server refuses to type into a choice dialog (issue #3513)', async () => {
+    const io = captureIo();
+    const { impl } = fakeFetch({
+      agents: [{ agentId: 'agent-1', taskId: 't1', taskName: 'Task One', taskStatus: 'inProgress' }],
+      messageStatus: 409,
+      messageResult: { error: 'agent agent-1 is showing a choice dialog', code: 'awaiting_choice' },
+    });
+    const code = await runReplyCli(['t1', 'continue', '--json'], { env: {}, out: io.out, err: io.err, fetchImpl: impl });
+    expect(code).toBe(2);
+    expect(JSON.parse(io.logs[0])).toMatchObject({
+      ok: false,
+      code: 'INPUT_REFUSED',
+      details: { status: 409, reason: 'awaiting_choice' },
+    });
+  });
 });
 
 describe('defaultReadStdin (real read path, not the injected seam)', () => {
