@@ -1,3 +1,5 @@
+import { InputSubmitAbortedError } from '../core/ports/agent-interaction-port.js';
+import type { TerminalInputSequenceMeta } from '../core/ports/terminal-input-writer-port.js';
 import {
   isBackendRecoverySignal,
   isRecoverableSessionFault,
@@ -280,8 +282,12 @@ export class FakeTerminalBackend implements TerminalBackend, TerminalInputWriter
   async writeInputSequence(
     id: SessionId,
     payloads: Uint8Array[],
-    _meta?: { reason?: string; interPayloadDelayMs?: number },
+    meta?: TerminalInputSequenceMeta,
   ): Promise<TerminalInputWriteResult> {
+    if (meta?.beforeFinalPayload && payloads.length > 0 && !(await meta.beforeFinalPayload())) {
+      await this.writeSequence(id, payloads.slice(0, -1));
+      throw new InputSubmitAbortedError(id);
+    }
     await this.writeSequence(id, payloads);
     return { sessionId: id, readinessVersion: 0 };
   }

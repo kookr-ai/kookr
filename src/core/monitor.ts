@@ -10,7 +10,7 @@ import type { SnoozeSuppressionTracker } from './snooze-suppression.js';
 import type { WatchdogVerdict } from './watchdog.js';
 import { anomalyFingerprint } from './anomaly-fingerprint.js';
 import { detectAnomalies, evaluateAnomalies } from './anomaly-detector.js';
-import { deriveTurnState } from './turn-state.js';
+import { deriveTurnState, deriveTurnStateDetails } from './turn-state.js';
 import { deriveLatestCompletionSignal } from './completion-signal.js';
 import type { LatestCompletionSignal } from '../shared/contracts/completion-signal.js';
 import {
@@ -1206,6 +1206,23 @@ export class Monitor {
    * diagnostics use this to keep REST projections aligned with WebSocket
    * snapshots without recursively asking the health provider for a snapshot.
    */
+  /**
+   * True when the agent is sitting on a choice dialog: a pending
+   * `PermissionRequest` (tool approval, or Claude Code's AskUserQuestion menu)
+   * or an unanswered `AskUserQuestion` tool call. Typing text + Enter there
+   * selects the highlighted option, so input paths refuse instead (issue
+   * #3513). Event-derived rather than screen-scraped: the pane capture is ring
+   * history, where a dismissed menu lingers.
+   */
+  isAwaitingChoice(agentId: string): boolean {
+    const events = this.agentEvents.get(agentId);
+    if (!events || this.stoppedAgents.has(agentId)) return false;
+    const { effectiveEvent } = deriveTurnStateDetails(events);
+    if (!effectiveEvent) return false;
+    if (effectiveEvent.type === 'permission_request') return true;
+    return effectiveEvent.type === 'tool_use' && effectiveEvent.toolName === 'AskUserQuestion';
+  }
+
   getLiveTurnState(agentId: string): TurnState | undefined {
     const events = this.agentEvents.get(agentId);
     if (events === undefined) return undefined;

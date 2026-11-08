@@ -1,3 +1,5 @@
+import { InputSubmitAbortedError } from '../core/ports/agent-interaction-port.js';
+import type { TerminalInputSequenceMeta } from '../core/ports/terminal-input-writer-port.js';
 import { randomUUID } from 'node:crypto';
 import type { SessionId, TerminalBackend } from '../adapters/terminal-backend.js';
 import type {
@@ -137,7 +139,7 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
   async writeInputSequence(
     sessionId: string,
     payloads: Uint8Array[],
-    meta?: { reason?: string; interPayloadDelayMs?: number },
+    meta?: TerminalInputSequenceMeta,
   ): Promise<TerminalInputWriteResult> {
     this.getOrRegisterState(sessionId);
     if (payloads.length === 0) {
@@ -159,12 +161,14 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
           // not by write-ack latency, so it is excluded from the RTT
           // histogram — recording it would corrupt the typing-lag signal.
           await this.backend.write(sessionId, payloads[0]!);
-          for (const payload of payloads.slice(1)) {
+          for (let i = 1; i < payloads.length; i += 1) {
             await this.sleepFn(delayMs);
             this.assertCurrent(state);
-            await this.backend.write(sessionId, payload);
+            if (i === payloads.length - 1) await this.vetoFinalPayload(sessionId, meta);
+            await this.backend.write(sessionId, payloads[i]!);
           }
         } else {
+          await this.vetoFinalPayload(sessionId, meta);
           await this.backend.writeSequence(sessionId, payloads);
           this.recordRtt(startedAt);
         }
@@ -173,6 +177,13 @@ export class TerminalInputCoordinator implements TerminalInputWriterPort {
       }
       return { sessionId, readinessVersion };
     }).finally(reservation.release);
+  }
+
+  /** Issue #3513: abort before the submit payload when the caller's check vetoes it. */
+  private async vetoFinalPayload(sessionId: string, meta?: TerminalInputSequenceMeta): Promise<void> {
+    if (meta?.beforeFinalPayload && !(await meta.beforeFinalPayload())) {
+      throw new InputSubmitAbortedError(sessionId);
+    }
   }
 
   markUserPromptSubmitted(sessionId: string): Promise<void> {

@@ -17,6 +17,7 @@ import type { evaluateGrantById } from '../remote/share-policy.js';
 import type { isPresetReplyId, sendPresetReply } from '../remote/preset-reply.js';
 import type { NodeId } from '../remote/ids.js';
 import { isOwnerLocal } from './auth.js';
+import { asInputRefusal, guardChoiceDialog } from '../core/choice-dialog-guard.js';
 import { isSubmitMessageCommand, type RemoteInputAdapter } from './remote-input-adapter.js';
 
 export interface RemoteCommandHandlerRuntime {
@@ -160,7 +161,19 @@ export async function configureRemoteCommandHandler(deps: RemoteCommandHandlerDe
             },
             execute: async () => {
               const presetId = (command.payload as { presetId: Parameters<typeof sendPresetReply>[2] }).presetId;
-              const result = await runtime.sendPresetReply(adapter, command.sessionId, presetId);
+              // Issue #3513: never press Enter on a choice dialog. The guard wraps the
+              // adapter here because src/remote modules must stay free of local-only imports.
+              const guardedAdapter = {
+                sendInput: async (sessionId: string, text: string): Promise<void> => {
+                  const sendOpts = guardChoiceDialog(sessionId, (id) => monitor.isAwaitingChoice(id));
+                  try {
+                    await (sendOpts ? adapter.sendInput(sessionId, text, sendOpts) : adapter.sendInput(sessionId, text));
+                  } catch (err) {
+                    throw asInputRefusal(err, sessionId);
+                  }
+                },
+              };
+              const result = await runtime.sendPresetReply(guardedAdapter, command.sessionId, presetId);
               const preAnomaly = queue.getAnomaly(command.sessionId);
               if (monitor.markInputReceived(command.sessionId)) {
                 watchdog?.recordInputReceived(command.sessionId);

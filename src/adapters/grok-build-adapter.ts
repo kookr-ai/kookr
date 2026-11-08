@@ -1,3 +1,5 @@
+import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
+import { writeComposerInput } from './composer-input.js';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -42,7 +44,7 @@ import {
   toPromptDeliveryHealth,
   DEFAULT_PROMPT_SUBMIT_DELAY_MS,
 } from './agent-launch-context.js';
-import { translateKeystroke, encodeBracketedPaste, ENTER_BYTES, CLEAR_LINE_BYTES } from './keystroke.js';
+import { translateKeystroke, ENTER_BYTES } from './keystroke.js';
 import { resolveHookWriterPath } from '../core/hook-writer-paths.js';
 import { resolvePluginDir } from '../core/plugin-paths.js';
 import { withTimeout } from '../core/with-timeout.js';
@@ -974,12 +976,9 @@ export class GrokBuildAdapter implements AgentAdapter {
     }
   }
 
-  async sendInput(tmuxName: string, text: string): Promise<void> {
-    await this.inputWriter.writeInputSequence(
-      tmuxName,
-      [CLEAR_LINE_BYTES, encodeBracketedPaste(text), ENTER_BYTES],
-      { reason: 'adapter-send-input', interPayloadDelayMs: DEFAULT_PROMPT_SUBMIT_DELAY_MS },
-    );
+  async sendInput(tmuxName: string, text: string, opts?: SendInputOptions): Promise<void> {
+    // `opts.beforeSubmit` re-checks right before Enter (issue #3513).
+    await writeComposerInput(this.inputWriter, tmuxName, text, DEFAULT_PROMPT_SUBMIT_DELAY_MS, opts);
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {

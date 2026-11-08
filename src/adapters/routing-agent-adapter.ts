@@ -1,3 +1,4 @@
+import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
 import type { EventOrigin, InjectHookEventResult } from '../core/types.js';
 import type { TaskStore } from '../core/tasks.js';
 import { normalizeAgentType } from '../core/agent-types.js';
@@ -48,8 +49,9 @@ export class RoutingAgentAdapter implements AgentAdapter {
     return this.registry.getDefault().launch(taskId, prompt, cwd, resume, opts);
   }
 
-  async sendInput(tmuxName: string, text: string): Promise<void> {
-    return this.resolve(tmuxName).sendInput(tmuxName, text);
+  async sendInput(tmuxName: string, text: string, opts?: SendInputOptions): Promise<void> {
+    const target = this.resolve(tmuxName);
+    return opts ? target.sendInput(tmuxName, text, opts) : target.sendInput(tmuxName, text);
   }
 
   async sendKeystroke(tmuxName: string, key: string): Promise<void> {

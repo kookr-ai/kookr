@@ -1302,3 +1302,4 @@ describe('resolveGitCommonDirBounded (issue #1526 Phase C / #1528)', () => {
     expect(context.env.KOOKR_TASK_ID).toBe(task.id);
   });
 });
+

@@ -1440,6 +1440,26 @@ Resolution is all-or-nothing rather than a guess:
   `details.candidates` list each candidate's `agentId`, `taskName`, and `taskStatus`
   so the caller can disambiguate.
 
+**Choice dialogs are never answered by accident.** Typed input ends with Enter,
+and at a choice dialog Enter picks the highlighted option. A choice dialog is a
+permission prompt or an `AskUserQuestion` menu, which Kookr knows about from the
+agent's own hook events. While the agent is waiting on one, the reply is
+**refused** before anything is typed: the route answers `409` and `kookr reply`
+exits `2` with `INPUT_REFUSED` (`details.reason: awaiting_choice`). The server
+also re-checks just before pressing Enter, so a menu that appears while the text
+is being typed is not answered either. Read the menu with `kookr peek`, then
+answer it in the Kookr dashboard, using the permission buttons or keys typed in
+the task terminal. The same guard covers dashboard free-text replies, Telegram
+free-text replies and remote preset replies (issue #3513). Raw terminal input,
+meaning keys typed in the dashboard terminal or a remote terminal, is
+deliberately not guarded: whoever types there can see the menu and is answering
+it on purpose. A message to an agent that is busy mid-turn is still delivered and
+queued as before.
+
+Known limitation: if a menu is dismissed with Esc in the terminal, Claude Code
+emits no hook event. Kookr then keeps treating the agent as waiting on a choice
+until its next event, for example any prompt typed in the task terminal.
+
 **Reply text.** Taken from the second positional argument; when it is omitted the
 text is read from **piped stdin** (trailing whitespace trimmed). An interactive
 stdin with no positional text, or empty text, is a usage error — the command never

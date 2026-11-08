@@ -1,3 +1,4 @@
+import { InputSubmitAbortedError } from './agent-interaction-port.js';
 export interface TerminalInputWriteResult {
   sessionId: string;
   readinessVersion: number;
@@ -13,8 +14,20 @@ export interface TerminalInputWriterPort {
   writeInputSequence(
     sessionId: string,
     payloads: Uint8Array[],
-    meta?: { reason?: string; interPayloadDelayMs?: number },
+    meta?: TerminalInputSequenceMeta,
   ): Promise<TerminalInputWriteResult>;
+}
+
+export interface TerminalInputSequenceMeta {
+  reason?: string;
+  interPayloadDelayMs?: number;
+  /**
+   * Checked inside the session's write queue immediately before the final
+   * payload (the submit Enter). Returning `false` aborts the sequence with
+   * `InputSubmitAbortedError` and leaves the final payload unwritten (issue
+   * #3513: never press Enter on a choice dialog that appeared mid-sequence).
+   */
+  beforeFinalPayload?: () => boolean | Promise<boolean>;
 }
 
 export function asTerminalInputWriterPort(value: unknown): TerminalInputWriterPort {
@@ -35,7 +48,11 @@ export function asTerminalInputWriterPort(value: unknown): TerminalInputWriterPo
         await legacy.write!(sessionId, bytes);
         return { sessionId, readinessVersion: 0 };
       },
-      async writeInputSequence(sessionId, payloads) {
+      async writeInputSequence(sessionId, payloads, meta) {
+        // Legacy writers cannot pause inside the sequence; check up front.
+        if (meta?.beforeFinalPayload && !(await meta.beforeFinalPayload())) {
+          throw new InputSubmitAbortedError(sessionId);
+        }
         // Legacy backends can preserve sequence atomicity via writeSequence,
         // but cannot hold that mutex while inserting a delay. Production
         // delayed submits use TerminalInputCoordinator instead.

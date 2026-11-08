@@ -1046,6 +1046,54 @@ describe('Monitor', () => {
     });
   });
 
+  describe('isAwaitingChoice (issue #3513 input guard)', () => {
+    test('is true on a pending tool permission prompt', () => {
+      monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);
+      expect(monitor.isAwaitingChoice('agent-1')).toBe(true);
+    });
+
+    test('is true on an AskUserQuestion menu, including under bypass mode (tool_use only)', () => {
+      monitor.processEvents('agent-1', [
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+      ]);
+      expect(monitor.isAwaitingChoice('agent-1')).toBe(true);
+
+      monitor.processEvents('agent-2', [makeToolUse('s2', 'AskUserQuestion')]);
+      expect(monitor.isAwaitingChoice('agent-2')).toBe(true);
+    });
+
+    test('stays true when an idle notification trails the prompt', () => {
+      monitor.processEvents('agent-1', [
+        makePermissionRequest('s1', 'Bash'),
+        { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'waiting' },
+      ]);
+      expect(monitor.isAwaitingChoice('agent-1')).toBe(true);
+    });
+
+    test('is false once the menu is answered, at a clean stop, mid-turn, and on an API-error block', () => {
+      monitor.processEvents('agent-1', [
+        makeToolUse('s1', 'AskUserQuestion'),
+        makePermissionRequest('s1', 'AskUserQuestion'),
+        makeToolResult('s1', 'AskUserQuestion'),
+      ]);
+      expect(monitor.isAwaitingChoice('agent-1')).toBe(false);
+
+      monitor.processEvents('agent-2', [makeStop('s2', 'done')]);
+      expect(monitor.isAwaitingChoice('agent-2')).toBe(false);
+
+      monitor.processEvents('agent-3', [makeToolUse('s3', 'Bash')]);
+      expect(monitor.isAwaitingChoice('agent-3')).toBe(false);
+
+      monitor.processEvents('agent-4', [makeStopFailure('s4')]);
+      expect(monitor.isAwaitingChoice('agent-4')).toBe(false);
+    });
+
+    test('is false for an unknown agent', () => {
+      expect(monitor.isAwaitingChoice('nobody')).toBe(false);
+    });
+  });
+
   describe('isPermissionBlocked', () => {
     test('returns true when last event is permission_request', () => {
       monitor.processEvents('agent-1', [makePermissionRequest('s1', 'Bash')]);

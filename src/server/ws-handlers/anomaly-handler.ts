@@ -144,6 +144,7 @@ export class AnomalyHandler {
           await sendDirectAgentInput({
             adapter: this.deps.adapter,
             interactionLog: this.deps.interactionLog,
+            isAwaitingChoice: (id) => this.deps.monitor.isAwaitingChoice(id),
           }, msg.agentId, msg.input);
         }
         return;

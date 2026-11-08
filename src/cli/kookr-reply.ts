@@ -68,7 +68,8 @@ Instance discovery mirrors \`kookr stop\` / \`kookr open\`: KOOKR_API_BASE_URL
 wins, else KOOKR_PORT, else the default ports ${PORTS_TO_TRY.join(' / ')} are probed.
 
 Exit codes:
-  0  Success (reply delivered).                2  User error (incl. no live agent).
+  0  Success (reply delivered).                2  User error (incl. no live agent, or reply
+                                                  refused: the agent shows a choice dialog).
   3  No server reachable.                       4  Server/HTTP error delivering the reply.
   5  Ambiguous port, or more than one live agent matched the task.
 `;
@@ -355,12 +356,21 @@ export async function runReplyCli(argv: string[], io: ReplyCliIo = {}): Promise<
     >;
     const message =
       typeof bodyObj.error === 'string' ? bodyObj.error : `server returned HTTP ${response.status}`;
+    // 409 = the server refused to type into the agent because its screen shows a
+    // choice dialog (or could not be read) — issue #3513. Not a server fault.
+    const refused = response.status === 409;
+    const code = refused ? 'INPUT_REFUSED' : 'SERVER_ERROR';
     if (args.json) {
-      emitJson(out, { ok: false, code: 'SERVER_ERROR', message, details: { status: response.status } });
+      emitJson(out, {
+        ok: false,
+        code,
+        message,
+        details: { status: response.status, ...(typeof bodyObj.code === 'string' ? { reason: bodyObj.code } : {}) },
+      });
     } else {
       err.error(`kookr reply: ${message}`);
     }
-    return EXIT_SERVER_ERROR;
+    return refused ? EXIT_USER_ERROR : EXIT_SERVER_ERROR;
   }
 
   if (!isMessageDeliveryResult(response.body)) {

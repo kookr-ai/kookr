@@ -811,6 +811,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   const userInputDeliveries = new UserInputDeliveryService({
     adapter,
     interactionLog,
+    isAwaitingChoice: (sessionId) => monitor.isAwaitingChoice(sessionId),
     retry: {
       sendEnter: (sessionId) => adapter.sendKeystroke(sessionId, 'Enter'),
       capturePane: (sessionId) => adapter.captureDisplay(sessionId),
