@@ -90,7 +90,7 @@ task-specific is baked: `/cfg` (read-only: `opencode.json`, `plugins/kookr.js`,
 per-task git clone, rw), `/data` (bind mount: opencode sqlite + A2A task store),
 `/memory` (the project view, ro). Entrypoint: `opencode serve` on
 127.0.0.1 with a generated password, A2A wrapper on `:8000` with a bearer
-token; both secrets passed by env at `docker run`. Exits if either child dies.
+token; both secrets read from 0600 files in `/run/secrets` (never env, never baked). Exits if either child dies.
 
 ### 2. Container runtime: a sibling adapter, not a branch
 
@@ -339,7 +339,7 @@ default cap is raised only from that measurement.
 | Memory writer down | Worker boots with the last view (stale but valid); lesson writes fail open with a logged warning; hook never blocks stop. |
 | Worker writes junk lessons | Bounded by nb limits, per-token project scope and the audit log; curator can `rm`. |
 | Disk pressure | Existing launch refusal; container mode adds image/volume GC for `kookr.task`-labelled objects only, explicit-name based. |
-| Leaked secret | Env-only, never in image; the gate/PR flow is unchanged. Worker egress is unrestricted in Phase A (documented gap, see Open questions); secrets live in 0600 files, not env. |
+| Leaked secret | 0600 files in `/run/secrets`, never baked into the image; the gate/PR flow is unchanged. Worker egress is unrestricted in Phase A (documented gap, see Open questions); secrets live in 0600 files, not env. |
 
 ### 6. Rollback
 
@@ -357,7 +357,7 @@ image, real provider, N-times repeats) are an operator-run script under `scripts
 whose output is recorded in the PR; they are not part of the PR gate and are not
 claimed as such.
 
-- **S1 image**: `docs/rfc/evidence/prototype-opencode-worker/**` (incl. the Kookr toolchain layer) (Dockerfile, hardened entrypoint with
+- **S1 image**: move the prototype to `deploy/opencode-worker/**` (incl. the Kookr toolchain layer) (Dockerfile, hardened entrypoint with
   `/run/secrets`, HEALTHCHECK, log prefixes, distinct exit codes, hook self-test),
   build script, per-child-death test. No Kookr runtime change.
 - **S2a**: extract the session preparer from `opencode-adapter.ts` and add the
@@ -388,8 +388,8 @@ format, egress filtering (Phase A).
 
 ## Alternatives considered
 
-- **Hermes-style container** (2-2.6 GB, in-memory tasks): rejected; measured
-  worse on every dimension that matters here.
+- **Hermes-style container** (2-2.6 GB, in-memory tasks): rejected; its known figures
+  (not re-measured here) are worse on every dimension that matters here.
 - **`opencode acp` (stdio) behind our own thin bridge**: no HTTP/A2A surface,
   we would own the protocol; the wrapper already exists and is pinned.
 - **Direct `opencode serve` REST (no A2A)** : works (F1) and is simpler, but

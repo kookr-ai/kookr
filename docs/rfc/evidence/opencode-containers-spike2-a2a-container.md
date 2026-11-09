@@ -37,7 +37,7 @@ final message), so no real model cost and no external traffic.
 | First message after cold start | 12.7 s (opencode installs `@opencode-ai/plugin`, 63 MB x2, from the network into tmpfs) | **1.7 s** | n/a |
 | Container memory after tasks (cgroup, includes tmpfs) | 831 MiB | **~390-460 MiB** | ~2-2.6 GB, 3 GB cap |
 | Processes inside | `opencode serve` 590 MB RSS, wrapper 88 MB RSS, 14 pids | same | |
-| Image size | | 1.31 GB (shared base layers across containers) | |
+| Image size | | 1.36 GB (shared base layers across containers) | |
 
 The seed is built at image build time (`opencode debug config` with a stub
 plugin, same trick as Kookr's `prepareOpenCodeSeed`) and symlinked read-only,

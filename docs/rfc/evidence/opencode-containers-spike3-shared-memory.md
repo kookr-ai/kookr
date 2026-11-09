@@ -13,7 +13,7 @@ Reuses `nb` (agent-notebook 0.7.0) unchanged: same shelf files, same
   token; the token fixes `{actor, project, role}`, so the target shelf is
   always `<role>@<project>` of that worker. All writes pass through one
   in-process queue and then `nb add` (nb's own mkdir lock is a second guard),
-  and every request (accepted or rejected) is appended to an audit log.
+  and every request that reaches the queue (accepted or rejected by `nb`) is appended to an audit log (the prototype does not audit 401/400 pre-queue rejections; the RFC requires it).
 - **Per-project read-only view.** After each write the writer republishes
   `views/<project>/` (that project's `*@project` shelves + the role-wide and
   `fleet-global` shelves) by per-file atomic rename. A worker mounts only its
