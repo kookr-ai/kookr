@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   buildAgentSelectionOptions,
-  AVAILABLE_AGENT_TYPES,
+  settingsVisibleAgentTypes,
   ROUND_ROBIN_AGENT_TYPE,
   effortLevelsForAgent,
   isAgentType,
@@ -614,6 +614,8 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
   const agentOptions = buildAgentSelectionOptions(
     availableAgentTypes.filter((item) => !(settings?.blacklistedAgentTypes ?? []).includes(item.type)),
   );
+  // Only agents the server registered (opt-in agents such as opencode are absent when their flag is off).
+  const settingsAgents = settingsVisibleAgentTypes(availableAgentTypes, settings?.blacklistedAgentTypes ?? []);
   const sound = useSoundPreference();
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -1402,7 +1404,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         </span>
                       </div>
                       <div className="settings-agent-blacklist" role="group" aria-label="Blacklisted agents">
-                        {AVAILABLE_AGENT_TYPES.map((agent) => {
+                        {settingsAgents.map((agent) => {
                           const banned = (settings.blacklistedAgentTypes ?? []).includes(agent.type);
                           return (
                             <label
@@ -1622,7 +1624,7 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                     </div>
                     {/* #681: per-agent-type reasoning-effort default. One row per
                         concrete agent. */}
-                    {AVAILABLE_AGENT_TYPES.map(({ type, label }) => (
+                    {settingsAgents.map(({ type, label }) => (
                       <div className="settings-row" key={`effort-${type}`}>
                         <div className="settings-row-info">
                           <span className="settings-label">{label} effort</span>

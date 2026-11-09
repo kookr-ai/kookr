@@ -59,6 +59,33 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
 ];
 
 /**
+ * Agents that exist only when the operator opts in on the server (an env flag registers the adapter).
+ * Until the server has advertised the registered set, the UI must not assume these exist.
+ */
+export const OPT_IN_AGENT_TYPES: readonly AgentType[] = ['opencode'];
+
+/** Canonical agents shown before the server's registered set is known: everything except opt-in agents. */
+export function defaultAdvertisedAgentTypes(): AvailableAgentType[] {
+  return AVAILABLE_AGENT_TYPES.filter((item) => !OPT_IN_AGENT_TYPES.includes(item.type));
+}
+
+/**
+ * Agents the Settings dialog should offer a blacklist checkbox / effort row for: those the server
+ * registered (advertised, which already omits blacklisted ones, so those are re-added from the
+ * blacklist so they can be un-ticked). Before the server's list arrives, the non-opt-in defaults.
+ */
+export function settingsVisibleAgentTypes(
+  advertised: readonly AvailableAgentType[],
+  blacklisted: readonly AgentType[] = [],
+): AvailableAgentType[] {
+  const known = new Set<AgentType>(
+    (advertised.length > 0 ? advertised : defaultAdvertisedAgentTypes()).map((item) => item.type),
+  );
+  for (const type of blacklisted) known.add(type);
+  return AVAILABLE_AGENT_TYPES.filter((item) => known.has(item.type));
+}
+
+/**
  * True for a concrete {@link AgentType} that exists only as an interop identity
  * — an activity-ledger `provider` and an independent-review verdict lane — and
  * is NOT launchable: absent from {@link AVAILABLE_AGENT_TYPES}, registering no
@@ -555,7 +582,7 @@ export function buildAgentSelectionOptions(
   available: readonly AvailableAgentType[],
 ): AvailableAgentSelection[] {
   const base: AvailableAgentSelection[] =
-    available.length > 0 ? [...available] : [...AVAILABLE_AGENT_TYPES];
+    available.length > 0 ? [...available] : defaultAdvertisedAgentTypes();
   const rotatable = base.filter((option) => !isAgentType(option.type) || isAutoRotationEligible(option.type));
   return rotatable.length >= 2 ? [...base, ROUND_ROBIN_OPTION] : base;
 }

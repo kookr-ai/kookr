@@ -7,6 +7,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { SettingsDialog } from './SettingsDialog.js';
 import { __resetSoundPreferenceForTests, getSoundPreferenceState } from '../audio/sound.js';
 import type { AgentSelection } from '../../shared/protocol.js';
+import { AVAILABLE_AGENT_TYPES } from '../../shared/protocol.js';
+import { useKookrStore } from '../store/useStore.js';
 
 interface MockSettings {
   githubPollingEnabled: boolean;
@@ -302,6 +304,28 @@ describe('SettingsDialog tabs', () => {
     expect(container.querySelector<HTMLInputElement>(
       'input[aria-label="Blacklist Claude Code"]',
     )?.checked).toBe(true);
+  });
+
+  test('offers opencode effort and blacklist controls only when the server registered opencode', async () => {
+    const prior = useKookrStore.getState().availableAgentTypes;
+    try {
+      await act(async () => {
+        useKookrStore.setState({ availableAgentTypes: AVAILABLE_AGENT_TYPES.filter((a) => a.type !== 'opencode') });
+      });
+      await flush();
+      expect(container.querySelector('input[aria-label="Blacklist Claude Code"]')).not.toBeNull();
+      expect(container.querySelector('select[aria-label="Claude Code reasoning effort"]')).not.toBeNull();
+      expect(container.querySelector('input[aria-label="Blacklist opencode"]')).toBeNull();
+      expect(container.querySelector('select[aria-label="opencode reasoning effort"]')).toBeNull();
+      await act(async () => {
+        useKookrStore.setState({ availableAgentTypes: AVAILABLE_AGENT_TYPES });
+      });
+      await flush();
+      expect(container.querySelector('input[aria-label="Blacklist opencode"]')).not.toBeNull();
+      expect(container.querySelector('select[aria-label="opencode reasoning effort"]')).not.toBeNull();
+    } finally {
+      useKookrStore.setState({ availableAgentTypes: prior });
+    }
   });
 
   test('persists the task completion cleanup default', async () => {
