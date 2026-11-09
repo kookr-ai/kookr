@@ -171,6 +171,8 @@ describe('kookr ask over Telegram', () => {
     await waitFor(() => expect(audit().filter((e) => e.kind === 'ask_rejected').length).toBeGreaterThan(0));
     const raw = readFileSync(join(tmp, 'telegram', 'audit.jsonl'), 'utf8');
     expect(raw).not.toContain(data.split(':')[3]);
+    // The forged tap's data (id:index:mac) must not appear either — the rejected path is audited too.
+    expect(raw).not.toContain('0'.repeat(16));
     expect(raw).not.toContain('Secretive question');
     expect(raw).not.toContain('callback_invalid');
   });
@@ -259,6 +261,29 @@ describe('kookr ask over Telegram', () => {
     reply('actually no', messageId);
     await waitFor(() => expect(fake.outbound.sendMessage.some((m) => m.text === 'This question is already closed.')).toBe(true));
     expect(deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('a rate-limited tap is rejected before the ask service is consulted', async () => {
+    await boot();
+    const a = await ask();
+    const messageId = store.get(a.id)!.delivery!.messageId;
+    // The shared limiter allows 10 per minute per user: burn it with bad taps, then tap the real button.
+    for (let i = 0; i < 10; i++) tap(`ask:${a.id}:0:${'c'.repeat(16)}`, { messageId });
+    tap(keyboard()[0].callback_data, { messageId });
+    await waitFor(() => expect(toasts()).toContain('Rate limited. Try again in a minute.'));
+    expect(store.get(a.id)?.state).toBe('pending');
+  });
+
+  it('sends the question to the spawning chat only while that user is still allowlisted', async () => {
+    await boot();
+    const { writeFileSync, mkdirSync } = await import('node:fs');
+    await handle!.stop();
+    handle = null;
+    mkdirSync(join(tmp, 'telegram'), { recursive: true });
+    writeFileSync(join(tmp, 'telegram', 'state.json'), JSON.stringify({ offset: 0, spawnsByMs: [], origin: { t1: OTHER }, agentDefaultsByUser: {}, sentNotifications: {} }));
+    await boot();
+    await ask();
+    expect(fake.outbound.sendMessage.at(-1)?.chat_id).toBe(USER);
   });
 
   it('a command-looking reply is not an answer', async () => {

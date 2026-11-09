@@ -4336,11 +4336,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     connectionRegistry.closeAll();
 
     // Telegram integration shutdown (releases lockfile so prod:restart picks up cleanly).
-    if (askService) {
-      try { await askService.stop(); } catch (err) { console.warn('[asks] stop failed:', err); }
-    }
+    // Telegram first (no more taps), then the ask service so its final flush
+    // cannot miss an answer recorded by a tap that was already in flight.
     if (telegramHandle) {
       try { await telegramHandle.stop(); } catch (err) { console.warn('[telegram] stop failed:', err); }
+    }
+    if (askService) {
+      try { await askService.stop(); } catch (err) { console.warn('[asks] stop failed:', err); }
     }
 
     // Close servers

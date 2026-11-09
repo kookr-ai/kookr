@@ -688,7 +688,7 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     expired: 'This question expired.',
     cancelled: 'This question was cancelled.',
     wrong_chat: 'This button does not belong to this chat.',
-    bad_option: 'Invalid answer.',
+    bad_option: 'Invalid answer (empty, or longer than 1000 characters).',
     text_not_allowed: 'This question only accepts the buttons.',
     task_gone: 'The task is no longer running, so the answer was not delivered.',
   };
@@ -1049,7 +1049,12 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   const askNotifier: AskNotifier | undefined = deps.asks
     ? {
       async sendAsk(ask, callbackData) {
-        const chatId = state.get().origin[ask.taskId] ?? deps.allowedUserIds.values().next().value;
+        // Use the spawning chat only while that user is still allowlisted: a
+        // chat that was removed from the allowlist can no longer answer.
+        const origin = state.get().origin[ask.taskId];
+        const chatId = origin !== undefined && deps.allowedUserIds.has(origin)
+          ? origin
+          : deps.allowedUserIds.values().next().value;
         if (chatId === undefined) throw new Error('no Telegram chat to send the question to');
         const lines = [`❓ Task ${ask.taskId} asks:`, '', ask.question];
         if (ask.context) lines.push('', ask.context);

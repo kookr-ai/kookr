@@ -350,8 +350,10 @@ Only allowlisted users can answer; each button is signed with a per-install
 secret stored in `<kookrDir>/asks/secret`. Without the Telegram variables the
 command exits `7` and nothing is created. `KOOKR_REMOTE_CHAT_DISABLED=1` turns
 the feature off with the rest of remote chat. Every question, answer and
-rejection is recorded in the Telegram `audit.jsonl` without the question text,
-answer text or button data.
+rejection is recorded in the Telegram `audit.jsonl` (`ask_*` events) without the
+question text, answer text or button data; a typed text reply additionally
+appears, credential-redacted, in the generic `message_received` event like any
+other inbound message.
 
 ## Outbound Finding Webhook
 
