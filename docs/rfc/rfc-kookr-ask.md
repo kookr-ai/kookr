@@ -195,6 +195,16 @@ safe to ship.
 * **Blocking-only CLI** — rejected; agents usually have other work to do.
 * **Dashboard pending-ask panel** — deferred; not required for slice 1.
 
+## Verification
+
+`node --import tsx scripts/ask-live-proof.ts [--evidence <file.md>]` is the
+hermetic end-to-end proof (not part of `pnpm test`): a real server in a temp
+HOME with Telegram pointed at the in-process fake server, a real task whose
+stand-in agent runs the real `kookr ask` CLI, a simulated button press, and
+checks that the answer reaches the task's terminal, forged/unauthorised taps
+change nothing, `--wait` prints the label, an unanswered ask expires (exit 5),
+and with Telegram unconfigured nothing is written (exit 7).
+
 ## Critic feedback incorporated
 
 Round 1 (failure-mode-analyst, design-minimalist, delivery-pragmatist; one round
