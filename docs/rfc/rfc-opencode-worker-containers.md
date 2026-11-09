@@ -45,7 +45,7 @@ Evidence (all hermetic, mock provider, temp state; reproducible from
 - R2 Cancel must actually stop tool execution; task state must survive a
   container restart.
 - R3 Per-worker isolation: non-root, no capabilities, read-only root, memory,
-  CPU and pid caps, tmpfs scratch; secrets only via env/files, never baked.
+  CPU and pid caps, tmpfs scratch; secrets only via 0600 files, never env, never baked.
 - R4 Shared memory: one writer, no lost lessons under concurrent writers,
   project > domain > global precedence with size caps, no cross-project
   read or write. Reuse `nb`; no new memory format.
