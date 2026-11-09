@@ -96,7 +96,8 @@ export const DEFAULT_ADVISOR_MODEL = 'claude-fable-5-2';
 export function resolveAdvisorModel(env: NodeJS.ProcessEnv): string | undefined {
   const raw = env.KOOKR_ADVISOR_MODEL;
   if (raw === undefined) return DEFAULT_ADVISOR_MODEL;
-  return raw.trim() || undefined;
+  const trimmed = raw.trim();
+  return trimmed || undefined;
 }
 
 export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentRuntime> {

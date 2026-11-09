@@ -324,6 +324,7 @@ describe('resolveAdvisorModel', () => {
   });
   test('env override wins; empty/blank disables', () => {
     expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: 'claude-opus-5' })).toBe('claude-opus-5');
+    expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: ' claude-opus-5 ' })).toBe('claude-opus-5');
     expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: '' })).toBeUndefined();
     expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: '  ' })).toBeUndefined();
   });
