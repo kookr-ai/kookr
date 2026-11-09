@@ -3,6 +3,7 @@ import {
   looksLikeInteractiveMenu,
   looksLikeVisibleComposerDraft,
   stripTerminalReports,
+  terminalContentTail,
   updateTerminalInputDraft,
 } from './terminal-input-draft.js';
 
@@ -87,5 +88,55 @@ describe('looksLikeVisibleComposerDraft', () => {
     ['ordinary output', 'Tests passed'],
   ])('does not treat a %s as a visible draft', (_name, tail) => {
     expect(looksLikeVisibleComposerDraft(tail)).toBe(false);
+  });
+});
+
+describe('terminalContentTail', () => {
+  const tailOf = (rows: string[], screenRows: number) =>
+    terminalContentTail(rows.length, screenRows, (index) => rows[index] ?? '');
+  const blank = (count: number) => Array.from({ length: count }, () => '');
+  const numbered = (count: number) => Array.from({ length: count }, (_, i) => `row ${i}`);
+
+  it('ends at the last row with content, not at the bottom of the screen', () => {
+    expect(tailOf(['output', '❯ 1. Yes', '  2. No', ...blank(21)], 24)).toBe('output\n❯ 1. Yes\n  2. No');
+  });
+
+  it('treats a whitespace-only row as blank', () => {
+    expect(tailOf(['❯ 1. Yes', '   ', ''], 24)).toBe('❯ 1. Yes');
+  });
+
+  it('keeps blank rows that sit between rows of content', () => {
+    expect(tailOf(['question', '', '❯ 1. Yes', ...blank(5)], 24)).toBe('question\n\n❯ 1. Yes');
+  });
+
+  it('returns the last 15 rows when the screen is full', () => {
+    expect(tailOf(numbered(40), 24).split('\n')).toEqual(numbered(40).slice(25));
+  });
+
+  it('returns the 15 rows above the blank area when content is longer than that', () => {
+    expect(tailOf([...numbered(20), ...blank(4)], 24).split('\n')).toEqual(numbered(20).slice(5));
+  });
+
+  it('is empty when the live screen is blank, even if scrollback holds an old menu', () => {
+    expect(tailOf(['❯ 1. Yes', 'Enter to select', ...blank(24)], 24)).toBe('');
+  });
+
+  it('never reaches above the live screen, even when it holds fewer than 15 content rows', () => {
+    // Scrollback (rows 0-1) holds an old menu; the live screen was cleared and
+    // redrawn with a short idle composer. The old menu must not leak into the
+    // tail, or Enter would be forwarded instead of advancing.
+    expect(tailOf(['❯ 1. Yes', 'Enter to select', '───', '❯ ', '───', ...blank(21)], 24)).toBe('───\n❯ \n───');
+  });
+
+  it('yields at most a screenful for a pane shorter than 15 rows', () => {
+    expect(tailOf(numbered(40), 10).split('\n')).toEqual(numbered(40).slice(30));
+  });
+
+  it('is empty for an empty buffer', () => {
+    expect(tailOf([], 24)).toBe('');
+  });
+
+  it.each([0, 5.5, Number.NaN])('still skips blank rows when the screen height is %s', (screenRows) => {
+    expect(tailOf(['❯ 1. Yes', ...blank(10)], screenRows)).toBe('❯ 1. Yes');
   });
 });

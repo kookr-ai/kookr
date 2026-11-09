@@ -328,8 +328,9 @@ The system SHALL treat Enter on an empty managed terminal input as a server-auth
 - The server rejects stale epoch, stale readiness, unknown prompt, blocked prompt, missing session, and stale selection intents without forwarding `\r`.
 - Only parent `Notification(idle_prompt)` marks a prompt ready in V1; `Stop` returns the prompt state to unknown.
 - Duplicate or stale empty-enter intents are consumed/rejected by an atomic selection compare-and-swap.
+- While the agent shows a selection menu (a question, a permission prompt, the folder-trust dialog), Enter is forwarded to the agent so it confirms the highlighted choice. This holds wherever the menu is drawn above the blank remainder of the screen, including partway down a screen the session has not filled yet.
 
-**Evidence:** `src/server/terminal-input-coordinator.ts`, `src/server/dashboard-selection-controller.ts`, `src/server/session-bridge.ts`, `src/frontend/components/DetailPanel.tsx`, `src/server/terminal-input-coordinator.test.ts`, `src/server/dashboard-selection-controller.test.ts`, `src/server/terminal-input-boundary.test.ts`, `src/frontend/components/DetailPanel.empty-enter.test.ts`.
+**Evidence:** `src/server/terminal-input-coordinator.ts`, `src/server/dashboard-selection-controller.ts`, `src/server/session-bridge.ts`, `src/frontend/components/DetailPanel.tsx`, `src/frontend/components/TerminalPanel.tsx`, `src/frontend/terminal-input-draft.ts`, `src/server/terminal-input-coordinator.test.ts`, `src/server/dashboard-selection-controller.test.ts`, `src/server/terminal-input-boundary.test.ts`, `src/frontend/components/DetailPanel.empty-enter.test.ts`, `src/frontend/components/TerminalPanel.test.ts`, `src/frontend/terminal-input-draft.xterm.test.ts`.
 
 ### R3.4: "All Clear" State [F3.4] — SHOULD — `partial`
 

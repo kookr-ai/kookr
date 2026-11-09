@@ -66,6 +66,38 @@ const MENU_FOOTER_RE = /\benter to (?:select|continue|confirm|submit|choose)\b|\
 const COMPOSER_ROW_RE = /^\s*[❯›](?:\s+(.*?))?\s*$/;
 const COMPOSER_PLACEHOLDER_RE = /^Try\s+["“]|^[─━╌\-—]+$/i;
 
+const TAIL_ROWS = 15;
+
+/**
+ * The last rows the agent drew, for the menu and composer checks below.
+ *
+ * A terminal buffer always holds at least one full screen, so its last rows are
+ * the bottom of the screen, not the end of the output. Until a session has
+ * printed a screenful, the menu or composer sits partway down with blank rows
+ * beneath it. The tail therefore ends at the last non-blank row.
+ *
+ * `rowCount` counts every buffer row, scrollback included; `screenRows` is the
+ * height of the live screen. The tail never reaches above the live screen: the
+ * scrollback holds what the agent showed before — an old menu, perhaps — which
+ * says nothing about what Enter would do now. So blank rows are skipped only
+ * within the live screen, and a short redraw after a clear yields only the
+ * redrawn rows. A pane shorter than 15 rows yields at most a screenful.
+ */
+export function terminalContentTail(
+  rowCount: number,
+  screenRows: number,
+  readRow: (index: number) => string,
+): string {
+  const screenHeight = Number.isInteger(screenRows) && screenRows > 0 ? screenRows : TAIL_ROWS;
+  const screenStart = Math.max(0, rowCount - screenHeight);
+  let end = rowCount;
+  while (end > screenStart && readRow(end - 1).trim() === '') end -= 1;
+  if (end === screenStart) return '';
+  const rows: string[] = [];
+  for (let i = Math.max(screenStart, end - TAIL_ROWS); i < end; i += 1) rows.push(readRow(i));
+  return rows.join('\n');
+}
+
 export function looksLikeInteractiveMenu(tail: string): boolean {
   return tail.split('\n').some((line) => MENU_SELECTION_ROW_RE.test(line) || MENU_FOOTER_RE.test(line));
 }

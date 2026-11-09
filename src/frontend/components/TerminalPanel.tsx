@@ -21,6 +21,7 @@ import { createTerminalWheelScroller, type TerminalWheelScroller } from '../term
 import {
   looksLikeInteractiveMenu,
   looksLikeVisibleComposerDraft,
+  terminalContentTail,
   updateTerminalInputDraft,
 } from '../terminal-input-draft.js';
 import {
@@ -93,18 +94,17 @@ function isTerminalAtBottom(terminal: Terminal): boolean {
   }
 }
 
-// Last visible rows of the rendered buffer — used only as a menu backstop, not
-// to decide draft emptiness (that stays byte-tracked). `translateToString(true)`
-// trims trailing whitespace per row.
+// Last rows the agent drew — used only as a menu backstop, not to decide draft
+// emptiness (that stays byte-tracked). `translateToString(true)` trims trailing
+// whitespace per row.
 function getVisibleTerminalTail(terminal: Terminal): string {
   try {
     const buffer = terminal.buffer.active;
-    const start = Math.max(0, buffer.length - 15);
-    const lines: string[] = [];
-    for (let i = start; i < buffer.length; i++) {
-      lines.push(buffer.getLine(i)?.translateToString(true) ?? '');
-    }
-    return lines.join('\n');
+    return terminalContentTail(
+      buffer.length,
+      terminal.rows,
+      (index) => buffer.getLine(index)?.translateToString(true) ?? '',
+    );
   } catch {
     return '';
   }
