@@ -51,6 +51,7 @@ reachable only over a phone.
 
 - [Production server service](production-server-service.md) — the systemd user unit and the `/api/ready` probe.
 - [Low-downtime redeploy](../runbooks/low-downtime-redeploy.md) — planned `prod:update` / `prod:restart` procedure, and the client contracts that make a restart a non-event.
+- [Enabling opencode in production](../runbooks/enabling-opencode-in-production.md) — operator runbook for the opt-in `opencode` agent: pinned binary, env vars, canary, RAM expectations, rollback.
 - [Offline recovery card](offline-recovery-card.md) — the short triage checklist for host-class failures, sized for a brief SSH window.
 - [Unattended recovery runbook](unattended-recovery-runbook.md) — the full symptom → health field → action map.
 - [Lucy prod update watchdog](lucy-prod-update-watchdog.md) — spec for the daily schedule that redeploys lucy (a separate project Kookr supervises) and must prove the deploy converged before reporting green.
