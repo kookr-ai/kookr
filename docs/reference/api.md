@@ -807,6 +807,19 @@ Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with
 | `GET /api/issue-claims?repo=&number=` | List claims (one when `number` given) with `doing`/`lastActivityAt`/`ageMs` |
 | `DELETE /api/issue-claims` | Holder-checked release (`{repo, number, taskId}` in the JSON body); `403` if not owner |
 
+## Agent Asks (`kookr ask`)
+
+An agent asks the operator a multiple-choice question over Telegram; the answer is recorded once and typed back into the asking task's session. Design: `docs/rfc/rfc-kookr-ask.md`. Available only when Telegram remote chat is configured; otherwise `POST` returns `503 {"code":"not_configured"}`, `GET /api/asks` returns an empty list, and nothing is written to disk. There is deliberately **no** HTTP route that records an answer — the only answer channel is the allowlisted Telegram user, so an agent cannot answer its own question.
+
+| Endpoint | Description |
+| --- | --- |
+| `POST /api/asks` | Create an ask: `{taskId, question, options[2..4], context?, timeoutSec?, idempotencyKey?, allowText?}`. `201` with `{ask, deduped:false, redacted[]}`; `200` with `deduped:true` when a *pending* ask for the same `(taskId, idempotencyKey)` exists. Errors: `400 invalid`, `404 unknown_task`, `409 terminal_task`, `422 redacted_option`, `429 rate_limited` (`scope`: `task_pending`/`task_hourly`/`global_hourly`), `502 delivery_failed`, `503 not_configured` |
+| `GET /api/asks?taskId=&state=` | List asks (newest first) plus the enforced `limits`. `state` is `pending`, `answered`, `expired` or `cancelled` |
+| `GET /api/asks/:id` | One ask. `state`, `answer` (`{kind:"option",index,label}` or `{kind:"text",text}`), `resolution` (`answered`, `expired`, `cancelled`, `task_gone`, `delivery_failed`) and `taskDelivery` (`delivered`/`failed`) tell a waiting CLI what happened |
+| `POST /api/asks/:id/cancel` | Cancel a pending ask (edits the Telegram message); `409` when it is no longer pending |
+
+Question and context text is credential-scrubbed (a matching field is replaced by a sentinel and listed in `redacted`). Defaults: 30 min timeout (30 s..24 h), at most 4 options of 48 characters, 3 pending / 6 per hour per task and 20 per hour globally.
+
 ### Environment blockers (issue #1690, escalation heartbeat #1702)
 
 A durable registry of active external blockers (e.g. a GitHub Actions billing limit) so the first detector registers a blocker once, other agents consult it instead of re-diagnosing, and the owner is escalated. The registry is durable across daemon restart and auto-clears on a successful probe.

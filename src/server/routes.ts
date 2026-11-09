@@ -21,6 +21,7 @@ import { registerTaskRoutes } from './routes/task-routes.js';
 import { applyDefaultAgentUpdate } from './settings-service.js';
 import { registerSessionTransportRoutes } from './routes/session-transport-routes.js';
 import { registerIssueClaimRoutes } from './routes/issue-claim-routes.js';
+import { registerAskRoutes } from './routes/ask-routes.js';
 import { registerEnvironmentBlockerRoutes } from './routes/environment-blocker-routes.js';
 import { registerSelfReportRoutes } from './routes/self-report-routes.js';
 import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
@@ -177,6 +178,7 @@ export function createRoutes(deps: RouteDeps): Hono {
   registerTaskRelationsRoutes(app, sharedDeps);
   registerSupervisionRoutes(app, sharedDeps);
   if (sharedDeps.issueClaims) registerIssueClaimRoutes(app, sharedDeps.issueClaims);
+  registerAskRoutes(app, sharedDeps.asks ?? {});
   if (sharedDeps.environmentBlockerRegistry) {
     registerEnvironmentBlockerRoutes(app, { registry: sharedDeps.environmentBlockerRegistry });
   }

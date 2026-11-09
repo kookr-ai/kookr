@@ -285,6 +285,9 @@ import type { SystemdNotifier } from './systemd-notify.js';
 import type { BootClassification } from './boot-marker.js';
 import { startRemoteChatTrigger } from './bootstrap/start-remote-chat-trigger.js';
 import { createTelegramTaskBridge } from './telegram-task-bridge.js';
+import { AskStore } from './asks/ask-store.js';
+import { AskService } from './asks/ask-service.js';
+import type { AskNotifier } from '../shared/contracts/asks.js';
 import {
   TaskTailStore,
   readTaskTailConfigFromEnv,
@@ -1271,6 +1274,24 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       + ` (${rebuilt.ignoredTerminalFields} terminal field(s) ignored)`,
     );
   }
+
+  // `kookr ask` (rfc-kookr-ask). Only constructed when Telegram is configured, so
+  // with the integration off nothing is created on disk and POST /api/asks 503s.
+  // The notifier and the task-delivery function are filled in below once the
+  // Telegram handle and reply bridge exist (the routes are built before them).
+  let askNotifierHolder: AskNotifier | undefined;
+  let askDeliverHolder: ((taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>) | undefined;
+  const askService: AskService | undefined = process.env.KOOKR_TELEGRAM_BOT_TOKEN && process.env.KOOKR_REMOTE_CHAT_DISABLED !== '1'
+    ? new AskService({
+      store: await AskStore.open(kookrDir, (err) => console.warn('[asks] persist failed:', err)),
+      getNotifier: () => askNotifierHolder,
+      taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
+      deliverToTask: async (taskId, text) => askDeliverHolder
+        ? askDeliverHolder(taskId, text)
+        : { ok: false, reason: 'reply bridge not ready' },
+      log: (message) => console.log(message),
+    })
+    : undefined;
 
   // Environment-blocker registry (issue #1690). A durable, shared record of
   // active external blockers (e.g. a GitHub Actions billing limit) so the first
@@ -2833,6 +2854,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     faaAckReapWarningCoordinator,
     faaAckReaperMetrics,
     hungTaskReaperMetrics,
+    asks: { service: askService },
     ...(issueClaimServices ? {
       issueClaims: {
         enabled: true,

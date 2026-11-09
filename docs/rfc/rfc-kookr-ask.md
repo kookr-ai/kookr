@@ -72,12 +72,17 @@ interface AskRecord {
 * Limits (constants, not env vars): ≤4 options (Telegram rows stay legible),
   label ≤48 chars, question ≤600, context ≤1500, ≤3 pending per task, ≤6 asks
   per task per hour, ≤20 asks/hour globally, timeout default 30 min, max 24 h.
-* Idempotency: `(taskId, idempotencyKey)` returns the existing ask (HTTP 200,
-  `deduped: true`) instead of creating a second Telegram message.
+* Idempotency: `(taskId, idempotencyKey)` returns the existing **pending** ask
+  (HTTP 200, `deduped: true`) instead of creating a second Telegram message; an
+  answered/expired ask with the same key does not block a new one.
 * Scrubbing: question/context pass through `redactCredentials` (existing
-  conservative detector; false positives acceptable). A redacted field is
-  replaced by the sentinel and the response lists `redacted: [...]` so the agent
-  can rephrase. An option label that would be redacted is rejected (422).
+  conservative detector; false positives acceptable). "Redacted" means the
+  detector's output differs from its input (it matches words such as `token`,
+  `password`, `secret`, so a label like "Rotate token" is refused). A redacted
+  question/context is replaced by `[redacted — looked like a credential]` (not
+  the detector's own sentinel, which points at a dashboard view asks do not
+  have) and the response lists `redacted: [...]` so the agent can rephrase. An
+  option label that would be redacted is rejected (422).
 * Liveness on answer: the service asks `taskLiveness`; if the task is gone or
   terminal the ask becomes `cancelled/task_gone`, **nothing is typed into any
   session**, and the Telegram message is edited to say so.
@@ -105,13 +110,24 @@ and creates nothing (flag-off behaviour unchanged, pinned by a test).
   option; footer "Or reply to this message with text" when `allowText`.
 * Callback data `ask:<id>:<idx>:<mac>`, `mac = HMAC-SHA256(secret,
   id|idx|nonce)` truncated to 16 hex chars, compared in constant time.
-* `handleCallback` checks, in order: allowlisted sender, rate limit, MAC,
-  ask exists, `state === pending`, callback's message chat+id equals
-  `ask.delivery`. Then `service.answer`. The message is edited to show the
-  chosen option (keyboard removed) and the callback is answered with a toast.
+* `handleCallback` checks, in order: allowlisted sender, rate limit, strict
+  pattern `^ask:[0-9a-f]{12}:[0-3]:[0-9a-f]{16}$`, ask lookup (the MAC needs the
+  ask's nonce, so lookup comes first), MAC, `state === pending`, callback's
+  message chat+id equals `ask.delivery`, private chat. Then `service.answer`.
+  The message is edited to show the chosen option (keyboard removed) and the
+  callback is answered with a toast. The branch returns before the legacy
+  `callback_invalid` audit, which logs raw callback data: no ask audit event
+  may contain callback data or the MAC.
 * Free text: a reply-to on the ask's message (allowlisted sender, same chat)
   is an answer of kind `text`, checked before the generic notification reply
-  routing.
+  routing. A reply to an ask message that is no longer pending is answered with
+  a hint ("this question is already closed") and never falls through to the
+  spawn flow. Text starting with `/` is a command, not an answer (use the
+  buttons for such options).
+* Target chat: `origin[taskId]` for a remote-spawned task, else the first user
+  in `KOOKR_TELEGRAM_ALLOWED_USERS` (insertion order). The choice is arbitrary
+  with several allowed users but safe: answers from any other chat are
+  rejected as `wrong_chat`.
 * Audit kinds: `ask_sent`, `ask_answered`, `ask_rejected` (reason: forged,
   stale, duplicate, wrong_chat, unauthorized, task_gone), `ask_expired`,
   `ask_delivery_failed`. Question text is never put in the audit log.
