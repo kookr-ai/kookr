@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { gitExecEnv } from '../core/git-helpers.js';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -104,6 +104,45 @@ describe('commit-and-pr-body', () => {
     const r = run(['--kind', 'commit-and-pr-body'], env());
     expect(r.status).toBe(2);
     expect(r.stderr).toContain('PR_BODY.md is missing');
+  });
+
+  it('blocks while the branch commits PR_BODY.md, with the exact untrack instruction; passes once removed from the index', () => {
+    commit('feat: a');
+    writeFileSync(join(repo, 'PR_BODY.md'), 'body');
+    g(repo, 'add', 'PR_BODY.md');
+    g(repo, 'commit', '-q', '--amend', '--no-edit');
+    const r = run(['--kind', 'commit-and-pr-body'], env());
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('git rm --cached PR_BODY.md');
+    expect(r.stderr).toContain('git commit --amend --no-edit');
+    g(repo, 'rm', '--cached', '-q', 'PR_BODY.md');
+    g(repo, 'commit', '-q', '-m', 'chore: untrack PR_BODY.md');
+    expect(existsSync(join(repo, 'PR_BODY.md'))).toBe(true);
+    expect(run(['--kind', 'commit-and-pr-body'], env()).status).toBe(0);
+  });
+
+  it('does not flag a repo whose base already tracks an untouched PR_BODY.md', () => {
+    writeFileSync(join(repo, 'PR_BODY.md'), 'fixture');
+    g(repo, 'add', 'PR_BODY.md');
+    g(repo, 'commit', '-q', '-m', 'fixture');
+    base = g(repo, 'rev-parse', 'HEAD');
+    commit('feat: a');
+    writeFileSync(join(repo, 'a-other.txt'), 'x');
+    expect(run(['--kind', 'commit-and-pr-body'], env()).status).toBe(0);
+    writeFileSync(join(repo, 'PR_BODY.md'), 'edited and committed');
+    g(repo, 'add', 'PR_BODY.md');
+    g(repo, 'commit', '-q', '-m', 'oops');
+    expect(run(['--kind', 'commit-and-pr-body'], env()).stderr).toContain('git rm --cached PR_BODY.md');
+  });
+
+  it('does not flag an untracked PR_BODY.md or a same-named file in a subdirectory', () => {
+    commit('feat: a');
+    writeFileSync(join(repo, 'PR_BODY.md'), 'body');
+    mkdirSync(join(repo, 'docs'));
+    writeFileSync(join(repo, 'docs', 'PR_BODY.md'), 'x');
+    g(repo, 'add', 'docs/PR_BODY.md');
+    g(repo, 'commit', '-q', '-m', 'docs: sample');
+    expect(run(['--kind', 'commit-and-pr-body'], env()).status).toBe(0);
   });
 
   it('runs the lint command with {pr_body} substituted and feeds back its output', () => {

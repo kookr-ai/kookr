@@ -125,7 +125,10 @@ at most 4 times):
       by the adapter; if that commit no longer resolves in the repo the gate falls
       back to the merge-base with `origin/main`/`main`, and says so when none is
       found), `Closes #N` when `KOOKR_OPENCODE_ISSUE` is set,
-      `PR_BODY.md`, and a passing PR lint when one is configured. A failure
+      `PR_BODY.md` that the branch has **not committed** (it is a hand-off file;
+      a net diff against the base that adds or modifies it blocks with `git rm --cached PR_BODY.md` + amend/new
+      commit, keeping the file on disk), and a passing PR lint when one is
+      configured. A failure
       exits 2 and tells the worker exactly what is missing. After 3 blocks per
       session the gate lets the worker stop, so it can never trap it.
    2. `nb-retro.sh`: the one-time notebook retrospective (vote, prune, add at
@@ -235,15 +238,38 @@ small (about 15 s); a long task that really needs a larger heap may want
 `shelves: [...]` in a profile's frontmatter scopes the notebook content: at
 launch the adapter runs `nb show <shelf>` for each of the profile's shelves
 (session `NB_DIR`, 4 s timeout each, fail-open, at most about 6 KB per shelf and
-16 KB total, truncated with a marker) and appends a `## Lessons from your
-shelves` section to the session's `AGENTS.md`. The notebook index that
+16 KB total) and appends the result as a `## Lessons from your shelves` section
+to the session's `AGENTS.md`. A shelf over its cap keeps the highest-scored
+lessons (about 65% of the cap) and reserves the rest for the most recently added
+ones (the tail of the score-ordered listing, skipping non-positive scores), and
+ends with a marker naming the omitted count and telling the worker to run
+`nb show <shelf>` for the rest. The notebook index that
 `nb-inject.sh` injects at SessionStart stays intentionally global (shelf names
 and descriptions only), so a worker can still discover other shelves, but only
 its own shelves' lesson text is preloaded. The profiles also carry a short `kb`
 usage block (one focused `kb search "<question>" --kb=<name>`, tolerate
 failure: `kb search` needs an embedding provider and an initialised index).
 
+## Reading the conversation (`kookr peek`, transcript API)
+
+opencode has no JSONL transcript file; the whole conversation lives in the
+task's per-task opencode DB (see [Resume](#resume)). `GET
+/api/tasks/:id/transcript` (and therefore `kookr peek <task>`) reads the user
+and assistant text messages from that DB, read-only, for opencode sessions
+(`source: "vendor"`), filtered by the session's opencode session id. Tool calls
+and results are not included. If the DB is missing, swept, locked or of an
+unknown schema the route falls back to its previous behaviour (hook ledger,
+then `unsupported_provider`).
+
 ## Limits
+
+- A healthy worker can flash `stuckReason=hung_suspect` for a few seconds while the
+  model generates a long tool call (for example writing a large file) with no hook
+  for more than 30 s: Claude sessions are protected by transcript-file growth, which
+  has no opencode equivalent (opencode writes its DB when a part finishes), so the
+  watchdog sees a frozen pane, no tool in progress and no token activity. It clears
+  with the next hook event; it does not trigger a reap (that needs the much larger
+  reaper silence threshold).
 
 - The Settings dialog shows the opencode rows (effort, blacklist checkbox) and the
   launch pickers offer it only when the server registered it, that is when

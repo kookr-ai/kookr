@@ -11,7 +11,8 @@
 // else merge-base with the upstream default branch); `Closes #N` in those
 // commit messages when env KOOKR_OPENCODE_ISSUE=N; PR_BODY.md in cwd; and a
 // zero exit from the lint command (--lint-cmd or env KOOKR_PR_LINT_CMD, with
-// `{pr_body}` replaced by the quoted PR_BODY.md path).
+// `{pr_body}` replaced by the quoted PR_BODY.md path); and PR_BODY.md must NOT
+// be added/modified by the branch (hand-off file).
 //
 // Loop guard: after MAX_BLOCKS blocks for one session the gate exits 0 with a
 // note, so an unsatisfiable gate can never trap a worker forever.
@@ -113,6 +114,17 @@ export function checkDeliverable({ kind, cwd, lintCmd, base, env = process.env }
     if (!new RegExp(`\\bCloses\\s+#${issue.replace(/[^0-9]/g, '')}\\b`, 'i').test(messages)) {
       problems.push(`The commit message must contain the line "Closes #${issue}". Amend it (git commit --amend) to add it.`);
     }
+  }
+  // PR_BODY.md is a hand-off file, never part of the change: block when the
+  // branch ADDS or MODIFIES it relative to the base (net diff, so a follow-up
+  // commit that untracks it clears the problem). A repo that already tracks its
+  // own PR_BODY.md and is left untouched is not flagged. Needs a resolvable base.
+  if (baseSha && git(cwd, ['diff', '--name-only', '--diff-filter=AM', baseSha, 'HEAD', '--', 'PR_BODY.md'])) {
+    problems.push(
+      'PR_BODY.md is committed on this branch, but it must stay uncommitted (it is a hand-off file, not part of the change). ' +
+      'Run `git rm --cached PR_BODY.md` (keeps the file on disk), then `git commit --amend --no-edit` ' +
+      '(or `git commit -m "chore: untrack PR_BODY.md"` as a new commit). Do not delete PR_BODY.md from disk.',
+    );
   }
   const prBody = resolve(cwd, 'PR_BODY.md');
   if (!existsSync(prBody) || readFileSync(prBody, 'utf8').trim() === '') {

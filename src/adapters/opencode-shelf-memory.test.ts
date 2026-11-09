@@ -43,6 +43,45 @@ describe('buildShelfLessonsSection', () => {
     expect(Buffer.byteLength(out)).toBeLessThan(1000 + 600);
   });
 
+  it('keeps the highest-scored AND the newest lessons of an oversized shelf, with a shelf-named marker', async () => {
+    const lesson = (id: string, score: number, label: string) => `${id}  [${score >= 0 ? '+' : ''}${score}]  ${label} ${'z'.repeat(80)}`;
+    const old = Array.from({ length: 60 }, (_, i) => lesson(`a${String(i).padStart(5, '0')}`, i < 10 ? 5 : 1, `OLD-${i}`));
+    const listing = ['# desc: big shelf', ...old, lesson('f00001', 1, 'NEWEST-CANARY'), lesson('f00002', -1, 'DOWNVOTED'), '# vote by id: nb vote big <id> +1|-1'].join('\n');
+    const out = await buildShelfLessonsSection(['big'], { show: fake({ big: listing }), perShelfMaxBytes: 3000 });
+    expect(out).toContain('# desc: big shelf');
+    expect(out).toContain('OLD-0 '); // top-scored head survives
+    expect(out).toContain('NEWEST-CANARY'); // newest score-1 lesson survives
+    expect(out).not.toContain('DOWNVOTED');
+    expect(out).not.toContain('OLD-30 ');
+    expect(out).toMatch(/\[\.\.\. truncated: \d+ of 62 lessons omitted .* run `nb show big` for the rest \.\.\.\]/);
+    expect(Buffer.byteLength(out)).toBeLessThan(3000 + 600);
+  });
+
+  it('does not alter a shelf that fits the cap', async () => {
+    const listing = ['# desc: d', 'a00001  [+2]  one', 'b00002  [+1]  two', '# vote by id: x'].join('\n');
+    const out = await buildShelfLessonsSection(['small'], { show: fake({ small: listing }) });
+    expect(out).toContain(listing);
+    expect(out).not.toContain('truncated');
+  });
+
+  it('real nb: a planted newest lesson on a large shelf reaches the injected text', async () => {
+    let nbOk = true;
+    try { execFileSync('nb', ['--version'], { stdio: 'ignore' }); } catch { nbOk = false; }
+    if (!nbOk) return;
+    const dir = mkdtempSync(join(tmpdir(), 'oc-nb-big-'));
+    try {
+      const env = { ...process.env, NB_DIR: dir };
+      for (let i = 0; i < 25; i += 1) execFileSync('nb', ['add', 'bigshelf', `filler lesson number ${i} ${'q'.repeat(90)} ${i}`], { env });
+      const ids = execFileSync('nb', ['show', 'bigshelf', '--json'], { env, encoding: 'utf8' });
+      const first = (JSON.parse(ids) as { entries: Array<{ id: string }> }).entries.slice(0, 5).map((e) => e.id).join(',');
+      execFileSync('nb', ['vote', 'bigshelf', first, '+1'], { env });
+      execFileSync('nb', ['add', 'bigshelf', 'PLANTED-CANARY newest lesson'], { env });
+      const out = await buildShelfLessonsSection(['bigshelf'], { env, perShelfMaxBytes: 1500 });
+      expect(out).toContain('PLANTED-CANARY');
+      expect(out).toContain('run `nb show bigshelf` for the rest');
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('enforces the total budget across shelves', async () => {
     const big = 'y'.repeat(900);
     const out = await buildShelfLessonsSection(['a', 'b', 'c'], { show: fake({ a: big, b: big, c: 'C-LAST' }), perShelfMaxBytes: 1000, totalMaxBytes: 1200 });
