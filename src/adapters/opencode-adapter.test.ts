@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { OpenCodeAdapter, parseRamLimitMb, type OpenCodeAdapterOptions } from './opencode-adapter.js';
+import { LaunchAbortedError } from './launch-abort.js';
+import { composeOpenCodeSession } from './opencode-home-composer.js';
+import { OpenCodeAdapter, OpenCodeSessionUnreadableError, parseRamLimitMb, type OpenCodeAdapterOptions } from './opencode-adapter.js';
 import type { OpenCodeProfile } from './opencode-kookr-hooks.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { AgentEvent } from '../core/types.js';
@@ -438,6 +440,100 @@ describe('OpenCodeAdapter', () => {
       vi.spyOn(backend, 'createSession').mockRejectedValueOnce(new Error('boom2'));
       await expect(adapter.launch(task.id, 'x', '/workspace', undefined, { tmuxName: 'kookr-oc3' })).rejects.toThrow('boom2');
       expect(existsSync(taskDir)).toBe(false);
+    });
+
+    test('a timed-out launch whose late cleanup runs after a retry recreated the dir does not remove the retry data', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      const taskDir = join(sessionRoot, 'opencode-data', task.id);
+      let failLate!: (e: Error) => void;
+      vi.spyOn(backend, 'createSession').mockImplementationOnce(
+        () => new Promise<void>((_, reject) => { failLate = reject; }),
+      );
+      // Launch A hangs inside createSession (the timeout race already abandoned it).
+      const late = adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      late.catch(() => undefined);
+      await vi.waitFor(() => expect(failLate).toBeDefined());
+      // The retry of the SAME task wipes A's dir, recreates and re-marks it, and writes data.
+      const id = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc3' });
+      const retryData = join(dataHomeOf(id), 'retry-data.txt');
+      writeFileSync(retryData, 'keep');
+      // A's aborted launch now finishes its failure cleanup.
+      failLate(new Error('late boom'));
+      await expect(late).rejects.toThrow('late boom');
+      expect(existsSync(taskDir)).toBe(true);
+      expect(readFileSync(retryData, 'utf8')).toBe('keep');
+    });
+
+    test('a crash-recovery fresh launch keeps the ORIGINAL gate base after the worker committed', async () => {
+      const repo = mkdtempSync(join(tmpdir(), 'oc-gate-repo-'));
+      try {
+        const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', ...a], { encoding: 'utf8', env: gitExecEnv() });
+        git('init', '-q', '-b', 'main');
+        git('commit', '-q', '--allow-empty', '-m', 'one');
+        const base = git('rev-parse', 'HEAD').trim();
+        const adapter = makeAdapter();
+        const task = taskStore.createTask('do it', repo);
+        const pluginOf = (i: string) => readFileSync(join(backend.sessions.get(i)!.spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8');
+        const id = await adapter.launch(task.id, 'do it', repo, undefined, { tmuxName: 'kookr-oc1' });
+        await adapter.stop(id);
+        git('commit', '-q', '--allow-empty', '-m', 'worker commit');
+        const head = git('rev-parse', 'HEAD').trim();
+        // Fresh (non-resuming) relaunch of the same task: the base must not move to the worker's commit.
+        const id2 = await adapter.launch(task.id, 'do it', repo, undefined, { tmuxName: 'kookr-oc2' });
+        expect(pluginOf(id2)).toContain(base);
+        expect(pluginOf(id2)).not.toContain(head);
+        await adapter.stop(id2);
+        // A stored base that no longer exists in the repo is replaced by the current HEAD.
+        writeFileSync(join(sessionRoot, 'opencode-data', task.id, 'gate-base'), `${'e'.repeat(40)}\n`);
+        const id3 = await adapter.launch(task.id, 'do it', repo, undefined, { tmuxName: 'kookr-oc3' });
+        expect(pluginOf(id3)).toContain(head);
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    test('resume with an unreadable session DB fails clearly, keeps the data and does not launch fresh', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      const dataHome = dataHomeOf(id);
+      await adapter.stop(id);
+      mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+      writeFileSync(join(dataHome, 'opencode', 'opencode.db'), 'not sqlite');
+      writeFileSync(join(dataHome, 'conversation-marker.txt'), 'keep');
+      await expect(adapter.launch(task.id, 'x', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' }))
+        .rejects.toBeInstanceOf(OpenCodeSessionUnreadableError);
+      expect(backend.sessions.has('kookr-oc2')).toBe(false);
+      expect(readFileSync(join(dataHome, 'conversation-marker.txt'), 'utf8')).toBe('keep');
+      expect((adapter as any).tmuxToTaskId.size).toBe(0);
+    });
+
+    test('an already-aborted launch throws LaunchAbortedError and leaks no session bookkeeping', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      const ac = new AbortController();
+      ac.abort();
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1', signal: ac.signal }))
+        .rejects.toBeInstanceOf(LaunchAbortedError);
+      const a = adapter as any;
+      expect(a.tmuxToTaskId.size).toBe(0);
+      expect(a.sessionDirs.size).toBe(0);
+      expect(a.dataHomes.size).toBe(0);
+      expect(backend.sessions.has('kookr-oc1')).toBe(false);
+    });
+
+    test('an abort that lands after the session dir was composed cleans up the dir, data home and bookkeeping', async () => {
+      const ac = new AbortController();
+      const adapter = makeAdapter({ composeSession: async (o) => { ac.abort(); return composeOpenCodeSession(o); } });
+      const task = taskStore.createTask('do it', '/workspace');
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1', signal: ac.signal }))
+        .rejects.toBeInstanceOf(LaunchAbortedError);
+      const a = adapter as any;
+      expect(a.tmuxToTaskId.size).toBe(0);
+      expect(a.sessionDirs.size).toBe(0);
+      expect(a.dataHomes.size).toBe(0);
+      expect(existsSync(join(sessionRoot, 'opencode-data', task.id))).toBe(false); // fresh launch: its data dir goes too
+      expect(backend.sessions.has('kookr-oc1')).toBe(false);
     });
 
     test('stop sweeps the data of a completed task but keeps a terminated task resumable', async () => {

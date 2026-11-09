@@ -11,8 +11,10 @@ import {
   openCodeTaskDir,
   parseDataCap,
   readGateBase,
+  inspectOpenCodeSession,
   readOpenCodeSessionId,
   removeMarkedTaskDir,
+  removeTaskDirOwnedByLaunch,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
   writeGateBase,
@@ -65,6 +67,63 @@ describe('readOpenCodeSessionId', () => {
     mkdirSync(join(root, 'opencode'), { recursive: true });
     writeFileSync(join(root, 'opencode', 'opencode.db'), 'not sqlite');
     expect(await readOpenCodeSessionId(root)).toBeUndefined();
+  });
+});
+
+describe('inspectOpenCodeSession', () => {
+  test('absent DB, zero-byte DB and a DB with no root session are "absent" (fresh launch is right)', async () => {
+    expect((await inspectOpenCodeSession(join(root, 'nope'))).kind).toBe('absent');
+    mkdirSync(join(root, 'opencode'), { recursive: true });
+    writeFileSync(join(root, 'opencode', 'opencode.db'), '');
+    expect((await inspectOpenCodeSession(root)).kind).toBe('absent');
+    rmSync(join(root, 'opencode'), { recursive: true });
+    makeDb(root, [['ses_child', 'ses_x', 1]]);
+    expect((await inspectOpenCodeSession(root)).kind).toBe('absent');
+  });
+  test('a present but unreadable DB (corrupt file, schema drift) is "unreadable", never "absent"', async () => {
+    mkdirSync(join(root, 'opencode'), { recursive: true });
+    writeFileSync(join(root, 'opencode', 'opencode.db'), 'not sqlite');
+    expect((await inspectOpenCodeSession(root)).kind).toBe('unreadable');
+    rmSync(join(root, 'opencode'), { recursive: true });
+    mkdirSync(join(root, 'opencode'), { recursive: true });
+    const db = new Database(join(root, 'opencode', 'opencode.db'));
+    db.exec('CREATE TABLE other (x integer)');
+    db.close();
+    const r = await inspectOpenCodeSession(root);
+    expect(r.kind).toBe('unreadable');
+    // The best-effort wrapper still collapses both to undefined.
+    expect(await readOpenCodeSessionId(root)).toBeUndefined();
+  });
+  test('found carries the id', async () => {
+    makeDb(root, [['ses_a', null, 3]]);
+    expect(await inspectOpenCodeSession(root)).toEqual({ kind: 'found', id: 'ses_a' });
+  });
+});
+
+describe('launch-token ownership marker', () => {
+  test('only the launch that wrote the token may remove the dir; taskId-only helpers still work', async () => {
+    const d = join(root, 'task-a');
+    mkdirSync(d, { recursive: true });
+    await markTaskDir(d, 'task-a', 'tok-1');
+    expect(await isMarkedTaskDir(d, 'task-a')).toBe(true);
+    // A retry re-marks the dir with its own token...
+    await markTaskDir(d, 'task-a', 'tok-2');
+    // ...so the first launch's late cleanup is a no-op.
+    expect(await removeTaskDirOwnedByLaunch(d, 'task-a', 'tok-1')).toBe(false);
+    expect(existsSync(d)).toBe(true);
+    expect(await removeTaskDirOwnedByLaunch(d, 'other', 'tok-2')).toBe(false);
+    expect(await removeTaskDirOwnedByLaunch(d, 'task-a', 'tok-2')).toBe(true);
+    expect(existsSync(d)).toBe(false);
+  });
+  test('sweep and fresh reset (taskId-only) still remove a token-marked dir; a legacy marker has no token', async () => {
+    const d = join(root, 'task-b');
+    mkdirSync(d, { recursive: true });
+    await markTaskDir(d, 'task-b', 'tok-9');
+    expect(await removeMarkedTaskDir(d, 'task-b')).toBe(true);
+    mkdirSync(d, { recursive: true });
+    await markTaskDir(d, 'task-b');
+    expect(await removeTaskDirOwnedByLaunch(d, 'task-b', 'tok-9')).toBe(false);
+    expect(await removeMarkedTaskDir(d, 'task-b')).toBe(true);
   });
 });
 
