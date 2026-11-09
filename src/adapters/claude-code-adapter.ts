@@ -81,6 +81,13 @@ export interface HookSettings {
    * contract). Keyed last so its presence never reorders the pre-existing keys.
    */
   enabledPlugins?: Record<string, boolean>;
+  /**
+   * Model Claude Code's `advisor` tool runs on. Written here (not only in
+   * ~/.claude/settings.json) because bypass-mode launches pass
+   * `--setting-sources ''`, which skips user settings. OMITTED when unset so
+   * the settings file stays byte-identical to pre-advisor output.
+   */
+  advisorModel?: string;
 }
 
 export interface ClaudeCodeAdapterOptions {
@@ -98,6 +105,8 @@ export interface ClaudeCodeAdapterOptions {
    * spawned Claude Code bypasses all permission prompts. Defaults to false.
    */
   bypassAllPermissions?: boolean;
+  /** Advisor model injected into every spawned session's settings; unset = leave to Claude Code. */
+  advisorModel?: string;
   /**
    * Absolute path to the kookr-toolkit plugin tree (containing
    * `.claude-plugin/plugin.json`). When set and the path is valid, the
@@ -243,6 +252,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
   private agentBin: string;
   private agentBinConfiguredVia: 'env' | 'default';
   private bypassAllPermissions: boolean;
+  private advisorModel: string | undefined;
   private pluginDir?: string;
   /**
    * Names of the plugins force-loaded via `--plugin-dir`, resolved lazily from
@@ -277,6 +287,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
     this.agentBin = options?.agentBin ?? 'claude';
     this.agentBinConfiguredVia = options?.agentBin ? 'env' : 'default';
     this.bypassAllPermissions = options?.bypassAllPermissions ?? false;
+    this.advisorModel = options?.advisorModel || undefined;
     this.pluginDir = resolvePluginDir(options?.pluginDir);
     this.probeExec = options?.probeExec;
     this.loadAgents = options?.loadFileBasedAgents ?? ((cwd) => loadFileBasedAgents(cwd));
@@ -1103,6 +1114,7 @@ export class ClaudeCodeAdapter implements AgentAdapter {
       // Spread so the key is entirely ABSENT when no loadout applies — keeping
       // JSON.stringify byte-identical to pre-2b output.
       ...(enabledPlugins ? { enabledPlugins } : {}),
+      ...(this.advisorModel ? { advisorModel: this.advisorModel } : {}),
     };
   }
 }

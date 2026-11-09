@@ -89,6 +89,16 @@ export interface AgentRuntime {
   hermesFleetOptIn: boolean;
 }
 
+/** Default advisor model for spawned Claude Code workers. */
+export const DEFAULT_ADVISOR_MODEL = 'claude-fable-5-2';
+
+/** `KOOKR_ADVISOR_MODEL` overrides the default; set it empty to leave the advisor to Claude Code. */
+export function resolveAdvisorModel(env: NodeJS.ProcessEnv): string | undefined {
+  const raw = env.KOOKR_ADVISOR_MODEL;
+  if (raw === undefined) return DEFAULT_ADVISOR_MODEL;
+  return raw.trim() || undefined;
+}
+
 export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentRuntime> {
   const terminalInputWriter = deps.terminalInputWriter ?? asTerminalInputWriterPort(deps.terminalBackend);
   const claudeCodeAdapter = new ClaudeCodeAdapter(deps.terminalBackend, deps.taskStore, {
@@ -100,6 +110,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     agentBin: deps.agentBin,
     probeExec: deps.claudeProbeExec,
     bypassAllPermissions: deps.bypassAllPermissions,
+    advisorModel: resolveAdvisorModel(process.env),
     resolveDefaultEffort: () => deps.getAgentEffort?.()['claude-code'],
     // Issue #3295: mark the launch cwd trusted in ~/.claude.json so Claude
     // Code does not paint a "No, exit" workspace-trust dialog that Kookr
