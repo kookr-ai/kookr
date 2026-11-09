@@ -82,12 +82,15 @@ import {
   OPENCODE_DATA_SWEEP_INTERVAL_MS,
   openCodeTaskDataHome,
   isAbsentOrEmptyDir,
+  isMarkedTaskDir,
   markTaskDir,
   openCodeTaskDir,
   removeMarkedTaskDir,
   parseDataCap,
   readGateBase,
+  inspectOpenCodeSession,
   readOpenCodeSessionId,
+  removeTaskDirOwnedByLaunch,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
   touchTaskDir,
@@ -202,6 +205,18 @@ function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenC
   return { ...base, modelId: override.startsWith(prefix) ? override.slice(prefix.length) : override };
 }
 
+/** A resume was requested but the task's opencode DB exists and cannot be read; launching fresh would wipe the conversation. */
+export class OpenCodeSessionUnreadableError extends Error {
+  readonly code = 'opencode_session_unreadable';
+  constructor(taskId: string, detail: string) {
+    super(
+      `cannot resume opencode task ${taskId}: its persistent session database is unreadable (${detail}). ` +
+        'The conversation data was kept; retry once the database is readable instead of starting fresh.',
+    );
+    this.name = 'OpenCodeSessionUnreadableError';
+  }
+}
+
 export class OpenCodeAdapter implements AgentAdapter {
   readonly agentType = 'opencode';
   private eventHandlers: Array<AdapterEventHandler> = [];
@@ -215,6 +230,8 @@ export class OpenCodeAdapter implements AgentAdapter {
   private dataHomes = new Map<string, string>();
   /** tmuxName -> task data dir created by a FRESH launch (removed again if that launch fails). */
   private freshTaskDirs = new Map<string, string>();
+  /** Per-launch generation token written into the task dir marker, so a late failed-launch cleanup only removes its own dir. */
+  private launchTokens = new Map<string, string>();
   private dataRoot: string;
   private dataMaxAgeMs: number;
   private dataMaxBytes: number;
@@ -329,7 +346,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     opts?.onPhase?.('session-create');
     // Resume only when the task's persistent opencode DB still holds a session; otherwise warn and
     // launch fresh with the prompt (the data dir may have been swept or the task never ran).
-    const opencodeSessionId = resume?.sessionId ? await this.findResumableSession(taskId, resume) : undefined;
+    this.launchTokens.set(tmuxName, randomUUID());
+    let opencodeSessionId: string | undefined;
+    try {
+      throwIfLaunchAborted(opts?.signal);
+      opencodeSessionId = resume?.sessionId ? await this.findResumableSession(taskId, resume) : undefined;
+    } catch (err) {
+      // Nothing was created yet, but the tmuxToTaskId entry (which exempts the task from sweeps) must go.
+      await this.cleanupFailedLaunch(tmuxName);
+      throw err;
+    }
     let env: Record<string, string>;
     try {
       env = await this.prepareSession(taskId, cwd, tmuxName, opts, opencodeSessionId !== undefined);
@@ -339,7 +365,13 @@ export class OpenCodeAdapter implements AgentAdapter {
     }
 
     const submitConfirmed = this.armInitialPromptSubmitSignal(tmuxName);
-    throwIfLaunchAborted(opts?.signal);
+    try {
+      throwIfLaunchAborted(opts?.signal);
+    } catch (err) {
+      this.initialPromptSubmitResolvers.delete(tmuxName);
+      await this.cleanupFailedLaunch(tmuxName);
+      throw err;
+    }
     try {
       await this.backend.createSession({
         id: tmuxName,
@@ -425,6 +457,8 @@ export class OpenCodeAdapter implements AgentAdapter {
     this.sessionDirs.set(tmuxName, sessionDir);
     // Per-task persistent data: kept across stop so a relaunch can resume; a fresh launch starts clean.
     const taskDir = openCodeTaskDir(this.dataRoot, taskId);
+    // Read before a fresh launch wipes the dir: the ORIGINAL gate base must survive a crash-recovery relaunch.
+    const priorGateBase = !resuming && (await isMarkedTaskDir(taskDir, taskId)) ? await readGateBase(taskDir) : undefined;
     if (!resuming) {
       // Only a dir Kookr created (ownership marker) may be reset; anything else in the way is refused, never deleted.
       if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
@@ -435,7 +469,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const dataHome = openCodeTaskDataHome(taskDir);
     // Marker first: a crash between the two steps must not leave an unmarked (and thus never reclaimed) dir.
     await mkdir(taskDir, { recursive: true, mode: 0o700 });
-    await markTaskDir(taskDir, taskId);
+    await markTaskDir(taskDir, taskId, this.launchTokens.get(tmuxName));
     await mkdir(dataHome, { recursive: true, mode: 0o700 });
     await touchTaskDir(taskDir);
     this.dataHomes.set(tmuxName, dataHome);
@@ -470,7 +504,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       KOOKR_TASK_ID: taskId,
       ...(this.serverPort ? { KOOKR_PORT: String(this.serverPort) } : {}),
       KOOKR_SESSION_DIR: sessionDir,
-      ...(await this.gateBaseEnv(cwd, taskDir, resuming)),
+      ...(await this.gateBaseEnv(cwd, taskDir, resuming, priorGateBase)),
       ...passthroughEnv(this.env, opts?.extraEnv),
       ...(issue !== undefined ? { KOOKR_OPENCODE_ISSUE: String(issue) } : {}),
       ...(this.profile?.hookEnv ?? {}),
@@ -517,15 +551,28 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   /**
-   * HEAD at launch: the deliverable gate counts commits ahead of it. A resumed launch reuses the base
-   * recorded by the first launch (HEAD has moved by then). Best-effort (non-git cwd => none).
+   * The base the deliverable gate counts commits ahead of. The first launch of a task records HEAD; every
+   * later launch of the SAME task (resume, or a crash-recovery fresh launch after the worker already
+   * committed) keeps that original base while it still resolves in the repo, and only records a new one
+   * when none is stored or the stored one no longer exists. Best-effort (non-git cwd => none).
    */
-  private async gateBaseEnv(cwd: string, taskDir: string, resuming: boolean): Promise<Record<string, string>> {
-    if (resuming) {
-      const saved = await readGateBase(taskDir);
-      if (saved) return { KOOKR_OPENCODE_GATE_BASE: saved };
-    }
+  private async gateBaseEnv(
+    cwd: string,
+    taskDir: string,
+    resuming: boolean,
+    priorBase?: string,
+  ): Promise<Record<string, string>> {
+    const saved = resuming ? await readGateBase(taskDir) : priorBase;
     try {
+      if (saved) {
+        const ok = await execFileAsync('git', ['rev-parse', '--verify', '--quiet', `${saved}^{commit}`], { cwd, timeout: 5000, env: gitExecEnv() })
+          .then(() => true, () => false);
+        if (ok) {
+          // A fresh launch wiped the dir: put the kept base back.
+          if (!resuming) await writeGateBase(taskDir, saved).catch(() => { /* best-effort */ });
+          return { KOOKR_OPENCODE_GATE_BASE: saved };
+        }
+      }
       const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, env: gitExecEnv() });
       const sha = stdout.trim();
       if (!/^[0-9a-f]{7,64}$/.test(sha)) return {};
@@ -541,14 +588,19 @@ export class OpenCodeAdapter implements AgentAdapter {
     const preferred = resume.sessionId.startsWith('ses_')
       ? resume.sessionId
       : this.taskStore.getTask(taskId)?.metadata?.opencodeSessionId;
-    const id = await readOpenCodeSessionId(openCodeTaskDataHome(openCodeTaskDir(this.dataRoot, taskId)), preferred);
-    if (!id) {
+    const found = await inspectOpenCodeSession(openCodeTaskDataHome(openCodeTaskDir(this.dataRoot, taskId)), preferred);
+    if (found.kind === 'unreadable') {
+      // Launching fresh would wipe the conversation; an unreadable DB (locked, schema drift) is not an empty one.
+      throw new OpenCodeSessionUnreadableError(taskId, found.error);
+    }
+    if (found.kind === 'absent') {
       console.warn(
         `[opencode-adapter] resume requested for ${taskId} but no opencode session was found in its persistent data ` +
           `(${this.dataRoot}); launching fresh.`,
       );
+      return undefined;
     }
-    return id;
+    return found.id;
   }
 
   /** Throttled, fire-and-forget retention sweep (see opencode-task-data.ts). */
@@ -647,6 +699,8 @@ export class OpenCodeAdapter implements AgentAdapter {
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
     await this.recordSessionTokenUsage(tmuxName);
     const failedTaskId = this.tmuxToTaskId.get(tmuxName);
+    const launchToken = this.launchTokens.get(tmuxName);
+    this.launchTokens.delete(tmuxName);
     this.forgetSession(tmuxName);
     try {
       await this.backend.killSession(tmuxName);
@@ -658,7 +712,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const fresh = this.freshTaskDirs.get(tmuxName);
     this.freshTaskDirs.delete(tmuxName);
     this.dataHomes.delete(tmuxName);
-    if (fresh && failedTaskId) await removeMarkedTaskDir(fresh, failedTaskId).catch(() => { /* best-effort */ });
+    if (fresh && failedTaskId && launchToken) await removeTaskDirOwnedByLaunch(fresh, failedTaskId, launchToken).catch(() => { /* best-effort */ });
   }
 
   private async cleanupSessionDir(tmuxName: string): Promise<void> {
@@ -690,6 +744,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const dataHome = this.dataHomes.get(tmuxName);
     this.dataHomes.delete(tmuxName);
     this.freshTaskDirs.delete(tmuxName);
+    this.launchTokens.delete(tmuxName);
     this.forgetSession(tmuxName);
     await this.cleanupSessionDir(tmuxName);
     // The per-task data (conversation DB) deliberately outlives the session so the task can resume.

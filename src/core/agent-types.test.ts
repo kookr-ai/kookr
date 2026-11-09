@@ -9,6 +9,7 @@ import {
   excludeBlacklistedAgents,
   advertisedAgentTypes,
   buildAgentSelectionOptions,
+  settingsVisibleAgentTypes,
   previewRoundRobinNextLabel,
   agentSelectionHint,
   DEFAULT_AGENT_TYPE,
@@ -358,9 +359,34 @@ describe('buildAgentSelectionOptions', () => {
     expect(options.map((o) => o.type)).toEqual(['claude-code']);
   });
 
-  test('falls back to the canonical list (with round-robin) when none are supplied', () => {
+  test('falls back to the canonical list without opt-in agents (with round-robin) when none are supplied', () => {
     const options = buildAgentSelectionOptions([]);
-    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode', 'round-robin']);
+    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'round-robin']);
+  });
+
+  test('keeps opencode when the server advertises it', () => {
+    expect(buildAgentSelectionOptions(AVAILABLE_AGENT_TYPES).map((o) => o.type)).toContain('opencode');
+  });
+});
+
+describe('settingsVisibleAgentTypes', () => {
+  const types = (list: readonly { type: string }[]) => list.map((a) => a.type);
+  test('hides opt-in agents that are not registered, before and after the server list arrives', () => {
+    expect(types(settingsVisibleAgentTypes([]))).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+    const registered = AVAILABLE_AGENT_TYPES.filter((a) => a.type !== 'opencode');
+    expect(types(settingsVisibleAgentTypes(registered))).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+  });
+  test('existing agents are always offered, even when their CLI is not installed (regression: only opt-in agents are hidden)', () => {
+    // A host with only claude installed advertises ['claude-code']; Codex/Grok controls must still be shown (pre-set effort,
+    // blacklist an agent about to be installed), exactly as before opencode existed.
+    const onlyClaude = AVAILABLE_AGENT_TYPES.filter((a) => a.type === 'claude-code');
+    expect(types(settingsVisibleAgentTypes(onlyClaude))).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+    expect(types(settingsVisibleAgentTypes(onlyClaude, ['opencode']))).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
+  });
+  test('shows opencode when registered, and a blacklisted agent stays visible so it can be un-ticked', () => {
+    expect(types(settingsVisibleAgentTypes(AVAILABLE_AGENT_TYPES))).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
+    const withoutCodex = AVAILABLE_AGENT_TYPES.filter((a) => a.type !== 'codex-cli');
+    expect(types(settingsVisibleAgentTypes(withoutCodex, ['codex-cli']))).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
   });
 });
 

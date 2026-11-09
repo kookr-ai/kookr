@@ -522,6 +522,14 @@ describe('launchTask', () => {
       expect(plain.task.prompt).toContain('fresh git worktree of its own');
     });
 
+    it('rejects an issue that is not a positive safe integer (1e21 stringifies to 1e+21)', async () => {
+      for (const issue of [1e21, Number.MAX_SAFE_INTEGER + 1, 0, -3, 1.5]) {
+        await expect(
+          launchTask(deps, { prompt: 'x', cwd: '/tmp', agentType: 'opencode', issue }),
+        ).rejects.toBeInstanceOf(ProfileValidationError);
+      }
+    });
+
     it('rejects raw tier-target model pins for Codex and Grok (#1518)', async () => {
       await expect(
         launchTask(deps, {

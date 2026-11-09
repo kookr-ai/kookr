@@ -796,8 +796,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // #681 / #1518: shape check only. The agent-specific allowed-set check
       // runs in launchTask after round-robin resolution and surfaces as a 400
       // via EffortValidationError / ModelValidationError (mapped below).
-      if (body.issue !== undefined && (typeof body.issue !== 'number' || !Number.isInteger(body.issue) || body.issue <= 0)) {
-        return c.json({ error: 'issue must be a positive integer', code: 'invalid_issue' }, 400);
+      if (body.issue !== undefined && (typeof body.issue !== 'number' || !Number.isSafeInteger(body.issue) || body.issue <= 0)) {
+        return c.json({ error: 'issue must be a positive safe integer (<= 9007199254740991)', code: 'invalid_issue' }, 400);
       }
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);

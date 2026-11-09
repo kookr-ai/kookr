@@ -38,6 +38,8 @@ export {
   excludeBlacklistedAgents,
   advertisedAgentTypes,
   buildAgentSelectionOptions,
+  defaultAdvertisedAgentTypes,
+  settingsVisibleAgentTypes,
   previewRoundRobinNextLabel,
   CLAUDE_CODE_EFFORT_LEVELS,
   CODEX_CLI_EFFORT_LEVELS,

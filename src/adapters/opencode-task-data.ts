@@ -65,19 +65,30 @@ export const openCodeTaskDataHome = (taskDir: string): string => join(taskDir, '
  */
 export const TASK_DIR_MARKER = '.kookr-opencode-task';
 
-export async function markTaskDir(taskDir: string, taskId: string): Promise<void> {
-  await writeFile(join(taskDir, TASK_DIR_MARKER), `${taskId}\n`, { mode: 0o600 });
+/**
+ * Marker contents are `taskId` (legacy) or `taskId:token`. The token is a per-launch generation id: a
+ * failed launch's late cleanup must only remove the dir THAT launch created, never one a retry of the
+ * same task has since recreated and re-marked.
+ */
+export async function markTaskDir(taskDir: string, taskId: string, launchToken?: string): Promise<void> {
+  await writeFile(join(taskDir, TASK_DIR_MARKER), `${launchToken ? `${taskId}:${launchToken}` : taskId}\n`, { mode: 0o600 });
 }
 
-/** True only for a real directory (not a symlink) holding the marker for exactly this task id. */
-export async function isMarkedTaskDir(dir: string, taskId: string): Promise<boolean> {
+async function readTaskDirMarker(dir: string): Promise<{ taskId: string; token?: string } | undefined> {
   try {
     const l = await lstat(dir);
-    if (!l.isDirectory() || l.isSymbolicLink()) return false;
-    return (await readFile(join(dir, TASK_DIR_MARKER), 'utf8')).trim() === taskId;
+    if (!l.isDirectory() || l.isSymbolicLink()) return undefined;
+    const raw = (await readFile(join(dir, TASK_DIR_MARKER), 'utf8')).trim();
+    const sep = raw.indexOf(':');
+    return sep < 0 ? { taskId: raw } : { taskId: raw.slice(0, sep), token: raw.slice(sep + 1) };
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+/** True only for a real directory (not a symlink) holding the marker for exactly this task id (any launch). */
+export async function isMarkedTaskDir(dir: string, taskId: string): Promise<boolean> {
+  return (await readTaskDirMarker(dir))?.taskId === taskId;
 }
 
 /** True when `dir` does not exist or is an empty real directory (safe to take over without deleting anything). */
@@ -99,26 +110,46 @@ export async function removeMarkedTaskDir(dir: string, taskId: string): Promise<
 }
 
 /**
+ * Remove a task dir only when its marker carries this task id AND this launch's token. Used by a failed
+ * launch's cleanup, which can run after a retry of the same task recreated the dir.
+ */
+export async function removeTaskDirOwnedByLaunch(dir: string, taskId: string, launchToken: string): Promise<boolean> {
+  const marker = await readTaskDirMarker(dir);
+  if (marker?.taskId !== taskId || marker.token !== launchToken) return false;
+  await rm(dir, { recursive: true, force: true });
+  return true;
+}
+
+/** Outcome of inspecting a task's opencode DB for a resumable session. */
+export type OpenCodeSessionLookup =
+  | { kind: 'found'; id: string }
+  /** No DB, a never-initialised (zero-byte) DB, or a DB without a usable root session: a fresh launch is correct. */
+  | { kind: 'absent' }
+  /** The DB exists but could not be read (locked, schema drift, addon load failure): do NOT treat as empty. */
+  | { kind: 'unreadable'; error: string };
+
+/**
  * The opencode session to resume from the task's DB: `preferred` when that row exists, else the newest
  * root (non-child) session. Never throws; `undefined` when the DB is absent/unreadable/empty.
  */
-export async function readOpenCodeSessionId(dataHome: string, preferred?: string): Promise<string | undefined> {
+export async function inspectOpenCodeSession(dataHome: string, preferred?: string): Promise<OpenCodeSessionLookup> {
   const dbPath = openCodeDbPathForDataHome(dataHome);
-  if (!existsSync(dbPath)) return undefined;
+  if (!existsSync(dbPath)) return { kind: 'absent' };
   let db: import('better-sqlite3').Database | undefined;
   try {
+    if ((await stat(dbPath)).size === 0) return { kind: 'absent' };
     const { default: Database } = await import('better-sqlite3');
     db = new Database(dbPath, { readonly: true, fileMustExist: true, timeout: 500 });
     if (preferred && SESSION_ID_RE.test(preferred)) {
       const hit = db.prepare('SELECT id FROM session WHERE id = ?').get(preferred) as { id: string } | undefined;
-      if (hit) return hit.id;
+      if (hit) return { kind: 'found', id: hit.id };
     }
     const row = db
       .prepare('SELECT id FROM session WHERE parent_id IS NULL ORDER BY time_updated DESC LIMIT 1')
       .get() as { id: string } | undefined;
-    return row && SESSION_ID_RE.test(row.id) ? row.id : undefined;
-  } catch {
-    return undefined;
+    return row && SESSION_ID_RE.test(row.id) ? { kind: 'found', id: row.id } : { kind: 'absent' };
+  } catch (err) {
+    return { kind: 'unreadable', error: err instanceof Error ? err.message : String(err) };
   } finally {
     try {
       db?.close();
@@ -126,6 +157,12 @@ export async function readOpenCodeSessionId(dataHome: string, preferred?: string
       /* ignore */
     }
   }
+}
+
+/** Best-effort id lookup for callers that only record usage: unreadable collapses to `undefined`. Never throws. */
+export async function readOpenCodeSessionId(dataHome: string, preferred?: string): Promise<string | undefined> {
+  const r = await inspectOpenCodeSession(dataHome, preferred);
+  return r.kind === 'found' ? r.id : undefined;
 }
 
 export async function readGateBase(taskDir: string): Promise<string | undefined> {

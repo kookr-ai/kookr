@@ -59,7 +59,12 @@ export function parseArgs(argv) {
 
 function resolveBase(cwd, explicit, env) {
   const given = explicit || env.KOOKR_OPENCODE_GATE_BASE;
-  if (given) return git(cwd, ['rev-parse', '--verify', '--quiet', `${given}^{commit}`]);
+  if (given) {
+    const sha = git(cwd, ['rev-parse', '--verify', '--quiet', `${given}^{commit}`]);
+    if (sha) return sha;
+    // The recorded base no longer resolves (gc, rewritten history): fall
+    // through to the merge-base heuristic instead of skipping the check.
+  }
   for (const ref of ['origin/HEAD', 'origin/main', 'origin/master', 'main', 'master']) {
     const mb = git(cwd, ['merge-base', 'HEAD', ref]);
     if (mb) return mb;
@@ -95,6 +100,8 @@ export function checkDeliverable({ kind, cwd, lintCmd, base, env = process.env }
     problems.push(`There are uncommitted changes to tracked files:\n${tail(dirty)}\nCommit the files that belong to your change (git add <files> + git commit) and restore unrelated ones, such as a lockfile touched by an install, with git checkout -- <file> instead of committing them; do not push.`);
   }
   const baseSha = resolveBase(cwd, base, env);
+  const baseGiven = Boolean(base || env.KOOKR_OPENCODE_GATE_BASE);
+  const baseUnresolved = baseGiven && !baseSha;
   const range = baseSha ? `${baseSha}..HEAD` : null;
   if (range) {
     const count = Number(git(cwd, ['rev-list', '--count', range]) ?? '0');
@@ -123,6 +130,10 @@ export function checkDeliverable({ kind, cwd, lintCmd, base, env = process.env }
         );
       }
     }
+  }
+  // Informational only: never blocks on its own, but explains the missing check.
+  if (baseUnresolved && problems.length > 0) {
+    problems.push('Note: the recorded starting point could not be resolved and no merge-base with origin/main or main was found, so the "at least one commit ahead" check was skipped.');
   }
   return problems;
 }

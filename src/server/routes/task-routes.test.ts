@@ -1843,7 +1843,7 @@ parameters:
     expect((await post({ issue: 7 })).status).toBe(201);
     expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ issue: 7 }));
     vi.mocked(launchTask).mockClear();
-    for (const issue of [0, -1, 1.5, '7']) {
+    for (const issue of [0, -1, 1.5, '7', 1e21, Number.MAX_SAFE_INTEGER + 1]) {
       const res = await post({ issue });
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({ code: 'invalid_issue' });
