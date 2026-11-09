@@ -1,6 +1,6 @@
 # RFC: opencode worker containers: A2A, scaling, shared layered memory
 
-**Status:** Draft v3 (post review round 2, pre-implementation)
+**Status:** Draft v4 (post review rounds 1-2 and consensus attack; awaiting independent review)
 **Date:** 2026-11-09
 **Author:** Jean Ibarz (with Claude)
 
@@ -182,12 +182,30 @@ non-interactive (attach is log view only; documented).
 
 ### 2a. Round-2 additions to Design 2 (v3)
 
+**Workload fit (consensus-attack finding; the review had assumed a container is a useful place to work).**
+A worker must build and test the repo, so the base image alone (git, node, python, opencode, nb) is not enough.
+Decision: **toolchain layers**. `opencode-worker` stays repo-neutral; a repo supplies a thin derived image
+(`FROM opencode-worker@sha256:...` + node, pnpm, whatever its checks need; Kookr's own is
+`deploy/opencode-worker/toolchains/kookr.Dockerfile`). Dependencies are not baked: the clone gets
+`pnpm install --offline --frozen-lockfile` against the host pnpm store mounted **read-only**
+(copy-import into `/work/node_modules`, the only writable place), so no network is needed for installs and
+the image stays task-neutral; the per-task disk cost of `node_modules` is measured in S2d and counted in the
+capacity numbers. Phase A keeps egress open (provider + registry), so a missing store entry degrades to a
+network install, not a failure. A profile is container-eligible only if its toolchain image exists and its
+declared checks resolve inside it; otherwise the launch is refused with `toolchain_missing`. Not baked and not
+offered: `gh`/push credentials (deliverable is a local commit). The S2d live gate adds a real task, not a
+smoke: the existing fix-a-failing-test fixture runs `pnpm test` in the container and its result (tests run,
+commit, gate passed) is compared with the TUI run of the same fixture.
+Alternative recorded (open question 5): keep workers on the host and sandbox only tool execution; rejected
+for Phase A because it does not give per-task resource caps, A2A addressability or a Phase B path, but it
+becomes the fallback if the toolchain-layer cost or fidelity gap is too high.
+
 **Hook commands are rewritten for the container (blocking finding, verified in
 `opencode-kookr-hooks.ts`: commands embed absolute host paths and the plugin
 treats any exit other than 2 as pass, so a missing path = exit 127 = the gate
 silently lets every worker stop).** In container mode the composer takes a path
 map: node = `/usr/local/bin/node`, hooks = `/kookr-hooks/...`, and
-`KOOKR_PR_LINT_CMD` must resolve inside the image or is dropped with a warning.
+`KOOKR_PR_LINT_CMD` must resolve inside the image; if it does not, the launch is **refused** (never silently dropped: a gate that quietly weakens defeats its purpose).
 The hooks dir is a **per-task immutable copy** made at launch (not a bind of the live
 install), so a Kookr upgrade mid-task cannot swap hooks under a worker; the
 node and hooks versions are recorded on the task. Fail closed: the plugin's
@@ -339,7 +357,7 @@ image, real provider, N-times repeats) are an operator-run script under `scripts
 whose output is recorded in the PR; they are not part of the PR gate and are not
 claimed as such.
 
-- **S1 image**: `deploy/opencode-worker/**` (Dockerfile, hardened entrypoint with
+- **S1 image**: `deploy/opencode-worker/**` (incl. the Kookr toolchain layer) (Dockerfile, hardened entrypoint with
   `/run/secrets`, HEALTHCHECK, log prefixes, distinct exit codes, hook self-test),
   build script, per-child-death test. No Kookr runtime change.
 - **S2a**: extract the session preparer from `opencode-adapter.ts` and add the
@@ -395,6 +413,8 @@ format, egress filtering (Phase A).
 4. Upgrade path: a new opencode pin changes the image digest and the plugin
    API; the version check and the image tag must move together.
 
+5. Toolchain fit: disk and fidelity cost of per-repo toolchain layers and `node_modules` per clone (S2d measures); host-sandboxed tool execution as the fallback.
+
 ## Appendix B: Phase B (do not build now)
 
 Only when a second host or untrusted tenants appear. Components and fit:
@@ -436,6 +456,10 @@ Rejected with reason: **cut the A2A wrapper and the writer service** (design-min
 Empirical checkpoint: verified in source that hook commands embed host absolute paths and that only exit 2 blocks (the failure-mode analyst's gate-bypass finding is real).
 Incorporated: all of section 2a (hook path map + fail-closed + self-test; no-hardlinks clone and host-side fetch with isolated git config; host uid; routing adapter for dispatch; ownership of sweep vs reconciler; intent record and grace; instance id; network reconcile; probe/health/divergence semantics; mode semantics) and the delivery-pragmatist's S2a-d split with live checks separated from the PR gate; the real-model smoke that decides wrapper vs REST moved into S2d. Contradictions (worktree vs clone, env vs files) fixed.
 Rejected: none this round.
+
+### Consensus attack, 2026-11-09 (general-purpose, runs once)
+
+general-purpose 2026-11-09: consensus-attack — **finding**: the panel assumed a container is a useful place to do the work; nothing said how the repo's toolchain/deps get in, and a dropped lint command would have weakened the gate silently. Incorporated (one revision, no further round): toolchain layers, offline pnpm store, `toolchain_missing` refusal, lint-unresolvable = refuse, a real-task S2d gate compared with TUI, open question 5 with the host-sandbox fallback. It was not routed to more debate; the S2d gate is the empirical test.
 
 Intent preservation check: operator asked for A2A + scaling + shared layered memory with Phase A = no Kubernetes; v2 keeps all three and Phase B only as an appendix.
 
