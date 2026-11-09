@@ -33,7 +33,7 @@ describe('resolveSessionPolicy', () => {
     expect(r.instructions).toContain('Be careful.');
     expect(r.instructions).toContain('a lesson');
     expect(r.instructions!.indexOf('Be careful.')).toBeLessThan(r.instructions!.indexOf('a lesson'));
-    expect(shelfShow.mock.calls[0]).toBeDefined();
+    expect(shelfShow).toHaveBeenCalledWith('alpha', expect.objectContaining({ NB_DIR: '/x', A: '1' }), expect.any(Number));
   });
   test('an unknown profile id throws a typed error', async () => {
     await expect(resolveSessionPolicy(deps(), { profileId: 'nope' })).rejects.toThrow();
