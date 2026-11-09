@@ -246,6 +246,17 @@ its own shelves' lesson text is preloaded. The profiles also carry a short `kb`
 usage block (one focused `kb search "<question>" --kb=<name>`, tolerate
 failure: `kb search` needs an embedding provider and an initialised index).
 
+## Reading the conversation (`kookr peek`, transcript API)
+
+opencode has no JSONL transcript file; the whole conversation lives in the
+task's per-task opencode DB (see [Resume](#resume)). `GET
+/api/tasks/:id/transcript` (and therefore `kookr peek <task>`) reads the user
+and assistant text messages from that DB, read-only, for opencode sessions
+(`source: "vendor"`), filtered by the session's opencode session id. Tool calls
+and results are not included. If the DB is missing, swept, locked or of an
+unknown schema the route falls back to its previous behaviour (hook ledger,
+then `unsupported_provider`).
+
 ## Limits
 
 - The Settings dialog shows the opencode rows (effort, blacklist checkbox) and the

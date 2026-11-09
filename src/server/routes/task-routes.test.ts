@@ -36,6 +36,7 @@ import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, 
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
+import Database from 'better-sqlite3';
 import { captureTaskTranscript } from '../use-cases/transcript-store.js';
 import { archiveTerminalTasks } from '../use-cases/task-archive.js';
 
@@ -4384,6 +4385,33 @@ describe('GET /api/tasks/:id/transcript (RFC transcript-capture phase 1)', () =>
     const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
     const body = await (await app.request(`/api/tasks/${task.id}/transcript?meta=1`)).json();
     expect(body).toEqual({ taskId: task.id, sessionId: 'sess-f', meta: null });
+  });
+
+  test('serves an opencode task\'s last assistant text from its per-task opencode DB (and falls back to unavailable without one)', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'kookr-oc-data-'));
+    const saved = process.env.KOOKR_OPENCODE_DATA_DIR;
+    process.env.KOOKR_OPENCODE_DATA_DIR = dataRoot;
+    try {
+      const taskStore = new TaskStore();
+      const task = taskStore.createTask('oc', '/repo');
+      taskStore.addSession(task.id, { tmuxSession: 'sess-oc', agentType: 'opencode', claudeSessionId: 'ses_abc', cwd: '/repo', createdAt: new Date() } as never);
+      const app = mkApp({ ...mkLoopDeps(taskStore), kookrDir } as TaskRouteDeps);
+      expect((await (await app.request(`/api/tasks/${task.id}/transcript`)).json()).unavailable).toEqual({ reason: 'unsupported_provider' });
+      const dbDir = join(dataRoot, task.id, 'data', 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      const db = new Database(join(dbDir, 'opencode.db'));
+      db.exec(`CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);
+               CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL);`);
+      db.prepare('INSERT INTO message VALUES (?,?,?,?,?)').run('m1', 'ses_abc', 5, 5, JSON.stringify({ role: 'assistant' }));
+      db.prepare('INSERT INTO part VALUES (?,?,?,?,?,?)').run('p1', 'm1', 'ses_abc', 5, 5, JSON.stringify({ type: 'text', text: 'all done here' }));
+      db.close();
+      const body = await (await app.request(`/api/tasks/${task.id}/transcript`)).json();
+      expect(body.source).toBe('vendor');
+      expect(body.messages).toMatchObject([{ kind: 'text', role: 'assistant', text: 'all done here' }]);
+    } finally {
+      if (saved === undefined) delete process.env.KOOKR_OPENCODE_DATA_DIR; else process.env.KOOKR_OPENCODE_DATA_DIR = saved;
+      rmSync(dataRoot, { recursive: true, force: true });
+    }
   });
 
   test('reaches a pruned task through the archive without mutating the store', async () => {

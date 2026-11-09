@@ -115,6 +115,8 @@ import {
 import { capMessagesKeepingTail, normalizeLedgerEvents, normalizeVendorLines } from '../../core/transcript-normalizer.js';
 import { redactTranscriptText } from '../../core/redact-transcript-line.js';
 import type { TranscriptMessage } from '../../shared/contracts/transcript.js';
+import { readOpenCodeTaskTranscript } from '../../adapters/opencode-transcript.js';
+import { resolveOpenCodeDataRoot } from '../../adapters/opencode-task-data.js';
 import { readSnapshotMeta, readStoredTranscript } from '../use-cases/transcript-store.js';
 import type { TranscriptResponse } from '../../shared/contracts/transcript.js';
 
@@ -491,6 +493,19 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       }
     }
     const hooksDir = deps.kookrDir ? join(deps.kookrDir, 'hooks') : undefined;
+    if (hooksDir && session.agentType === 'opencode') {
+      // opencode keeps its conversation only in the per-task sqlite DB (no vendor JSONL); the hook
+      // ledger has no assistant text, so read the DB first and fall through when it yields nothing.
+      const dbMessages = await readOpenCodeTaskTranscript(
+        resolveOpenCodeDataRoot(process.env, hooksDir),
+        taskId,
+        session.claudeSessionId,
+      );
+      if (dbMessages) {
+        const body: TranscriptResponse = { taskId, sessionId, source: 'vendor', messages: prepareLiveMessages(dbMessages) };
+        return c.json(body);
+      }
+    }
     if (hooksDir) {
       const pointer = await resolveSessionTranscriptPointer(hooksDir, sessionId);
       const transcriptPath = pointer.transcriptPath ?? session.transcriptPath;
