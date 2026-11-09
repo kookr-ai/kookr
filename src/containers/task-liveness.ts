@@ -4,6 +4,11 @@ import { join } from 'node:path';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import type { TaskLookupPort } from './ports.js';
 
+/** Mirrors `resolveTaskStoreMode` (src/core/task-sqlite-store.ts) exactly, without loading the native sqlite addon. */
+function jsonMode(env: NodeJS.ProcessEnv): boolean {
+  return env.KOOKR_TASK_STORE?.trim().toLowerCase() === 'json';
+}
+
 interface TaskRow { id?: string; status?: string; updatedAt?: string | number }
 
 function toLiveness(row: TaskRow | undefined): ReturnType<TaskLookupPort> {
@@ -26,7 +31,7 @@ export async function loadTaskLiveness(dataDir: string, taskIds: string[], env: 
   let unreadable = false;
   const dbPath = join(dataDir, 'tasks.sqlite');
   try {
-    if (env.KOOKR_TASK_STORE !== 'json' && existsSync(dbPath)) {
+    if (jsonMode(env) === false && existsSync(dbPath)) {
       const { default: Database } = await import('better-sqlite3');
       const db = new Database(dbPath, { readonly: true, fileMustExist: true });
       try {

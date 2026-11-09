@@ -20,6 +20,13 @@ describe('loadTaskLiveness (tasks.json)', () => {
     expect(look('b')).toEqual({ state: 'terminal', endedAt: new Date('2026-01-01T00:00:00Z') });
     expect(look('c')).toEqual({ state: 'unknown' });
   });
+  test('KOOKR_TASK_STORE is normalised like the server (case/space) and a stale tasks.sqlite is then ignored', async () => {
+    writeFileSync(join(dir, 'tasks.sqlite'), 'not a database');
+    writeFileSync(join(dir, 'tasks.json'), JSON.stringify({ version: 2, tasks: [{ id: 'a', status: 'inProgress' }] }));
+    for (const v of ['JSON', ' Json ', 'json']) {
+      expect((await loadTaskLiveness(dir, ['a'], { KOOKR_TASK_STORE: v } as NodeJS.ProcessEnv))('a')).toEqual({ state: 'live' });
+    }
+  });
   test('an id that was not requested is store_unreadable, never unknown', async () => {
     writeFileSync(join(dir, 'tasks.json'), JSON.stringify({ version: 2, tasks: [{ id: 'T', status: 'inProgress' }] }));
     expect((await loadTaskLiveness(dir, ['other'], env))('T')).toEqual({ state: 'store_unreadable' });
