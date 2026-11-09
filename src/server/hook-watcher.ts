@@ -13,7 +13,8 @@ import {
   writeFileSync,
   type FSWatcher,
 } from 'node:fs';
-import { open, stat } from 'node:fs/promises';
+import { open, stat, lstat } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { HookEventInjector } from './hook-ingestion.js';
 import { splitHookRecords } from './hook-record-framing.js';
@@ -24,6 +25,17 @@ const DEFAULT_POLL_INTERVAL_MS = 3_000;
 const REPLAY_CHECKPOINT_TAIL_BYTES = 4_096;
 
 interface WatchOptions {
+  /**
+   * Read this exact file instead of `<hooksDir>/<name>.jsonl` (RFC #3541, S2c: a container's spool ledger).
+   * Must be paired with `untrusted: true` when the file lives in a directory a worker can write.
+   */
+  filePath?: string;
+  /**
+   * The file sits in a worker-writable directory. Reads then `lstat` and open with `O_NOFOLLOW` (and so refuse a
+   * symlink or any non-regular file, including a rotated `.1`), because a worker could otherwise point the ledger
+   * at a host file and have the host parse it.
+   */
+  untrusted?: boolean;
   replayExisting?: boolean;
   suppressParseAlertsForExisting?: boolean;
   useReplayCheckpoint?: boolean;
@@ -253,6 +265,9 @@ export class HookFileWatcher {
    * from an in-place truncation (same inode → plain reset-to-0, issue #703).
    */
   private inodes = new Map<string, number>();
+  /** Per-session file path overrides and untrusted (worker-writable) sessions; see WatchOptions. */
+  private pathOverrides = new Map<string, string>();
+  private untrustedSessions = new Set<string>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   /**
    * Sessions whose backup poll is logically active (issue #2776). Gates the
@@ -311,7 +326,9 @@ export class HookFileWatcher {
   watch(tmuxName: string, options?: WatchOptions): void {
     if (this.watchers.has(tmuxName)) return;
 
-    const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
+    if (options?.filePath) this.pathOverrides.set(tmuxName, options.filePath);
+    if (options?.untrusted) this.untrustedSessions.add(tmuxName);
+    const filePath = this.pathFor(tmuxName);
     const replay = options?.replayExisting ?? false;
     this.getOrCreateHealth(tmuxName).replayExisting = replay;
 
@@ -391,7 +408,7 @@ export class HookFileWatcher {
       if (health) health.drainNowSkippedCount += 1;
       return;
     }
-    const filePath = join(this.hooksDir, `${tmuxName}.jsonl`);
+    const filePath = this.pathFor(tmuxName);
     const startedAt = Date.now();
     await this.readNewLines(tmuxName, filePath);
     const latencyMs = Math.max(0, Date.now() - startedAt);
@@ -402,6 +419,24 @@ export class HookFileWatcher {
       ? latencyMs
       : Math.max(sessionHealth.maxDrainLatencyMs, latencyMs);
     pushBounded(sessionHealth.drainLatencySamples, latencyMs, HEALTH_SAMPLE_LIMIT);
+  }
+
+  private pathFor(tmuxName: string): string {
+    return this.pathOverrides.get(tmuxName) ?? join(this.hooksDir, `${tmuxName}.jsonl`);
+  }
+
+  /**
+   * `stat` for the session's active file. For an untrusted session this is an `lstat` that rejects anything but a
+   * regular file (a symlink, directory, fifo...), so a worker cannot redirect the host's reads.
+   */
+  private async statFor(tmuxName: string, path: string) {
+    if (!this.untrustedSessions.has(tmuxName)) return stat(path);
+    const st = await lstat(path);
+    if (!st.isFile()) {
+      this.recordHealthError(tmuxName, new Error(`untrusted ledger ${path} is not a regular file; refusing to read it`));
+      throw new Error('ledger_not_regular_file');
+    }
+    return st;
   }
 
   /** Check if a session is being watched. */
@@ -429,6 +464,8 @@ export class HookFileWatcher {
     this.inodes.delete(tmuxName);
     this.reading.delete(tmuxName);
     this.healthBySession.delete(tmuxName);
+    this.pathOverrides.delete(tmuxName);
+    this.untrustedSessions.delete(tmuxName);
     // Session intentionally ended — drop its durable resume offset so the
     // checkpoint map does not accumulate forever (issue #2385).
     this.deleteReplayCheckpoint(tmuxName);
@@ -569,7 +606,7 @@ export class HookFileWatcher {
 
     try {
       const prevInode = this.inodes.get(tmuxName);
-      const fileStat = await stat(filePath).catch(() => undefined);
+      const fileStat = await this.statFor(tmuxName, filePath).catch(() => undefined);
       if (fileStat === undefined) return;
 
       let offset = this.offsets.get(tmuxName) ?? 0;
@@ -613,7 +650,7 @@ export class HookFileWatcher {
 
       const start = offset;
       const length = fileStat.size - start;
-      const buffer = await readFileRange(filePath, start, length);
+      const buffer = await readFileRange(filePath, start, length, this.untrustedSessions.has(tmuxName));
       // Meter actual bytes pulled off disk (the ledger's churn signal).
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
@@ -698,7 +735,7 @@ export class HookFileWatcher {
   ): Promise<void> {
     const rotatedPath = `${filePath}.1`;
     try {
-      const rotatedStat = await stat(rotatedPath).catch(() => undefined);
+      const rotatedStat = await this.statFor(tmuxName, rotatedPath).catch(() => undefined);
       // Only the generation carrying the pre-rotation inode is the file whose
       // tail we lagged behind. A mismatch means either no rotation produced this
       // shrink or several rotations elapsed (the wanted generation aged past
@@ -706,7 +743,7 @@ export class HookFileWatcher {
       if (rotatedStat === undefined || rotatedStat.ino !== prevInode) return;
       if (rotatedStat.size <= offset) return; // caught up at rotation time — nothing unread
 
-      const buffer = await readFileRange(rotatedPath, offset, rotatedStat.size - offset);
+      const buffer = await readFileRange(rotatedPath, offset, rotatedStat.size - offset, this.untrustedSessions.has(tmuxName));
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
 
@@ -788,7 +825,7 @@ export class HookFileWatcher {
     const startedAtMs = Date.now();
     try {
       this.recordPollTick(tmuxName);
-      const fileStat = await stat(filePath);
+      const fileStat = await this.statFor(tmuxName, filePath);
       const knownOffset = this.offsets.get(tmuxName) ?? 0;
       if (fileStat.size !== knownOffset) {
         // Both sides are byte offsets (issue #1612). Growth means fs.watch
@@ -1059,9 +1096,9 @@ export class HookFileWatcher {
 }
 
 /** Positioned byte-range read (async). Used by the incremental hot path. */
-async function readFileRange(filePath: string, start: number, length: number): Promise<Buffer> {
+async function readFileRange(filePath: string, start: number, length: number, noFollow = false): Promise<Buffer> {
   if (length <= 0) return Buffer.alloc(0);
-  const handle = await open(filePath, 'r');
+  const handle = await open(filePath, noFollow ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW : 'r');
   try {
     const buf = Buffer.allocUnsafe(length);
     const { bytesRead } = await handle.read(buf, 0, length, start);

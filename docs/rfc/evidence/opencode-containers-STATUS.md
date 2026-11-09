@@ -11,8 +11,8 @@ Worktree `../kookr-oc-containers`. Updated 2026-11-09. Phase A (no Kubernetes). 
 | RFC `rfc-opencode-worker-containers.md` | v4, MERGED (#3541) after 2 critic rounds, consensus attack, independent review |
 | S1 worker image | MERGED (#3546); 8/8 live checks; non-blocking notes in #3551 |
 | S2a launch-mode seam | MERGED (#3553) |
-| S2b reconciler / ports / `kookr containers` | in PR: ports, instance id, intent store, reconciler, read-model, probe, `kookr containers ls/prune`; not wired to the server (S2d) |
-| S2c hook spool ingest | not started |
+| S2b reconciler / ports / `kookr containers` | MERGED (#3556); non-blocking notes #3557; not wired to the server (S2d) |
+| S2c hook spool ingest | in PR: `HookFileWatcher` file override + untrusted (lstat/O_NOFOLLOW) mode, `ContainerLedgerIngest`, key = taskId+token |
 | S2d container launch (`KOOKR_OPENCODE_CONTAINERS`) | not started |
 | S3 productised memory writer | not started |
 | S4 real-model capacity run (4 then 8) | not started |
