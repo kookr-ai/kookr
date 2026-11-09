@@ -55,7 +55,7 @@ Options:
   -h, --help                    Show this help.
 
 Use --json for one machine-readable output envelope with: spawn, stop, open, reply, ask, supervise, supervision status, peek, status, doctor,
-signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
+signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
