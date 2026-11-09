@@ -40,7 +40,8 @@ A2A_HOST=0.0.0.0 A2A_PORT=8000 A2A_PUBLIC_URL="${A2A_PUBLIC_URL:-http://127.0.0.
 opencode-a2a serve &
 A2A=$!
 trap 'kill $OC $A2A 2>/dev/null' TERM INT
-wait -n "$OC" "$A2A" 2>/dev/null || wait "$OC"
-echo "child exited; stopping container" >&2
+# dash has no `wait -n`: poll both children so the container exits when EITHER dies.
+while kill -0 "$OC" 2>/dev/null && kill -0 "$A2A" 2>/dev/null; do sleep 1; done
+echo "child exited (opencode=$(kill -0 "$OC" 2>/dev/null && echo up || echo down) a2a=$(kill -0 "$A2A" 2>/dev/null && echo up || echo down)); stopping container" >&2
 kill "$OC" "$A2A" 2>/dev/null || true
 exit 1

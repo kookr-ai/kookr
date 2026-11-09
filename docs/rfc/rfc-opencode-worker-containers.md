@@ -1,6 +1,6 @@
 # RFC: opencode worker containers: A2A, scaling, shared layered memory
 
-**Status:** Draft v1 (spike-backed, pre-implementation)
+**Status:** Draft v2 (post review round 1, pre-implementation)
 **Date:** 2026-11-09
 **Author:** Jean Ibarz (with Claude)
 
@@ -18,6 +18,8 @@ global) built on the existing `nb` notebooks. Phase A is Docker on this one
 host, no Kubernetes. Phase B (kagent BYO, Agent Sandbox, agentgateway) is an
 appendix with the cheap test that would justify it. It stays behind
 `KOOKR_OPENCODE_ENABLED`, plus a second opt-in `KOOKR_OPENCODE_CONTAINERS=1`.
+The mode is resolved once at launch and persisted on the task; there is **no
+silent fallback** to host TUI mode (that would drop the isolation guarantee).
 
 Evidence (all hermetic, mock provider, temp state; reproducible from
 `deploy/opencode-worker/`):
@@ -65,6 +67,8 @@ Evidence (all hermetic, mock provider, temp state; reproducible from
 | F6 | Unseeded cold start: first message 12.7 s, 830 MiB (plugin deps installed at boot into tmpfs, needs network). Seeded at image build: 1.7 s, ~400 MiB. | Seed baked and symlinked read-only. |
 | F7 | 4 and 8 containers: ~0.4 GB each, linear, all healthy in 9-11 s, 8 parallel first messages in 3.1 s (one earlier run 35 s, not reproduced). | RAM is not the limit on a 31 GB host; disk and provider rate limits are. |
 | F8 | One of 4 parallel starts hung: the entrypoint health `curl` had no timeout. Fixed. | Supervisor must also enforce a readiness timeout (see Failure modes). |
+| F10 | **Verified in round 1:** a git *worktree* mounted into the container is not a repository (its `.git` file points at a host path); a per-task `git clone --local` mounted at `/work` commits normally. | Workers get a per-task clone, not a worktree (Design 2). |
+| F11 | **Verified in round 1:** the Spike-2 entrypoint used `wait -n`, which dash lacks, so it did not exit when the wrapper died. Fixed with a poll loop; killing either child now stops the container (exit 1). | Entrypoint is tested per child death (Slice 1 gate). |
 | F9 | Memory spike: single writer + per-project read-only view: 30 concurrent writes from 2 writers all present, 60 concurrent reads 0 torn, projB worker sees 0 projA data, bad token 401. | Memory design below. |
 
 Hermes figures to beat (known, not re-measured here): ~2-2.6 GB per container,
@@ -88,73 +92,131 @@ worktree, rw), `/data` (volume: opencode sqlite + A2A task store),
 127.0.0.1 with a generated password, A2A wrapper on `:8000` with a bearer
 token; both secrets passed by env at `docker run`. Exits if either child dies.
 
-### 2. Launch mode in `OpenCodeAdapter`
+### 2. Container runtime: a sibling adapter, not a branch
 
-`launch()` gains a branch when the task's launch options select the container
-mode (`KOOKR_OPENCODE_CONTAINERS=1` and a per-task choice, default the flag):
+**Boundaries (review: boundary-critic).** Container mode is a different runtime
+kind, so it is a separate `OpenCodeContainerAdapter` (same `AgentType`
+`opencode`, same profiles, same task metadata), chosen by a **launch-policy
+resolver** outside the adapters: it reads `KOOKR_OPENCODE_CONTAINERS`, persists
+`metadata.opencodeLaunchMode = tui|container` on the task, and every
+relaunch/resume obeys the persisted value. The code both adapters need (home
+composition, task-data dir and ownership marker, usage sum from the opencode DB,
+session-id storage) is extracted from `opencode-adapter.ts` into a shared
+"opencode session preparer"; the TUI adapter is refactored onto it in Slice 2
+with no behaviour change. Collaborators behind ports (all fakeable in tests):
+`DockerRunner`, `A2aClient` (owns the F5 workaround), `ContainerReconciler`.
 
-1. Compose the session dir as today (config, plugin, profile `AGENTS.md`,
-   layered memory pack); mount it read-only at `/cfg`.
-2. `docker run -d --name kookr-oc-<taskId8>-<launchToken>` with the hardening
-   flags from spike 2, labels `kookr.task=<id>`, `kookr.launch=<token>`,
-   a per-task `/data` volume (the existing per-task data dir becomes a bind
-   mount, so retention sweep and resume keep their semantics), the worktree at
-   `/work`, a per-task ledger dir mounted rw at `/kookr-spool` (the plugin's
-   hook command appends there; the host ingests with the existing
-   `kookr-hook-writer` path).
-3. Readiness: poll the agent card with a 60 s ceiling; fail launch (and
-   `docker rm -f` by the label-checked name) on timeout.
-4. Deliver the prompt with A2A `message:send` (`returnImmediately: true`) and
-   record the A2A `taskId`/`contextId` in task metadata.
-5. A thin **supervisor terminal session** (the dtach session Kookr already
-   expects) runs `docker logs -f` for that container, so the existing
-   capture/peek, attach and "session is alive" machinery keeps working
-   unchanged; `kookr peek` for container tasks reads the opencode DB under
-   the bind-mounted data dir exactly as today.
+**Launch.**
+1. Compose the session dir as today (config, plugin, profile `AGENTS.md`, layered
+   memory pack built host-side, see 3), mounted read-only at `/cfg`.
+2. **Git**: `git clone --local` of the target repo into a per-task dir mounted
+   at `/work` (F10). The worker commits locally; the deliverable (local commit,
+   never a push) is fetched by Kookr from that clone. Pushing from inside is not
+   offered: no credentials are mounted.
+3. **Hooks run in the container.** The hook scripts the plugin calls
+   (`kookr-opencode-gate.js`, `nb-inject`, `nb-retro`, `kookr-stop-nudge`) are
+   mounted read-only at `/kookr-hooks` from the Kookr install and run by the
+   image's node; the plugin's hook command appends events to a per-task ledger
+   file in `/kookr-spool` (rw, one dir per task), never to `localhost`. The host
+   ingests that file with the existing writer path, **keyed by `taskId` +
+   launch token** (not a terminal name) so adopt after a restart keeps event
+   identity. Slice 1/2 gate: the gate's exit-2 re-prompt is exercised inside a
+   container end to end.
+4. `docker run -d --name kookr-oc-<taskId8>-<token>` with the Spike-2 hardening
+   flags, `--memory 2g` by default (tmpfs counts against it), `--cpus 2`,
+   `--pids-limit 512`, `--log-opt max-size=10m max-file=3`, labels
+   `kookr.task`, `kookr.launch`, `kookr.instance=<this server's id>`, a
+   per-task data **bind mount** (the existing task-data dir, so retention sweep,
+   resume and `peek` keep working; one place, no named volume), publish `:8000`
+   on **127.0.0.1 only**, one private docker network per worker (only the memory
+   writer is attached to it, so workers cannot reach each other).
+5. **Secrets** (A2A bearer token, opencode password, provider key) are written
+   0600 to a per-task secrets dir mounted at `/run/secrets` and read by the
+   entrypoint, not passed via env (`docker inspect` and `env` would leak them).
+   Kookr keeps the token and the published port in the task's private metadata
+   so an adopted container stays controllable after a Kookr restart (tested).
+6. **Readiness** = `HEALTHCHECK` (opencode `/global/health` and the wrapper) **and**
+   an observed `SessionStart` + canary ack in the ledger, 60 s ceiling, with
+   distinct failure reasons (`image_missing`, `docker_down`, `health_timeout`,
+   `plugin_not_loaded`, `a2a_unauth`). On failure `docker rm -f` by the
+   label-checked name.
+7. Prompt delivery: A2A `message:send` (`returnImmediately: true`); record
+   `taskId`/`contextId`.
 
-Messages to a running worker: A2A `message:send` on the same `contextId`.
-Stop: A2A `tasks/cancel`, wait up to 5 s, then `docker stop -t 10`, then
-`docker rm`; then the usual stop path (usage sum from the DB, session id
-storage, data retention). Reap/recovery: on server start, list containers by
-label `kookr.task`, adopt those whose task is non-terminal (resume the
-supervisor session), remove those whose task is terminal or unknown **only if
-the name starts with `kookr-oc-` and the label matches** (never by pattern
-alone).
+**Input and control.** Container sessions declare `deliveryChannel: 'a2a'`:
+`sendInput` goes to A2A `message:send` on the same context; `sendKeystroke`
+throws a typed `Unsupported`. Every existing `sendInput` caller (nudges, UI) is
+audited in Slice 2. **Stop** = A2A `tasks/cancel`, then opencode
+`session.abort` if the task already reads terminal (a Stop-hook re-prompt runs
+a turn after the wrapper marked its task `COMPLETED`; this must be tested in the
+Slice 2 gate), then `docker stop -t 10`, `docker rm`; then the usual stop path.
+A2A task state is advisory: **truth for "done/working" is the hook ledger plus
+the container state**, never the A2A task alone.
 
-No change to `AgentType`, profiles, the deliverable gate, or hook ingestion.
-Where a TUI-mode behaviour has no container equivalent (bracketed paste,
-attach for typing) the container task is documented as non-interactive
-(attach is log view only).
+**One liveness authority.** The container is the single source of truth. The
+`docker logs -f` supervisor session, if the existing machinery needs a session at
+all, is a derived, disposable view recreated on demand (Slice 2 first
+confirms whether a session-less task is possible; if so the shim is cut). A
+per-task probe loop (30 s) records `docker inspect` (State, OOMKilled,
+ExitCode, RestartCount), A2A `tasks/get`, ledger recency and ingest lag, and
+cgroup memory; the watchdog's container-mode rules are defined on those inputs,
+not on pane freezing.
+
+**Reconcile, not just adopt.** A periodic reconciler (and once at start) lists
+`docker ps -a` by label **and `kookr.instance` == this server** (another Kookr
+on the same daemon is never touched). Non-terminal task: adopt. Terminal task:
+stop+remove after retention. Unknown task: **quarantine** (stop, keep) for 24 h,
+then remove, only for names starting `kookr-oc-` with matching labels; every action
+is written to a durable log. `kookr containers ls` shows task, state, age, orphan?.
+
+**Per-task read-model** (one record, shown in `kookr status/peek` and UI):
+`{launchMode, kookrState, containerState, a2aState, lastHookAt, lastProbeAt,
+ingestLagMs, restarts, oomKilled, memBytes, diskBytes, imageDigest, launchToken,
+memoryViewVersion, divergence}`.
+
+No change to `AgentType`, profiles, or the gate's semantics. Container tasks are
+non-interactive (attach is log view only; documented).
 
 ### 3. Shared layered memory
 
-Exactly the spike 3 design, productised:
+Spike-3 design, tightened after review:
 
-- **`memory-writer`**: the only rw owner of the notebook store. Bearer token
-  per worker fixes `{actor, project, role}`; target shelf is always
-  `<role>@<project>`. A single queue serialises `nb add`/`vote`/`rm`; every
-  request is audited; after a write it republishes `views/<project>/` by
-  per-file atomic rename. Runs as a Kookr-supervised container (or a host
-  process when the operator prefers) on a private docker network.
-- **Isolation**: a worker mounts only `views/<its project>` read-only; it never
-  sees another project's shelves. Domain and global shelves are copied into
-  each view (they are by definition cross-project).
-- **Layering at SessionStart**: the composer uses the existing
-  `capShelfListing` (keeps top-scored *and* newest lessons) per layer:
-  project 4 KB, domain 2 KB, global 1 KB, header "earlier layer wins".
-  Precedence is ordering plus an instruction, not enforcement (stated
-  honestly in the docs).
-- **Stale reads** are by design: lessons written during a session reach other
-  workers at their next SessionStart.
-- **Promotion** project -> domain -> global is a curator action (operator or
-  orchestrator token with a wider scope), never a worker action.
-- Voting/retro and `nb rm` also go through the writer (a verb per mutation);
-  workers get a `nb` shim that calls the writer. Spike 3 proved only `add`.
+- **Layering is composed host-side in TypeScript** (`composeLayeredPack` in
+  `opencode-shelf-memory.ts`, reusing `capShelfListing`: top-scored plus newest),
+  PROJECT 4 KB > DOMAIN 2 KB > GLOBAL 1 KB, written into the worker's
+  `AGENTS.md` at launch. The spike's `layered-pack.mjs` is a prototype and is
+  not shipped. Precedence is ordering plus an instruction, not enforcement.
+  The pack records a `memoryViewVersion` on the task.
+- **`memory-writer`** is the only rw owner of the notebook store, split into
+  `scope-policy` (token -> `{actor, project, role}`; target shelf is always
+  `<role>@<project>`), `write-queue` and `view-publisher`. Hardening from the
+  failure-mode review: errors are isolated **per queue item** (a failing audit or
+  publish never wedges the chain), a write acknowledges success once `nb add`
+  committed (view publish failure is retried, not reported as a failed lesson),
+  `nb` timeout > its 12 s lock wait, tokens are a **runtime registry** (admin
+  endpoint with a separate admin token: add at launch, revoke at task end), and
+  `/health` + `/metrics` (queue depth, accepted/rejected, last publish, view
+  version, dropped writes per worker).
+- **Isolation**: a worker mounts only `views/<its project>` read-only and sits
+  on its own network with the writer. Fail-open: writer down -> worker uses its
+  start-of-session pack and lesson writes log a warning.
+- **Other writers**: operator and host-side workers still `nb add` directly into
+  the store. The writer republishes all views on start and every 5 min so these
+  are picked up; the RFC states plainly that the store has one *managed* writer
+  for container workers, not a global lock on the filesystem.
+- **Stale reads** by design (next SessionStart). **Promotion** project -> domain
+  -> global is a curator verb with its own token scope. Votes, `nb rm`, retro
+  go through writer verbs (Slice 3; spike proved only `add`).
+- Honest limit: nb evicts at 50 entries per shelf; the writer logs the evicted
+  lesson in the audit entry so a loss is recoverable.
+- **Simplest alternative kept in reserve** (design-minimalist): bind-mount the
+  project shelf rw and domain/global ro and rely on nb's lock; cheaper but no
+  audit, no per-worker identity, and a worker can rewrite its whole project shelf.
 
 ### 4. Scaling on this host
 
 Limits enforced by Kookr, not by hope: a container count cap
-(`KOOKR_OPENCODE_CONTAINERS_MAX`, default 6), the existing resource watchdog
+(`KOOKR_OPENCODE_CONTAINERS_MAX`, hard default 4 until Slice 4 measures a real-model number), the existing resource watchdog
 (host RAM/disk), launch refusal below 5 % disk (existing), and per-container
 `--memory`, `--cpus 2`, `--pids-limit`. Planning numbers: 0.4 GB (mock) to
 1.2 GB (assumed real) per container; image 1.36 GB shared across all
@@ -171,14 +233,18 @@ default cap is raised only from that measurement.
 | --- | --- |
 | Container fails readiness (60 s) | Launch fails, container removed by label-checked name, task stays launchable. |
 | opencode or wrapper dies in the container | Entrypoint exits; supervisor session ends; Kookr's normal dead-worker path (reap/relaunch) applies; `/data` volume keeps session and A2A state so a relaunch resumes the same opencode session. |
-| Kookr server restarts | Adopt by label; the supervisor session is recreated; A2A task state is in the container's volume. |
-| Docker daemon down | `docker` probe in preflight: container mode is not registered (adapter falls back to TUI mode if allowed by flag policy) and a startup warning names the reason. |
+| Kookr server restarts | Reconciler adopts own-instance containers; token+port come from private task metadata; A2A state is in the bind-mounted data dir. Stopped containers are found with `docker ps -a`. |
+| Wrapper dies but opencode lives (or the reverse) | Entrypoint exits non-zero (F11, tested per child); container state `exited` is the liveness truth. |
+| Hook ingest dead or spool unwritable | Canary at SessionStart; ingest lag gauge; task flag `hooks_blind` distinct from `hung_suspect`. |
+| Second Kookr on the same Docker daemon | Reconciler only touches `kookr.instance == self`. |
+| Flag turned off with containers running | No new containers; running ones are adopted until terminal, then reaped. |
+| Docker daemon down (start or mid-run) | Preflight: container launches are refused with `docker_down` (**no silent TUI fallback**; the operator may relaunch with TUI explicitly). Mid-run: tasks flagged `runtime_unreachable`, not dead; no relaunch storm. |
 | Cancel race (F5) | Read state after stream close; our own cancel wins. |
 | Provider outage / 429 | Same provider-transient retry path as TUI mode (the A2A task reports the failure; the stored launch replays). |
 | Memory writer down | Worker boots with the last view (stale but valid); lesson writes fail open with a logged warning; hook never blocks stop. |
 | Worker writes junk lessons | Bounded by nb limits, per-token project scope and the audit log; curator can `rm`. |
 | Disk pressure | Existing launch refusal; container mode adds image/volume GC for `kookr.task`-labelled objects only, explicit-name based. |
-| Leaked secret | Env-only, never in image; the gate/PR flow is unchanged. Worker egress is unrestricted in Phase A (documented gap, see Open questions). |
+| Leaked secret | Env-only, never in image; the gate/PR flow is unchanged. Worker egress is unrestricted in Phase A (documented gap, see Open questions); secrets live in 0600 files, not env. |
 
 ### 6. Rollback
 
@@ -192,9 +258,13 @@ untouched (the store is the source of truth; views are derived).
 
 - Slice 1: `deploy/opencode-worker/**` (Dockerfile, entrypoint, locks), docs,
   a CI-free local build script; image build check test. No Kookr runtime change.
-- Slice 2: `src/adapters/opencode-container-*.ts` (docker runner port, A2A
-  client, supervisor session), adapter branch, preflight, reap/adopt, tests
-  with a fake docker port and a fake A2A server.
+- Slice 2: shared session preparer extracted from `opencode-adapter.ts`
+  (TUI behaviour unchanged), `OpenCodeContainerAdapter`, launch-policy
+  resolver, `DockerRunner`/`A2aClient`/`ContainerReconciler` ports,
+  read-model, tests with fake docker + fake A2A. **Gate:** repeat 10x with the
+  real image: cancel with `setsid`/`nohup`/background tools and during a model
+  call, `kill -9` opencode mid-task, Stop re-prompt through A2A, bind-mounted
+  data read by the host while the container writes, adopt after a Kookr restart.
 - Slice 3: `memory-writer` productised (TS, tests), layered composer reusing
   `capShelfListing`, writer-backed `nb` shim, `docs/reference`.
 - Slice 4: live gate (hermetic) with real provider key: 1 task, then 4 and 8
@@ -262,4 +332,13 @@ Phase A.
 
 ## Critic feedback incorporated
 
-(To be filled per review round.)
+### Round 1 (boundary-critic, failure-mode-analyst, operability-reviewer, design-minimalist), 2026-11-09
+
+Empirical checkpoint (done by the author, 4 probes): dash `wait -n` unsupported, entrypoint fixed and per-child death tested (F11); worktree `.git` breaks git in a container, per-task clone works (F10). The rest of failure-mode's claims are accepted as code-reading findings and become Slice 2 gate tests.
+
+Incorporated: sibling adapter + session preparer + launch-policy resolver (boundary F1, F7); delivery-channel capability and typed Unsupported (F2); container as single liveness authority, supervisor session derived (F3); hooks keyed by taskId+token and run in-container from a mounted hooks dir (F4, failure #2); layering in TS reusing `capShelfListing` (F5); writer split and hardened, runtime tokens, health/metrics (F6, failure #7/#8, operability #8); git clone strategy (failure #1); A2A state advisory + re-prompt test (failure #3); instance label, `-a`, quarantine, periodic reconcile (failure #5, operability #4); secrets via files, loopback publish, network per worker (failure #6/#10); no fail-open to TUI (failure #9, minimalist #4); HEALTHCHECK + ledger canary readiness, probe loop, read-model, log rotation, per-task disk, flag-off behaviour (operability #1-3,5,6,9, failure #12); repeated, wider cancel/kill tests as the Slice 2 gate (failure #11); cap hard default 4 (minimalist #5).
+
+Rejected with reason: **cut the A2A wrapper and the writer service** (design-minimalist #1, #2). The operator decided A2A support and a single-writer shared memory are goals of this stream, and the wrapper is what closes the Hermes gaps (F2-F4). Mitigation: the plain-REST path (F1) stays a documented fallback if `opencode-a2a` proves unfit in Slice 2/4, and the file-lock variant is recorded in Design 3 as the cheap alternative. Per the adversarial-pair rule: sided with the operator mandate over design-minimalist on these two items, and with design-minimalist on the policy stacking, hard cap, and cutting the supervisor shim unless proven needed. Deferred: image/volume GC beyond label-based reconcile; per-worker egress allowlist (open question 1).
+
+Intent preservation check: operator asked for A2A + scaling + shared layered memory with Phase A = no Kubernetes; v2 keeps all three and Phase B only as an appendix.
+
