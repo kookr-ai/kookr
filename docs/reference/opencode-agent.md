@@ -34,6 +34,8 @@ picker and round-robin.
 Defaults: provider `deepinfra`, model `deepseek-ai/DeepSeek-V4.1-Flash-1017`,
 permissions `allow` (unattended workers must not stall on prompts).
 
+A per-task model pin is routed to this single configured provider: use `<model id>` or `deepinfra/<model id>`. A pin that names a different provider (for example `openrouter/...`) passes validation but fails on the first turn with a model-not-found error, because the adapter composes exactly one provider.
+
 | Variable | Purpose |
 | --- | --- |
 | `KOOKR_OPENCODE_ENABLED` | `1` to enable the agent (default off). |

@@ -343,7 +343,11 @@ const VOLATILE_ACTIVITY_LINE_RES = [
 // opencode (1.19.x) idle composer: the persistent footer carries `ctrl+p commands`, and a running
 // turn adds an `esc interrupt` hint to the status area. Without this an opencode task that finished
 // its turn reads as `unknown` and is eventually flagged hung_suspect instead of waiting on input.
-const OPENCODE_COMPOSER_FOOTER_RE = /ctrl\+p\s+commands/i;
+// The footer is the LAST thing on its line (`... ctrl+p commands`) and only counts when the composer frame
+// (`┃` rows closed by a `╹▀▀▀` rule) is also on screen, so another agent's pane that merely quotes the phrase
+// (grep output, a file read, a doc) is never classified as an idle opencode composer.
+const OPENCODE_COMPOSER_FOOTER_RE = /ctrl\+p\s+commands\s*$/i;
+const OPENCODE_COMPOSER_FRAME_RE = /^\s*╹▀{3,}/;
 const OPENCODE_BUSY_RE = /esc\s+(?:to\s+)?interrupt/i;
 
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
@@ -412,8 +416,9 @@ export function analyzeVisiblePaneLines(visibleLines: readonly string[]): PaneSe
     }
   }
 
-  const opencodeFooter = lastLines.find((line) => OPENCODE_COMPOSER_FOOTER_RE.test(line));
-  if (opencodeFooter && !lastLines.some((line) => OPENCODE_BUSY_RE.test(line))) {
+  const opencodeFooter = lastLines.slice(-3).find((line) => OPENCODE_COMPOSER_FOOTER_RE.test(line));
+  const opencodeFrame = lastLines.slice(-8).some((line) => OPENCODE_COMPOSER_FRAME_RE.test(line));
+  if (opencodeFooter && opencodeFrame && !lastLines.some((line) => OPENCODE_BUSY_RE.test(line))) {
     return { state: 'input_prompt', confidence: 'high', matchedText: 'opencode composer idle' };
   }
 
