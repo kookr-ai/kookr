@@ -2084,3 +2084,14 @@ kookr ops timers --json  # same timer table as one JSON envelope (includes overd
 kookr github status  # GitHub scanner liveness, backoff, and tracked-ref count (GET /api/github/status)
 kookr github status --json  # same scanner status as one JSON envelope
 ```
+
+## `kookr containers`
+
+```
+kookr containers ls [--json] [--dir PATH]
+kookr containers prune --instance [--yes] [--force] [--dir PATH]
+```
+
+Inspect and clean up opencode worker containers (experimental; see
+[opencode-agent.md](opencode-agent.md#worker-container-housekeeping-kookr-containers)). `ls` is read-only;
+`prune --instance` is a dry run unless `--yes`, and needs `--force` to remove containers of live tasks.

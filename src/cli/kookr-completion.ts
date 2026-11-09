@@ -164,6 +164,11 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['-n', '--lines', '--json', '--dir', '-h', '--help'],
   },
   {
+    name: 'containers',
+    subcommands: ['ls', 'prune'],
+    flags: ['--json', '--instance', '--yes', '--force', '--dir', '-h', '--help'],
+  },
+  {
     name: 'command',
     subcommands: ['outcome'],
   },
@@ -475,6 +480,8 @@ function renderBashCompletion(): string {
   const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
+  const containersSubcommands = subcommandsFor('containers');
+  const containersFlags = flagsFor('containers');
   const issueSubcommands = subcommandsFor('issue');
   const issueFlags = flagsFor('issue');
   const logsFlags = flagsFor('logs');
@@ -643,6 +650,13 @@ _kookr()
         COMPREPLY=( $(compgen -W "${opsTimersFlags}" -- "\${cur}") )
       else
         COMPREPLY=( $(compgen -W "${opsFlags}" -- "\${cur}") )
+      fi
+      ;;
+    containers)
+      if [[ "\${COMP_CWORD}" == 2 ]]; then
+        COMPREPLY=( $(compgen -W "${containersSubcommands} ${containersFlags}" -- "\${cur}") )
+      else
+        COMPREPLY=( $(compgen -W "${containersFlags}" -- "\${cur}") )
       fi
       ;;
     github)
@@ -846,6 +860,8 @@ function renderZshCompletion(): string {
   const opsTimersFlags = opsFlags.split(' ').filter(flag => flag !== '--all-warnings').join(' ');
   const githubSubcommands = subcommandsFor('github');
   const githubFlags = flagsFor('github');
+  const containersSubcommands = subcommandsFor('containers');
+  const containersFlags = flagsFor('containers');
   const issueSubcommands = subcommandsFor('issue');
   const issueFlags = flagsFor('issue');
   const logsFlags = flagsFor('logs');
@@ -976,6 +992,13 @@ _kookr()
         compadd -- ${opsTimersFlags}
       else
         compadd -- ${opsFlags}
+      fi
+      ;;
+    containers)
+      if (( CURRENT == 3 )); then
+        compadd -- ${containersSubcommands} ${containersFlags}
+      else
+        compadd -- ${containersFlags}
       fi
       ;;
     github)

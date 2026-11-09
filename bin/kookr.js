@@ -27,6 +27,7 @@ Usage:
   kookr ops timers [--json]              List lifecycle-timer lastFiredAt and overdue flags (GET /api/diagnostics/timer-health).
   kookr github status [--json]   Print GitHub scanner liveness, backoff, and tracked-ref count.
   kookr logs <taskId> [OPTIONS]   Tail a task's recent hook-event activity.
+  kookr containers ls|prune       List or clean up opencode worker containers.
   kookr command outcome [commandId] Inspect local/remote command outcomes as JSONL.
   kookr ralph <command> <taskId> [--json] Inspect or control a Ralph loop.
   kookr schedule <verb> [OPTIONS]  List/run/enable/disable schedules.
@@ -54,7 +55,7 @@ Options:
   -h, --help                    Show this help.
 
 Use --json for one machine-readable output envelope with: spawn, stop, open, reply, ask, supervise, supervision status, peek, status, doctor,
-signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
+signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs, containers,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
 
@@ -220,6 +221,11 @@ async function main({
 
   if (command === 'logs') {
     await runLogsCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  if (command === 'containers') {
+    await runContainersCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -511,6 +517,20 @@ async function runLogsCommand(argv, { env = process.env, out = console, err = co
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runLogsCli(argv, { env, out, err });
+}
+
+async function runContainersCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-containers.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-containers.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] Containers module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exit(1);
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runContainersCli(argv, { env, out, err });
 }
 
 async function runOpsCommand(argv, { env = process.env, out = console, err = console } = {}) {
