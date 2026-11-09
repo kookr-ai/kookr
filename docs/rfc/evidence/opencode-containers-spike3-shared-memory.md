@@ -2,7 +2,7 @@
 
 Date 2026-11-09. 1 writer container + 4 worker containers (3 on project `projA`,
 1 on `projB`) from the Spike 2 image on a user-defined docker network. Code:
-`deploy/opencode-worker/memory/` (`memory-writer.mjs`, `layered-pack.mjs`).
+`docs/rfc/evidence/prototype-opencode-worker/memory/` (`memory-writer.mjs`, `layered-pack.mjs`).
 Reuses `nb` (agent-notebook 0.7.0) unchanged: same shelf files, same
 `role@project` naming, same 200-char/50-entry rules and eviction.
 

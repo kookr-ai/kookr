@@ -1,7 +1,7 @@
 # Spike 2: opencode-worker container + opencode-a2a smoke test
 
 Date 2026-11-09. Host: WSL2, 16 CPU, 31 GB RAM, Docker 29.8 (overlay2, cgroup v2).
-Image `opencode-worker` (source: `deploy/opencode-worker/`): opencode **1.19.5**
+Image `opencode-worker` (source: `docs/rfc/evidence/prototype-opencode-worker/` (moves to `deploy/opencode-worker/` in Slice 1)): opencode **1.19.5**
 (npm lockfile integrity sha512 pinned, postinstall run in build), `opencode-a2a`
 **1.4.0** (PyPI, `--require-hashes`, 44 hashed deps, a2a-sdk 1.2.3, A2A protocol
 1.0), `nb` (agent-notebook 0.7.0), Kookr-generated `kookr.js` plugin mounted at

@@ -22,7 +22,7 @@ The mode is resolved once at launch and persisted on the task; there is **no
 silent fallback** to host TUI mode (that would drop the isolation guarantee).
 
 Evidence (all hermetic, mock provider, temp state; reproducible from
-`deploy/opencode-worker/`):
+`docs/rfc/evidence/prototype-opencode-worker/` (moves to `deploy/opencode-worker/` in Slice 1)):
 [spike 1 hooks under serve](evidence/opencode-containers-spike1-serve-hooks.md),
 [spike 2 container + A2A](evidence/opencode-containers-spike2-a2a-container.md),
 [spike 3 shared memory](evidence/opencode-containers-spike3-shared-memory.md).
@@ -80,7 +80,7 @@ plan capacity with 1.2 GB per container until the first real-model run
 
 ## Design
 
-### 1. Worker image (`deploy/opencode-worker/`)
+### 1. Worker image (`docs/rfc/evidence/prototype-opencode-worker/` (moves to `deploy/opencode-worker/` in Slice 1))
 
 Debian slim (python 3.12 + node binary copied), digest-pinned bases; opencode
 1.19.5 from a lockfile with sha512 integrity; `opencode-a2a==1.4.0` with
@@ -357,7 +357,7 @@ image, real provider, N-times repeats) are an operator-run script under `scripts
 whose output is recorded in the PR; they are not part of the PR gate and are not
 claimed as such.
 
-- **S1 image**: `deploy/opencode-worker/**` (incl. the Kookr toolchain layer) (Dockerfile, hardened entrypoint with
+- **S1 image**: `docs/rfc/evidence/prototype-opencode-worker/**` (incl. the Kookr toolchain layer) (Dockerfile, hardened entrypoint with
   `/run/secrets`, HEALTHCHECK, log prefixes, distinct exit codes, hook self-test),
   build script, per-child-death test. No Kookr runtime change.
 - **S2a**: extract the session preparer from `opencode-adapter.ts` and add the
