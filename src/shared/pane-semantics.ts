@@ -348,7 +348,7 @@ const VOLATILE_ACTIVITY_LINE_RES = [
 // (grep output, a file read, a doc) is never classified as an idle opencode composer.
 const OPENCODE_COMPOSER_FOOTER_RE = /ctrl\+p\s+commands\s*$/i;
 const OPENCODE_COMPOSER_FRAME_RE = /^\s*╹▀{3,}/;
-const OPENCODE_BUSY_RE = /esc\s+(?:to\s+)?interrupt/i;
+const OPENCODE_BUSY_RE = /esc\s+(?:again\s+)?(?:to\s+)?interrupt/i;
 
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
   return analyzeVisiblePaneLines(visibleLinesFromTerminalText(paneText));

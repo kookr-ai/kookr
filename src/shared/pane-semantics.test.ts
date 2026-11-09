@@ -233,6 +233,9 @@ describe('analyzePaneSemantics', () => {
     expect(analyzePaneSemantics(idle)).toMatchObject({ state: 'input_prompt', confidence: 'high' });
     const busy = idle.replace('2.3s', '2.3s\n   ⬝⬝⬝■■■  esc interrupt');
     expect(analyzePaneSemantics(busy).state).not.toBe('input_prompt');
+    // after one Esc press opencode shows `esc again to interrupt`; that is still a running turn
+    const busyAgain = idle.replace('2.3s', '2.3s\n   ⬝⬝⬝■■■  esc again to interrupt');
+    expect(analyzePaneSemantics(busyAgain).state).not.toBe('input_prompt');
   });
 
   test('a non-opencode pane that merely quotes the opencode footer is not an idle input prompt', () => {

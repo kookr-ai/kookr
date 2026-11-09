@@ -213,6 +213,23 @@ describe('resolveRoundRobinAgent', () => {
 });
 
 describe('resolvePinnedAgentFallback (issue #1895 / #1699 WS1.3)', () => {
+  test('opencode (excluded from rotation) never changes how an existing pin resolves when it is registered', () => {
+    // Regression (independent review of #3520): opencode used to count as a healthy alternative, so with the
+    // pin deprioritized the pool collapsed to [opencode] and the pin was reported unavailable.
+    expect(resolvePinnedAgentFallback('claude-code', ['claude-code', 'opencode'], ['claude-code']))
+      .toEqual({ kind: 'available', agentType: 'claude-code', substituted: false });
+    expect(resolvePinnedAgentFallback('claude-code', ['codex-cli', 'opencode'], ['codex-cli']))
+      .toEqual({ kind: 'substituted', agentType: 'codex-cli', substituted: true, from: 'claude-code' });
+    expect(resolvePinnedAgentFallback('claude-code', ['claude-code'], ['claude-code']))
+      .toEqual({ kind: 'available', agentType: 'claude-code', substituted: false });
+  });
+
+  test('an explicit pin to opencode still resolves when it is registered, and is never substituted into', () => {
+    expect(resolvePinnedAgentFallback('opencode', ['claude-code', 'opencode']))
+      .toEqual({ kind: 'available', agentType: 'opencode', substituted: false });
+    expect(resolvePinnedAgentFallback('claude-code', ['opencode'])).toEqual({ kind: 'unavailable', from: 'claude-code' });
+  });
+
   const both: ReadonlyArray<'claude-code' | 'codex-cli'> = ['claude-code', 'codex-cli'];
   const all: ReadonlyArray<'claude-code' | 'codex-cli' | 'grok-build'> = [
     'claude-code',

@@ -519,9 +519,12 @@ export function resolvePinnedAgentFallback(
   deprioritized: readonly AgentType[] = [],
   policy?: AgentFallbackPolicy,
 ): PinnedAgentResolution {
+  // Agents excluded from automatic rotation (opencode) never count as a healthy alternative: letting them
+  // into the pool before the deprioritisation step made `effective` collapse to [opencode] and wrongly
+  // reported an available pin as unavailable. The pin itself still counts when it names such an agent.
   const registered = AVAILABLE_AGENT_TYPES
     .map((entry) => entry.type)
-    .filter((type) => available.includes(type));
+    .filter((type) => available.includes(type) && (type === pinned || isAutoRotationEligible(type)));
   if (registered.length === 0) {
     return { kind: 'unavailable', from: pinned };
   }
