@@ -1,8 +1,10 @@
 #!/bin/bash
 # opencode-worker entrypoint: `opencode serve` (loopback, password) + the A2A wrapper on :8000.
-# Secrets are read from 0600 files in /run/secrets (never env): opencode_password, a2a_token.
+# Secrets are read from 0600 files in /run/secrets, never from the container environment (so `docker inspect`
+# does not show them). They are handed to the two child processes through their own process env.
 # Exit codes: 10 opencode never became healthy, 11 opencode exited, 12 A2A wrapper exited,
-#             13 missing secret, 14 hook self-test failed. The container exits when EITHER child dies.
+#             13 missing secret, 14 hook self-test failed; 0 on a clean SIGTERM stop.
+#             The container exits when EITHER child dies. Secret charset: [A-Za-z0-9._~+-].
 set -u
 log() { echo "[entrypoint] $*" >&2; }
 SECRETS_DIR="${SECRETS_DIR:-/run/secrets}"
@@ -65,8 +67,15 @@ A2A_TASK_STORE_DATABASE_URL="sqlite+aiosqlite:////data/a2a-tasks.db" \
 A2A_HOST=0.0.0.0 A2A_PORT=8000 A2A_PUBLIC_URL="${A2A_PUBLIC_URL:-http://127.0.0.1:8000}" \
 opencode-a2a serve > >(sed -u 's/^/[a2a] /' >&2) 2>&1 &
 A2A=$!
-trap 'kill "$OC" "$A2A" 2>/dev/null' TERM INT
-wait -n "$OC" "$A2A"
+STOPPING=0
+trap 'STOPPING=1; kill "$OC" "$A2A" 2>/dev/null' TERM INT
+# A signal interrupts `wait -n` (status > 128): loop until a child actually ended or we are stopping.
+while :; do
+  wait -n "$OC" "$A2A"; st=$?
+  [ "$STOPPING" = 1 ] && { wait "$OC" "$A2A" 2>/dev/null; log "stopped by signal"; exit 0; }
+  [ "$st" -le 128 ] || [ "$STOPPING" = 1 ] && break
+  kill -0 "$OC" 2>/dev/null && kill -0 "$A2A" 2>/dev/null || break
+done
 if ! kill -0 "$OC" 2>/dev/null; then code=11; else code=12; fi
 log "child exited (opencode=$([ $code = 11 ] && echo down || echo up) a2a=$([ $code = 12 ] && echo down || echo up)); stopping container"
 kill "$OC" "$A2A" 2>/dev/null || true

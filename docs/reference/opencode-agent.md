@@ -271,7 +271,7 @@ plugin, workspace and data are mounted at launch.
 
 - Pins: base images by digest, opencode 1.19.5 from a lockfile with sha512 integrity, `opencode-a2a` with
   `--require-hashes`, plugin dependencies pre-seeded at build time (first message 1.7 s instead of 12.7 s).
-- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the environment.
+- Secrets: read from 0600 files in `/run/secrets` (`opencode_password`, `a2a_token`), never from the container environment (`docker inspect` shows none); the entrypoint passes them to its two child processes through their process env. The `kookr.Dockerfile` toolchain layer pins pnpm by version, not by tarball hash (known gap).
 - The entrypoint exits when either child dies, with a distinct code: 10 opencode never healthy, 11 opencode
   exited, 12 A2A wrapper exited, 13 missing secret, 14 hook self-test failed (a hook executable listed in
   `/kookr-hooks/MANIFEST` is missing). Output is prefixed `[entrypoint]`, `[opencode]`, `[a2a]`.

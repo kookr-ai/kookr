@@ -36,6 +36,8 @@ RUN chmod 0755 /usr/local/bin/worker-entrypoint \
  && ln -s /opt/tools/node_modules/.bin/opencode /usr/local/bin/opencode \
  && ln -s /opt/tools/node_modules/.bin/nb /usr/local/bin/nb \
  && ln -s /opt/a2a/bin/opencode-a2a /usr/local/bin/opencode-a2a
+# Mount points must exist because the root filesystem is read-only at run time.
+RUN mkdir -p /data /work /memory /cfg /run/secrets /kookr-hooks /kookr-spool
 USER 1000:1000
 ENV HOME=/home/worker XDG_DATA_HOME=/data/xdg-data XDG_CONFIG_HOME=/home/worker/.config \
     OPENCODE_DISABLE_AUTOUPDATE=1 NB_DIR=/memory

@@ -46,7 +46,9 @@ describe('opencode-worker image contract', () => {
     expect(e.startsWith('#!/bin/bash')).toBe(true);
     expect(e).toContain('/run/secrets');
     expect(e).not.toMatch(/:\?required/);
-    for (const code of [10, 11, 12, 13, 14]) expect(e).toMatch(new RegExp(`exit ${code}|code=${code}`));
+    const body = e.split('\n').filter((l) => !l.trimStart().startsWith('#')).join('\n');
+    for (const code of [10, 11, 12, 13, 14]) expect(body).toMatch(new RegExp(`(?:exit |code=)${code}\\b`));
+    expect(body).toContain('STOPPING=1');
     expect(e).toContain('wait -n "$OC" "$A2A"');
     expect(e).toContain('--max-time 2');
   });

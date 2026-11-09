@@ -6,7 +6,11 @@
 # names `ocw-test-*` and a temp dir it creates.
 set -u
 IMG="${1:?usage: test-container.sh <image>}"
-T=$(mktemp -d /tmp/ocw-test.XXXXXX); trap 'rm -rf "$T"' EXIT
+T=$(mktemp -d /tmp/ocw-test.XXXXXX)
+NAMES="ocw-test-main ocw-test-nosecret ocw-test-hook"
+finish() { for n in $NAMES; do docker rm -f "$n" >/dev/null 2>&1; done; rm -rf "$T"; }
+trap finish EXIT
+for n in $NAMES; do docker rm -f "$n" >/dev/null 2>&1; done   # leftovers of an aborted run (explicit names only)
 mkdir -p "$T/secrets" "$T/work" "$T/data"; chmod 777 "$T/data" "$T/work"
 echo "pw$RANDOM$RANDOM" > "$T/secrets/opencode_password"; echo "tok$RANDOM$RANDOM" > "$T/secrets/a2a_token"; chmod 0644 "$T/secrets/"*
 git -C "$T/work" init -q; echo x > "$T/work/f"
@@ -20,17 +24,18 @@ run() { # name [extra docker args...]
 wait_status() { # name want timeout
   for _ in $(seq 1 "$3"); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$1" 2>/dev/null)" = "$2" ] && return 0; sleep 1; done; return 1
 }
+wait_exit() { for _ in $(seq 1 "$2"); do [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null)" = false ] && return 0; sleep 1; done; return 1; }
 cleanup() { for n in "$@"; do docker rm -f "$n" >/dev/null 2>&1; done; }
 N=ocw-test-main
 run $N -e HOME=/home/worker
 wait_status $N healthy 90 && ok "healthcheck reaches healthy" || bad "never healthy"
 docker exec $N sh -c 'touch /x 2>/dev/null' && bad "root fs writable" || ok "root fs read-only"
 docker logs $N 2>&1 | grep -q '^\[opencode\]' && docker logs $N 2>&1 | grep -q '^\[entrypoint\]' && ok "log prefixes" || bad "log prefixes missing"
-docker exec $N pkill -f 'opencode-a2a serve'; sleep 4
+docker exec $N pkill -f 'opencode-a2a serve' || bad "pkill a2a matched nothing"; wait_exit $N 15
 c=$(docker inspect -f '{{.State.ExitCode}}' $N); [ "$c" = 12 ] && ok "a2a death -> exit 12" || bad "a2a death exit=$c (want 12)"
 cleanup $N
 run $N -e HOME=/home/worker; wait_status $N healthy 90 || bad "second start never healthy"
-docker exec $N pkill -f 'opencode serve'; sleep 4
+docker exec $N pkill -f 'opencode serve' || bad "pkill opencode matched nothing"; wait_exit $N 15
 c=$(docker inspect -f '{{.State.ExitCode}}' $N); [ "$c" = 11 ] && ok "opencode death -> exit 11" || bad "opencode death exit=$c (want 11)"
 cleanup $N
 docker run --rm --name ocw-test-nosecret --read-only --user "$(id -u):$(id -g)" --tmpfs /home/worker:uid="$(id -u)" -v "$T/data":/data "$IMG" >/dev/null 2>&1; c=$?
@@ -38,5 +43,7 @@ docker run --rm --name ocw-test-nosecret --read-only --user "$(id -u):$(id -g)" 
 mkdir -p "$T/hooks"; echo /kookr-hooks/does-not-exist.js > "$T/hooks/MANIFEST"
 docker run --rm --name ocw-test-hook --read-only --user "$(id -u):$(id -g)" --tmpfs /home/worker:uid="$(id -u)" -v "$T/data":/data -v "$T/work":/work -v "$T/secrets":/run/secrets:ro -v "$T/hooks":/kookr-hooks:ro "$IMG" >/dev/null 2>&1; c=$?
 [ "$c" = 14 ] && ok "hook self-test fail -> exit 14" || bad "hook self-test exit=$c (want 14)"
-cleanup ocw-test-main ocw-test-nosecret ocw-test-hook
+# clean stop: SIGTERM must exit 0, not report a child death
+run $N -e HOME=/home/worker; wait_status $N healthy 90 || bad "third start never healthy"
+docker stop -t 10 $N >/dev/null; c=$(docker inspect -f '{{.State.ExitCode}}' $N); [ "$c" = 0 ] && ok "SIGTERM stop -> exit 0" || bad "SIGTERM stop exit=$c (want 0)"
 exit $fail
