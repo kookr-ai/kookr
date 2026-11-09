@@ -308,3 +308,22 @@ plugin, workspace and data are mounted at launch.
 only mode available today. A task persisted as `container` is refused by the TUI adapter with a clear error and is
 never launched as a TUI (no silent fallback). Container launches arrive in a later slice of
 [RFC #3541](../rfc/rfc-opencode-worker-containers.md).
+
+### Worker container housekeeping (`kookr containers`)
+
+Worker containers are labelled `kookr.instance=<this install's id>` (the id lives in `<data dir>/instance-id`,
+created on first container launch and never regenerated), `kookr.task` and `kookr.launch`, and named `kookr-oc-*`.
+Nothing launches containers yet; the housekeeping ships first so a revert can always be cleaned up.
+
+```
+kookr containers ls [--json] [--dir PATH]
+kookr containers prune --instance [--yes] [--dir PATH]
+```
+
+`ls` is read-only and shows, per container, what the reconciler would do: `adopt` (task live), `grace` (younger than
+120 s or its launch intent is open), `keep_terminal` / `stop_remove` (task finished; removed after 24 h),
+`quarantine_stop` / `quarantine_keep` / `remove_quarantined` (no such task: stopped, kept 24 h, then removed), or
+`hold` (the task store could not be read, so nothing is touched). `prune --instance` stops and removes every
+container and network of this instance; it is a dry run unless `--yes`. Another Kookr instance's objects, and anything
+not named `kookr-oc-*` with this instance's label, are never touched. Reconciler actions are appended to
+`<data dir>/container-reconcile.jsonl`.

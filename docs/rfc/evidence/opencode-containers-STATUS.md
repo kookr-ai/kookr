@@ -10,8 +10,8 @@ Worktree `../kookr-oc-containers`. Updated 2026-11-09. Phase A (no Kubernetes). 
 | Spike 3 (shared layered memory) | done, add path only; vote/remove proven in S3 |
 | RFC `rfc-opencode-worker-containers.md` | v4, MERGED (#3541) after 2 critic rounds, consensus attack, independent review |
 | S1 worker image | MERGED (#3546); 8/8 live checks; non-blocking notes in #3551 |
-| S2a launch-mode seam | in PR (this change): session policy, gate base, launch-mode resolver extracted; TUI unchanged |
-| S2b reconciler / ports / `kookr containers` | not started |
+| S2a launch-mode seam | MERGED (#3553) |
+| S2b reconciler / ports / `kookr containers` | in PR: ports, instance id, intent store, reconciler, read-model, probe, `kookr containers ls/prune`; not wired to the server (S2d) |
 | S2c hook spool ingest | not started |
 | S2d container launch (`KOOKR_OPENCODE_CONTAINERS`) | not started |
 | S3 productised memory writer | not started |
