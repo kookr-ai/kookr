@@ -421,8 +421,10 @@ export class OpenCodeAdapter implements AgentAdapter {
       this.freshTaskDirs.set(tmuxName, taskDir);
     }
     const dataHome = openCodeTaskDataHome(taskDir);
-    await mkdir(dataHome, { recursive: true, mode: 0o700 });
+    // Marker first: a crash between the two steps must not leave an unmarked (and thus never reclaimed) dir.
+    await mkdir(taskDir, { recursive: true, mode: 0o700 });
     await markTaskDir(taskDir, taskId);
+    await mkdir(dataHome, { recursive: true, mode: 0o700 });
     await touchTaskDir(taskDir);
     this.dataHomes.set(tmuxName, dataHome);
     void this.maybeSweepTaskData(taskId);
@@ -524,6 +526,7 @@ export class OpenCodeAdapter implements AgentAdapter {
         root: this.dataRoot,
         statusOf: (id) => this.taskStore.getTask(id)?.status,
         activeTaskIds: active,
+        isActive: (id) => id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
         maxAgeMs: this.dataMaxAgeMs,
         doneTtlMs: this.dataDoneTtlMs,
         maxBytes: this.dataMaxBytes,

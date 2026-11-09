@@ -165,6 +165,11 @@ export interface SweepOptions {
   statusOf: (taskId: string) => TaskStatus | undefined;
   /** Task ids with a live session in this process (never swept). */
   activeTaskIds: ReadonlySet<string>;
+  /**
+   * Re-evaluated immediately before every removal (a resume-launch can start while a long sweep is walking the
+   * tree, and a session adopted after a server restart is not in `activeTaskIds`). Returning true skips the removal.
+   */
+  isActive?: (taskId: string) => boolean;
   maxAgeMs: number;
   /** Grace after last use before a completed/cancelled task's data is removed (0 = immediately). */
   doneTtlMs: number;
@@ -190,8 +195,10 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   }
   const now = opts.now ?? Date.now();
   const survivors: Array<{ taskId: string; dir: string; mtimeMs: number; bytes: number }> = [];
+  let protectedBytes = 0;
   const remove = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
     try {
+      if (opts.isActive?.(taskId)) return;
       if (await removeMarkedTaskDir(dir, taskId)) result.removed.push({ taskId, reason });
     } catch (err) {
       opts.warn?.(`[opencode-task-data] could not remove ${dir}: ${(err as Error).message}`);
@@ -212,6 +219,12 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
     }
     const status = opts.statusOf(taskId);
     if (status === undefined) { await remove(taskId, dir, 'task-gone'); continue; }
+    // A task that is still open/pending/in progress may have a live terminal session that survived a Kookr
+    // restart (dtach keeps it running) and is therefore not in `activeTaskIds`: the caps never evict it.
+    if (status === 'open' || status === 'pending' || status === 'inProgress') {
+      protectedBytes += await dirBytes(dir);
+      continue;
+    }
     if ((status === 'completed' || status === 'cancelled') && now - mtimeMs >= opts.doneTtlMs) {
       await remove(taskId, dir, 'task-done');
       continue;
@@ -223,7 +236,7 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
     }
     survivors.push({ taskId, dir, mtimeMs, bytes: await dirBytes(dir) });
   }
-  let total = survivors.reduce((n, s) => n + s.bytes, 0);
+  let total = survivors.reduce((n, s) => n + s.bytes, 0) + protectedBytes;
   if (opts.maxBytes > 0 && total > opts.maxBytes) {
     survivors.sort((a, b) => a.mtimeMs - b.mtimeMs);
     for (const s of survivors) {

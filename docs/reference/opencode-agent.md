@@ -119,7 +119,7 @@ conversation instead of starting over.
   unused for `KOOKR_OPENCODE_DATA_MAX_AGE_DAYS` (14), and least-recently-used
   first while the total exceeds `KOOKR_OPENCODE_DATA_MAX_MB` (1024). A
   `terminated` task (crash, abort the operator may reopen) is kept until
-  those caps. Dirs of live sessions are never swept. There is no task-status
+  those caps. Dirs of live sessions are never swept: a session of this process, a launch in flight, and any task that is still `open`/`pending`/`inProgress` in the task store (a terminal session can outlive a Kookr restart) are exempt from every cap. There is no task-status
   event to hook, so cleanup is lazy: deleting an idle task with no live
   session leaves its data until the next sweep (any opencode launch or stop).
   To purge by hand, delete `<data dir>/opencode-data/<taskId>`.

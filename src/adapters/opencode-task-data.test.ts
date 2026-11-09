@@ -183,6 +183,32 @@ describe('ownership marker: nothing unmarked is ever deleted (data-loss regressi
     expect(existsSync(d)).toBe(true);
   });
 
+  test('a non-terminal task (live session surviving a Kookr restart) is never evicted by the age or size cap', async () => {
+    const d = join(root, 'live-task');
+    mkdirSync(join(d, 'data'), { recursive: true });
+    writeFileSync(join(d, 'data', 'blob'), Buffer.alloc(300_000));
+    await markTaskDir(d, 'live-task');
+    const t = new Date(Date.now() - 30 * 86_400_000);
+    utimesSync(d, t, t);
+    for (const status of ['inProgress', 'pending', 'open'] as const) {
+      const res = await sweepOpenCodeTaskData(base({ statusOf: () => status, maxAgeMs: 86_400_000, maxBytes: 1_000 }));
+      expect(res.removed).toEqual([]);
+      expect(existsSync(join(d, 'data', 'blob'))).toBe(true);
+    }
+    // a terminated task of the same size/age is still evicted by the caps
+    const res = await sweepOpenCodeTaskData(base({ statusOf: () => 'terminated' as TaskStatus, maxAgeMs: 86_400_000 }));
+    expect(res.removed.map((r) => r.taskId)).toEqual(['live-task']);
+  });
+
+  test('isActive is re-checked right before each removal (a launch can start during a long sweep)', async () => {
+    const d = join(root, 'resuming-task');
+    mkdirSync(d, { recursive: true });
+    await markTaskDir(d, 'resuming-task');
+    const res = await sweepOpenCodeTaskData(base({ isActive: (id: string) => id === 'resuming-task' }));
+    expect(res.removed).toEqual([]);
+    expect(existsSync(d)).toBe(true);
+  });
+
   test('marked dirs are still swept, and isAbsentOrEmptyDir only accepts absent/empty real dirs', async () => {
     const d = join(root, 'task-b');
     mkdirSync(d, { recursive: true });
