@@ -13,6 +13,7 @@ Usage:
   kookr spawn [OPTIONS] [PROMPT...]    Create a task from the current shell.
   kookr open [taskId] [--json]  Open the running dashboard in your browser (deep-link to a task).
   kookr reply <taskId|name> "<text>" [--json]  Deliver a terminal reply to a task's live agent.
+  kookr ask --question "<text>" --option "<label>" ... [--wait] [--json]  Ask the operator a multiple-choice question (Telegram).
   kookr supervise <taskRef...> [--goal <text>]... [--until <+Nh|HH:MM>] [--print-brief] [--json]  Attach a supervisor task to running tasks.
   kookr supervision status|end [id] [--json]  Show attached supervisions (health, next wake), or end one.
   kookr peek <taskId|name> [--max-chars N] [--json]  Show a task's run-state and its FULL last assistant message.
@@ -52,7 +53,7 @@ Options:
   -v, --version                 Print the installed Kookr version.
   -h, --help                    Show this help.
 
-Use --json for one machine-readable output envelope with: spawn, stop, open, reply, supervise, supervision status, peek, status, doctor,
+Use --json for one machine-readable output envelope with: spawn, stop, open, reply, ask, supervise, supervision status, peek, status, doctor,
 signal, ralph, issue, schedule, playbook, drain, resume, ops digest, ops timers, github, logs,
 maintenance, lesson, emission, queue-feeder, retro-verify, reflect, orchestration,
 migrate, context-pack, pr-checklist, effort-split, and value-density.
@@ -118,6 +119,12 @@ async function main({
   // type a reply. Loads the src/cli module with a dist→src fallback.
   if (command === 'reply') {
     await runReplyCommand(rest, { env, out, err });
+    return exit(process.exitCode ?? 0);
+  }
+
+  // Agent -> operator multiple-choice question over Telegram (RFC kookr-ask).
+  if (command === 'ask') {
+    await runAskCommand(rest, { env, out, err });
     return exit(process.exitCode ?? 0);
   }
 
@@ -594,6 +601,21 @@ async function runReplyCommand(argv, { env = process.env, out = console, err = c
   }
   const mod = await importMaybeTs(entry);
   process.exitCode = await mod.runReplyCli(argv, { env, out, err });
+}
+
+async function runAskCommand(argv, { env = process.env, out = console, err = console } = {}) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const distEntry = join(here, '..', 'dist', 'cli', 'kookr-ask.js');
+  const sourceEntry = join(here, '..', 'src', 'cli', 'kookr-ask.ts');
+  const entry = existsSync(distEntry) ? distEntry : sourceEntry;
+  if (!existsSync(entry)) {
+    err.error('[kookr] ask module not found at ' + entry);
+    err.error('[kookr] Run `pnpm build:server` (or `npm run build:server`) first.');
+    process.exitCode = 1;
+    return;
+  }
+  const mod = await importMaybeTs(entry);
+  process.exitCode = await mod.runAskCli(argv, { env, out, err });
 }
 
 async function runSuperviseCommand(argv, { env = process.env, out = console, err = console } = {}) {

@@ -102,6 +102,12 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
     flags: ['--json', '-h', '--help'],
   },
   {
+    // Agent -> operator multiple-choice question over Telegram (RFC kookr-ask);
+    // keep in sync with src/cli/kookr-ask.ts.
+    name: 'ask',
+    flags: ['--question', '--option', '--context', '--timeout', '--task-id', '--no-other', '--wait', '--json', '-h', '--help'],
+  },
+  {
     // Attach a supervisor task to running tasks (RFC attachable-task-supervisor P1).
     // Positionals are task refs; keep in sync with src/cli/kookr-supervise.ts.
     name: 'supervise',
@@ -453,6 +459,7 @@ function renderBashCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
   const supervisionSubcommands = subcommandsFor('supervision');
@@ -595,6 +602,9 @@ _kookr()
       ;;
     reply)
       COMPREPLY=( $(compgen -W "${replyFlags}" -- "\${cur}") )
+      ;;
+    ask)
+      COMPREPLY=( $(compgen -W "${askFlags}" -- "\${cur}") )
       ;;
     peek)
       COMPREPLY=( $(compgen -W "${peekFlags}" -- "\${cur}") )
@@ -820,6 +830,7 @@ function renderZshCompletion(): string {
   const abortFlags = flagsFor('abort');
   const openFlags = flagsFor('open');
   const replyFlags = flagsFor('reply');
+  const askFlags = flagsFor('ask');
   const peekFlags = flagsFor('peek');
   const superviseFlags = flagsFor('supervise');
   const supervisionSubcommands = subcommandsFor('supervision');
@@ -918,6 +929,9 @@ _kookr()
       ;;
     reply)
       compadd -- ${replyFlags}
+      ;;
+    ask)
+      compadd -- ${askFlags}
       ;;
     peek)
       compadd -- ${peekFlags}

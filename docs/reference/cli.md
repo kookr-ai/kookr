@@ -717,7 +717,7 @@ Exit codes (specific to `kookr issue`): `0` you own it — also returned when th
 
 ## Server Discovery
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr peek`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr signal`, `kookr status`, `kookr ops`, and `kookr github` discover the active Kookr instance with this precedence:
 
 1. `KOOKR_API_BASE_URL`
 2. `KOOKR_PORT`
@@ -727,7 +727,7 @@ Ambiguity handling differs by command family: `kookr spawn` / `kookr stop` / `ko
 
 ## JSON Output
 
-`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
+`kookr spawn`, `kookr stop`, `kookr open`, `kookr reply`, `kookr ask`, `kookr peek`, `kookr status`, `kookr ops digest`, `kookr ops timers`, `kookr ralph` (and their deprecated standalone aliases), `kookr github`, and `kookr migrate` accept `--json`. JSON mode prints exactly one envelope to stdout and suppresses human-oriented output:
 
 ```json
 {
@@ -1410,6 +1410,54 @@ overrides auto-detect; otherwise Kookr probes ports `4800` then `4801` and, like
 Exit codes: `0` success (browser launched, or URL printed for a remote/headless
 host), `2` usage error (unknown flag), `3` no server reachable, `5` ambiguous port
 (two instances reachable; set `KOOKR_PORT` to choose one).
+
+## `kookr ask`
+
+Ask the operator a multiple-choice question over Telegram, from inside a task.
+Operators are often away from the terminal; this lets an agent that is blocked
+on a genuine operator decision get an answer on their phone. Design:
+`docs/rfc/rfc-kookr-ask.md`; HTTP contract: `docs/reference/api.md`
+("Agent Asks"). Requires the Telegram remote-chat integration to be configured
+(see "Remote Chat Trigger" in `docs/reference/environment-variables.md`);
+otherwise the command exits `7` and changes nothing.
+
+```text
+kookr ask --question "<text>" --option "<label>" --option "<label>" [--option "<label>"]
+          [--context "<text>"] [--timeout <dur>] [--task-id <uuid>] [--no-other]
+          [--wait[=<seconds>]] [--json]
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--question` | The question, at most 600 characters. |
+| `--option` | An answer button; give 2 to 4, each at most 48 characters on one line. |
+| `--context` | Background shown under the question, at most 1500 characters. |
+| `--timeout` | How long the question stays open: `30s`, `10m`, `2h` or plain seconds. Default 30 minutes, minimum 30 seconds, maximum 24 hours. |
+| `--task-id` | The asking task. Defaults to `KOOKR_TASK_ID`, which Kookr sets in every managed task. |
+| `--no-other` | Do not accept a free-text reply to the Telegram message as an answer. |
+| `--wait[=<seconds>]` | Block until the ask is answered or expires and print the answer. Without a value, wait until the question's own expiry. |
+| `--json` | One JSON envelope on stdout, like the other commands. |
+
+Without `--wait` the command returns immediately and prints the ask id; the
+operator's answer is typed into the task's session as
+`Operator answered ask <id>: <label>`. With `--wait` it also prints the chosen
+label (or the free text) on stdout. Re-running the same question with the same
+options from the same task while it is still pending returns the existing ask
+instead of sending a second Telegram message. Question and context text that
+looks like a credential is replaced by a placeholder, with a warning on stderr.
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Answered (with `--wait`), or created (without). |
+| `2` | Usage error (missing question, not 2 to 4 options, no task id, bad duration). |
+| `3` | No Kookr server reachable. |
+| `4` | The server rejected the request (unknown or finished task, rate limit, delivery to Telegram failed). |
+| `5` | Expired with no answer. |
+| `6` | Cancelled, including when the task is gone before the operator answered. |
+| `7` | Telegram is not configured on this server. |
+| `8` | The `--wait=<seconds>` window elapsed and the ask is still pending. |
+
+Instance discovery and bearer-token forwarding match `kookr reply`.
 
 ## `kookr reply`
 
