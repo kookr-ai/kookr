@@ -64,13 +64,15 @@ kookr spawn --agent opencode --model deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1
 `metadata.opencodeProfile`, so queued promotion and relaunch paths launch with
 the same profile.
 
-`POST /api/tasks` also takes `issue` (a positive integer; `400 invalid_issue`
-otherwise, and `400 invalid_profile` for a non-opencode agent). It is stored as `metadata.opencodeIssue` and
+`POST /api/tasks` also takes `issue` (a positive safe integer, 1 to 9007199254740991; `400 invalid_issue`
+otherwise, so a value such as `1e21` that would stringify as `1e+21` is refused, and `400 invalid_profile` for a non-opencode agent). It is stored as `metadata.opencodeIssue` and
 exported to the worker's hooks as `KOOKR_OPENCODE_ISSUE`, so the deliverable
 gate requires `Closes #<issue>` per task (it wins over a server-wide
 `KOOKR_OPENCODE_ISSUE`). Profile and issue are part of the launch identity: the
 same prompt with a different profile or issue is a different task, not a
-duplicate.
+duplicate. A replay of a persisted launch (a provider-transient retry, or
+a resume after a provider rate-limit pause) carries the stored `profile` and
+`issue` forward, so the replayed worker keeps its profile and gate.
 
 A launch with a `profile` does not get the generic Kookr worktree/delivery
 preamble ("create a fresh worktree, push, open and merge a PR"): the caller
@@ -120,7 +122,9 @@ at most 4 times):
       declares a deliverable). `file:X` requires `X` to exist and be non-empty.
       `commit-and-pr-body` requires no uncommitted tracked changes, at least
       one commit ahead of the launch HEAD (`KOOKR_OPENCODE_GATE_BASE`, injected
-      by the adapter), `Closes #N` when `KOOKR_OPENCODE_ISSUE` is set,
+      by the adapter; if that commit no longer resolves in the repo the gate falls
+      back to the merge-base with `origin/main`/`main`, and says so when none is
+      found), `Closes #N` when `KOOKR_OPENCODE_ISSUE` is set,
       `PR_BODY.md`, and a passing PR lint when one is configured. A failure
       exits 2 and tells the worker exactly what is missing. After 3 blocks per
       session the gate lets the worker stop, so it can never trap it.
@@ -165,11 +169,26 @@ conversation instead of starting over.
   adapter, it delivers no initial prompt: the conversation already contains it.
   Send the next instruction with `POST /api/agents/:id/message`. The
   deliverable gate keeps counting commits from the HEAD recorded at the first
-  launch (stored beside the database), not the current HEAD.
+  launch (stored beside the database), not the current HEAD. The same base is kept
+  for a non-resume relaunch of the same task (for example crash recovery after
+  the worker already committed) while it still exists in the repo; a new base
+  is recorded only when none is stored or the stored one is gone.
 - **Fallback.** If the task's database or session cannot be found (for example
   the data was already cleaned up, or a non-resume relaunch) the adapter logs a
   warning and launches fresh with the prompt, discarding stale data of that
   task id. A fresh launch always starts from an empty data dir.
+- **Unreadable database.** Absent, zero-byte or session-less databases mean
+  "nothing to resume" and fall back as above. A database that exists but
+  cannot be read (locked, schema drift, native addon failure) is not treated
+  as empty: the resume launch fails with `OpenCodeSessionUnreadableError`
+  (code `opencode_session_unreadable`), the data is kept untouched, and the
+  operator can retry once the database is readable.
+- **Aborted and timed-out launches.** A launch aborted at any point (including
+  before the session is created) releases its session directory and
+  bookkeeping. The task-data directory carries a per-launch token in its
+  ownership marker; a failed launch's late cleanup only removes a directory
+  carrying its own token, so a retry of the same task that recreated the
+  directory keeps it. Sweeps and fresh-launch resets match on the task id only.
 - **Cleanup and caps.** Disk use is bounded by a retention sweep that runs
   at the first launch after boot, on every launch (at most once a minute) and
   after every stop (immediately and again 5 s later, which catches a delete
@@ -225,6 +244,10 @@ usage block (one focused `kb search "<question>" --kb=<name>`, tolerate
 failure: `kb search` needs an embedding provider and an initialised index).
 
 ## Limits
+
+- The Settings dialog lists opencode (effort row, blacklist checkbox) and the
+  launch pickers offer it only when the server registered it, that is when
+  `KOOKR_OPENCODE_ENABLED` is set.
 
 - The TUI takes about 22 s to paint on first boot, so launches are slow and
   the ready timeout is 60 s.
