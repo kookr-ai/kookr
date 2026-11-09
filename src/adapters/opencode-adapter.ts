@@ -77,7 +77,10 @@ import {
   DEFAULT_OPENCODE_DATA_MAX_MB,
   OPENCODE_DATA_SWEEP_INTERVAL_MS,
   openCodeTaskDataHome,
+  isAbsentOrEmptyDir,
+  markTaskDir,
   openCodeTaskDir,
+  removeMarkedTaskDir,
   parseDataCap,
   readOpenCodeSessionId,
   resolveOpenCodeDataRoot,
@@ -411,11 +414,15 @@ export class OpenCodeAdapter implements AgentAdapter {
     // Per-task persistent data: kept across stop so a relaunch can resume; a fresh launch starts clean.
     const taskDir = openCodeTaskDir(this.dataRoot, taskId);
     if (!resuming) {
-      await rm(taskDir, { recursive: true, force: true });
+      // Only a dir Kookr created (ownership marker) may be reset; anything else in the way is refused, never deleted.
+      if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
+        throw new Error(`refusing to use ${taskDir} as opencode task data: it exists and was not created by Kookr`);
+      }
       this.freshTaskDirs.set(tmuxName, taskDir);
     }
     const dataHome = openCodeTaskDataHome(taskDir);
     await mkdir(dataHome, { recursive: true, mode: 0o700 });
+    await markTaskDir(taskDir, taskId);
     await touchTaskDir(taskDir);
     this.dataHomes.set(tmuxName, dataHome);
     void this.maybeSweepTaskData(taskId);
@@ -594,6 +601,7 @@ export class OpenCodeAdapter implements AgentAdapter {
 
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
     await this.recordSessionTokenUsage(tmuxName);
+    const failedTaskId = this.tmuxToTaskId.get(tmuxName);
     this.forgetSession(tmuxName);
     try {
       await this.backend.killSession(tmuxName);
@@ -605,7 +613,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     const fresh = this.freshTaskDirs.get(tmuxName);
     this.freshTaskDirs.delete(tmuxName);
     this.dataHomes.delete(tmuxName);
-    if (fresh) await rm(fresh, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+    if (fresh && failedTaskId) await removeMarkedTaskDir(fresh, failedTaskId).catch(() => { /* best-effort */ });
   }
 
   private async cleanupSessionDir(tmuxName: string): Promise<void> {

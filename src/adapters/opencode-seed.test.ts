@@ -40,6 +40,24 @@ describe('prepareOpenCodeSeed', () => {
     expect(existsSync(`${seedDir}.lock`)).toBe(false);
   });
 
+  it('never deletes an operator-pointed directory that is not a seed (data-loss regression)', async () => {
+    const seedDir = join(tmp, 'my-important-dir');
+    mkdirSync(seedDir, { recursive: true });
+    writeFileSync(join(seedDir, 'precious.txt'), 'keep me');
+    const warn = vi.fn();
+    const res = await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: vi.fn(populate), warn });
+    expect(res).toBeUndefined();
+    expect(readFileSync(join(seedDir, 'precious.txt'), 'utf8')).toBe('keep me');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing to replace'));
+  });
+
+  it('replaces an empty directory and a stale seed (marker present)', async () => {
+    const empty = join(tmp, 'empty-seed');
+    mkdirSync(empty, { recursive: true });
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir: empty, runner: vi.fn(populate) })).toBe(empty);
+    expect(isOpenCodeSeedReady(empty)).toBe(true);
+  });
+
   it('returns undefined with a warning (never throws) when the run fails or output is incomplete', async () => {
     const warn = vi.fn();
     const seedDir = join(tmp, 'seed');

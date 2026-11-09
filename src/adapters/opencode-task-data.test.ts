@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import Database from 'better-sqlite3';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  TASK_DIR_MARKER,
+  isAbsentOrEmptyDir,
+  isMarkedTaskDir,
+  markTaskDir,
   openCodeTaskDir,
   parseDataCap,
   readOpenCodeSessionId,
+  removeMarkedTaskDir,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
 } from './opencode-task-data.js';
@@ -67,6 +72,7 @@ describe('sweepOpenCodeTaskData', () => {
     const d = join(root, id);
     mkdirSync(join(d, 'data'), { recursive: true });
     writeFileSync(join(d, 'data', 'blob'), Buffer.alloc(bytes));
+    writeFileSync(join(d, TASK_DIR_MARKER), `${id}\n`);
     const t = new Date(Date.now() - ageMs);
     utimesSync(d, t, t);
     return d;
@@ -130,5 +136,64 @@ describe('sweepOpenCodeTaskData', () => {
     expect((await sweepOpenCodeTaskData(base({}))).removed).toEqual([]);
     expect(existsSync(join(root, 'has space'))).toBe(true);
     expect(await sweepOpenCodeTaskData(base({}, { root: join(root, 'missing') }))).toEqual({ removed: [], remainingBytes: 0 });
+  });
+});
+
+describe('ownership marker: nothing unmarked is ever deleted (data-loss regression)', () => {
+  const base = (over: Record<string, unknown> = {}) => ({
+    root,
+    activeTaskIds: new Set<string>(),
+    statusOf: () => undefined as TaskStatus | undefined,
+    maxAgeMs: 1,
+    doneTtlMs: 0,
+    maxBytes: 1,
+    ...over,
+  });
+
+  test('a data root pointed at an existing directory keeps its unrelated children', async () => {
+    mkdirSync(join(root, 'projects', 'app'), { recursive: true });
+    writeFileSync(join(root, 'projects', 'app', 'f'), 'precious');
+    mkdirSync(join(root, 'Documents'), { recursive: true });
+    const res = await sweepOpenCodeTaskData(base());
+    expect(res.removed).toEqual([]);
+    expect(existsSync(join(root, 'projects', 'app', 'f'))).toBe(true);
+    expect(existsSync(join(root, 'Documents'))).toBe(true);
+  });
+
+  test('a symlink in the root is never followed or removed, even when its name looks like a task id', async () => {
+    const target = mkdtempSync(join(tmpdir(), 'oc-elsewhere-'));
+    try {
+      writeFileSync(join(target, 'keep'), 'x');
+      symlinkSync(target, join(root, 'looks-like-a-task'));
+      const res = await sweepOpenCodeTaskData(base());
+      expect(res.removed).toEqual([]);
+      expect(existsSync(join(target, 'keep'))).toBe(true);
+    } finally {
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  test('a marker for a different task id does not authorise deletion', async () => {
+    const d = join(root, 'task-a');
+    mkdirSync(d, { recursive: true });
+    writeFileSync(join(d, TASK_DIR_MARKER), 'someone-else\n');
+    expect((await sweepOpenCodeTaskData(base())).removed).toEqual([]);
+    expect(await isMarkedTaskDir(d, 'task-a')).toBe(false);
+    expect(await removeMarkedTaskDir(d, 'task-a')).toBe(false);
+    expect(existsSync(d)).toBe(true);
+  });
+
+  test('marked dirs are still swept, and isAbsentOrEmptyDir only accepts absent/empty real dirs', async () => {
+    const d = join(root, 'task-b');
+    mkdirSync(d, { recursive: true });
+    await markTaskDir(d, 'task-b');
+    expect((await sweepOpenCodeTaskData(base())).removed.map((r) => r.taskId)).toEqual(['task-b']);
+    expect(existsSync(d)).toBe(false);
+    expect(await isAbsentOrEmptyDir(join(root, 'nope'))).toBe(true);
+    mkdirSync(join(root, 'empty'));
+    expect(await isAbsentOrEmptyDir(join(root, 'empty'))).toBe(true);
+    mkdirSync(join(root, 'full'));
+    writeFileSync(join(root, 'full', 'f'), 'x');
+    expect(await isAbsentOrEmptyDir(join(root, 'full'))).toBe(false);
   });
 });

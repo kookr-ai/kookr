@@ -108,6 +108,11 @@ export async function prepareOpenCodeSeed(opts: PrepareOpenCodeSeedOptions): Pro
       await rename(join(cfg, entry), join(staged, entry));
     }
     await writeFile(join(staged, READY_MARKER), `${OPENCODE_PINNED_VERSION}\n`);
+    // Only replace a directory that is a (stale) seed or empty: KOOKR_OPENCODE_SEED_DIR is operator-settable and must
+    // never cause an unrelated directory to be deleted.
+    if (existsSync(seedDir) && !existsSync(join(seedDir, READY_MARKER)) && (await readdir(seedDir)).length > 0) {
+      throw new Error(`${seedDir} exists, is not empty and is not an opencode seed; refusing to replace it`);
+    }
     await rm(seedDir, { recursive: true, force: true });
     await rename(staged, seedDir);
     return seedDir;

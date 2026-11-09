@@ -17,7 +17,7 @@
  * kept (until the caps) so it stays resumable.
  */
 import { existsSync } from 'node:fs';
-import { readdir, rm, stat, utimes } from 'node:fs/promises';
+import { lstat, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { TaskStatus } from '../core/task-status.js';
@@ -55,6 +55,47 @@ export function openCodeTaskDir(root: string, taskId: string): string {
 }
 
 export const openCodeTaskDataHome = (taskDir: string): string => join(taskDir, 'data');
+
+/**
+ * Ownership marker written into every task dir the adapter creates. Every recursive delete in this module
+ * (sweep, fresh-launch reset, failed-launch cleanup) is confined to dirs that carry the marker with the
+ * matching task id, so an operator-chosen `KOOKR_OPENCODE_DATA_DIR` that points at an existing directory
+ * (or a symlink) can never get its unrelated children deleted.
+ */
+export const TASK_DIR_MARKER = '.kookr-opencode-task';
+
+export async function markTaskDir(taskDir: string, taskId: string): Promise<void> {
+  await writeFile(join(taskDir, TASK_DIR_MARKER), `${taskId}\n`, { mode: 0o600 });
+}
+
+/** True only for a real directory (not a symlink) holding the marker for exactly this task id. */
+export async function isMarkedTaskDir(dir: string, taskId: string): Promise<boolean> {
+  try {
+    const l = await lstat(dir);
+    if (!l.isDirectory() || l.isSymbolicLink()) return false;
+    return (await readFile(join(dir, TASK_DIR_MARKER), 'utf8')).trim() === taskId;
+  } catch {
+    return false;
+  }
+}
+
+/** True when `dir` does not exist or is an empty real directory (safe to take over without deleting anything). */
+export async function isAbsentOrEmptyDir(dir: string): Promise<boolean> {
+  try {
+    const l = await lstat(dir);
+    if (!l.isDirectory() || l.isSymbolicLink()) return false;
+    return (await readdir(dir)).length === 0;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
+/** Remove a task dir only when Kookr marked it; returns whether anything was removed. Never touches foreign dirs. */
+export async function removeMarkedTaskDir(dir: string, taskId: string): Promise<boolean> {
+  if (!(await isMarkedTaskDir(dir, taskId))) return false;
+  await rm(dir, { recursive: true, force: true });
+  return true;
+}
 
 /**
  * The opencode session to resume from the task's DB: `preferred` when that row exists, else the newest
@@ -151,8 +192,7 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   const survivors: Array<{ taskId: string; dir: string; mtimeMs: number; bytes: number }> = [];
   const remove = async (taskId: string, dir: string, reason: SweepResult['removed'][number]['reason']) => {
     try {
-      await rm(dir, { recursive: true, force: true });
-      result.removed.push({ taskId, reason });
+      if (await removeMarkedTaskDir(dir, taskId)) result.removed.push({ taskId, reason });
     } catch (err) {
       opts.warn?.(`[opencode-task-data] could not remove ${dir}: ${(err as Error).message}`);
     }
@@ -160,6 +200,8 @@ export async function sweepOpenCodeTaskData(opts: SweepOptions): Promise<SweepRe
   for (const taskId of names) {
     if (!TASK_ID_RE.test(taskId) || opts.activeTaskIds.has(taskId)) continue;
     const dir = join(opts.root, taskId);
+    // Only dirs Kookr itself created (ownership marker) are ever considered; foreign dirs and symlinks are left alone.
+    if (!(await isMarkedTaskDir(dir, taskId))) continue;
     let mtimeMs: number;
     try {
       const s = await stat(dir);

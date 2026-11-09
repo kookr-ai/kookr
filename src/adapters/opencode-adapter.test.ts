@@ -344,6 +344,16 @@ describe('OpenCodeAdapter', () => {
       expect(existsSync(stale)).toBe(false);
     });
 
+    test('a fresh launch refuses (never deletes) a non-Kookr directory already sitting at the task data path', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      const foreign = join(sessionRoot, 'opencode-data', task.id);
+      mkdirSync(foreign, { recursive: true });
+      writeFileSync(join(foreign, 'precious.txt'), 'keep me');
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc9' })).rejects.toThrow('not created by Kookr');
+      expect(readFileSync(join(foreign, 'precious.txt'), 'utf8')).toBe('keep me');
+    });
+
     test('a failed fresh launch removes its data dir; a failed resume keeps it', async () => {
       const adapter = makeAdapter();
       const { task, id } = await launch(adapter);
