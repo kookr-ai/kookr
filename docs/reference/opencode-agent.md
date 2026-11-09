@@ -245,9 +245,10 @@ failure: `kb search` needs an embedding provider and an initialised index).
 
 ## Limits
 
-- The Settings dialog lists opencode (effort row, blacklist checkbox) and the
+- The Settings dialog shows the opencode rows (effort, blacklist checkbox) and the
   launch pickers offer it only when the server registered it, that is when
-  `KOOKR_OPENCODE_ENABLED` is set.
+  `KOOKR_OPENCODE_ENABLED` is set (or it is blacklisted, so it can be un-ticked).
+  Every other agent's Settings rows are always shown, installed or not.
 
 - The TUI takes about 22 s to paint on first boot, so launches are slow and
   the ready timeout is 60 s.

@@ -70,19 +70,20 @@ export function defaultAdvertisedAgentTypes(): AvailableAgentType[] {
 }
 
 /**
- * Agents the Settings dialog should offer a blacklist checkbox / effort row for: those the server
- * registered (advertised, which already omits blacklisted ones, so those are re-added from the
- * blacklist so they can be un-ticked). Before the server's list arrives, the non-opt-in defaults.
+ * Agents the Settings dialog should offer a blacklist checkbox / effort row for. Every canonical agent is
+ * always offered (an operator can pre-set the effort default or blacklist an agent whose CLI is not installed
+ * yet); ONLY opt-in agents (opencode) are hidden, and only while the server has not registered them and they
+ * are not blacklisted (a blacklisted agent stays visible so it can be un-ticked; the advertised list omits it).
  */
 export function settingsVisibleAgentTypes(
   advertised: readonly AvailableAgentType[],
   blacklisted: readonly AgentType[] = [],
 ): AvailableAgentType[] {
-  const known = new Set<AgentType>(
-    (advertised.length > 0 ? advertised : defaultAdvertisedAgentTypes()).map((item) => item.type),
+  const advertisedSet = new Set<AgentType>(advertised.map((item) => item.type));
+  const blacklistedSet = new Set<AgentType>(blacklisted);
+  return AVAILABLE_AGENT_TYPES.filter(
+    (item) => !OPT_IN_AGENT_TYPES.includes(item.type) || advertisedSet.has(item.type) || blacklistedSet.has(item.type),
   );
-  for (const type of blacklisted) known.add(type);
-  return AVAILABLE_AGENT_TYPES.filter((item) => known.has(item.type));
 }
 
 /**
