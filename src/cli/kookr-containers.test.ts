@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { FakeDocker } from '../containers/fake-docker.js';
+import { IntentStore } from '../containers/intent-store.js';
 import { LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK } from '../containers/ports.js';
 import { parseContainersArgs, runContainersCli } from './kookr-containers.js';
 
@@ -79,6 +80,16 @@ describe('kookr containers', () => {
     docker.containers = [];
     docker.networks = [{ id: 'n', name: 'kookr-oc-net-live1', createdAt: new Date('2026-01-01T00:00:00Z'), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 'live1' } }];
     expect(await run(['prune', '--instance', '--yes'])).toBe(1);
+    expect(docker.calls).toEqual([]);
+  });
+
+  test('prune protects an old object whose launch intent is still open, even with no task record', async () => {
+    docker.containers = [{ id: 'x', name: 'kookr-oc-fresh-z', state: 'running', createdAt: new Date('2026-01-01T00:00:00Z'),
+      labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 'notyet', [LABEL_LAUNCH]: 'tok-inflight1' } }];
+    docker.networks = [];
+    await new IntentStore(join(dir, 'container-intents'), () => new Date('2026-01-09T23:59:00Z')).open('notyet', 'tok-inflight1', SELF);
+    expect(await run(['prune', '--instance', '--yes'])).toBe(1);
+    expect(errs.join('\n')).toContain('open launch intent');
     expect(docker.calls).toEqual([]);
   });
 

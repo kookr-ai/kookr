@@ -2,8 +2,8 @@ import { join } from 'node:path';
 import { DockerCliRunner } from '../containers/docker-cli-runner.js';
 import { readInstanceId } from '../containers/instance-id.js';
 import { IntentStore } from '../containers/intent-store.js';
-import { CONTAINER_NAME_PREFIX, LABEL_INSTANCE, LABEL_TASK, type DockerRunnerPort } from '../containers/ports.js';
-import { ContainerReconciler, type ReconcileAction } from '../containers/reconciler.js';
+import { CONTAINER_NAME_PREFIX, LABEL_INSTANCE, LABEL_LAUNCH, LABEL_TASK, type DockerRunnerPort } from '../containers/ports.js';
+import { ContainerReconciler, DEFAULT_GRACE_MS, type ReconcileAction } from '../containers/reconciler.js';
 import { loadTaskLiveness } from '../containers/task-liveness.js';
 import { resolveKookrDataDir } from './kookr-maintenance.js';
 
@@ -117,14 +117,18 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
     for (const c of targets) out.log(`${p.yes ? 'removing' : 'would remove'} container ${c.name} (${c.state})`);
     for (const n of nets) out.log(`${p.yes ? 'removing' : 'would remove'} network ${n.name}`);
     if (!p.yes) { out.log('Dry run. Re-run with --yes to remove.'); return 0; }
-    const protectedState = (o: { labels: Record<string, string>; createdAt?: Date }) => {
+    const intents = new IntentStore(join(dataDir, 'container-intents'), now);
+    const protectedMarks = new Set<string>();
+    for (const o of [...targets, ...nets]) {
       const st = tasks(o.labels[LABEL_TASK] ?? '').state;
-      const young = !o.createdAt || !(now().getTime() - o.createdAt.getTime() >= 120_000);
-      return st === 'live' || st === 'store_unreadable' || young;
-    };
-    const liveOnes = [...targets, ...nets].filter(protectedState);
+      const young = !o.createdAt || !(now().getTime() - o.createdAt.getTime() >= DEFAULT_GRACE_MS);
+      const launch = o.labels[LABEL_LAUNCH];
+      const inFlight = launch ? await intents.isOpen(launch) : false;
+      if (st === 'live' || st === 'store_unreadable' || young || inFlight) protectedMarks.add(o.name);
+    }
+    const liveOnes = [...targets, ...nets].filter((o) => protectedMarks.has(o.name));
     if (liveOnes.length > 0 && !p.force) {
-      err.error(`refusing to prune: ${liveOnes.length} object(s) belong to live tasks, are younger than 120 s, or the task store is unreadable (${liveOnes.map((c) => c.name).join(', ')}). Re-run with --force to kill them.`);
+      err.error(`refusing to prune: ${liveOnes.length} object(s) belong to live tasks, are younger than 120 s, have an open launch intent, or the task store is unreadable (${liveOnes.map((c) => c.name).join(', ')}). Re-run with --force to kill them.`);
       return 1;
     }
     let failed = 0;
