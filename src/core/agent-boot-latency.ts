@@ -114,6 +114,7 @@ const SLOW_BOOT_MS_BY_AGENT: Record<AgentType, number> = {
   'claude-code': DEFAULT_SLOW_BOOT_MS,
   'codex-cli': DEFAULT_SLOW_BOOT_MS,
   'grok-build': GROK_BUILD_SLOW_BOOT_MS,
+  opencode: DEFAULT_SLOW_BOOT_MS,
   // Kookr never boots hermes-fleet (identity-only, no launch adapter — jeanibarz/hermes-fleet#15), so
   // this bar is never consulted; the default keeps the exhaustive map total.
   'hermes-fleet': DEFAULT_SLOW_BOOT_MS,

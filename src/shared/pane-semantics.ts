@@ -340,6 +340,12 @@ const VOLATILE_ACTIVITY_LINE_RES = [
   ACTIVE_STATUS_LINE_RE,
 ];
 
+// opencode (1.19.x) idle composer: the persistent footer carries `ctrl+p commands`, and a running
+// turn adds an `esc interrupt` hint to the status area. Without this an opencode task that finished
+// its turn reads as `unknown` and is eventually flagged hung_suspect instead of waiting on input.
+const OPENCODE_COMPOSER_FOOTER_RE = /ctrl\+p\s+commands/i;
+const OPENCODE_BUSY_RE = /esc\s+(?:to\s+)?interrupt/i;
+
 export function analyzePaneSemantics(paneText: string): PaneSemantics {
   return analyzeVisiblePaneLines(visibleLinesFromTerminalText(paneText));
 }
@@ -404,6 +410,11 @@ export function analyzeVisiblePaneLines(visibleLines: readonly string[]): PaneSe
         return { state: 'input_prompt', confidence: 'high', matchedText: nonStatusLines[i].trim() };
       }
     }
+  }
+
+  const opencodeFooter = lastLines.find((line) => OPENCODE_COMPOSER_FOOTER_RE.test(line));
+  if (opencodeFooter && !lastLines.some((line) => OPENCODE_BUSY_RE.test(line))) {
+    return { state: 'input_prompt', confidence: 'high', matchedText: 'opencode composer idle' };
   }
 
   for (let i = lastLines.length - 1; i >= Math.max(0, lastLines.length - 5); i--) {

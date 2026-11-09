@@ -21,6 +21,7 @@ This README is the map. New readers should start at the top and follow the links
   the event callbacks a coding-agent CLI fires when it stops or asks permission,
   described in [Architecture](architecture.md).
 - [Codex CLI setup](codex-cli-setup.md) — the maintained fork required before Kookr can supervise Codex CLI agents.
+- [opencode agent](reference/opencode-agent.md) — enabling the opt-in opencode agent type and its limits.
 - [Playbook scoping](playbook-scoping.md) — which playbooks a project sees, and why.
 
 The repo's top-level [README](../README.md) is a short project entry point.

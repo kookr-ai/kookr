@@ -52,6 +52,13 @@ const AGENT_PROVIDER_PRESENTATION: Record<AgentType, AgentProviderPresentation> 
     provider: 'xAI',
     iconPath: 'M9.27 15.29l7.978-5.897c.391-.29.95-.177 1.137.272.98 2.369.542 5.215-1.41 7.169-1.951 1.954-4.667 2.382-7.149 1.406l-2.711 1.257c3.889 2.661 8.611 2.003 11.562-.953 2.341-2.344 3.066-5.539 2.388-8.42l.006.007c-.983-4.232.242-5.924 2.75-9.383.06-.082.12-.164.179-.248l-3.301 3.305v-.01L9.267 15.292M7.623 16.723c-2.792-2.67-2.31-6.801.071-9.184 1.761-1.763 4.647-2.483 7.166-1.425l2.705-1.25a7.808 7.808 0 00-1.829-1A8.975 8.975 0 005.984 5.83c-2.533 2.536-3.33 6.436-1.962 9.764 1.022 2.487-.653 4.246-2.34 6.022-.599.63-1.199 1.259-1.682 1.925l7.62-6.815Z',
   },
+  // opencode (open-source TUI agent). No official glyph vendored: a neutral
+  // square-bracket terminal-prompt mark, monochrome like the others.
+  opencode: {
+    label: 'opencode',
+    provider: 'opencode',
+    iconPath: 'M3 3h18v18H3Zm3 3v12h12V6Zm2 2h8v2H8Zm0 4h5v2H8Z',
+  },
   // Hermes fleet (jeanibarz/hermes-fleet#15): the operator's own DeepSeek-via-bash fleet. No
   // brand glyph — a neutral hexagon node mark. hermes-fleet is identity-only
   // (not launchable), so this is normally not rendered, but the map is a total
@@ -80,6 +87,7 @@ const AGENT_RUNTIME_SHORT_LABEL: Record<AgentType, string> = {
   'claude-code': 'Claude',
   'codex-cli': 'Codex',
   'grok-build': 'Grok',
+  opencode: 'opencode',
   // Total Record<AgentType> — see the note on AGENT_PROVIDER_PRESENTATION (jeanibarz/hermes-fleet#15).
   'hermes-fleet': 'Hermes',
 };

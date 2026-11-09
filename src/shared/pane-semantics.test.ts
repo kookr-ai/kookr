@@ -222,6 +222,19 @@ describe('analyzePaneSemantics', () => {
     expect(result.confidence).toBe('high');
   });
 
+  test('classifies the opencode idle composer as input_prompt, and a running turn as not idle', () => {
+    const idle = [
+      '  ┃  Already voted the only lesson in the prior turn.',
+      '     ▣  Build · deepseek-ai/DeepSeek-V4.1-Flash-1017 · 2.3s',
+      '  ┃  Build · deepseek-ai/DeepSeek-V4.1-Flash-1017 deepinfra',
+      '  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '   /tmp/e3/wt-b                                10.9K (1%) · $0.00  ctrl+p commands',
+    ].join('\n');
+    expect(analyzePaneSemantics(idle)).toMatchObject({ state: 'input_prompt', confidence: 'high' });
+    const busy = idle.replace('2.3s', '2.3s\n   ⬝⬝⬝■■■  esc interrupt');
+    expect(analyzePaneSemantics(busy).state).not.toBe('input_prompt');
+  });
+
   test('classifies Claude Allow/Deny permission dialog as high confidence', () => {
     const result = analyzePaneSemantics('● Bash(ls)\n  Allow  Deny  allow-always');
     expect(result.state).toBe('permission_dialog');

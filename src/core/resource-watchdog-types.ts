@@ -24,6 +24,11 @@ export interface AgentFamilyProcessCounts {
   claude: number;
   grok: number;
   codex: number;
+  /**
+   * `opencode` and its `opencode serve --stdio` child (RFC opencode §9). Optional
+   * so persisted pre-opencode audit samples stay valid.
+   */
+  opencode?: number;
   /** `dtach` masters + attach clients (both ends of a session socket). */
   dtach: number;
 }

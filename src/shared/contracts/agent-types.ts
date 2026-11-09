@@ -10,7 +10,7 @@
  * derive from AVAILABLE ∩ registry). A launchable integration, if ever wanted,
  * is a separate opt-in slice (gated by `KOOKR_HERMES_FLEET`).
  */
-export const AGENT_TYPES = ['claude-code', 'codex-cli', 'grok-build', 'hermes-fleet'] as const;
+export const AGENT_TYPES = ['claude-code', 'codex-cli', 'grok-build', 'opencode', 'hermes-fleet'] as const;
 
 export type AgentType = (typeof AGENT_TYPES)[number];
 
@@ -55,6 +55,7 @@ export const AVAILABLE_AGENT_TYPES: AvailableAgentType[] = [
   { type: 'claude-code', label: 'Claude Code' },
   { type: 'codex-cli', label: 'Codex CLI' },
   { type: 'grok-build', label: 'Grok Build' },
+  { type: 'opencode', label: 'opencode' },
 ];
 
 /**
@@ -84,6 +85,7 @@ export const AGENT_SELECTION_HINTS: { readonly [K in AgentSelection]: string } =
   'claude-code': 'Anthropic Claude; native Kookr hooks and the bundled toolkit plugin',
   'codex-cli': "OpenAI Codex (Kookr's Claude-compatible fork)",
   'grok-build': 'xAI Grok, using the signed-in subscription session',
+  opencode: 'opencode (open-source TUI agent); cheap, fast worker for small scoped tasks on provider/model ids',
   'hermes-fleet': 'Hermes fleet (DeepSeek via bash harness); ledger/verdict interop identity, not a launchable agent',
   'round-robin': 'Spreads launches across whatever runtimes are available',
 };
@@ -133,6 +135,8 @@ export const CODEX_GPT_6_ASTRA_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh'
  * the adapter never emits an effort flag.
  */
 export const GROK_BUILD_EFFORT_LEVELS = [] as const;
+/** opencode exposes NO Kookr-side effort levels (RFC opencode-agent-integration); the model id selects the behaviour. */
+export const OPENCODE_EFFORT_LEVELS = [] as const;
 /**
  * Hermes fleet exposes NO Kookr-side effort levels: its reasoning model is
  * locked by its own bash harness (`bin/model-guard.sh`), not selected by Kookr.
@@ -144,10 +148,11 @@ export const HERMES_FLEET_EFFORT_LEVELS = [] as const;
 export type ClaudeCodeEffort = (typeof CLAUDE_CODE_EFFORT_LEVELS)[number];
 export type CodexCliEffort = (typeof CODEX_CLI_EFFORT_LEVELS)[number];
 export type GrokBuildEffort = (typeof GROK_BUILD_EFFORT_LEVELS)[number];
+export type OpenCodeEffort = (typeof OPENCODE_EFFORT_LEVELS)[number];
 export type HermesFleetEffort = (typeof HERMES_FLEET_EFFORT_LEVELS)[number];
 
 /** Any effort token. Validity is agent-specific — see {@link isValidEffortForAgent}. */
-export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort | HermesFleetEffort;
+export type EffortLevel = ClaudeCodeEffort | CodexCliEffort | GrokBuildEffort | OpenCodeEffort | HermesFleetEffort;
 
 /**
  * Per-agent-type effort defaults, as persisted in kookr settings (`agentEffort`).
@@ -177,6 +182,8 @@ export function effortLevelsForAgent(agent: AgentType, model?: string): readonly
         : CODEX_CLI_EFFORT_LEVELS;
     case 'grok-build':
       return GROK_BUILD_EFFORT_LEVELS;
+    case 'opencode':
+      return OPENCODE_EFFORT_LEVELS;
     case 'hermes-fleet':
       return HERMES_FLEET_EFFORT_LEVELS;
     default:
@@ -209,6 +216,7 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
     ...CLAUDE_CODE_EFFORT_LEVELS,
     ...CODEX_CLI_EFFORT_LEVELS,
     ...GROK_BUILD_EFFORT_LEVELS,
+    ...OPENCODE_EFFORT_LEVELS,
     ...HERMES_FLEET_EFFORT_LEVELS,
   ]),
 ];
@@ -239,16 +247,23 @@ export const CLAUDE_CODE_MODEL_IDS = [
 ] as const;
 export const CODEX_CLI_MODEL_IDS = ['gpt-6-astra'] as const;
 export const GROK_BUILD_MODEL_IDS = [] as const;
+/**
+ * opencode models are free-form `provider/model` ids (e.g.
+ * `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017`), so there is no fixed
+ * allowlist; {@link isValidOpenCodeModelId} validates the shape instead.
+ */
+export const OPENCODE_MODEL_IDS = [] as const;
 /** Hermes pins its own model in its harness; Kookr accepts no per-task pin. */
 export const HERMES_FLEET_MODEL_IDS = [] as const;
 
 export type ClaudeCodeModel = (typeof CLAUDE_CODE_MODEL_IDS)[number];
 export type CodexCliModel = (typeof CODEX_CLI_MODEL_IDS)[number];
 export type GrokBuildModel = (typeof GROK_BUILD_MODEL_IDS)[number];
+export type OpenCodeModel = (typeof OPENCODE_MODEL_IDS)[number];
 export type HermesFleetModel = (typeof HERMES_FLEET_MODEL_IDS)[number];
 
 /** Any model id. Validity is agent-specific — see {@link isValidModelForAgent}. */
-export type ModelId = ClaudeCodeModel | CodexCliModel | GrokBuildModel | HermesFleetModel | string;
+export type ModelId = ClaudeCodeModel | CodexCliModel | GrokBuildModel | OpenCodeModel | HermesFleetModel | string;
 
 /**
  * The allowed model ids for a given agent type. Exhaustive switch so a new
@@ -262,11 +277,23 @@ export function modelsForAgent(agent: AgentType): readonly string[] {
       return CODEX_CLI_MODEL_IDS;
     case 'grok-build':
       return GROK_BUILD_MODEL_IDS;
+    case 'opencode':
+      return OPENCODE_MODEL_IDS;
     case 'hermes-fleet':
       return HERMES_FLEET_MODEL_IDS;
     default:
       return assertNeverAgentType(agent);
   }
+}
+
+/**
+ * Shape check for an opencode `provider/model` id: a provider segment, then one
+ * or more model path segments, each limited to a conservative charset (no
+ * whitespace, shell metacharacters, `..`, or leading/trailing slashes).
+ */
+const OPENCODE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._:-]*)+$/;
+export function isValidOpenCodeModelId(model: string): boolean {
+  return model.length <= 200 && !model.includes('..') && OPENCODE_MODEL_ID_PATTERN.test(model);
 }
 
 /**
@@ -276,6 +303,7 @@ export function modelsForAgent(agent: AgentType): readonly string[] {
  */
 export function isValidModelForAgent(agent: AgentType, model: string): boolean {
   if (model.length === 0) return false;
+  if (agent === 'opencode') return isValidOpenCodeModelId(model);
   const allowed = modelsForAgent(agent);
   if (allowed.includes(model)) return true;
   if (agent !== 'claude-code') return false;
@@ -319,6 +347,8 @@ export function normalizeAgentType(value: string | undefined | null): AgentType 
     case 'grok':
     case 'grok-build':
       return 'grok-build';
+    case 'opencode':
+      return 'opencode';
     case 'hermes':
     case 'hermes-fleet':
       return 'hermes-fleet';
@@ -337,6 +367,21 @@ export function normalizeAgentType(value: string | undefined | null): AgentType 
 export function normalizeAgentSelection(value: string | undefined | null): AgentSelection {
   if (value === ROUND_ROBIN_AGENT_TYPE) return ROUND_ROBIN_AGENT_TYPE;
   return normalizeAgentType(value);
+}
+
+/**
+ * Agent types that must be chosen explicitly (a pin, a profile, `--agent`) and
+ * never by automatic selection: round-robin rotation, the picker's round-robin
+ * option, or an automatic substitute for an unavailable pin. opencode is a
+ * scoped cheap worker for small tasks on provider/model ids, not a general
+ * rotation member (RFC opencode-agent-integration). An explicit pin to an
+ * excluded type is unaffected. Existing agents are not excluded.
+ */
+export const AUTO_ROTATION_EXCLUDED_AGENT_TYPES: readonly AgentType[] = ['opencode'];
+
+/** True when `type` may be picked automatically (rotation / substitution). */
+export function isAutoRotationEligible(type: AgentType): boolean {
+  return !AUTO_ROTATION_EXCLUDED_AGENT_TYPES.includes(type);
 }
 
 /**
@@ -363,7 +408,7 @@ export function resolveRoundRobinAgent(
 ): AgentType {
   const rotation = AVAILABLE_AGENT_TYPES
     .map((entry) => entry.type)
-    .filter((type) => available.includes(type));
+    .filter((type) => available.includes(type) && isAutoRotationEligible(type));
   if (rotation.length === 0) return DEFAULT_AGENT_TYPE;
   let effective = rotation;
   if (deprioritized.length > 0) {
@@ -490,7 +535,7 @@ export function resolvePinnedAgentFallback(
   }
   // Issue #2001: only automatic substitutes are filtered. The pin itself was
   // already checked above; remaining candidates must pass the fallback policy.
-  const allowed = filterFallbackCandidates(effective, policy);
+  const allowed = filterFallbackCandidates(effective.filter(isAutoRotationEligible), policy);
   const substitute = allowed[0];
   if (!substitute) {
     return { kind: 'unavailable', from: pinned };
@@ -508,7 +553,8 @@ export function buildAgentSelectionOptions(
 ): AvailableAgentSelection[] {
   const base: AvailableAgentSelection[] =
     available.length > 0 ? [...available] : [...AVAILABLE_AGENT_TYPES];
-  return base.length >= 2 ? [...base, ROUND_ROBIN_OPTION] : base;
+  const rotatable = base.filter((option) => !isAgentType(option.type) || isAutoRotationEligible(option.type));
+  return rotatable.length >= 2 ? [...base, ROUND_ROBIN_OPTION] : base;
 }
 
 /**

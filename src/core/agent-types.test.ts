@@ -3,6 +3,8 @@ import {
   normalizeAgentType,
   normalizeAgentSelection,
   resolveRoundRobinAgent,
+  AUTO_ROTATION_EXCLUDED_AGENT_TYPES,
+  isAutoRotationEligible,
   resolvePinnedAgentFallback,
   excludeBlacklistedAgents,
   advertisedAgentTypes,
@@ -68,8 +70,8 @@ describe('normalizeAgentType', () => {
 });
 
 describe('AVAILABLE_AGENT_TYPES', () => {
-  test('contains claude-code, codex-cli, and grok-build in canonical order', () => {
-    expect(AVAILABLE_AGENT_TYPES.map((a) => a.type)).toEqual(['claude-code', 'codex-cli', 'grok-build']);
+  test('contains claude-code, codex-cli, grok-build, and opencode in canonical order', () => {
+    expect(AVAILABLE_AGENT_TYPES.map((a) => a.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
   });
 
   test('each entry has a label', () => {
@@ -341,7 +343,7 @@ describe('buildAgentSelectionOptions', () => {
 
   test('falls back to the canonical list (with round-robin) when none are supplied', () => {
     const options = buildAgentSelectionOptions([]);
-    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'round-robin']);
+    expect(options.map((o) => o.type)).toEqual(['claude-code', 'codex-cli', 'grok-build', 'opencode', 'round-robin']);
   });
 });
 
@@ -352,6 +354,8 @@ describe('previewRoundRobinNextLabel', () => {
     expect(previewRoundRobinNextLabel(options, { cursor: 0 })).toBe('Claude Code');
     expect(previewRoundRobinNextLabel(options, { cursor: 1 })).toBe('Codex CLI');
     expect(previewRoundRobinNextLabel(options, { cursor: 2 })).toBe('Grok Build');
+    // opencode is explicit-only: the rotation wraps after Grok Build.
+    expect(previewRoundRobinNextLabel(options, { cursor: 3 })).toBe('Claude Code');
   });
 
   test('prefers a still-available advertised next agent over the cursor', () => {
@@ -377,9 +381,9 @@ describe('previewRoundRobinNextLabel', () => {
 
   test('skips Grok when session auth is known unusable', () => {
     expect(previewRoundRobinNextLabel(options, {
-      cursor: 2,
+      cursor: 3,
       grokAuthUsable: false,
-    })).toBe('Claude Code');
+    })).toBe('Codex CLI');
   });
 });
 
@@ -577,6 +581,85 @@ describe('hermes-fleet AgentType identity (jeanibarz/hermes-fleet#15)', () => {
     const advertised = new Set(AVAILABLE_AGENT_TYPES.map((a) => a.type));
     for (const t of AGENT_TYPES) {
       expect(isIdentityOnlyAgentType(t)).toBe(!advertised.has(t));
+    }
+  });
+});
+
+describe('opencode agent type', () => {
+  test('normalizes and is a launchable (non identity-only) type', () => {
+    expect(normalizeAgentType('opencode')).toBe('opencode');
+    expect(isAgentType('opencode')).toBe(true);
+    expect(isIdentityOnlyAgentType('opencode')).toBe(false);
+  });
+
+  test('has no effort levels and no fixed model allowlist', () => {
+    expect(effortLevelsForAgent('opencode')).toEqual([]);
+    expect(isValidEffortForAgent('opencode', 'high')).toBe(false);
+    expect(modelsForAgent('opencode')).toEqual([]);
+  });
+
+  test.each([
+    'deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017',
+    'openrouter/anthropic/claude-sonnet-4.5',
+    'provider/model:free',
+  ])('accepts provider/model id %s', (model) => {
+    expect(isValidModelForAgent('opencode', model)).toBe(true);
+  });
+
+  test.each(['', 'bare-model', '/model', 'a/', 'a//b', 'a/../b', 'a/b c', 'a/b;rm -rf', 'a/$(x)', `a/${'x'.repeat(250)}`])(
+    'rejects unsafe or malformed model id %j',
+    (model) => {
+      expect(isValidModelForAgent('opencode', model)).toBe(false);
+    },
+  );
+});
+
+describe('auto-rotation exclusion (opencode is explicit-only)', () => {
+  const all = AVAILABLE_AGENT_TYPES.map((entry) => entry.type);
+
+  test('excludes only opencode', () => {
+    expect([...AUTO_ROTATION_EXCLUDED_AGENT_TYPES]).toEqual(['opencode']);
+    expect(isAutoRotationEligible('opencode')).toBe(false);
+    expect(isAutoRotationEligible('claude-code')).toBe(true);
+  });
+
+  test('round-robin never yields opencode across many cursors', () => {
+    for (let cursor = 0; cursor < 20; cursor += 1) {
+      expect(resolveRoundRobinAgent(cursor, all)).not.toBe('opencode');
+    }
+  });
+
+  test('rotation over the existing agents is unchanged by opencode being registered', () => {
+    const without = all.filter((t) => t !== 'opencode');
+    for (let cursor = 0; cursor < 8; cursor += 1) {
+      expect(resolveRoundRobinAgent(cursor, all)).toBe(resolveRoundRobinAgent(cursor, without));
+    }
+  });
+
+  test('opencode as the only registered agent falls back to the default, not opencode', () => {
+    expect(resolveRoundRobinAgent(0, ['opencode'])).toBe(DEFAULT_AGENT_TYPE);
+  });
+
+  test('an explicit opencode pin is honored but opencode is never an automatic substitute', () => {
+    expect(resolvePinnedAgentFallback('opencode', all)).toEqual({
+      kind: 'available', agentType: 'opencode', substituted: false,
+    });
+    expect(resolvePinnedAgentFallback('codex-cli', ['opencode'])).toEqual({ kind: 'unavailable', from: 'codex-cli' });
+    const res = resolvePinnedAgentFallback('codex-cli', ['opencode', 'claude-code']);
+    expect(res).toMatchObject({ kind: 'substituted', agentType: 'claude-code' });
+  });
+
+  test('round-robin picker option needs two rotatable agents', () => {
+    const opts = (types: Array<(typeof all)[number]>) =>
+      buildAgentSelectionOptions(AVAILABLE_AGENT_TYPES.filter((e) => types.includes(e.type)));
+    expect(opts(['claude-code', 'opencode']).some((o) => o.type === ROUND_ROBIN_AGENT_TYPE)).toBe(false);
+    expect(opts(['claude-code', 'codex-cli', 'opencode']).some((o) => o.type === ROUND_ROBIN_AGENT_TYPE)).toBe(true);
+  });
+
+  test('round-robin preview label skips opencode', () => {
+    const options = buildAgentSelectionOptions(AVAILABLE_AGENT_TYPES);
+    for (let cursor = 0; cursor < 8; cursor += 1) {
+      expect(previewRoundRobinNextLabel(options, { cursor })).not.toBe('opencode');
     }
   });
 });

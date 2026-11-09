@@ -23,6 +23,7 @@ const AGENT_LABELS: Record<AgentType, string> = {
   'claude-code': 'Claude Code',
   'codex-cli': 'Codex CLI',
   'grok-build': 'Grok Build',
+  opencode: 'opencode',
   'hermes-fleet': 'Hermes fleet',
 };
 
