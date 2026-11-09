@@ -1536,6 +1536,32 @@ describe('ClaudeCodeAdapter', () => {
     expect(inputEvents).toHaveLength(0);
   });
 
+  describe('advisorModel settings injection', () => {
+    async function launchedSettings(opts?: { advisorModel?: string }): Promise<Record<string, unknown>> {
+      const dir = mkdtempSync(join(tmpdir(), 'kookr-advisor-test-'));
+      const written = new Map<string, string>();
+      const a = new ClaudeCodeAdapter(backend, taskStore, {
+        settingsDir: dir,
+        writeFile: async (path, content) => { written.set(path, content); },
+        ...opts,
+      });
+      const task = taskStore.createTask('t', '/cwd');
+      await a.launch(task.id, 't', '/cwd');
+      rmSync(dir, { recursive: true, force: true });
+      expect(written.size).toBe(1);
+      return JSON.parse([...written.values()][0]!);
+    }
+
+    test('writes advisorModel into the per-session settings file when configured', async () => {
+      expect((await launchedSettings({ advisorModel: 'claude-fable-5-2' })).advisorModel).toBe('claude-fable-5-2');
+    });
+
+    test('omits the key when unset or empty', async () => {
+      expect('advisorModel' in (await launchedSettings())).toBe(false);
+      expect('advisorModel' in (await launchedSettings({ advisorModel: '' }))).toBe(false);
+    });
+  });
+
   describe('--plugin-dir injection', () => {
     let validPluginDir: string;
     let tempRoot: string;

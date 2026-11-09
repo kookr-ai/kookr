@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { FakeTerminalBackend } from '../../adapters/fake-terminal-backend.js';
 import type { GrokInstalledState } from '../../adapters/grok-build-preflight.js';
 import { TaskStore } from '../../core/tasks.js';
-import { createAgentRuntime, type AgentRuntimeDeps } from './create-agent-runtime.js';
+import { createAgentRuntime, resolveAdvisorModel, DEFAULT_ADVISOR_MODEL, type AgentRuntimeDeps } from './create-agent-runtime.js';
 
 /**
  * Registration policy for the GA Grok Build adapter: registered exactly when
@@ -314,5 +314,17 @@ describe('createAgentRuntime — hermes-fleet opt-in (jeanibarz/hermes-fleet#15)
     // the agent picker or round-robin), even with the opt-in on.
     expect(runtime.adapterRegistry.getTypes()).not.toContain('hermes-fleet');
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('hermes-fleet: opt-in ENABLED'));
+  });
+});
+
+describe('resolveAdvisorModel', () => {
+  test('defaults to claude-fable-5-2 when unset', () => {
+    expect(resolveAdvisorModel({})).toBe(DEFAULT_ADVISOR_MODEL);
+    expect(DEFAULT_ADVISOR_MODEL).toBe('claude-fable-5-2');
+  });
+  test('env override wins; empty/blank disables', () => {
+    expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: 'claude-opus-5' })).toBe('claude-opus-5');
+    expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: '' })).toBeUndefined();
+    expect(resolveAdvisorModel({ KOOKR_ADVISOR_MODEL: '  ' })).toBeUndefined();
   });
 });
