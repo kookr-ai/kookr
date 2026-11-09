@@ -52,18 +52,39 @@ export interface PrepareOpenCodeSeedOptions {
   warn?: (msg: string) => void;
 }
 
+const LOCK_OWNER_FILE = '.kookr-seed-lock';
+
+/**
+ * Take the seed build lock. The lock dir is only ever removed when it carries our owner file (a stale lock
+ * left by a crashed Kookr build); a directory we did not create is never deleted, and any mkdir failure other
+ * than EEXIST (read-only/unwritable parent, ...) is thrown so the caller boots unseeded instead of spinning.
+ */
 async function acquireLock(lockDir: string, staleMs: number, waitMs: number, seedDir: string): Promise<boolean> {
   const deadline = Date.now() + waitMs;
   for (;;) {
     try {
       await mkdir(lockDir);
+      try {
+        await writeFile(join(lockDir, LOCK_OWNER_FILE), `${process.pid}\n`);
+      } catch (err) {
+        await rm(lockDir, { recursive: true, force: true }).catch(() => { /* we just created it */ });
+        throw err;
+      }
       return true;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
       // Someone else is seeding (or died holding the lock).
       if (isOpenCodeSeedReady(seedDir)) return false;
       try {
-        if (Date.now() - (await stat(lockDir)).mtimeMs > staleMs) { await rm(lockDir, { recursive: true, force: true }); continue; }
-      } catch { continue; }
+        const stale = Date.now() - (await stat(lockDir)).mtimeMs > staleMs;
+        if (stale && existsSync(join(lockDir, LOCK_OWNER_FILE))) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+        if (stale) return false; // an old directory we did not create: leave it alone, boot unseeded
+      } catch {
+        // the lock vanished between mkdir and stat: retry, but never without the deadline/sleep below
+      }
       if (Date.now() > deadline) return false;
       await new Promise((r) => setTimeout(r, 250));
     }
@@ -144,7 +165,12 @@ async function linkTree(src: string, dst: string): Promise<void> {
 /** Hardlink (copy fallback) the seed template entries into `targetDir`. */
 export async function seedConfigDir(seedDir: string, targetDir: string): Promise<void> {
   await mkdir(targetDir, { recursive: true, mode: 0o700 });
-  for (const entry of OPENCODE_SEED_ENTRIES) await linkTree(join(seedDir, entry), join(targetDir, entry));
+  for (const entry of OPENCODE_SEED_ENTRIES) {
+    // node_modules is hardlinked (big); the small manifest files are COPIED so an in-place rewrite by npm/bun or an
+    // agent inside one session can never change the shared template for later sessions.
+    if (entry === 'node_modules') await linkTree(join(seedDir, entry), join(targetDir, entry));
+    else await copyFile(join(seedDir, entry), join(targetDir, entry));
+  }
   await chmod(targetDir, 0o700);
 }
 

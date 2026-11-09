@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -51,6 +51,44 @@ describe('prepareOpenCodeSeed', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('refusing to replace'));
   });
 
+  it('never deletes a foreign .lock directory, even an old one (data-loss regression)', async () => {
+    const seedDir = join(tmp, 'tools', 'seed');
+    const lockDir = `${seedDir}.lock`;
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, 'precious'), 'keep me');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(lockDir, old, old);
+    const warn = vi.fn();
+    const res = await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: vi.fn(populate), warn, lockStaleMs: 1000, lockWaitMs: 500 });
+    expect(res).toBeUndefined();
+    expect(readFileSync(join(lockDir, 'precious'), 'utf8')).toBe('keep me');
+  });
+
+  it('breaks a stale lock only when it carries our owner file', async () => {
+    const seedDir = join(tmp, 'tools', 'seed');
+    const lockDir = `${seedDir}.lock`;
+    mkdirSync(lockDir, { recursive: true });
+    writeFileSync(join(lockDir, '.kookr-seed-lock'), '1\n');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(lockDir, old, old);
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: vi.fn(populate), lockStaleMs: 1000 })).toBe(seedDir);
+  });
+
+  it('returns promptly (no spin) when the lock dir cannot be created', async () => {
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return; // chmod does not restrict root
+    const parent = join(tmp, 'ro');
+    mkdirSync(parent, { recursive: true });
+    chmodSync(parent, 0o555);
+    const started = Date.now();
+    try {
+      const res = await prepareOpenCodeSeed({ bin: 'oc', seedDir: join(parent, 'seed'), runner: vi.fn(populate), warn: vi.fn(), lockWaitMs: 30_000 });
+      expect(res).toBeUndefined();
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally {
+      chmodSync(parent, 0o755);
+    }
+  });
+
   it('replaces an empty directory and a stale seed (marker present)', async () => {
     const empty = join(tmp, 'empty-seed');
     mkdirSync(empty, { recursive: true });
@@ -79,6 +117,7 @@ describe('prepareOpenCodeSeed', () => {
   it('breaks a stale lock', async () => {
     const seedDir = join(tmp, 'seed');
     mkdirSync(`${seedDir}.lock`, { recursive: true });
+    writeFileSync(join(`${seedDir}.lock`, '.kookr-seed-lock'), '1\n'); // a lock our own (crashed) build left behind
     expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: populate, lockStaleMs: -1 })).toBe(seedDir);
   });
 });
