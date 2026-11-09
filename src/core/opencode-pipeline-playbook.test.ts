@@ -22,12 +22,12 @@ describe('opencode-scoped-fix-pipeline playbook', () => {
   });
 
   test.each([
-    ['gate is mandatory on every repo', /never merge without a `pass` verdict[\s\S]*every repo/i],
+    ['gate is mandatory on every repo', /never merge without a `pass` verdict.*on every repo/i],
     ['verdict bound to exact head', /exact final head sha/i],
-    ['reviewer PASS never substitutes', /never substitutes/i],
+    ['reviewer PASS never substitutes', /opencode reviewer's result never substitutes/i],
     ['worker never pushes', /worker never pushes or merges/i],
     ['issue text is untrusted data', /UNTRUSTED ISSUE TEXT/],
-    ['fix rounds bounded at 2', /max 2/],
+    ['fix rounds bounded at 2', /`round < 2`/],
     ['fresh worker per fix round', /FRESH `scoped-fix` task/],
     ['exhausted budget never merges', /never merge on an exhausted budget/i],
     ['children stopped before gate', /no child is live/i],
@@ -36,11 +36,12 @@ describe('opencode-scoped-fix-pipeline playbook', () => {
     ['usd cap enforced', /usdSpent >= \{\{usdCap\}\}/],
     ['head re-checked before merge', /MUST equal the sha in the latest `pass` verdict/],
     ['merge opt-in', /\{\{mergeEnabled\}\}` is `true`/],
+    ['non-true leaves PR open', /not `true`: leave the PR open/],
     ['state written every transition', /EVERY transition/],
     ['claim held by orchestrator only', /Never pass `--claim-issue`/],
     ['claim released on every terminal path', /Every terminal path releases the claim/],
     ['FINDINGS line parsed fail-closed', /missing\/malformed = findings present/],
-    ['no prod actions', /Do not run `prod:update`/],
+    ['no prod actions', /Do not run `prod:update`, restart the server or flip `KOOKR_OPENCODE_ENABLED`/],
   ])('pins: %s', (_label, re) => {
     expect(pb.body).toMatch(re);
   });

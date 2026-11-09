@@ -59,8 +59,8 @@ Write the JSON state file after EVERY transition and read it first on start (res
 ## Stage 0 — Preflight
 
 1. `gh issue view {{issueNumber}} --repo {{repoFullName}} --json state,labels,title,body`: must be open, labelled `opencode-eligible`, NOT labelled `opencode-pipeline-failed`. Otherwise report and exit (no claim).
-2. `kookr doctor` ok and `kookr issue owner {{issueNumber}}` answers (claim registry active); then `kookr issue claim {{issueNumber}} --repo {{repoFullName}}` (task id = you). Claim conflict -> report and exit.
-3. Create the worktree: `git worktree add -b <branch> <wt> origin/<default branch>`. Export `KOOKR_OPENCODE_ISSUE={{issueNumber}}` for the worker spawn.
+2. `kookr doctor` ok and `kookr issue owner {{issueNumber}}` answers (claim registry active); then `kookr issue claim {{issueNumber}} --repo {{repoFullName}}` (task id = you). Claim conflict -> report and exit; any other claim failure (e.g. server unreachable) also exits without proceeding (fail closed).
+3. Create the worktree (on resume, reuse an existing `<wt>`/`<branch>` instead): `git worktree add -b <branch> <wt> origin/<default branch>`. Export `KOOKR_OPENCODE_ISSUE={{issueNumber}}` for the worker spawn.
 
 ## Stage 1 — Work
 

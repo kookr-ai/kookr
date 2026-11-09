@@ -64,7 +64,7 @@ accounting rows after dogfood (n is small: signal only, not a decision).
   issue release`, label `opencode-pipeline-failed`, never merge. Preflight
   refuses relabelled-failed issues until an operator removes the label.
 * Time: each spawn uses `--wait=<seconds>`; total wall cap 2 h; total cap
-  `usd_cap` (default $3) enforced from the state file before each spawn.
+  `usdCap` (default $3) enforced from the state file before each spawn.
 * Stopping = `kookr stop <orchestrator>`. Children are linked by
   `parent-task-id` and the orchestrator stops them by id in its final step.
   Verified gap: the server does **not** cascade-stop children, so a crashed
@@ -102,7 +102,7 @@ via the task API, stored in the state file, posted once as a PR comment table
    never-merge on exhausted rounds, head re-check, mandatory stage 4,
    untrusted-text framing).
 2. **Slice B**: stages 3-4 (fix round, gate review).
-3. **Slice C**: stage 5 behind an explicit playbook parameter `merge=true`.
+3. **Slice C**: stage 5 behind an explicit playbook parameter `mergeEnabled=true`.
 Rollback: delete the playbook; remove labels and release claims via the
 documented cleanup step.
 Proof: the real thing, not a fake: a **scratch GitHub repo** with real `gh`
