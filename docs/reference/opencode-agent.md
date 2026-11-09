@@ -238,12 +238,12 @@ small (about 15 s); a long task that really needs a larger heap may want
 `shelves: [...]` in a profile's frontmatter scopes the notebook content: at
 launch the adapter runs `nb show <shelf>` for each of the profile's shelves
 (session `NB_DIR`, 4 s timeout each, fail-open, at most about 6 KB per shelf and
-16 KB total). A shelf over its cap keeps the highest-scored lessons (about
-65% of the cap) and reserves the rest for the most recently added ones (the
-tail of the score-ordered listing, skipping non-positive scores), and ends with
-a marker naming the omitted count and telling the worker to run `nb show <shelf>`
-for the rest and appends a `## Lessons from your
-shelves` section to the session's `AGENTS.md`. The notebook index that
+16 KB total) and appends the result as a `## Lessons from your shelves` section
+to the session's `AGENTS.md`. A shelf over its cap keeps the highest-scored
+lessons (about 65% of the cap) and reserves the rest for the most recently added
+ones (the tail of the score-ordered listing, skipping non-positive scores), and
+ends with a marker naming the omitted count and telling the worker to run
+`nb show <shelf>` for the rest. The notebook index that
 `nb-inject.sh` injects at SessionStart stays intentionally global (shelf names
 and descriptions only), so a worker can still discover other shelves, but only
 its own shelves' lesson text is preloaded. The profiles also carry a short `kb`

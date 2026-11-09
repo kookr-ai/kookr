@@ -42,7 +42,7 @@ export async function readOpenCodeDbTranscript(dbPath: string, sessionId?: strin
     const rows = db
       .prepare(
         `SELECT m.id AS mid, m.data AS mdata, ${mc.has('time_created') ? 'm.time_created' : '0'} AS mtime, p.data AS pdata
-           FROM message m LEFT JOIN part p ON p.message_id = m.id
+           FROM message m LEFT JOIN part p ON p.message_id = m.id AND CASE WHEN json_valid(p.data) THEN json_extract(p.data, '$.type') END = 'text'
           ${filterSession ? 'WHERE m.session_id = @sid' : ''}
           ORDER BY ${mc.has('time_created') ? 'm.time_created,' : ''} m.id, ${pc.has('time_created') ? 'p.time_created,' : ''} p.id`,
       )
