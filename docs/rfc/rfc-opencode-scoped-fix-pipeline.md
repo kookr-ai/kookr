@@ -40,6 +40,24 @@ Stage 2 is an economy filter and never substitutes for stage 4 (mandatory
 everywhere in v1). Whether stage 2 earns its cost is a signal read from the
 accounting rows after dogfood (n is small: signal only, not a decision).
 
+### 3a. Mechanics fixed in round 2
+
+* **Worktree**: `kookr spawn` has no branch/worktree flag and a profile
+  launch skips the worktree preamble, so the orchestrator creates
+  `git worktree add` for branch `ocpipe/<issue>` and passes `--cwd`. Rounds
+  reuse it only after the previous child is stopped and terminal (no
+  concurrent writers, no double checkout).
+* **`--wait` exits**: 0 = completion-ready/completed; 6 = timeout **or**
+  claim conflict; 4 = failed task **or** API error. On any non-zero exit the
+  orchestrator `kookr stop`s the child, waits for a terminal state, reads the
+  task status to tell failure from API error, and only then proceeds.
+* **Reviewer verdict**: the stage-2 prompt requires a final line
+  `FINDINGS: <n>`; a missing/malformed line counts as findings present.
+  Reviewer runs in a separate disposable checkout of the PR head (REVIEW.md
+  never lands in the PR worktree).
+* **Pause check**: `kookr orchestration status --json` before each spawn;
+  paused = stop cleanly and keep state for resume.
+
 ## 4. Bounds and stopping
 
 * Rounds: max 2 fix rounds. Exhausted with findings -> post summary, `kookr
