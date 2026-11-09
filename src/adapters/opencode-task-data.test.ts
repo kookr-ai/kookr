@@ -10,10 +10,12 @@ import {
   markTaskDir,
   openCodeTaskDir,
   parseDataCap,
+  readGateBase,
   readOpenCodeSessionId,
   removeMarkedTaskDir,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
+  writeGateBase,
 } from './opencode-task-data.js';
 import type { TaskStatus } from '../core/task-status.js';
 
@@ -63,6 +65,16 @@ describe('readOpenCodeSessionId', () => {
     mkdirSync(join(root, 'opencode'), { recursive: true });
     writeFileSync(join(root, 'opencode', 'opencode.db'), 'not sqlite');
     expect(await readOpenCodeSessionId(root)).toBeUndefined();
+  });
+});
+
+describe('gate base', () => {
+  test('round-trips and rejects garbage', async () => {
+    const dir = join(root, 't1');
+    await writeGateBase(dir, 'abc1234def');
+    expect(await readGateBase(dir)).toBe('abc1234def');
+    writeFileSync(join(dir, 'gate-base'), 'not a sha');
+    expect(await readGateBase(dir)).toBeUndefined();
   });
 });
 

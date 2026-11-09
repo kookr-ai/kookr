@@ -1,3 +1,4 @@
+import { OPENCODE_PROFILE_ID_PATTERN } from '../adapters/opencode-profiles.js';
 import { isValidOpenCodeModelId } from '../shared/contracts/agent-types.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -229,6 +230,40 @@ describe('parseArgs', () => {
     expect(parseArgs(['--effort', 'ultra']).effort).toBe('ultra');
     expect(() => parseArgs(['--effort', 'supermax'])).toThrow(UsageError);
     expect(() => parseArgs(['--effort', ''])).toThrow(UsageError);
+  });
+
+  it('parses --profile for opencode only, validating the id charset', () => {
+    expect(parseArgs([]).profile).toBeNull();
+    expect(parseArgs(['-a', 'opencode', '--profile', 'scoped-fix']).profile).toBe('scoped-fix');
+    expect(parseArgs(['-a', 'opencode', '--profile=reviewer']).profile).toBe('reviewer');
+    expect(() => parseArgs(['--profile', 'scoped-fix'])).toThrow(UsageError);
+    expect(() => parseArgs(['-a', 'claude-code', '--profile', 'scoped-fix'])).toThrow(UsageError);
+    for (const bad of ['', 'Scoped', '../x', 'a b', '-x', 'x'.repeat(41)]) {
+      expect(() => parseArgs(['-a', 'opencode', '--profile', bad])).toThrow(UsageError);
+    }
+  });
+
+  it('keeps the --profile id charset in parity with OPENCODE_PROFILE_ID_PATTERN', () => {
+    for (const id of ['a', 'scoped-fix', 'test-auditor', 'a1-b2', 'x'.repeat(40), 'x'.repeat(41), '1a', 'A', 'a_b', 'a.b', '-a', '']) {
+      const cli = (() => { try { parseArgs(['-a', 'opencode', '--profile', id]); return true; } catch { return false; } })();
+      expect(cli, id).toBe(OPENCODE_PROFILE_ID_PATTERN.test(id));
+    }
+  });
+
+  it('postTask sends the profile on the wire only when set', async () => {
+    const bodies: any[] = [];
+    const { server, baseUrl } = await startFakeApi((_req, bodyText) => {
+      bodies.push(JSON.parse(bodyText));
+      return { status: 201, body: JSON.stringify({ id: 't' }) };
+    });
+    try {
+      await postTask({ baseUrl, prompt: 'p', cwd: '/tmp', agent: 'opencode' as any, profile: 'scoped-fix', criteria: null });
+      await postTask({ baseUrl, prompt: 'p', cwd: '/tmp', agent: 'opencode' as any, criteria: null });
+      expect(bodies[0].profile).toBe('scoped-fix');
+      expect(bodies[1]).not.toHaveProperty('profile');
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it('parses --model and --model=<id>, defaulting to null (#1518)', () => {

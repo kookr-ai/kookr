@@ -92,6 +92,13 @@ export interface AdapterLaunchOptions {
    */
   model?: string;
   /**
+   * opencode worker profile id (`plugin/opencode-profiles/<id>.md`). Only the opencode adapter
+   * reads it; other adapters ignore it. Falls back to `task.metadata.opencodeProfile`.
+   */
+  profile?: string;
+  /** opencode: issue number for the deliverable gate; falls back to `task.metadata.opencodeIssue`. */
+  issue?: number;
+  /**
    * Per-phase launch instrumentation callback (issue #1589). The launch service
    * injects this so the adapter can mark the boundaries that live INSIDE
    * `launch()` — `session-create` (context build + `createSession`),

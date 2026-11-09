@@ -9,9 +9,23 @@ import { dirname, join, resolve } from 'node:path';
 import { buildStopNudgeCommand } from '../core/hook-writer-paths.js';
 import type { ClaudeHooksConfig } from './opencode-instrumentation/kookr-plugin-source.js';
 
+/** What a profile must have produced before its worker may stop (enforced by `bin/kookr-opencode-gate.js`). */
+export type OpenCodeDeliverableSpec =
+  | { kind: 'none' }
+  | { kind: 'commit-and-pr-body' }
+  | { kind: 'file'; name: string };
+
 export interface OpenCodeProfile {
-  /** Agent Notebook shelves whose lessons are appended to the session's AGENTS.md (read with the session's NB_DIR). */
+  /** Profile id (set for profiles loaded from `plugin/opencode-profiles/`). */
+  id?: string;
+  description?: string;
+  /** Tool-permission posture requested by the profile. */
+  permission?: 'allow' | 'ask';
+  deliverable?: OpenCodeDeliverableSpec;
+  /** Agent Notebook shelves the profile recommends (informational; the instructions tell the worker to use `nb`). */
   shelves?: string[];
+  /** Optional model pin (`provider/model` or bare model id) when the task does not pin one. */
+  model?: string;
   /** Written to the session's AGENTS.md. */
   instructions?: string;
   claudeHooks?: ClaudeHooksConfig;
@@ -40,6 +54,16 @@ export interface DefaultKookrClaudeHooksOptions {
   /** Directory holding kookr-stop-nudge.js. Omitted/missing => nudge skipped. */
   binDir?: string;
   nodePath?: string;
+  /** Profile deliverable. Adds the gate as the FIRST Stop command (before retrospective and nudge). */
+  deliverable?: OpenCodeDeliverableSpec;
+}
+
+/** Gate (and its retries) may run a PR-body lint, so it gets a generous hook timeout. */
+const GATE_TIMEOUT_SEC = 120;
+
+export function gateKindArg(d: OpenCodeDeliverableSpec): string | undefined {
+  if (d.kind === 'none') return undefined;
+  return d.kind === 'file' ? `file:${d.name}` : d.kind;
 }
 
 const shq = (v: string): string => `'${v.replace(/'/g, `'\\''`)}'`;
@@ -50,7 +74,17 @@ export function defaultKookrClaudeHooks(opts: DefaultKookrClaudeHooksOptions = {
   const env: Record<string, string> = {};
   const stop: ReturnType<typeof cmd>[] = [];
 
-  // Order: notebook retrospective, then the completion nudge. A
+  const gateKind = opts.deliverable ? gateKindArg(opts.deliverable) : undefined;
+  if (gateKind) {
+    const gate = opts.binDir ? join(opts.binDir, 'kookr-opencode-gate.js') : undefined;
+    if (gate && existsSync(gate)) {
+      stop.push(cmd(`${shq(opts.nodePath ?? process.execPath)} ${shq(gate)} --kind ${shq(gateKind)}`, GATE_TIMEOUT_SEC));
+    } else {
+      console.warn(`[opencode-adapter] deliverable gate skipped: ${gate ?? 'no bin dir'} missing`);
+    }
+  }
+
+  // Order: deliverable gate, then the notebook retrospective, then the completion nudge. A
   // `completion_ready` signal is dropped when the turn resumes, so the signal must be the LAST
   // thing the worker does: a retrospective re-prompt arriving after it would silently clear it.
   const dir = opts.pluginHooksDir;

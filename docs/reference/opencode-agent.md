@@ -43,7 +43,10 @@ A per-task model pin is routed to this single configured provider: use `<model i
 | `KOOKR_OPENCODE_RAM_LIMIT_MB` | TUI heap cap (`BUN_JSC_forceRAMSize`); see [Boot time](#boot-time-and-memory). |
 | `KOOKR_OPENCODE_BIN` | Binary path/command override. |
 | `KOOKR_OPENCODE_ALLOW_ANY_VERSION` | Skip the pinned-version check (unsupported). |
+| `KOOKR_OPENCODE_PROFILES_DIR` | Directory of profile files (default `plugin/opencode-profiles`). |
 | `KOOKR_OPENCODE_HOOKS_DIR`, `KOOKR_OPENCODE_BIN_DIR` | Override where the nb hook scripts / bin scripts are found. |
+| `KOOKR_OPENCODE_ISSUE` | Issue number `N`; the `scoped-fix` gate then requires `Closes #N` in the commit message. |
+| `KOOKR_PR_LINT_CMD` | PR-body lint command run by the gate; `{pr_body}` is replaced by the quoted `PR_BODY.md` path. |
 | `KOOKR_OPENCODE_DATA_DIR`, `KOOKR_OPENCODE_DATA_MAX_AGE_DAYS`, `KOOKR_OPENCODE_DATA_MAX_MB`, `KOOKR_OPENCODE_DATA_DONE_TTL_HOURS` | Persistent per-task data root and its retention caps; see [Resume](#resume). |
 | `KOOKR_OPENCODE_PLUGIN_DEBUG` | File to append one JSON line per emitted hook. |
 
@@ -51,14 +54,61 @@ A per-task model pin is routed to this single configured provider: use `<model i
 
 ```sh
 kookr spawn --agent opencode "Fix #123: ..."
+kookr spawn --agent opencode --profile scoped-fix "Fix #123: ..."
 kookr spawn --agent opencode --model deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017 "..."
 ```
 
-`--agent opencode` is accepted by `kookr spawn`, and `agentType: "opencode"` by
-`POST /api/tasks`. `--model` takes a `provider/model` id for opencode (the
-fixed model allowlists of the other agents do not apply).
+`--profile` requires `--agent opencode`. The same field is `profile` on
+`POST /api/tasks`; an unknown id or a non-opencode agent is a `400` with code
+`invalid_profile`. The chosen id is stored on the task as
+`metadata.opencodeProfile`, so queued promotion and relaunch paths launch with
+the same profile.
 
-## Hooks and memory
+`POST /api/tasks` also takes `issue` (a positive integer; `400 invalid_issue`
+otherwise, and `400 invalid_profile` for a non-opencode agent). It is stored as `metadata.opencodeIssue` and
+exported to the worker's hooks as `KOOKR_OPENCODE_ISSUE`, so the deliverable
+gate requires `Closes #<issue>` per task (it wins over a server-wide
+`KOOKR_OPENCODE_ISSUE`). Profile and issue are part of the launch identity: the
+same prompt with a different profile or issue is a different task, not a
+duplicate.
+
+A launch with a `profile` does not get the generic Kookr worktree/delivery
+preamble ("create a fresh worktree, push, open and merge a PR"): the caller
+prepares the checkout, and the profile plus its deliverable gate define
+delivery (a local commit, never a push).
+
+## Profiles
+
+A profile is a Markdown file in `plugin/opencode-profiles/`: a small
+frontmatter block, then the worker instructions (written to the session's
+`AGENTS.md`).
+
+```markdown
+---
+id: scoped-fix
+description: One-line summary.
+permission: allow            # allow | ask
+deliverable: commit-and-pr-body   # none | commit-and-pr-body | file:<NAME>
+shelves: [patch-author]      # Agent Notebook shelves the worker should open
+model: provider/model        # optional pin (a per-task --model wins)
+---
+Instructions...
+```
+
+Only single-line `key: value` entries and one-line `[a, b]` lists are
+supported; unknown keys, a bad id, or an empty body fail loudly with the file
+name in the message.
+
+| Profile | Deliverable | Use |
+| --- | --- | --- |
+| `scoped-fix` | one commit + `PR_BODY.md` | Implement one small, well-specified fix with a regression test. |
+| `reviewer` | `REVIEW.md` | Read-only review of a diff or merged PR. |
+| `test-auditor` | `AUDIT.md` | Find the most valuable untested behaviours in one module and add passing tests. |
+
+Without a profile the worker still gets the default hook set (below) but no
+deliverable gate and no extra instructions.
+
+## Hooks, gates and memory
 
 The generated opencode plugin runs Claude-shaped hooks with Claude semantics
 (`SessionStart` stdout becomes context; `Stop` exit 2 re-prompts the worker,
@@ -66,9 +116,17 @@ at most 4 times):
 
 1. `SessionStart`: `nb-inject.sh` injects the Agent Notebook index.
 2. `Stop`, in this order:
-   1. `nb-retro.sh`: the one-time notebook retrospective (vote, prune, add at
+   1. **Deliverable gate** (`bin/kookr-opencode-gate.js`, only when the profile
+      declares a deliverable). `file:X` requires `X` to exist and be non-empty.
+      `commit-and-pr-body` requires no uncommitted tracked changes, at least
+      one commit ahead of the launch HEAD (`KOOKR_OPENCODE_GATE_BASE`, injected
+      by the adapter), `Closes #N` when `KOOKR_OPENCODE_ISSUE` is set,
+      `PR_BODY.md`, and a passing PR lint when one is configured. A failure
+      exits 2 and tells the worker exactly what is missing. After 3 blocks per
+      session the gate lets the worker stop, so it can never trap it.
+   2. `nb-retro.sh`: the one-time notebook retrospective (vote, prune, add at
       most one lesson).
-   2. `kookr-stop-nudge.js`: the once-per-task completion-ready reminder (its
+   3. `kookr-stop-nudge.js`: the once-per-task completion-ready reminder (its
       45 s task-age gate is disabled for opencode workers, which routinely
       finish faster than that).
 
@@ -102,10 +160,12 @@ conversation instead of starting over.
   looks the real id up in the database (preferring `metadata.opencodeSessionId`
   while that row exists).
 - **Relaunch.** A resumed launch runs `opencode --session <ses_id> <cwd>`
-  with a freshly composed session directory (plugin, hooks env,
+  with a freshly composed session directory (plugin, hooks env, profile
   `AGENTS.md`, shelf lessons) pointing at the same data. Like the Claude
   adapter, it delivers no initial prompt: the conversation already contains it.
-  Send the next instruction with `POST /api/agents/:id/message`.
+  Send the next instruction with `POST /api/agents/:id/message`. The
+  deliverable gate keeps counting commits from the HEAD recorded at the first
+  launch (stored beside the database), not the current HEAD.
 - **Fallback.** If the task's database or session cannot be found (for example
   the data was already cleaned up, or a non-resume relaunch) the adapter logs a
   warning and launches fresh with the prompt, discarding stale data of that
@@ -146,21 +206,23 @@ Measured live (3 runs each, launch to prompt acknowledged): unseeded median
 
 RAM cap: `KOOKR_OPENCODE_RAM_LIMIT_MB` (default 512, `0` = off) sets
 `BUN_JSC_forceRAMSize` for the TUI. On the fixture fix-a-failing-test task with
-a scoped-fix task, peak process-tree RSS was 556/599 MB with the cap vs
+the `scoped-fix` profile, peak process-tree RSS was 556/599 MB with the cap vs
 798/798 MB without it, with the task succeeding in all four runs. The task is
 small (about 15 s); a long task that really needs a larger heap may want
 `0` or a higher value.
 
-## Shelf memory
+## Profile memory
 
-When the adapter is configured with notebook shelves (`OpenCodeAdapterOptions.profile.shelves`),
-the adapter runs `nb show <shelf>` for each shelf at launch (session `NB_DIR`,
-4 s timeout each, fail-open, at most about 6 KB per shelf and 16 KB total,
-truncated with a marker) and appends a `## Lessons from your shelves` section
-to the session's `AGENTS.md`. The notebook index that `nb-inject.sh` injects at
-SessionStart stays intentionally global (shelf names and descriptions only), so
-a worker can still discover other shelves, but only the configured shelves'
-lesson text is preloaded.
+`shelves: [...]` in a profile's frontmatter scopes the notebook content: at
+launch the adapter runs `nb show <shelf>` for each of the profile's shelves
+(session `NB_DIR`, 4 s timeout each, fail-open, at most about 6 KB per shelf and
+16 KB total, truncated with a marker) and appends a `## Lessons from your
+shelves` section to the session's `AGENTS.md`. The notebook index that
+`nb-inject.sh` injects at SessionStart stays intentionally global (shelf names
+and descriptions only), so a worker can still discover other shelves, but only
+its own shelves' lesson text is preloaded. The profiles also carry a short `kb`
+usage block (one focused `kb search "<question>" --kb=<name>`, tolerate
+failure: `kb search` needs an embedding provider and an initialised index).
 
 ## Limits
 
@@ -170,4 +232,5 @@ lesson text is preloaded.
   accordingly.
 - Resume needs the task's persistent data (see [Resume](#resume)); once it has been swept, a reopen starts fresh.
 - One pinned opencode release (1.19.5); other versions are refused.
-- `permission: ask` stalls an unattended worker; the default is `allow`.
+- Profile `permission: ask` stalls an unattended worker; the shipped profiles
+  all use `allow`.

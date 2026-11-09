@@ -96,6 +96,9 @@ function isValidOpenCodeModelId(model) {
     && !model.includes('..')
     && OPENCODE_MODEL_ID_PATTERN.test(model);
 }
+// opencode worker profile ids (plugin/opencode-profiles/<id>.md). Keep in sync with
+// OPENCODE_PROFILE_ID_PATTERN in src/adapters/opencode-profiles.ts (parity-tested).
+const OPENCODE_PROFILE_ID_PATTERN = /^[a-z][a-z0-9-]{0,39}$/;
 const MODEL_TIERS = new Set(['small']);
 function isKnownModelId(model) {
   if (typeof model !== 'string' || model.length === 0) return false;
@@ -140,10 +143,10 @@ function isTruthyEnv(value) {
  * opt-in convenience for stable-prompt spawns, not a general orphan cure for
  * entropy-prompt orchestrators.
  *
- * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null, modelTier?: string|null, playbook?: string|null, playbookScope?: string|null }} input
+ * @param {{ prompt: string, cwd: string, criteria?: string|null, agent?: string|null, effort?: string|null, model?: string|null, modelTier?: string|null, profile?: string|null, playbook?: string|null, playbookScope?: string|null }} input
  * @returns {string} an `auto-<16-hex>` key, always ≤ MAX_IDEMPOTENCY_KEY_LENGTH.
  */
-function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, playbook = null, playbookScope = null }) {
+function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, effort = null, model = null, modelTier = null, profile = null, playbook = null, playbookScope = null }) {
   // JSON.stringify gives unambiguous, printable field separation (no control
   // chars in the source) so distinct field splits can't collide.
   const hasModelPolicy = effort !== null || model !== null || modelTier !== null;
@@ -155,6 +158,7 @@ function deriveAutoIdempotencyKey({ prompt, cwd, criteria = null, agent = null, 
     // Preserve the pre-model-tier identity when no policy is supplied. A
     // timeout retry that crosses a deploy must still find its ledger entry.
     ...(hasModelPolicy ? ['model-policy', effort ?? '', model ?? '', modelTier ?? ''] : []),
+    ...(profile ? ['profile', profile] : []),
     ...(playbook ? [playbook, playbookScope ?? 'project'] : []),
   ]);
   // 64-bit digest — collision-negligible at any realistic spawn rate.
@@ -207,6 +211,9 @@ Options:
                            portable model intent). opencode (scoped worker,
                            never auto-selected) takes a provider/model id,
                            e.g. deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017.
+      --profile <id>       opencode worker profile (scoped-fix, reviewer,
+                           test-auditor); requires --agent opencode. The
+                           server validates the id.
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
                            Codex requires the Kookr fork; stock/older binaries
@@ -327,6 +334,7 @@ function parseArgs(argv) {
     effort: null,
     model: null,
     modelTier: null,
+    profile: null,
     criteria: null,
     dedupe: 'warn',
     idempotencyKey: null,
@@ -377,6 +385,10 @@ function parseArgs(argv) {
       out.modelTier = eat();
     } else if (tok.startsWith('--model-tier=')) {
       out.modelTier = tok.slice('--model-tier='.length);
+    } else if (tok === '--profile') {
+      out.profile = eat();
+    } else if (tok.startsWith('--profile=')) {
+      out.profile = tok.slice('--profile='.length);
     } else if (tok === '--criteria') {
       out.criteria = eat();
     } else if (tok === '--dedupe') {
@@ -476,6 +488,16 @@ function parseArgs(argv) {
       `--effort for gpt-6-astra must be one of: ${[...GPT_6_ASTRA_EFFORT_LEVELS].join(', ')} ` +
       `(got: ${out.effort})`,
     );
+  }
+  if (out.profile !== null) {
+    // Charset mirror of OPENCODE_PROFILE_ID_PATTERN (src/adapters/opencode-profiles.ts); the
+    // server validates that the profile actually exists.
+    if (!OPENCODE_PROFILE_ID_PATTERN.test(out.profile)) {
+      throw new UsageError(`--profile must match ${OPENCODE_PROFILE_ID_PATTERN} (got: ${out.profile})`);
+    }
+    if (out.agent !== 'opencode') {
+      throw new UsageError('--profile is only valid with --agent opencode');
+    }
   }
   if (out.modelTier !== null && !MODEL_TIERS.has(out.modelTier)) {
     throw new UsageError(`--model-tier must be "small" (got: ${out.modelTier})`);
@@ -1004,6 +1026,7 @@ function buildTaskPostBody({
   effort = null,
   model = null,
   modelTier = null,
+  profile = null,
   criteria = null,
   disableDedup = false,
   metadataIntent = null,
@@ -1028,6 +1051,7 @@ function buildTaskPostBody({
   if (effort) body.effort = effort;
   if (model) body.model = model;
   if (modelTier) body.modelTier = modelTier;
+  if (profile) body.profile = profile;
   if (disableDedup) body.disableDedup = true;
   if (metadataIntent) body.metadata = { intent: metadataIntent };
   if (parentTaskId) body.parentTaskId = parentTaskId;
@@ -1224,7 +1248,7 @@ function formatDryRunPreview({ baseUrl, cwdAbs, promptSource, body, matchingTask
   return lines.join('\n');
 }
 
-async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
+async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = null, modelTier = null, profile = null, criteria, disableDedup = false, metadataIntent = null, parentTaskId = null, autoCloseOnSignal = null, unattended = false, idempotencyKey = null, claimIssue = null, claimRepo = null, playbook = null, playbookScope = null }) {
   const body = buildTaskPostBody({
     prompt,
     cwd,
@@ -1232,6 +1256,7 @@ async function postTask({ baseUrl, prompt, cwd, agent, effort = null, model = nu
     effort,
     model,
     modelTier,
+    profile,
     criteria,
     disableDedup,
     metadataIntent,
@@ -2196,6 +2221,7 @@ async function main({
       effort: args.effort,
       model: args.model,
       modelTier: args.modelTier,
+      profile: args.profile,
       playbook: args.playbook,
       playbookScope: args.playbookScope ?? (args.playbook ? 'project' : null),
     });
@@ -2228,6 +2254,7 @@ async function main({
       effort: args.effort,
       model: args.model,
       modelTier: args.modelTier,
+      profile: args.profile,
       criteria: args.criteria,
       disableDedup: args.dedupe === 'skip',
       metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -2266,6 +2293,7 @@ async function main({
         effort: args.effort,
         model: args.model,
         modelTier: args.modelTier,
+        profile: args.profile,
         criteria: args.criteria,
         disableDedup: args.dedupe === 'skip',
         metadataIntent: args.dedupe === 'skip' ? 'keep_as_duplicate' : null,
@@ -2464,6 +2492,7 @@ async function main({
           effort: args.effort,
           model: args.model,
           modelTier: args.modelTier,
+          profile: args.profile,
           criteria: args.criteria,
           disableDedup: true,
           metadataIntent: 'keep_as_duplicate',

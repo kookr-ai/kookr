@@ -8,10 +8,12 @@
  * Resume: the conversation DB lives in a per-task persistent data dir (opencode-task-data.ts) and a
  * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
 import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
 import {
   asTerminalInputWriterPort,
@@ -62,6 +64,7 @@ import {
   resolveDefaultPluginHooksDir,
   type OpenCodeProfile,
 } from './opencode-kookr-hooks.js';
+import { resolveOpenCodeProfile } from './opencode-profiles.js';
 import { buildShelfLessonsSection, type ShelfShowRunner } from './opencode-shelf-memory.js';
 import { prepareOpenCodeSeed, resolveOpenCodeSeedDir } from './opencode-seed.js';
 import { preflightOpenCode, resolveOpenCodeBin } from './opencode-preflight.js';
@@ -82,10 +85,12 @@ import {
   openCodeTaskDir,
   removeMarkedTaskDir,
   parseDataCap,
+  readGateBase,
   readOpenCodeSessionId,
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
   touchTaskDir,
+  writeGateBase,
 } from './opencode-task-data.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { TerminalBackend } from './terminal-backend.js';
@@ -141,7 +146,9 @@ export interface OpenCodeAdapterOptions {
    * Explicit `claudeHooks` here replace the generated default hook set.
    */
   profile?: OpenCodeProfile;
-  /** Directory holding the bin scripts (the stop nudge). Defaults to `<repo>/bin`. */
+  /** Directory of `*.md` worker profiles. Defaults to `<repo>/plugin/opencode-profiles`. */
+  profilesDir?: string;
+  /** Directory holding the bin scripts (stop nudge, deliverable gate). Defaults to `<repo>/bin`. */
   binDir?: string;
   /** Directory holding nb-inject.sh / nb-retro.sh. Defaults to `<repo>/plugin/hooks`. */
   pluginHooksDir?: string;
@@ -184,6 +191,8 @@ export interface OpenCodeAdapterOptions {
   /** Generate the default Kookr hook set when no explicit `claudeHooks` is configured. Default true. */
   defaultHooks?: boolean;
 }
+
+const execFileAsync = promisify(execFile);
 
 /** Split a per-task model pin: an optional leading `<providerId>/` is stripped, the rest is the model id. */
 function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenCodeModelConfig {
@@ -234,6 +243,7 @@ export class OpenCodeAdapter implements AgentAdapter {
   private promptReadyTimeoutMs: number;
   private promptSubmitConfirmTimeoutMs: number;
   private profile?: OpenCodeProfile;
+  private profilesDir?: string;
   private binDir?: string;
   private pluginHooksDir?: string;
   private defaultHooks: boolean;
@@ -267,6 +277,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       apiKeyEnv: options?.apiKeyEnv ?? DEFAULT_OPENCODE_API_KEY_ENV,
     };
     this.profile = options?.profile;
+    this.profilesDir = options?.profilesDir;
     this.binDir = options?.binDir;
     this.pluginHooksDir = options?.pluginHooksDir;
     this.defaultHooks = options?.defaultHooks ?? true;
@@ -434,14 +445,18 @@ export class OpenCodeAdapter implements AgentAdapter {
       serverPort: this.serverPort,
       writerPath: resolveHookWriterPath(),
     });
-    // Per-call bypass wins, then the constructor default.
+    // Profile: explicit per-call id, else the id persisted on the task record (covers queued
+    // promotion / relaunch paths that do not re-thread launch options). Unknown id => typed error.
+    const profileId = opts?.profile ?? this.taskStore.getTask(taskId)?.metadata?.opencodeProfile;
+    const loaded = profileId ? resolveOpenCodeProfile(profileId, this.profilesDir) : undefined;
+    // Per-call bypass wins, then the profile's posture, then the constructor default.
     const permission = opts?.bypassPermissions !== undefined
       ? (opts.bypassPermissions ? 'allow' : 'ask')
-      : this.permission;
-    let instructions = this.profile?.instructions;
-    if (this.profile?.shelves?.length) {
-      // Only the configured shelves, read with the session's NB_DIR (fail-open).
-      const lessons = await buildShelfLessonsSection(this.profile.shelves, {
+      : (loaded?.permission ?? this.permission);
+    let instructions = loaded?.instructions ?? this.profile?.instructions;
+    if (loaded?.shelves?.length) {
+      // Profile-scoped memory: only THIS profile's shelves, read with the session's NB_DIR (fail-open).
+      const lessons = await buildShelfLessonsSection(loaded.shelves, {
         env: { ...this.env, ...(opts?.extraEnv ?? {}) },
         show: this.shelfShow,
         warn: (m) => console.warn(m),
@@ -449,15 +464,21 @@ export class OpenCodeAdapter implements AgentAdapter {
       if (lessons) instructions = `${instructions ?? ''}${instructions?.endsWith('\n') ? '\n' : '\n\n'}${lessons}`;
     }
     const seedDir = this.seed ? await this.ensureSeed() : undefined;
+    const issue = opts?.issue ?? this.taskStore.getTask(taskId)?.metadata?.opencodeIssue;
     const hookEnv = {
       KOOKR_TASK_ID: taskId,
       ...(this.serverPort ? { KOOKR_PORT: String(this.serverPort) } : {}),
+      KOOKR_SESSION_DIR: sessionDir,
+      ...(await this.gateBaseEnv(cwd, taskDir, resuming)),
+      ...passthroughEnv(this.env, opts?.extraEnv),
+      ...(issue !== undefined ? { KOOKR_OPENCODE_ISSUE: String(issue) } : {}),
       ...(this.profile?.hookEnv ?? {}),
     };
     const claudeHooks = this.profile?.claudeHooks ?? (this.defaultHooks
       ? defaultKookrClaudeHooks({
           pluginHooksDir: this.pluginHooksDir ?? resolveDefaultPluginHooksDir(this.env),
           binDir: this.binDir ?? resolveDefaultBinDir(this.env),
+          deliverable: loaded?.deliverable,
         })
       : undefined);
     const composed = await this.composeSession({
@@ -466,7 +487,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       cwd,
       dataHome,
       hookCommand,
-      model: resolveModelConfig(this.model, opts?.model),
+      model: resolveModelConfig(this.model, opts?.model ?? loaded?.model),
       permission,
       ...(seedDir ? { seedDir } : {}),
       ramLimitMb: this.ramLimitMb,
@@ -492,6 +513,26 @@ export class OpenCodeAdapter implements AgentAdapter {
       warn: (m) => console.warn(m),
     }).catch(() => undefined);
     return this.seedPromise;
+  }
+
+  /**
+   * HEAD at launch: the deliverable gate counts commits ahead of it. A resumed launch reuses the base
+   * recorded by the first launch (HEAD has moved by then). Best-effort (non-git cwd => none).
+   */
+  private async gateBaseEnv(cwd: string, taskDir: string, resuming: boolean): Promise<Record<string, string>> {
+    if (resuming) {
+      const saved = await readGateBase(taskDir);
+      if (saved) return { KOOKR_OPENCODE_GATE_BASE: saved };
+    }
+    try {
+      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000 });
+      const sha = stdout.trim();
+      if (!/^[0-9a-f]{7,64}$/.test(sha)) return {};
+      await writeGateBase(taskDir, sha).catch(() => { /* best-effort */ });
+      return { KOOKR_OPENCODE_GATE_BASE: sha };
+    } catch {
+      return {};
+    }
   }
 
   /** The opencode session id to continue for `taskId`, or undefined (with a warning) => launch fresh. */
@@ -863,11 +904,23 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 }
 
+/** Operator/caller env that the hook scripts read (deliverable gate inputs). */
 /** `KOOKR_OPENCODE_RAM_LIMIT_MB`: unset => 512, 0 => off, invalid => 512. */
 export function parseRamLimitMb(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_OPENCODE_RAM_LIMIT_MB;
   const n = Number(raw);
   return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_OPENCODE_RAM_LIMIT_MB;
+}
+
+function passthroughEnv(...sources: Array<Record<string, string | undefined> | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const src of sources) {
+    for (const key of ['KOOKR_OPENCODE_ISSUE', 'KOOKR_PR_LINT_CMD']) {
+      const v = src?.[key];
+      if (v) out[key] = v;
+    }
+  }
+  return out;
 }
 
 function describeParseError(err: unknown): string {

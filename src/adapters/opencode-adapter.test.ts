@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -92,7 +93,7 @@ describe('OpenCodeAdapter', () => {
     expect(plugin).toContain('"NB_DIR":"/tmp/nb"');
   });
 
-  describe('boot-time seed, RAM cap and shelf memory', () => {
+  describe('boot-time seed, RAM cap and profile memory', () => {
     const envOf = (id: string) => backend.sessions.get(id)!.spec.env!;
 
     test('RAM cap defaults to 512 MB, env/option override, 0 disables', async () => {
@@ -135,42 +136,88 @@ describe('OpenCodeAdapter', () => {
       expect(existsSync(join(envOf(f.id).OPENCODE_CONFIG_DIR!, 'node_modules'))).toBe(false);
     });
 
-    test('configured shelves are appended to AGENTS.md; only those shelves are read, with the session NB_DIR', async () => {
-      const seen: Array<[string, string | undefined]> = [];
-      const shelfShow = async (shelf: string, env: NodeJS.ProcessEnv) => { seen.push([shelf, env.NB_DIR]); return shelf === 'shelf-a' ? 'lesson MARK-A' : 'lesson MARK-B'; };
-      const { id } = await launch(
-        makeAdapter({ profile: { instructions: 'A instructions.\n', shelves: ['shelf-a'] }, shelfShow }),
-        { extraEnv: { NB_DIR: '/tmp/nbx' } },
-      );
-      const agents = readFileSync(join(envOf(id).OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8');
-      expect(agents).toContain('A instructions.');
-      expect(agents).toContain('## Lessons from your shelves');
-      expect(agents).toContain('MARK-A');
-      expect(agents).not.toContain('MARK-B');
-      expect(seen).toEqual([['shelf-a', '/tmp/nbx']]);
+    test('profile shelves are appended to AGENTS.md; only the profile\'s own shelves are read, with the session NB_DIR', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'oc-prof-'));
+      try {
+        writeFileSync(join(dir, 'a.md'), '---\nid: pa\ndescription: d\npermission: allow\ndeliverable: none\nshelves: [shelf-a]\n---\nA instructions.\n');
+        const seen: Array<[string, string | undefined]> = [];
+        const shelfShow = async (shelf: string, env: NodeJS.ProcessEnv) => { seen.push([shelf, env.NB_DIR]); return shelf === 'shelf-a' ? 'lesson MARK-A' : 'lesson MARK-B'; };
+        const { id } = await launch(makeAdapter({ profilesDir: dir, shelfShow }), { profile: 'pa', extraEnv: { NB_DIR: '/tmp/nbx' } });
+        const agents = readFileSync(join(envOf(id).OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8');
+        expect(agents).toContain('A instructions.');
+        expect(agents).toContain('## Lessons from your shelves');
+        expect(agents).toContain('MARK-A');
+        expect(agents).not.toContain('MARK-B');
+        expect(seen).toEqual([['shelf-a', '/tmp/nbx']]);
+      } finally { rmSync(dir, { recursive: true, force: true }); }
     });
 
     test('a throwing shelf read never blocks the launch', async () => {
-      const { id } = await launch(makeAdapter({ profile: { instructions: 'x', shelves: ['s'] }, shelfShow: async () => { throw new Error('nb gone'); } }));
+      const { id } = await launch(makeAdapter({ shelfShow: async () => { throw new Error('nb gone'); } }), { profile: 'reviewer' });
       expect(readFileSync(join(envOf(id).OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8')).not.toContain('Lessons from your shelves');
     });
   });
 
-  describe('default Kookr hooks', () => {
+  describe('worker profiles', () => {
     const pluginOf = (id: string) =>
       readFileSync(join(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf-8');
+    const agentsOf = (id: string) =>
+      readFileSync(join(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8');
 
-    test('the hook env carries the task id and port', async () => {
-      const { id } = await launch(makeAdapter({ serverPort: 4801 }));
+    test('opts.profile loads instructions and puts the deliverable gate first in the Stop hooks', async () => {
+      const adapter = makeAdapter({ serverPort: 4801 });
+      const { id } = await launch(adapter, { profile: 'reviewer' });
+      expect(agentsOf(id)).toContain('You are a code reviewer');
       const plugin = pluginOf(id);
+      expect(plugin).toContain('kookr-opencode-gate.js');
+      expect(plugin).toContain('file:REVIEW.md');
+      expect(plugin.indexOf('kookr-opencode-gate.js')).toBeLessThan(plugin.indexOf('nb-retro.sh'));
       expect(plugin).toContain('"KOOKR_PORT":"4801"');
+      expect(plugin).toContain('"KOOKR_SESSION_DIR"');
     });
 
-    test('the default hooks (nb-inject, nudge, nb-retro) are wired', async () => {
+    test('falls back to the profile persisted on the task record, and the profile supplies the model', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'oc-prof-'));
+      try {
+        writeFileSync(join(dir, 'p.md'), '---\nid: pinned\ndescription: d\npermission: ask\ndeliverable: none\nmodel: deepinfra/x/Pinned\n---\nPinned instructions.\n');
+        const adapter = makeAdapter({ profilesDir: dir });
+        const task = taskStore.createTask({ prompt: 'do it', cwd: '/workspace', metadata: { opencodeProfile: 'pinned' } });
+        const id = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1' });
+        const env = backend.sessions.get(id)!.spec.env!;
+        expect(agentsOf(id)).toBe('Pinned instructions.\n');
+        const config = JSON.parse(readFileSync(env.OPENCODE_CONFIG!, 'utf-8'));
+        expect(config.model).toBe('deepinfra/x/Pinned');
+        expect(config.permission.bash).toBe('ask');
+        expect(pluginOf(id)).not.toContain('kookr-opencode-gate.js');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    test('the task issue (opts or persisted metadata) becomes KOOKR_OPENCODE_ISSUE for the gate, beating operator env', async () => {
+      const adapter = makeAdapter({ env: { KOOKR_OPENCODE_ISSUE: '99' } });
+      const a = await launch(adapter, { profile: 'scoped-fix', issue: 7 });
+      expect(pluginOf(a.id)).toContain('"KOOKR_OPENCODE_ISSUE":"7"');
+      expect(pluginOf(a.id)).not.toContain('"KOOKR_OPENCODE_ISSUE":"99"');
+      const task = taskStore.createTask({ prompt: 'do it', cwd: '/workspace', metadata: { opencodeProfile: 'scoped-fix', opencodeIssue: 12 } });
+      const id = await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      expect(pluginOf(id)).toContain('"KOOKR_OPENCODE_ISSUE":"12"');
+    });
+
+    test('an unknown profile fails the launch cleanly', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1', profile: 'nope' }))
+        .rejects.toThrow(/Unknown opencode profile "nope"/);
+      expect(backend.sessions.has('kookr-oc1')).toBe(false);
+    });
+
+    test('without a profile the default hooks (nb-inject, nudge, nb-retro) are wired and no gate', async () => {
       const { id } = await launch(makeAdapter());
       const plugin = pluginOf(id);
       expect(plugin).toContain('nb-inject.sh');
       expect(plugin).toContain('nb-retro.sh');
+      expect(plugin).not.toContain('kookr-opencode-gate.js');
       expect(existsSync(join(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG_DIR!, 'AGENTS.md'))).toBe(false);
     });
 
@@ -352,6 +399,30 @@ describe('OpenCodeAdapter', () => {
       writeFileSync(join(foreign, 'precious.txt'), 'keep me');
       await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc9' })).rejects.toThrow('not created by Kookr');
       expect(readFileSync(join(foreign, 'precious.txt'), 'utf8')).toBe('keep me');
+    });
+
+    test('a resumed launch reuses the first launch gate base even after HEAD moved', async () => {
+      const repo = mkdtempSync(join(tmpdir(), 'oc-gate-repo-'));
+      try {
+        const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', ...a], { encoding: 'utf8' });
+        git('init', '-q', '-b', 'main');
+        git('commit', '-q', '--allow-empty', '-m', 'one');
+        const base = git('rev-parse', 'HEAD').trim();
+        const adapter = makeAdapter();
+        const task = taskStore.createTask('do it', repo);
+        const id = await adapter.launch(task.id, 'do it', repo, undefined, { tmuxName: 'kookr-oc1' });
+        stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+        expect(backend.sessions.get(id)!.spec.env!.KOOKR_OPENCODE_GATE_BASE).toBeUndefined(); // env lives in the plugin
+        const pluginOf = (i: string) => readFileSync(join(backend.sessions.get(i)!.spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8');
+        expect(pluginOf(id)).toContain(base);
+        await adapter.stop(id);
+        git('commit', '-q', '--allow-empty', '-m', 'two');
+        const id2 = await adapter.launch(task.id, 'do it', repo, { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' });
+        expect(pluginOf(id2)).toContain(base);
+        expect(pluginOf(id2)).not.toContain(git('rev-parse', 'HEAD').trim());
+      } finally {
+        rmSync(repo, { recursive: true, force: true });
+      }
     });
 
     test('a failed fresh launch removes its data dir; a failed resume keeps it', async () => {
