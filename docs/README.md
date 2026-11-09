@@ -70,7 +70,8 @@ and says what each page answers; the most-used starting points are
 [Environment Variables](reference/environment-variables.md).
 
 [`runbooks/`](runbooks/low-downtime-redeploy.md) — step-by-step operator
-procedures. Currently one: planned low-downtime redeploys.
+procedures: planned low-downtime redeploys, and
+[enabling the opt-in opencode agent](runbooks/enabling-opencode-in-production.md).
 
 ## A note on transparency
 
