@@ -49,7 +49,16 @@ mkdirSync(home, { recursive: true });
 mkdirSync(proof, { recursive: true });
 
 async function freePort(): Promise<number> {
-  if (process.env.E2E_PORT) return Number(process.env.E2E_PORT);
+  if (process.env.E2E_PORT) {
+    const forced = Number(process.env.E2E_PORT);
+    // 4800 is the production instance: never bind it, never touch its socket dir.
+    if (!Number.isInteger(forced) || forced < 1024 || forced === 4800) {
+      console.log(`SKIP: refusing E2E_PORT=${process.env.E2E_PORT} (must be an integer >= 1024 and not the production port 4800)`);
+      rmSync(work, { recursive: true, force: true });
+      process.exit(0);
+    }
+    return forced;
+  }
   return new Promise((res, rej) => {
     const s = createServer();
     s.listen(0, '127.0.0.1', () => { const p = (s.address() as { port: number }).port; s.close(() => res(p)); });
@@ -188,10 +197,12 @@ async function main(): Promise<void> {
     } as any]);
     tap(`ask:${askId}:0:${'0'.repeat(16)}`);
     tap(kb1[0]!.callback_data, 999, messageId, 999);
-    await waitFor(() => fake.outbound.answerCallbackQuery.some((a) => a.text === 'Invalid button.'), 10_000);
+    // Both taps must be answered (forged -> "Invalid button.", non-allowlisted -> silent empty toast).
+    await waitFor(() => fake.outbound.answerCallbackQuery.length >= 2, 10_000);
     await sleep(500);
     const still = (await api('GET', `/api/asks/${askId}`)).json.ask as Rec;
-    record('forged button and non-allowlisted tap are rejected; ask stays pending, nothing typed', still.state === 'pending' && read('typed-reply-1.txt') === '',
+    record('forged button and non-allowlisted tap are rejected; ask stays pending, nothing typed',
+      still.state === 'pending' && !existsSync(join(proof, 'typed-reply-1.txt')) && fake.outbound.answerCallbackQuery.length >= 2 && fake.outbound.answerCallbackQuery.some((a) => a.text === 'Invalid button.'),
       `state=${still.state} toasts=${JSON.stringify(fake.outbound.answerCallbackQuery.map((a) => a.text))}`);
 
     // 3. the real button

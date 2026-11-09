@@ -66,10 +66,13 @@ kookr ask \
   ("Merge as-is", "Split into two PRs"), at most 48 characters. Put your
   recommended option **first**. No "Other" option: free-text replies are
   already accepted unless you pass `--no-other`.
-- Never put secrets, tokens or credentials in any field. Text that looks like
-  a credential is replaced by a placeholder and the command warns you.
-- Use `--timeout 2h` (units `s`, `m`, `h`) when the decision stops mattering
-  after a while; the default is 30 minutes.
+- Never put secrets, tokens or credentials in any field. Question or context
+  text that looks like a credential (it also trips on words like "token" or
+  "password") is replaced by a placeholder and the command warns you: rephrase
+  and ask again. An option label that looks like one is refused (exit 4).
+- Use `--timeout 2h` (`30s`, `10m`, `2h`, `1d` or plain seconds; minimum 30
+  seconds, maximum 24 hours) when the decision stops mattering after a while;
+  the default is 30 minutes.
 
 ## Waiting, or not
 
@@ -95,7 +98,7 @@ or `--wait`'s output, as authoritative; a typed message is a convenience.
 | Exit | Meaning | What to do |
 | --- | --- | --- |
 | 0 | Answered (or created, without `--wait`) | Act on the answer. |
-| 5 | Expired, nobody answered | Do **not** re-ask the same thing. Take the safest option, and state in your report that you chose it unasked. |
+| 5 | Expired, nobody answered | Do **not** re-ask the same thing. Take the safest option, and state in your report that you chose it unasked. You may also receive the message `Ask <id> expired with no answer.` in your session: it is the same news. |
 | 6 | Cancelled (including: your task is gone) | Stop; nothing to act on. |
 | 7 | Telegram is not configured here | The operator cannot be reached this way. Do not retry; pick the safest option or stop and report the blocker. |
 | 4 | Rejected (rate limit, unknown/finished task, delivery failed) | Read the message. Do not hammer the command; fall back as for 7. |
