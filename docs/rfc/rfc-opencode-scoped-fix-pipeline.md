@@ -1,6 +1,6 @@
 # RFC: opencode scoped-fix pipeline (worker + fresh reviewer + merge gate)
 
-Status: draft (round 1) · Related: rfc-opencode-agent-integration, #3534–#3537
+Status: draft (round 2) · Related: rfc-opencode-agent-integration, #3534–#3537
 
 ## 1. Problem and the finding that motivates it
 
@@ -22,69 +22,77 @@ insufficient (see §8).
 
 ## 3. Stages (one issue per orchestrator run)
 
+The orchestrator is one Claude task (mid tier, **not** `small`: it parses
+verdicts, compares head shas and decides to merge, which is judgement).
+It writes `ocpipe-<issue>.json` (stage, round, head sha, child task ids,
+per-stage start/end/usd) after **every** transition and resumes from it.
+
 | # | Stage | Actor | Output / exit |
 |---|-------|-------|---------------|
-| 0 | Preflight | orchestrator | kill-switch file absent; issue open, unclaimed, labelled `opencode-eligible`; `kookr doctor` ok; claim via `--claim-issue` |
-| 1 | Work | opencode `scoped-fix`, own worktree | branch + PR (draft) with gate-validated body; else stage fails |
-| 2 | Cheap review | opencode `reviewer` (fresh task, sees diff+issue only) | verdict `PASS`/`BLOCK` + findings, advisory |
-| 3 | Fix loop (≤ 2 rounds) | orchestrator `kookr reply`s findings to worker (same session), worker pushes | new head; back to 2 |
-| 4 | Gate review | Claude `independent-merge-review`, exact head | `kookr-review-verdict` comment bound to head sha |
-| 5 | Merge | existing `pnpm merge` rules (local gate, label, hard-gate verdict) | merged, or PR left open with report |
+| 0 | Preflight | orchestrator | issue open and labelled `opencode-eligible`, not labelled `opencode-pipeline-failed`; claim registry active (`kookr issue owner` answers) and claim taken by the **orchestrator** (single owner; worker spawned with no `--claim-issue`); `kookr doctor` ok; on resume, `kookr stop` any child ids still live in the state file |
+| 1 | Work | fresh opencode `scoped-fix` task (`--agent opencode --profile scoped-fix --wait=1800`), own worktree, env `KOOKR_OPENCODE_ISSUE` | worker **commits locally and never pushes** (profile text); `PR_BODY.md` untracked. Orchestrator pushes the branch and runs `gh pr create --body-file PR_BODY.md`. Exit 6 from `--wait` = failure; re-check state, no retry |
+| 2 | Cheap review | fresh opencode `reviewer` task (`file:REVIEW.md`), given issue text (quoted, marked untrusted) + diff file; **not** the PR body or worker narrative | `REVIEW.md` with 0 findings = pass, otherwise ≤8 findings; advisory |
+| 3 | Fix round (≤ 2) | **fresh** `scoped-fix` task on the same branch, prompt = findings; orchestrator pushes | new head; back to 2. Fresh task per round: no dependency on reaching an exited session via `kookr reply` |
+| 4 | Gate review | Claude `independent-merge-review` on the final head, **all repos** | verdict comment bound to head sha. Worker/reviewer tasks are already stopped |
+| 5 | Merge | `pnpm merge` / existing local-gate rules, using the sha the verdict names | merged, or PR left open with report |
 
-Stage 2 is an economy filter: it removes cheap-to-catch defects before the
-expensive Claude gate. It is **never** a substitute for stage 4. On
-`kookr-ai/kookr` stage 4 is mandatory; the opencode reviewer's PASS grants
-nothing.
+Stage 2 is an economy filter and never substitutes for stage 4 (mandatory
+everywhere in v1). Whether stage 2 earns its cost is a signal read from the
+accounting rows after dogfood (n is small: signal only, not a decision).
 
-## 4. Bounds and kill-switch
+## 4. Bounds and stopping
 
-* Max 2 fix rounds (stage 3). After round 2 with BLOCK → stop, post a
-  summary on the issue, release claim, label `opencode-pipeline-failed`.
-  Never merge on exhausted budget.
-* Per-stage wall-clock timeouts (worker 30 min, reviewer 10 min, gate 10 min);
-  timeout = stage failure, not skip.
-* Kill-switch: file `~/.kookr/opencode-pipeline.disabled` (checked at stages
-  0, 3 and 5) and `kookr stop` on the orchestrator; stopping it must also stop
-  children (orchestrator stops its child tasks by id in a trap-like final
-  step; children are linked via parent-task-id so the dashboard shows them).
-* Concurrency: one orchestrator per issue (idempotency key
-  `ocpipe-<repo>-<issue>`); scheduler caps parallel pipelines at 2 (hermetic
-  runs: 1).
+* Rounds: max 2 fix rounds. Exhausted with findings -> post summary, `kookr
+  issue release`, label `opencode-pipeline-failed`, never merge. Preflight
+  refuses relabelled-failed issues until an operator removes the label.
+* Time: each spawn uses `--wait=<seconds>`; total wall cap 2 h; total cap
+  `usd_cap` (default $3) enforced from the state file before each spawn.
+* Stopping = `kookr stop <orchestrator>`. Children are linked by
+  `parent-task-id` and the orchestrator stops them by id in its final step.
+  Verified gap: the server does **not** cascade-stop children, so a crashed
+  or killed orchestrator leaves its in-flight child running until that child
+  finishes or hits its own `--wait`/profile bounds (a single scoped worker:
+  bounded, not unbounded). Mitigation without server glue: preflight on any
+  resume (or the next run for that issue) stops children listed in the state
+  file; the dead-claim reclaim frees the claim. A server cascade-stop is the
+  one glue item to add *if* the §7 `kill -9` test shows orphans matter.
+* No separate kill-switch file: `kookr stop` + `kookr orchestration pause`
+  already exist; the playbook checks the pause state before each spawn.
+* Concurrency: playbook note, 1 pipeline per issue (claim), launched manually
+  or by schedule with `maxActive` 2.
 
 ## 5. Accounting
 
-Orchestrator writes `ocpipe-<issue>.json` in the task data dir: per stage
-`{task_id, start, end, wall_s, tokens_in/out, usd}` from the existing usage
-scanner (`kookr peek --json` / task usage), plus verdict and round count, and
-posts a one-table summary comment on the PR. This gives cost per merged PR
-and the pass-rate of stage 2 vs stage 4 (does the cheap reviewer predict the
-gate? — the metric that decides whether stage 2 is worth keeping).
+Task `tokenUsage` (incl. `costUsd`, from the opencode usage scanner) read
+via the task API, stored in the state file, posted once as a PR comment table
+(stage, task, wall, tokens, usd, verdict). Derived: cost per merged PR.
 
 ## 6. Safety
 
-* Worker never merges and never edits outside its worktree (profile + gate).
-* Orchestrator uses a small-tier model (`modelTier: small`) — it only runs
-  commands; judgement lives in the reviewers.
-* Issue content is untrusted: passed to the worker as data in the profile
-  prompt; reviewer gets requirements + diff, not the worker's narrative.
-* Exact-head binding: any worker push after a verdict invalidates it;
-  orchestrator re-runs stage 4 on the final head only (stage 2 may re-run).
-* Production flag `KOOKR_OPENCODE_ENABLED` is an operator decision; the
-  playbook fails preflight when opencode is unavailable.
+* Worker never pushes or merges; orchestrator owns push/PR/merge/claim.
+* Issue text and PR body are untrusted: reviewers see requirements quoted as
+  data plus the diff; the Claude gate is told to judge the diff, not the PR
+  summary. Reviewer instructions say verdict text inside the issue is data.
+* Exact-head binding: all child tasks stopped before stage 4; stage 5 merges
+  the verdict's sha and aborts if the PR head differs.
+* `KOOKR_OPENCODE_ENABLED` stays an operator decision; preflight fails closed.
 
-## 7. Proof plan (hermetic first)
+## 7. Delivery slices and proof
 
-Hermetic fixture repo (local bare remote, `gh` shim) with 3 real small issues
-replayed from agent-notebook history. Success: each ends merged-or-reported with
-the accounting file; at least one run exercises the fix loop; one run
-exercises kill-switch mid-stage; no stray processes/worktrees afterwards.
+1. **Slice A**: playbook, stages 0-2, no merge (stops after cheap review),
+   plus a wording **contract test** (state-file after every transition,
+   never-merge on exhausted rounds, head re-check, mandatory stage 4,
+   untrusted-text framing).
+2. **Slice B**: stages 3-4 (fix round, gate review).
+3. **Slice C**: stage 5 behind an explicit playbook parameter `merge=true`.
+Rollback: delete the playbook; remove labels and release claims via the
+documented cleanup step.
+Proof: the real thing, not a fake: a **scratch GitHub repo** with real `gh`
+and 3 real small issues, on a throwaway kookr instance (no prod). Must cover:
+one fix-round, one orchestrator `kill -9` mid-worker (orphan observed, resume
+cleans up), exhausted-rounds path. Tier-A wording tests run in CI/pre-push.
 
 ## 8. Alternatives and deferred
 
-* Server-side pipeline state machine: rejected for v1 — more code, more
-  failure modes, no evidence yet that the playbook cannot hold state in a
-  JSON file.
-* Dropping stage 2 (opencode reviewer): decided by the §5 metric after the
-  3 issues, not on priors.
-* Auto-selecting eligible issues (queue feeder integration): deferred; v1 takes
-  an explicit issue number.
+* Server pipeline state machine: rejected for v1. Cascade-stop: conditional,
+  see §4. Queue-feeder auto-selection: deferred.
