@@ -222,6 +222,39 @@ describe('analyzePaneSemantics', () => {
     expect(result.confidence).toBe('high');
   });
 
+  test('classifies the opencode idle composer as input_prompt, and a running turn as not idle', () => {
+    const idle = [
+      '  ┃  Already voted the only lesson in the prior turn.',
+      '     ▣  Build · deepseek-ai/DeepSeek-V4.1-Flash-1017 · 2.3s',
+      '  ┃  Build · deepseek-ai/DeepSeek-V4.1-Flash-1017 deepinfra',
+      '  ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀',
+      '   /tmp/e3/wt-b                                10.9K (1%) · $0.00  ctrl+p commands',
+    ].join('\n');
+    expect(analyzePaneSemantics(idle)).toMatchObject({ state: 'input_prompt', confidence: 'high' });
+    const busy = idle.replace('2.3s', '2.3s\n   ⬝⬝⬝■■■  esc interrupt');
+    expect(analyzePaneSemantics(busy).state).not.toBe('input_prompt');
+    // after one Esc press opencode shows `esc again to interrupt`; that is still a running turn
+    const busyAgain = idle.replace('2.3s', '2.3s\n   ⬝⬝⬝■■■  esc again to interrupt');
+    expect(analyzePaneSemantics(busyAgain).state).not.toBe('input_prompt');
+  });
+
+  test('a non-opencode pane that merely quotes the opencode footer is not an idle input prompt', () => {
+    const claudeReadingTheFile = [
+      '● Read(src/adapters/opencode-readiness.ts)',
+      "  ⎿  const READY_RE = /ask anything|ctrl+p commands/i   // 'ctrl+p commands'",
+      '✻ Thinking… (12s · ↑ 1.2k tokens)',
+    ].join('\n');
+    expect(analyzePaneSemantics(claudeReadingTheFile).state).not.toBe('input_prompt');
+    const grepOutput = [
+      '● Bash(grep -rn "ctrl+p commands" src)',
+      '  ⎿  src/shared/pane-semantics.test.ts:231:      \'   /tmp/e3/wt-b   10.9K (1%) · $0.00  ctrl+p commands\',',
+      '     docs/reference/opencode-agent.md:40:- the idle footer reads `ctrl+p commands`',
+    ].join('\n');
+    expect(analyzePaneSemantics(grepOutput).state).not.toBe('input_prompt');
+    // footer text alone, without the composer frame, is not enough
+    expect(analyzePaneSemantics('some output\n   ctrl+p commands').state).not.toBe('input_prompt');
+  });
+
   test('classifies Claude Allow/Deny permission dialog as high confidence', () => {
     const result = analyzePaneSemantics('● Bash(ls)\n  Allow  Deny  allow-always');
     expect(result.state).toBe('permission_dialog');

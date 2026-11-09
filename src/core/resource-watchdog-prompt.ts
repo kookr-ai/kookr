@@ -35,7 +35,7 @@ function formatSample(sample: ResourceWatchdogSample): string {
     `swapUsedPercent: ${sample.swapUsedPercent === null ? 'n/a' : `${sample.swapUsedPercent.toFixed(1)}%`}`,
     `memAvailableMb: ${sample.memAvailableMb === null ? 'n/a' : sample.memAvailableMb.toFixed(0)}`,
     `oomKillTotal: ${sample.oomKillTotal === null ? 'n/a' : sample.oomKillTotal}`,
-    `processCounts: claude=${sample.processCounts.claude} grok=${sample.processCounts.grok} codex=${sample.processCounts.codex} dtach=${sample.processCounts.dtach}`,
+    `processCounts: claude=${sample.processCounts.claude} grok=${sample.processCounts.grok} codex=${sample.processCounts.codex} opencode=${sample.processCounts.opencode ?? 0} dtach=${sample.processCounts.dtach}`,
     `orphanSessionCount: ${sample.orphanSessionCount}`,
     `terminalLeakCount: ${sample.terminalLeakCount}`,
   ];

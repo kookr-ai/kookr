@@ -5,6 +5,8 @@ import { ClaudeCodeAdapter } from '../../adapters/claude-code-adapter.js';
 import { CodexCliAdapter } from '../../adapters/codex-cli-adapter.js';
 import { GrokBuildAdapter } from '../../adapters/grok-build-adapter.js';
 import type { GrokInstalledState } from '../../adapters/grok-build-preflight.js';
+import { OpenCodeAdapter } from '../../adapters/opencode-adapter.js';
+import { isOpenCodeEnabled, OPENCODE_ENABLED_ENV } from '../../adapters/opencode-preflight.js';
 import type { ProbeExecRunner } from '../../adapters/probe-agent-binary.js';
 import { RoutingAgentAdapter } from '../../adapters/routing-agent-adapter.js';
 import type { TerminalBackend } from '../../adapters/terminal-backend.js';
@@ -46,6 +48,12 @@ export interface AgentRuntimeDeps {
   grokProbeExec?: ProbeExecRunner;
   /** Test seam: bypass the Grok binary probe with a fixed installed state. */
   grokInstalledState?: GrokInstalledState;
+  /** opencode binary path/command (`KOOKR_OPENCODE_BIN`). */
+  opencodeBin?: string;
+  /** Env source for opencode binary/version-pin resolution. Defaults to `process.env`. */
+  opencodeEnv?: NodeJS.ProcessEnv;
+  /** Test seam: probe runner for the opencode pinned-version preflight. */
+  opencodeProbeExec?: ProbeExecRunner;
   preflightOnFatal?: (snapshot: AgentPreflightSnapshot & { status: 'absent' }) => never;
   preflightLogger?: PreflightLogger;
   /**
@@ -72,6 +80,8 @@ export interface AgentRuntime {
   codexCliAdapter: CodexCliAdapter;
   /** Always constructed; registered (and thus launchable) only when its binary preflight passed. */
   grokBuildAdapter: GrokBuildAdapter;
+  /** Constructed only when `KOOKR_OPENCODE_ENABLED=1`; registered (and thus launchable) only when its pinned-version preflight passed. */
+  openCodeAdapter?: OpenCodeAdapter;
   adapterRegistry: AdapterRegistry;
   adapter: AgentAdapter;
   agentPreflight: Record<string, AgentPreflightSnapshot>;
@@ -188,6 +198,36 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     );
   }
 
+  // opencode adapter (RFC rfc-opencode-agent-integration). Opt-in: nothing is
+  // constructed or probed unless KOOKR_OPENCODE_ENABLED=1, so default Kookr
+  // behaviour is unchanged. When enabled it is registered only if the pinned
+  // opencode build is present. Unlike codex/grok, an unreachable
+  // KOOKR_OPENCODE_BIN or a version mismatch is warn-and-skip, never fatal: the
+  // agent must not stop the server from booting.
+  const openCodeEnv = deps.opencodeEnv ?? process.env;
+  let openCodeAdapter: OpenCodeAdapter | undefined;
+  if (isOpenCodeEnabled(openCodeEnv)) {
+    openCodeAdapter = new OpenCodeAdapter(deps.terminalBackend, deps.taskStore, {
+      terminalInputWriter,
+      hooksDir: deps.hooksDir,
+      serverPort: deps.serverPort,
+      agentBin: deps.opencodeBin,
+      env: openCodeEnv,
+      probeExec: deps.opencodeProbeExec,
+    });
+    const openCodePreflight = await openCodeAdapter.preflight();
+    if (openCodePreflight.kind === 'ok') {
+      adapterRegistry.register(openCodeAdapter);
+    } else {
+      preflightLogger.warn(
+        `[startup] warning: opencode unavailable (${openCodePreflight.reason}); ` +
+          `opencode is not registered — it stays out of the agent picker and round-robin.`,
+      );
+    }
+  } else {
+    console.debug(`[startup] opencode agent disabled (set ${OPENCODE_ENABLED_ENV}=1 to enable)`);
+  }
+
   const adapter = new RoutingAgentAdapter(deps.taskStore, adapterRegistry);
 
   const agentPreflight = await runAdapterPreflights(adapterRegistry, {
@@ -228,6 +268,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     claudeCodeAdapter,
     codexCliAdapter,
     grokBuildAdapter,
+    openCodeAdapter,
     adapterRegistry,
     adapter,
     agentPreflight,

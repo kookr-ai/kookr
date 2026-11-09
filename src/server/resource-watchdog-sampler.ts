@@ -111,16 +111,19 @@ export function classifyProcessCommand(command: string): {
   if (/(^|\/|\s)grok(\s|$)/.test(lower) || lower.includes('grok-build')) {
     return { family: 'grok', isDtach };
   }
+  if (/(^|\/|\s)opencode(\s|$)/.test(lower)) {
+    return { family: 'opencode', isDtach };
+  }
   return { family: null, isDtach };
 }
 
 export function countAgentFamilies(
   entries: readonly ProcessTableEntry[],
 ): AgentFamilyProcessCounts {
-  const counts: AgentFamilyProcessCounts = { claude: 0, grok: 0, codex: 0, dtach: 0 };
+  const counts: AgentFamilyProcessCounts = { claude: 0, grok: 0, codex: 0, opencode: 0, dtach: 0 };
   for (const entry of entries) {
     const { family, isDtach } = classifyProcessCommand(entry.command);
-    if (family) counts[family] += 1;
+    if (family) counts[family] = (counts[family] ?? 0) + 1;
     if (isDtach) counts.dtach += 1;
   }
   return counts;

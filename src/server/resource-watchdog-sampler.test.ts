@@ -33,6 +33,8 @@ describe('classifyProcessCommand / countAgentFamilies', () => {
     expect(classifyProcessCommand('/usr/bin/claude --print')).toMatchObject({ family: 'claude' });
     expect(classifyProcessCommand('codex exec')).toMatchObject({ family: 'codex' });
     expect(classifyProcessCommand('grok-build agent')).toMatchObject({ family: 'grok' });
+    expect(classifyProcessCommand('/home/u/.kookr/tools/opencode-1.19.5/node_modules/.bin/opencode /work')).toMatchObject({ family: 'opencode' });
+    expect(classifyProcessCommand('opencode serve --stdio')).toMatchObject({ family: 'opencode' });
     expect(classifyProcessCommand('dtach -n /tmp/x.sock -E claude')).toMatchObject({
       family: 'claude',
       isDtach: true,
@@ -46,8 +48,9 @@ describe('classifyProcessCommand / countAgentFamilies', () => {
       { pid: 3, command: 'codex' },
       { pid: 4, command: 'dtach -a /tmp/kookr.sock' },
       { pid: 5, command: 'bash' },
+      { pid: 6, command: 'opencode serve --stdio' },
     ]);
-    expect(counts).toEqual({ claude: 2, grok: 0, codex: 1, dtach: 1 });
+    expect(counts).toEqual({ claude: 2, grok: 0, codex: 1, opencode: 1, dtach: 1 });
   });
 });
 

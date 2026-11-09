@@ -25,6 +25,8 @@ export function resolveModelTier(
       return { model: 'gpt-5.6-luna', effort: 'high' };
     case 'grok-build':
       return { model: 'grok-4.6' };
+    case 'opencode':
+      return { model: 'deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017' };
     case 'hermes-fleet':
       // hermes-fleet is identity-only (jeanibarz/hermes-fleet#15): Kookr never launches it, so it
       // never resolves a tier model. Its reasoning model is locked inside its

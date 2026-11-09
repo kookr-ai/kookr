@@ -89,9 +89,10 @@ export function collectTriggers(
       'claude',
       'grok',
       'codex',
+      'opencode',
     ];
     for (const family of families) {
-      const count = sample.processCounts[family];
+      const count = sample.processCounts[family] ?? 0;
       if (count >= config.processCeiling) {
         triggers.push({
           reason: 'process_ceiling',

@@ -6,6 +6,7 @@ describe('small model tier', () => {
     expect(resolveModelTier('claude-code', 'small')).toEqual({ model: 'claude-haiku-4-5' });
     expect(resolveModelTier('codex-cli', 'small')).toEqual({ model: 'gpt-5.6-luna', effort: 'high' });
     expect(resolveModelTier('grok-build', 'small')).toEqual({ model: 'grok-4.6' });
+    expect(resolveModelTier('opencode', 'small')).toEqual({ model: 'deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017' });
   });
 
   it('accepts only the closed tier vocabulary', () => {

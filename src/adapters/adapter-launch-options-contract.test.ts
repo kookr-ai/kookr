@@ -7,6 +7,7 @@ import { AdapterRegistry, type AgentAdapter } from './agent-adapter.js';
 import { ClaudeCodeAdapter } from './claude-code-adapter.js';
 import { CodexCliAdapter } from './codex-cli-adapter.js';
 import { GrokBuildAdapter } from './grok-build-adapter.js';
+import { OpenCodeAdapter } from './opencode-adapter.js';
 import type { GrokInstalledState } from './grok-build-preflight.js';
 import { TaskStore } from '../core/tasks.js';
 
@@ -56,8 +57,12 @@ function grokTestedState(): GrokInstalledState {
 interface AdapterCase {
   agentType: string;
   make(): { adapter: AgentAdapter; backend: FakeTerminalBackend; taskStore: TaskStore };
-  /** Substring that appears in SessionSpec.args ONLY when permissions are bypassed. */
-  bypassArgMarker: string;
+  /**
+   * Substring that appears in SessionSpec.args ONLY when permissions are bypassed.
+   * Omitted for adapters whose permission posture lives in composed config, not
+   * argv (opencode) — those are covered in their own adapter test.
+   */
+  bypassArgMarker?: string;
 }
 
 describe('AdapterLaunchOptions contract — every registered adapter honors it', () => {
@@ -146,6 +151,21 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
           return { adapter, backend, taskStore };
         },
       },
+      {
+        agentType: 'opencode',
+        make() {
+          const backend = new FakeTerminalBackend();
+          const taskStore = new TaskStore();
+          const adapter = new OpenCodeAdapter(backend, taskStore, {
+            env: { PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv,
+            agentBin: '/fake/opencode',
+            sessionRoot: sessionHomeRoot,
+            promptBracketedPaste: false,
+            promptReadyTimeoutMs: 30,
+          });
+          return { adapter, backend, taskStore };
+        },
+      },
     ];
   }
 
@@ -166,10 +186,10 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
     return { registry, backends, stores };
   }
 
-  test('the registry actually holds all three shipping adapters', () => {
+  test('the registry actually holds all shipping adapters', () => {
     const { registry } = buildRegistry(adapterCases());
     expect(registry.getAll().map((a) => a.agentType).sort()).toEqual(
-      ['claude-code', 'codex-cli', 'grok-build'],
+      ['claude-code', 'codex-cli', 'grok-build', 'opencode'],
     );
   });
 
@@ -228,7 +248,8 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
     for (const adapter of registry.getAll()) {
       const backend = backends.get(adapter.agentType)!;
       const taskStore = stores.get(adapter.agentType)!;
-      const marker = markerByType.get(adapter.agentType)!;
+      const marker = markerByType.get(adapter.agentType);
+      if (!marker) continue; // permission posture is not argv-visible for this adapter
 
       // Constructor default is bypass=false, so the marker must be absent
       // unless the per-call override turns it on.
@@ -259,7 +280,8 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
     for (const adapter of registry.getAll()) {
       const backend = backends.get(adapter.agentType)!;
       const taskStore = stores.get(adapter.agentType)!;
-      const marker = markerByType.get(adapter.agentType)!;
+      const marker = markerByType.get(adapter.agentType);
+      if (!marker) continue; // permission posture is not argv-visible for this adapter
 
       // No override → instance default (ON) applies.
       const defTask = taskStore.createTask('do it', '/workspace');

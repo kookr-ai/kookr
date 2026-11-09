@@ -31,6 +31,8 @@ export {
   normalizeAgentType,
   normalizeAgentSelection,
   resolveRoundRobinAgent,
+  AUTO_ROTATION_EXCLUDED_AGENT_TYPES,
+  isAutoRotationEligible,
   resolvePinnedAgentFallback,
   filterFallbackCandidates,
   excludeBlacklistedAgents,

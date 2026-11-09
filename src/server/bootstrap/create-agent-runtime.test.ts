@@ -66,6 +66,11 @@ describe('createAgentRuntime — grok-build registration policy', () => {
       // Hermetic codex probe (issue #2001): without this, a real PATH probe can
       // pass on /bin/echo while the sibling host check fails closed fatally.
       codexProbeExec: async () => ({ stdout: 'codex 1.0.0\n', stderr: '' }),
+      // Hermetic opencode probe: never spawn a real (or host-installed) opencode.
+      opencodeEnv: {},
+      opencodeProbeExec: async () => {
+        throw Object.assign(new Error('spawn opencode ENOENT'), { code: 'ENOENT' });
+      },
       preflightLogger: logger,
       preflightOnFatal: ((): never => {
         throw new Error('fatal preflight');
@@ -99,6 +104,50 @@ describe('createAgentRuntime — grok-build registration policy', () => {
     expect(Object.values(runtime.agentPreflight).map((preflight) => preflight.status)).toEqual(['ok', 'ok', 'ok']);
     expect(claudeProbeExec).toHaveBeenCalledWith('/missing/e2e-claude', ['--version'], expect.any(Object));
     expect(codexProbeExec).toHaveBeenCalledWith('/missing/e2e-codex', ['--version'], expect.any(Object));
+  });
+
+  test('opencode is opt-in: without KOOKR_OPENCODE_ENABLED=1 nothing is probed, registered or logged', async () => {
+    const probe = vi.fn(async () => ({ stdout: '1.19.5\n', stderr: '' }));
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    const runtime = await createAgentRuntime(baseDeps({
+      grokEnv: {} as NodeJS.ProcessEnv,
+      grokInstalledState: grokTestedState(),
+      opencodeBin: '/fake/opencode',
+      opencodeEnv: {},
+      opencodeProbeExec: probe,
+    }));
+    expect(probe).not.toHaveBeenCalled();
+    expect(runtime.openCodeAdapter).toBeUndefined();
+    expect(runtime.adapterRegistry.getTypes()).not.toContain('opencode');
+    expect(runtime.agentPreflight['opencode']).toBeUndefined();
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('opencode'));
+    expect(debug).toHaveBeenCalledTimes(1);
+    debug.mockRestore();
+  });
+
+  test('registers opencode when enabled and the pinned version is installed', async () => {
+    const runtime = await createAgentRuntime(baseDeps({
+      opencodeEnv: { KOOKR_OPENCODE_ENABLED: '1' },
+      grokEnv: {} as NodeJS.ProcessEnv,
+      grokInstalledState: grokTestedState(),
+      opencodeBin: '/fake/opencode',
+      opencodeProbeExec: async () => ({ stdout: '1.19.5\n', stderr: '' }),
+    }));
+    expect(runtime.adapterRegistry.getTypes()).toContain('opencode');
+    expect(runtime.agentPreflight['opencode']?.status).toBe('ok');
+  });
+
+  test('skips opencode with a warning (never fatal) on a version mismatch, even when explicitly configured', async () => {
+    const runtime = await createAgentRuntime(baseDeps({
+      opencodeEnv: { KOOKR_OPENCODE_ENABLED: '1' },
+      grokEnv: {} as NodeJS.ProcessEnv,
+      grokInstalledState: grokTestedState(),
+      opencodeBin: '/fake/opencode',
+      opencodeProbeExec: async () => ({ stdout: '2.2.0\n', stderr: '' }),
+    }));
+    expect(runtime.adapterRegistry.getTypes()).not.toContain('opencode');
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('opencode is not registered'));
   });
 
   test('skips registration with a warning when the default grok binary is absent', async () => {

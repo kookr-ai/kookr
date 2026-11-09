@@ -380,6 +380,12 @@ GET /api/tasks?limit=50&offset=100
 `agentType`, `modelTier`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
 `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
+`agentType: "opencode"` launches the opt-in opencode agent. It is only
+available when the server runs with `KOOKR_OPENCODE_ENABLED=1` and the pinned
+opencode binary is present (see [opencode agent](opencode-agent.md)); it is
+never chosen by `round-robin` or as an automatic substitute for an unavailable
+pinned agent, so it must be requested explicitly.
+
 `playbook` (optional) wraps the supplied prompt with a parsed playbook before
 launch. Its shape is `{ "path": "phase.md", "scope": "project" }`. `path` must
 be non-empty. `scope` may be `project`, `user`, or `plugin` and defaults to
@@ -478,6 +484,7 @@ resolves to a concrete agent first — and an invalid level returns
 
 - `claude-code`: `low`, `medium`, `high`, `xhigh`, `max`
 - `codex-cli`: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`
+- `opencode`: none (it has no Kookr-side effort levels; any `effort` is rejected)
 
 The selected model can narrow that set. `gpt-6-astra` accepts `low`, `medium`,
 `high`, `xhigh`, `max`, and `ultra`; `none` and `minimal` are rejected.
@@ -501,7 +508,10 @@ no silent fallback. Allowed base ids for `claude-code`:
 
 For `codex-cli`, the accepted raw pin is `gpt-6-astra`. `grok-build` rejects a
 raw per-task `model` pin (use `modelTier` for portable policy or the
-agent-specific environment setting).
+agent-specific environment setting). `opencode` takes a free-form
+`provider/model` id (for example `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017`),
+validated by shape only: a provider segment, then one or more model segments,
+no whitespace, shell metacharacters or `..`, at most 200 characters.
 Omitting `model` leaves the agent
 CLI / env default unchanged. The `kookr-spawn --model <id>` flag maps to this
 field. The dashboard Launch dialog and Quick Launch send the same field
@@ -512,7 +522,8 @@ default → unset**.
 `modelTier` (optional) is a provider-neutral model intent. The only current
 value is `small`, which resolves after Kookr has selected the final agent:
 Claude Code → `claude-haiku-4-5`, Codex CLI → `gpt-5.6-luna` with `high`
-reasoning, Grok Build → `grok-4.6`. It cannot be combined with raw `model` or
+reasoning, Grok Build → `grok-4.6`, opencode →
+`deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017`. It cannot be combined with raw `model` or
 `effort` pins. A schedule can persist the same field while omitting `agentType`,
 so every fire follows the live Kookr default and then resolves the matching
 small target. Codex tier launches require the Kookr Codex fork's per-task model

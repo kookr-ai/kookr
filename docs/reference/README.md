@@ -17,6 +17,7 @@ The stable surfaces other software — and your own scripts — depend on.
 - [Spawn contract (`POST /api/tasks`)](spawn-contract.md) — the authoritative request/response shape for launching a task programmatically.
 - [Environment variables](environment-variables.md) — canonical list of every `KOOKR_*` variable Kookr reads or injects.
 - [Data directory](data-directory.md) — what Kookr stores under `~/.kookr/`, and which files are operator-owned state rather than repository content.
+- [opencode agent](opencode-agent.md) — enabling the opencode agent type, how a session is launched and its limits.
 - [Playbooks](playbooks.md) — the frontmatter and body format for the Markdown task templates Kookr can launch.
 
 ## How the supervisor decides
