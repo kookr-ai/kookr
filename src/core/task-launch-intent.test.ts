@@ -170,4 +170,24 @@ describe('task launch intent', () => {
     expect(sameLaunchIntent(dependent, 'claude-code', { dependencies: [] })).toBe(false);
     expect(sameLaunchIntent(dependent, 'claude-code', { dependencies: ['kb'] })).toBe(false);
   });
+
+  it('keeps the opencode profile and issue in the dedup identity, and legacy fingerprints stable', () => {
+    const scoped = buildTaskLaunchIntent('opencode', { prompt: 'p', profile: 'scoped-fix', issue: 7 });
+    expect(sameLaunchIntent(scoped, 'opencode', { profile: 'scoped-fix', issue: 7 })).toBe(true);
+    expect(sameLaunchIntent(scoped, 'opencode', { profile: 'reviewer', issue: 7 })).toBe(false);
+    expect(sameLaunchIntent(scoped, 'opencode', { issue: 7 })).toBe(false);
+    expect(sameLaunchIntent(scoped, 'opencode', { profile: 'scoped-fix', issue: 8 })).toBe(false);
+    expect(sameLaunchIntent(scoped, 'opencode', { profile: 'scoped-fix' })).toBe(false);
+    // A profile-less intent fingerprints exactly as it did before profiles existed.
+    const legacy = launchIntentFingerprint({ schemaVersion: 'task-launch-intent.v1', agentType: 'opencode' });
+    expect(launchIntentFingerprint(buildTaskLaunchIntent('opencode'))).toBe(legacy);
+    expect(legacy).not.toContain('profile');
+  });
+
+  it('round-trips profile and issue through persisted-intent validation and rejects a bad issue', () => {
+    const intent = buildTaskLaunchIntent('opencode', { prompt: 'p', profile: 'scoped-fix', issue: 7 });
+    expect(validatePersistedLaunchIntent({ agentType: 'opencode', launchIntent: intent })).toEqual({ ok: true, intent });
+    expect(validatePersistedLaunchIntent({ agentType: 'opencode', launchIntent: { ...intent, issue: 0 } }).ok).toBe(false);
+    expect(validatePersistedLaunchIntent({ agentType: 'opencode', launchIntent: { ...intent, profile: ' ' } }).ok).toBe(false);
+  });
 });

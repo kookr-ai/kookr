@@ -41,6 +41,30 @@ describe('defaultKookrClaudeHooks', () => {
     warn.mockRestore();
   });
 
+  it('puts the deliverable gate FIRST in Stop, before nb-retro and nudge', () => {
+    const f = fixture(['nb-inject.sh', 'nb-retro.sh', 'bin/kookr-stop-nudge.js', 'bin/kookr-opencode-gate.js']);
+    const cfg = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'file', name: 'REVIEW.md' } })!;
+    const stop = cfg.hooks.Stop![0]!.hooks;
+    expect(stop).toHaveLength(3);
+    expect(stop[0]!.command).toContain('kookr-opencode-gate.js');
+    expect(stop[0]!.command).toContain("--kind 'file:REVIEW.md'");
+    expect(stop[1]!.command).toContain('nb-retro.sh');
+    expect(stop[2]!.command).toContain('kookr-stop-nudge.js');
+    const pr = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'commit-and-pr-body' } })!;
+    expect(pr.hooks.Stop![0]!.hooks[0]!.command).toContain("--kind 'commit-and-pr-body'");
+  });
+
+  it('adds no gate for deliverable none, and warns (still returns the rest) when the gate script is missing', () => {
+    const f = fixture(['nb-inject.sh', 'nb-retro.sh', 'bin/kookr-stop-nudge.js']);
+    const none = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'none' } })!;
+    expect(none.hooks.Stop![0]!.hooks).toHaveLength(2);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const missing = defaultKookrClaudeHooks({ pluginHooksDir: f.hooks, binDir: f.bin, deliverable: { kind: 'commit-and-pr-body' } })!;
+    expect(missing.hooks.Stop![0]!.hooks).toHaveLength(2);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deliverable gate skipped'));
+    warn.mockRestore();
+  });
+
   it('returns undefined when nothing is available', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     expect(defaultKookrClaudeHooks({})).toBeUndefined();

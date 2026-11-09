@@ -62,6 +62,14 @@ export interface LaunchOpts {
    * per-task → per-schedule → global agent-type default → unset.
    */
   model?: string;
+  /**
+   * opencode worker profile id (`scoped-fix`, `reviewer`, `test-auditor`, ...). Only valid with
+   * `agentType: 'opencode'`; existence is validated server-side in `launchTask`
+   * (`ProfileValidationError`, API -> 400) and persisted as `metadata.opencodeProfile`.
+   */
+  profile?: string;
+  /** Issue number an opencode task closes; exported to the worker's gate as KOOKR_OPENCODE_ISSUE. opencode only. */
+  issue?: number;
   /** When true, always create a new task instead of returning an existing active duplicate. */
   disableDedup?: boolean;
   /** Explicit operator intent for duplicate-preserving launches. */

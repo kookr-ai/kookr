@@ -23,6 +23,7 @@ import {
   isCwdValidationError,
   isEffortValidationError,
   isModelValidationError,
+  isProfileValidationError,
   isModelTierValidationError,
   isPendingQueueFullError,
   isSpawnBurstLimitError,
@@ -729,6 +730,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         agentType?: string;
         effort?: unknown;
         model?: unknown;
+        profile?: unknown;
+        issue?: unknown;
         modelTier?: unknown;
         disableDedup?: unknown;
         metadata?: unknown;
@@ -793,8 +796,14 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
       // #681 / #1518: shape check only. The agent-specific allowed-set check
       // runs in launchTask after round-robin resolution and surfaces as a 400
       // via EffortValidationError / ModelValidationError (mapped below).
+      if (body.issue !== undefined && (typeof body.issue !== 'number' || !Number.isInteger(body.issue) || body.issue <= 0)) {
+        return c.json({ error: 'issue must be a positive integer', code: 'invalid_issue' }, 400);
+      }
       if (body.effort !== undefined && typeof body.effort !== 'string') {
         return c.json({ error: 'effort must be a string' }, 400);
+      }
+      if (body.profile !== undefined && (typeof body.profile !== 'string' || body.profile.trim() === '')) {
+        return c.json({ error: 'profile must be a non-empty string', code: 'invalid_profile' }, 400);
       }
       if (body.model !== undefined && typeof body.model !== 'string') {
         return c.json({ error: 'model must be a string' }, 400);
@@ -888,6 +897,8 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         modelTier: isModelTier(body.modelTier) ? body.modelTier : undefined,
         effort: typeof body.effort === 'string' ? body.effort : undefined,
         model: typeof body.model === 'string' ? body.model : undefined,
+        profile: typeof body.profile === 'string' ? body.profile : undefined,
+        issue: typeof body.issue === 'number' ? body.issue : undefined,
         disableDedup: body.disableDedup === true,
         metadataIntent,
         dependencies: preparedPlaybook?.launchOpts.dependencies ?? parseLaunchDependencies(body.dependencies),
@@ -990,6 +1001,9 @@ export function registerTaskRoutes(app: Hono, deps: TaskRouteDeps): void {
         }, 503);
       }
       if (isEffortValidationError(err)) {
+        return c.json({ error: err.message, code: err.code }, 400);
+      }
+      if (isProfileValidationError(err)) {
         return c.json({ error: err.message, code: err.code }, 400);
       }
       if (isModelValidationError(err)) {

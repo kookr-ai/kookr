@@ -32,7 +32,7 @@ vi.mock('../use-cases/delete-task.js', async (importActual) => {
   };
 });
 
-import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, AgentBlacklistedError, GrokAuthUnavailableError, ModelValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
+import { launchTask, CwdValidationError, DrainModeError, EffortValidationError, AgentBlacklistedError, GrokAuthUnavailableError, ModelValidationError, ProfileValidationError, PendingQueueFullError, SpawnBurstLimitError, HostLoadAdmissionError, QuotaHeadroomAdmissionError } from '../launch-service.js';
 import { deleteTask } from '../use-cases/delete-task.js';
 import { registerTaskRoutes } from './task-routes.js';
 import { buildCoordinatorSnapshotState } from '../coordinator/detectors.js';
@@ -1810,6 +1810,45 @@ parameters:
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'invalid_model' });
+  });
+
+  test('forwards profile, rejects a non-string profile, and maps ProfileValidationError to 400', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const post = (body: Record<string, unknown>) => mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', ...body }),
+    });
+    expect((await post({ agentType: 'opencode', profile: 'scoped-fix' })).status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ profile: 'scoped-fix' }));
+    vi.mocked(launchTask).mockClear();
+    const bad = await post({ profile: 3 });
+    expect(bad.status).toBe(400);
+    expect(launchTask).not.toHaveBeenCalled();
+    vi.mocked(launchTask).mockRejectedValueOnce(new ProfileValidationError('Unknown opencode profile "x"'));
+    const res = await post({ agentType: 'opencode', profile: 'x' });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ code: 'invalid_profile' });
+  });
+
+  test('forwards a positive-integer issue and rejects anything else with 400', async () => {
+    const taskStore = new TaskStore();
+    mockRouteLaunchTask(taskStore);
+    const post = (body: Record<string, unknown>) => mkApp(mkLoopDeps(taskStore)).request('/api/tasks', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'p', cwd: '/cwd', agentType: 'opencode', ...body }),
+    });
+    expect((await post({ issue: 7 })).status).toBe(201);
+    expect(launchTask).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ issue: 7 }));
+    vi.mocked(launchTask).mockClear();
+    for (const issue of [0, -1, 1.5, '7']) {
+      const res = await post({ issue });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ code: 'invalid_issue' });
+    }
+    expect(launchTask).not.toHaveBeenCalled();
   });
 
   // --- Server-side backpressure (issue #1526 Phase C / C3) ---

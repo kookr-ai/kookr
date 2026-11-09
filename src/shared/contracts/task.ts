@@ -115,6 +115,10 @@ export interface TaskMetadata {
    * relation projections, but autonomous parent policy is not inherited.
    */
   userInitiatedRelaunch?: true;
+  /** opencode worker profile id this task launched with (agentType 'opencode' only). */
+  opencodeProfile?: string;
+  /** Issue number an opencode task closes; surfaced to the deliverable gate as KOOKR_OPENCODE_ISSUE. */
+  opencodeIssue?: number;
   /** opencode's own session id (`ses_...`) recorded when the session stops; a relaunch resumes it with `--session`. */
   opencodeSessionId?: string;
   /** Audit marker for tasks launched while permission prompts were globally bypassed. */
@@ -162,6 +166,10 @@ export interface TaskLaunchIntent {
   ralphVerdictEnv?: boolean;
   dependencies?: LaunchDependency[];
   idempotencyKey?: string;
+  /** opencode worker profile id; part of the launch identity (same prompt, different profile = different task). */
+  profile?: string;
+  /** opencode issue number the worker closes (KOOKR_OPENCODE_ISSUE); part of the launch identity. */
+  issue?: number;
 }
 
 export type LaunchDependencyState = 'healthy' | 'degraded' | 'unknown' | 'half_open';

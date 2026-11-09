@@ -1,3 +1,4 @@
+import { isOpenCodeProfileError, resolveOpenCodeProfile } from '../adapters/opencode-profiles.js';
 import { stat } from 'node:fs/promises';
 import { expandConfiguredCwd } from './cwd-paths.js';
 import type { Task, TaskLaunchHealthSummary, TaskStore } from '../core/tasks.js';
@@ -732,6 +733,22 @@ export class ModelValidationError extends Error {
   }
 }
 
+/**
+ * Thrown by {@link launchTask} when `profile` is combined with a non-opencode
+ * agent or names an unknown opencode profile. The API maps this to HTTP 400.
+ */
+export class ProfileValidationError extends Error {
+  readonly code = 'invalid_profile';
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProfileValidationError';
+  }
+}
+
+export function isProfileValidationError(err: unknown): err is ProfileValidationError {
+  return err instanceof ProfileValidationError;
+}
+
 /** Invalid or ambiguous provider-neutral model-tier request. */
 export class ModelTierValidationError extends Error {
   readonly code: 'invalid_model_tier' | 'model_tier_conflict';
@@ -1011,6 +1028,8 @@ export function checkSubmission(
     effort?: string;
     dependencies?: readonly LaunchDependency[];
     ralphVerdictEnv?: boolean;
+    profile?: string;
+    issue?: number;
   } = {},
 ): Task | undefined {
   const hash = hashPrompt(prompt);
@@ -1608,6 +1627,27 @@ async function launchTaskCore(
     );
   }
 
+  if (opts.issue !== undefined && agentType !== 'opencode') {
+    throw new ProfileValidationError(
+      `issue is only valid with agentType "opencode" (resolved agent: ${agentType})`,
+    );
+  }
+
+  // opencode worker profile: only meaningful for the opencode agent, and must exist on disk.
+  if (opts.profile !== undefined) {
+    if (agentType !== 'opencode') {
+      throw new ProfileValidationError(
+        `profile "${opts.profile}" is only valid with agentType "opencode" (resolved agent: ${agentType})`,
+      );
+    }
+    try {
+      resolveOpenCodeProfile(opts.profile);
+    } catch (err) {
+      if (isOpenCodeProfileError(err)) throw new ProfileValidationError(err.message);
+      throw err;
+    }
+  }
+
   // R19 trust-boundary check (rfc-remote-chat-trigger §4): Telegram-spawned
   // Codex is opt-in because its permission model is more permissive than
   // Claude Code's supervised path. The integration checks this before
@@ -1631,7 +1671,12 @@ async function launchTaskCore(
 
   const userPrompt = normalizePromptFileReferences(opts.prompt, opts.cwd);
   const deliveryAuthorization: DeliveryAuthorization = serverOpts.deliveryPolicy ?? 'pre-authorized';
-  const guardedPrompt = await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
+  // A profiled opencode worker is a scoped, locally-delivered task: the caller already prepared its
+  // checkout and the profile (plus the deliverable gate) defines delivery. The generic guardrail would
+  // tell it to open a second worktree and push/open/merge a PR, which defeats the gate and the profile.
+  const guardedPrompt = opts.profile !== undefined
+    ? opts.prompt
+    : await applyWorktreeGuardrails(opts.prompt, opts.cwd, deliveryAuthorization);
   const effectivePrompt = normalizePromptFileReferences(guardedPrompt, opts.cwd);
   const bypassAllPermissions = deps.bypassAllPermissions === true;
 
@@ -1654,6 +1699,8 @@ async function launchTaskCore(
       effort,
       dependencies: opts.dependencies,
       ralphVerdictEnv: opts.ralphVerdictEnv,
+      ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
+      ...(opts.issue !== undefined ? { issue: opts.issue } : {}),
     }))) {
       const activeDuplicate = await validateDuplicateCandidate(deps, existing);
       if (activeDuplicate) {
@@ -2059,8 +2106,10 @@ async function launchTaskCore(
       // pendings as self-releasing. Additive — absent when no source was given.
       // agentSubstitutionChain (issue #2001): full schedule_sub + quota_rotate
       // hops so receipts match the final agentType after multi-hop cascade.
-      metadata: (opts.metadataIntent || opts.launchSource || opts.userInitiatedRelaunch || agentSubstitutionChain.length > 0)
+      metadata: (opts.metadataIntent || opts.launchSource || opts.userInitiatedRelaunch || opts.profile || opts.issue !== undefined || agentSubstitutionChain.length > 0)
         ? {
+            ...(opts.profile ? { opencodeProfile: opts.profile } : {}),
+            ...(opts.issue !== undefined ? { opencodeIssue: opts.issue } : {}),
             ...(opts.metadataIntent ? { intent: opts.metadataIntent } : {}),
             ...(opts.launchSource ? { launchSource: opts.launchSource } : {}),
             ...(opts.userInitiatedRelaunch ? { userInitiatedRelaunch: true as const } : {}),
@@ -2442,6 +2491,8 @@ async function launchTaskCore(
       : {}),
     ...(effectiveEffort !== undefined ? { effort: effectiveEffort } : {}),
     ...(effectiveModel !== undefined ? { model: effectiveModel } : {}),
+    ...(opts.profile ? { profile: opts.profile } : {}),
+    ...(opts.issue !== undefined ? { issue: opts.issue } : {}),
     ...(opts.sandboxProfile ? { sandboxProfile: opts.sandboxProfile } : {}),
     ...(probeSessionId ? { tmuxName: probeSessionId } : {}),
     ...loadoutFields,
@@ -2958,6 +3009,8 @@ function buildLaunchIntent(
     ...(opts.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
     ...(opts.dependencies ? { dependencies: [...opts.dependencies] } : {}),
     ...(opts.idempotencyKey !== undefined ? { idempotencyKey: opts.idempotencyKey } : {}),
+    ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
+    ...(opts.issue !== undefined ? { issue: opts.issue } : {}),
   });
 }
 

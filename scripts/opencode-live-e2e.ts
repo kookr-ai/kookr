@@ -65,7 +65,7 @@ interface Live {
 
 interface StartOpts {
   claudeHooks?: ClaudeHooksConfig; extraEnv?: Record<string, string>; cwd?: string; tmux?: string;
-  shelves?: string[]; seed?: boolean; ramLimitMb?: number; fastBoot?: boolean;
+  profile?: string; seed?: boolean; ramLimitMb?: number; fastBoot?: boolean;
 }
 async function start(prompt: string, o: StartOpts = {}): Promise<Live & { bootMs: number; sessionDir: string; seeded: boolean }> {
   let bootMsOut = -1;
@@ -79,9 +79,7 @@ async function start(prompt: string, o: StartOpts = {}): Promise<Live & { bootMs
     fastBoot: o.fastBoot ?? false,
     seed: o.seed ?? process.env.OCLIVE_SEED !== '0', seedDir,
     ...(o.ramLimitMb !== undefined ? { ramLimitMb: o.ramLimitMb } : process.env.OCLIVE_RAM !== undefined ? { ramLimitMb: Number(process.env.OCLIVE_RAM) } : {}),
-    profile: o.claudeHooks || o.shelves
-      ? { ...(o.claudeHooks ? { claudeHooks: o.claudeHooks } : {}), ...(o.shelves ? { shelves: o.shelves, instructions: 'Use the lessons from your shelves.\n' } : {}) }
-      : undefined,
+    profile: o.claudeHooks ? { claudeHooks: o.claudeHooks } : undefined,
     promptBracketedPaste: true,
   });
   // Mimic HookIngestion: feed each JSONL line through the adapter parser.
@@ -97,7 +95,7 @@ async function start(prompt: string, o: StartOpts = {}): Promise<Live & { bootMs
   try {
     let bootStart = 0;
     await adapter.launch(task.id, prompt, cwd, undefined, {
-      tmuxName: tmux, extraEnv: o.extraEnv,
+      tmuxName: tmux, extraEnv: o.extraEnv, ...(o.profile ? { profile: o.profile } : {}),
       onPhase: (p: string) => { if (p === 'agent-boot') bootStart = Date.now(); if (p === 'ack') bootMsOut = Date.now() - bootStart; },
     });
   } catch (err) {
@@ -298,10 +296,10 @@ const nbCmds = (h: Rec[]) => preBash(h).map((r) => String(r.tool_input.command))
 const MARKERS = ['PA-7731', 'CV-4410', 'CR-5521', 'FM-6632', 'SO-9902'];
 const MARKER_Q = ' Finally, in your last message list, comma separated, every lesson marker code of the form XX-0000 that appears in the "Lessons from your shelves" part of your instructions (write none if there is no such part).';
 
-async function memoryRun(shelves: string[], prompt: string, cwd: string, done: (s: Awaited<ReturnType<typeof start>>) => boolean) {
+async function memoryRun(profile: string, prompt: string, cwd: string, done: (s: Awaited<ReturnType<typeof start>>) => boolean) {
   const nb = makeNb();
   const before = snapshotDir(nb.dir);
-  const s = await start(prompt + MARKER_Q, { cwd, shelves, extraEnv: { NB_DIR: nb.dir } });
+  const s = await start(prompt + MARKER_Q, { cwd, profile, extraEnv: { NB_DIR: nb.dir } });
   const agentsPath = join(s.sessionDir, 'cfg', 'AGENTS.md');
   const agents = existsSync(agentsPath) ? readFileSync(agentsPath, 'utf8') : '';
   const pane = pollPane(s);
@@ -320,7 +318,7 @@ const retroDone = (s: Awaited<ReturnType<typeof start>>) => preBash(s.hooks()).s
 
 async function S7(): Promise<void> {
   const cwd = newRepo();
-  const r = await memoryRun(['patch-author', 'change-verifier'],
+  const r = await memoryRun('scoped-fix',
     "Tiny task: create hello.txt containing the word hi, commit it with `git add hello.txt && git commit -m 'feat: add hello'`, and write a one-paragraph PR_BODY.md at the repo root.", cwd, retroDone);
   const has = (t: string, m: string) => t.includes(m);
   const ctx = [
@@ -330,10 +328,10 @@ async function S7(): Promise<void> {
     `hook JSONL SO-9902=${has(r.hookText, 'SO-9902')}`,
     `global index (nb-inject.sh) lists shelf name secret-other=${has(r.inject, 'secret-other')}, index contains lesson text SO-9902=${has(r.inject, 'SO-9902')}`,
   ];
-  record('S7a configured shelves reach AGENTS.md; foreign shelf lesson does not', has(r.agents, 'PA-7731') && has(r.agents, 'CV-4410') && !has(r.agents, 'SO-9902') && !has(r.agents, 'CR-5521') && !has(r.agents, 'FM-6632') && has(r.inject, 'secret-other') && !has(r.inject, 'SO-9902'), ctx.join('\n'));
+  record('S7a profile shelves reach AGENTS.md; foreign shelf lesson does not', has(r.agents, 'PA-7731') && has(r.agents, 'CV-4410') && !has(r.agents, 'SO-9902') && !has(r.agents, 'CR-5521') && !has(r.agents, 'FM-6632') && has(r.inject, 'secret-other') && !has(r.inject, 'SO-9902'), ctx.join('\n'));
   record('S7b model context: markers seen, SO-9902 never in model output', has(r.display + r.hookText, 'PA-7731') && has(r.display + r.hookText, 'CV-4410') && !has(r.display, 'SO-9902') && !has(r.hookText, 'SO-9902'), ctx.slice(2, 4).join('\n'));
   const cmds = nbCmds(r.hooks);
-  record('S7c agent ran nb show on a configured shelf', cmds.some((c) => /nb\s+show\s+(patch-author|change-verifier)/.test(c)), `nb commands=${JSON.stringify(cmds)}`);
+  record('S7c agent ran nb show on a profile shelf', cmds.some((c) => /nb\s+show\s+(patch-author|change-verifier)/.test(c)), `nb commands=${JSON.stringify(cmds)}`);
   record('S7d retro vote/add changed the NB_DIR file', r.finished && !!r.diff.trim(), `finished=${r.finished}\nnotebook diff:\n${r.diff || '<none>'}`);
 }
 
@@ -342,10 +340,10 @@ async function S8(): Promise<void> {
   writeFileSync(join(cwd, 'cache.js'), "const cache = {};\nfunction getUser(id, load) {\n  if (cache.last && cache.last.id !== id) cache.last = undefined;\n  cache.last = cache.last || load(id);\n  return cache.last;\n}\nmodule.exports = { getUser };\n");
   execFileSync('git', ['-C', cwd, 'add', '.']);
   execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'add cache']);
-  const r = await memoryRun(['code-review', 'failure-mode-analyst'], 'Review cache.js for real defects and write REVIEW.md (at most 3 findings).', cwd, (s) => retroDone(s) || existsSync(join(s.cwd, 'REVIEW.md')) && s.names().filter((n) => n === 'Stop').length >= 2);
+  const r = await memoryRun('reviewer', 'Review cache.js for real defects and write REVIEW.md (at most 3 findings).', cwd, (s) => retroDone(s) || existsSync(join(s.cwd, 'REVIEW.md')) && s.names().filter((n) => n === 'Stop').length >= 2);
   const has = (t: string, m: string) => t.includes(m);
   const cmds = nbCmds(r.hooks);
-  record('S8a AGENTS.md has only the configured shelves, not patch-author/change-verifier/secret', has(r.agents, 'CR-5521') && has(r.agents, 'FM-6632') && !has(r.agents, 'PA-7731') && !has(r.agents, 'CV-4410') && !has(r.agents, 'SO-9902'),
+  record('S8a reviewer AGENTS.md has its own shelves, not patch-author/change-verifier/secret', has(r.agents, 'CR-5521') && has(r.agents, 'FM-6632') && !has(r.agents, 'PA-7731') && !has(r.agents, 'CV-4410') && !has(r.agents, 'SO-9902'),
     `AGENTS.md CR-5521=${has(r.agents, 'CR-5521')} FM-6632=${has(r.agents, 'FM-6632')} PA-7731=${has(r.agents, 'PA-7731')} CV-4410=${has(r.agents, 'CV-4410')} SO-9902=${has(r.agents, 'SO-9902')}`);
   record('S8b model never sees patch-author lesson text', !has(r.display, 'PA-7731') && !has(r.hookText, 'PA-7731') && !has(r.display, 'SO-9902'), `pane PA-7731=${has(r.display, 'PA-7731')} hooks PA-7731=${has(r.hookText, 'PA-7731')} nb commands=${JSON.stringify(cmds)}\nnotebook diff:\n${r.diff || '<none>'}`);
 }
@@ -393,12 +391,12 @@ function makeSlugRepo(): string {
   return d;
 }
 
-/** Mid-size fix task; compare with OCLIVE_RAM=512 vs OCLIVE_RAM=0 (peak tree RSS, success). */
+/** Mid-size task with the scoped-fix profile; compare with OCLIVE_RAM=512 vs OCLIVE_RAM=0 (peak tree RSS, success). */
 async function R1(): Promise<void> {
   const nb = makeNb();
   for (let i = 0; i < RUNS; i++) {
     const cwd = makeSlugRepo();
-    const s = await start("Issue #7: slugify() keeps punctuation and produces doubled dashes. `slugify('Hello,   World!')` returns `hello,---world!` but should return `hello-world`. The failing test is test/slug.test.js (run with `npm test`). Fix it minimally, add a regression test, commit with 'fix: slugify punctuation' and write PR_BODY.md.", { cwd, extraEnv: { NB_DIR: nb.dir } });
+    const s = await start("Issue #7: slugify() keeps punctuation and produces doubled dashes. `slugify('Hello,   World!')` returns `hello,---world!` but should return `hello-world`. The failing test is test/slug.test.js (run with `npm test`). Fix it minimally, add a regression test, commit with 'fix: slugify punctuation' and write PR_BODY.md.", { cwd, profile: 'scoped-fix', extraEnv: { NB_DIR: nb.dir, KOOKR_OPENCODE_ISSUE: '7' } });
     let peak = 0; let atRest = 0;
     const t0 = Date.now();
     const sampler = setInterval(() => { const r = ownedPids(s.tmux).reduce((a, p) => a + p.rss, 0) / 1024; if (!atRest && r > 0) atRest = r; peak = Math.max(peak, r); }, 2000);

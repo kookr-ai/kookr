@@ -29,6 +29,8 @@ export interface LaunchIntentOptions extends LaunchIntentPins {
   ralphVerdictEnv?: boolean;
   dependencies?: readonly LaunchDependency[];
   idempotencyKey?: string;
+  profile?: string;
+  issue?: number;
 }
 
 export type PersistedLaunchIntentValidation =
@@ -49,6 +51,8 @@ export function buildTaskLaunchIntent(agentType: AgentType, options: LaunchInten
     ...(options.ralphVerdictEnv !== undefined ? { ralphVerdictEnv: options.ralphVerdictEnv } : {}),
     ...(options.dependencies !== undefined ? { dependencies: [...new Set(options.dependencies)] } : {}),
     ...(options.idempotencyKey !== undefined ? { idempotencyKey: options.idempotencyKey } : {}),
+    ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.issue !== undefined ? { issue: options.issue } : {}),
   };
 }
 
@@ -150,6 +154,7 @@ export function validatePersistedLaunchIntent(
     ['cwd', candidate.cwd],
     ['projectId', candidate.projectId],
     ['idempotencyKey', candidate.idempotencyKey],
+    ['profile', candidate.profile],
   ] as const) {
     if (value !== undefined && (typeof value !== 'string' || value.trim() === '')) {
       return {
@@ -158,6 +163,13 @@ export function validatePersistedLaunchIntent(
         detail: `launch intent ${field} must be a non-empty string when present`,
       };
     }
+  }
+  if (candidate.issue !== undefined && (!Number.isInteger(candidate.issue) || candidate.issue <= 0)) {
+    return {
+      ok: false,
+      reason: 'malformed_launch_intent',
+      detail: 'launch intent issue must be a positive integer when present',
+    };
   }
   if (candidate.ralphVerdictEnv !== undefined && typeof candidate.ralphVerdictEnv !== 'boolean') {
     return {
@@ -193,6 +205,8 @@ export function validatePersistedLaunchIntent(
       ...(candidate.ralphVerdictEnv !== undefined ? { ralphVerdictEnv: candidate.ralphVerdictEnv } : {}),
       ...(candidate.dependencies !== undefined ? { dependencies: candidate.dependencies } : {}),
       ...(candidate.idempotencyKey !== undefined ? { idempotencyKey: candidate.idempotencyKey } : {}),
+      ...(candidate.profile !== undefined ? { profile: candidate.profile } : {}),
+      ...(candidate.issue !== undefined ? { issue: candidate.issue } : {}),
     }),
   };
 }
@@ -231,6 +245,10 @@ export function launchIntentFingerprint(intent: unknown): string | undefined {
       : ['absent'],
     dependencies,
     raw.ralphVerdictEnv === true,
+    // Appended only when present so fingerprints of profile-less intents stay
+    // byte-identical to those persisted before profiles existed.
+    ...(raw.profile !== undefined ? [['profile', raw.profile]] : []),
+    ...(raw.issue !== undefined ? [['issue', raw.issue]] : []),
   ]);
 }
 

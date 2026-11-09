@@ -22,6 +22,7 @@ export interface ParsedArgs {
   effort: string | null;
   model: string | null;
   modelTier: 'small' | null;
+  profile: string | null;
   criteria: string | null;
   dedupe: 'warn' | 'block' | 'skip';
   idempotencyKey: string | null;
@@ -105,6 +106,7 @@ export interface PostTaskArgs {
   effort?: string | null;
   model?: string | null;
   modelTier?: 'small' | null;
+  profile?: string | null;
   criteria: string | null;
   disableDedup?: boolean;
   metadataIntent?: 'keep_as_duplicate' | null;

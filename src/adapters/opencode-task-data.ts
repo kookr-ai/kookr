@@ -7,6 +7,7 @@
  * the same task could never continue it. The adapter now points `XDG_DATA_HOME` at
  *
  *   <dataRoot>/<taskId>/data          (the opencode DB lives in data/opencode/opencode.db)
+ *   <dataRoot>/<taskId>/gate-base     (HEAD sha the deliverable gate counts commits against)
  *
  * so a later launch of the same task can run `opencode --session <ses_...> <cwd>` against the same DB.
  *
@@ -17,7 +18,7 @@
  * kept (until the caps) so it stays resumable.
  */
 import { existsSync } from 'node:fs';
-import { lstat, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import type { TaskStatus } from '../core/task-status.js';
@@ -125,6 +126,20 @@ export async function readOpenCodeSessionId(dataHome: string, preferred?: string
       /* ignore */
     }
   }
+}
+
+export async function readGateBase(taskDir: string): Promise<string | undefined> {
+  try {
+    const sha = (await readFile(join(taskDir, 'gate-base'), 'utf8')).trim();
+    return /^[0-9a-f]{7,64}$/.test(sha) ? sha : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function writeGateBase(taskDir: string, sha: string): Promise<void> {
+  await mkdir(taskDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(taskDir, 'gate-base'), `${sha}\n`, { mode: 0o600 });
 }
 
 /** Mark the dir as used now (the age cap counts from last use). Best-effort. */

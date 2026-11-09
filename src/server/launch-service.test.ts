@@ -6,7 +6,7 @@ import { join, relative } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { TaskStore, LAUNCH_RESERVATION_TTL_MS } from '../core/tasks.js';
 import { AdapterRegistry } from '../adapters/agent-adapter.js';
-import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, AgentNotLaunchableError, isAgentNotLaunchableError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
+import { checkSubmission, launchTask, launchFreshTaskSession, launchPhaseTimingsOf, CwdValidationError, isCwdValidationError, DrainModeError, AutomationKillSwitchError, AgentBlacklistedError, isAgentBlacklistedError, AgentNotLaunchableError, isAgentNotLaunchableError, GrokAuthUnavailableError, isGrokAuthUnavailableError, EffortValidationError, ModelValidationError, ProfileValidationError, LaunchTimeoutError, isLaunchTimeoutError, isPendingQueueFullError, isSpawnBurstLimitError, isHostLoadAdmissionError, isQuotaHeadroomAdmissionError, IssueClaimHeldError, isIssueClaimHeldError, RelaunchDeniedError, isRelaunchDeniedError, IssueClaimLeaseRequiredError, isIssueClaimLeaseRequiredError, type PendingQueueFullError, type SpawnBurstLimitError, type HostLoadAdmissionError, type QuotaHeadroomAdmissionError, type LaunchServiceDeps } from './launch-service.js';
 import { IssueClaimRegistry } from '../core/issue-claim-registry.js';
 import type { ClaimEvent, ClaimTaskPort, ClaimTaskView } from '../core/issue-claim-types.js';
 import { isTerminalStatus } from '../core/task-status.js';
@@ -454,6 +454,72 @@ describe('launchTask', () => {
         }),
       ).rejects.toBeInstanceOf(ModelValidationError);
       expect(store.listTasks()).toHaveLength(0);
+    });
+
+    it('validates an opencode worker profile and persists it on the task metadata', async () => {
+      const opencode = {
+        agentType: 'opencode',
+        launch: vi.fn().mockResolvedValue('kookr-oc'),
+        sendInput: vi.fn(),
+        sendKeystroke: vi.fn(),
+        stop: vi.fn(),
+        captureDisplay: vi.fn(),
+        onEvent: vi.fn(),
+        onRefreshNeeded: vi.fn(),
+        injectHookEvent: vi.fn(),
+      };
+      deps.adapterRegistry.register(opencode as any);
+      await expect(
+        launchTask(deps, { prompt: 'x', cwd: '/tmp', agentType: 'claude-code', profile: 'scoped-fix' }),
+      ).rejects.toBeInstanceOf(ProfileValidationError);
+      await expect(
+        launchTask(deps, { prompt: 'x', cwd: '/tmp', agentType: 'opencode', profile: 'nope' }),
+      ).rejects.toThrow(/Unknown opencode profile "nope"/);
+      expect(store.listTasks()).toHaveLength(0);
+      const result = await launchTask(deps, { prompt: 'fix it', cwd: '/tmp', agentType: 'opencode', profile: 'scoped-fix' });
+      expect(result.task.metadata?.opencodeProfile).toBe('scoped-fix');
+      expect(opencode.launch).toHaveBeenCalledWith(
+        result.task.id, expect.any(String), '/tmp', undefined, expect.objectContaining({ profile: 'scoped-fix' }),
+      );
+    });
+
+    it('keeps worktree guardrails off a profiled opencode worker, issue is opencode-only and persisted, profile splits dedup', async () => {
+      const { execFileSync } = await import('node:child_process');
+      const { mkdtempSync } = await import('node:fs');
+      const { tmpdir } = await import('node:os');
+      const { join } = await import('node:path');
+      const repo = mkdtempSync(join(tmpdir(), 'ls-guard-'));
+      const { gitExecEnv } = await import('../core/git-helpers.js');
+      execFileSync('git', ['init', '-q', repo], { env: gitExecEnv() });
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'i'], { env: gitExecEnv() });
+      const opencode = {
+        agentType: 'opencode',
+        launch: vi.fn().mockResolvedValue('kookr-oc'),
+        sendInput: vi.fn(),
+        sendKeystroke: vi.fn(),
+        stop: vi.fn(),
+        captureDisplay: vi.fn(),
+        onEvent: vi.fn(),
+        onRefreshNeeded: vi.fn(),
+        injectHookEvent: vi.fn(),
+      };
+      deps.adapterRegistry.register(opencode as any);
+      await expect(
+        launchTask(deps, { prompt: 'x', cwd: repo, agentType: 'claude-code', issue: 7 }),
+      ).rejects.toBeInstanceOf(ProfileValidationError);
+      const scoped = await launchTask(deps, { prompt: 'fix it', cwd: repo, agentType: 'opencode', profile: 'scoped-fix', issue: 7 });
+      expect(scoped.task.prompt).toBe('fix it');
+      expect(scoped.task.metadata).toMatchObject({ opencodeProfile: 'scoped-fix', opencodeIssue: 7 });
+      expect(scoped.task.launchIntent).toMatchObject({ profile: 'scoped-fix', issue: 7 });
+      expect(opencode.launch).toHaveBeenCalledWith(
+        scoped.task.id, 'fix it', repo, undefined, expect.objectContaining({ profile: 'scoped-fix', issue: 7 }),
+      );
+      // Same prompt, different profile is a different launch; same profile+issue still dedupes.
+      expect(checkSubmission(store, 'fix it', 'opencode', repo, { profile: 'reviewer', issue: 7 })).toBeUndefined();
+      expect(checkSubmission(store, 'fix it', 'opencode', repo, { profile: 'scoped-fix', issue: 7 })?.id).toBe(scoped.task.id);
+      // Unprofiled opencode launches keep the guardrail.
+      const plain = await launchTask(deps, { prompt: 'plain', cwd: repo, agentType: 'opencode' });
+      expect(plain.task.prompt).toContain('fresh git worktree of its own');
     });
 
     it('rejects raw tier-target model pins for Codex and Grok (#1518)', async () => {

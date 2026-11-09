@@ -377,14 +377,33 @@ GET /api/tasks?limit=50&offset=100
 ### `POST /api/tasks` body fields
 
 `prompt` (required) and `cwd` (required) plus optional `criteria`, `parentTaskId`,
-`agentType`, `modelTier`, `effort`, `model`, `disableDedup`, `metadata`, `dependencies`,
-`autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
+`agentType`, `modelTier`, `effort`, `model`, `profile`, `issue`, `disableDedup`, `metadata`,
+`dependencies`, `autoCloseOnSignal`, `unattended`, `idempotencyKey`, and `playbook`.
 
 `agentType: "opencode"` launches the opt-in opencode agent. It is only
 available when the server runs with `KOOKR_OPENCODE_ENABLED=1` and the pinned
 opencode binary is present (see [opencode agent](opencode-agent.md)); it is
 never chosen by `round-robin` or as an automatic substitute for an unavailable
 pinned agent, so it must be requested explicitly.
+
+`profile` (optional, string) selects an opencode worker profile (`scoped-fix`,
+`reviewer`, `test-auditor`; see [opencode agent](opencode-agent.md#profiles)).
+It is only valid with `agentType: "opencode"`: a non-opencode agent, an empty or
+non-string value, or an unknown profile id returns
+`400 {"error", "code": "invalid_profile"}` without launching a task. The id is
+stored as `metadata.opencodeProfile`, so queued promotion and relaunch launch
+with the same profile. A profiled launch skips the generic worktree/delivery
+preamble: the caller prepares the checkout and the profile's deliverable gate
+defines delivery. The `kookr-spawn --profile <id>` flag maps to this field.
+
+`issue` (optional, positive integer) is the issue number an opencode task
+closes. A value that is not a positive
+integer returns `400 {"error", "code": "invalid_issue"}`; a non-opencode agent
+returns `400` with `code: "invalid_profile"`. It is stored as `metadata.opencodeIssue` and exported to
+the worker's gate as `KOOKR_OPENCODE_ISSUE`, which then requires `Closes #<issue>`
+in the commit message. `profile` and `issue` are part of the launch identity:
+the same prompt with a different profile or issue is a different task, not a
+duplicate.
 
 `playbook` (optional) wraps the supplied prompt with a parsed playbook before
 launch. Its shape is `{ "path": "phase.md", "scope": "project" }`. `path` must
