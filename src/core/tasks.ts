@@ -1563,6 +1563,15 @@ export class TaskStore {
     return cloneTask(task);
   }
 
+  /** Record opencode's own session id on the task metadata (used by resume). No-op for an unknown task. */
+  recordOpenCodeSessionId(taskId: string, sessionId: string): void {
+    const task = this.tasks.get(taskId);
+    if (!task) return;
+    task.metadata = { ...(task.metadata ?? {}), opencodeSessionId: sessionId };
+    task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
+  }
+
   updateTokenUsage(taskId: string, usage: TokenUsage): Task {
     const task = this.tasks.get(taskId);
     if (!task) {

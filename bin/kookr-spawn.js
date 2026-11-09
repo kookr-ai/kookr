@@ -86,6 +86,16 @@ const MODEL_IDS = [
   ...CLAUDE_MODEL_IDS,
   'gpt-6-astra',
 ];
+// opencode takes free-form `provider/model` ids, validated by shape. Keep in
+// sync with OPENCODE_MODEL_ID_PATTERN / isValidOpenCodeModelId in
+// src/shared/contracts/agent-types.ts (parity-tested in src/cli/kookr-spawn.test.ts).
+const OPENCODE_MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._:-]*)+$/;
+function isValidOpenCodeModelId(model) {
+  return typeof model === 'string'
+    && model.length <= 200
+    && !model.includes('..')
+    && OPENCODE_MODEL_ID_PATTERN.test(model);
+}
 const MODEL_TIERS = new Set(['small']);
 function isKnownModelId(model) {
   if (typeof model !== 'string' || model.length === 0) return false;
@@ -179,7 +189,7 @@ Usage:
 
 Options:
   -C, --cwd <path>         Working directory for the task (default: cwd).
-  -a, --agent <type>       claude-code, codex-cli, or grok-build
+  -a, --agent <type>       claude-code, codex-cli, grok-build, or opencode
                            (default: server default).
       --effort <level>     Reasoning effort for this task (default: server's
                            per-agent-type setting, else the agent CLI default).
@@ -194,7 +204,9 @@ Options:
                            claude-haiku-4-5 and dated
                            suffixes). codex-cli accepts gpt-6-astra.
                            grok-build rejects --model (use --model-tier for
-                           portable model intent).
+                           portable model intent). opencode (scoped worker,
+                           never auto-selected) takes a provider/model id,
+                           e.g. deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017.
       --model-tier <tier>  Portable model intent resolved after agent choice.
                            small = Haiku, Luna/high, or Grok 4.6.
                            Codex requires the Kookr fork; stock/older binaries
@@ -430,10 +442,10 @@ function parseArgs(argv) {
       out.positional.push(tok);
     }
   }
-  const ACCEPTED_AGENTS = new Set(['claude-code', 'codex-cli', 'grok-build']);
+  const ACCEPTED_AGENTS = new Set(['claude-code', 'codex-cli', 'grok-build', 'opencode']);
   if (out.agent !== null && !ACCEPTED_AGENTS.has(out.agent)) {
     throw new UsageError(
-      `--agent must be "claude-code", "codex-cli", or "grok-build" (got: ${out.agent})`,
+      `--agent must be "claude-code", "codex-cli", "grok-build", or "opencode" (got: ${out.agent})`,
     );
   }
   if (!DEDUPE_MODES.has(out.dedupe)) {
@@ -444,7 +456,13 @@ function parseArgs(argv) {
       `--effort must be one of: ${[...EFFORT_LEVELS].join(', ')} (got: ${out.effort})`,
     );
   }
-  if (out.model !== null && !isKnownModelId(out.model)) {
+  if (out.agent === 'opencode' && out.model !== null) {
+    if (!isValidOpenCodeModelId(out.model)) {
+      throw new UsageError(
+        `--model for opencode must be a provider/model id (e.g. deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017; got: ${out.model})`,
+      );
+    }
+  } else if (out.model !== null && !isKnownModelId(out.model)) {
     throw new UsageError(
       `--model must be a known model id (e.g. ${MODEL_IDS.slice(0, 4).join(', ')}; got: ${out.model})`,
     );

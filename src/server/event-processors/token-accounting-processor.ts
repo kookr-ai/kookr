@@ -40,8 +40,8 @@ export function createTokenAccountingProcessor({
   // all-zero usage (empty Claude-format buckets), which the periodic/stop token
   // scans then write over the adapter's real counts. Skip non-Claude transcripts.
   const registerClaudeTranscript = (task: TokenOwnerTask, transcriptPath: string): void => {
-    // opencode hook payloads carry no token counts (its usage lives in its own
-    // database), so there is nothing to derive from hook events here.
+    // opencode hook payloads carry no token counts; its usage is read from the per-session
+    // opencode DB by the adapter on stop (opencode-usage-scanner), so skip it here.
     if (task.agentType === 'grok-build' || task.agentType === 'opencode') return;
     transcriptRegistry.register(transcriptPath, task.id);
   };

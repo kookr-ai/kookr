@@ -551,6 +551,34 @@ describe('wireEventPipeline – stale suggestion clearing (integration)', () => 
     expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
   });
 
+  test('opencode: keeps a completion_ready raised from inside a tool call when that call\'s own tool events arrive', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.getTaskForMutation(task.id)!.agentType = 'opencode';
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    // `kookr signal completion-ready` runs as a Bash tool call: its tool events land after the POST.
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+    adapter.injectHookEvent(tmuxName, makeStopHook());
+    expect(taskStore.getPendingSignal(task.id)?.kind).toBe('completion_ready');
+  });
+
+  test('non-opencode agents keep clearing completion_ready on in-flight tool events (original behaviour)', async () => {
+    setup();
+    const tmuxName = await launchAgent();
+    const task = taskStore.findTaskBySession(tmuxName)!;
+    taskStore.setPendingSignal(task.id, {
+      kind: 'completion_ready',
+      raisedAt: new Date('2026-06-21T00:00:00.000Z').toISOString(),
+    });
+    adapter.injectHookEvent(tmuxName, makeToolUseHook());
+    expect(taskStore.getPendingSignal(task.id)).toBeUndefined();
+  });
+
   test('retains a pending completion_ready during replay hydration (no wipe on restart)', async () => {
     setup();
     const tmuxName = await launchAgent();

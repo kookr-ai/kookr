@@ -5,11 +5,13 @@
  * per-session composed config/data/plugin directory. The generated plugin pipes
  * Claude-shaped hook payloads into `kookr-hook-writer`, so inbound events reuse
  * the Claude hook normaliser (`parseHookEvent`). Modelled on GrokBuildAdapter.
+ * Resume: the conversation DB lives in a per-task persistent data dir (opencode-task-data.ts) and a
+ * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
 import {
   asTerminalInputWriterPort,
@@ -54,13 +56,37 @@ import { getGitInfo } from './git-info.js';
 import { translateKeystroke } from './keystroke.js';
 import { LaunchAbortedError, raceAgainstLaunchAbort, throwIfLaunchAborted } from './launch-abort.js';
 import { composeOpenCodeSession, type ComposeOpenCodeSessionOptions } from './opencode-home-composer.js';
-import type { OpenCodeProfile } from './opencode-kookr-hooks.js';
+import {
+  defaultKookrClaudeHooks,
+  resolveDefaultBinDir,
+  resolveDefaultPluginHooksDir,
+  type OpenCodeProfile,
+} from './opencode-kookr-hooks.js';
+import { buildShelfLessonsSection, type ShelfShowRunner } from './opencode-shelf-memory.js';
+import { prepareOpenCodeSeed, resolveOpenCodeSeedDir } from './opencode-seed.js';
 import { preflightOpenCode, resolveOpenCodeBin } from './opencode-preflight.js';
 import {
   formatOpenCodePaneExcerpt,
   isOpenCodeBusyOrResponding,
   isOpenCodeComposerReady,
 } from './opencode-readiness.js';
+import { mapOpenCodeUsageToTokenUsage, readOpenCodeDataHomeUsage } from './opencode-usage-scanner.js';
+import {
+  DEFAULT_OPENCODE_DATA_DONE_TTL_HOURS,
+  DEFAULT_OPENCODE_DATA_MAX_AGE_DAYS,
+  DEFAULT_OPENCODE_DATA_MAX_MB,
+  OPENCODE_DATA_SWEEP_INTERVAL_MS,
+  openCodeTaskDataHome,
+  isAbsentOrEmptyDir,
+  markTaskDir,
+  openCodeTaskDir,
+  removeMarkedTaskDir,
+  parseDataCap,
+  readOpenCodeSessionId,
+  resolveOpenCodeDataRoot,
+  sweepOpenCodeTaskData,
+  touchTaskDir,
+} from './opencode-task-data.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { TerminalBackend } from './terminal-backend.js';
 
@@ -72,6 +98,8 @@ const DEFAULT_READY_POLL_MS = 100;
 /** opencode's plugin hook round-trip (writer + HTTP) is slower than Claude's 2s ack window. */
 export const DEFAULT_OPENCODE_PROMPT_SUBMIT_CONFIRM_TIMEOUT_MS = 30_000;
 
+/** Default TUI heap cap (MB); see KOOKR_OPENCODE_RAM_LIMIT_MB. */
+export const DEFAULT_OPENCODE_RAM_LIMIT_MB = 512;
 export const DEFAULT_OPENCODE_PROVIDER_ID = 'deepinfra';
 export const DEFAULT_OPENCODE_MODEL_ID = 'deepseek-ai/DeepSeek-V4.1-Flash-1017';
 export const DEFAULT_OPENCODE_BASE_URL = 'https://api.deepinfra.com/v1/openai';
@@ -110,8 +138,51 @@ export interface OpenCodeAdapterOptions {
   promptSubmitConfirmTimeoutMs?: number;
   /**
    * Instructions (AGENTS.md), Claude-shaped hooks and hook env applied to every session.
+   * Explicit `claudeHooks` here replace the generated default hook set.
    */
   profile?: OpenCodeProfile;
+  /** Directory holding the bin scripts (the stop nudge). Defaults to `<repo>/bin`. */
+  binDir?: string;
+  /** Directory holding nb-inject.sh / nb-retro.sh. Defaults to `<repo>/plugin/hooks`. */
+  pluginHooksDir?: string;
+  /**
+   * Pre-seed each session's config roots (hardlinked from a one-time template) so the TUI skips its
+   * in-process `npm install`, and set `OPENCODE_FAST_BOOT=1` for seeded sessions. Default false
+   * (the server wiring turns it on); on any seed failure sessions simply boot unseeded.
+   */
+  seed?: boolean;
+  /** Seed template dir. Defaults to `KOOKR_OPENCODE_SEED_DIR`, else `~/.kookr/tools/opencode-<ver>/seed`. */
+  seedDir?: string;
+  /** Test seam: seed preparation. */
+  prepareSeed?: typeof prepareOpenCodeSeed;
+  /**
+   * RAM cap for the TUI (`BUN_JSC_forceRAMSize`), in MB. Defaults to `KOOKR_OPENCODE_RAM_LIMIT_MB`,
+   * else 512; 0 disables the cap.
+   */
+  ramLimitMb?: number;
+  /**
+   * Set `OPENCODE_FAST_BOOT=1` on seeded sessions (default off, env `KOOKR_OPENCODE_FAST_BOOT`).
+   * Measured live: with no terminal attached (the normal Kookr case) the TUI never paints the
+   * composer under FAST_BOOT, so the initial prompt is lost; it is only safe with an attached terminal.
+   */
+  fastBoot?: boolean;
+  /** Test seam: `nb show <shelf>` runner. */
+  shelfShow?: ShelfShowRunner;
+  /**
+   * Root of the per-task persistent opencode data (conversation DB, kept so a relaunch can resume).
+   * Defaults to `KOOKR_OPENCODE_DATA_DIR`, else `opencode-data` beside the hooks dir.
+   */
+  dataRoot?: string;
+  /** Unused-age cap for a task's data dir, days (`KOOKR_OPENCODE_DATA_MAX_AGE_DAYS`, default 14; 0 = off). */
+  dataMaxAgeDays?: number;
+  /** Hours a completed/cancelled task's data is kept for reopen+resume (`KOOKR_OPENCODE_DATA_DONE_TTL_HOURS`, default 24; 0 = remove at the next sweep). */
+  dataDoneTtlHours?: number;
+  /** Delay before the post-stop sweep (ms); lets a task delete/complete that triggered the stop settle. Default 5000. */
+  postStopSweepDelayMs?: number;
+  /** Total size cap for all task data, MB (`KOOKR_OPENCODE_DATA_MAX_MB`, default 1024; 0 = off). */
+  dataMaxMb?: number;
+  /** Generate the default Kookr hook set when no explicit `claudeHooks` is configured. Default true. */
+  defaultHooks?: boolean;
 }
 
 /** Split a per-task model pin: an optional leading `<providerId>/` is stripped, the rest is the model id. */
@@ -130,11 +201,21 @@ export class OpenCodeAdapter implements AgentAdapter {
   private sequenceCounters = new Map<string, number>();
   private hookSettings = new Map<string, EffectiveHookSettings>();
   private sessionDirs = new Map<string, string>();
+  /** tmuxName -> per-task persistent XDG_DATA_HOME (survives the session). */
+  private dataHomes = new Map<string, string>();
+  /** tmuxName -> task data dir created by a FRESH launch (removed again if that launch fails). */
+  private freshTaskDirs = new Map<string, string>();
+  private dataRoot: string;
+  private dataMaxAgeMs: number;
+  private dataMaxBytes: number;
+  private dataDoneTtlMs: number;
+  private postStopSweepDelayMs: number;
+  private lastDataSweep = 0;
   private initialPromptSubmitResolvers = new Map<string, () => void>();
   /**
    * SessionStart seen before the session was registered on the task. The plugin emits it as soon as
    * opencode loads, i.e. before `addSession` at the end of launch, so it would otherwise never reach
-   * the session record and the task would have no recoverable conversation id.
+   * the session record and the task would have no recoverable conversation id (resume gate).
    */
   private earlyParentStarts = new Map<string, { sessionId: string; transcriptPath: string }>();
 
@@ -153,6 +234,16 @@ export class OpenCodeAdapter implements AgentAdapter {
   private promptReadyTimeoutMs: number;
   private promptSubmitConfirmTimeoutMs: number;
   private profile?: OpenCodeProfile;
+  private binDir?: string;
+  private pluginHooksDir?: string;
+  private defaultHooks: boolean;
+  private seed: boolean;
+  private seedDir: string;
+  private prepareSeed: typeof prepareOpenCodeSeed;
+  private seedPromise?: Promise<string | undefined>;
+  private ramLimitMb: number;
+  private fastBoot: boolean;
+  private shelfShow?: ShelfShowRunner;
   private preflightProbe?: Promise<PreflightResult>;
 
   constructor(
@@ -176,6 +267,23 @@ export class OpenCodeAdapter implements AgentAdapter {
       apiKeyEnv: options?.apiKeyEnv ?? DEFAULT_OPENCODE_API_KEY_ENV,
     };
     this.profile = options?.profile;
+    this.binDir = options?.binDir;
+    this.pluginHooksDir = options?.pluginHooksDir;
+    this.defaultHooks = options?.defaultHooks ?? true;
+    this.seed = options?.seed ?? false;
+    this.seedDir = options?.seedDir ?? resolveOpenCodeSeedDir(this.env);
+    this.prepareSeed = options?.prepareSeed ?? prepareOpenCodeSeed;
+    this.ramLimitMb = options?.ramLimitMb ?? parseRamLimitMb(this.env.KOOKR_OPENCODE_RAM_LIMIT_MB);
+    this.shelfShow = options?.shelfShow;
+    this.dataRoot = options?.dataRoot ?? resolveOpenCodeDataRoot(this.env, this.hooksDir);
+    this.dataMaxAgeMs = (options?.dataMaxAgeDays
+      ?? parseDataCap(this.env.KOOKR_OPENCODE_DATA_MAX_AGE_DAYS, DEFAULT_OPENCODE_DATA_MAX_AGE_DAYS)) * 86_400_000;
+    this.dataDoneTtlMs = (options?.dataDoneTtlHours
+      ?? parseDataCap(this.env.KOOKR_OPENCODE_DATA_DONE_TTL_HOURS, DEFAULT_OPENCODE_DATA_DONE_TTL_HOURS)) * 3_600_000;
+    this.postStopSweepDelayMs = options?.postStopSweepDelayMs ?? 5000;
+    this.dataMaxBytes = (options?.dataMaxMb
+      ?? parseDataCap(this.env.KOOKR_OPENCODE_DATA_MAX_MB, DEFAULT_OPENCODE_DATA_MAX_MB)) * 1024 * 1024;
+    this.fastBoot = options?.fastBoot ?? ['1', 'true', 'yes'].includes(this.env.KOOKR_OPENCODE_FAST_BOOT?.trim().toLowerCase() ?? '');
     this.permission = options?.permission ?? 'allow';
     this.sessionRoot = options?.sessionRoot ?? tmpdir();
     this.probeExec = options?.probeExec;
@@ -203,14 +311,16 @@ export class OpenCodeAdapter implements AgentAdapter {
     resume?: ResumeContext,
     opts?: AdapterLaunchOptions,
   ): Promise<string> {
-    // `resume` is not honoured: every launch starts a fresh conversation with `prompt`.
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
     opts?.onPhase?.('session-create');
+    // Resume only when the task's persistent opencode DB still holds a session; otherwise warn and
+    // launch fresh with the prompt (the data dir may have been swept or the task never ran).
+    const opencodeSessionId = resume?.sessionId ? await this.findResumableSession(taskId, resume) : undefined;
     let env: Record<string, string>;
     try {
-      env = await this.prepareSession(taskId, cwd, tmuxName, opts);
+      env = await this.prepareSession(taskId, cwd, tmuxName, opts, opencodeSessionId !== undefined);
     } catch (err) {
       await this.cleanupFailedLaunch(tmuxName);
       throw err;
@@ -222,7 +332,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       await this.backend.createSession({
         id: tmuxName,
         command: this.agentBin,
-        args: [cwd],
+        args: opencodeSessionId ? ['--session', opencodeSessionId, cwd] : [cwd],
         env,
         cwd,
         size: { cols: 200, rows: 50 },
@@ -241,7 +351,11 @@ export class OpenCodeAdapter implements AgentAdapter {
     let deliveryResult: InitialPromptDeliveryResult | undefined;
     try {
       deliveryResult = await raceAgainstLaunchAbort(
-        this.runAgentBootSequence(tmuxName, prompt, submitConfirmed),
+        opencodeSessionId
+          // Resume: the conversation already holds the original prompt (Claude does the same); just
+          // wait for the composer so the session registers healthy.
+          ? this.waitForComposerReady(tmuxName).then(() => undefined)
+          : this.runAgentBootSequence(tmuxName, prompt, submitConfirmed),
         opts?.signal,
         tmuxName,
       );
@@ -286,6 +400,7 @@ export class OpenCodeAdapter implements AgentAdapter {
     cwd: string,
     tmuxName: string,
     opts?: AdapterLaunchOptions,
+    resuming = false,
   ): Promise<Record<string, string>> {
     const launchContext = await buildAgentLaunchContext({
       taskStore: this.taskStore,
@@ -296,6 +411,23 @@ export class OpenCodeAdapter implements AgentAdapter {
     });
     const sessionDir = await mkdtemp(join(this.sessionRoot, `kookr-opencode-${tmuxName}-`));
     this.sessionDirs.set(tmuxName, sessionDir);
+    // Per-task persistent data: kept across stop so a relaunch can resume; a fresh launch starts clean.
+    const taskDir = openCodeTaskDir(this.dataRoot, taskId);
+    if (!resuming) {
+      // Only a dir Kookr created (ownership marker) may be reset; anything else in the way is refused, never deleted.
+      if (!(await removeMarkedTaskDir(taskDir, taskId)) && !(await isAbsentOrEmptyDir(taskDir))) {
+        throw new Error(`refusing to use ${taskDir} as opencode task data: it exists and was not created by Kookr`);
+      }
+      this.freshTaskDirs.set(tmuxName, taskDir);
+    }
+    const dataHome = openCodeTaskDataHome(taskDir);
+    // Marker first: a crash between the two steps must not leave an unmarked (and thus never reclaimed) dir.
+    await mkdir(taskDir, { recursive: true, mode: 0o700 });
+    await markTaskDir(taskDir, taskId);
+    await mkdir(dataHome, { recursive: true, mode: 0o700 });
+    await touchTaskDir(taskDir);
+    this.dataHomes.set(tmuxName, dataHome);
+    void this.maybeSweepTaskData(taskId);
     const hookCommand = buildHookCommand({
       tmuxName,
       hookFile: `${this.hooksDir}/${tmuxName}.jsonl`,
@@ -306,20 +438,40 @@ export class OpenCodeAdapter implements AgentAdapter {
     const permission = opts?.bypassPermissions !== undefined
       ? (opts.bypassPermissions ? 'allow' : 'ask')
       : this.permission;
+    let instructions = this.profile?.instructions;
+    if (this.profile?.shelves?.length) {
+      // Only the configured shelves, read with the session's NB_DIR (fail-open).
+      const lessons = await buildShelfLessonsSection(this.profile.shelves, {
+        env: { ...this.env, ...(opts?.extraEnv ?? {}) },
+        show: this.shelfShow,
+        warn: (m) => console.warn(m),
+      });
+      if (lessons) instructions = `${instructions ?? ''}${instructions?.endsWith('\n') ? '\n' : '\n\n'}${lessons}`;
+    }
+    const seedDir = this.seed ? await this.ensureSeed() : undefined;
     const hookEnv = {
       KOOKR_TASK_ID: taskId,
       ...(this.serverPort ? { KOOKR_PORT: String(this.serverPort) } : {}),
       ...(this.profile?.hookEnv ?? {}),
     };
-    const claudeHooks = this.profile?.claudeHooks;
+    const claudeHooks = this.profile?.claudeHooks ?? (this.defaultHooks
+      ? defaultKookrClaudeHooks({
+          pluginHooksDir: this.pluginHooksDir ?? resolveDefaultPluginHooksDir(this.env),
+          binDir: this.binDir ?? resolveDefaultBinDir(this.env),
+        })
+      : undefined);
     const composed = await this.composeSession({
       sessionDir,
       sessionId: tmuxName,
       cwd,
+      dataHome,
       hookCommand,
       model: resolveModelConfig(this.model, opts?.model),
       permission,
-      ...(this.profile?.instructions !== undefined ? { instructions: this.profile.instructions } : {}),
+      ...(seedDir ? { seedDir } : {}),
+      ramLimitMb: this.ramLimitMb,
+      fastBoot: this.fastBoot,
+      ...(instructions !== undefined ? { instructions } : {}),
       ...(claudeHooks ? { claudeHooks: { ...claudeHooks, env: { ...(claudeHooks.env ?? {}), ...hookEnv } } } : {}),
     });
     this.hookSettings.set(tmuxName, {
@@ -329,6 +481,63 @@ export class OpenCodeAdapter implements AgentAdapter {
     });
     // Layering: launch context < caller extraEnv < composed isolation vars.
     return { ...launchContext.env, ...(opts?.extraEnv ?? {}), ...composed.env };
+  }
+
+  /** Memoised seed preparation (a failure is remembered for the process: sessions boot unseeded). */
+  private ensureSeed(): Promise<string | undefined> {
+    this.seedPromise ??= this.prepareSeed({
+      bin: this.agentBin,
+      seedDir: this.seedDir,
+      env: this.env,
+      warn: (m) => console.warn(m),
+    }).catch(() => undefined);
+    return this.seedPromise;
+  }
+
+  /** The opencode session id to continue for `taskId`, or undefined (with a warning) => launch fresh. */
+  private async findResumableSession(taskId: string, resume: ResumeContext): Promise<string | undefined> {
+    const preferred = resume.sessionId.startsWith('ses_')
+      ? resume.sessionId
+      : this.taskStore.getTask(taskId)?.metadata?.opencodeSessionId;
+    const id = await readOpenCodeSessionId(openCodeTaskDataHome(openCodeTaskDir(this.dataRoot, taskId)), preferred);
+    if (!id) {
+      console.warn(
+        `[opencode-adapter] resume requested for ${taskId} but no opencode session was found in its persistent data ` +
+          `(${this.dataRoot}); launching fresh.`,
+      );
+    }
+    return id;
+  }
+
+  /** Throttled, fire-and-forget retention sweep (see opencode-task-data.ts). */
+  private async maybeSweepTaskData(launchingTaskId?: string): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastDataSweep < OPENCODE_DATA_SWEEP_INTERVAL_MS) return;
+    this.lastDataSweep = now;
+    await this.sweepTaskData(launchingTaskId);
+  }
+
+  /** Run the retention sweep now. Never throws. */
+  async sweepTaskData(launchingTaskId?: string): Promise<void> {
+    try {
+      const active = new Set(this.tmuxToTaskId.values());
+      if (launchingTaskId) active.add(launchingTaskId);
+      const res = await sweepOpenCodeTaskData({
+        root: this.dataRoot,
+        statusOf: (id) => this.taskStore.getTask(id)?.status,
+        activeTaskIds: active,
+        isActive: (id) => id === launchingTaskId || [...this.tmuxToTaskId.values()].includes(id),
+        maxAgeMs: this.dataMaxAgeMs,
+        doneTtlMs: this.dataDoneTtlMs,
+        maxBytes: this.dataMaxBytes,
+        warn: (m) => console.warn(m),
+      });
+      if (res.removed.length > 0) {
+        console.log(`[opencode-adapter] swept ${res.removed.length} persistent opencode data dir(s): ${res.removed.map((r) => `${r.taskId.slice(0, 8)}:${r.reason}`).join(', ')}`);
+      }
+    } catch {
+      /* retention is best-effort */
+    }
   }
 
   /** Poll until the composer chrome is painted. Fail-open on timeout (confirmation still guards delivery). */
@@ -394,6 +603,8 @@ export class OpenCodeAdapter implements AgentAdapter {
   }
 
   private async cleanupFailedLaunch(tmuxName: string): Promise<void> {
+    await this.recordSessionTokenUsage(tmuxName);
+    const failedTaskId = this.tmuxToTaskId.get(tmuxName);
     this.forgetSession(tmuxName);
     try {
       await this.backend.killSession(tmuxName);
@@ -401,6 +612,11 @@ export class OpenCodeAdapter implements AgentAdapter {
       /* preserve the original failure */
     }
     await this.cleanupSessionDir(tmuxName);
+    // A failed FRESH launch leaves nothing worth resuming; a failed resume keeps the conversation.
+    const fresh = this.freshTaskDirs.get(tmuxName);
+    this.freshTaskDirs.delete(tmuxName);
+    this.dataHomes.delete(tmuxName);
+    if (fresh && failedTaskId) await removeMarkedTaskDir(fresh, failedTaskId).catch(() => { /* best-effort */ });
   }
 
   private async cleanupSessionDir(tmuxName: string): Promise<void> {
@@ -426,8 +642,56 @@ export class OpenCodeAdapter implements AgentAdapter {
   async stop(tmuxName: string): Promise<void> {
     this.initialPromptSubmitResolvers.get(tmuxName)?.();
     await this.backend.killSession(tmuxName);
+    // After the kill (opencode has flushed its DB) and BEFORE the session dir is deleted.
+    await this.recordSessionTokenUsage(tmuxName);
+    await this.recordOpenCodeSessionId(tmuxName);
+    const dataHome = this.dataHomes.get(tmuxName);
+    this.dataHomes.delete(tmuxName);
+    this.freshTaskDirs.delete(tmuxName);
     this.forgetSession(tmuxName);
     await this.cleanupSessionDir(tmuxName);
+    // The per-task data (conversation DB) deliberately outlives the session so the task can resume.
+    if (dataHome) await touchTaskDir(dirname(dataHome));
+    await this.sweepTaskData();
+    // A task delete/complete that caused this stop may land just after it: sweep once more shortly.
+    if (this.postStopSweepDelayMs > 0) {
+      setTimeout(() => { void this.sweepTaskData(); }, this.postStopSweepDelayMs).unref();
+    }
+  }
+
+  /** Persist the opencode session id on the task (`metadata.opencodeSessionId`) for operators and relaunch. Best-effort. */
+  private async recordOpenCodeSessionId(tmuxName: string): Promise<void> {
+    const dataHome = this.dataHomes.get(tmuxName);
+    const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (!dataHome || !taskId) return;
+    try {
+      const id = await readOpenCodeSessionId(dataHome, this.taskStore.getTask(taskId)?.metadata?.opencodeSessionId);
+      if (id && this.taskStore.getTask(taskId)?.metadata?.opencodeSessionId !== id) {
+        this.taskStore.recordOpenCodeSessionId(taskId, id);
+      }
+    } catch {
+      /* best-effort */
+    }
+  }
+
+  /**
+   * Sum the session's opencode DB into the task's token usage (mirrors the grok adapter).
+   * Best-effort: a missing/unreadable DB leaves usage unset and never blocks teardown.
+   */
+  private async recordSessionTokenUsage(tmuxName: string): Promise<void> {
+    const dataHome = this.dataHomes.get(tmuxName);
+    if (!dataHome) return;
+    const taskId = this.tmuxToTaskId.get(tmuxName) ?? this.taskStore.findTaskBySession(tmuxName)?.id;
+    if (!taskId) return;
+    try {
+      const result = await readOpenCodeDataHomeUsage(dataHome);
+      if (result.kind !== 'ok') return;
+      if (!this.taskStore.getTask(taskId)) return;
+      this.taskStore.updateTokenUsage(taskId, mapOpenCodeUsageToTokenUsage(result.usage));
+      for (const handler of this.refreshHandlers) handler();
+    } catch {
+      /* telemetry is best-effort — never block teardown on a scan failure */
+    }
   }
 
   async captureDisplay(tmuxName: string): Promise<string> {
@@ -597,6 +861,13 @@ export class OpenCodeAdapter implements AgentAdapter {
   getEffectiveHookSettings(tmuxName: string): EffectiveHookSettings | undefined {
     return this.getActiveHookSettings(tmuxName);
   }
+}
+
+/** `KOOKR_OPENCODE_RAM_LIMIT_MB`: unset => 512, 0 => off, invalid => 512. */
+export function parseRamLimitMb(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_OPENCODE_RAM_LIMIT_MB;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : DEFAULT_OPENCODE_RAM_LIMIT_MB;
 }
 
 function describeParseError(err: unknown): string {

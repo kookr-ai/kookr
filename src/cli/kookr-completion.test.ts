@@ -147,7 +147,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('--run-commands');
     expect(script).toContain('compgen -W "--spec --out --review-out --plugin-dir --cache-dir --json -h --help"');
     expect(script).toContain('--prompt-file');
-    expect(script).toContain('compgen -W "claude-code codex-cli grok-build"');
+    expect(script).toContain('compgen -W "claude-code codex-cli grok-build opencode"');
     expect(script).toContain('compgen -W "none minimal low medium high xhigh max ultra"');
     expect(script).toContain('compgen -W "warn block skip"');
     expect(script).toContain('--dedupe=warn');
@@ -177,7 +177,7 @@ describe('renderCompletion', () => {
     expect(script).toContain('--from-command');
     expect(script).toContain('--run-commands');
     expect(script).toContain('compadd -- --spec --out --review-out --plugin-dir --cache-dir --json -h --help');
-    expect(script).toContain('compadd claude-code codex-cli grok-build');
+    expect(script).toContain('compadd claude-code codex-cli grok-build opencode');
     expect(script).toContain('compadd none minimal low medium high xhigh max ultra');
     expect(script).toContain('compadd warn block skip');
     expect(script).toContain('compadd -- --dedupe=warn --dedupe=block --dedupe=skip');
@@ -297,6 +297,7 @@ describe('bash completion behavior', () => {
       'claude-code',
       'codex-cli',
       'grok-build',
+      'opencode',
     ]);
   });
 
@@ -713,6 +714,7 @@ describe.skipIf(!hasZsh)('zsh completion behavior', () => {
       'claude-code',
       'codex-cli',
       'grok-build',
+      'opencode',
     ]);
   });
 

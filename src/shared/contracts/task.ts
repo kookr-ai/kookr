@@ -115,6 +115,8 @@ export interface TaskMetadata {
    * relation projections, but autonomous parent policy is not inherited.
    */
   userInitiatedRelaunch?: true;
+  /** opencode's own session id (`ses_...`) recorded when the session stops; a relaunch resumes it with `--session`. */
+  opencodeSessionId?: string;
   /** Audit marker for tasks launched while permission prompts were globally bypassed. */
   launchPermissionPosture?: TaskLaunchPermissionPosture;
   /**
