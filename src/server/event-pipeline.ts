@@ -670,11 +670,19 @@ export function wireEventPipeline(deps: EventPipelineDeps): {
         // programmatic resumes are covered. Skip replay hydration
         // (meta.origin === 'replay'): it re-feeds historical user_prompts and
         // must not wipe a signal that was legitimately pending at restart.
-        // Note: a preemptive manual `kookr signal completion-ready` raised while
-        // the agent is still mid-turn is intentionally dropped here — the signal
-        // means "finished", so an in-flight live turn contradicts it.
+        // opencode workers: only a new prompt (`user_prompt`) counts as work resuming. The agent raises
+        // `completion_ready` from inside a tool call (`kookr signal ...` via Bash), so that
+        // very call's PreToolUse/PostToolUse events — ingested around the signal POST — also
+        // derive to a live turn; clearing on them dropped every agent-raised signal before the
+        // closing Stop arrived (observed with opencode workers). A turn that keeps working
+        // after signalling is still covered by the reapers' live-work veto. Other agent types
+        // keep the original behaviour (clear on any live turn state) until it is verified there:
+        // a preemptive manual `kookr signal completion-ready` raised while the agent is still
+        // mid-turn is intentionally dropped, since the signal means "finished" and an in-flight
+        // live turn contradicts it.
         if (
           meta.origin !== 'replay'
+          && (pipelineEvent.type === 'user_prompt' || ownerTask.agentType !== 'opencode')
           && (turnState === 'running' || turnState === 'waiting_for_input' || turnState === 'blocked')
           && taskStore.getPendingSignal(ownerTask.id)?.kind === 'completion_ready'
           && taskStore.clearPendingSignal(ownerTask.id)

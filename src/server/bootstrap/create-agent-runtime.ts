@@ -214,6 +214,8 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
       agentBin: deps.opencodeBin,
       env: openCodeEnv,
       probeExec: deps.opencodeProbeExec,
+      // One-time config seed (boot 10-17 s -> ~2 s); KOOKR_OPENCODE_SEED=0 opts out.
+      seed: openCodeEnv.KOOKR_OPENCODE_SEED?.trim() !== '0',
     });
     const openCodePreflight = await openCodeAdapter.preflight();
     if (openCodePreflight.kind === 'ok') {

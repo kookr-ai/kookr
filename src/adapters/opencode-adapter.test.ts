@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import Database from 'better-sqlite3';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
-import { OpenCodeAdapter, type OpenCodeAdapterOptions } from './opencode-adapter.js';
+import { OpenCodeAdapter, parseRamLimitMb, type OpenCodeAdapterOptions } from './opencode-adapter.js';
 import type { OpenCodeProfile } from './opencode-kookr-hooks.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { AgentEvent } from '../core/types.js';
@@ -27,9 +29,13 @@ describe('OpenCodeAdapter', () => {
       env: { PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv,
       agentBin: '/opt/opencode',
       sessionRoot,
+      dataRoot: join(sessionRoot, 'opencode-data'),
+      dataDoneTtlHours: 0,
+      postStopSweepDelayMs: 0,
       promptBracketedPaste: false,
       promptReadyTimeoutMs: 20,
       promptSubmitConfirmTimeoutMs: 40,
+      shelfShow: async () => '', // never read the host's real notebooks
       ...overrides,
     });
   }
@@ -86,6 +92,122 @@ describe('OpenCodeAdapter', () => {
     expect(plugin).toContain('"NB_DIR":"/tmp/nb"');
   });
 
+  describe('boot-time seed, RAM cap and shelf memory', () => {
+    const envOf = (id: string) => backend.sessions.get(id)!.spec.env!;
+
+    test('RAM cap defaults to 512 MB, env/option override, 0 disables', async () => {
+      const a = await launch(makeAdapter());
+      expect(envOf(a.id).BUN_JSC_forceRAMSize).toBe(String(512 * 1024 * 1024));
+      const b = await launch(makeAdapter({ env: { PATH: '/bin', KOOKR_OPENCODE_RAM_LIMIT_MB: '256' } as NodeJS.ProcessEnv }), { tmuxName: 'kookr-oc2' });
+      expect(envOf(b.id).BUN_JSC_forceRAMSize).toBe(String(256 * 1024 * 1024));
+      const c = await launch(makeAdapter({ env: { PATH: '/bin', KOOKR_OPENCODE_RAM_LIMIT_MB: '0' } as NodeJS.ProcessEnv }), { tmuxName: 'kookr-oc3' });
+      expect(envOf(c.id).BUN_JSC_forceRAMSize).toBeUndefined();
+      expect(parseRamLimitMb('junk')).toBe(512);
+    });
+
+    test('seed disabled by default: no seed run, no FAST_BOOT', async () => {
+      const prepareSeed = vi.fn();
+      const { id } = await launch(makeAdapter({ prepareSeed }));
+      expect(prepareSeed).not.toHaveBeenCalled();
+      expect(envOf(id).OPENCODE_FAST_BOOT).toBeUndefined();
+    });
+
+    test('seeded session links both config roots (FAST_BOOT only when opted in); failed seed boots unseeded', async () => {
+      const seedDir = join(sessionRoot, 'seed-template');
+      mkdirSync(join(seedDir, 'node_modules', 'p'), { recursive: true });
+      for (const f of ['package.json', 'package-lock.json', '.gitignore', '.seed-ready']) writeFileSync(join(seedDir, f), '{}');
+      writeFileSync(join(seedDir, 'node_modules', 'p', 'i.js'), 'x');
+      const prepareSeed = vi.fn(async () => seedDir);
+      const adapter = makeAdapter({ seed: true, prepareSeed });
+      const { id } = await launch(adapter);
+      const env = envOf(id);
+      expect(env.OPENCODE_FAST_BOOT).toBeUndefined(); // FAST_BOOT is opt-in (needs an attached terminal)
+      expect(existsSync(join(env.OPENCODE_CONFIG_DIR!, 'node_modules', 'p', 'i.js'))).toBe(true);
+      expect(existsSync(join(env.XDG_CONFIG_HOME!, 'opencode', 'node_modules', 'p', 'i.js'))).toBe(true);
+      const fast = await launch(makeAdapter({ seed: true, prepareSeed, fastBoot: true }), { tmuxName: 'kookr-oc8' });
+      expect(envOf(fast.id).OPENCODE_FAST_BOOT).toBe('1');
+      await launch(adapter, { tmuxName: 'kookr-oc9' });
+      expect(prepareSeed).toHaveBeenCalledTimes(2); // memoised per adapter
+
+      const failing = makeAdapter({ seed: true, prepareSeed: async () => undefined });
+      const f = await launch(failing, { tmuxName: 'kookr-oc4' });
+      expect(envOf(f.id).OPENCODE_FAST_BOOT).toBeUndefined();
+      expect(existsSync(join(envOf(f.id).OPENCODE_CONFIG_DIR!, 'node_modules'))).toBe(false);
+    });
+
+    test('configured shelves are appended to AGENTS.md; only those shelves are read, with the session NB_DIR', async () => {
+      const seen: Array<[string, string | undefined]> = [];
+      const shelfShow = async (shelf: string, env: NodeJS.ProcessEnv) => { seen.push([shelf, env.NB_DIR]); return shelf === 'shelf-a' ? 'lesson MARK-A' : 'lesson MARK-B'; };
+      const { id } = await launch(
+        makeAdapter({ profile: { instructions: 'A instructions.\n', shelves: ['shelf-a'] }, shelfShow }),
+        { extraEnv: { NB_DIR: '/tmp/nbx' } },
+      );
+      const agents = readFileSync(join(envOf(id).OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8');
+      expect(agents).toContain('A instructions.');
+      expect(agents).toContain('## Lessons from your shelves');
+      expect(agents).toContain('MARK-A');
+      expect(agents).not.toContain('MARK-B');
+      expect(seen).toEqual([['shelf-a', '/tmp/nbx']]);
+    });
+
+    test('a throwing shelf read never blocks the launch', async () => {
+      const { id } = await launch(makeAdapter({ profile: { instructions: 'x', shelves: ['s'] }, shelfShow: async () => { throw new Error('nb gone'); } }));
+      expect(readFileSync(join(envOf(id).OPENCODE_CONFIG_DIR!, 'AGENTS.md'), 'utf-8')).not.toContain('Lessons from your shelves');
+    });
+  });
+
+  describe('default Kookr hooks', () => {
+    const pluginOf = (id: string) =>
+      readFileSync(join(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf-8');
+
+    test('the hook env carries the task id and port', async () => {
+      const { id } = await launch(makeAdapter({ serverPort: 4801 }));
+      const plugin = pluginOf(id);
+      expect(plugin).toContain('"KOOKR_PORT":"4801"');
+    });
+
+    test('the default hooks (nb-inject, nudge, nb-retro) are wired', async () => {
+      const { id } = await launch(makeAdapter());
+      const plugin = pluginOf(id);
+      expect(plugin).toContain('nb-inject.sh');
+      expect(plugin).toContain('nb-retro.sh');
+      expect(existsSync(join(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG_DIR!, 'AGENTS.md'))).toBe(false);
+    });
+
+    test('defaultHooks:false composes no hooks', async () => {
+      const { id } = await launch(makeAdapter({ defaultHooks: false }));
+      expect(pluginOf(id)).not.toContain('nb-retro.sh');
+    });
+  });
+
+  describe('usage accounting on stop', () => {
+    const FIXTURE_DB = fileURLToPath(new URL('./__fixtures__/opencode-session.db', import.meta.url));
+    const stageDb = (id: string) => {
+      const dbDir = join(backend.sessions.get(id)!.spec.env!.XDG_DATA_HOME!, 'opencode');
+      mkdirSync(dbDir, { recursive: true });
+      copyFileSync(FIXTURE_DB, join(dbDir, 'opencode.db'));
+    };
+
+    test('records token usage on the task before the session dir is deleted', async () => {
+      const adapter = makeAdapter();
+      const refreshed = vi.fn();
+      adapter.onRefreshNeeded(refreshed);
+      const { task, id } = await launch(adapter);
+      stageDb(id);
+      await adapter.stop(id);
+      const usage = taskStore.getTask(task.id)!.tokenUsage!;
+      expect(usage).toMatchObject({ inputTokens: 5545, outputTokens: 2, cacheReadTokens: 1792 });
+      expect(refreshed).toHaveBeenCalled();
+    });
+
+    test('a session without a DB leaves usage unset and still tears down', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      await adapter.stop(id);
+      expect(taskStore.getTask(task.id)!.tokenUsage).toBeUndefined();
+    });
+  });
+
   test('composes the default provider/model and honors a per-task model pin', async () => {
     const adapter = makeAdapter();
     const { id } = await launch(adapter, { model: 'deepinfra/deepseek-ai/Other-Model' });
@@ -132,15 +254,125 @@ describe('OpenCodeAdapter', () => {
     expect(taskStore.getTask(task.id)!.sessions).toHaveLength(0);
   });
 
-  test('a SessionStart that arrives before the session is registered still reaches the session record', async () => {
-    const adapter = makeAdapter({ promptReadyTimeoutMs: 200 });
-    const task = taskStore.createTask('do it', '/workspace');
-    const pending = adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1' });
-    await vi.waitFor(() => expect(backend.sessions.has('kookr-oc1')).toBe(true));
-    // The plugin emits SessionStart as soon as opencode loads, before launch registers the session.
-    adapter.injectHookEvent('kookr-oc1', hook('SessionStart', { source: 'startup' }));
-    await pending;
-    expect(taskStore.getTask(task.id)!.sessions[0]!.claudeSessionId).toBe('kookr-oc1');
+  describe('resume (per-task persistent data)', () => {
+    const dataHomeOf = (id: string) => backend.sessions.get(id)!.spec.env!.XDG_DATA_HOME!;
+    function stageSessions(dataHome: string, rows: Array<[string, string | null, number]>) {
+      mkdirSync(join(dataHome, 'opencode'), { recursive: true });
+      const db = new Database(join(dataHome, 'opencode', 'opencode.db'));
+      db.exec('CREATE TABLE session (id text PRIMARY KEY, parent_id text, time_updated integer NOT NULL)');
+      for (const r of rows) db.prepare('INSERT INTO session VALUES (?, ?, ?)').run(...r);
+      db.close();
+    }
+
+    test('XDG_DATA_HOME is the per-task dir, outside the session dir, and survives stop', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      const dataHome = dataHomeOf(id);
+      expect(dataHome).toBe(join(sessionRoot, 'opencode-data', task.id, 'data'));
+      expect(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG!.startsWith(dataHome)).toBe(false);
+      await adapter.stop(id);
+      expect(existsSync(dataHome)).toBe(true);
+      expect(existsSync(backend.sessions.get(id)!.spec.env!.OPENCODE_CONFIG!)).toBe(false);
+    });
+
+    test('stop records the opencode session id on the task metadata', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      await adapter.stop(id);
+      expect(taskStore.getTask(task.id)!.metadata?.opencodeSessionId).toBe('ses_abc123');
+    });
+
+    test('resume launches `--session <id> <cwd>` against the same data dir and delivers no prompt', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      const firstData = dataHomeOf(id);
+      await adapter.stop(id);
+
+      const id2 = await adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' });
+      const spec = backend.sessions.get(id2)!.spec;
+      expect(spec.args).toEqual(['--session', 'ses_abc123', '/workspace']);
+      expect(spec.env!.XDG_DATA_HOME).toBe(firstData);
+      expect(backend.getWrittenBytes(id2)).toHaveLength(0); // no initial prompt re-delivery
+      expect(backend.sessions.get(id2)!.paneContent).not.toContain('do it');
+      const session = taskStore.getTask(task.id)!.sessions.find((s) => s.tmuxSession === id2)!;
+      expect(session.promptDelivery).toBeUndefined();
+      // The session config is re-composed (plugin + hooks env) for the new session.
+      expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain('kookr-oc2');
+      expect(readFileSync(join(spec.env!.OPENCODE_CONFIG_DIR!, 'plugins', 'kookr.js'), 'utf8')).toContain(task.id);
+    });
+
+    test('a SessionStart that arrives before the session is registered still reaches the session record', async () => {
+      const adapter = makeAdapter({ promptReadyTimeoutMs: 200 });
+      const task = taskStore.createTask('do it', '/workspace');
+      const pending = adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc1' });
+      await vi.waitFor(() => expect(backend.sessions.has('kookr-oc1')).toBe(true));
+      // The plugin emits SessionStart as soon as opencode loads, before launch registers the session.
+      adapter.injectHookEvent('kookr-oc1', hook('SessionStart', { source: 'startup' }));
+      await pending;
+      expect(taskStore.getTask(task.id)!.sessions[0]!.claudeSessionId).toBe('kookr-oc1');
+    });
+
+    test('a ses_-prefixed resume id wins over the newest session when it exists', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageSessions(dataHomeOf(id), [['ses_older', null, 1], ['ses_newer', null, 9]]);
+      await adapter.stop(id);
+      const id2 = await adapter.launch(task.id, 'x', '/workspace', { sessionId: 'ses_older' }, { tmuxName: 'kookr-oc2' });
+      expect(backend.sessions.get(id2)!.spec.args).toEqual(['--session', 'ses_older', '/workspace']);
+    });
+
+    test('resume without a stored session warns and launches fresh with the prompt', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const adapter = makeAdapter();
+      const task = taskStore.createTask('do it', '/workspace');
+      const id = await adapter.launch(task.id, 'do it', '/workspace', { sessionId: 'kookr-gone' }, { tmuxName: 'kookr-oc1' });
+      expect(backend.sessions.get(id)!.spec.args).toEqual(['/workspace']);
+      expect(backend.sessions.get(id)!.paneContent).toContain('do it');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('launching fresh'));
+      warn.mockRestore();
+    });
+
+    test('a fresh launch discards stale data left by an earlier conversation of the same task id', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      const stale = join(dataHomeOf(id), 'stale.txt');
+      writeFileSync(stale, 'x');
+      await adapter.stop(id);
+      await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc2' });
+      expect(existsSync(stale)).toBe(false);
+    });
+
+    test('a failed fresh launch removes its data dir; a failed resume keeps it', async () => {
+      const adapter = makeAdapter();
+      const { task, id } = await launch(adapter);
+      stageSessions(dataHomeOf(id), [['ses_abc123', null, 5]]);
+      await adapter.stop(id);
+      const taskDir = join(sessionRoot, 'opencode-data', task.id);
+      vi.spyOn(backend, 'createSession').mockRejectedValueOnce(new Error('boom'));
+      await expect(adapter.launch(task.id, 'x', '/workspace', { sessionId: 'kookr-oc1' }, { tmuxName: 'kookr-oc2' })).rejects.toThrow('boom');
+      expect(existsSync(taskDir)).toBe(true);
+      vi.spyOn(backend, 'createSession').mockRejectedValueOnce(new Error('boom2'));
+      await expect(adapter.launch(task.id, 'x', '/workspace', undefined, { tmuxName: 'kookr-oc3' })).rejects.toThrow('boom2');
+      expect(existsSync(taskDir)).toBe(false);
+    });
+
+    test('stop sweeps the data of a completed task but keeps a terminated task resumable', async () => {
+      const adapter = makeAdapter();
+      const a = await launch(adapter);
+      const dirA = join(sessionRoot, 'opencode-data', a.task.id);
+      taskStore.completeTask(a.task.id);
+      await adapter.stop(a.id);
+      expect(existsSync(dirA)).toBe(false);
+
+      const t2 = taskStore.createTask('two', '/workspace');
+      const id2 = await adapter.launch(t2.id, 'two', '/workspace', undefined, { tmuxName: 'kookr-oc9' });
+      const dir2 = join(sessionRoot, 'opencode-data', t2.id);
+      taskStore.terminateTask(t2.id, { reason: 'unknown' } as never);
+      await adapter.stop(id2);
+      expect(existsSync(dir2)).toBe(true);
+    });
   });
 
   describe('initial prompt delivery (bracketed paste)', () => {

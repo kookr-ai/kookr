@@ -1,3 +1,4 @@
+import { isValidOpenCodeModelId } from '../shared/contracts/agent-types.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -185,6 +186,35 @@ describe('parseArgs', () => {
     expect(parseArgs(['-a', 'codex-cli']).agent).toBe('codex-cli');
     expect(parseArgs(['--agent', 'grok-build']).agent).toBe('grok-build');
     expect(parseArgs(['-a', 'grok-build']).agent).toBe('grok-build');
+  });
+
+  it('accepts opencode with provider/model ids and rejects non-provider ids for it', () => {
+    expect(parseArgs(['--agent', 'opencode']).agent).toBe('opencode');
+    expect(
+      parseArgs(['-a', 'opencode', '--model', 'deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017']).model,
+    ).toBe('deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017');
+    expect(() => parseArgs(['-a', 'opencode', '--model', 'claude-opus-5'])).toThrow(UsageError);
+    expect(() => parseArgs(['-a', 'opencode', '--model', 'a//b'])).toThrow(UsageError);
+    // provider/model ids are opencode-only: other agents keep the fixed allowlist.
+    expect(() => parseArgs(['-a', 'claude-code', '--model', 'deepinfra/some-model'])).toThrow(UsageError);
+    expect(() => parseArgs(['--model', 'deepinfra/some-model'])).toThrow(UsageError);
+  });
+
+  it('keeps the opencode model-id mirror in parity with isValidOpenCodeModelId', () => {
+    const cases = [
+      'deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017', 'openai/gpt-5', 'a/b', 'a/b:free', 'p/m/x.y_z',
+      'noslash', '/lead', 'trail/', 'a//b', 'a/../b', 'a/b c', 'a/b;rm', '-a/b', 'a/-b', 'a/b$',
+      `p/${'x'.repeat(200)}`, '',
+    ];
+    for (const model of cases) {
+      let accepted = true;
+      try {
+        parseArgs(['--agent', 'opencode', '--model', model]);
+      } catch {
+        accepted = false;
+      }
+      expect(accepted, model).toBe(isValidOpenCodeModelId(model));
+    }
   });
 
   it('parses --effort and --effort=<level>, defaulting to null (#681)', () => {

@@ -35,6 +35,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
+import { importMaybeTs } from './import-maybe-ts.js';
 import {
   apiAuthHeaders,
   resolveBaseUrl,
@@ -169,7 +170,8 @@ async function loadOutboxModule() {
   }
   const src = join(here, '..', 'src', 'core', 'signal-outbox.ts');
   if (existsSync(src)) {
-    return import(pathToFileURL(src).href);
+    // Source checkout without dist: .ts needs tsx's resolver for its `.js` import specifiers.
+    return importMaybeTs(src);
   }
   throw new Error(
     'signal outbox module not found. Run `pnpm build:server` first.',

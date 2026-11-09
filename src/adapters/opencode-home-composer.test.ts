@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Script } from 'node:vm';
@@ -64,5 +64,28 @@ describe('composeOpenCodeSession', () => {
     await expect(composeOpenCodeSession({ ...opts(tmp), sessionDir: 'rel' })).rejects.toThrow();
     await expect(composeOpenCodeSession(opts(tmp, { model: { ...model, apiKeyEnv: 'sk-abc def' } }))).rejects.toThrow();
     await expect(composeOpenCodeSession(opts(tmp, { extraPluginSources: { '../x.js': '' } }))).rejects.toThrow();
+  });
+
+  it('seeds both config roots (hardlinks) and sets FAST_BOOT only when seeded; ramLimitMb sets BUN_JSC_forceRAMSize', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'oc-'));
+    const seed = join(tmp, 'seed');
+    mkdirSync(join(seed, 'node_modules', 'p'), { recursive: true });
+    for (const f of ['package.json', 'package-lock.json', '.gitignore', '.seed-ready']) writeFileSync(join(seed, f), '1');
+    writeFileSync(join(seed, 'node_modules', 'p', 'a.js'), 'x');
+    const seeded = await composeOpenCodeSession(opts(tmp, { seedDir: seed, ramLimitMb: 512, fastBoot: true }));
+    expect(seeded.seeded).toBe(true);
+    expect(seeded.env.OPENCODE_FAST_BOOT).toBe('1');
+    const noFast = await composeOpenCodeSession({ ...opts(tmp), sessionDir: join(tmp, 'sess3'), seedDir: seed });
+    expect(noFast.seeded).toBe(true);
+    expect(noFast.env.OPENCODE_FAST_BOOT).toBeUndefined();
+    expect(seeded.env.BUN_JSC_forceRAMSize).toBe(String(512 * 1024 * 1024));
+    expect(statSync(join(seeded.configDir, 'node_modules/p/a.js')).ino).toBe(statSync(join(seed, 'node_modules/p/a.js')).ino);
+    expect(existsSync(join(seeded.env.XDG_CONFIG_HOME, 'opencode', 'package-lock.json'))).toBe(true);
+
+    const plain = await composeOpenCodeSession({ ...opts(tmp), sessionDir: join(tmp, 'sess2'), seedDir: join(tmp, 'missing') });
+    expect(plain.seeded).toBe(false);
+    expect(plain.env.OPENCODE_FAST_BOOT).toBeUndefined();
+    expect(plain.env.BUN_JSC_forceRAMSize).toBeUndefined();
+    expect(existsSync(join(plain.configDir, 'node_modules'))).toBe(false);
   });
 });

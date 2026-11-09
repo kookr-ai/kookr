@@ -160,6 +160,8 @@ describe('AdapterLaunchOptions contract — every registered adapter honors it',
             env: { PATH: '/usr/bin:/bin' } as NodeJS.ProcessEnv,
             agentBin: '/fake/opencode',
             sessionRoot: sessionHomeRoot,
+            dataRoot: join(sessionHomeRoot, 'opencode-data'),
+            postStopSweepDelayMs: 0,
             promptBracketedPaste: false,
             promptReadyTimeoutMs: 30,
           });
