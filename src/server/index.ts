@@ -1281,17 +1281,23 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Telegram handle and reply bridge exist (the routes are built before them).
   let askNotifierHolder: AskNotifier | undefined;
   let askDeliverHolder: ((taskId: string, text: string) => Promise<{ ok: boolean; reason?: string }>) | undefined;
-  const askService: AskService | undefined = process.env.KOOKR_TELEGRAM_BOT_TOKEN && process.env.KOOKR_REMOTE_CHAT_DISABLED !== '1'
-    ? new AskService({
-      store: await AskStore.open(kookrDir, (err) => console.warn('[asks] persist failed:', err)),
-      getNotifier: () => askNotifierHolder,
-      taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
-      deliverToTask: async (taskId, text) => askDeliverHolder
-        ? askDeliverHolder(taskId, text)
-        : { ok: false, reason: 'reply bridge not ready' },
-      log: (message) => console.log(message),
-    })
-    : undefined;
+  let askService: AskService | undefined;
+  if (process.env.KOOKR_TELEGRAM_BOT_TOKEN && process.env.KOOKR_REMOTE_CHAT_DISABLED !== '1') {
+    try {
+      askService = new AskService({
+        store: await AskStore.open(kookrDir, (err) => console.warn('[asks] persist failed:', err)),
+        getNotifier: () => askNotifierHolder,
+        taskStatus: (taskId) => taskStore.getTask(taskId)?.status,
+        deliverToTask: async (taskId, text) => askDeliverHolder
+          ? askDeliverHolder(taskId, text)
+          : { ok: false, reason: 'reply bridge not ready' },
+        log: (message) => console.log(message),
+      });
+    } catch (err) {
+      // A broken ask store must never stop Kookr from starting: asks are simply unavailable.
+      console.warn('[asks] disabled — could not open the ask store:', err);
+    }
+  }
 
   // Environment-blocker registry (issue #1690). A durable, shared record of
   // active external blockers (e.g. a GitHub Actions billing limit) so the first

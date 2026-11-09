@@ -80,12 +80,17 @@ export class AskService {
         this.transition(ask.id, 'cancelled', 'delivery_failed');
       }
     }
-    this.deps.store.prune(this.now());
-    await this.sweepExpired();
+    await this.tick();
     this.timer = setInterval(() => {
-      this.sweepExpired().catch((err) => this.log(`[asks] sweep failed: ${String(err)}`));
+      this.tick().catch((err) => this.log(`[asks] sweep failed: ${String(err)}`));
     }, SWEEP_INTERVAL_MS);
     this.timer.unref();
+  }
+
+  /** One maintenance pass: enforce retention, then expire overdue asks. */
+  private async tick(): Promise<void> {
+    this.deps.store.prune(this.now());
+    await this.sweepExpired();
   }
 
   async stop(): Promise<void> {
@@ -173,6 +178,12 @@ export class AskService {
     try {
       const delivery = await notifier.sendAsk(ask, (idx) => this.callbackData(ask, idx));
       this.deps.store.update(ask.id, (a) => { a.delivery = delivery; });
+      // The ask may have been cancelled/expired while the send was in flight;
+      // its message was not finalizable then (no delivery yet), so close it now.
+      const current = this.deps.store.get(ask.id) as AskRecord;
+      if (current.state !== 'pending') {
+        await this.finalize(current, current.state === 'expired' ? '⌛ Expired — no answer.' : '🚫 Cancelled by the asking task.');
+      }
     } catch (err) {
       this.transition(ask.id, 'cancelled', 'delivery_failed');
       const message = err instanceof Error ? err.message : String(err);
@@ -256,6 +267,9 @@ export class AskService {
     if (!ask) return { ok: false, reason: 'not_found' };
 
     if (input.option) {
+      if (typeof input.option.mac !== 'string' || !Number.isInteger(input.option.index)) {
+        return { ok: false, reason: 'forged' };
+      }
       const expected = Buffer.from(this.mac(ask, input.option.index));
       const given = Buffer.from(input.option.mac);
       if (expected.length !== given.length || !timingSafeEqual(expected, given)) {

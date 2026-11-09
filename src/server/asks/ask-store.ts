@@ -33,10 +33,17 @@ export class AskStore {
 
     let secret: Buffer;
     const secretPath = join(dir, 'secret');
+    let existing: Buffer | undefined;
     try {
-      secret = Buffer.from((await readFile(secretPath, 'utf-8')).trim(), 'hex');
-      if (secret.length !== 32) throw new Error('bad secret length');
-    } catch {
+      existing = Buffer.from((await readFile(secretPath, 'utf-8')).trim(), 'hex');
+    } catch (err) {
+      // Only a missing file may mint a new secret: regenerating on a transient
+      // read error (EACCES/EIO) would silently invalidate every live button.
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+    if (existing && existing.length === 32) {
+      secret = existing;
+    } else {
       secret = randomBytes(32);
       await atomicWriteFile(secretPath, `${secret.toString('hex')}\n`, { mode: 0o600 });
     }

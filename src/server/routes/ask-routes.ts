@@ -47,6 +47,9 @@ export function registerAskRoutes(app: Hono, deps: AskRouteDeps): void {
     } catch {
       return c.json({ error: 'invalid JSON body', code: 'invalid' }, 400);
     }
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return c.json({ error: 'body must be a JSON object', code: 'invalid' }, 400);
+    }
     const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
     const taskId = str(body.taskId);
     const question = str(body.question);

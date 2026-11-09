@@ -195,6 +195,20 @@ describe('AskService.answer', () => {
     expect(h.deliver).not.toHaveBeenCalled();
   });
 
+  it('rejects non-string MACs and non-integer option indexes without throwing', async () => {
+    const ask = await createOk();
+    const base2 = { askId: ask.id, senderId: 7, chatId: 42, messageId: ask.delivery!.messageId };
+    for (const option of [
+      { index: 0, mac: 5 as unknown as string },
+      { index: Number.NaN, mac: 'a'.repeat(16) },
+      { index: -1, mac: 'a'.repeat(16) },
+      { index: 0.5, mac: 'a'.repeat(16) },
+    ]) {
+      expect(await h.service.answer({ ...base2, option })).toMatchObject({ ok: false, reason: 'forged' });
+    }
+    expect(h.store.get(ask.id)?.state).toBe('pending');
+  });
+
   it('rejects a MAC minted for a different ask (nonce binding)', async () => {
     const a = await createOk({ question: 'a' });
     const b = await createOk({ question: 'b' });
@@ -274,6 +288,29 @@ describe('expiry, cancel and boot reconciliation', () => {
     expect(h.deliver).not.toHaveBeenCalled();
   });
 
+  it('closes the Telegram message when the ask is cancelled while the send is in flight', async () => {
+    let release!: () => void;
+    h.notifier.sendAsk.mockImplementationOnce(() => new Promise((resolve) => {
+      release = () => resolve({ chatId: 42, messageId: 555 });
+    }));
+    const pending = h.service.create(base);
+    await vi.waitFor(() => expect(h.store.all()).toHaveLength(1));
+    h.store.update(h.store.all()[0].id, (a) => { a.state = 'cancelled'; a.resolution = 'cancelled'; });
+    release();
+    await pending;
+    expect(h.notifier.finalizeAsk).toHaveBeenCalledWith(expect.objectContaining({ state: 'cancelled' }), expect.stringContaining('Cancelled'));
+  });
+
+  it('start() enforces retention and the sweep tick expires overdue asks', async () => {
+    const old = await createOk({ question: 'old' });
+    await tap(old, 0);
+    const overdue = await createOk({ question: 'overdue', timeoutSec: 60 });
+    h.clock.now += 8 * 24 * 60 * 60 * 1000;
+    await h.service.start();
+    expect(h.store.get(old.id)).toBeUndefined();
+    expect(h.store.get(overdue.id)?.state).toBe('expired');
+  });
+
   it('cancel is one-shot', async () => {
     const ask = await createOk();
     expect(await h.service.cancel(ask.id)).toMatchObject({ ok: true, ask: { state: 'cancelled' } });
@@ -301,6 +338,17 @@ describe('expiry, cancel and boot reconciliation', () => {
 });
 
 describe('AskStore', () => {
+  it('keeps the secret stable across reopen and refuses to regenerate it on a read error', async () => {
+    const again = await AskStore.open(h.dir);
+    expect(again.secret.equals(h.store.secret)).toBe(true);
+    // A directory where the secret file should be is a non-ENOENT read error (EISDIR).
+    const { mkdtemp: mk, mkdir } = await import('node:fs/promises');
+    const dir2 = await mk(join(tmpdir(), 'kookr-asks-eisdir-'));
+    await mkdir(join(dir2, 'asks', 'secret'), { recursive: true });
+    await expect(AskStore.open(dir2)).rejects.toThrow();
+    await rm(dir2, { recursive: true, force: true });
+  });
+
   it('writes the secret and store with 0600 and a schemaVersion', async () => {
     await createOk();
     await h.store.flush();
@@ -354,6 +402,14 @@ describe('ask routes', () => {
     expect((await app.request(`/api/asks/${body.ask.id}/cancel`, { method: 'POST' })).status).toBe(200);
     expect((await app.request(`/api/asks/${body.ask.id}/cancel`, { method: 'POST' })).status).toBe(409);
     expect((await app.request('/api/asks/zzz/cancel', { method: 'POST' })).status).toBe(404);
+  });
+
+  it('rejects a non-object JSON body with 400, not 500', async () => {
+    const app = appFor(h.service);
+    for (const raw of ['null', '[]', '"x"', '7']) {
+      const r = await app.request('/api/asks', { method: 'POST', headers: { 'content-type': 'application/json' }, body: raw });
+      expect(r.status).toBe(400);
+    }
   });
 
   it.each([
