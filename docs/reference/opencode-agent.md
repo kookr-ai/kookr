@@ -301,3 +301,10 @@ plugin, workspace and data are mounted at launch.
 - One pinned opencode release (1.19.5); other versions are refused.
 - Profile `permission: ask` stalls an unattended worker; the shipped profiles
   all use `allow`.
+
+### Launch mode (internal seam)
+
+`metadata.opencodeLaunchMode` (`tui` | `container`) records how an opencode task launches. Absent means `tui`, the
+only mode available today. A task persisted as `container` is refused by the TUI adapter with a clear error and is
+never launched as a TUI (no silent fallback). Container launches arrive in a later slice of
+[RFC #3541](../rfc/rfc-opencode-worker-containers.md).
