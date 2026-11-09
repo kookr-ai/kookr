@@ -1,3 +1,5 @@
+import type { AskNotifier } from './asks.js';
+
 export type TelegramTaskOutcome =
   | { kind: 'completion_ready'; note?: string }
   | { kind: 'completed' }
@@ -23,4 +25,10 @@ export interface TelegramHandle {
    * may await completion when they need to observe the routed notification.
    */
   onTaskOutcome: (taskId: string, outcome: TelegramTaskOutcome) => void | Promise<void>;
+  /**
+   * Transport for `kookr ask`: posts questions with buttons and edits them to
+   * their final state. Present only when the integration was started with an
+   * ask service, so the sender and the callback handler are registered together.
+   */
+  ask?: AskNotifier;
 }

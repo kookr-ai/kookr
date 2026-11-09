@@ -4198,8 +4198,18 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     llmClient,
     lifecycleSignal,
     taskBridge: telegramTaskBridge,
+    ...(askService ? { asks: askService } : {}),
   });
   const telegramHandle = remoteChatTrigger.handle;
+  // `kookr ask`: the sender and the answer handler were registered together by
+  // the Telegram integration; connect the service to them and start its
+  // expiry sweep. Without a Telegram handle the notifier stays undefined and
+  // POST /api/asks keeps returning 503.
+  if (askService && telegramHandle?.ask) {
+    askNotifierHolder = telegramHandle.ask;
+    askDeliverHolder = (taskId, text) => telegramTaskBridge.sendText(taskId, text);
+    await askService.start();
+  }
   onPermissionBlockedHolder = remoteChatTrigger.onPermissionBlocked;
   // Compose remote-chat notify with pipeline-starvation terminal hooks:
   // - PR2 R6: product blocked-empty outcomes that never POSTed handle
@@ -4326,8 +4336,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     connectionRegistry.closeAll();
 
     // Telegram integration shutdown (releases lockfile so prod:restart picks up cleanly).
+    // Telegram first (no more taps), then the ask service so its final flush
+    // cannot miss an answer recorded by a tap that was already in flight.
     if (telegramHandle) {
       try { await telegramHandle.stop(); } catch (err) { console.warn('[telegram] stop failed:', err); }
+    }
+    if (askService) {
+      try { await askService.stop(); } catch (err) { console.warn('[asks] stop failed:', err); }
     }
 
     // Close servers

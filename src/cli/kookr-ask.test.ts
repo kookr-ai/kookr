@@ -75,6 +75,13 @@ describe('runAskCli usage errors (no network)', () => {
     const noTask = await run(ARGS, { KOOKR_API_BASE_URL: 'http://k' } as NodeJS.ProcessEnv);
     expect(noTask.code).toBe(EXIT_USER_ERROR); expect(noTask.io.errors.join()).toMatch(/KOOKR_TASK_ID/);
   });
+  it('rejects an empty option label client-side and prints the error before the hint', async () => {
+    const r = await run(['--question', 'Q', '--option', 'a', '--option=']);
+    expect(r.code).toBe(EXIT_USER_ERROR);
+    expect(r.reqs).toEqual([]);
+    expect(r.io.errors[0]).toMatch(/empty/);
+    expect(r.io.errors[1]).toMatch(/--help/);
+  });
   it('prints help with exit 0', async () => {
     const r = await run(['--help']); expect(r.code).toBe(EXIT_OK); expect(r.io.logs.join()).toMatch(/Exit codes/);
   });

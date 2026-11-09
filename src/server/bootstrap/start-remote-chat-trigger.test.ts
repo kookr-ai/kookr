@@ -22,6 +22,25 @@ describe('startRemoteChatTrigger', () => {
     });
     expect(startTelegramTrigger).toHaveBeenCalledWith(expect.objectContaining({ transcriptionModel: expectedModel }));
   });
+  test.each([
+    ['passes the ask answer port through when provided', true],
+    ['leaves it out entirely when not provided (flag-off behaviour unchanged)', false],
+  ])('%s', async (_name, withAsks) => {
+    const startTelegramTrigger = vi.fn(async () => ({ stop: vi.fn() }));
+    const asks = { answer: vi.fn(), findByMessage: vi.fn() };
+    await startRemoteChatTrigger({
+      host: 'localhost', port: 4801, kookrDir: '/tmp/kookr',
+      launchTask: vi.fn(), llmClient: null,
+      ...(withAsks ? { asks } : {}),
+      env: { KOOKR_TELEGRAM_BOT_TOKEN: 'test', KOOKR_TELEGRAM_ALLOWED_USERS: '1', KOOKR_REMOTE_CHAT_PROJECTS: '/repo' },
+      loadTelegramModule: async () => ({ startTelegramTrigger, probeWhisperReachability: async () => ({ ok: true, modelCount: 1 }) }),
+      log: vi.fn(), warn: vi.fn(),
+    });
+    const passed = (startTelegramTrigger.mock.calls[0] as unknown[])[0] as Record<string, unknown>;
+    if (withAsks) expect(passed.asks).toBe(asks);
+    else expect('asks' in passed).toBe(false);
+  });
+
   test('returns no handle when Telegram is disabled', async () => {
     const logs: string[] = [];
     const loadTelegramModule = vi.fn<() => Promise<TelegramTriggerModule>>();

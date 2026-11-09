@@ -107,6 +107,17 @@ export interface AnswerInput {
 }
 
 /**
+ * What the ask service offers the Telegram integration: record an answer, and
+ * recognise which ask a Telegram message belongs to. Plain functions only, so
+ * `src/integrations` never imports server internals.
+ */
+export interface AskAnswerPort {
+  answer(input: AnswerInput): Promise<AnswerResult>;
+  /** The ask whose Telegram message is (chatId, messageId), in any state. */
+  findByMessage(chatId: number, messageId: number): Pick<AskRecord, 'id' | 'state'> | undefined;
+}
+
+/**
  * What the Telegram integration implements for the ask service. Kept free of
  * Telegram types so the service never imports from `src/integrations`.
  */

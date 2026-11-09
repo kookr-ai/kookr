@@ -339,6 +339,22 @@ set.
 | `KOOKR_TELEGRAM_API_URL` | Telegram API default (`https://api.telegram.org`) | HTTP or HTTPS URL | Overrides the Telegram Bot API base URL for bot methods and file CDN downloads. Used by tests and local fakes. Rejected at client construction / config preflight when the host is a cloud-metadata hostname, a link-local address, or the URL embeds credentials. Loopback and private-LAN hosts remain allowed for fake servers and intentional bot-API proxies. |
 | `KOOKR_STT_WHISPER_URL` | unset | HTTP URL of the local Whisper or Qwen service (e.g. `http://127.0.0.1:8010`) | Enables Telegram audio transcription for voice, uploaded audio, video notes, and audio documents. When unset, audio messages are dropped with the `dropped_audio_disabled` audit kind and the user is told audio is unsupported. The server must expose the OpenAI-compatible `POST /v1/audio/transcriptions` endpoint and is reached over plain HTTP — bind it to localhost only. |
 
+### Agent questions (`kookr ask`)
+
+No extra variables. With the Remote Chat Trigger configured above, a running
+agent can run `kookr ask` (see `docs/reference/cli.md`) to send an allowlisted
+operator a multiple-choice question: Telegram shows one button per option,
+and a text reply to the message is accepted too. The question goes to the chat
+that spawned the task, or else to the first id in `KOOKR_TELEGRAM_ALLOWED_USERS`.
+Only allowlisted users can answer; each button is signed with a per-install
+secret stored in `<kookrDir>/asks/secret`. Without the Telegram variables the
+command exits `7` and nothing is created. `KOOKR_REMOTE_CHAT_DISABLED=1` turns
+the feature off with the rest of remote chat. Every question, answer and
+rejection is recorded in the Telegram `audit.jsonl` (`ask_*` events) without the
+question text, answer text or button data; a typed text reply additionally
+appears, credential-redacted, in the generic `message_received` event like any
+other inbound message.
+
 ## Outbound Finding Webhook
 
 Outbound webhooks are off by default. Set `KOOKR_WEBHOOK_URL` to POST each new

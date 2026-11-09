@@ -193,13 +193,15 @@ export async function runAskCli(argv: string[], io: AskCliIo = {}): Promise<numb
     return exit;
   };
   const usage = (message: string): number => {
+    const code = fail('USER_ERROR', message, EXIT_USER_ERROR);
     if (!args.json) err.error('Run `kookr ask --help` for usage.');
-    return fail('USER_ERROR', message, EXIT_USER_ERROR);
+    return code;
   };
 
   if (args.error) return usage(args.error);
   if (args.question === undefined || args.question.trim() === '') return usage('--question is required.');
   if (args.options.length < 2 || args.options.length > 4) return usage('provide 2 to 4 --option labels.');
+  if (args.options.some((o) => o.trim() === '')) return usage('an --option label is empty.');
   const taskId = args.taskId ?? env.KOOKR_TASK_ID?.trim();
   if (!taskId) return usage('no task id: run inside a Kookr task (KOOKR_TASK_ID) or pass --task-id.');
 
