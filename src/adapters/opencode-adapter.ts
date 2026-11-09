@@ -8,6 +8,7 @@
  * Resume: the conversation DB lives in a per-task persistent data dir (opencode-task-data.ts) and a
  * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
+import { gitExecEnv } from '../core/git-helpers.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -525,7 +526,7 @@ export class OpenCodeAdapter implements AgentAdapter {
       if (saved) return { KOOKR_OPENCODE_GATE_BASE: saved };
     }
     try {
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000 });
+      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, env: gitExecEnv() });
       const sha = stdout.trim();
       if (!/^[0-9a-f]{7,64}$/.test(sha)) return {};
       await writeGateBase(taskDir, sha).catch(() => { /* best-effort */ });

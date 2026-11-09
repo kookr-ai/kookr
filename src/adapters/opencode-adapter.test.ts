@@ -1,3 +1,4 @@
+import { gitExecEnv } from '../core/git-helpers.js';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { execFileSync } from 'node:child_process';
@@ -404,7 +405,7 @@ describe('OpenCodeAdapter', () => {
     test('a resumed launch reuses the first launch gate base even after HEAD moved', async () => {
       const repo = mkdtempSync(join(tmpdir(), 'oc-gate-repo-'));
       try {
-        const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', ...a], { encoding: 'utf8' });
+        const git = (...a: string[]) => execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@e.x', ...a], { encoding: 'utf8', env: gitExecEnv() });
         git('init', '-q', '-b', 'main');
         git('commit', '-q', '--allow-empty', '-m', 'one');
         const base = git('rev-parse', 'HEAD').trim();

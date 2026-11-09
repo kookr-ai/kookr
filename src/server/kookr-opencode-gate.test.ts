@@ -3,6 +3,7 @@
 // generated opencode plugin does (payload on stdin, exit 2 = block).
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { gitExecEnv } from '../core/git-helpers.js';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -15,13 +16,13 @@ let repo: string;
 let sessionDir: string;
 
 const g = (cwd: string, ...args: string[]) =>
-  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8', env: gitExecEnv() }).trim();
 
 function run(args: string[], env: Record<string, string> = {}, payload: Record<string, unknown> = {}) {
   const r = spawnSync(process.execPath, [GATE, ...args], {
     input: JSON.stringify({ session_id: 'sess-1', cwd: repo, ...payload }),
     encoding: 'utf8',
-    env: { ...process.env, KOOKR_SESSION_DIR: sessionDir, KOOKR_OPENCODE_GATE_BASE: '', KOOKR_OPENCODE_ISSUE: '', KOOKR_PR_LINT_CMD: '', ...env },
+    env: { ...gitExecEnv(), KOOKR_SESSION_DIR: sessionDir, KOOKR_OPENCODE_GATE_BASE: '', KOOKR_OPENCODE_ISSUE: '', KOOKR_PR_LINT_CMD: '', ...env },
   });
   return { status: r.status, stderr: r.stderr, stdout: r.stdout };
 }
@@ -30,7 +31,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'kookr-gate-'));
   repo = join(root, 'repo');
   sessionDir = join(root, 'sess');
-  execFileSync('git', ['init', '-q', repo]);
+  execFileSync('git', ['init', '-q', repo], { env: gitExecEnv() });
   g(repo, 'commit', '-q', '--allow-empty', '-m', 'init');
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -153,7 +154,7 @@ describe('loop guard', () => {
 
   it('fails open on a missing --kind or garbage stdin', () => {
     expect(run([]).status).toBe(0);
-    const r = spawnSync(process.execPath, [GATE, '--kind', 'file:X.md'], { input: 'not json', encoding: 'utf8', cwd: repo, env: { ...process.env, KOOKR_SESSION_DIR: sessionDir } });
+    const r = spawnSync(process.execPath, [GATE, '--kind', 'file:X.md'], { input: 'not json', encoding: 'utf8', cwd: repo, env: { ...gitExecEnv(), KOOKR_SESSION_DIR: sessionDir } });
     expect(r.status).toBe(2);
     expect(existsSync(sessionDir)).toBe(true);
   });

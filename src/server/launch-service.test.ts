@@ -489,8 +489,9 @@ describe('launchTask', () => {
       const { tmpdir } = await import('node:os');
       const { join } = await import('node:path');
       const repo = mkdtempSync(join(tmpdir(), 'ls-guard-'));
-      execFileSync('git', ['init', '-q', repo]);
-      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'i']);
+      const { gitExecEnv } = await import('../core/git-helpers.js');
+      execFileSync('git', ['init', '-q', repo], { env: gitExecEnv() });
+      execFileSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'i'], { env: gitExecEnv() });
       const opencode = {
         agentType: 'opencode',
         launch: vi.fn().mockResolvedValue('kookr-oc'),
