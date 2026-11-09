@@ -87,7 +87,7 @@ Debian slim (python 3.12 + node binary copied), digest-pinned bases; opencode
 `--require-hashes`; `nb` 0.7.0; plugin deps seeded at build. Nothing
 task-specific is baked: `/cfg` (read-only: `opencode.json`, `plugins/kookr.js`,
 `AGENTS.md`, composed by the existing home composer), `/work` (the task's git
-worktree, rw), `/data` (volume: opencode sqlite + A2A task store),
+per-task git clone, rw), `/data` (bind mount: opencode sqlite + A2A task store),
 `/memory` (the project view, ro). Entrypoint: `opencode serve` on
 127.0.0.1 with a generated password, A2A wrapper on `:8000` with a bearer
 token; both secrets passed by env at `docker run`. Exits if either child dies.
@@ -297,7 +297,7 @@ Limits enforced by Kookr, not by hope: a container count cap
 (host RAM/disk), launch refusal below 5 % disk (existing), and per-container
 `--memory`, `--cpus 2`, `--pids-limit`. Planning numbers: 0.4 GB (mock) to
 1.2 GB (assumed real) per container; image 1.36 GB shared across all
-containers; each task adds its worktree plus a small `/data` volume. With
+containers; each task adds its clone plus a small `/data` dir. With
 31 GB RAM the RAM-bound ceiling is far above 8; the binding constraints are
 disk (~26 GB free; images and per-task data) and provider rate limits.
 Measured: 4 and 8 containers healthy (Spike 2). The Slice 4 gate repeats 4 then
