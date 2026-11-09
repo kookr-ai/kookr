@@ -125,7 +125,10 @@ at most 4 times):
       by the adapter; if that commit no longer resolves in the repo the gate falls
       back to the merge-base with `origin/main`/`main`, and says so when none is
       found), `Closes #N` when `KOOKR_OPENCODE_ISSUE` is set,
-      `PR_BODY.md`, and a passing PR lint when one is configured. A failure
+      `PR_BODY.md` that the branch has **not committed** (it is a hand-off file;
+      a net diff against the base that adds or modifies it blocks with `git rm --cached PR_BODY.md` + amend/new
+      commit, keeping the file on disk), and a passing PR lint when one is
+      configured. A failure
       exits 2 and tells the worker exactly what is missing. After 3 blocks per
       session the gate lets the worker stop, so it can never trap it.
    2. `nb-retro.sh`: the one-time notebook retrospective (vote, prune, add at
