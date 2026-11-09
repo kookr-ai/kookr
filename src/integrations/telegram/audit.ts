@@ -47,6 +47,12 @@ export type AuditEvent =
   | { kind: 'permission_decision_sent'; taskId: string; sender: number }
   | { kind: 'permission_decision_failed'; taskId: string; sender: number; reason: string }
   | { kind: 'task_outcome_sent'; taskId: string; chatId: number; outcome: 'completion_ready' | 'completed' | 'failed' | 'cancelled' }
+  // `kookr ask` (docs/rfc/rfc-kookr-ask.md). Never carries question text,
+  // answer text or callback data (which holds the button MAC).
+  | { kind: 'ask_sent'; askId: string; taskId: string; chatId: number }
+  | { kind: 'ask_answered'; askId: string; taskId: string; sender: number; via: 'button' | 'text'; taskDelivery?: string }
+  | { kind: 'ask_rejected'; askId?: string; sender: number; via: 'button' | 'text'; reason: string }
+  | { kind: 'ask_finalized'; askId: string; taskId: string; state: string; resolution?: string }
   | { kind: 'handle_failed'; updateId: number; err: string }
   | { kind: 'offset_persist_failed'; err: string }
   | { kind: 'loop_died'; err: string }

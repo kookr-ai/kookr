@@ -139,11 +139,13 @@ kookr ask --question "<text>" --option "<label>" [--option …] [--context "<tex
           [--timeout <dur>] [--task-id <uuid>] [--no-other] [--wait[=<s>]] [--json]
 ```
 
-Default task is `KOOKR_TASK_ID`. A random idempotency key is generated per
-invocation so one network retry is safe. Without `--wait`: prints the ask id,
+Default task is `KOOKR_TASK_ID`. The idempotency key is derived from a hash of
+(task, question, options, context), so one network retry — or the agent re-running
+the command after a tool timeout — is a no-op while the ask is pending. Without `--wait`: prints the ask id,
 exit 0. With `--wait`: polls `GET /api/asks/:id` (2 s) until terminal and
 prints the label. Exit codes: 0 answered/created, 2 user error, 3 no server,
-4 server rejected, 5 expired, 6 cancelled, 7 not configured. `--wait` with no
+4 server rejected, 5 expired, 6 cancelled, 7 not configured, 8 the
+`--wait=<s>` window elapsed with the ask still pending. `--wait` with no
 value waits until the ask's own expiry.
 
 ### Agent guidance

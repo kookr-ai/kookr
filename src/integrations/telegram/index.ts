@@ -6,6 +6,7 @@
  * setting KOOKR_TELEGRAM_BOT_TOKEN in .env enables it.
  */
 
+import type { AskAnswerPort, AskNotifier, AskRecord, AnswerRejection } from '../../shared/contracts/asks.js';
 import { createHash } from 'node:crypto';
 import { DEFAULT_AGENT_TYPE, type AgentType } from '../../core/agent-types.js';
 import type { LlmClient } from '../../core/llm-client.js';
@@ -105,6 +106,12 @@ export interface StartTelegramTriggerDeps {
   approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
   /** Short identity of a task's current permission prompt (for the Approve button). */
   permissionPromptId?: (taskId: string) => string | null;
+  /**
+   * `kookr ask` (docs/rfc/rfc-kookr-ask.md). When set, the handle exposes an
+   * `ask` notifier AND the callback/reply handlers below are active — the two
+   * are registered together so a question is never sent that cannot be answered.
+   */
+  asks?: AskAnswerPort;
 }
 
 /**
@@ -285,6 +292,8 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
   /** callback_data namespaces (kept distinct from the spawn `hash:y|n` shape). */
   const CB_APPROVE = 'approve:'; // approve:<taskId>[:<promptId>]
   const CB_REPLY = 'reply:'; // reply:<taskId>:continue
+  const CB_ASK = 'ask:'; // ask:<askId 12 hex>:<option index>:<mac 16 hex> (kookr ask)
+  const ASK_CALLBACK = /^ask:([0-9a-f]{12}):([0-3]):([0-9a-f]{16})$/;
 
   // Initial GC pass; schedule periodic GC.
   const pruneSentNotificationState = async (): Promise<void> => {
@@ -477,6 +486,16 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     // deliver the text to that running agent instead of treating it as a new
     // task request. Unmatched replies fall through to the normal flow.
     const replyToId = m.reply_to_message?.message_id;
+    // `kookr ask`: a free-text reply to a question message is the operator's
+    // answer. A reply to a question that is already closed gets a hint and never
+    // falls through to the spawn flow. Commands (`/…`) are not answers.
+    if (replyToId !== undefined && deps.asks && !text.startsWith('/')) {
+      const hit = deps.asks.findByMessage(m.chat.id, replyToId);
+      if (hit) {
+        await handleAskText(m.chat.id, userId, replyToId, hit, text);
+        return;
+      }
+    }
     // A reply that is itself a command (/tasks, /agent, …) is executed, not sent
     // to the agent — only route genuine free-text replies.
     if (replyToId !== undefined && deps.replyToTask && !text.startsWith('/')) {
@@ -662,8 +681,90 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     });
   }
 
+  const ASK_REJECTION_TEXT: Record<AnswerRejection, string> = {
+    not_found: 'This question no longer exists.',
+    forged: 'Invalid button.',
+    already_answered: 'Already answered.',
+    expired: 'This question expired.',
+    cancelled: 'This question was cancelled.',
+    wrong_chat: 'This button does not belong to this chat.',
+    bad_option: 'Invalid answer.',
+    text_not_allowed: 'This question only accepts the buttons.',
+    task_gone: 'The task is no longer running, so the answer was not delivered.',
+  };
+
+  /**
+   * `kookr ask` button tap. Order (docs/rfc/rfc-kookr-ask.md): allowlist, rate
+   * limit, strict pattern, then the ask service (lookup, MAC, state, chat and
+   * message binding). Audit events never carry the callback data (it holds the MAC).
+   */
+  async function handleAskCallback(cb: NonNullable<TelegramUpdate['callback_query']>, data: string): Promise<void> {
+    if (!deps.allowedUserIds.has(cb.from.id)) {
+      audit({ kind: 'dropped_unauthorized' });
+      await api.answerCallbackQuery(cb.id).catch(() => undefined);
+      return;
+    }
+    if (!limiter.allow(cb.from.id)) {
+      audit({ kind: 'rate_limited', sender: cb.from.id });
+      await api.answerCallbackQuery(cb.id, 'Rate limited. Try again in a minute.').catch(() => undefined);
+      return;
+    }
+    const match = ASK_CALLBACK.exec(data);
+    const message = cb.message;
+    if (!deps.asks || !match || !message || message.chat.type !== 'private') {
+      audit({ kind: 'ask_rejected', sender: cb.from.id, via: 'button', reason: !deps.asks ? 'unavailable' : !match ? 'malformed' : 'wrong_chat' });
+      await api.answerCallbackQuery(cb.id, !deps.asks ? 'Questions are unavailable.' : 'Invalid button.').catch(() => undefined);
+      return;
+    }
+    const [, askId, index, mac] = match;
+    const result = await deps.asks.answer({
+      askId,
+      senderId: cb.from.id,
+      chatId: message.chat.id,
+      messageId: message.message_id,
+      option: { index: Number(index), mac },
+    });
+    if (result.ok) {
+      audit({ kind: 'ask_answered', askId, taskId: result.ask.taskId, sender: cb.from.id, via: 'button', taskDelivery: result.ask.taskDelivery });
+      await api.answerCallbackQuery(cb.id, result.ask.taskDelivery === 'failed' ? 'Recorded, but could not reach the task' : 'Sent').catch(() => undefined);
+    } else {
+      audit({ kind: 'ask_rejected', askId, sender: cb.from.id, via: 'button', reason: result.reason });
+      await api.answerCallbackQuery(cb.id, ASK_REJECTION_TEXT[result.reason]).catch(() => undefined);
+    }
+  }
+
+  /** `kookr ask` free-text reply to a question message. */
+  async function handleAskText(
+    chatId: number,
+    userId: number,
+    replyToId: number,
+    hit: { id: string; state: AskRecord['state'] },
+    text: string,
+  ): Promise<void> {
+    if (!deps.asks) return;
+    if (hit.state !== 'pending') {
+      audit({ kind: 'ask_rejected', askId: hit.id, sender: userId, via: 'text', reason: 'closed' });
+      await sendMessageSafe(chatId, 'This question is already closed.');
+      return;
+    }
+    const result = await deps.asks.answer({ askId: hit.id, senderId: userId, chatId, messageId: replyToId, text });
+    if (result.ok) {
+      audit({ kind: 'ask_answered', askId: hit.id, taskId: result.ask.taskId, sender: userId, via: 'text', taskDelivery: result.ask.taskDelivery });
+    } else {
+      audit({ kind: 'ask_rejected', askId: hit.id, sender: userId, via: 'text', reason: result.reason });
+      await sendMessageSafe(chatId, ASK_REJECTION_TEXT[result.reason]);
+    }
+  }
+
   async function handleCallback(cb: NonNullable<TelegramUpdate['callback_query']>): Promise<void> {
     const data = cb.data ?? '';
+
+    // `kookr ask` buttons. Handled first and returns before every legacy path,
+    // in particular before `callback_invalid`, which would log the raw data.
+    if (data.startsWith(CB_ASK)) {
+      await handleAskCallback(cb, data);
+      return;
+    }
 
     // Quick-reply buttons on notifications (approve a block / continue a task).
     // These drive a LIVE agent, so they are allowlist-checked and rate-limited
@@ -944,5 +1045,28 @@ export async function startTelegramTrigger(deps: StartTelegramTriggerDeps): Prom
     await lock.release();
   };
 
-  return { stop, onPermissionBlocked, onTaskOutcome };
+  // `kookr ask` transport. Present only together with the answer port above.
+  const askNotifier: AskNotifier | undefined = deps.asks
+    ? {
+      async sendAsk(ask, callbackData) {
+        const chatId = state.get().origin[ask.taskId] ?? deps.allowedUserIds.values().next().value;
+        if (chatId === undefined) throw new Error('no Telegram chat to send the question to');
+        const lines = [`❓ Task ${ask.taskId} asks:`, '', ask.question];
+        if (ask.context) lines.push('', ask.context);
+        if (ask.allowText) lines.push('', 'Or reply to this message with text.');
+        const sent = await api.sendMessage(chatId, lines.join('\n'), {
+          inline_keyboard: ask.options.map((label, i) => [{ text: label, callback_data: callbackData(i) }]),
+        });
+        audit({ kind: 'ask_sent', askId: ask.id, taskId: ask.taskId, chatId });
+        return { chatId, messageId: sent.message_id };
+      },
+      async finalizeAsk(ask, text) {
+        if (!ask.delivery) return;
+        await api.editMessageText(ask.delivery.chatId, ask.delivery.messageId, text);
+        audit({ kind: 'ask_finalized', askId: ask.id, taskId: ask.taskId, state: ask.state, resolution: ask.resolution });
+      },
+    }
+    : undefined;
+
+  return { stop, onPermissionBlocked, onTaskOutcome, ...(askNotifier ? { ask: askNotifier } : {}) };
 }

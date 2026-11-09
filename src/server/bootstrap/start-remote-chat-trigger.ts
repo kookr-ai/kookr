@@ -2,6 +2,7 @@ import type { LlmClient } from '../../core/llm-client.js';
 import type { LaunchResult, LaunchOpts } from '../../shared/contracts/launch.js';
 import type { TelegramHandle, TelegramTaskOutcome, TelegramReplyResult } from '../../shared/contracts/telegram.js';
 import type { TelegramTaskBridge } from '../telegram-task-bridge.js';
+import type { AskAnswerPort } from '../../shared/contracts/asks.js';
 
 type Env = Record<string, string | undefined>;
 
@@ -22,6 +23,7 @@ export interface TelegramTriggerModule {
     replyToTask?: (taskId: string, text: string) => Promise<TelegramReplyResult>;
     approveTaskPermission?: (taskId: string, expectedPromptId?: string) => Promise<TelegramReplyResult>;
     permissionPromptId?: (taskId: string) => string | null;
+    asks?: AskAnswerPort;
   }): Promise<TelegramHandle>;
   probeWhisperReachability(url: string): Promise<
     | { ok: true; modelCount: number | null }
@@ -39,6 +41,8 @@ export interface RemoteChatTriggerDeps {
   lifecycleSignal?: AbortSignal;
   /** When set, enables answering a task from Telegram (reply routing + approve). */
   taskBridge?: TelegramTaskBridge;
+  /** `kookr ask` answer port (the ask service). When set the handle carries the ask notifier. */
+  asks?: AskAnswerPort;
   env?: Env;
   loadTelegramModule?: () => Promise<TelegramTriggerModule>;
   log?: (message: string) => void;
@@ -164,6 +168,7 @@ export async function startRemoteChatTrigger(deps: RemoteChatTriggerDeps): Promi
       transcriptionModel: deps.sttTranscription && sameSpeechEndpoint(env.KOOKR_STT_WHISPER_URL, deps.sttTranscription.url)
         ? deps.sttTranscription.model : undefined,
       lifecycleSignal: deps.lifecycleSignal,
+      ...(deps.asks ? { asks: deps.asks } : {}),
       ...(bridge
         ? {
           replyToTask: (taskId: string, text: string) => bridge.sendText(taskId, text),

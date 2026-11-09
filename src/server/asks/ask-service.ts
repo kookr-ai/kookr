@@ -228,9 +228,8 @@ export class AskService {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  findPendingByMessage(chatId: number, messageId: number): AskRecord | undefined {
-    return this.deps.store.all().find((a) => a.state === 'pending'
-      && a.delivery?.chatId === chatId && a.delivery.messageId === messageId);
+  findByMessage(chatId: number, messageId: number): AskRecord | undefined {
+    return this.deps.store.all().find((a) => a.delivery?.chatId === chatId && a.delivery.messageId === messageId);
   }
 
   // ------------------------------------------------------------------- cancel
