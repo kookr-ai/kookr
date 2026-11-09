@@ -20,6 +20,10 @@ describe('loadTaskLiveness (tasks.json)', () => {
     expect(look('b')).toEqual({ state: 'terminal', endedAt: new Date('2026-01-01T00:00:00Z') });
     expect(look('c')).toEqual({ state: 'unknown' });
   });
+  test('an id that was not requested is store_unreadable, never unknown', async () => {
+    writeFileSync(join(dir, 'tasks.json'), JSON.stringify({ version: 2, tasks: [{ id: 'T', status: 'inProgress' }] }));
+    expect((await loadTaskLiveness(dir, ['other'], env))('T')).toEqual({ state: 'store_unreadable' });
+  });
   test('a row without a usable status is store_unreadable, not unknown', async () => {
     writeFileSync(join(dir, 'tasks.json'), JSON.stringify({ version: 2, tasks: [{ id: 'a' }] }));
     expect((await loadTaskLiveness(dir, ['a'], env))('a')).toEqual({ state: 'store_unreadable' });

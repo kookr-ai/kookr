@@ -324,6 +324,6 @@ kookr containers prune --instance [--yes] [--force] [--dir PATH]
 120 s or its launch intent is open), `keep_terminal` / `stop_remove` (task finished; removed after 24 h),
 `quarantine_stop` / `quarantine_keep` / `remove_quarantined` (no such task: stopped, kept 24 h, then removed), or
 `hold` (the task store could not be read, so nothing is touched). `prune --instance` stops and removes every
-container and network of this instance; it is a dry run unless `--yes`, and refuses while any container belongs to a live task (or the task store cannot be read) unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then reports it as dead with a live task. Another Kookr instance's objects, and anything
+container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then reports it as dead with a live task. Another Kookr instance's objects, and anything
 not named `kookr-oc-*` with this instance's label, are never touched. Reconciler actions are appended to
 `<data dir>/container-reconcile.jsonl`.

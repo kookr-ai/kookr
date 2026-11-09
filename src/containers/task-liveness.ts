@@ -47,5 +47,7 @@ export async function loadTaskLiveness(dataDir: string, taskIds: string[], env: 
   } catch {
     unreadable = true;
   }
-  return (id) => (unreadable ? { state: 'store_unreadable' } : toLiveness(rows.get(id)));
+  const asked = new Set(taskIds);
+  // An id that was never looked up proves nothing: report it as unreadable, never as an absent (unknown) task.
+  return (id) => (unreadable || !asked.has(id) ? { state: 'store_unreadable' } : toLiveness(rows.get(id)));
 }

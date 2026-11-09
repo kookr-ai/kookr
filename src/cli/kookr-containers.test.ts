@@ -75,6 +75,13 @@ describe('kookr containers', () => {
     expect(docker.containers.map((c) => c.name)).toEqual(['kookr-oc-theirs-c']);
   });
 
+  test('a live task\'s orphan network (no container left) is protected from prune and held by the reconciler', async () => {
+    docker.containers = [];
+    docker.networks = [{ id: 'n', name: 'kookr-oc-net-live1', createdAt: new Date('2026-01-01T00:00:00Z'), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 'live1' } }];
+    expect(await run(['prune', '--instance', '--yes'])).toBe(1);
+    expect(docker.calls).toEqual([]);
+  });
+
   test('no instance id means nothing was ever launched and docker is not consulted', async () => {
     rmSync(join(dir, 'instance-id'));
     expect(await run(['ls'])).toBe(0);

@@ -83,7 +83,9 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
   const docker = deps.docker ?? new DockerCliRunner();
   try {
     const containers = await docker.listContainers({ key: LABEL_INSTANCE, value: instanceId });
-    const tasks = await loadTaskLiveness(dataDir, containers.map((c) => c.labels[LABEL_TASK] ?? ''), env);
+    const allNetworks = await docker.listNetworks({ key: LABEL_INSTANCE, value: instanceId });
+    // Look up every task id either kind of object mentions, so no object is judged on an unqueried id.
+    const tasks = await loadTaskLiveness(dataDir, [...containers, ...allNetworks].map((o) => o.labels[LABEL_TASK] ?? ''), env);
     const reconciler = new ContainerReconciler({
       docker, tasks, instanceId, now,
       intents: new IntentStore(join(dataDir, 'container-intents'), now),
@@ -109,15 +111,20 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
 
     // prune --instance: every labelled + prefixed object of THIS instance.
     const targets = containers.filter((c) => c.name.startsWith(CONTAINER_NAME_PREFIX) && c.labels[LABEL_INSTANCE] === instanceId);
-    const nets = (await docker.listNetworks({ key: LABEL_INSTANCE, value: instanceId }))
+    const nets = allNetworks
       .filter((n) => n.name.startsWith(CONTAINER_NAME_PREFIX) && n.labels[LABEL_INSTANCE] === instanceId);
     if (targets.length + nets.length === 0) { out.log('Nothing to prune.'); return 0; }
     for (const c of targets) out.log(`${p.yes ? 'removing' : 'would remove'} container ${c.name} (${c.state})`);
     for (const n of nets) out.log(`${p.yes ? 'removing' : 'would remove'} network ${n.name}`);
     if (!p.yes) { out.log('Dry run. Re-run with --yes to remove.'); return 0; }
-    const liveOnes = targets.filter((c) => tasks(c.labels[LABEL_TASK] ?? '').state !== 'terminal' && tasks(c.labels[LABEL_TASK] ?? '').state !== 'unknown');
+    const protectedState = (o: { labels: Record<string, string>; createdAt?: Date }) => {
+      const st = tasks(o.labels[LABEL_TASK] ?? '').state;
+      const young = !o.createdAt || !(now().getTime() - o.createdAt.getTime() >= 120_000);
+      return st === 'live' || st === 'store_unreadable' || young;
+    };
+    const liveOnes = [...targets, ...nets].filter(protectedState);
     if (liveOnes.length > 0 && !p.force) {
-      err.error(`refusing to prune: ${liveOnes.length} container(s) belong to live tasks or an unreadable task store (${liveOnes.map((c) => c.name).join(', ')}). Re-run with --force to kill them.`);
+      err.error(`refusing to prune: ${liveOnes.length} object(s) belong to live tasks, are younger than 120 s, or the task store is unreadable (${liveOnes.map((c) => c.name).join(', ')}). Re-run with --force to kill them.`);
       return 1;
     }
     let failed = 0;
