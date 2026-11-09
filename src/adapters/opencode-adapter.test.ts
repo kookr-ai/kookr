@@ -404,6 +404,20 @@ describe('OpenCodeAdapter', () => {
       expect(readFileSync(join(foreign, 'precious.txt'), 'utf8')).toBe('keep me');
     });
 
+    test('a task persisted as container mode is refused, never launched as a TUI (no silent fallback)', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask({ prompt: 'do it', cwd: '/workspace', metadata: { opencodeLaunchMode: 'container' } });
+      await expect(adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc-mode' })).rejects.toThrow('refusing to fall back');
+      expect(backend.sessions.has('kookr-oc-mode')).toBe(false);
+    });
+
+    test('a task persisted as tui mode launches as before', async () => {
+      const adapter = makeAdapter();
+      const task = taskStore.createTask({ prompt: 'do it', cwd: '/workspace', metadata: { opencodeLaunchMode: 'tui' } });
+      await adapter.launch(task.id, 'do it', '/workspace', undefined, { tmuxName: 'kookr-oc-mode2' });
+      expect(backend.sessions.has('kookr-oc-mode2')).toBe(true);
+    });
+
     test('a resumed launch reuses the first launch gate base even after HEAD moved', async () => {
       const repo = mkdtempSync(join(tmpdir(), 'oc-gate-repo-'));
       try {

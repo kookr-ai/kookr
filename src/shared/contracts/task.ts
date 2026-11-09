@@ -117,6 +117,8 @@ export interface TaskMetadata {
   userInitiatedRelaunch?: true;
   /** opencode worker profile id this task launched with (agentType 'opencode' only). */
   opencodeProfile?: string;
+  /** How this opencode task launches: host TUI (default) or worker container (RFC #3541). Persisted so a relaunch never switches mode silently. */
+  opencodeLaunchMode?: 'tui' | 'container';
   /** Issue number an opencode task closes; surfaced to the deliverable gate as KOOKR_OPENCODE_ISSUE. */
   opencodeIssue?: number;
   /** opencode's own session id (`ses_...`) recorded when the session stops; a relaunch resumes it with `--session`. */

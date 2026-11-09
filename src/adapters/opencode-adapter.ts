@@ -8,13 +8,10 @@
  * Resume: the conversation DB lives in a per-task persistent data dir (opencode-task-data.ts) and a
  * resumed launch runs `opencode --session <ses_id> <cwd>`.
  */
-import { gitExecEnv } from '../core/git-helpers.js';
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { promisify } from 'node:util';
 import type { SendInputOptions } from '../core/ports/agent-interaction-port.js';
 import {
   asTerminalInputWriterPort,
@@ -65,8 +62,10 @@ import {
   resolveDefaultPluginHooksDir,
   type OpenCodeProfile,
 } from './opencode-kookr-hooks.js';
-import { resolveOpenCodeProfile } from './opencode-profiles.js';
-import { buildShelfLessonsSection, type ShelfShowRunner } from './opencode-shelf-memory.js';
+import { resolveOpenCodeLaunchMode } from './opencode-launch-policy.js';
+import { resolveGateBaseEnv } from './opencode-gate-base.js';
+import { resolveSessionPolicy } from './opencode-session-policy.js';
+import type { ShelfShowRunner } from './opencode-shelf-memory.js';
 import { prepareOpenCodeSeed, resolveOpenCodeSeedDir } from './opencode-seed.js';
 import { preflightOpenCode, resolveOpenCodeBin } from './opencode-preflight.js';
 import {
@@ -94,7 +93,6 @@ import {
   resolveOpenCodeDataRoot,
   sweepOpenCodeTaskData,
   touchTaskDir,
-  writeGateBase,
 } from './opencode-task-data.js';
 import type { ProbeExecRunner } from './probe-agent-binary.js';
 import type { TerminalBackend } from './terminal-backend.js';
@@ -195,8 +193,6 @@ export interface OpenCodeAdapterOptions {
   /** Generate the default Kookr hook set when no explicit `claudeHooks` is configured. Default true. */
   defaultHooks?: boolean;
 }
-
-const execFileAsync = promisify(execFile);
 
 /** Split a per-task model pin: an optional leading `<providerId>/` is stripped, the rest is the model id. */
 function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenCodeModelConfig {
@@ -340,6 +336,10 @@ export class OpenCodeAdapter implements AgentAdapter {
     resume?: ResumeContext,
     opts?: AdapterLaunchOptions,
   ): Promise<string> {
+    // Launch-mode seam (RFC #3541): this adapter is the host-TUI mode. A task persisted as another mode is refused
+    // here, never silently launched as a TUI.
+    const policy = resolveOpenCodeLaunchMode({ persisted: this.taskStore.getTask(taskId)?.metadata?.opencodeLaunchMode });
+    if (!policy.ok) throw new Error(policy.message);
     const tmuxName = opts?.tmuxName ?? `kookr-${randomUUID().slice(0, 8)}`;
     this.tmuxToTaskId.set(tmuxName, taskId);
 
@@ -481,30 +481,29 @@ export class OpenCodeAdapter implements AgentAdapter {
       writerPath: resolveHookWriterPath(),
     });
     // Profile: explicit per-call id, else the id persisted on the task record (covers queued
-    // promotion / relaunch paths that do not re-thread launch options). Unknown id => typed error.
-    const profileId = opts?.profile ?? this.taskStore.getTask(taskId)?.metadata?.opencodeProfile;
-    const loaded = profileId ? resolveOpenCodeProfile(profileId, this.profilesDir) : undefined;
-    // Per-call bypass wins, then the profile's posture, then the constructor default.
-    const permission = opts?.bypassPermissions !== undefined
-      ? (opts.bypassPermissions ? 'allow' : 'ask')
-      : (loaded?.permission ?? this.permission);
-    let instructions = loaded?.instructions ?? this.profile?.instructions;
-    if (loaded?.shelves?.length) {
-      // Profile-scoped memory: only THIS profile's shelves, read with the session's NB_DIR (fail-open).
-      const lessons = await buildShelfLessonsSection(loaded.shelves, {
-        env: { ...this.env, ...(opts?.extraEnv ?? {}) },
-        show: this.shelfShow,
+    // promotion / relaunch paths that do not re-thread launch options).
+    const { loaded, permission, instructions } = await resolveSessionPolicy(
+      {
+        profilesDir: this.profilesDir,
+        defaultPermission: this.permission,
+        defaultProfile: this.profile,
+        env: this.env,
+        shelfShow: this.shelfShow,
         warn: (m) => console.warn(m),
-      });
-      if (lessons) instructions = `${instructions ?? ''}${instructions?.endsWith('\n') ? '\n' : '\n\n'}${lessons}`;
-    }
+      },
+      {
+        profileId: opts?.profile ?? this.taskStore.getTask(taskId)?.metadata?.opencodeProfile,
+        bypassPermissions: opts?.bypassPermissions,
+        extraEnv: opts?.extraEnv,
+      },
+    );
     const seedDir = this.seed ? await this.ensureSeed() : undefined;
     const issue = opts?.issue ?? this.taskStore.getTask(taskId)?.metadata?.opencodeIssue;
     const hookEnv = {
       KOOKR_TASK_ID: taskId,
       ...(this.serverPort ? { KOOKR_PORT: String(this.serverPort) } : {}),
       KOOKR_SESSION_DIR: sessionDir,
-      ...(await this.gateBaseEnv(cwd, taskDir, resuming, priorGateBase)),
+      ...(await resolveGateBaseEnv(cwd, taskDir, resuming, priorGateBase)),
       ...passthroughEnv(this.env, opts?.extraEnv),
       ...(issue !== undefined ? { KOOKR_OPENCODE_ISSUE: String(issue) } : {}),
       ...(this.profile?.hookEnv ?? {}),
@@ -548,39 +547,6 @@ export class OpenCodeAdapter implements AgentAdapter {
       warn: (m) => console.warn(m),
     }).catch(() => undefined);
     return this.seedPromise;
-  }
-
-  /**
-   * The base the deliverable gate counts commits ahead of. The first launch of a task records HEAD; every
-   * later launch of the SAME task (resume, or a crash-recovery fresh launch after the worker already
-   * committed) keeps that original base while it still resolves in the repo, and only records a new one
-   * when none is stored or the stored one no longer exists. Best-effort (non-git cwd => none).
-   */
-  private async gateBaseEnv(
-    cwd: string,
-    taskDir: string,
-    resuming: boolean,
-    priorBase?: string,
-  ): Promise<Record<string, string>> {
-    const saved = resuming ? await readGateBase(taskDir) : priorBase;
-    try {
-      if (saved) {
-        const ok = await execFileAsync('git', ['rev-parse', '--verify', '--quiet', `${saved}^{commit}`], { cwd, timeout: 5000, env: gitExecEnv() })
-          .then(() => true, () => false);
-        if (ok) {
-          // A fresh launch wiped the dir: put the kept base back.
-          if (!resuming) await writeGateBase(taskDir, saved).catch(() => { /* best-effort */ });
-          return { KOOKR_OPENCODE_GATE_BASE: saved };
-        }
-      }
-      const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd, timeout: 5000, env: gitExecEnv() });
-      const sha = stdout.trim();
-      if (!/^[0-9a-f]{7,64}$/.test(sha)) return {};
-      await writeGateBase(taskDir, sha).catch(() => { /* best-effort */ });
-      return { KOOKR_OPENCODE_GATE_BASE: sha };
-    } catch {
-      return {};
-    }
   }
 
   /** The opencode session id to continue for `taskId`, or undefined (with a warning) => launch fresh. */
