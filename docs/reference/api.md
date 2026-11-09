@@ -398,7 +398,7 @@ defines delivery. The `kookr-spawn --profile <id>` flag maps to this field.
 
 `issue` (optional, positive integer) is the issue number an opencode task
 closes. A value that is not a positive
-integer returns `400 {"error", "code": "invalid_issue"}`; a non-opencode agent
+safe integer (1 to 9007199254740991) returns `400 {"error", "code": "invalid_issue"}`; a non-opencode agent
 returns `400` with `code: "invalid_profile"`. It is stored as `metadata.opencodeIssue` and exported to
 the worker's gate as `KOOKR_OPENCODE_ISSUE`, which then requires `Closes #<issue>`
 in the commit message. `profile` and `issue` are part of the launch identity:

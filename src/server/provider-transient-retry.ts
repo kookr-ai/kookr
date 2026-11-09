@@ -95,6 +95,8 @@ export function createProviderTransientRetryHandler(
             ...(pins.effort !== undefined ? { effort: pins.effort } : {}),
           }),
       ...(intent.intent.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+      ...(intent.intent.profile !== undefined ? { profile: intent.intent.profile } : {}),
+      ...(intent.intent.issue !== undefined ? { issue: intent.intent.issue } : {}),
       ...(intent.intent.dependencies ? { dependencies: [...intent.intent.dependencies] } : {}),
       // A retry is always a distinct fire — never dedup it onto the failed task.
       disableDedup: true,

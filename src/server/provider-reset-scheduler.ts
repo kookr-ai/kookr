@@ -175,6 +175,8 @@ export function buildProviderResumeLaunch(task: ProviderResumeSource): LaunchOpt
           ...(replayModel !== undefined ? { model: replayModel } : {}),
         }),
     ...(intent?.ralphVerdictEnv ? { ralphVerdictEnv: true } : {}),
+    ...(intent?.profile !== undefined ? { profile: intent.profile } : {}),
+    ...(intent?.issue !== undefined ? { issue: intent.issue } : {}),
     ...(intent?.dependencies ? { dependencies: [...intent.dependencies] } : {}),
     claimIssue: { number: task.issueClaim.number, repo: task.issueClaim.repo },
     disableDedup: true,

@@ -98,6 +98,35 @@ describe('createProviderTransientRetryHandler', () => {
     }), expect.anything()));
   });
 
+  it('carries profile and issue from the persisted intent and omits them otherwise', async () => {
+    const mk = (id: string, intent: ReturnType<typeof buildTaskLaunchIntent>) => aTask({
+      id,
+      agentType: 'opencode',
+      provenance: { kind: 'schedule', sourceId: 'sched-oc' },
+      launchIntent: intent,
+    });
+    const profiled = mk('orig-oc', buildTaskLaunchIntent('opencode', { profile: 'scoped-fix', issue: 7 }));
+    const plain = mk('orig-plain', buildTaskLaunchIntent('opencode'));
+    const taskStore = {
+      getTask: vi.fn((id: string) => (id === 'orig-oc' ? profiled : plain)),
+      setRetryLineage: vi.fn(),
+    };
+    const launchTask = vi.fn().mockResolvedValue({ task: aTask({ id: 'retry-oc' }) });
+    const handler = createProviderTransientRetryHandler({
+      taskStore: taskStore as any,
+      launchTask,
+      setTimeoutFn: immediateTimer,
+      logger: silentLogger,
+    });
+    handler({ originalTaskId: 'orig-oc', failedTaskId: 'orig-oc', attempt: 1, delayMs: 0 });
+    await vi.waitFor(() => expect(launchTask).toHaveBeenCalledTimes(1));
+    expect(launchTask.mock.calls[0]?.[0]).toMatchObject({ profile: 'scoped-fix', issue: 7 });
+    handler({ originalTaskId: 'orig-plain', failedTaskId: 'orig-plain', attempt: 1, delayMs: 0 });
+    await vi.waitFor(() => expect(launchTask).toHaveBeenCalledTimes(2));
+    expect(launchTask.mock.calls[1]?.[0]).not.toHaveProperty('profile');
+    expect(launchTask.mock.calls[1]?.[0]).not.toHaveProperty('issue');
+  });
+
   it('marks an exact persisted tier target as trusted for replay', async () => {
     const original = aTask({
       id: 'orig-small',

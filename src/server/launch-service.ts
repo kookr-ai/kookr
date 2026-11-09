@@ -1627,6 +1627,9 @@ async function launchTaskCore(
     );
   }
 
+  if (opts.issue !== undefined && (!Number.isSafeInteger(opts.issue) || opts.issue <= 0)) {
+    throw new ProfileValidationError('issue must be a positive safe integer (<= 9007199254740991)');
+  }
   if (opts.issue !== undefined && agentType !== 'opencode') {
     throw new ProfileValidationError(
       `issue is only valid with agentType "opencode" (resolved agent: ${agentType})`,

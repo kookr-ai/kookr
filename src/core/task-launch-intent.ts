@@ -164,7 +164,7 @@ export function validatePersistedLaunchIntent(
       };
     }
   }
-  if (candidate.issue !== undefined && (!Number.isInteger(candidate.issue) || candidate.issue <= 0)) {
+  if (candidate.issue !== undefined && (!Number.isSafeInteger(candidate.issue) || candidate.issue <= 0)) {
     return {
       ok: false,
       reason: 'malformed_launch_intent',

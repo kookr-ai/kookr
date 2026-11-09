@@ -516,6 +516,19 @@ describe('ProviderResetScheduler', () => {
       expect(opts.scheduleId).toBe('sched-9');
     });
 
+    it('carries profile and issue from the launch intent only when present', () => {
+      const withBoth = buildProviderResumeLaunch({
+        ...src,
+        agentType: 'opencode',
+        launchIntent: { ...src.launchIntent, agentType: 'opencode', profile: 'scoped-fix', issue: 42 } as any,
+      });
+      expect(withBoth.profile).toBe('scoped-fix');
+      expect(withBoth.issue).toBe(42);
+      const without = buildProviderResumeLaunch(src);
+      expect(without).not.toHaveProperty('profile');
+      expect(without).not.toHaveProperty('issue');
+    });
+
     it('replays portable tier intent instead of exposing its concrete pins as raw input', () => {
       const opts = buildProviderResumeLaunch({
         ...src,

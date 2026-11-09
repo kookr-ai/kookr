@@ -134,6 +134,27 @@ describe('commit-and-pr-body', () => {
     expect(run(['--kind', 'commit-and-pr-body']).status).toBe(0);
   });
 
+  it('falls back to the merge-base when the recorded base no longer resolves', () => {
+    g(repo, 'branch', '-M', 'main');
+    g(repo, 'checkout', '-q', '-b', 'work');
+    writeFileSync(join(repo, 'PR_BODY.md'), 'body');
+    const gone = { KOOKR_OPENCODE_GATE_BASE: 'f'.repeat(40) };
+    // Nothing ahead of main: the check must still fire, not be skipped.
+    expect(run(['--kind', 'commit-and-pr-body'], gone).stderr).toContain('No commit exists ahead');
+    commit('feat: a');
+    expect(run(['--kind', 'commit-and-pr-body'], gone).status).toBe(0);
+  });
+
+  it('says the check was skipped when the base and every fallback are unresolvable', () => {
+    g(repo, 'branch', '-M', 'trunk');
+    const gone = { KOOKR_OPENCODE_GATE_BASE: 'f'.repeat(40) };
+    // No PR_BODY.md so the gate blocks and must explain the skipped check.
+    const r = run(['--kind', 'commit-and-pr-body'], gone);
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('could not be resolved');
+    expect(r.stderr).not.toContain('No commit exists ahead');
+  });
+
   it('honours --base over the env base', () => {
     commit('feat: a');
     writeFileSync(join(repo, 'PR_BODY.md'), 'body');
