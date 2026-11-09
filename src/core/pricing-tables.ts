@@ -56,7 +56,19 @@ export interface ModelPricing {
  */
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   // Anthropic
+  // Fable 5.2/5.1 and Opus/Sonnet 5.5 bill cache reads below the usual 10% of
+  // input (2.5% on Fable 5.2/5.1, 5% on Opus/Sonnet 5.5) — rates below are the
+  // published per-MTok numbers, not derived.
+  'claude-fable-5-2':  { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 8,    outputPerMTok: 40,  cacheWritePerMTok: 10,     cacheReadPerMTok: 0.20  },
+  'claude-fable-5-1':  { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 0.25  },
+  'claude-opus-5-5':   { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 4,    outputPerMTok: 20,  cacheWritePerMTok: 5,      cacheReadPerMTok: 0.20  },
   'claude-opus-5':     { vendor: 'anthropic', lastVerified: '2026-08-28', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
+  'claude-sonnet-5-5': { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 2,    outputPerMTok: 10,  cacheWritePerMTok: 2.5,    cacheReadPerMTok: 0.10  },
+  'claude-sonnet-5':   { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 2,    outputPerMTok: 10,  cacheWritePerMTok: 2.5,    cacheReadPerMTok: 0.20  },
+  // Haiku 5.5 pricing is tiered: the row below is the ≤100K-prompt-token tier;
+  // prompts over 100K bill 5x these rates ($0.50/$2.50), which this flat table
+  // cannot express. Long-context Haiku 5.5 cost is therefore underestimated.
+  'claude-haiku-5-5':  { vendor: 'anthropic', lastVerified: '2026-11-09', inputPerMTok: 0.10, outputPerMTok: 0.50, cacheWritePerMTok: 0.125, cacheReadPerMTok: 0.01  },
   'claude-opus-4-8':   { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
   'claude-fable-5':    { vendor: 'anthropic', lastVerified: '2026-07-15', inputPerMTok: 10,   outputPerMTok: 50,  cacheWritePerMTok: 12.5,   cacheReadPerMTok: 1     },
   'claude-opus-4-7':   { vendor: 'anthropic', lastVerified: '2026-04-24', inputPerMTok: 5,    outputPerMTok: 25,  cacheWritePerMTok: 6.25,   cacheReadPerMTok: 0.5   },
@@ -112,10 +124,14 @@ export interface ResolvedPricing {
 /**
  * Resolve a model id to a pricing row and an honesty-tier match label.
  *
- * Order: exact key → longest prefix whose key is a prefix of `model` →
- * silent Sonnet default (`fallback`). Longest-prefix avoids binding a more
- * specific dated id (e.g. `gpt-5.5-pro-…`) to a shorter sibling row
- * (`gpt-5.5`) when object-key order would otherwise return first-hit.
+ * Order: exact key → longest prefix whose key is a prefix of `model` at a
+ * `-` boundary → silent Sonnet default (`fallback`). Longest-prefix avoids
+ * binding a more specific dated id (e.g. `gpt-5.5-pro-…`) to a shorter
+ * sibling row (`gpt-5.5`) when object-key order would otherwise return
+ * first-hit. The `-` boundary keeps a dated snapshot of one model from
+ * matching a sibling whose key happens to extend the same string: without it,
+ * `claude-fable-5-20260715` (a dated Fable 5) would longest-prefix onto the
+ * `claude-fable-5-2` row.
  *
  * Prefer {@link lookupPricing} for surfaces that must not silently substitute
  * Sonnet for unknown OpenAI models.
@@ -127,7 +143,7 @@ export function resolvePricing(model: string): ResolvedPricing {
   let bestKey: string | undefined;
   let bestPricing: ModelPricing | undefined;
   for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
-    if (!model.startsWith(key)) continue;
+    if (!model.startsWith(`${key}-`)) continue;
     if (bestKey === undefined || key.length > bestKey.length) {
       bestKey = key;
       bestPricing = pricing;

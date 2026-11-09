@@ -1,5 +1,6 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import { MODEL_PRICING, lookupPricing, getPricing, resolvePricing, estimateCost } from './pricing-tables.js';
+import { CLAUDE_CODE_MODEL_IDS } from '../shared/contracts/agent-types.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -22,6 +23,50 @@ describe('lookupPricing — strict exact-match', () => {
       expect(p!.outputPerMTok, `outputPerMTok for ${m}`).toBeGreaterThan(0);
       expect(p!.lastVerified, `lastVerified for ${m}`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     }
+  });
+
+  test('every Claude Code allowlisted model id has its own pricing row', () => {
+    // Drift guard: a model offered in the launch picker must not silently fall
+    // back to Sonnet 4.6 pricing in the cost tracker (that happened to
+    // claude-sonnet-5, allowlisted in #1518 without a pricing row).
+    for (const m of CLAUDE_CODE_MODEL_IDS) {
+      const p = lookupPricing(m);
+      expect(p, `missing pricing for allowlisted ${m}`).not.toBeNull();
+      // lookupPricing validates rates but not lastVerified; a 'TBD' placeholder
+      // would otherwise slip through this guard.
+      expect(p!.lastVerified, `lastVerified for ${m}`).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    }
+  });
+
+  test('uses published rates for Fable 5.2 (reduced-rate cache reads: 2.5% of input)', () => {
+    expect(lookupPricing('claude-fable-5-2')).toMatchObject({
+      inputPerMTok: 8,
+      outputPerMTok: 40,
+      cacheWritePerMTok: 10,
+      cacheReadPerMTok: 0.20,
+    });
+  });
+
+  test('pins the rate pairs that differ only in cache reads (Sonnet 5 vs 5.5) and Haiku 5.5', () => {
+    // claude-sonnet-5 and claude-sonnet-5-5 share input/output/cache-write and
+    // differ ONLY in cacheReadPerMTok — a row transposition would pass the
+    // drift guard, so pin both explicitly.
+    expect(lookupPricing('claude-sonnet-5-5')).toMatchObject({
+      inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.10,
+    });
+    expect(lookupPricing('claude-sonnet-5')).toMatchObject({
+      inputPerMTok: 2, outputPerMTok: 10, cacheWritePerMTok: 2.5, cacheReadPerMTok: 0.20,
+    });
+    expect(lookupPricing('claude-opus-5-5')).toMatchObject({
+      inputPerMTok: 4, outputPerMTok: 20, cacheWritePerMTok: 5, cacheReadPerMTok: 0.20,
+    });
+    expect(lookupPricing('claude-fable-5-1')).toMatchObject({
+      inputPerMTok: 10, outputPerMTok: 50, cacheWritePerMTok: 12.5, cacheReadPerMTok: 0.25,
+    });
+    // Base (≤100K-prompt) tier — the >100K tier is 5x and not modeled.
+    expect(lookupPricing('claude-haiku-5-5')).toMatchObject({
+      inputPerMTok: 0.10, outputPerMTok: 0.50, cacheWritePerMTok: 0.125, cacheReadPerMTok: 0.01,
+    });
   });
 
   test('uses current Anthropic API rates for Opus 4.8 and Fable 5', () => {
@@ -162,6 +207,27 @@ describe('resolvePricing — match honesty', () => {
     const r = resolvePricing('claude-opus-4-8-20260115');
     expect(r.match).toBe('prefix');
     expect(r.pricing.inputPerMTok).toBe(MODEL_PRICING['claude-opus-4-8'].inputPerMTok);
+  });
+
+  test('prefix match stops at a `-` boundary: dated Fable 5 ids do not bind to the Fable 5.2 row', () => {
+    // `claude-fable-5-20260715` is a dated snapshot of claude-fable-5 ($10/$50).
+    // Without the boundary, longest-prefix would bind it to the longer sibling
+    // key `claude-fable-5-2` ($8/$40) because the version digit abuts the date.
+    const dated = resolvePricing('claude-fable-5-20260715');
+    expect(dated.match).toBe('prefix');
+    // Row identity (not just rate equality) keeps this discriminating even if
+    // the two Fable rows' rates ever converge.
+    expect(dated.pricing).toBe(MODEL_PRICING['claude-fable-5']);
+
+    // The sibling still resolves exactly, and its own dated ids still prefix to it.
+    expect(resolvePricing('claude-fable-5-2').match).toBe('exact');
+    const datedSibling = resolvePricing('claude-fable-5-2-20270101');
+    expect(datedSibling.match).toBe('prefix');
+    expect(datedSibling.pricing).toBe(MODEL_PRICING['claude-fable-5-2']);
+
+    // Refusal direction of the boundary (intended): a non-`-` extension no
+    // longer prefix-matches at all and falls to the Sonnet default.
+    expect(resolvePricing('claude-fable-5x').match).toBe('fallback');
   });
 
   test('unknown model is fallback Sonnet', () => {

@@ -1,5 +1,5 @@
 import { OPENCODE_PROFILE_ID_PATTERN } from '../adapters/opencode-profiles.js';
-import { isValidOpenCodeModelId } from '../shared/contracts/agent-types.js';
+import { CLAUDE_CODE_MODEL_IDS, isValidOpenCodeModelId } from '../shared/contracts/agent-types.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -272,6 +272,15 @@ describe('parseArgs', () => {
     expect(parseArgs(['--model=claude-opus-4-8']).model).toBe('claude-opus-4-8');
     expect(parseArgs(['--model', 'claude-haiku-4-5-20251001']).model).toBe('claude-haiku-4-5-20251001');
     expect(parseArgs(['--model', 'gpt-6-astra']).model).toBe('gpt-6-astra');
+  });
+
+  it('keeps the CLI Claude model-id mirror in parity with CLAUDE_CODE_MODEL_IDS', () => {
+    // bin/kookr-spawn.js inlines CLAUDE_MODEL_IDS (no build-time import); a
+    // shared-contract addition that misses the mirror makes the CLI fast-fail
+    // reject an id the server accepts (happened with claude-haiku-5-5).
+    for (const id of CLAUDE_CODE_MODEL_IDS) {
+      expect(parseArgs(['--model', id]).model, id).toBe(id);
+    }
   });
 
   it('rejects unknown --model values at the CLI (#1518)', () => {

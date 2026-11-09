@@ -505,6 +505,14 @@ describe('per-task model allowlist (#1518)', () => {
     expect(modelsForAgent('claude-code')).toEqual(CLAUDE_CODE_MODEL_IDS);
   });
 
+  test('claude-code allowlist includes the current-generation Anthropic ids', () => {
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-fable-5-2');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-fable-5-1');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-opus-5-5');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-sonnet-5-5');
+    expect(CLAUDE_CODE_MODEL_IDS).toContain('claude-haiku-5-5');
+  });
+
   test('codex-cli exposes gpt-6-astra without inheriting Claude models', () => {
     expect(CODEX_CLI_MODEL_IDS).toEqual(['gpt-6-astra']);
     expect(modelsForAgent('codex-cli')).toEqual(CODEX_CLI_MODEL_IDS);
