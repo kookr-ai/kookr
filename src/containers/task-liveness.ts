@@ -7,10 +7,13 @@ import type { TaskLookupPort } from './ports.js';
 interface TaskRow { id?: string; status?: string; updatedAt?: string | number }
 
 function toLiveness(row: TaskRow | undefined): ReturnType<TaskLookupPort> {
-  if (!row || typeof row.status !== 'string') return { state: 'unknown' };
+  if (!row) return { state: 'unknown' };
+  // A row that exists but has no usable status is malformed data, which proves nothing about the task.
+  if (typeof row.status !== 'string') return { state: 'store_unreadable' };
   if (!isTerminalStatus(row.status as never)) return { state: 'live' };
-  const t = row.updatedAt !== undefined ? new Date(row.updatedAt) : new Date(0);
-  return { state: 'terminal', endedAt: Number.isNaN(t.getTime()) ? new Date(0) : t };
+  const t = row.updatedAt !== undefined ? new Date(row.updatedAt) : undefined;
+  // No usable end time: treat the task as just ended, so retention starts now rather than at the epoch.
+  return { state: 'terminal', endedAt: t && !Number.isNaN(t.getTime()) ? t : new Date() };
 }
 
 /**

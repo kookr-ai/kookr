@@ -2089,9 +2089,9 @@ kookr github status --json  # same scanner status as one JSON envelope
 
 ```
 kookr containers ls [--json] [--dir PATH]
-kookr containers prune --instance [--yes] [--dir PATH]
+kookr containers prune --instance [--yes] [--force] [--dir PATH]
 ```
 
 Inspect and clean up opencode worker containers (experimental; see
 [opencode-agent.md](opencode-agent.md#worker-container-housekeeping-kookr-containers)). `ls` is read-only;
-`prune --instance` is a dry run unless `--yes`.
+`prune --instance` is a dry run unless `--yes`, and needs `--force` to remove containers of live tasks.

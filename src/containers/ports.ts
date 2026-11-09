@@ -23,6 +23,8 @@ export interface ContainerInfo {
 export interface NetworkInfo {
   id: string;
   name: string;
+  /** Docker's `Created`; a missing or invalid date is treated as brand new (inside grace). */
+  createdAt?: Date;
   labels: Record<string, string>;
 }
 

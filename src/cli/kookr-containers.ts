@@ -11,7 +11,7 @@ export const CONTAINERS_HELP_TEXT = `kookr containers — inspect and clean up o
 
 Usage:
   kookr containers ls [--json] [--dir PATH]
-  kookr containers prune --instance [--yes] [--dir PATH]
+  kookr containers prune --instance [--yes] [--force] [--dir PATH]
 
 ls     Lists this Kookr instance's worker containers (label kookr.instance) with the
        decision the reconciler would take: adopt, grace, keep_terminal, stop_remove,
@@ -24,6 +24,7 @@ Options:
   --json      Machine-readable output (ls).
   --instance  Required for prune: scope to this instance's label.
   --yes       Actually remove (prune); without it prune only lists.
+  --force     Prune even containers whose task is still live (kills running workers).
   --dir PATH  Use an explicit data directory (e.g. ~/.kookr-4801).
   -h, --help  Show this help.`;
 
@@ -35,16 +36,17 @@ export interface ContainersDeps {
   now?: () => Date;
 }
 
-interface Parsed { verb?: 'ls' | 'prune'; json: boolean; instance: boolean; yes: boolean; dir?: string; help: boolean; error?: string }
+interface Parsed { verb?: 'ls' | 'prune'; json: boolean; instance: boolean; yes: boolean; force: boolean; dir?: string; help: boolean; error?: string }
 
 export function parseContainersArgs(argv: string[]): Parsed {
-  const p: Parsed = { json: false, instance: false, yes: false, help: false };
+  const p: Parsed = { json: false, instance: false, yes: false, force: false, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === '-h' || a === '--help') p.help = true;
     else if (a === '--json') p.json = true;
     else if (a === '--instance') p.instance = true;
     else if (a === '--yes') p.yes = true;
+    else if (a === '--force') p.force = true;
     else if (a === '--dir') {
       const v = argv[++i];
       if (!v) return { ...p, error: '--dir requires a path' };
@@ -113,6 +115,11 @@ export async function runContainersCli(argv: string[], deps: ContainersDeps = {}
     for (const c of targets) out.log(`${p.yes ? 'removing' : 'would remove'} container ${c.name} (${c.state})`);
     for (const n of nets) out.log(`${p.yes ? 'removing' : 'would remove'} network ${n.name}`);
     if (!p.yes) { out.log('Dry run. Re-run with --yes to remove.'); return 0; }
+    const liveOnes = targets.filter((c) => tasks(c.labels[LABEL_TASK] ?? '').state !== 'terminal' && tasks(c.labels[LABEL_TASK] ?? '').state !== 'unknown');
+    if (liveOnes.length > 0 && !p.force) {
+      err.error(`refusing to prune: ${liveOnes.length} container(s) belong to live tasks or an unreadable task store (${liveOnes.map((c) => c.name).join(', ')}). Re-run with --force to kill them.`);
+      return 1;
+    }
     let failed = 0;
     for (const c of targets) {
       try { await docker.stopContainer(c.name, 10); await docker.removeContainer(c.name); } catch (e) { failed++; err.error(`failed to remove ${c.name}: ${String(e)}`); }

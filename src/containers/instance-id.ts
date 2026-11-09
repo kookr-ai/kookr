@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -21,13 +21,20 @@ export async function getOrCreateInstanceId(dataDir: string): Promise<string> {
   }
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
   const id = randomUUID();
-  // `wx`: if two processes race, exactly one wins and the loser re-reads the winner's id.
+  // Write a complete temp file, then `link` it into place: link fails with EEXIST if another process won, and a
+  // reader can never observe a half-written id (the final path appears fully formed or not at all).
+  const tmp = `${file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  await writeFile(tmp, `${id}\n`, { mode: 0o600 });
   try {
-    await writeFile(file, `${id}\n`, { mode: 0o600, flag: 'wx' });
+    await link(tmp, file);
     return id;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    return (await readFile(file, 'utf8')).trim();
+    const winner = (await readFile(file, 'utf8')).trim();
+    if (!UUID.test(winner)) throw new Error(`${file} exists but is not a valid instance id; refusing to replace it`);
+    return winner;
+  } finally {
+    await rm(tmp, { force: true });
   }
 }
 

@@ -28,7 +28,7 @@ describe('kookr containers', () => {
       labels: { [LABEL_INSTANCE]: instance, [LABEL_TASK]: task, [LABEL_LAUNCH]: 'tok-12345678' },
     });
     docker.containers = [mk('kookr-oc-live1-a', 'live1'), mk('kookr-oc-gone-b', 'gone'), mk('kookr-oc-theirs-c', 'x', OTHER)];
-    docker.networks = [{ id: 'n', name: 'kookr-oc-net-gone', labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 'gone' } }];
+    docker.networks = [{ id: 'n', name: 'kookr-oc-net-gone', createdAt: new Date('2026-01-01T00:00:00Z'), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 'gone' } }];
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -61,8 +61,14 @@ describe('kookr containers', () => {
     expect(docker.calls).toEqual([]);
   });
 
-  test('prune --instance --yes removes this instance\'s containers and networks, and only those', async () => {
-    expect(await run(['prune', '--instance', '--yes'])).toBe(0);
+  test('prune --yes refuses while a live task owns a container, and says how to override', async () => {
+    expect(await run(['prune', '--instance', '--yes'])).toBe(1);
+    expect(errs.join('\n')).toContain('--force');
+    expect(docker.calls).toEqual([]);
+  });
+
+  test('prune --instance --yes --force removes this instance\'s containers and networks, and only those', async () => {
+    expect(await run(['prune', '--instance', '--yes', '--force'])).toBe(0);
     expect(docker.calls).toContain('rm kookr-oc-live1-a');
     expect(docker.calls).toContain('rm kookr-oc-gone-b');
     expect(docker.calls).toContain('net-rm kookr-oc-net-gone');

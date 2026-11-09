@@ -166,7 +166,7 @@ export const KOOKR_COMPLETION_COMMANDS: readonly CommandCompletion[] = [
   {
     name: 'containers',
     subcommands: ['ls', 'prune'],
-    flags: ['--json', '--instance', '--yes', '--dir', '-h', '--help'],
+    flags: ['--json', '--instance', '--yes', '--force', '--dir', '-h', '--help'],
   },
   {
     name: 'command',

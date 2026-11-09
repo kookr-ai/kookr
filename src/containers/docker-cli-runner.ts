@@ -19,7 +19,7 @@ interface InspectContainer {
   RestartCount?: number;
   Config?: { Labels?: Record<string, string> | null };
 }
-interface InspectNetwork { Id: string; Name: string; Labels?: Record<string, string> | null }
+interface InspectNetwork { Id: string; Name: string; Created?: string; Labels?: Record<string, string> | null }
 
 /** Docker CLI adapter. Arguments are always an argv array (never a shell string); names must be plain identifiers. */
 export class DockerCliRunner implements DockerRunnerPort {
@@ -60,7 +60,7 @@ export class DockerCliRunner implements DockerRunnerPort {
       .split('\n').map((s) => s.trim()).filter(Boolean);
     if (ids.length === 0) return [];
     const rows = JSON.parse(await this.exec(['network', 'inspect', ...ids], this.timeoutMs)) as InspectNetwork[];
-    return rows.map((r) => ({ id: r.Id, name: r.Name, labels: r.Labels ?? {} }));
+    return rows.map((r) => ({ id: r.Id, name: r.Name, labels: r.Labels ?? {}, ...(r.Created ? { createdAt: new Date(r.Created) } : {}) }));
   }
 
   async removeNetwork(name: string): Promise<void> {

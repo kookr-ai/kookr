@@ -121,7 +121,7 @@ export class ContainerReconciler {
         else survivingTasks.add(taskId!);
       };
       const launch = c.labels[LABEL_LAUNCH];
-      if (now - c.createdAt.getTime() < grace) { act('grace', 'younger than the grace period'); continue; }
+      if (!(now - c.createdAt.getTime() >= grace)) { act('grace', 'younger than the grace period'); continue; }
       if (launch && (await this.d.intents.isOpen(launch))) { act('grace', 'launch intent still open'); continue; }
       const live = this.d.tasks(taskId!);
       if (live.state === 'store_unreadable') {
@@ -148,7 +148,10 @@ export class ContainerReconciler {
       }
       const launch = n.labels[LABEL_LAUNCH];
       if (survivingTasks.has(taskId)) continue;
+      if (!n.createdAt || !(now - n.createdAt.getTime() >= grace)) continue; // young or undated: inside grace
       if (launch && (await this.d.intents.isOpen(launch))) continue;
+      const liveness = this.d.tasks(taskId);
+      if (liveness.state === 'store_unreadable' || liveness.state === 'live') continue; // a live task's network is never removed
       actions.push({ kind: 'remove_network', name: n.name, taskId, reason: 'no container of this task remains' });
     }
     return actions;

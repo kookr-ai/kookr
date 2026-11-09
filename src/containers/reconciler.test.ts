@@ -115,8 +115,8 @@ describe('ContainerReconciler', () => {
 
   test('networks of a task with no remaining container are removed; protected by surviving container or open intent', async () => {
     docker.networks = [
-      { id: 'n1', name: 'kookr-oc-net-t1', labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 't1', [LABEL_LAUNCH]: 'tokentoken1' } },
-      { id: 'n2', name: 'kookr-oc-net-t2', labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 't2', [LABEL_LAUNCH]: 'tokentoken2' } },
+      { id: 'n1', name: 'kookr-oc-net-t1', createdAt: new Date(T0.getTime() - 48 * H), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 't1', [LABEL_LAUNCH]: 'tokentoken1' } },
+      { id: 'n2', name: 'kookr-oc-net-t2', createdAt: new Date(T0.getTime() - 48 * H), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 't2', [LABEL_LAUNCH]: 'tokentoken2' } },
     ];
     docker.containers = [container()];
     liveness.t1 = { state: 'live' };
@@ -126,6 +126,24 @@ describe('ContainerReconciler', () => {
     await intents.close('tokentoken2');
     await make().reconcile();
     expect(docker.calls).toEqual(['net-rm kookr-oc-net-t2']);
+  });
+
+  test('networks are held when the task store is unreadable, when the task is live, and while young or undated', async () => {
+    const net = (over: object = {}) => ({ id: 'n', name: 'kookr-oc-net-t1', createdAt: new Date(T0.getTime() - 48 * H), labels: { [LABEL_INSTANCE]: SELF, [LABEL_TASK]: 't1' }, ...over });
+    docker.networks = [net()];
+    liveness.t1 = { state: 'store_unreadable' };
+    await make().reconcile();
+    liveness.t1 = { state: 'live' };
+    await make().reconcile();
+    docker.networks = [net({ createdAt: new Date(T0.getTime() - 30_000) })];
+    liveness.t1 = { state: 'unknown' };
+    await make().reconcile();
+    docker.networks = [net({ createdAt: undefined })];
+    await make().reconcile();
+    expect(docker.calls).toEqual([]);
+    docker.networks = [net()];
+    await make().reconcile();
+    expect(docker.calls).toEqual(['net-rm kookr-oc-net-t1']);
   });
 
   test('every change and failure is logged; a failing stop is counted, not thrown', async () => {
