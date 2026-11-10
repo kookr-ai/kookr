@@ -1,9 +1,14 @@
 /**
  * Viewport-first streaming attach seed (RFC Phase 1 / C4, issue #1934).
  *
- * Cold streaming attaches used to ship the full ring (up to 1 MiB). Default
- * attach now seeds the last N KB with a **defined** safe cut so we never start
- * mid-CSI or mid-UTF-8. Absolute-position TUI paths do not use this module.
+ * Cold streaming attaches used to ship the full ring (up to 1 MiB). This
+ * module seeds the last N KB instead, with a **defined** safe cut so we never
+ * start mid-CSI or mid-UTF-8. Absolute-position TUI paths do not use it.
+ *
+ * A byte suffix is not a picture of the screen for an agent that redraws
+ * differentially, so the v2 attach prefers a screen snapshot (see
+ * `streaming-attach-snapshot.ts`, issue #3564). This cut is what it falls back
+ * to, and it is still the seed on the legacy v1 path.
  *
  * `bytes` must already be in logical order (oldest → newest), as returned by
  * `TerminalBackend.captureBytes`. Ring wraparound is handled by capture; this

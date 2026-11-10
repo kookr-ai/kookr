@@ -11,7 +11,7 @@ flowchart LR
   subgraph Developer Machine
     Browser[Browser SPA<br/>React + Vite]
     Backend[Kookr Backend<br/>Node.js process]
-    Host[Optional Terminal Host<br/>Node.js child process<br/>bounded reconstruction worker thread]
+    Host[Optional Terminal Host<br/>Node.js child process<br/>reconstruction + attach-snapshot worker threads]
     Term1[Terminal Session #1<br/>dtach]
     Term2[Terminal Session #2<br/>dtach]
     CC[Claude Code<br/>interactive mode]
@@ -58,7 +58,7 @@ flowchart LR
 | Container | Technology | Responsibility |
 |---|---|---|
 | **Kookr Backend** | Node.js (TypeScript) | HTTP server, WebSocket server, terminal session management, supervisor logic, task storage, schedules, workspace cleanup, OSS contribution refresh, optional speech/Telegram integration |
-| **Terminal host (optional)** | Node.js child process | Enabled by `KOOKR_TERMINAL_HOST=true`. Owns the dtach backend, terminal sockets, input coordinator, asynchronous ring persistence and a bounded reconstruction worker thread. The main process authenticates and authorizes upgrades before transferring sockets; the child opens no listener |
+| **Terminal host (optional)** | Node.js child process | Enabled by `KOOKR_TERMINAL_HOST=true`. Owns the dtach backend, terminal sockets, input coordinator, asynchronous ring persistence, a bounded reconstruction worker thread and a worker thread that builds screen-snapshot attach seeds (the in-process backend starts the snapshot worker itself). The main process authenticates and authorizes upgrades before transferring sockets; the child opens no listener |
 | **Browser SPA** | React + Vite (ADR-002) | Findings panel, terminal panel, input box, status bar, notifications |
 | **Hosted Relay** | Optional external service | Public session-sharing transport. The local backend still owns the agent process and publishes/accepts only policy-gated session data and commands |
 | **Terminal Session** | dtach (ADR-014, sole backend post-V8) | Managed terminal hosting a single agent process. A persistent dtach master owns the child PTY; the terminal backend owns one persistent byte-transparent attach client per session, shared by its browser viewers. One session per agent |
