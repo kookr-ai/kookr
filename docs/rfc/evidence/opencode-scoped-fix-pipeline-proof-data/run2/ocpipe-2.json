@@ -1,0 +1,36 @@
+{
+  "stage": "ready-for-merge",
+  "round": 0,
+  "head": "0ee54ada114277301f5229c8a75d55283a48842a",
+  "branch": "ocpipe/2",
+  "worktree": "/tmp/claude-1000/-home-jean-git-kookr/fc5681c7-3471-47ff-b956-4fcb22887494/scratchpad/proof/kookr-pipeline-proof-scratch-ocpipe-2",
+  "pr": 5,
+  "children": [
+    {
+      "id": "f73adca4-d326-4f8b-bf59-3dd7f10ce995",
+      "role": "worker-r0",
+      "startedAt": "2026-11-10T18:07:50Z",
+      "endedAt": "2026-11-10T18:10:10Z",
+      "usd": 0.00701,
+      "tokens": 335119
+    },
+    {
+      "id": "817e5edb-dcb7-484b-b4f9-7732a2daa7e8",
+      "role": "reviewer-r0",
+      "startedAt": "2026-11-10T18:12:25Z",
+      "endedAt": "2026-11-10T18:18:09Z",
+      "usd": 0.00617,
+      "tokens": 226086
+    },
+    {
+      "id": "ae6c02c44f97ed6f1",
+      "role": "gate-reviewer-claude",
+      "startedAt": null,
+      "endedAt": "2026-11-10T18:19:26Z",
+      "usd": null,
+      "tokens": null
+    }
+  ],
+  "usdSpent": 0.01318,
+  "startedAt": "2026-11-10T18:07:23Z"
+}

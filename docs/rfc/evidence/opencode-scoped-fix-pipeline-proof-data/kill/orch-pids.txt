@@ -1,0 +1,1 @@
+2074488 claude --plugin-dir /home/jean/git/kookr-pipeline-proof/plugin --effort medium --model claude-sonnet-5-5 --set

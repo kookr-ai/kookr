@@ -1,0 +1,20 @@
+{
+  "stage": "1-work",
+  "round": 0,
+  "head": null,
+  "branch": "ocpipe/3",
+  "worktree": "/tmp/claude-1000/-home-jean-git-kookr/fc5681c7-3471-47ff-b956-4fcb22887494/scratchpad/proof/kookr-pipeline-proof-scratch-ocpipe-3",
+  "pr": null,
+  "children": [
+    {
+      "id": "b2697493-ece7-4dc7-8ad3-3af00f1a2a5b",
+      "role": "scoped-fix",
+      "startedAt": "2026-11-10T18:21:27Z",
+      "endedAt": null,
+      "usd": null,
+      "tokens": null
+    }
+  ],
+  "usdSpent": 0,
+  "startedAt": "2026-11-10T18:21:21Z"
+}

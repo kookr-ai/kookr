@@ -1,0 +1,144 @@
+{
+  "stage": "failed-exit",
+  "round": 2,
+  "head": "63849d18772a0caa40fc62c469289e4b16b30307",
+  "branch": "ocpipe/1",
+  "worktree": "/tmp/claude-1000/-home-jean-git-kookr/fc5681c7-3471-47ff-b956-4fcb22887494/scratchpad/proof/kookr-pipeline-proof-scratch-ocpipe-1",
+  "pr": 4,
+  "children": [
+    {
+      "id": "41c1d436-15e4-47be-ada8-31c81f66e51d",
+      "role": "worker-scoped-fix-r0",
+      "startedAt": "2026-11-10T17:30:17Z",
+      "endedAt": "2026-11-10T17:31:32Z",
+      "usd": 0.006277640000000002,
+      "tokens": {
+        "inputTokens": 16312,
+        "outputTokens": 2555,
+        "cacheReadTokens": 247040,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; stopped by orchestrator (status cancelled)"
+    },
+    {
+      "id": "4d88418a-724e-4bc4-a002-00957c8df869",
+      "role": "reviewer-r0",
+      "startedAt": "2026-11-10T17:34:51Z",
+      "endedAt": "2026-11-10T17:35:37Z",
+      "usd": 0.005410832,
+      "tokens": {
+        "inputTokens": 15211,
+        "outputTokens": 2381,
+        "cacheReadTokens": 156672,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; FINDINGS: 3; stopped by orchestrator"
+    },
+    {
+      "id": "335e7848-6d6c-423a-befd-02bd996aa84a",
+      "role": "worker-scoped-fix-r1",
+      "startedAt": "2026-11-10T17:36:26Z",
+      "endedAt": "2026-11-10T17:37:53Z",
+      "usd": 0.009395944000000002,
+      "tokens": {
+        "inputTokens": 20666,
+        "outputTokens": 4761,
+        "cacheReadTokens": 401024,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; 1 new commit; stopped by orchestrator"
+    },
+    {
+      "id": "46745659-10e7-4552-b468-f8cc97145f8e",
+      "role": "reviewer-r1",
+      "startedAt": "2026-11-10T17:39:10Z",
+      "endedAt": "2026-11-10T17:40:27Z",
+      "usd": 0.009112616000000002,
+      "tokens": {
+        "inputTokens": 21808,
+        "outputTokens": 4223,
+        "cacheReadTokens": 369536,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; FINDINGS: 0; stopped by orchestrator"
+    },
+    {
+      "id": "4c5f9913-2f3f-4e7b-9977-087053f9a6c3",
+      "role": "worker-scoped-fix-r2",
+      "startedAt": "2026-11-10T17:46:05Z",
+      "endedAt": "2026-11-10T17:47:02Z",
+      "usd": 0.00764768,
+      "tokens": {
+        "inputTokens": 19516,
+        "outputTokens": 3412,
+        "cacheReadTokens": 282880,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; 1 new commit; stopped by orchestrator"
+    },
+    {
+      "id": "db704684-f61b-4c6a-83d2-85d4f2ac6d9b",
+      "role": "reviewer-r2",
+      "startedAt": "2026-11-10T17:47:47Z",
+      "endedAt": "2026-11-10T17:49:59Z",
+      "usd": 0.014273511999999999,
+      "tokens": {
+        "inputTokens": 25199,
+        "outputTokens": 9202,
+        "cacheReadTokens": 618752,
+        "cacheWriteTokens": 0
+      },
+      "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      "outcome": "completion_ready; FINDINGS: 1 (LOW, test title wording); stopped by orchestrator"
+    }
+  ],
+  "usdSpent": 0.052118224000000005,
+  "startedAt": "2026-11-10T17:29:37Z",
+  "notes": [
+    "kookr doctor exits 1 from the scratch repo cwd (runtime.dtach looked up relative to cwd) but exits 0 with no required failures from the kookr checkout; treated as ok",
+    "kookr spawn --wait returned exit 0 before the child had finished. Seen directly on the first two spawns: stage 1 returned after 10 s with the child still open, and the first reviewer spawn had returned while that child was mid-turn. Four of the six spawn outputs carry the message Active task recovered via reconcile probe (ambiguous create outcome); the other two say Task created. The orchestrator waited on every child itself with the same completion_ready/terminal rule (wait-child.sh).",
+    "orchestrator observation on head 3f51387 (verified by running the code, not passed to the round-1 re-review so it stays independent): truncation drops a whole word when the cut lands exactly at a word end, e.g. slugify(\"abc def ghi\", {maxLength: 7}) returns \"abc\" where the 7-character prefix \"abc-def\" is valid",
+    "stage 2 reviewer prompt (prompt-stage2-review.md) was written by the orchestrator and lists \"a test that does not test what it claims\" as a reportable defect; the playbook does not name that category, and the round-2 finding that ended the run falls in it",
+    "stage 4 gate review ran once, on 3f51387 (BLOCK). It did not run on the final head 63849d1 because the cheap review after round 2 reported FINDINGS: 1 with the round budget exhausted"
+  ],
+  "lastReview": {
+    "round": 2,
+    "head": "63849d18772a0caa40fc62c469289e4b16b30307",
+    "findings": 1,
+    "file": "REVIEW-r2.md"
+  },
+  "gate": [
+    {
+      "attempt": 1,
+      "head": "3f5138762289137f7fc689e6194fddff4c0f98f2",
+      "lane": "claude",
+      "policy": "hard",
+      "startedAt": "2026-11-10T17:42:05Z",
+      "endedAt": "2026-11-10T17:45:50Z",
+      "verdict": "block",
+      "confirmedFindings": 1,
+      "file": "GATE-1.md",
+      "subagentTokens": 75394,
+      "wallSeconds": 160,
+      "commentUrl": "https://github.com/jeanibarz/kookr-pipeline-proof-scratch/pull/4#issuecomment-6774776787",
+      "wallSecondsNote": "reviewer run time reported by the harness (159861 ms); startedAt and endedAt are when the orchestrator recorded the launch and the verdict"
+    }
+  ],
+  "terminal": {
+    "outcome": "opencode-pipeline-failed",
+    "reason": "cheap review after fix round 2 reported FINDINGS: 1 (LOW, test title wording) with the round budget of 2 exhausted",
+    "stageReached": "2-review after fix round 2",
+    "finalHead": "63849d18772a0caa40fc62c469289e4b16b30307",
+    "gateVerdictOnFinalHead": null,
+    "accountingCommentUrl": "https://github.com/jeanibarz/kookr-pipeline-proof-scratch/pull/4#issuecomment-6774945939",
+    "issueCommentUrl": "https://github.com/jeanibarz/kookr-pipeline-proof-scratch/issues/1#issuecomment-6774946425",
+    "labelAdded": "opencode-pipeline-failed",
+    "claimReleased": true,
+    "endedAt": "2026-11-10T17:54:46Z"
+  }
+}
