@@ -163,6 +163,19 @@ test.describe('Terminal image drag & drop', () => {
     await expect.poll(() => pastedImagePaths(request, tmuxName), { timeout: 5_000 }).toHaveLength(1);
   });
 
+  // A refusal notice has no timer, so a real pointer click must be able to dismiss it
+  // (it sits above xterm, whose pending-state chrome is click-through).
+  test('a refusal notice is dismissed by a real click on its close button', async ({ page }) => {
+    await dragFilesOntoTerminal(
+      page, [{ name: 'notes.pdf', type: 'application/pdf', bytes: [0x25, 0x50, 0x44, 0x46] }], ['dragover', 'drop'],
+    );
+    await expect(page.getByTestId('terminal-image-notice')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Dismiss image notice' }).click();
+
+    await expect(page.getByTestId('terminal-image-notice')).toHaveCount(0);
+  });
+
   test('rejects a file that only claims to be a PNG (server checks the real bytes)', async ({ page, request }) => {
     const before = (await writtenChunks(request, tmuxName)).length;
 
