@@ -28,7 +28,7 @@ const MAX_RETAINED_BYTES = 8 * 1024 * 1024;
  * emulator packages, which measured about 100 ms on an idle host and can take
  * seconds on a loaded one. Without it a slow start would be mistaken for a stall.
  */
-const COLD_START_ALLOWANCE_MS = 2000;
+const COLD_START_ALLOWANCE_MS = 1500;
 
 /**
  * A ring is not replayed again for this long after it stalled the worker. The
@@ -85,20 +85,31 @@ export class TerminalSnapshotWorker {
     const worker = new Worker(join(__dirname, `terminal-snapshot-worker-entry.${source ? 'ts' : 'js'}`), {
       execArgv: source ? ['--import', 'tsx'] : [],
     });
-    worker.unref();
     this.worker = worker;
     this.served = false;
     worker.on('message', (message: { id: number; result: StreamingAttachSnapshotResult }) => {
       if (this.worker !== worker) return;
       this.served = true;
+      // A replay that ran past its own budget is expensive however it ended, and the
+      // ring will cost the same next time. Back the session off, as for a stall.
+      if (message.result.kind === 'unavailable' && message.result.reason === 'budget-exceeded') {
+        this.markStalled(this.pending.get(message.id)?.sessionKey);
+      }
       this.finish(message.id, message.result);
     });
     worker.on('error', (error) => {
       if (this.worker !== worker) return;
+      // An exception in the thread (a parser handler throwing) is attributed like a
+      // stall: the oldest job was the one running, and the same ring would throw again.
+      const crashed = this.oldestPending();
       console.error('[terminal-snapshot-worker] worker failed; attaches fall back to the byte-tail seed:', error);
+      this.markStalled(crashed?.sessionKey);
       void this.retire('failed');
     });
     worker.on('exit', () => { if (this.worker === worker) void this.retire('failed'); });
+    // After the listeners: adding a 'message' listener takes a reference on the
+    // thread's port, which would undo an earlier unref() and keep the process alive.
+    worker.unref();
     return worker;
   }
 
@@ -111,7 +122,12 @@ export class TerminalSnapshotWorker {
     if (this.pending.size >= MAX_PENDING_JOBS || this.retainedBytes + bytes.length > MAX_RETAINED_BYTES) {
       return Promise.resolve(unavailable('busy'));
     }
-    const worker = this.start();
+    let worker: Worker | null;
+    try { worker = this.start(); }
+    catch (error) {
+      console.error('[terminal-snapshot-worker] could not start the worker; attaches fall back to the byte-tail seed:', error);
+      return Promise.resolve(unavailable('failed'));
+    }
     if (!worker) return Promise.resolve(unavailable('failed'));
 
     const id = ++this.nextId;
@@ -119,13 +135,17 @@ export class TerminalSnapshotWorker {
     const deadlineMs = snapshotDeadlineMs(options) + (this.served ? 0 : COLD_START_ALLOWANCE_MS);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        // The worker runs one job at a time and takes messages in order, so the
-        // oldest waiting job is the one that was running when it got stuck.
-        const stuck = this.pending.values().next().value as Pending | undefined;
-        console.error(`[terminal-snapshot-worker] replay ran past ${deadlineMs} ms; terminating the worker`
-          + (stuck?.sessionKey ? ` (session ${stuck.sessionKey} skipped for ${this.backoffMs} ms)` : ''));
-        this.markStalled(stuck?.sessionKey);
-        void this.retire('budget-exceeded');
+        // If this thread was itself stalled past the deadline, the worker's reply may
+        // already be waiting in the port. Let the poll phase deliver it before blaming
+        // the worker: a healthy reply must not cost a healthy session its snapshots.
+        setImmediate(() => {
+          if (!this.pending.has(id)) return;
+          const stuck = this.oldestPending();
+          console.error(`[terminal-snapshot-worker] replay ran past ${deadlineMs} ms; terminating the worker`
+            + (stuck?.sessionKey ? ` (session ${stuck.sessionKey} skipped for ${this.backoffMs} ms)` : ''));
+          this.markStalled(stuck?.sessionKey);
+          void this.retire('budget-exceeded');
+        });
       }, deadlineMs);
       timer.unref?.();
       this.pending.set(id, { bytes: bytes.length, sessionKey: options.sessionKey, startedAt, resolve, timer });
@@ -133,6 +153,11 @@ export class TerminalSnapshotWorker {
       try { worker.postMessage({ id, bytes: owned, options }, [owned.buffer]); }
       catch { this.finish(id, unavailable('failed')); }
     });
+  }
+
+  /** The worker runs one job at a time and takes messages in order: the oldest waiting job is the running one. */
+  private oldestPending(): Pending | undefined {
+    return this.pending.values().next().value;
   }
 
   private isBackingOff(sessionKey: string | undefined): boolean {

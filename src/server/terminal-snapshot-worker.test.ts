@@ -116,6 +116,64 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
     expect((await worker.snapshot(encode('poison has left the ring\r\n'), { ...geometry, sessionKey: 'poisoned' })).kind).toBe('snapshot');
   });
 
+  it('blames the session whose ring stalled the worker, not one that was in flight beside it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const worker = newWorker({ backoffMs: 60_000 });
+    await warmUp(worker);
+    const tight = { ...geometry, maxMs: 150, maxQueueWaitMs: 50 };
+    // Both jobs are lost with the worker; only the one that was running is to blame.
+    const [stalled, bystander] = await Promise.all([
+      worker.snapshot(poisonedRing, { ...tight, sessionKey: 'poisoned' }),
+      worker.snapshot(encode('innocent bystander\r\n'), { ...tight, sessionKey: 'bystander' }),
+    ]);
+    expect(stalled.kind).toBe('unavailable');
+    expect(bystander.kind).toBe('unavailable');
+    expect(await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'poisoned' }))
+      .toMatchObject({ reason: 'backoff' });
+    await vi.waitFor(async () => {
+      expect((await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'bystander' })).kind).toBe('snapshot');
+    }, { timeout: 20_000, interval: 100 });
+  });
+
+  it('also skips a session whose replay overran its own budget but came back before the deadline', async () => {
+    // A ring that costs more than the replay budget is expensive every time, even when
+    // the host's deadline never fires. A zero budget makes that deterministic.
+    const worker = newWorker({ backoffMs: 60_000 });
+    await warmUp(worker);
+    expect(await worker.snapshot(encode('some output\r\n'.repeat(100)), { ...geometry, maxMs: 0, sessionKey: 'slow' }))
+      .toMatchObject({ kind: 'unavailable', reason: 'budget-exceeded' });
+    expect(await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'slow' })).toMatchObject({ reason: 'backoff' });
+    expect((await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'other' })).kind).toBe('snapshot');
+  });
+
+  it('attributes a crash of the worker thread to the session that was running', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const worker = newWorker({ backoffMs: 60_000 });
+    await warmUp(worker);
+    const crashing = worker.snapshot(encode('about to lose the thread\r\n'), { ...geometry, sessionKey: 'crashes' });
+    // What Node does when the thread throws outside any handler: an 'error' event on the Worker.
+    (worker as unknown as { worker: Worker }).worker.emit('error', new Error('parser handler threw'));
+    expect(await crashing).toMatchObject({ kind: 'unavailable', reason: 'failed' });
+    expect(await worker.snapshot(encode('again\r\n'), { ...geometry, sessionKey: 'crashes' })).toMatchObject({ reason: 'backoff' });
+  });
+
+  it('does not kill a worker whose reply was already waiting when this thread finally got to the deadline', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
+    const worker = newWorker({ backoffMs: 60_000 });
+    await warmUp(worker);
+    terminate.mockClear();
+    // Deadline for these options: 0 ms queue + 1000 ms budget + 500 ms slack = 1500 ms.
+    const job = worker.snapshot(encode('answered long ago\r\n'), { ...geometry, maxQueueWaitMs: 0, sessionKey: 'healthy' });
+    // Stall this thread past the deadline: the worker answers meanwhile, and both the
+    // reply and the expired timer are waiting when the event loop resumes.
+    const until = performance.now() + 1700;
+    while (performance.now() < until) { /* busy */ }
+    expect((await job).kind).toBe('snapshot');
+    expect(terminate).not.toHaveBeenCalled();
+    expect((await worker.snapshot(encode('next\r\n'), { ...geometry, sessionKey: 'healthy' })).kind).toBe('snapshot');
+  });
+
   it('does not penalize a session for a job that merely sat behind a healthy one', async () => {
     const worker = newWorker({ backoffMs: 60_000 });
     await warmUp(worker);

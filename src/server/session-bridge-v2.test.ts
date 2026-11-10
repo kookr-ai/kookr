@@ -10,7 +10,7 @@ import { TERMINAL_V2_PROTOCOL, TERMINAL_CLOSE, parseTerminalServerControl } from
 import { getHotPathSampler, resetHotPathSamplerForTests } from '../core/hot-path-sampler.js';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { snapshotStreamingAttachSeed } from './streaming-attach-snapshot.js';
-import { closeSharedTerminalSnapshotWorker, snapshotStreamingAttachSeedIsolated } from './terminal-snapshot-worker.js';
+import { closeSharedTerminalSnapshotWorker, snapshotStreamingAttachSeedIsolated, TerminalSnapshotWorker } from './terminal-snapshot-worker.js';
 import { diffRenderedAgentStream, SPINNER_ONLY_FRAMES } from './__fixtures__/diff-rendered-agent-stream.js';
 import { Terminal } from '@xterm/xterm';
 
@@ -521,10 +521,14 @@ describe('NFR-TERM-001: version-two session bridge', () => {
       await vi.waitFor(async () => {
         expect((await snapshotStreamingAttachSeedIsolated(new TextEncoder().encode('warm up\r\n'), { cols: 80, rows: 24 })).kind).toBe('snapshot');
       }, { timeout: 25_000, interval: 200 });
+      const isolated = vi.spyOn(TerminalSnapshotWorker.prototype, 'snapshot');
       const h = await setup(stream.bytes, false, false, undefined, { streamingAttachSnapshot: undefined });
       h.attach();
       await vi.waitFor(() => expect(controlsOf(h).filter((frame) => frame?.type === 'seed-end')).toHaveLength(1), { timeout: 20_000 });
       await drain();
+      // The output alone cannot tell a worker from an in-thread build; the call can.
+      expect(isolated).toHaveBeenCalledTimes(1);
+      expect(isolated.mock.calls[0]?.[1]).toMatchObject({ cols: 80, rows: 24, sessionKey: 'test' });
       expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({ strategy: 'viewport-snapshot' });
       expect(await paint(Buffer.concat(outputOf(h)))).toEqual(await paint(stream.bytes));
     }, 30_000);

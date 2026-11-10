@@ -1143,15 +1143,20 @@ indices and transport acknowledgements.
   the agent has waited for about 90 seconds. The server therefore replays the
   retained ring through a terminal emulator and sends the serialized screen,
   cursor position, colors, and persistent input modes (cursor visibility and
-  scroll regions are not carried), followed by any bytes after the last clean
-  parser boundary (at most 4 KiB) so an unfinished escape sequence continues
-  into live output. Scrollback is trimmed to fit the viewport budget; the
-  visible screen and that short tail are always sent. The emulator runs in a
-  worker thread that is terminated if it overruns its deadline, so a ring that
-  stalls the parser costs one attach its snapshot and never blocks the terminal
-  host. The seed carries no resume cursor, and older output stays behind
-  `request-history`. If no snapshot can be built (emulator unavailable, busy, or
-  over its time budget) the byte tail is sent instead and the reason is logged.
+  style, scroll regions, and the mouse encoding are not carried), followed by
+  any bytes after the last clean parser boundary (at most 4 KiB) so an
+  unfinished escape sequence continues into live output. Scrollback is trimmed
+  to fit the viewport budget; the visible screen and that short tail are always
+  sent. The emulator runs in a worker thread that is terminated if it overruns
+  its deadline, so a ring that stalls the parser never blocks the thread that
+  serves terminals (the server, or the terminal host when
+  `KOOKR_TERMINAL_HOST=true`). Attaches that overlap the stall lose their
+  snapshot, and the stalled session is skipped for 60 seconds (a replay that
+  runs past its own time budget is skipped the same way), so a poisoned ring
+  cannot cost a deadline of CPU on every re-attach. The seed carries no resume
+  cursor, and older output stays behind `request-history`. If no snapshot can be
+  built (emulator unavailable, busy, over its time budget, or backing off) the
+  byte tail is sent instead and the reason is logged.
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively
 invalidates the cursor, even if that parse later completes. Carrying the retiring

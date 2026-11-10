@@ -20,10 +20,13 @@
  * application cursor keys, mouse tracking, alternate screen). tmux and VS
  * Code's terminal reconnection also send a serialized screen.
  *
- * What the serializer does not carry is cursor visibility, scroll regions and
- * the saved-cursor and charset state. Agent TUIs that redraw every frame set
- * those again on the next frame; a full-screen program that sets a scroll
- * region once and never again would live-scroll differently until it does.
+ * What the serializer does not carry is cursor visibility and style, scroll
+ * regions, the saved-cursor and charset state, and the mouse *encoding* (it
+ * restores that mouse tracking is on, not whether reports use SGR). Agent TUIs
+ * that redraw every frame set most of those again on the next frame; a
+ * full-screen program that sets a scroll region or a mouse encoding once and
+ * never again would behave differently until it does. The byte-tail seed lost
+ * the same state, so this is not a regression.
  *
  * The snapshot is only as good as the bytes it is given. A ring that has
  * itself lost the base screen (wrapped during a very long quiet period, or
