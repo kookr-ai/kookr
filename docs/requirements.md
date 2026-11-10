@@ -1142,18 +1142,22 @@ indices and transport acknowledgements.
   edits with nothing to edit: replayed alone they leave a nearly blank pane once
   the agent has waited for about 90 seconds. The server therefore replays the
   retained ring through a terminal emulator and sends the serialized screen,
-  cursor, and modes, followed by any bytes after the last clean parser boundary
-  so an unfinished escape sequence continues into live output. The seed stays
-  within the viewport budget by trimming scrollback, never the visible screen.
-  It carries no resume cursor, and older output stays behind `request-history`.
-  If no snapshot can be built (emulator unavailable, busy, or over its time
-  budget) the byte tail is sent instead and the reason is logged.
+  cursor position, colors, and persistent input modes (cursor visibility and
+  scroll regions are not carried), followed by any bytes after the last clean
+  parser boundary (at most 4 KiB) so an unfinished escape sequence continues
+  into live output. Scrollback is trimmed to fit the viewport budget; the
+  visible screen and that short tail are always sent. The emulator runs in a
+  worker thread that is terminated if it overruns its deadline, so a ring that
+  stalls the parser costs one attach its snapshot and never blocks the terminal
+  host. The seed carries no resume cursor, and older output stays behind
+  `request-history`. If no snapshot can be built (emulator unavailable, busy, or
+  over its time budget) the byte tail is sent instead and the reason is logged.
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively
 invalidates the cursor, even if that parse later completes. Carrying the retiring
 chunk's completion into exact resume, as specified by the RFC, remains deferred.
 
-**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/server/streaming-attach-snapshot.test.ts`, `src/server/streaming-attach-snapshot.failure.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
+**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/server/streaming-attach-snapshot.test.ts`, `src/server/streaming-attach-snapshot.failure.test.ts`, `src/server/terminal-snapshot-worker.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
 
 ### NFR-TERM-001: Bounded responsive terminal rendering [F5.2] — SHALL — `partial`
 

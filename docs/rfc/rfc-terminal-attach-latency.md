@@ -294,10 +294,16 @@ For a ring larger than the viewport budget the seed is now a screen snapshot:
 the retained ring is replayed through `@xterm/headless` *at attach time* and the
 serialized screen is sent, with the byte-tail cut kept as the fallback. This is
 not D1-vte. No emulator outlives the attach, the ring stays the only stored
-truth, and ADR-014 is unchanged. A full 1 MiB ring costs roughly 60-85 ms of
-replay on a loaded host; a continuous D1-vte model would cut that to the few
-milliseconds serialization takes and would also survive a ring that has wrapped
-past its base screen, which the attach-time replay cannot.
+truth, and ADR-014's decision stands (only its rejected-alternative entry for
+`@xterm/headless` is annotated). The replay runs in a worker thread that the
+host terminates on a deadline, because the parser handles one control sequence
+synchronously and a ring is untrusted output (`ESC[999999999b` alone occupies a
+thread for tens of seconds). Replay cost was measured at about 25-40 ms for a
+full 1 MiB ring on an idle development host (issue #3564 prototype: 22 ms
+emulate plus 3 ms serialize) and has not been measured on a loaded production
+host; a continuous D1-vte model would cut that to the few milliseconds
+serialization takes and would also survive a ring that has wrapped past its base
+screen, which the attach-time replay cannot.
 
 Optional **1a:** A3 prepare-on-select via #1927/`getSeed` owner if cold still
 misses.

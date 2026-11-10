@@ -132,6 +132,56 @@ describe('snapshotStreamingAttachSeed (issue #3564)', () => {
     } finally { terminal.dispose(); }
   });
 
+  it('keeps cell colors and text attributes, which the row text cannot show', async () => {
+    // Rows of plain text compare equal whether or not the colors survived, so
+    // compare the style of every cell on a screen that uses each color mode.
+    const styled = encode(
+      '\x1b[1;38;2;10;20;30;48;5;99mtruecolor on palette\x1b[0m plain\r\n'
+      + '\x1b[2;3;4;7;31mdim italic underline inverse red\x1b[0m\r\n'
+      + `${'filler line\r\n'.repeat(10)}`
+      + '\x1b[1;32mgreen bold\x1b[0m tail',
+    );
+    const cellStyles = async (seed: Uint8Array) => {
+      const terminal = new Terminal({ cols: COLS, rows: ROWS, scrollback: 2000, allowProposedApi: true });
+      try {
+        await write(terminal, seed);
+        const buffer = terminal.buffer.active;
+        return Array.from({ length: terminal.rows }, (_, y) => {
+          const line = buffer.getLine(buffer.baseY + y);
+          return Array.from({ length: terminal.cols }, (_, x) => {
+            const cell = line?.getCell(x);
+            return cell && [
+              cell.getFgColorMode(), cell.getFgColor(), cell.getBgColorMode(), cell.getBgColor(),
+              cell.isBold(), cell.isDim(), cell.isItalic(), cell.isUnderline(), cell.isInverse(),
+            ].join(',');
+          });
+        });
+      } finally { terminal.dispose(); }
+    };
+    const truth = await cellStyles(styled);
+    // Default, truecolor+bold on palette, dim/italic/underline/inverse red, bold green.
+    expect(new Set(truth.flat()).size).toBeGreaterThanOrEqual(4);
+
+    const result = await snapshot(styled);
+    if (result.kind !== 'snapshot') throw new Error(`snapshot unavailable: ${result.reason}`);
+    expect(await cellStyles(result.bytes)).toEqual(truth);
+  });
+
+  it('refuses a screen that is itself implausibly large instead of sending it', async () => {
+    // Every cell a different truecolor: nothing for the serializer to merge, so
+    // even with all scrollback dropped the visible screen alone is over the ceiling.
+    const cols = 300;
+    const rows = 200;
+    const lines: string[] = [];
+    for (let y = 0; y < rows; y++) {
+      let line = '';
+      for (let x = 0; x < cols; x++) line += `\x1b[38;2;${x % 256};${y % 256};${(x * 7 + y) % 256}m#`;
+      lines.push(line);
+    }
+    const result = await snapshot(encode(lines.join('\r\n')), { cols, rows, maxBytes: 1000, maxMs: 10_000 });
+    expect(result).toMatchObject({ kind: 'unavailable', reason: 'oversized' });
+  });
+
   it('reports why no snapshot was produced instead of throwing', async () => {
     expect(await snapshot(new Uint8Array(0))).toMatchObject({ kind: 'unavailable', reason: 'empty' });
     expect(await snapshot(stream.bytes, { cols: 0 })).toMatchObject({ kind: 'unavailable', reason: 'invalid-geometry' });
@@ -171,6 +221,14 @@ describe('findSnapshotBoundary', () => {
 
   it('keeps the whole buffer when it ends in complete plain text', () => {
     const bytes = encode('x'.repeat(5000));
+    expect(findSnapshotBoundary(bytes)).toBe(bytes.byteLength);
+  });
+
+  it('does not search the whole ring for an escape character that is far from the end', () => {
+    // Only the last few KiB can hold an unfinished sequence. An escape character
+    // at the very start of a long plain-text ring must not drag the boundary
+    // there and push the whole ring through as raw bytes.
+    const bytes = encode(`\x1b[1m${'x'.repeat(10_000)}`);
     expect(findSnapshotBoundary(bytes)).toBe(bytes.byteLength);
   });
 

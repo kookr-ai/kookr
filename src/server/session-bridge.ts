@@ -34,7 +34,8 @@ import {
   cutStreamingAttachSeed,
   DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
 } from './streaming-attach-seed.js';
-import { snapshotStreamingAttachSeed } from './streaming-attach-snapshot.js';
+import type { snapshotStreamingAttachSeed, StreamingAttachSnapshotResult } from './streaming-attach-snapshot.js';
+import { snapshotStreamingAttachSeedIsolated } from './terminal-snapshot-worker.js';
 
 /**
  * Server → browser text control frame for attach join keys (RFC Phase 0.0).
@@ -334,8 +335,10 @@ export interface SessionBridgeOptions {
   /**
    * Builds the screen-snapshot seed used when a streaming ring is larger than
    * the viewport budget (issue #3564). Defaults to replaying the ring through
-   * a headless terminal emulator. Inject a stub in unit tests to exercise the
-   * fallback to the byte-tail cut.
+   * a headless terminal emulator in a worker thread, so a ring that makes the
+   * parser stall costs one attach its snapshot instead of blocking this
+   * thread. Inject `snapshotStreamingAttachSeed` to run it in-thread, or a
+   * stub to exercise the fallback to the byte-tail cut.
    */
   streamingAttachSnapshot?: typeof snapshotStreamingAttachSeed;
 
@@ -456,7 +459,7 @@ export class SessionBridge {
         'KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES',
         DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
       );
-    this.streamingAttachSnapshot = options?.streamingAttachSnapshot ?? snapshotStreamingAttachSeed;
+    this.streamingAttachSnapshot = options?.streamingAttachSnapshot ?? snapshotStreamingAttachSeedIsolated;
     this.initialResizeWaitMs = options?.initialResizeWaitMs
       ?? readNonNegativeIntegerEnv(
         'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
@@ -1005,9 +1008,17 @@ export class SessionBridge {
         && this.streamingAttachViewportBytes > 0
         && snapshot.bytes.byteLength > this.streamingAttachViewportBytes
       ) {
-        const result = await this.streamingAttachSnapshot(snapshot.bytes, {
-          cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes,
-        });
+        let result: StreamingAttachSnapshotResult;
+        try {
+          result = await this.streamingAttachSnapshot(snapshot.bytes, {
+            cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes,
+          });
+        } catch (error) {
+          // The builder promises not to throw. If it does anyway, the attach
+          // still gets the byte tail rather than being closed over a seed.
+          console.error('[session-bridge] screen snapshot builder threw:', error);
+          result = { kind: 'unavailable', reason: 'failed', elapsedMs: 0 };
+        }
         if (this.closed) return;
         snapshotMs = result.elapsedMs;
         getHotPathSampler().record('terminal_attach_snapshot', snapshotMs);

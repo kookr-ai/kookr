@@ -15,12 +15,32 @@
  *
  * This module builds the seed from what the screen *is* instead: it replays
  * the retained ring through a headless terminal emulator (the same parser the
- * browser's xterm uses) and serializes the resulting screen, cursor, colors
- * and modes. tmux and VS Code's terminal reconnection work the same way.
+ * browser's xterm uses) and serializes the resulting screen, the cursor
+ * position, colors and the persistent input modes (bracketed paste,
+ * application cursor keys, mouse tracking, alternate screen). tmux and VS
+ * Code's terminal reconnection also send a serialized screen.
+ *
+ * What the serializer does not carry is cursor visibility, scroll regions and
+ * the saved-cursor and charset state. Agent TUIs that redraw every frame set
+ * those again on the next frame; a full-screen program that sets a scroll
+ * region once and never again would live-scroll differently until it does.
  *
  * The snapshot is only as good as the bytes it is given. A ring that has
  * itself lost the base screen (wrapped during a very long quiet period, or
  * shrunk by the fleet budget) still replays to an incomplete screen.
+ *
+ * **Run this off the main thread in production.** xterm parses one control
+ * sequence synchronously, and the ring is untrusted program output: a single
+ * sequence such as `ESC[999999999b` (repeat the last character a billion
+ * times) occupies the thread for tens of seconds, and neither the budget nor
+ * the watchdog below can interrupt a call that never returns. The bridge
+ * therefore defaults to `terminal-snapshot-worker.ts`, which runs this module
+ * in a worker thread that the host terminates on a deadline. Calling it
+ * directly runs it in the current thread; tests do that, and the worker does
+ * that inside its own thread. It does not reuse the Grok reconstruct queue
+ * (`absolute-position-tui-screen.ts`): that queue walks a hand-written grid
+ * that can stop at any byte, while an xterm replay cannot, so a poisoned ring
+ * must not be able to take the reconstruct worker down with it.
  *
  * Every failure here is soft: the caller falls back to the 64 KiB cut, which
  * is the previous behavior.
@@ -35,9 +55,8 @@ import { DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES } from './streaming-attach-seed
 /**
  * Scrollback rows carried in the seed, above the visible screen.
  *
- * Serializing costs time on the shared event loop in proportion to the rows
- * sent (about 3 ms for 200 rows, 15 ms for a full 1 MiB ring's worth). 200 rows
- * is several screens of recent output — more than the 64 KiB byte tail ever
+ * Serializing costs time in proportion to the rows sent (about 3 ms for 200
+ * rows, about 22 ms for 2000). 200 rows is several screens of recent output — more than the 64 KiB byte tail ever
  * held for a differentially rendering agent — and anything older stays
  * reachable through request-history.
  */
@@ -45,17 +64,20 @@ const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
 
 /**
  * xterm parses one `write()` call as a single synchronous block, and only
- * yields to the event loop between calls. Feeding the ring in slices keeps a
- * full 1 MiB replay from stalling keystroke delivery for other sessions: one
- * slice parses in a few milliseconds. Much smaller slices would not help,
- * because each one also costs a timer round trip before the parser starts.
+ * yields between calls. Feeding the ring in slices lets the time budget be
+ * checked between them, and keeps an in-thread replay from monopolizing the
+ * event loop: one slice parses in a few milliseconds. Much smaller slices
+ * would not help, because each one also costs a timer round trip before the
+ * parser starts.
  */
 const EMULATE_CHUNK_BYTES = 64 * 1024;
 
 /**
- * Wall-clock budget for one replay. A full 1 MiB ring takes about 25 ms on an
- * idle machine; the budget only matters when the event loop is saturated. It
- * must stay well under the browser's 5 s wait for the seed.
+ * Wall-clock budget for one replay, measured from the moment it gets the slot
+ * (queue wait and the first-use package load do not count against it). A full
+ * 1 MiB ring takes about 25 ms on an idle machine; the budget only matters
+ * when the thread is saturated. It must stay well under the browser's 5 s wait
+ * for the seed.
  */
 const DEFAULT_MAX_MS = 1000;
 
@@ -70,6 +92,18 @@ const watchdogMs = (maxMs: number): number => maxMs * 2 + 250;
 
 /** How long a caller waits for the single replay slot before falling back. */
 const DEFAULT_MAX_QUEUE_WAIT_MS = 750;
+
+/** Slack a supervising thread adds on top of queue wait and budget. */
+const DEADLINE_SLACK_MS = 500;
+
+/**
+ * How long a supervising thread should wait for a result before it gives up on
+ * the replay thread: the time spent queued, the replay budget, and some slack
+ * for the package load. Past this, the thread is presumed stuck in the parser.
+ */
+export function snapshotDeadlineMs(options: Pick<StreamingAttachSnapshotOptions, 'maxMs' | 'maxQueueWaitMs'>): number {
+  return (options.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS) + (options.maxMs ?? DEFAULT_MAX_MS) + DEADLINE_SLACK_MS;
+}
 
 /**
  * How far back to look for the escape character that starts the last, possibly
@@ -114,7 +148,7 @@ export type StreamingAttachSnapshotResult =
   | { kind: 'unavailable'; reason: StreamingAttachSnapshotUnavailableReason; elapsedMs: number };
 
 export interface StreamingAttachSnapshotOptions {
-  /** PTY geometry the ring's most recent output was drawn for. */
+  /** The PTY's current geometry, after any resize the attach applied. */
   cols: number;
   rows: number;
   /**
@@ -285,6 +319,8 @@ export async function snapshotStreamingAttachSeed(
 
   if (!(await acquireSlot(options.maxQueueWaitMs ?? DEFAULT_MAX_QUEUE_WAIT_MS))) return unavailable('busy');
 
+  // The budget covers the replay itself, not the wait for the slot above.
+  const replayStartedAt = now();
   const scrollback = Math.max(0, Math.floor(options.scrollbackRows ?? DEFAULT_SNAPSHOT_SCROLLBACK_ROWS));
   const maxMs = options.maxMs ?? DEFAULT_MAX_MS;
   const maxBytes = options.maxBytes && options.maxBytes > 0 ? options.maxBytes : DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES;
@@ -299,7 +335,7 @@ export async function snapshotStreamingAttachSeed(
       const boundary = findSnapshotBoundary(bytes);
       for (let offset = 0; offset < boundary; offset += EMULATE_CHUNK_BYTES) {
         await writeChunk(terminal, bytes.subarray(offset, Math.min(offset + EMULATE_CHUNK_BYTES, boundary)));
-        if (now() - startedAt > maxMs) return unavailable('budget-exceeded');
+        if (now() - replayStartedAt > maxMs) return unavailable('budget-exceeded');
       }
 
       const screen = await serializeWithinBudget(serializer, scrollback, maxBytes);

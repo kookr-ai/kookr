@@ -8,6 +8,7 @@ import { TERMINAL_V2_PROTOCOL } from '../shared/terminal-protocol.js';
 import { SessionBridge } from './session-bridge.js';
 import { TerminalInputCoordinator } from './terminal-input-coordinator.js';
 import { TerminalReconstructionWorker } from './terminal-reconstruction-worker.js';
+import { closeSharedTerminalSnapshotWorker } from './terminal-snapshot-worker.js';
 import { setAbsoluteTuiReconstructionExecutor } from './absolute-position-tui-screen.js';
 import { TerminalHostChannel } from './terminal-host-channel.js';
 import { getTerminalOutputBytes } from './terminal-output-queue.js';
@@ -259,7 +260,7 @@ async function stop() {
   // A hard deadline lets main confirm exit before replacing this owner. The
   // dtach masters are detached and deliberately survive either shutdown path.
   const deadline = setTimeout(() => process.exit(1), 3000);
-  await Promise.all([backend?.closeAndDrain(), reconstruction.close()]);
+  await Promise.all([backend?.closeAndDrain(), reconstruction.close(), closeSharedTerminalSnapshotWorker()]);
   clearTimeout(deadline); channel.close(); process.exit(0);
 }
 process.on('disconnect', () => void stop());
