@@ -34,6 +34,8 @@ export interface TerminalImageUploadResponse {
   /**
    * Absolute path on the Kookr host. The file name has no spaces or shell-special
    * characters; the directory part is the Kookr state dir (normally `~/.kookr`).
+   * Known limit: the path is pasted unquoted, so if the state dir itself
+   * contains whitespace the agents may treat it as text rather than an image.
    */
   path: string;
   /** Format the server detected from the file's leading bytes (not the client's claim). */

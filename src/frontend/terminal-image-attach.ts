@@ -23,6 +23,13 @@ import {
 const EXTENSION_TYPES: Readonly<Record<string, true>> = { png: true, jpg: true, jpeg: true, gif: true, webp: true };
 const MAX_MB = TERMINAL_IMAGE_MAX_BYTES / (1024 * 1024);
 
+/**
+ * How long one upload may take before it is abandoned. Without a bound, a
+ * stalled request would hold back the other images of the same drop and leave
+ * the "Uploading…" notice up indefinitely.
+ */
+export const TERMINAL_IMAGE_UPLOAD_TIMEOUT_MS = 60_000;
+
 /** True when a drag carries files (as opposed to dragged text or a page link). */
 export function dragCarriesFiles(dataTransfer: DataTransfer | null | undefined): boolean {
   return !!dataTransfer && Array.from(dataTransfer.types ?? []).includes('Files');
@@ -47,6 +54,24 @@ export function isSupportedImageFile(file: Pick<File, 'name' | 'type'>): boolean
 export function imageFilesFromClipboard(data: DataTransfer | null | undefined): File[] {
   if (!data || data.getData('text')) return [];
   return Array.from(data.files ?? []).filter(isSupportedImageFile);
+}
+
+/**
+ * Images on the clipboard, read through the async Clipboard API — for the
+ * terminal's explicit right-click "Paste" action, where there is no `paste`
+ * event to read files from. Chrome exposes a copied picture or screenshot as
+ * `image/png`. Returns nothing when the API is unavailable (an insecure
+ * origin) and lets a permission refusal propagate to the caller.
+ */
+export async function readClipboardImages(clipboard: Pick<Clipboard, 'read'> | undefined): Promise<File[]> {
+  if (typeof clipboard?.read !== 'function') return [];
+  const files: File[] = [];
+  for (const item of await clipboard.read()) {
+    const type = item.types.find((candidate) => (TERMINAL_IMAGE_TYPES as readonly string[]).includes(candidate));
+    if (!type) continue;
+    files.push(new File([await item.getType(type)], `clipboard.${type.slice('image/'.length)}`, { type }));
+  }
+  return files;
 }
 
 export interface ImageAttachPlan {
@@ -97,16 +122,24 @@ function describeUploadFailure(status: number, error: TerminalImageUploadError |
 export async function uploadTerminalImage(
   file: File,
   fetchImpl: typeof fetch = (...args) => fetch(...args),
+  timeoutMs: number = TERMINAL_IMAGE_UPLOAD_TIMEOUT_MS,
 ): Promise<TerminalImageUploadResponse> {
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
   let response: Response;
   try {
     response = await fetchImpl(TERMINAL_IMAGE_UPLOAD_PATH, {
       method: 'POST',
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
       body: file,
+      signal: abort.signal,
     });
   } catch {
-    throw new Error(`${file.name || 'image'}: could not reach the Kookr server`);
+    throw new Error(abort.signal.aborted
+      ? `${file.name || 'image'}: upload timed out`
+      : `${file.name || 'image'}: could not reach the Kookr server`);
+  } finally {
+    clearTimeout(timer);
   }
   if (!response.ok) {
     const error = await response.json().catch(() => null) as TerminalImageUploadError | null;

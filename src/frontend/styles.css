@@ -3167,7 +3167,6 @@ a.overview-tour-link:visited:hover {
   max-width: min(420px, calc(100% - 24px));
   white-space: normal;
 }
-.terminal-image-notice::before { animation: none; }
 .terminal-history-notice {
   display: flex;
   align-items: center;

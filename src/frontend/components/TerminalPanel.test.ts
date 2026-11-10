@@ -2076,7 +2076,9 @@ describe('TerminalPanel', () => {
         .toContain('was not attached');
     });
 
-    test('attaches an image from the clipboard (Ctrl+V screenshot) when it carries no text', async () => {
+    // A real `paste` event: macOS Cmd+V, Shift+Insert, or the browser's Edit ▸ Paste.
+    // (Plain Ctrl+V never fires one here — see the Ctrl+V test below.)
+    test('attaches an image delivered by a browser paste event when the clipboard carries no text', async () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH)));
       const { ws, xterm } = mountReady();
 
@@ -2100,6 +2102,194 @@ describe('TerminalPanel', () => {
       expect(evt!.defaultPrevented).toBe(false);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(ws.send).not.toHaveBeenCalled();
+    });
+
+    const notice = () => container.querySelector('[data-testid="terminal-image-notice"]');
+    const overlay = () => container.querySelector('[data-testid="terminal-drop-overlay"]');
+    const PDF_FILE = () => new File(['%PDF'], 'notes.pdf', { type: 'application/pdf' });
+    /** A clipboard holding only a picture, as after a screenshot. */
+    const imageOnlyClipboard = () => ({
+      readText: vi.fn().mockResolvedValue(''),
+      read: vi.fn().mockResolvedValue([{
+        types: ['image/png'],
+        getType: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }),
+      }]),
+    });
+
+    test('shows "Uploading image…" while in flight and clears it once the image is attached', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH)));
+      const { ws, xterm } = mountReady();
+
+      act(() => { dispatchFileDrag(xterm, 'drop', [PNG_FILE()]); });
+      expect(notice()?.textContent).toBe('Uploading image…');
+      // In-flight progress is not dismissible.
+      expect(notice()?.querySelector('button')).toBeNull();
+
+      await flush();
+      expect(sentTypes(ws)).toEqual(['paste']);
+      expect(notice()).toBeNull();
+    });
+
+    test('a mixed drop attaches the image and names the file it skipped', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH)));
+      const { ws, xterm } = mountReady();
+
+      act(() => { dispatchFileDrag(xterm, 'drop', [PNG_FILE(), PDF_FILE()]); });
+      await flush();
+
+      expect(sentTypes(ws)).toEqual(['paste']);
+      expect(notice()?.querySelector('span')?.textContent)
+        .toBe('Attached 1 image; skipped: notes.pdf: not a PNG, JPEG, GIF or WebP image');
+    });
+
+    test('a result notice stays until dismissed (no timer) and its live region is always mounted', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady();
+      const region = container.querySelector('[data-testid="terminal-image-notice-region"]');
+      // Present before any notice exists, so screen readers announce the text when it arrives.
+      expect(region?.getAttribute('role')).toBe('status');
+
+      vi.useFakeTimers();
+      try {
+        act(() => { dispatchFileDrag(xterm, 'drop', [PDF_FILE()]); });
+        act(() => { vi.advanceTimersByTime(10 * 60_000); });
+        expect(notice()).not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const dismiss = notice()!.querySelector<HTMLButtonElement>('button[aria-label="Dismiss image notice"]');
+      act(() => { dismiss!.click(); });
+      expect(notice()).toBeNull();
+      expect(container.querySelector('[data-testid="terminal-image-notice-region"]')).toBe(region);
+    });
+
+    test('clears a lingering notice when the selected agent changes', () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady('agent-A');
+      act(() => { dispatchFileDrag(xterm, 'drop', [PDF_FILE()]); });
+      expect(notice()).not.toBeNull();
+
+      act(() => { root.render(React.createElement(TerminalPanel, { tmuxName: 'agent-B', visible: true })); });
+      expect(notice()).toBeNull();
+    });
+
+    test('says so when a file drag carries no files', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady();
+      act(() => { dispatchFileDrag(xterm, 'drop', []); });
+      await flush();
+      expect(notice()?.querySelector('span')?.textContent).toBe('No image to attach.');
+    });
+
+    test('keeps the overlay while the drag moves between the panel\'s own children, and hides it on drop', () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady();
+      act(() => { dispatchFileDrag(xterm, 'dragenter', [PNG_FILE()]); });
+      expect(overlay()).not.toBeNull();
+
+      // dragleave whose pointer is still inside the panel (xterm → the overlay sibling).
+      const inside = new Event('dragleave', { bubbles: true, cancelable: true });
+      Object.defineProperty(inside, 'relatedTarget', { value: overlay() });
+      act(() => { xterm.dispatchEvent(inside); });
+      expect(overlay()).not.toBeNull();
+
+      act(() => { dispatchFileDrag(xterm, 'drop', [PDF_FILE()]); });
+      expect(overlay()).toBeNull();
+    });
+
+    test('claims a drop that lands on a sibling of the terminal (the notice), not only on xterm', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH));
+      vi.stubGlobal('fetch', fetchMock);
+      const { ws, xterm } = mountReady();
+      act(() => { dispatchFileDrag(xterm, 'drop', [PDF_FILE()]); });
+      expect(notice()).not.toBeNull();
+
+      // The pointer is over the notice pill, which is outside the xterm element.
+      let drop: Event;
+      act(() => { drop = dispatchFileDrag(notice()!, 'drop', [PNG_FILE()]); });
+      await flush();
+
+      // Unclaimed, the browser would navigate the dashboard tab to the file.
+      expect(drop!.defaultPrevented).toBe(true);
+      expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: `${IMG_PATH} ` }));
+    });
+
+    test('leaves a dropped text drag alone', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady();
+      let drop: Event;
+      act(() => { drop = dispatchFileDrag(xterm, 'drop', [], ['text/plain']); });
+      await flush();
+      expect(drop!.defaultPrevented).toBe(false);
+      expect(notice()).toBeNull();
+    });
+
+    test('leaves a text-less paste that holds no image alone', async () => {
+      vi.stubGlobal('fetch', vi.fn());
+      const { xterm } = mountReady();
+      let paste: Event;
+      act(() => { paste = dispatchFilePaste(xterm, [PDF_FILE()]); });
+      await flush();
+      expect(paste!.defaultPrevented).toBe(false);
+      expect(notice()).toBeNull();
+    });
+
+    test('right-click ▸ Paste attaches a clipboard screenshot when the clipboard has no text', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH));
+      vi.stubGlobal('fetch', fetchMock);
+      const clipboard = imageOnlyClipboard();
+      vi.stubGlobal('navigator', { clipboard });
+      const { ws, xterm } = mountReady();
+
+      act(() => { xterm.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+      const pasteButton = [...container.querySelectorAll('.terminal-context-menu button')]
+        .find((button) => button.textContent === 'Paste') as HTMLButtonElement;
+      await act(async () => { pasteButton.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await flush();
+
+      expect(clipboard.read).toHaveBeenCalledTimes(1);
+      const uploaded = fetchMock.mock.calls[0][1].body as File;
+      expect(uploaded).toMatchObject({ name: 'clipboard.png', type: 'image/png' });
+      expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: `${IMG_PATH} ` }));
+    });
+
+    // Plain Ctrl+V belongs to the agent: xterm forwards it as ^V and Claude Code / Codex
+    // paste an image from the host clipboard themselves. Uploading here as well would
+    // attach the same screenshot twice wherever the agent can read that clipboard.
+    test('does not upload a clipboard image on plain Ctrl+V (the agent handles that key itself)', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const clipboard = imageOnlyClipboard();
+      vi.stubGlobal('navigator', { clipboard });
+      const { ws, xterm } = mountReady();
+
+      act(() => {
+        xterm.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, bubbles: true, cancelable: true }));
+      });
+      await flush();
+      await flush();
+
+      expect(clipboard.read).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(ws.send).not.toHaveBeenCalled();
+    });
+
+    test('"Paste raw" never uploads a clipboard image', async () => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal('fetch', fetchMock);
+      const clipboard = imageOnlyClipboard();
+      vi.stubGlobal('navigator', { clipboard });
+      const { xterm } = mountReady();
+
+      act(() => { xterm.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+      const rawButton = [...container.querySelectorAll('.terminal-context-menu button')]
+        .find((button) => button.textContent === 'Paste raw') as HTMLButtonElement;
+      await act(async () => { rawButton.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      await flush();
+
+      expect(clipboard.read).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     test('refuses to attach while the terminal is not connected', async () => {

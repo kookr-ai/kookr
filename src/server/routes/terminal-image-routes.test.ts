@@ -155,6 +155,31 @@ describe('POST /api/terminal-images', () => {
     expect(remaining).toContain(saved.path.slice(saved.path.lastIndexOf('/') + 1));
   });
 
+  it('accepts the older GIF87a signature and rejects near-miss GIF and WebP headers', async () => {
+    expect((await upload(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x37, 0x61, 1, 0]))).status).toBe(201);
+    // "GIF89" followed by a wrong sixth byte.
+    expect((await upload(new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x00, 1, 0]))).status).toBe(415);
+    // "WEBP" at the right offset but no leading "RIFF".
+    expect((await upload(new Uint8Array([0, 0, 0, 0, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]))).status).toBe(415);
+  });
+
+  it('prunes expired images of every extension, and an entry it cannot remove never fails the upload', async () => {
+    const dir = join(kookrDir, TERMINAL_IMAGE_DIR_NAME);
+    mkdirSync(dir, { recursive: true });
+    const ancient = new Date(Date.now() - TERMINAL_IMAGE_RETENTION_MS - 60_000);
+    const expiredJpg = 'kookr-image-20200101-000000-cccccccc.jpg';
+    writeFileSync(join(dir, expiredJpg), png());
+    utimesSync(join(dir, expiredJpg), ancient, ancient);
+    // A directory carrying a generated-looking name: unlink() on it fails, which pruning must swallow.
+    const unremovable = 'kookr-image-20200101-000000-dddddddd.png';
+    mkdirSync(join(dir, unremovable));
+    utimesSync(join(dir, unremovable), ancient, ancient);
+
+    expect((await upload(png())).status).toBe(201);
+    expect(readdirSync(dir)).not.toContain(expiredJpg);
+    expect(readdirSync(dir)).toContain(unremovable);
+  });
+
   it('answers 500 storage_failed (not a crash) when the state dir cannot be written', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     // A regular file where the directory should be makes mkdir fail.

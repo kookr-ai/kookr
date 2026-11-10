@@ -29,7 +29,6 @@ import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerGrokAuthRoutes } from './routes/grok-auth-routes.js';
 import { registerFileRoutes } from './routes/file-routes.js';
 import { registerTerminalImageRoutes } from './routes/terminal-image-routes.js';
-import { TERMINAL_IMAGE_UPLOAD_PATH } from '../shared/contracts/terminal-image.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
 import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
@@ -56,6 +55,7 @@ import { registerAuthSessionRoutes, createCsrfMiddleware } from './auth-session.
 import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
+import { TERMINAL_IMAGE_UPLOAD_PATH } from '../shared/contracts/terminal-image.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
 import { ControlPlaneLatencyMetrics } from './control-plane-latency-metrics.js';
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';

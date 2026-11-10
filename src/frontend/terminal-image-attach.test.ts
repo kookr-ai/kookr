@@ -6,6 +6,7 @@ import {
   imageFilesFromClipboard,
   isSupportedImageFile,
   planImageAttach,
+  readClipboardImages,
   uploadTerminalImage,
 } from './terminal-image-attach.js';
 import { TERMINAL_IMAGE_MAX_BYTES, TERMINAL_IMAGE_MAX_PER_DROP } from '../shared/contracts/terminal-image.js';
@@ -63,6 +64,34 @@ describe('imageFilesFromClipboard', () => {
   });
 });
 
+describe('readClipboardImages', () => {
+  const item = (types: string[], bytes = [1, 2, 3]) => ({
+    types,
+    getType: async (type: string) => new Blob([new Uint8Array(bytes)], { type }),
+  }) as unknown as ClipboardItem;
+
+  it('turns a clipboard picture into an uploadable PNG file', async () => {
+    const files = await readClipboardImages({ read: async () => [item(['text/html', 'image/png'])] });
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({ name: 'clipboard.png', type: 'image/png', size: 3 });
+  });
+
+  it('skips clipboard items that hold no supported image', async () => {
+    const files = await readClipboardImages({ read: async () => [item(['text/plain']), item(['image/svg+xml'])] });
+    expect(files).toEqual([]);
+  });
+
+  it('returns nothing when the async clipboard API is unavailable (insecure origin)', async () => {
+    expect(await readClipboardImages(undefined)).toEqual([]);
+    expect(await readClipboardImages({} as unknown as Clipboard)).toEqual([]);
+  });
+
+  it('lets a permission refusal reach the caller', async () => {
+    const denied = { read: async () => { throw new DOMException('denied', 'NotAllowedError'); } };
+    await expect(readClipboardImages(denied)).rejects.toThrow('denied');
+  });
+});
+
 describe('planImageAttach', () => {
   it('accepts supported images and explains every file it leaves out', () => {
     const plan = planImageAttach([
@@ -104,8 +133,17 @@ describe('uploadTerminalImage', () => {
       path: '/p.png', mime: 'image/png', size: 4,
     });
     expect(fetchImpl).toHaveBeenCalledWith('/api/terminal-images', {
-      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: image,
+      method: 'POST', headers: { 'Content-Type': 'image/png' }, body: image, signal: expect.any(AbortSignal),
     });
+  });
+
+  it('abandons an upload that outlives the timeout instead of waiting forever', async () => {
+    // A server that never answers: the request only settles when its signal aborts.
+    const stalled = vi.fn((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    await expect(uploadTerminalImage(file('s.png', 'image/png'), stalled as unknown as typeof fetch, 20))
+      .rejects.toThrow('s.png: upload timed out');
   });
 
   it.each([
@@ -157,6 +195,22 @@ describe('attachImagesToTerminal', () => {
     expect(paste.mock.calls).toEqual([['/up/a.png '], ['/up/c.png ']]);
   });
 
+  it('pastes in drop order even when a later upload finishes first', async () => {
+    const paste = vi.fn().mockReturnValue(true);
+    let releaseFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const pending = attachImagesToTerminal([file('a.png', 'image/png'), file('b.png', 'image/png')], {
+      // The first (say, larger) image is still uploading after the second has finished.
+      upload: async (f) => { if (f.name === 'a.png') await firstGate; return uploadOk(`/up/${f.name}`); },
+      isStillTarget: () => true,
+      paste,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseFirst();
+    await pending;
+    expect(paste.mock.calls).toEqual([['/up/a.png '], ['/up/b.png ']]);
+  });
+
   it('pastes nothing and reports failure when every upload fails', async () => {
     const paste = vi.fn();
     const outcome = await attachImagesToTerminal([file('a.png', 'image/png')], {
@@ -190,6 +244,17 @@ describe('attachImagesToTerminal', () => {
     });
     // It stops at the first refusal instead of pasting later images out of order.
     expect(paste).toHaveBeenCalledTimes(2);
+  });
+
+  it('words a single missed image in the singular', async () => {
+    const paste = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const outcome = await attachImagesToTerminal(
+      [file('a.png', 'image/png'), file('b.png', 'image/png')],
+      { upload: async (f) => uploadOk(`/up/${f.name}`), isStillTarget: () => true, paste },
+    );
+    expect(outcome).toEqual({
+      status: 'attached', attached: 1, failures: ['1 image not attached: the terminal disconnected'],
+    });
   });
 
   it('reports stale (not attached) when the terminal refuses the paste', async () => {
