@@ -6,8 +6,8 @@
  *  - the mode is decided once and persisted on the task (`opencodeLaunchMode`); a relaunch honours the persisted mode;
  *  - there is NO silent fallback: a task persisted as `container` is never launched as `tui` (or vice versa) —
  *    when the requested mode is unavailable the resolver returns a refusal the caller must surface;
- *  - until S2d the container mode is unavailable, so the resolver answers `tui` for everything that has no
- *    persisted mode and refuses a persisted `container`.
+ *  - a task with no persisted mode launches as a container only when the flag requested it AND containers are available;
+ *    a persisted `container` is refused whenever containers are unavailable (flag off).
  */
 export type OpenCodeLaunchMode = 'tui' | 'container';
 
@@ -18,8 +18,10 @@ export type OpenCodeLaunchPolicy =
 export interface ResolveLaunchModeInput {
   /** `opencodeLaunchMode` persisted on the task record, if any. */
   persisted?: string;
-  /** Whether this build can launch containers. Always false before S2d. */
+  /** Whether containers can be launched right now (flag on and the container adapter constructed). */
   containersAvailable?: boolean;
+  /** `KOOKR_OPENCODE_CONTAINERS` is on: a task with no persisted mode launches as a container. Needs `containersAvailable`. */
+  containersRequested?: boolean;
 }
 
 export function resolveOpenCodeLaunchMode(input: ResolveLaunchModeInput = {}): OpenCodeLaunchPolicy {
@@ -33,6 +35,7 @@ export function resolveOpenCodeLaunchMode(input: ResolveLaunchModeInput = {}): O
           message: 'task was launched in container mode but container launches are not available; refusing to fall back to the host TUI',
         };
   }
-  // Absent or unrecognised persisted values mean the historical default.
+  // No persisted mode: the flag decides, once; the caller persists the answer. Unrecognised values mean the default.
+  if (input.persisted === undefined && input.containersRequested && containersAvailable) return { ok: true, mode: 'container' };
   return { ok: true, mode: 'tui' };
 }

@@ -41,7 +41,7 @@ export class DockerCliRunner implements DockerRunnerPort {
   static runArgs(spec: ContainerRunSpec): string[] {
     DockerCliRunner.safeContainer(spec.name);
     if (!/^[A-Za-z0-9][A-Za-z0-9_./:@-]*$/.test(spec.image)) throw new Error(`refusing unsafe image reference ${JSON.stringify(spec.image)}`);
-    const a = ['run', '-d', '--name', spec.name, '--init', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    const a = ['run', '-d', '--pull', 'never', '--name', spec.name, '--init', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
       '--memory', spec.memory, '--cpus', spec.cpus, '--pids-limit', String(spec.pidsLimit), '--user', spec.user,
       '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '-p', `127.0.0.1::${spec.publishPort}`];
     for (const [k, v] of Object.entries(spec.labels)) a.push('--label', `${k}=${v}`);
