@@ -9,10 +9,11 @@ import {
 } from './streaming-attach-snapshot.js';
 
 /** Options that survive a trip to the worker thread: the injected test clock, a function, does not. */
-export type TerminalSnapshotWorkerOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
+export type TerminalSnapshotJobOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
 
 interface Pending {
   bytes: number;
+  sessionKey: string | undefined;
   startedAt: number;
   resolve(result: StreamingAttachSnapshotResult): void;
   timer: ReturnType<typeof setTimeout>;
@@ -22,6 +23,26 @@ interface Pending {
 const MAX_PENDING_JOBS = 8;
 const MAX_RETAINED_BYTES = 8 * 1024 * 1024;
 
+/**
+ * Extra time for a worker's first job: the thread has to start and load the
+ * emulator packages, which measured about 100 ms on an idle host and can take
+ * seconds on a loaded one. Without it a slow start would be mistaken for a stall.
+ */
+const COLD_START_ALLOWANCE_MS = 2000;
+
+/**
+ * A ring is not replayed again for this long after it stalled the worker. The
+ * ring persists, so without this every re-attach (a browser tab regaining
+ * focus is one) would burn a full deadline of CPU and a worker respawn on the
+ * same bytes. The attach falls back to the byte-tail seed meanwhile.
+ */
+const DEFAULT_BACKOFF_MS = 60_000;
+const MAX_BACKOFF_ENTRIES = 256;
+
+export interface TerminalSnapshotWorkerOptions {
+  /** How long a session whose replay stalled the worker is skipped. */
+  backoffMs?: number;
+}
 /**
  * Builds screen-snapshot attach seeds (issue #3564) in a worker thread.
  *
@@ -46,6 +67,14 @@ export class TerminalSnapshotWorker {
   private nextId = 0;
   private readonly pending = new Map<number, Pending>();
   private retainedBytes = 0;
+  /** True once the current worker has answered a job, i.e. is past its cold start. */
+  private served = false;
+  private readonly backoffMs: number;
+  private readonly stalledSessions = new Map<string, number>();
+
+  constructor(options: TerminalSnapshotWorkerOptions = {}) {
+    this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
+  }
 
   get pendingBytes(): number { return this.retainedBytes; }
 
@@ -58,8 +87,11 @@ export class TerminalSnapshotWorker {
     });
     worker.unref();
     this.worker = worker;
+    this.served = false;
     worker.on('message', (message: { id: number; result: StreamingAttachSnapshotResult }) => {
-      if (this.worker === worker) this.finish(message.id, message.result);
+      if (this.worker !== worker) return;
+      this.served = true;
+      this.finish(message.id, message.result);
     });
     worker.on('error', (error) => {
       if (this.worker !== worker) return;
@@ -70,11 +102,12 @@ export class TerminalSnapshotWorker {
     return worker;
   }
 
-  snapshot(bytes: Uint8Array, options: TerminalSnapshotWorkerOptions): Promise<StreamingAttachSnapshotResult> {
+  snapshot(bytes: Uint8Array, options: TerminalSnapshotJobOptions): Promise<StreamingAttachSnapshotResult> {
     const startedAt = performance.now();
     const unavailable = (reason: StreamingAttachSnapshotUnavailableReason): StreamingAttachSnapshotResult =>
       ({ kind: 'unavailable', reason, elapsedMs: performance.now() - startedAt });
     if (bytes.length === 0) return Promise.resolve(unavailable('empty'));
+    if (this.isBackingOff(options.sessionKey)) return Promise.resolve(unavailable('backoff'));
     if (this.pending.size >= MAX_PENDING_JOBS || this.retainedBytes + bytes.length > MAX_RETAINED_BYTES) {
       return Promise.resolve(unavailable('busy'));
     }
@@ -83,17 +116,40 @@ export class TerminalSnapshotWorker {
 
     const id = ++this.nextId;
     const owned = Uint8Array.from(bytes); // the caller keeps its copy of the ring
+    const deadlineMs = snapshotDeadlineMs(options) + (this.served ? 0 : COLD_START_ALLOWANCE_MS);
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
-        console.error(`[terminal-snapshot-worker] replay ran past ${snapshotDeadlineMs(options)} ms; terminating the worker`);
+        // The worker runs one job at a time and takes messages in order, so the
+        // oldest waiting job is the one that was running when it got stuck.
+        const stuck = this.pending.values().next().value as Pending | undefined;
+        console.error(`[terminal-snapshot-worker] replay ran past ${deadlineMs} ms; terminating the worker`
+          + (stuck?.sessionKey ? ` (session ${stuck.sessionKey} skipped for ${this.backoffMs} ms)` : ''));
+        this.markStalled(stuck?.sessionKey);
         void this.retire('budget-exceeded');
-      }, snapshotDeadlineMs(options));
+      }, deadlineMs);
       timer.unref?.();
-      this.pending.set(id, { bytes: bytes.length, startedAt, resolve, timer });
+      this.pending.set(id, { bytes: bytes.length, sessionKey: options.sessionKey, startedAt, resolve, timer });
       this.retainedBytes += bytes.length;
       try { worker.postMessage({ id, bytes: owned, options }, [owned.buffer]); }
       catch { this.finish(id, unavailable('failed')); }
     });
+  }
+
+  private isBackingOff(sessionKey: string | undefined): boolean {
+    if (!sessionKey) return false;
+    const until = this.stalledSessions.get(sessionKey);
+    if (until === undefined) return false;
+    if (until > Date.now()) return true;
+    this.stalledSessions.delete(sessionKey);
+    return false;
+  }
+
+  private markStalled(sessionKey: string | undefined): void {
+    if (!sessionKey || this.backoffMs <= 0) return;
+    if (this.stalledSessions.size >= MAX_BACKOFF_ENTRIES) {
+      for (const key of this.stalledSessions.keys()) { this.stalledSessions.delete(key); break; }
+    }
+    this.stalledSessions.set(sessionKey, Date.now() + this.backoffMs);
   }
 
   private finish(id: number, result: StreamingAttachSnapshotResult): void {
@@ -134,7 +190,7 @@ let shared: TerminalSnapshotWorker | null = null;
  */
 export function snapshotStreamingAttachSeedIsolated(
   bytes: Uint8Array,
-  options: TerminalSnapshotWorkerOptions,
+  options: TerminalSnapshotJobOptions,
 ): Promise<StreamingAttachSnapshotResult> {
   shared ??= new TerminalSnapshotWorker();
   return shared.snapshot(bytes, options);

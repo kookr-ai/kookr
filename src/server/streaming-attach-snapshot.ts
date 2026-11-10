@@ -127,6 +127,8 @@ export type StreamingAttachSnapshotUnavailableReason =
   | 'load-failed'
   /** Another replay held the slot for longer than the queue wait. */
   | 'busy'
+  /** This session's last replay stalled the worker, so replays for it are skipped for a while. */
+  | 'backoff'
   /** The replay ran past its wall-clock budget. */
   | 'budget-exceeded'
   /** The visible screen alone serialized larger than the hard ceiling. */
@@ -160,6 +162,12 @@ export interface StreamingAttachSnapshotOptions {
   scrollbackRows?: number;
   maxMs?: number;
   maxQueueWaitMs?: number;
+  /**
+   * Which session the ring belongs to. Only the isolating worker uses it, to
+   * stop replaying a ring that has already stalled it; the in-thread builder
+   * ignores it.
+   */
+  sessionKey?: string;
   /** Injected monotonic clock (tests). */
   nowMs?: () => number;
 }

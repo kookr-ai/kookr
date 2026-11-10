@@ -10,7 +10,7 @@ import { TERMINAL_V2_PROTOCOL, TERMINAL_CLOSE, parseTerminalServerControl } from
 import { getHotPathSampler, resetHotPathSamplerForTests } from '../core/hot-path-sampler.js';
 import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
 import { snapshotStreamingAttachSeed } from './streaming-attach-snapshot.js';
-import { closeSharedTerminalSnapshotWorker } from './terminal-snapshot-worker.js';
+import { closeSharedTerminalSnapshotWorker, snapshotStreamingAttachSeedIsolated } from './terminal-snapshot-worker.js';
 import { diffRenderedAgentStream, SPINNER_ONLY_FRAMES } from './__fixtures__/diff-rendered-agent-stream.js';
 import { Terminal } from '@xterm/xterm';
 
@@ -487,7 +487,7 @@ describe('NFR-TERM-001: version-two session bridge', () => {
       });
       h.attach({ cols: 80, rows: 24 }); await seeded(h);
       expect(snapshot).toHaveBeenCalledTimes(1);
-      expect(snapshot.mock.calls[0]?.[1]).toEqual({ cols: 100, rows: 30, maxBytes: 64 * 1024 });
+      expect(snapshot.mock.calls[0]?.[1]).toEqual({ cols: 100, rows: 30, maxBytes: 64 * 1024, sessionKey: 'test' });
     });
 
     test('reports the replay cost to operators, and never in the frame the browser validates', async () => {
@@ -516,6 +516,11 @@ describe('NFR-TERM-001: version-two session bridge', () => {
 
     test('by default builds the snapshot in the isolated worker thread', async () => {
       // No injected builder: the production wiring, through a real worker thread.
+      // Start it first: a thread that loads tsx can take seconds on a busy host, and a
+      // slow start is (correctly) indistinguishable from a stall once the deadline passes.
+      await vi.waitFor(async () => {
+        expect((await snapshotStreamingAttachSeedIsolated(new TextEncoder().encode('warm up\r\n'), { cols: 80, rows: 24 })).kind).toBe('snapshot');
+      }, { timeout: 25_000, interval: 200 });
       const h = await setup(stream.bytes, false, false, undefined, { streamingAttachSnapshot: undefined });
       h.attach();
       await vi.waitFor(() => expect(controlsOf(h).filter((frame) => frame?.type === 'seed-end')).toHaveLength(1), { timeout: 20_000 });

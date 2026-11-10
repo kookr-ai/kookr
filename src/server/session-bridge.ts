@@ -1011,7 +1011,7 @@ export class SessionBridge {
         let result: StreamingAttachSnapshotResult;
         try {
           result = await this.streamingAttachSnapshot(snapshot.bytes, {
-            cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes,
+            cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes, sessionKey: this.sessionId,
           });
         } catch (error) {
           // The builder promises not to throw. If it does anyway, the attach
