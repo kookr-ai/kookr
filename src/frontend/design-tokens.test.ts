@@ -439,6 +439,10 @@ describe('quiet chrome (issue #3561 slice 2)', () => {
 
   test('the System panel stays on screen on a phone and shows the CPU/RAM detail inline', () => {
     // Right-anchored at 320 px wide, the panel ran off the left edge at 375 px.
+    // On a full top bar it opens rightward from the indicator; right-anchored,
+    // it ran off the left edge between 769 and ~1060 px.
+    expect(styles.lookup('.system-popover', 'left')).toBe('0');
+    expect(styles.lookup('.system-popover', 'right')).toBeUndefined();
     expect(styles.lookup('.topbar.compact .system-indicator-wrap', 'position')).toBe('static');
     expect(styles.lookup('.topbar.compact .system-popover', 'left')).toBe('16px');
     expect(styles.lookup('.topbar.compact .system-popover', 'right')).toBe('16px');

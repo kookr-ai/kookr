@@ -214,10 +214,14 @@ kbd {
   white-space: nowrap;
 }
 
+/* Opens rightward from the indicator, like the old build popover: the
+   indicator sits left of the search, Follow/DND and Launch controls, so
+   there is always room to the right, while a right-anchored panel ran off
+   the left edge between 769 and ~1060 px. */
 .system-popover {
   position: absolute;
   top: calc(100% + 6px);
-  right: 0;
+  left: 0;
   z-index: 100;
   background: var(--bg-card);
   border: 1px solid var(--border);

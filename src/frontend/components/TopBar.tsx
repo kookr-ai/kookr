@@ -160,7 +160,12 @@ export function TopBar({
     function handleKey(e: KeyboardEvent) {
       if (e.key !== 'Escape') return;
       setShowPopover(false);
-      systemButtonRef.current?.focus();
+      // Return focus only when it was in the System control (or nowhere), so
+      // Escape in a dialog opened from a readout does not steal its focus.
+      const active = document.activeElement;
+      if (!active || active === document.body || systemWrapRef.current?.contains(active)) {
+        systemButtonRef.current?.focus();
+      }
     }
     document.addEventListener('mousedown', handleClick);
     document.addEventListener('keydown', handleKey);
