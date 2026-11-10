@@ -140,10 +140,13 @@ describe('POST /api/terminal-images', () => {
       fresh: 'kookr-image-20200101-000001-bbbbbbbb.png',
       // Same age as `expired` but not a name this module creates: must survive.
       foreign: 'notes-from-the-user.png',
+      // Starts like a Kookr name but is not one (e.g. the user's own file): must survive too.
+      nearMiss: 'kookr-image-notes.png',
     };
     for (const name of Object.values(files)) writeFileSync(join(dir, name), png());
     utimesSync(join(dir, files.expired), ancient, ancient);
     utimesSync(join(dir, files.foreign), ancient, ancient);
+    utimesSync(join(dir, files.nearMiss), ancient, ancient);
     utimesSync(join(dir, files.fresh), recent, recent);
 
     const saved = await (await upload(png())).json() as TerminalImageUploadResponse;
@@ -152,6 +155,7 @@ describe('POST /api/terminal-images', () => {
     expect(remaining).not.toContain(files.expired);
     expect(remaining).toContain(files.fresh);
     expect(remaining).toContain(files.foreign);
+    expect(remaining).toContain(files.nearMiss);
     expect(remaining).toContain(saved.path.slice(saved.path.lastIndexOf('/') + 1));
   });
 
@@ -213,8 +217,9 @@ describe('POST /api/terminal-images through createRoutes (middleware stack)', ()
     });
     expect(image.status).toBe(201);
 
-    // Control: the same oversized body to any other API path is still refused by the JSON limit.
-    const other = await app.request('http://localhost/api/does-not-exist', {
+    // Control: the same oversized body to any other API path — even one sharing the
+    // `/api/terminal` prefix — is still refused by the JSON limit.
+    const other = await app.request('http://localhost/api/terminal-images-other', {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: big,
     });
     expect(other.status).toBe(413);

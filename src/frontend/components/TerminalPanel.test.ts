@@ -2254,6 +2254,35 @@ describe('TerminalPanel', () => {
       expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: `${IMG_PATH} ` }));
     });
 
+    // The clipboard permission prompt can stay open while the operator selects
+    // another agent. The picture read afterwards must not go to that new agent.
+    test('right-click ▸ Paste discards a clipboard image read after switching to another agent', async () => {
+      const fetchMock = vi.fn().mockResolvedValue(savedImageResponse(IMG_PATH));
+      vi.stubGlobal('fetch', fetchMock);
+      let resolveRead!: (items: unknown[]) => void;
+      const read = vi.fn(() => new Promise<unknown[]>((resolve) => { resolveRead = resolve; }));
+      vi.stubGlobal('navigator', { clipboard: { readText: vi.fn().mockResolvedValue(''), read } });
+      const { ws: old, xterm } = mountReady('old');
+
+      act(() => { xterm.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+      const pasteButton = [...container.querySelectorAll('.terminal-context-menu button')]
+        .find((button) => button.textContent === 'Paste') as HTMLButtonElement;
+      await act(async () => { pasteButton.click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(read).toHaveBeenCalledOnce();
+
+      const { ws: next } = mountReady('new');
+      old.send.mockClear();
+      await act(async () => resolveRead([{
+        types: ['image/png'],
+        getType: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }),
+      }]));
+      await flush();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(next.send).not.toHaveBeenCalled();
+      expect(old.send).not.toHaveBeenCalled();
+    });
+
     // Plain Ctrl+V belongs to the agent: xterm forwards it as ^V and Claude Code / Codex
     // paste an image from the host clipboard themselves. Uploading here as well would
     // attach the same screenshot twice wherever the agent can read that clipboard.
