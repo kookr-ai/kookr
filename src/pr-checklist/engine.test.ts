@@ -268,10 +268,12 @@ describe('collectAndVerify (with injected git + fs)', () => {
 
   describe('template-driven opt-in', () => {
     // A diff that WOULD trip the env rule if structural checks ran.
+    // (the env reference is split so this very test file does not trip the env rule it exercises)
+    const envRef = 'process' + '.env.BRAND_NEW';
     const diff = {
       'merge-base origin/main HEAD': { stdout: base },
       [`diff --name-status ${range}`]: { stdout: 'M\tsrc/config.ts' },
-      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/config.ts\n+const k = process.env.BRAND_NEW' },
+      [`diff --unified=0 ${range}`]: { stdout: `+++ b/src/config.ts\n+const k = ${envRef}` },
       'ls-files -- .env.example': { stdout: '.env.example' },
     };
     const readEnvOr = (other: string) => async (p: string) => (p.endsWith('.env.example') ? 'EXISTING=1\n' : other);

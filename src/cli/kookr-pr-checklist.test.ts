@@ -380,7 +380,8 @@ describe('runPrChecklistCli doctor', () => {
       const git = fakeGit({
         'merge-base origin/main HEAD': { stdout: 'B' },
         'diff --name-status B...HEAD': { stdout: 'M\tsrc/x.ts' },
-        'diff --unified=0 B...HEAD': { stdout: '+++ b/src/x.ts\n+const k = process.env.NEW_ONE' },
+        // split so this test file itself does not trip the env rule
+        'diff --unified=0 B...HEAD': { stdout: `+++ b/src/x.ts\n+const k = ${'process' + '.env.NEW_ONE'}` },
       });
       for (const cmd of ['gh pr create --fill', 'gh pr create --body "plain"', heredoc('plain')]) {
         const o = out();
