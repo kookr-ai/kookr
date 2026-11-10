@@ -210,16 +210,14 @@ describe('text contrast', () => {
     // and it applies to inherited colour too, so any partial opacity on a
     // text-bearing rule is suspect. Allowed: inactive states (disabled,
     // hover, stale, paused, locked, …), decorative separators, and the
-    // icon-only buttons listed below, whose glyphs are not running text.
+    // icon-only elements listed below (glyph, emoji or aria-labelled icon
+    // button; checked against their markup), which carry no running text.
     const inactive = /disabled|:hover|-sep\b|inactive|locked|is-revoked|is-expired|stale|muted|paused|blacklisted|drag-active|pending-deletion|snoozed/;
     const iconOnly = new Set([
       '.copy-explanation.btn-icon',
       '.task-id-copy-icon',
-      '.branch-icon',
-      '.task-actions-mini',
       '.btn-reply',
       '.playbook-pin-btn',
-      '.md-copy-btn',
       '.btn-speak-finding-ring',
       '.btn-sound-toggle',
       '.btn-trophy',
@@ -357,6 +355,7 @@ describe('state colours: four roles, one shape each', () => {
       expect(css.lookup(`.finding-card.${kind}`, 'border-left-color')).toBe(ROLE_COLOR[role]);
       expect(css.lookup(`.finding-severity.${kind}`, 'color')).toBe(ROLE_COLOR[role]);
       expect(css.lookup(`.detail-badge.${kind}`, 'color')).toBe(ROLE_COLOR[role]);
+      expect(css.lookup(`.finding-group.${kind}`, 'border-left-color')).toBe(ROLE_COLOR[role]);
       expect(shapeOf(`.finding-severity.${kind}::before`)).toBe(role);
       expect(shapeOf(`.detail-badge.${kind}::before`)).toBe(role);
     });
