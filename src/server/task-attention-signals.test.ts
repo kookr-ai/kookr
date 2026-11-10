@@ -63,14 +63,22 @@ describe('resolveTaskAttentionSignals', () => {
   it('never flags a task parked on its own background work, however silent', () => {
     const now = Date.now();
     const stale = now - 10 * HOUR_MS;
+    const parkedCalls: Array<[string, number]> = [];
     const watchdog = (parked: boolean) => ({
       getState: () => ({ lastEventAt: stale, lastPaneChangeAt: stale, lastTokenActivityAt: stale }) as never,
       getConfig: () => ({ unconditionalStaleThresholdMs: HOUR_MS }) as never,
       hasToolInProgress: () => false,
-      isBackgroundParked: () => parked,
+      isBackgroundParked: (agentId: string, at: number) => {
+        parkedCalls.push([agentId, at]);
+        return parked;
+      },
     });
     expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(true) }, now).hungSuspect).toBe(false);
     expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(false) }, now).hungSuspect).toBe(true);
+    // The resolver must forward the task's agent id and the caller's clock —
+    // dropping `now` (letting the watchdog default to Date.now()) silently
+    // breaks park age-out under replayed/simulated clocks.
+    expect(parkedCalls).toContainEqual(['kookr-test1234', now]);
   });
 
   it('#1653: exposes the agent liveness timestamps mapped from watchdog state', () => {

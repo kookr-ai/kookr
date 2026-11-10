@@ -1575,6 +1575,38 @@ describe('Watchdog', () => {
       expect(watchdog.isBackgroundParked(agentId, t0 + 2_001)).toBe(false);
     });
 
+    test('operator input outside the hook pipeline (input_received) ends the park', () => {
+      // recordInputReceived synthesizes `input_received` when the operator
+      // types into the pane directly — the one clear-event that genuinely
+      // arrives mid-park, and the one most at risk of being misfiled as a
+      // bookkeeping overlay by a future edit.
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+      watchdog.recordInputReceived(agentId, t0 + 2_000);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 2_001)).toBe(false);
+    });
+
+    test('a permission dialog on the pane outranks the park', () => {
+      // The park check deliberately sits AFTER the permission branches in
+      // tick(): a pane-detected approval dialog records no hook event (so
+      // nothing clears the park), yet it always needs the operator. Hoisting
+      // the park check above the permission branches would mask it for up to
+      // the whole grace period — this pins the ordering.
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.tick(agentId, 'Would you like to run the following command?', [], t0 + 5_000);
+      const verdict = watchdog.tick(
+        agentId,
+        'Would you like to run the following command?\n\n$ echo hello world\n\n› 1. Yes, proceed (y)\n  Press enter to confirm or esc to cancel',
+        [],
+        t0 + 11_000,
+      );
+      expect(verdict.status).toBe('permission_blocked');
+    });
+
     test('isBackgroundParked is false for unknown agents and ages out with the bound', () => {
       expect(watchdog.isBackgroundParked('unknown', 1000)).toBe(false);
 

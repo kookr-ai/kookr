@@ -204,6 +204,29 @@ describe('Hook Event Parser', () => {
     });
   });
 
+  test('the passive-listener exemption needs BOTH monitor type and the artifact description', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Waiting on my artifact poller.',
+      background_tasks: [
+        // A real shell whose description happens to match the listener's
+        // prefix — the type conjunct must keep it counted.
+        { id: 'b1', type: 'shell', status: 'running', description: 'live updates for artifact poller loop', command: 'while true; do curl -s …; sleep 30; done' },
+        // A monitor with NO description — unknown, so it must stay counted.
+        { id: 'm1', type: 'monitor', status: 'running' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toMatchObject({
+      type: 'stop',
+      activeBackgroundTaskCount: 2,
+    });
+  });
+
   test('parses active session crons in Stop hook background-work counts', () => {
     const event = parseHookEvent(JSON.stringify({
       session_id: 's1',
