@@ -34,6 +34,7 @@ import {
   cutStreamingAttachSeed,
   DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
 } from './streaming-attach-seed.js';
+import { snapshotStreamingAttachSeed } from './streaming-attach-snapshot.js';
 
 /**
  * Server → browser text control frame for attach join keys (RFC Phase 0.0).
@@ -163,10 +164,15 @@ export function resetAbsoluteTuiRecoveryForTests(): void {
  *                     settles (join key for client telemetry), and optional
  *                     `history` control + binary on request-history.
  *
- * Streaming attach (Claude/Codex-style scrollback) defaults to the last N KB
- * with a safe cut (see `cutStreamingAttachSeed`). Absolute-position TUIs keep
- * reconstruct/seed and never full-ring smash. Rollback: env
- * `KOOKR_TERMINAL_ATTACH_FULL_RING=1` or option `forceFullRingAttach`.
+ * Streaming attach (Claude/Codex-style scrollback) is viewport-first: a ring
+ * within the viewport budget is sent whole. On the v2 protocol a larger ring is
+ * replayed through a terminal emulator and its current screen is sent (see
+ * `snapshotStreamingAttachSeed`, issue #3564), because the last N KB of a
+ * differentially rendered stream do not rebuild the screen. The byte-tail cut
+ * (`cutStreamingAttachSeed`) remains the fallback there and the only seed on
+ * the legacy v1 path. Absolute-position TUIs keep reconstruct/seed and never
+ * full-ring smash. Rollback: env `KOOKR_TERMINAL_ATTACH_FULL_RING=1` or option
+ * `forceFullRingAttach`.
  */
 
 /**
@@ -203,6 +209,7 @@ type AttachStrategy =
   | 'absolute-frame'
   | 'absolute-snapshot'
   | 'viewport-ring'
+  | 'viewport-snapshot'
   | 'full-ring'
   | 'empty';
 
@@ -300,7 +307,8 @@ export interface SessionBridgeOptions {
    * How to handle ring-buffer replay on connect:
    * - `auto` (default): skip + reconstruct/seed when the ring looks like a
    *   dense absolute-position TUI (Grok); otherwise viewport-first streaming
-   *   seed (last N KB with safe cut). Full 1 MiB is not the default.
+   *   seed (a screen snapshot on v2; the last N KB with safe cut as its
+   *   fallback and on v1). Full 1 MiB is not the default.
    * - `full`: always replay full `captureBytes` for streaming rings (legacy
    *   smash path for absolute rings as well — prefer `forceFullRingAttach`
    *   for streaming-only rollback).
@@ -317,10 +325,19 @@ export interface SessionBridgeOptions {
   forceFullRingAttach?: boolean;
 
   /**
-   * Max bytes for the default streaming attach seed. Defaults to
-   * `KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES` or 64 KiB.
+   * Byte budget for the default streaming attach seed. A ring within it is
+   * sent whole; a larger one is seeded with a screen snapshot trimmed to it.
+   * Defaults to `KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES` or 64 KiB.
    */
   streamingAttachViewportBytes?: number;
+
+  /**
+   * Builds the screen-snapshot seed used when a streaming ring is larger than
+   * the viewport budget (issue #3564). Defaults to replaying the ring through
+   * a headless terminal emulator. Inject a stub in unit tests to exercise the
+   * fallback to the byte-tail cut.
+   */
+  streamingAttachSnapshot?: typeof snapshotStreamingAttachSeed;
 
   /**
    * Milliseconds to wait for the browser's first `resize` control frame before
@@ -378,6 +395,7 @@ export class SessionBridge {
   private readonly ringReplayPolicy: RingReplayPolicy;
   private readonly forceFullRingAttach: boolean;
   private readonly streamingAttachViewportBytes: number;
+  private readonly streamingAttachSnapshot: typeof snapshotStreamingAttachSeed;
   private readonly initialResizeWaitMs: number;
   private readonly resizeDebounceMs: number;
   private readonly liveRedrawNudgeMs: number;
@@ -401,7 +419,7 @@ export class SessionBridge {
   private recoveryUsed = false;
   /** Last attach seed kind for history / telemetry. */
   private lastAttachSeed: AttachSeedKind = 'empty';
-  /** True when attach seed was a proper suffix of a larger streaming ring. */
+  /** True when the attach seed stood in for a larger streaming ring (byte tail or screen snapshot). */
   private historyAvailable = false;
   /** True once a request-history full payload has been sent on this bridge. */
   private historyDelivered = false;
@@ -438,6 +456,7 @@ export class SessionBridge {
         'KOOKR_TERMINAL_ATTACH_VIEWPORT_BYTES',
         DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES,
       );
+    this.streamingAttachSnapshot = options?.streamingAttachSnapshot ?? snapshotStreamingAttachSeed;
     this.initialResizeWaitMs = options?.initialResizeWaitMs
       ?? readNonNegativeIntegerEnv(
         'KOOKR_SESSION_BRIDGE_INITIAL_RESIZE_WAIT_MS',
@@ -973,15 +992,47 @@ export class SessionBridge {
           }
         }
       }
+      // A ring larger than the viewport budget cannot be sent whole, and its
+      // byte tail is not a picture of the screen: agent TUIs redraw with
+      // relative cursor moves, so a suffix replays as edits on a blank pane
+      // (issue #3564). Send a snapshot of the emulated screen instead. Any
+      // failure falls back to the byte-tail cut, the previous behavior.
+      const wantsFullRing = history || this.forceFullRingAttach || this.ringReplayPolicy === 'full';
+      let screenSnapshot: Uint8Array | null = null;
+      let snapshotMs = 0;
+      if (
+        !request.cursor && !absolute && !wantsFullRing
+        && this.streamingAttachViewportBytes > 0
+        && snapshot.bytes.byteLength > this.streamingAttachViewportBytes
+      ) {
+        const result = await this.streamingAttachSnapshot(snapshot.bytes, {
+          cols: snapshot.cols, rows: snapshot.rows, maxBytes: this.streamingAttachViewportBytes,
+        });
+        if (this.closed) return;
+        snapshotMs = result.elapsedMs;
+        getHotPathSampler().record('terminal_attach_snapshot', snapshotMs);
+        if (result.kind === 'snapshot') {
+          screenSnapshot = result.bytes;
+        } else {
+          console.warn(
+            `[session-bridge] screen snapshot unavailable for ${this.sessionId} (${result.reason}); `
+            + `seeding with the last ${this.streamingAttachViewportBytes} bytes, which may paint an incomplete screen`,
+          );
+        }
+      }
       const seed = request.cursor ? snapshot.bytes.subarray(request.cursor.position - snapshot.start)
         : absolute ? reconstruction?.bytes ?? new Uint8Array(0)
-          : history || this.forceFullRingAttach || this.ringReplayPolicy === 'full' ? snapshot.bytes
-            : cutStreamingAttachSeed(snapshot.bytes, this.streamingAttachViewportBytes);
+          : screenSnapshot ?? (wantsFullRing ? snapshot.bytes
+            : cutStreamingAttachSeed(snapshot.bytes, this.streamingAttachViewportBytes));
       if (this.closed) return;
       const replayFallback = seed.byteLength === 0 && connection.output.hasUnpositionedOutput;
+      // A snapshot stands in for a ring that was too large to send, so older
+      // output is still only reachable through request-history. Its length says
+      // nothing about that: compare by what was done, not by byte counts.
+      const partialSeed = screenSnapshot !== null || seed.byteLength < snapshot.bytes.byteLength;
 
-      this.lastAttachSeed = absolute ? 'absolute' : seed.byteLength < snapshot.bytes.byteLength ? 'viewport' : 'full';
-      this.historyAvailable = !absolute && !request.cursor && seed.byteLength < snapshot.bytes.byteLength;
+      this.lastAttachSeed = absolute ? 'absolute' : partialSeed ? 'viewport' : 'full';
+      this.historyAvailable = !absolute && !request.cursor && partialSeed;
       const transaction = randomUUID();
       // A suffix can omit persistent modes or a partial control sequence.
       // Only a complete origin seed or an already retained parser can supply
@@ -990,7 +1041,9 @@ export class SessionBridge {
       // Resume cursors must describe the PTY after any post-classify resize.
       // A recaptured streaming snapshot can match; a pre-shrink Grok snapshot
       // will not, and must not claim exact recovery.
-      const resumable = !absolute && !replayFallback
+      // A serialized screen is not the byte stream: it cannot vouch for parser
+      // state the serializer does not carry, so it never yields a cursor.
+      const resumable = !absolute && !replayFallback && screenSnapshot === null
         && snapshot.cols === seedCols && snapshot.rows === seedRows
         && (!!request.cursor
           || (snapshot.originComplete && snapshot.start === 0 && seed.byteLength === snapshot.bytes.byteLength));
@@ -1017,8 +1070,8 @@ export class SessionBridge {
       this.recordBridgeTiming({
         startedAt, resizeWaitMs, captureMs, reconstructMs: absolute ? performance.now() - seedStarted : 0,
         seedCacheHit: false, strategy: request.cursor ? 'source-resume' : absolute ? absoluteStrategy
-          : seed.byteLength < snapshot.bytes.byteLength ? 'viewport-ring' : 'full-ring',
-        replayBytes: seed.byteLength, earlySeedBytes: 0,
+          : screenSnapshot ? 'viewport-snapshot' : partialSeed ? 'viewport-ring' : 'full-ring',
+        replayBytes: seed.byteLength, earlySeedBytes: 0, snapshotMs,
       });
     } catch (error) {
       connection.close(error instanceof SessionGoneError ? TERMINAL_CLOSE.ended : TERMINAL_CLOSE.unavailable,
@@ -1050,6 +1103,8 @@ export class SessionBridge {
     strategy: string;
     replayBytes: number;
     earlySeedBytes: number;
+    /** Time spent building a screen-snapshot seed; log only, not sent to the browser. */
+    snapshotMs?: number;
     historyAvailable?: boolean;
     attachSeed?: AttachSeedKind;
   }): void {
@@ -1078,6 +1133,9 @@ export class SessionBridge {
       resizeWaitMs: roundTimingMs(parts.resizeWaitMs),
       captureMs: roundTimingMs(parts.captureMs),
       reconstructMs: roundTimingMs(parts.reconstructMs),
+      // The browser validates attach_timing with a strict schema, so this
+      // stays in the server log line and out of the control frame below.
+      ...(parts.snapshotMs ? { snapshotMs: roundTimingMs(parts.snapshotMs) } : {}),
       seedCacheHit: parts.seedCacheHit,
       strategy: parts.strategy,
       recoveryUsed: this.recoveryUsed,

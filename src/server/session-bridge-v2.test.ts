@@ -7,7 +7,9 @@ import type { TerminalBackend } from '../adapters/terminal-backend.js';
 import type { TerminalStreamSnapshot } from '../shared/terminal-stream.js';
 import { ABSOLUTE_TUI_COLS } from '../shared/absolute-tui-geometry.js';
 import { TERMINAL_V2_PROTOCOL, TERMINAL_CLOSE } from '../shared/terminal-protocol.js';
-import { SessionBridge } from './session-bridge.js';
+import { SessionBridge, type SessionBridgeOptions } from './session-bridge.js';
+import { diffRenderedAgentStream, SPINNER_ONLY_FRAMES } from './__fixtures__/diff-rendered-agent-stream.js';
+import { Terminal } from '@xterm/xterm';
 
 const grokRingBytes = grokLikeRing();
 
@@ -46,6 +48,7 @@ async function setup(
   readOnly = false,
   absolute = false,
   liveRedrawNudgeMs?: number,
+  extraOptions: SessionBridgeOptions = {},
 ) {
   let snapshot: TerminalStreamSnapshot = {
     bytes, originComplete: true, epoch: 'e', start: 0, end: bytes.byteLength, geometryRevision: 1, cols: 80, rows: 24,
@@ -76,6 +79,7 @@ async function setup(
       readOnly,
       ...(liveRedrawNudgeMs !== undefined ? { liveRedrawNudgeMs } : {}),
       ...(absolute ? { ringReplay: 'skip-live-redraw' as const } : {}),
+      ...extraOptions,
     });
   bridges.push(bridge);
   await bridge.start();
@@ -83,8 +87,8 @@ async function setup(
   const send = (control: Record<string, unknown>) => ws.emit('message', Buffer.from(JSON.stringify({ generation: hello?.generation, ...control })), false);
   return { bridge, ws, backend, resize, write, hello, send,
     attach: (extra: Record<string, unknown> = {}) => send({ type: 'attach', attachId: 'a', cols: 80, rows: 24, ...extra }),
-    emit: (text: string) => {
-      const data = new TextEncoder().encode(text);
+    emit: (text: string | Uint8Array) => {
+      const data = typeof text === 'string' ? new TextEncoder().encode(text) : text;
       const start = snapshot.end;
       snapshot = { ...snapshot, bytes: Buffer.concat([snapshot.bytes, data]), end: start + data.byteLength };
       listener?.(data, 'live', { ...snapshot, start });
@@ -92,8 +96,30 @@ async function setup(
   };
 }
 
+type Harness = Awaited<ReturnType<typeof setup>>;
+const controlsOf = (h: Harness) => h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
+const outputOf = (h: Harness) => h.ws.send.mock.calls.map(([data]) => data).filter((data) => data instanceof Uint8Array);
+const outputBytes = (h: Harness) => outputOf(h).reduce((sum, data) => sum + data.length, 0);
+/** A snapshot seed is built asynchronously; wait for the boundary instead of counting loop turns. */
+async function seeded(h: Harness, count = 1) {
+  await vi.waitFor(() => expect(controlsOf(h).filter((frame) => frame?.type === 'seed-end')).toHaveLength(count));
+  await drain();
+}
+/** Paint bytes into a fresh 80x24 terminal, as the browser does after a seed reset. */
+async function paint(...chunks: Uint8Array[]) {
+  const terminal = new Terminal({ cols: 80, rows: 24, scrollback: 2000, allowProposedApi: true });
+  try {
+    for (const chunk of chunks) await new Promise<void>((resolve) => terminal.write(chunk, resolve));
+    const buffer = terminal.buffer.active;
+    return {
+      rows: Array.from({ length: terminal.rows }, (_, y) => buffer.getLine(buffer.baseY + y)?.translateToString(true) ?? ''),
+      cursor: [buffer.cursorX, buffer.cursorY],
+    };
+  } finally { terminal.dispose(); }
+}
+
 describe('NFR-TERM-001: version-two session bridge', () => {
-  afterEach(() => { for (const bridge of bridges.splice(0)) bridge.dispose(); });
+  afterEach(() => { for (const bridge of bridges.splice(0)) bridge.dispose(); vi.restoreAllMocks(); });
 
   test('waits for application negotiation, then sends a complete seed boundary even when empty', async () => {
     const h = await setup(new Uint8Array(0));
@@ -107,14 +133,16 @@ describe('NFR-TERM-001: version-two session bridge', () => {
 
   test('bounds initial replay and keeps seed-end after all credited bytes', async () => {
     const h = await setup(new Uint8Array(140 * 1024).fill(65));
-    h.attach(); await drain();
-    const output = () => h.ws.send.mock.calls.map(([data]) => data).filter((data) => data instanceof Uint8Array);
-    // Viewport-first initial seeds remain bounded by the existing 64-KiB policy.
-    expect(output().reduce((sum, data) => sum + data.length, 0)).toBe(64 * 1024);
-    expect(output().every((data) => data.byteLength <= 8192)).toBe(true);
-    h.send({ type: 'ack', processed: 64 * 1024 });
+    h.attach(); await seeded(h);
+    // Viewport-first initial seeds remain bounded by the existing 64-KiB policy,
+    // whether the seed is a screen snapshot or the byte-tail fallback.
+    const seedBytes = outputBytes(h);
+    expect(seedBytes).toBeGreaterThan(0);
+    expect(seedBytes).toBeLessThanOrEqual(64 * 1024);
+    expect(outputOf(h).every((data) => data.byteLength <= 8192)).toBe(true);
+    h.send({ type: 'ack', processed: seedBytes });
     h.emit('live'); await drain();
-    expect(output().at(-1)?.toString()).toBe('live');
+    expect(outputOf(h).at(-1)?.toString()).toBe('live');
   });
 
   test.each(['ring', 'viewport', 'restored'] as const)('a truncated %s seed permits explicit best-effort input without a resume cursor', async (kind) => {
@@ -124,11 +152,10 @@ describe('NFR-TERM-001: version-two session bridge', () => {
       bytes, originComplete: false, epoch: 'e', start: kind === 'ring' ? 100 : 0,
       end: kind === 'ring' ? 115 : 15, geometryRevision: 1, cols: 80, rows: 24,
     });
-    h.attach(); await drain();
-    h.send({ type: 'ack', processed: kind === 'viewport' ? 64 * 1024 : 15 });
+    h.attach(); await seeded(h);
+    h.send({ type: 'ack', processed: outputBytes(h) });
     await drain();
-    const controls = h.ws.send.mock.calls.map(([data]) => typeof data === 'string' ? JSON.parse(data) : null);
-    expect(controls.find((frame) => frame?.type === 'seed-end')).toMatchObject({
+    expect(controlsOf(h).find((frame) => frame?.type === 'seed-end')).toMatchObject({
       cursor: null, approximate: true,
     });
     h.send({ type: 'input', text: 'explicit initial view' });
@@ -292,5 +319,117 @@ describe('NFR-TERM-001: version-two session bridge', () => {
     expect(h.write).toHaveBeenCalledWith('test', new TextEncoder().encode('{"type":"resize"}'));
     h.ws.emit('error', new Error('transport failure'));
     expect(h.ws.close).toHaveBeenCalledWith(TERMINAL_CLOSE.unavailable, expect.any(String));
+  });
+  describe('screen-snapshot seed for rings larger than the viewport budget (issue #3564)', () => {
+    // An agent that printed a screenful and then only ticked a spinner for more than 64 KiB.
+    const stream = diffRenderedAgentStream(SPINNER_ONLY_FRAMES);
+    const live = diffRenderedAgentStream(SPINNER_ONLY_FRAMES + 25).bytes.subarray(stream.bytes.byteLength);
+
+    test('seeds the pane with the real screen and stays exact as live frames follow', async () => {
+      const h = await setup(stream.bytes);
+      h.attach(); await seeded(h);
+      const seed = Buffer.concat(outputOf(h));
+      expect(await paint(seed)).toEqual(await paint(stream.bytes));
+      expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({
+        strategy: 'viewport-snapshot', attachSeed: 'viewport', historyAvailable: true,
+      });
+      // The snapshot replaces a ring that was too large to send: older output is
+      // still behind request-history, and the view cannot claim a resume cursor.
+      expect(controlsOf(h).find((frame) => frame?.type === 'seed-end')).toMatchObject({
+        cursor: null, approximate: true, historyAvailable: true,
+      });
+
+      h.send({ type: 'ack', processed: seed.byteLength });
+      h.emit(live); await drain();
+      const painted = Buffer.concat(outputOf(h));
+      expect(painted.byteLength).toBe(seed.byteLength + live.byteLength);
+      expect(await paint(painted)).toEqual(await paint(stream.bytes, live));
+    });
+
+    test('falls back to the byte tail, and says why, when no snapshot can be built', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const h = await setup(stream.bytes, false, false, undefined, {
+        streamingAttachSnapshot: async () => ({ kind: 'unavailable', reason: 'budget-exceeded', elapsedMs: 1 }),
+      });
+      h.attach(); await seeded(h);
+      const seed = Buffer.concat(outputOf(h));
+      expect(seed.equals(Buffer.from(stream.bytes.subarray(stream.bytes.byteLength - seed.byteLength)))).toBe(true);
+      expect(seed.byteLength).toBeLessThanOrEqual(64 * 1024);
+      expect(seed.byteLength).toBeGreaterThan(60 * 1024);
+      expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({ strategy: 'viewport-ring' });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('screen snapshot unavailable for test (budget-exceeded)'));
+      // This is the pane the snapshot exists to prevent: the tail alone does not rebuild the screen.
+      expect(await paint(seed)).not.toEqual(await paint(stream.bytes));
+    });
+
+    test('a snapshot is treated as a partial seed even when it happens to be as long as the ring', async () => {
+      // Length cannot tell a serialized screen from the raw ring. If it were
+      // inferred from byte counts, this seed would be certified as the complete
+      // origin stream: a resume cursor, no history, attachSeed "full".
+      const h = await setup(stream.bytes, false, false, undefined, {
+        streamingAttachSnapshot: async (bytes) => ({
+          kind: 'snapshot', bytes: new Uint8Array(bytes.byteLength).fill(65),
+          emulatedBytes: bytes.byteLength, rawTailBytes: 0, elapsedMs: 1,
+        }),
+      });
+      h.attach(); await seeded(h);
+      expect(outputBytes(h)).toBe(stream.bytes.byteLength);
+      expect(controlsOf(h).find((frame) => frame?.type === 'seed-end')).toMatchObject({
+        cursor: null, approximate: true, historyAvailable: true,
+      });
+      expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({
+        strategy: 'viewport-snapshot', attachSeed: 'viewport', historyAvailable: true,
+      });
+    });
+
+    test('keeps the seed inside a smaller configured viewport budget', async () => {
+      // 140 KiB of dense text: 200 rows of scrollback alone would be about 18 KiB.
+      const h = await setup(new Uint8Array(140 * 1024).fill(65), false, false, undefined, { streamingAttachViewportBytes: 8 * 1024 });
+      h.attach(); await seeded(h);
+      expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({ strategy: 'viewport-snapshot' });
+      expect(outputBytes(h)).toBeGreaterThan(24 * 80);
+      expect(outputBytes(h)).toBeLessThanOrEqual(8 * 1024);
+    });
+
+    test('the full-ring rollback flag bypasses the snapshot', async () => {
+      const snapshot = vi.fn();
+      const h = await setup(stream.bytes, false, false, undefined, { forceFullRingAttach: true, streamingAttachSnapshot: snapshot });
+      h.attach(); await seeded(h);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(outputBytes(h)).toBe(stream.bytes.byteLength);
+      expect(controlsOf(h).find((frame) => frame?.type === 'attach_timing')).toMatchObject({ strategy: 'full-ring', attachSeed: 'full' });
+    });
+
+    test('request-history after a snapshot seed delivers the raw ring', async () => {
+      const h = await setup(stream.bytes);
+      h.attach(); await seeded(h);
+      const seedBytes = outputBytes(h);
+      h.send({ type: 'ack', processed: seedBytes });
+      h.send({ type: 'request-history' }); await seeded(h, 2);
+      expect(controlsOf(h).some((frame) => frame?.type === 'history-unavailable')).toBe(false);
+      expect(outputBytes(h) - seedBytes).toBe(stream.bytes.byteLength);
+      expect(controlsOf(h).filter((frame) => frame?.type === 'attach_timing').at(-1)).toMatchObject({ strategy: 'full-ring' });
+    });
+
+    test('an exact resume still sends only the missing bytes', async () => {
+      const snapshot = vi.fn();
+      const h = await setup(stream.bytes, false, false, undefined, { streamingAttachSnapshot: snapshot });
+      h.attach({ cursor: { epoch: 'e', position: stream.bytes.byteLength - 5, geometryRevision: 1, cols: 80, rows: 24 } });
+      await seeded(h);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(Buffer.concat(outputOf(h)).equals(Buffer.from(stream.bytes.subarray(stream.bytes.byteLength - 5)))).toBe(true);
+    });
+
+    test('a ring that fits the viewport budget is still sent whole and resumable', async () => {
+      const snapshot = vi.fn();
+      const small = stream.bytes.subarray(0, 4096);
+      const h = await setup(small, false, false, undefined, { streamingAttachSnapshot: snapshot });
+      h.attach(); await seeded(h);
+      expect(snapshot).not.toHaveBeenCalled();
+      expect(outputBytes(h)).toBe(small.byteLength);
+      expect(controlsOf(h).find((frame) => frame?.type === 'seed-end')).toMatchObject({
+        cursor: { epoch: 'e', position: small.byteLength }, approximate: false,
+      });
+    });
   });
 });

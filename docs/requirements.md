@@ -1136,12 +1136,24 @@ indices and transport acknowledgements.
 - Display-only seeds (no resume cursor, including reconstructed screens and
   truncated rings with older history available) reconnect as an explicit new view (`acceptGap`)
   instead of stalling on "parser continuity unavailable".
+- A display-only seed for a streaming ring larger than the viewport budget
+  paints the session's current screen. Agent TUIs redraw differentially
+  (relative cursor moves, changed cells only), so the last bytes of the ring are
+  edits with nothing to edit: replayed alone they leave a nearly blank pane once
+  the agent has waited for about 90 seconds. The server therefore replays the
+  retained ring through a terminal emulator and sends the serialized screen,
+  cursor, and modes, followed by any bytes after the last clean parser boundary
+  so an unfinished escape sequence continues into live output. The seed stays
+  within the viewport budget by trimming scrollback, never the visible screen.
+  It carries no resume cursor, and older output stays behind `request-history`.
+  If no snapshot can be built (emulator unavailable, busy, or over its time
+  budget) the byte tail is sent instead and the reason is logged.
 
 **Remaining gap:** A disconnect during an in-flight parse conservatively
 invalidates the cursor, even if that parse later completes. Carrying the retiring
 chunk's completion into exact resume, as specified by the RFC, remains deferred.
 
-**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
+**Linked tests:** `src/adapters/local-dtach-stream.test.ts`, `src/server/session-bridge-v2.test.ts`, `src/server/streaming-attach-snapshot.test.ts`, `src/server/streaming-attach-snapshot.failure.test.ts`, `src/shared/terminal-protocol.test.ts`, `src/frontend/terminal-stream-client.test.ts`.
 
 ### NFR-TERM-001: Bounded responsive terminal rendering [F5.2] — SHALL — `partial`
 
