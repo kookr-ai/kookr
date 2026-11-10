@@ -264,13 +264,18 @@ export const ALL_EFFORT_LEVELS: readonly string[] = [
  *   qualified. Empty (not Claude inheritance) mirrors the effort pattern.
  */
 export const CLAUDE_CODE_MODEL_IDS = [
-  'claude-opus-5',
+  'claude-fable-5-2',
+  'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-5-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
 ] as const;
 export const CODEX_CLI_MODEL_IDS = ['gpt-6-astra'] as const;

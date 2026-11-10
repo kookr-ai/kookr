@@ -23,13 +23,18 @@ const STATUS_FAIL_ON_VALUES = ['critical', 'warning', 'info', 'none'] as const;
 // Inlined (not imported) so `kookr completion` still loads from source without
 // a prior build — this file is imported by bin/kookr.js via strip-types.
 const SPAWN_MODEL_IDS = [
-  'claude-opus-5',
+  'claude-fable-5-2',
+  'claude-fable-5-1',
   'claude-fable-5',
+  'claude-opus-5-5',
+  'claude-opus-5',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',
+  'claude-sonnet-5-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
   'gpt-6-astra',
 ] as const;
