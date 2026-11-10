@@ -1,6 +1,5 @@
 import { chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { resolveHookWriterPath } from '../core/hook-writer-paths.js';
 
 /**
  * Hook assets a container worker runs (RFC #3541 §2a "Hook commands are rewritten for the container").
@@ -68,9 +67,4 @@ export async function stageContainerHooks(opts: StageHooksOptions): Promise<Stag
 export function buildContainerLedgerCommand(sessionKey: string): string {
   const q = (v: string) => `'${v.replaceAll("'", "'\\''")}'`;
   return `${q(CONTAINER_NODE)} ${q(`${CONTAINER_PATHS.binDir}/kookr-hook-writer.js`)} --session ${q(sessionKey)} --file ${q(CONTAINER_LEDGER_FILE)}`;
-}
-
-/** Host-side hook-writer presence check, so a launch is refused (not degraded) when the install lacks it. */
-export function hostHookWriterAvailable(): boolean {
-  return resolveHookWriterPath() !== undefined;
 }

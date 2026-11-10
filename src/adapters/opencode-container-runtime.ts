@@ -24,8 +24,8 @@ import type { TerminalBackend } from './terminal-backend.js';
 export const OPENCODE_CONTAINERS_ENV = 'KOOKR_OPENCODE_CONTAINERS';
 export const OPENCODE_CONTAINER_IMAGE_ENV = 'KOOKR_OPENCODE_CONTAINER_IMAGE';
 /** S2d ships a hard cap of one live container; S4 replaces it with a measured default. Deliberately not configurable. */
-export const OPENCODE_CONTAINER_CAP = 1;
-export const RECONCILE_INTERVAL_MS = 60_000;
+const OPENCODE_CONTAINER_CAP = 1;
+const RECONCILE_INTERVAL_MS = 60_000;
 
 export function isOpenCodeContainersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[OPENCODE_CONTAINERS_ENV]?.trim().toLowerCase();
@@ -73,7 +73,7 @@ export async function createOpenCodeContainerRuntime(deps: CreateContainerRuntim
     warn(`[startup] ${OPENCODE_CONTAINERS_ENV} is set but ${OPENCODE_CONTAINER_IMAGE_ENV} is not: opencode container mode is OFF (tasks use the host TUI).`);
     return undefined;
   }
-  const hooksDir = deps.hooksDir.startsWith('~/') ? join(process.env.HOME ?? '', deps.hooksDir.slice(2)) : deps.hooksDir;
+  const hooksDir = deps.hooksDir.startsWith('~/') ? join(deps.env.HOME ?? process.env.HOME ?? '', deps.hooksDir.slice(2)) : deps.hooksDir;
   const kookrDir = deps.kookrDir ?? dirname(hooksDir);
   const docker = deps.docker ?? new DockerCliRunner();
   const instanceId = await getOrCreateInstanceId(kookrDir);

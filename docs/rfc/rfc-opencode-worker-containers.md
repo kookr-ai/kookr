@@ -1,6 +1,6 @@
 # RFC: opencode worker containers: A2A, scaling, shared layered memory
 
-**Status:** Draft v4 (post review rounds 1-2 and consensus attack; awaiting independent review)
+**Status:** v4 merged (#3541); slices S1-S2d shipped (see "S2d result"); S3 and S4 pending, and S3 now builds on plain opencode REST instead of the A2A wrapper
 **Date:** 2026-11-09
 **Author:** Jean Ibarz (with Claude)
 
@@ -368,7 +368,7 @@ claimed as such.
   (ships the sweeper first).
 - **S2c**: hook spool ingest keyed by taskId + launch token (shared ingest port);
   TUI events unchanged and tested.
-- **S2d**: `OpenCodeRoutingAdapter` + `OpenCodeContainerAdapter` launch/stop/
+- **S2d** (shipped, see result below): `OpenCodeRoutingAdapter` + `OpenCodeContainerAdapter` launch/stop/
   `sendInput`, clone/extract, hook path map, behind `KOOKR_OPENCODE_CONTAINERS`,
   cap 1, static memory pack, no writer. Live script: 10x cancel (incl. `setsid`/
   `nohup`/background tools and cancel during a model call), `kill -9` opencode,
@@ -453,7 +453,7 @@ format, egress filtering (Phase A).
 4. Upgrade path: a new opencode pin changes the image digest and the plugin
    API; the version check and the image tag must move together.
 
-5. Toolchain fit: disk and fidelity cost of per-repo toolchain layers and `node_modules` per clone (S2d measures); host-sandboxed tool execution as the fallback.
+5. Toolchain fit: disk and fidelity cost of per-repo toolchain layers and `node_modules` per clone (not measured in S2d: the live gate used a repo-neutral commit task, not a toolchain run); host-sandboxed tool execution as the fallback.
 
 ## Appendix B: Phase B (do not build now)
 

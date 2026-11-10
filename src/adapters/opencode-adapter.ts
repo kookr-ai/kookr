@@ -195,7 +195,7 @@ export interface OpenCodeAdapterOptions {
 }
 
 /** Split a per-task model pin: an optional leading `<providerId>/` is stripped, the rest is the model id. */
-export function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenCodeModelConfig {
+function resolveModelConfig(base: OpenCodeModelConfig, override?: string): OpenCodeModelConfig {
   if (!override) return base;
   const prefix = `${base.providerId}/`;
   return { ...base, modelId: override.startsWith(prefix) ? override.slice(prefix.length) : override };

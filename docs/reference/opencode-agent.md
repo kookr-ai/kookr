@@ -261,11 +261,11 @@ and results are not included. If the DB is missing, swept, locked or of an
 unknown schema the route falls back to its previous behaviour (hook ledger,
 then `unsupported_provider`).
 
-## Container image (experimental, not wired into launches yet)
+## Container image and container launch mode (experimental)
 
-`deploy/opencode-worker/` builds `opencode-worker`, the image for the planned container launch mode
-([RFC](../rfc/rfc-opencode-worker-containers.md), Slice 1 of 4). Nothing in Kookr launches it yet; no flag
-changes behaviour. The image runs `opencode serve` on loopback (password-protected) plus the pinned
+`deploy/opencode-worker/` builds `opencode-worker`, the image for the container launch mode
+([RFC](../rfc/rfc-opencode-worker-containers.md)). Kookr launches it only when `KOOKR_OPENCODE_CONTAINERS` and
+`KOOKR_OPENCODE_CONTAINER_IMAGE` are set (see [environment variables](environment-variables.md)); otherwise nothing changes. The image runs `opencode serve` on loopback (password-protected) plus the pinned
 `opencode-a2a` wrapper (A2A, bearer token) on port 8000, as a non-root user, and is repo-neutral: the config,
 plugin, workspace and data are mounted at launch.
 
@@ -304,16 +304,25 @@ plugin, workspace and data are mounted at launch.
 
 ### Launch mode (internal seam)
 
-`metadata.opencodeLaunchMode` (`tui` | `container`) records how an opencode task launches. Absent means `tui`, the
-only mode available today. A task persisted as `container` is refused by the TUI adapter with a clear error and is
-never launched as a TUI (no silent fallback). Container launches arrive in a later slice of
-[RFC #3541](../rfc/rfc-opencode-worker-containers.md).
+`metadata.opencodeLaunchMode` (`tui` | `container`) records how an opencode task launches, decided once and honoured
+by every relaunch. With `KOOKR_OPENCODE_CONTAINERS` on, a task that has never run launches as a `container`; a task that
+already has sessions and no recorded mode is a host-TUI task and stays one. A task persisted as `container` is refused
+by the TUI adapter, and refused outright when the flag is off (no silent fallback either way).
+
+Container mode (S2d of [RFC #3541](../rfc/rfc-opencode-worker-containers.md)) in short: one live container at a time
+(a second concurrent launch is refused with `container_cap_reached`); launch refusals carry a stable reason
+(`docker_down`, `image_missing`, `health_timeout`, `plugin_not_loaded`, `a2a_unauth`, `provider_key_missing`,
+`hook_assets_missing`, `pr_lint_unresolvable`, `clone_failed`); the worker gets its own `git clone` (never a push
+credential) and the host fetches the result as `refs/kookr/opencode/<taskId>`; `sendInput` goes to the worker over A2A and
+`sendKeystroke` is unsupported (container workers are non-interactive; the terminal view is `docker logs -f`). The A2A
+task state is advisory and never reaches "completed" in this mode; hook records and the container state are the truth.
+Operator-run checks: `scripts/opencode-containers-live.ts`.
 
 ### Worker container housekeeping (`kookr containers`)
 
 Worker containers are labelled `kookr.instance=<this install's id>` (the id lives in `<data dir>/instance-id`,
 created on first container launch and never regenerated), `kookr.task` and `kookr.launch`, and named `kookr-oc-*`.
-Nothing launches containers yet; the housekeeping ships first so a revert can always be cleaned up.
+The server reconciles these containers every 60 s (adopt live ones, remove ended ones after retention, quarantine unknown ones); this command shows and prunes the same set.
 
 ```
 kookr containers ls [--json] [--dir PATH]
