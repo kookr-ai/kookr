@@ -1953,7 +1953,7 @@ describe('TerminalPanel', () => {
   });
 
   describe('image drag & drop and paste', () => {
-    const IMG_PATH = '/home/u/.kookr/terminal-images/kookr-image-20260101-000000-abcd1234.png';
+    const IMG_PATH = '/srv/kookr/terminal-images/kookr-image-20260101-000000-abcd1234.png';
 
     function mountReady(tmuxName = 'kookr-test') {
       act(() => {
