@@ -68,7 +68,7 @@ The notebooks directory can be a **private git repo**, exactly like
 `~/knowledge_bases`. When `~/.kookr/notebooks/.git` exists:
 
 - **Every notebook mutation commits.** `bin/nb.js` runs `git add -A && git commit`
-  after a successful `add` / `vote` / `merge` / `rm`, so `main` carries one commit
+  after a successful `add` / `vote` / `merge` / `rm` / `split` / `move` / `describe`, so `main` carries one commit
   per change. Reads (`show` / `stats`) never commit. Fail-open: a git error never
   fails the `nb` call (the lesson is already on disk). Opt out with
   `NB_GIT_AUTOCOMMIT=0`.
@@ -184,6 +184,7 @@ All optional; defaults match the RFC.
 |---|---|---|
 | `NB_DIR` | `~/.kookr/notebooks` | notebooks directory |
 | `NB_GIT_AUTOCOMMIT` | `1` (when `NB_DIR` is a git repo) | `0` disables the per-change commit in `bin/nb.js` |
+| `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. Never set it for ordinary tasks. |
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
 | `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to keep new lessons ≤120 chars — a style floor well under this ceiling. |

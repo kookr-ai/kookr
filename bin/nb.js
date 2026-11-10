@@ -18,15 +18,21 @@
 //      never fails the `nb` call (the change is already on disk).
 
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 
 // Commands that write the notebook — only these are worth a git commit.
-// Kept in sync with the package's mutating verbs (add/vote/merge/rm/split/describe).
-const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'describe']);
+// Kept in sync with the package's mutating verbs (add/vote/merge/rm/split/move/describe).
+// `move` is the promotion verb (it keeps a lesson's score), so it must be committed too.
+// src/cli/nb-bin.test.ts reads this line and fails when `nb --help` lists a mutating
+// verb that is missing here, so keep it a single `new Set([...])` literal.
+const MUTATING = new Set(['add', 'vote', 'merge', 'rm', 'split', 'move', 'describe']);
+
+// The shelf that holds host-wide lessons. Written only by the curator/promotion run.
+const GLOBAL_SHELF = 'fleet-global';
 
 // Inherited GIT_* vars pin git to a specific repo/worktree/index and would
 // OVERRIDE our `-C <NB_DIR>`. When `nb` runs from inside a git hook or any
@@ -108,6 +114,68 @@ function autoCommit(dir, argv) {
   }
 }
 
+/**
+ * Legacy short slugs that still mean `slug` (e.g. `agent-notebook` for
+ * `jeanibarz-agent-notebook`), read from plugin/notebooks/slug-aliases.json as
+ * `{ "<legacy>": "<canonical slug>" }`. The file arrives with a later change; until
+ * it exists (or when it cannot be parsed) no aliases are applied and the alias
+ * check is skipped, never an error. The file lives in the repo's plugin/ tree, so it
+ * is only found when `nb` runs from a repo checkout, which is where Kookr runs it.
+ */
+function aliasesOf(slug) {
+  try {
+    const file = join(dirname(fileURLToPath(import.meta.url)), '..', 'plugin', 'notebooks', 'slug-aliases.json');
+    if (!existsSync(file)) return new Set();
+    const map = JSON.parse(readFileSync(file, 'utf-8'));
+    if (!map || typeof map !== 'object') return new Set();
+    return new Set(Object.keys(map).filter((legacy) => map[legacy] === slug));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * One-line stderr advisories after a successful `nb add`. Never a refusal: the
+ * lesson is already written and the shim stays fail-open. They only make a wrong
+ * layer or another repo's shelf visible to the agent that just wrote it.
+ */
+function adviseOnAdd(argv) {
+  try {
+    if ((argv[0] ?? '').trim() !== 'add') return;
+    // First positional after `add`; `--reason`/`--note` take a value that is not the shelf.
+    let shelf;
+    for (let i = 1; i < argv.length; i++) {
+      if (argv[i] === '--reason' || argv[i] === '--note') i++;
+      else if (!argv[i].startsWith('--')) {
+        shelf = argv[i];
+        break;
+      }
+    }
+    if (!shelf) return;
+    if (shelf === GLOBAL_SHELF) {
+      if (!process.env.KOOKR_NB_CURATOR) {
+        console.error(
+          `[nb] advisory: ${GLOBAL_SHELF} is written only by promotion (the curator run); ` +
+            `add the lesson to <situation>@<slug> or the unscoped <situation> shelf instead.`,
+        );
+      }
+      return;
+    }
+    const at = shelf.indexOf('@');
+    const slug = (process.env.KOOKR_REPO_SLUG ?? '').trim();
+    if (at <= 0 || slug === '') return; // not a project shelf, or no repo slug to compare with
+    const shelfSlug = shelf.slice(at + 1);
+    if (shelfSlug !== slug && !aliasesOf(slug).has(shelfSlug)) {
+      console.error(
+        `[nb] advisory: shelf ${shelf} is scoped to '${shelfSlug}', but this repo's slug is '${slug}'; ` +
+          `if the lesson is about this repo use <situation>@${slug}.`,
+      );
+    }
+  } catch {
+    /* an advisory must never fail an nb call */
+  }
+}
+
 async function main() {
   // Pin the kookr notebooks location so dogfooding the package does not relocate
   // existing notebooks or the usage ring.
@@ -133,6 +201,8 @@ async function main() {
   const argv = process.argv.slice(2);
   const code = await mod.runNbCli(argv);
   process.exitCode = code;
+
+  if (code === 0) adviseOnAdd(argv);
 
   // One commit per successful notebook modification (Objective C).
   if (code === 0 && MUTATING.has((argv[0] ?? '').trim())) {
