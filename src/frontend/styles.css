@@ -3141,6 +3141,31 @@ a.overview-tour-link:visited:hover {
   padding: 6px 10px;
 }
 .terminal-attach-notice::before { animation: none; }
+/* Image drag & drop: a dashed target over the terminal while a file is dragged
+   in. pointer-events: none keeps drag events flowing to the terminal beneath. */
+.terminal-drop-overlay {
+  position: absolute;
+  inset: 6px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--teal, #2dd4bf);
+  border-radius: 8px;
+  background: rgba(15, 17, 23, 0.78);
+  color: var(--text-bright);
+  font-size: 13px;
+  pointer-events: none;
+}
+.terminal-image-notice {
+  top: auto;
+  bottom: 12px;
+  right: 12px;
+  height: auto;
+  max-width: min(420px, calc(100% - 24px));
+  white-space: normal;
+}
+.terminal-image-notice::before { animation: none; }
 .terminal-history-notice {
   display: flex;
   align-items: center;
