@@ -332,7 +332,9 @@ export class HookFileWatcher {
     if (this.watchers.has(tmuxName)) return;
 
     if (options?.filePath) this.pathOverrides.set(tmuxName, options.filePath);
+    else this.pathOverrides.delete(tmuxName);
     if (options?.untrusted) this.untrustedSessions.add(tmuxName);
+    else this.untrustedSessions.delete(tmuxName);
     const filePath = this.pathFor(tmuxName);
     const replay = options?.replayExisting ?? false;
     this.getOrCreateHealth(tmuxName).replayExisting = replay;
@@ -434,8 +436,8 @@ export class HookFileWatcher {
    * `stat` for the session's active file. For an untrusted session this is an `lstat` that rejects anything but a
    * regular file (a symlink, directory, fifo...), so a worker cannot redirect the host's reads.
    */
-  private async statFor(tmuxName: string, path: string) {
-    if (!this.untrustedSessions.has(tmuxName)) return stat(path);
+  private async statFor(tmuxName: string, path: string, untrusted = this.untrustedSessions.has(tmuxName)) {
+    if (!untrusted) return stat(path);
     const st = await lstat(path);
     if (!st.isFile()) {
       this.recordHealthError(tmuxName, new Error(`untrusted ledger ${path} is not a regular file; refusing to read it`));
@@ -469,8 +471,8 @@ export class HookFileWatcher {
     this.inodes.delete(tmuxName);
     this.reading.delete(tmuxName);
     this.healthBySession.delete(tmuxName);
-    this.pathOverrides.delete(tmuxName);
-    this.untrustedSessions.delete(tmuxName);
+    // pathOverrides/untrustedSessions are deliberately kept: a poll tick or fs.watch callback already in flight
+    // must stay on the strict untrusted path (a stop() must never downgrade it). watch() re-sets them per attach.
     this.untrustedWindow.delete(tmuxName);
     this.untrustedDiscarding.delete(tmuxName);
     // Session intentionally ended — drop its durable resume offset so the
@@ -502,8 +504,6 @@ export class HookFileWatcher {
     this.inodes.clear();
     this.reading.clear();
     this.healthBySession.clear();
-    this.pathOverrides.clear();
-    this.untrustedSessions.clear();
     this.untrustedWindow.clear();
     this.untrustedDiscarding.clear();
   }
@@ -617,9 +617,7 @@ export class HookFileWatcher {
     try {
       // An untrusted ledger is drained in bounded passes under one lock (a loop, not recursion, so each pass's
       // buffer is freed before the next); replay flags apply to every pass.
-      while (await this.readPass(tmuxName, filePath, options)) {
-        if (!this.untrustedSessions.has(tmuxName)) break;
-      }
+      while (await this.readPass(tmuxName, filePath, options)) { /* drain */ }
     } finally {
       this.reading.delete(tmuxName);
     }
@@ -637,9 +635,9 @@ export class HookFileWatcher {
 
     try {
       const prevInode = this.inodes.get(tmuxName);
-      const fileStat = await this.statFor(tmuxName, filePath).catch(() => undefined);
+      const fileStat = await this.statFor(tmuxName, filePath, untrusted).catch(() => undefined);
       if (fileStat === undefined) return false;
-      if (untrusted && !this.untrustedSessions.has(tmuxName)) return false; // stopped mid-pass
+      if (untrusted && !this.offsets.has(tmuxName)) return false; // stopped (stop() drops the offset)
 
       let offset = this.offsets.get(tmuxName) ?? 0;
 
@@ -663,7 +661,7 @@ export class HookFileWatcher {
       // phantom re-injection. HookIngestion content-hash dedup absorbs any
       // boundary overlap; the common truncate-to-0 case has none at all.
       if (prevInode !== undefined && fileStat.ino !== prevInode) {
-        await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, options);
+        await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, untrusted, options);
         offset = 0;
         this.offsets.set(tmuxName, 0);
         this.untrustedWindow.delete(tmuxName);
@@ -689,7 +687,7 @@ export class HookFileWatcher {
       const window = this.untrustedWindow.get(tmuxName) ?? MAX_UNTRUSTED_READ_BYTES;
       const length = untrusted ? Math.min(fileStat.size - start, window) : fileStat.size - start;
       const buffer = await readFileRange(filePath, start, length, untrusted ? { expectedIno: fileStat.ino } : undefined);
-      if (untrusted && !this.untrustedSessions.has(tmuxName)) return false; // stopped mid-pass
+      if (untrusted && !this.offsets.has(tmuxName)) return false; // stopped (stop() drops the offset)
       // Meter actual bytes pulled off disk (the ledger's churn signal).
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
@@ -813,11 +811,12 @@ export class HookFileWatcher {
     filePath: string,
     offset: number,
     prevInode: number,
+    untrusted: boolean,
     options?: { startupReplay?: boolean; replay?: boolean },
   ): Promise<void> {
     const rotatedPath = `${filePath}.1`;
     try {
-      const rotatedStat = await this.statFor(tmuxName, rotatedPath).catch(() => undefined);
+      const rotatedStat = await this.statFor(tmuxName, rotatedPath, untrusted).catch(() => undefined);
       // Only the generation carrying the pre-rotation inode is the file whose
       // tail we lagged behind. A mismatch means either no rotation produced this
       // shrink or several rotations elapsed (the wanted generation aged past
@@ -825,19 +824,8 @@ export class HookFileWatcher {
       if (rotatedStat === undefined || rotatedStat.ino !== prevInode) return;
       if (rotatedStat.size <= offset) return; // caught up at rotation time — nothing unread
 
-      const buffer = await readFileRange(
-        rotatedPath,
-        offset,
-        Math.min(rotatedStat.size - offset, this.untrustedSessions.has(tmuxName) ? MAX_UNTRUSTED_READ_BYTES : Infinity),
-        this.untrustedSessions.has(tmuxName) ? { expectedIno: rotatedStat.ino } : undefined,
-      );
-      this.cumulativeReadChars += buffer.length;
-      this.cumulativeReadCount += 1;
-
-      const { records } = splitHookRecords(buffer.toString('utf-8'));
       let recovered = 0;
-      for (const line of records) {
-        if (!line.trim()) continue;
+      const inject = (line: string): void => {
         try {
           this.adapter.injectHookEvent(tmuxName, line, undefined, {
             startupReplay: options?.startupReplay === true,
@@ -847,6 +835,41 @@ export class HookFileWatcher {
         } catch (err) {
           this.recordHealthError(tmuxName, err);
           console.error(`Error parsing rotated hook event for ${tmuxName}:`, err);
+        }
+      };
+
+      if (untrusted) {
+        // Worker-writable `.1`: same byte-exact, one-line-one-record, bounded-window framing as the live read, looped
+        // until the generation is drained so a lagging reader loses nothing. Records only; no growing window here
+        // (a line over one window is dropped and counted as a health error).
+        let pos = offset;
+        while (pos < rotatedStat.size) {
+          const buf = await readFileRange(
+            rotatedPath,
+            pos,
+            Math.min(rotatedStat.size - pos, MAX_UNTRUSTED_READ_BYTES),
+            { expectedIno: rotatedStat.ino },
+          );
+          this.cumulativeReadChars += buf.length;
+          this.cumulativeReadCount += 1;
+          const lastNl = buf.lastIndexOf(0x0a);
+          if (lastNl === -1) {
+            if (buf.length < MAX_UNTRUSTED_READ_BYTES) break; // partial last line: nothing more to recover
+            this.recordHealthError(tmuxName, new Error(`untrusted ledger ${rotatedPath}: record over ${MAX_UNTRUSTED_READ_BYTES} bytes in rotated tail; skipping`));
+            pos += buf.length;
+            continue;
+          }
+          for (const line of buf.subarray(0, lastNl + 1).toString('utf-8').split('\n')) {
+            if (line.trim()) inject(line.trim());
+          }
+          pos += lastNl + 1;
+        }
+      } else {
+        const buffer = await readFileRange(rotatedPath, offset, rotatedStat.size - offset);
+        this.cumulativeReadChars += buffer.length;
+        this.cumulativeReadCount += 1;
+        for (const line of splitHookRecords(buffer.toString('utf-8')).records) {
+          if (line.trim()) inject(line);
         }
       }
 

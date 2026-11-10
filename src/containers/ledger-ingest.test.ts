@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
-import { truncateSync, appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { renameSync, truncateSync, appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -236,6 +236,48 @@ describe('real HookFileWatcher on a spool ledger', () => {
     await until(() => seen.length >= n);
     expect(seen.length).toBe(n);
   }, 60_000);
+
+  test('a stop() landing mid-poll does not downgrade the in-flight read to the symlink-following trusted path', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":1}\n');
+    await until(() => seen.length >= 1);
+    const key = 'kookr-oc-task1-tok123';
+    const w = watcher as unknown as { statFor: (...a: unknown[]) => Promise<unknown>; stop: (k: string) => void };
+    const orig = w.statFor.bind(w);
+    let armed = true;
+    w.statFor = async (...a: unknown[]) => {
+      const r = await orig(...a);
+      if (armed) {
+        armed = false;
+        watcher.stop(key);
+        rmSync(loc.file);
+        writeFileSync(join(dir, 'hostsecret'), '{"host":"SECRET"}\n');
+        symlinkSync(join(dir, 'hostsecret'), loc.file);
+      }
+      return r;
+    };
+    appendFileSync(loc.file, '{"n":2}\n');
+    await new Promise((r) => setTimeout(r, 600));
+    expect(seen.map((s) => s.raw)).not.toContain('{"host":"SECRET"}');
+  });
+
+  test('rotation: a lagging untrusted reader recovers the whole rotated tail (more than one window)', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":"first"}\n');
+    await until(() => seen.length >= 1);
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'q'.repeat(1000) });
+    const n = 3000; // ~3 MiB, over the 1 MiB window
+    appendFileSync(loc.file, `${line}\n`.repeat(n));
+    renameSync(loc.file, `${loc.file}.1`);
+    writeFileSync(loc.file, '{"n":"fresh"}\n', { mode: 0o600 });
+    await until(() => seen.length >= n + 2);
+    expect(seen.length).toBe(n + 2);
+    expect(seen.at(-1)?.raw).toBe('{"n":"fresh"}');
+  });
 
   test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {
     writeFileSync(join(hooksDir, 'kookr-tui1.jsonl'), '');
