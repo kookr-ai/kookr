@@ -85,7 +85,7 @@ import {
   totalRingFleetBytes,
 } from './dtach-ring-store.js';
 import { killProcessTree } from './process-tree.js';
-import { ensureInteractiveTermEnv } from './session-term-env.js';
+import { composeSessionSpawnEnv } from './session-spawn-env.js';
 import { buildAgentCpuCommand, validateAgentCpuList } from './agent-cpu-budget.js';
 import {
   findAgentPidSync as findAgentPidSyncImpl,
@@ -419,16 +419,13 @@ export class LocalDtachBackend implements TerminalBackend, TerminalSessionDiagno
     // `envMode: 'replace'` gives the caller an exact allowlisted child env (the
     // Grok adapter uses it to keep server secrets out of the agent process);
     // the default 'inherit' preserves the historical `{...process.env, ...}`
-    // merge for Claude Code / Codex CLI. dtach itself is exec'd with the same
-    // env, so a 'replace' caller must include PATH so the multiplexer resolves.
-    // Normalize after both env modes and caller overrides are applied. This is
-    // the final spawn choke point, so an inherited or explicit TERM=dumb cannot
-    // reach a PTY-backed Codex session.
-    const env = ensureInteractiveTermEnv(
-      spec.envMode === 'replace'
-        ? { ...(spec.env ?? {}) }
-        : { ...process.env, ...spec.env },
-    );
+    // merge for Claude Code / Codex CLI, minus the server's own process-tree
+    // markers. dtach itself is exec'd with the same env, so a 'replace' caller
+    // must include PATH so the multiplexer resolves. See session-spawn-env.ts
+    // for the composition order; this is the final spawn choke point, so
+    // neither an inherited nor an explicit TERM=dumb can reach a PTY-backed
+    // Codex session.
+    const env = composeSessionSpawnEnv({ specEnv: spec.env, envMode: spec.envMode });
     try {
       this.assertExecutableAvailable(spec.id, this.dtachBinary, env);
       if (this.agentCpuList) this.assertExecutableAvailable(spec.id, 'taskset', env);

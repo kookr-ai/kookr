@@ -30,6 +30,7 @@ import type { DependencyPreflightRunner } from '../core/launch-dependency-prefli
 import { runLaunchDependencyPreflights } from './launch-dependency-runner.js';
 import { defaultVerdictPath } from '../core/ralph-iteration-verdict.js';
 import { buildTaskResumeContext } from './resume-context.js';
+import type { ResumeContext } from '../adapters/agent-adapter.js';
 import {
   DEFAULT_LAUNCH_TIMEOUT_MS,
   allocateLaunchSessionId,
@@ -1298,9 +1299,18 @@ export async function promotePendingTasks(deps: PromotionDeps): Promise<number> 
       // documented safe default. The context is built from the task's newest
       // recoverable session; adapters that do not support resume ignore it and
       // launch fresh with a warning.
-      const resumeContext = taskStore.takeResumeOnNextLaunch(pending.id)
-        ? await buildTaskResumeContext(pending)
-        : undefined;
+      let resumeContext: ResumeContext | undefined;
+      if (taskStore.takeResumeOnNextLaunch(pending.id)) {
+        const resolved = await buildTaskResumeContext(pending);
+        resumeContext = resolved.resumeContext;
+        // The operator asked for a resume and is not getting one. Say why, or
+        // the reopened task looks identical to a blank restart.
+        if (!resumeContext && resolved.fallbackReason) {
+          console.warn(
+            `[promotion] Task ${pending.id} was reopened for resume but will launch fresh: ${resolved.fallbackReason}`,
+          );
+        }
+      }
       adapterLaunchStarted = true;
       const launchPromise = adapter.launch(pending.id, launchPrompt, originalCwd, resumeContext, adapterOpts);
       const configuredTimeout = lifecycleDeps.getLaunchTimeoutMs?.();

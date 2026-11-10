@@ -1815,7 +1815,12 @@ describe('Crash Recovery', () => {
     expect(newSession.resumedFromCrash).toBeUndefined();
   });
 
-  test('resume mode: stale transcript path falls back to session-id-only resume', async () => {
+  // A transcriptPath comes from the agent's own session_start hook, so a path
+  // with nothing behind it means the conversation was never persisted. Passing
+  // the id anyway does not degrade: `claude --resume` answers "No conversation
+  // found with session ID: <id>" and exits, so the replacement worker dies on
+  // startup and the task is reaped as hung. Launching fresh at least runs.
+  test('resume mode: a recorded transcript that is absent falls back to a FRESH launch, with a reason', async () => {
     const cwd = join(tempDir, 'project-missing-transcript');
     const transcriptPath = join(tempDir, 'transcripts', 'gone.jsonl');
     // Intentionally do NOT create the transcript file
@@ -1831,9 +1836,16 @@ describe('Crash Recovery', () => {
     const result = await recoverCrashedSessions(taskStore, adapterRegistry, reconcileResult);
 
     expect(result.relaunched).toHaveLength(1);
-    expect(result.relaunched[0].mode).toBe('resumed');
-    expect(result.relaunched[0].fallbackReason).toBeUndefined();
-    expect(launchSpy.mock.calls[0][3]).toEqual({ sessionId: 'session-gone' });
+    expect(result.relaunched[0].mode).toBe('fresh');
+    expect(result.relaunched[0].fallbackReason).toContain(transcriptPath);
+    expect(result.relaunched[0].fallbackReason).toContain('session-gone');
+
+    // Adapter was called WITHOUT a ResumeContext — no doomed resume attempt.
+    expect(launchSpy.mock.calls[0][3]).toBeUndefined();
+
+    const updatedTask = taskStore.getTask(task.id)!;
+    const newSession = updatedTask.sessions.find((s) => s.tmuxSession === result.relaunched[0].newSessionId)!;
+    expect(newSession.resumedFromCrash).toBeUndefined();
   });
 
   test('codex sessions always get fresh launch even when claudeSessionId is set', async () => {

@@ -38,11 +38,39 @@ describe('buildResumeContext', () => {
     expect(fallbackReason).toBeUndefined();
   });
 
-  test('stale transcript path is dropped but the session id still resumes', async () => {
-    const { resumeContext } = await buildResumeContext(
+  // The agent reports transcriptPath on its own session_start hook, so a path
+  // with nothing behind it means the conversation was never persisted. Resuming
+  // it anyway is worse than launching fresh: `claude --resume` answers "No
+  // conversation found with session ID: <id>" and exits, so the replacement
+  // worker dies on startup and the task is reaped as hung.
+  test('recorded transcript that is absent → not resumable, with a reason naming the path and id', async () => {
+    const { resumeContext, fallbackReason } = await buildResumeContext(
       session({ tmuxSession: 'a', claudeSessionId: 'sess-1', transcriptPath: '/does/not/exist.jsonl' }),
     );
-    expect(resumeContext).toEqual({ sessionId: 'sess-1' });
+    expect(resumeContext).toBeUndefined();
+    expect(fallbackReason).toContain('/does/not/exist.jsonl');
+    expect(fallbackReason).toContain('sess-1');
+  });
+
+  // The inference "no file ⇒ no conversation" only holds for claude-code. The
+  // opencode adapter resolves a resume against its own session database, so an
+  // absent transcript path must not discard a conversation that is still there.
+  test('a non-claude session with an absent transcript still resumes by id', async () => {
+    const { resumeContext, fallbackReason } = await buildResumeContext(
+      session({
+        tmuxSession: 'a',
+        agentType: 'opencode',
+        claudeSessionId: 'ses_abc',
+        transcriptPath: '/does/not/exist.jsonl',
+      }),
+    );
+    // Resume is not refused, and the recorded path is passed through untouched:
+    // non-claude behavior is exactly what it was before the pre-flight existed.
+    expect(resumeContext).toEqual({
+      sessionId: 'ses_abc',
+      transcriptPath: '/does/not/exist.jsonl',
+    });
+    expect(fallbackReason).toBeUndefined();
   });
 
   test('existing transcript path is preserved', async () => {
@@ -97,10 +125,29 @@ describe('buildTaskResumeContext', () => {
       session({ tmuxSession: 'old', claudeSessionId: 'sess-old' }),
       session({ tmuxSession: 'new', claudeSessionId: 'sess-new' }),
     ]);
-    expect(await buildTaskResumeContext(task)).toEqual({ sessionId: 'sess-new' });
+    const { resumeContext, fallbackReason } = await buildTaskResumeContext(task);
+    expect(resumeContext).toEqual({ sessionId: 'sess-new' });
+    expect(fallbackReason).toBeUndefined();
   });
 
-  test('returns undefined when nothing is resumable', async () => {
-    expect(await buildTaskResumeContext(taskWith([session({ tmuxSession: 'a' })]))).toBeUndefined();
+  test('no session carries a conversation id → no context, and a reason saying so', async () => {
+    const { resumeContext, fallbackReason } = await buildTaskResumeContext(
+      taskWith([session({ tmuxSession: 'a' })]),
+    );
+    expect(resumeContext).toBeUndefined();
+    expect(fallbackReason).toBe('no session carries a provider conversation id');
+  });
+
+  // Regression guard for the reopen path: the newest session looks resumable by
+  // id, so hasResumableSession() says yes and reopenTask arms resume — but the
+  // conversation is not on disk. The caller must get a reason, not a context.
+  test('newest session has an id but no transcript on disk → reason, not a doomed context', async () => {
+    const { resumeContext, fallbackReason } = await buildTaskResumeContext(
+      taskWith([
+        session({ tmuxSession: 'a', claudeSessionId: 'sess-ghost', transcriptPath: '/nope/ghost.jsonl' }),
+      ]),
+    );
+    expect(resumeContext).toBeUndefined();
+    expect(fallbackReason).toContain('ghost.jsonl');
   });
 });

@@ -263,6 +263,69 @@ describe('LocalDtachBackend', () => {
     }
   });
 
+  // Covers the WIRING, not just the helper: a revert of the
+  // composeSessionSpawnEnv call in createSession must fail a test. The marker
+  // turns transcript saving off in the spawned agent, which silently disables
+  // conversation resume for every task Kookr launches.
+  skipIfNoDtach('does not leak the server CLAUDE_CODE_CHILD_SESSION marker into the PTY child', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-child-session-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+    const markerFile = join(tmpDir, 'marker.txt');
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_CODE_CHILD_SESSION');
+    const previous = process.env.CLAUDE_CODE_CHILD_SESSION;
+    process.env.CLAUDE_CODE_CHILD_SESSION = '1';
+
+    try {
+      await backend.createSession({
+        id: 'child-session-env',
+        command: '/bin/sh',
+        args: [
+          '-c',
+          `printf '%s' "\${CLAUDE_CODE_CHILD_SESSION-unset}" > ${JSON.stringify(markerFile)}; sleep 1`,
+        ],
+      });
+
+      await waitForFileContents(markerFile, 'unset');
+    } finally {
+      if (had) process.env.CLAUDE_CODE_CHILD_SESSION = previous;
+      else delete process.env.CLAUDE_CODE_CHILD_SESSION;
+      await backend.killSession('child-session-env').catch(() => undefined);
+      backend.close();
+    }
+  });
+
+  // The strip must not override a caller that sets the marker deliberately.
+  skipIfNoDtach('an explicit spec.env marker still reaches the PTY child', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'ldb-child-session-explicit-'));
+    backend = new LocalDtachBackend({
+      socketDir: tmpDir,
+      instanceId: 'test',
+      dtachBinary: DTACH!,
+    });
+    const markerFile = join(tmpDir, 'marker.txt');
+
+    try {
+      await backend.createSession({
+        id: 'child-session-env-explicit',
+        command: '/bin/sh',
+        args: [
+          '-c',
+          `printf '%s' "\${CLAUDE_CODE_CHILD_SESSION-unset}" > ${JSON.stringify(markerFile)}; sleep 1`,
+        ],
+        env: { CLAUDE_CODE_CHILD_SESSION: 'explicit' },
+      });
+
+      await waitForFileContents(markerFile, 'explicit');
+    } finally {
+      await backend.killSession('child-session-env-explicit').catch(() => undefined);
+      backend.close();
+    }
+  });
+
   it.skipIf(!DTACH || process.platform !== 'linux')('applies the shared CPU list through a real dtach launch', async () => {
     tmpDir = mkdtempSync(join(tmpdir(), 'ldb-cpu-'));
     const cpu = readFileSync('/proc/self/status', 'utf8').match(/^Cpus_allowed_list:\s*(.+)$/m)![1].split(/[,-]/)[0];
