@@ -295,21 +295,32 @@ describe('state colours: four roles, one shape each', () => {
   });
 
   test('no selected, active or pressed state is drawn in blue', () => {
-    const blue = /var\(--blue\)|#60a5fa|rgba\(\s*(96,\s*165,\s*250|120,\s*200,\s*255|122,\s*162,\s*247)\s*,/i;
+    // Blue literals seen in this stylesheet, plus `var(--accent, …)`: --accent
+    // is not defined, so its (blue) fallback is what renders.
+    const blue = /var\(--blue\)|var\(--accent\s*,|#60a5fa|#4a8eff|#61dafb|rgba\(\s*(96,\s*165,\s*250|120,\s*200,\s*255|122,\s*162,\s*247|64,\s*128,\s*255)\s*,/i;
     const offenders: string[] = [];
     for (const file of ['styles.css', 'critical.css']) {
       for (const match of stripComments(STYLESHEETS[file]).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
         const selector = match[1].trim().replace(/\s+/g, ' ');
-        if (!/\.(selected|active)\b|\[aria-(pressed|selected)="true"\]/.test(selector)) continue;
+        // `.selected`, `.active`, BEM `--active` / `-active` modifiers, aria state.
+        if (!/[-.](selected|active)\b|\[aria-(pressed|selected)="true"\]/.test(selector)) continue;
         if (blue.test(match[2])) offenders.push(`${file} ${selector}`);
       }
     }
     expect(offenders).toEqual([]);
   });
 
-  test('a pending (queued) task badge is neutral with a dash, not amber', () => {
+  test('a pending (queued) task is neutral everywhere, not amber', () => {
     expect(css.lookup('.detail-badge.pending', 'color')).toBe(ROLE_COLOR.neutral);
     expect(shapeOf('.detail-badge.pending::before')).toBe('neutral');
+    expect(css.lookup('.pending-label', 'color')).toBe(ROLE_COLOR.neutral);
+    expect(css.lookup('.pending-row', 'border-left')).toBe(`3px dashed ${ROLE_COLOR.neutral}`);
+  });
+
+  test('every rail row draws its selection in teal', () => {
+    for (const row of ['.finding-card', '.healthy-row', '.pending-row', '.snoozed-row', '.completed-row']) {
+      expect(css.lookup(`${row}.selected`, 'box-shadow'), row).toMatch(/^inset 4px 0 0 var\(--(teal|state-work)\)$/);
+    }
   });
 
   const css = rules(STYLESHEETS['styles.css']);

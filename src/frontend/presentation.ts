@@ -347,8 +347,10 @@ export function anomalyTypeLabel(anomalyType: string): string {
  * severity label and the detail-header badge. The stylesheet maps each kind to
  * one of the four state roles (#3561): `permission`, `input` and
  * `turn-complete` read as "waiting on you" (amber dot); `error` and `stuck`
- * read as "failed or stuck" (red diamond). Typed as a full `Record` so a new
- * anomaly type cannot ship without a kind (it used to render as `undefined`).
+ * read as "failed or stuck" (red diamond). The table covers every anomaly type
+ * (it used to render `undefined` for eight of them); since the frontend is not
+ * type-checked, the `ANOMALY_TYPES` loop in design-tokens.test.ts is what
+ * enforces that. An unknown (non-canonical) type falls back to `error`.
  */
 export type FindingKindClass = 'permission' | 'input' | 'turn-complete' | 'error' | 'stuck';
 
@@ -371,7 +373,7 @@ export function findingKindClass(anomalyType: AnomalyType, turnState: TurnState 
   // A normal completed turn is a review-ready signal, not a hung turn; an
   // explicit mid-turn AskUserQuestion still reads as `input`. See issue #358.
   if (anomalyType === 'needs_input' && turnState === 'completed_turn') return 'turn-complete';
-  return FINDING_KIND_CLASS[anomalyType];
+  return FINDING_KIND_CLASS[anomalyType] ?? 'error';
 }
 
 /**

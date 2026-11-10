@@ -5821,7 +5821,7 @@ label.task-share-row {
 
 .task-share-path:hover,
 .task-share-path--active {
-  border-color: var(--blue);
+  border-color: var(--state-work);
   color: var(--text-bright);
 }
 
@@ -7101,8 +7101,8 @@ label.task-share-row {
   background: var(--bg-hover, var(--border));
 }
 .btn-thumb.btn-thumb-active {
-  background: var(--accent, #4a8eff);
-  border-color: var(--accent, #4a8eff);
+  background: var(--state-work);
+  border-color: var(--state-work);
 }
 .complete-feedback-hint {
   font-size: 12px;
@@ -8814,7 +8814,7 @@ button.completed-row-rating:focus-visible {
   font-size: 12px;
   font-weight: 700;
   text-transform: uppercase;
-  color: var(--amber);
+  color: var(--state-neutral);
   letter-spacing: 0.04em;
 }
 .pending-row {
@@ -8825,15 +8825,16 @@ button.completed-row-rating:focus-visible {
   border-radius: 8px;
   cursor: pointer;
   color: var(--text-muted);
-  border-left: 3px dashed var(--amber);
+  /* Queued is a neutral state (#3561): nothing waits on the operator. */
+  border-left: 3px dashed var(--state-neutral);
   transition: background 0.15s, border-color 0.15s;
 }
 .pending-row:hover { background: var(--bg-card-hover); color: var(--text-secondary); }
 .pending-row.selected {
-  border-color: var(--amber);
+  border-color: var(--state-work);
   background: var(--bg-card-selected);
   color: var(--text-secondary);
-  box-shadow: inset 4px 0 0 var(--amber);
+  box-shadow: inset 4px 0 0 var(--state-work);
 }
 
 /* Forced-colors mode (Windows High Contrast / similar) strips box-shadow.
@@ -14675,8 +14676,8 @@ button.act-tool-entry:focus-visible {
 }
 
 .onboarding-dot.active {
-  background: var(--accent, #61dafb);
-  border-color: var(--accent, #61dafb);
+  background: var(--state-work);
+  border-color: var(--state-work);
 }
 
 .onboarding-dot:hover:not(.active) {
@@ -15498,7 +15499,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 
 .related-tasks-scope-btn--active {
-  background: var(--accent, rgba(64, 128, 255, 0.18));
+  background: rgba(45, 212, 191, 0.18);
   color: var(--accent-fg, currentColor);
   font-weight: 600;
 }
