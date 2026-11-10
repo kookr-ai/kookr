@@ -277,6 +277,14 @@ kbd {
    second row, so a right-anchored panel would run off-screen. Anchor it to the
    whole top bar with the 16 px page gutter instead. */
 .topbar.compact { position: relative; }
+/* The compact top bar shows only its last control group. With the mode chip
+   and System indicator in it, that group is wider than a 320-390 px phone,
+   so let it wrap instead of pushing Launch off-screen. */
+.topbar.compact .metric-group:last-child {
+  flex-wrap: wrap;
+  row-gap: 8px;
+  min-width: 0;
+}
 .topbar.compact .system-indicator-wrap { position: static; }
 .topbar.compact .system-popover {
   left: 16px;

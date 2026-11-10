@@ -171,6 +171,11 @@ test.describe('UI layout', () => {
 
     await expect(page.getByTestId('mobile-dashboard-tabs')).toBeVisible();
     await expect(page.getByTestId('mobile-quick-actions')).toBeVisible();
+    // The compact top bar wraps instead of overflowing: no sideways scroll,
+    // and Launch stays fully on screen (#3561 slice 2 review).
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    const launch = await page.locator('.btn-launch').boundingBox();
+    expect(launch!.x + launch!.width).toBeLessThanOrEqual(390);
     await expect(page.getByTestId('mobile-tab-findings')).toHaveClass(/active/);
     await expect(page.locator('.finding-card')).toBeVisible();
 
