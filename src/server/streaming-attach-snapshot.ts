@@ -41,7 +41,7 @@ import { DEFAULT_STREAMING_ATTACH_VIEWPORT_BYTES } from './streaming-attach-seed
  * held for a differentially rendering agent — and anything older stays
  * reachable through request-history.
  */
-export const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
+const DEFAULT_SNAPSHOT_SCROLLBACK_ROWS = 200;
 
 /**
  * xterm parses one `write()` call as a single synchronous block, and only
