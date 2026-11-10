@@ -100,11 +100,14 @@ whose mapped file is not in the diff fails; a struck box (`~~…~~ reason`) is
 waived; a blank box fails. It never executes repo commands (`--run-commands
 none`; `ci` is reserved for P4).
 
-The Kookr repository dogfoods the authoritative CI backstop in
-`.github/workflows/pr-checklist.yml`. That workflow verifies the final PR body
-against the diff using the engine checked out from the PR's base SHA, so a PR
-cannot silently weaken its own checklist verifier. The local Claude hook below
-remains an opt-in early warning layer.
+The CI workflow `.github/workflows/pr-checklist.yml` exists in this repository
+but is **currently disabled** (manual `workflow_dispatch` only) by a standing
+operator decision — see the CI policy in `CLAUDE.md`. So in the Kookr repository
+the local gate below is the **only** enforcement of the PR template; nothing on
+GitHub re-checks the body after `gh pr create`. If you adopt the CI workflow in
+your own repo (verifying the final PR body with the engine checked out from the
+PR's base SHA so a PR cannot weaken its own verifier), it becomes a second layer
+and can be made a required status check.
 
 **OFF by default.** Like `kb-context-inject.sh`, the gate is inert until you
 opt in, in either of two ways:
@@ -121,20 +124,33 @@ printf '["kookr-ai/kookr","your-org/your-repo"]\n' > ~/.kookr/pr-checklist-repos
 when a repo is in the scope list. When the gate is off it exits *before*
 spawning Node, so it adds no latency to `gh pr create` on non-adopting repos.
 
-**Authority: CI is the gate of record; this local gate is advisory-grade.**
-It exists to catch drift *before* you open the PR, not to replace the required
-CI check (P2). Its fail model reflects that:
+**Authority: where the CI workflow is disabled, this local gate is the only
+enforcement.** Its fail model:
 
 - **Fail-closed** (blocks `gh pr create`) on a real verification failure or a
   repo-input error (engine exit `2`). Fix the items or strike the N/A boxes,
   then retry.
 - **Fail-open** (allows, but never silently) only on kookr-internal faults —
   `kookr` not on `PATH`, an unresolvable session cwd, or engine exit `70`. Each
-  fail-open prints `checklist gate degraded (<reason>) — CI is authoritative`
-  to stderr **and** appends a JSON line to `~/.kookr/pr-checklist-degrade.log`.
-- **Attest-unverified** when the body isn't statically knowable (`--fill`,
-  `--body-file -`, or a `$(…)` body): attestation is skipped locally with a
-  printed note and CI stays authoritative — never a silent pass.
+  fail-open prints `checklist gate degraded (<reason>)` to stderr **and**
+  appends a JSON line to `~/.kookr/pr-checklist-degrade.log`. While it is
+  failing open, nothing checks the PR body.
+
+**Which `gh pr create` body shapes the gate verifies** (the hook forwards the raw
+command to `kookr pr-checklist verify --from-command`):
+
+| Body shape | Result |
+| --- | --- |
+| `--body "<text>"` / `-b` / `--body=` | Verified. A short inline body that omits the template's markers fails (`pr-template`). |
+| `--body "$(cat <<'EOF' … EOF)"` (quoted, unquoted, `"EOF"`, or `<<-EOF`; with or without the surrounding quotes) | Verified. The heredoc text is read statically from the command (never executed) and checked like an inline body. This is the recommended shape for agents. |
+| `--body-file <path>` / `-F` | Verified, if the file is inside the repo/worktree. A path outside it fails closed with a message telling you to use a heredoc or an in-repo file. |
+| `--fill*`, or no body flag at all | **Fails** when the repo PR template declares `kookr:check` markers (gh would build a body without the checklist). Passes degraded, with a printed note, when the template has no markers or does not exist. |
+| `--web` | Degraded (printed): the body is composed in the browser, which prefills the template. |
+| `--body-file -` (stdin), or any other expansion (`$(…)` that is not a `cat` heredoc, backticks, `${…}`) | **Attest-unverified**: attestation is skipped with a printed note. Nothing else checks it when CI is disabled, so avoid these shapes. |
+
+A `cat` heredoc is only recognised when the `$(cat <<DELIM` opener ends its
+line, the delimiter line appears on its own, and the closing `)` follows it;
+piped or otherwise modified heredocs are treated as other expansions.
 
 Check whether the gate has been quietly failing open:
 

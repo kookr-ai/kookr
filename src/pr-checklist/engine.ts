@@ -12,6 +12,7 @@ import {
   evaluateAttestation,
   evaluateStructural,
   evaluateTemplatePresence,
+  evaluateTemplateRequiredButMissing,
   isSourceFile,
   parseChecklist,
 } from './checklist.js';
@@ -38,6 +39,12 @@ export interface VerifyInput {
   disabled?: ReadonlySet<string>;
   /** Non-fatal notes from parsing the repo config, surfaced in the report. */
   configNotes?: readonly string[];
+  /**
+   * Set (with `body: null`) when the body is one the command cannot show us and
+   * gh would build without the template (`--fill*`, no body flag). If the repo
+   * template declares markers this fails; the value is the human reason.
+   */
+  templateRequiredReason?: string;
 }
 
 /** Pure: evaluate attestation + structural rules and aggregate. */
@@ -45,12 +52,17 @@ export function verifyChecklist(input: VerifyInput): VerifyReport {
   const notes: string[] = [];
   const rows = input.body === null ? [] : parseChecklist(input.body);
   const bodyChecked = input.body !== null;
-  if (!bodyChecked) notes.push('no PR body provided — attestation checks skipped (CI is authoritative)');
+  if (!bodyChecked) notes.push('no PR body provided — attestation checks skipped');
 
   // Presence before attestation: "was the checklist even included" is more
-  // fundamental than "are the ticked boxes honest". Skipped when no body was
-  // provided — CI stays authoritative rather than us guessing at an absent body.
-  const presence = bodyChecked ? evaluateTemplatePresence(input.templateText, rows) : [];
+  // fundamental than "are the ticked boxes honest". With no body we only fail
+  // when the caller says gh would build a template-less body (`--fill`, no body
+  // flag); other unseen bodies (stdin, other expansions) stay degraded, not failed.
+  const presence = bodyChecked
+    ? evaluateTemplatePresence(input.templateText, rows)
+    : input.templateRequiredReason !== undefined
+      ? evaluateTemplateRequiredButMissing(input.templateText, input.templateRequiredReason)
+      : [];
 
   const attest = evaluateAttestation(rows, input.facts.changedPaths);
   notes.push(...attest.notes);
@@ -79,6 +91,8 @@ export interface CollectDeps {
   cwd: string;
   base: string;
   body: string | null;
+  /** See `VerifyInput.templateRequiredReason`; only meaningful with `body: null`. */
+  templateRequiredReason?: string;
   gitRunner?: GitRunner;
   readFileText?: (absPath: string, cap: number) => Promise<string>;
 }
@@ -100,7 +114,8 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   // Only meaningful when a body was provided — the presence rule compares the
   // body against the template, and needs no diff (so it runs even when the
   // base is unresolved).
-  const templateText = deps.body !== null ? await readTemplate(runner, read, deps.cwd) : '';
+  const templateText =
+    deps.body !== null || deps.templateRequiredReason !== undefined ? await readTemplate(runner, read, deps.cwd) : '';
 
   // P4a: per-repo declarative rule config. Read unconditionally (cheap; a repo
   // may disable a structural rule that would otherwise fire on this very diff).
@@ -115,6 +130,7 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
     templateText,
     disabled: config.disable,
     configNotes: config.notes,
+    templateRequiredReason: deps.body === null ? deps.templateRequiredReason : undefined,
   });
 }
 

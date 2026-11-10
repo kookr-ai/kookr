@@ -4,6 +4,18 @@
 
 Draft (revised after critic round 1 — see "Critic Feedback Incorporated")
 
+> **Current enforcement reality (2026-11).** The CI design below (P1) is not
+> running: `.github/workflows/pr-checklist.yml` is disabled (`workflow_dispatch`
+> only) by a standing operator decision (see `CLAUDE.md` → "CI policy"). Wherever
+> this RFC says CI is "authoritative" / "the gate of record" / "the sole
+> authority", read it as the design intent *if the workflow is enabled*. While it
+> is disabled, the local hook gate (P3) is the **only** enforcement, so its body
+> extraction must be as complete as possible: it verifies literal `--body`,
+> `--body-file` inside the repo, and `cat` heredoc substitutions
+> (`--body "$(cat <<'EOF' … EOF)"`), and it fails `--fill` / a missing body flag
+> when the repo template declares markers. Only stdin (`--body-file -`), `--web`,
+> and non-heredoc expansions remain attest-unverified. See `docs/hooks-setup.md`.
+
 ## Date
 
 2026-07-01
@@ -149,7 +161,8 @@ inspectable via `kookr pr-checklist verify --explain`.
   the `attest` rules below then pass *vacuously* — there is nothing to verify. A
   template id absent from the body ⇒ fail, naming the missing ids and pointing at
   `gh pr create --body-file`. No-op when the repo ships no marked template, or when
-  no body was provided (CI stays authoritative). The `.github/PULL_REQUEST_TEMPLATE/`
+  no body was provided and none is required (`--fill` / no body flag instead fail via
+  `evaluateTemplateRequiredButMissing`; see the status note). The `.github/PULL_REQUEST_TEMPLATE/`
   multi-template *directory* layout is skipped (which template applies is not
   statically knowable from the command). This closes the exact bypass that forced
   the per-repo non-blocking `pre-push` reminder in lucy PR #835 — here it is a
@@ -214,13 +227,13 @@ kookr pr-checklist verify [--pr-body <file|->] [--base <ref>] [--from-command <r
 Three components may run the engine; their authority is now explicit (boundary-
 critic fix) to avoid duplicated/inconsistent verdicts:
 
-- **CI (P1) — the sole authority.** Runs
+- **CI (P1) — the sole authority when enabled (currently disabled, see the status note).** Runs
   `kookr pr-checklist verify --pr-body <final-body> --base <base_ref>` on
   `pull_request` (S5), triggers include `edited`/`synchronize` so late body edits
   can't erase attestations, and the adoption guide states plainly: **make it a
   required status check or it is advisory only.**
 - **`pre-pr-review` skill (P2) — advisory only.** May call the engine so an agent
-  sees problems *before* attempting `gh pr create`. Never the gate of record.
+  sees problems *before* attempting `gh pr create`. Never the gate of record (that is CI when enabled; the local hook while CI is disabled).
 - **User-global hook `pr-workflow-gate.sh` (P3) — local pre-create authority,
   opt-in.** Gated exactly like `kb-context-inject.sh`: a bash-side fast-exit
   (default OFF; env `KOOKR_PR_CHECKLIST=1` and/or a `~/.kookr/pr-checklist-repos.json`
@@ -229,9 +242,11 @@ critic fix) to avoid duplicated/inconsistent verdicts:
   non-zero would trip the existing `set -euo pipefail` + `trap ERR fail_open` and
   silently fail-open; delivery-critic bug). Runs `--run-commands none` (never
   executes repo commands locally). Body extraction: for `--body-file`/`--body`
-  the body is verified; for `--fill`/`$(...)`/unparseable forms the run is marked
-  **attest-unverified** and CI remains authoritative — degraded state is printed,
-  not silent.
+  the body is verified, as is a `$(cat <<'EOF' … EOF)` heredoc body (resolved
+  statically from the raw command, never executed); `--fill` and a missing body
+  flag fail when the repo template declares markers; stdin / `--web` / other
+  `$(...)` forms are marked **attest-unverified** — degraded state is printed,
+  not silent, and with CI disabled nothing else checks it.
 
 ### 6. Fail semantics and observability
 
@@ -239,7 +254,7 @@ critic fix) to avoid duplicated/inconsistent verdicts:
 - **Hook (P3):** fail-*closed* on verification failure and on config/parse/cap
   errors derived from repo input (S2); fail-*open* only on kookr-internal faults
   (missing binary), always with an in-band line: `checklist gate degraded
-  (<reason>) — CI is authoritative`. A machine kill-switch (`KOOKR_PR_CHECKLIST=0`)
+  (<reason>)` (the original design appended "CI is authoritative"; that holds only while the CI workflow is enabled). A machine kill-switch (`KOOKR_PR_CHECKLIST=0`)
   and `kookr pr-checklist doctor` (recent degrade/fail-open rate) make silent
   long-term fail-open detectable (failure-critic M4).
 
@@ -305,8 +320,9 @@ reversible, and does not start until the prior phase has baked.
   path is *first and cheap* (grep for `kookr:check:` before any git op) so the
   per-`gh pr create` latency on non-adopting repos is negligible (failure-critic
   M2).
-- **Body not statically extractable (`--fill`, `$(...)`):** marked
-  attest-unverified locally; CI authoritative. Never silently "pass".
+- **Body not statically extractable:** `cat` heredocs are resolved; `--fill` / no
+  body flag fail when a marked template exists; stdin, `--web` and other `$(...)`
+  forms are marked attest-unverified locally (printed). Never silently "pass".
 - **Merge-base unresolved:** explicit skip result, not a bogus-base verdict.
 - **Version skew** (`version: N` config on old kookr, P4): fail-closed with
   "upgrade kookr", never silent pass (S2).

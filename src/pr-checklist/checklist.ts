@@ -162,7 +162,8 @@ export function evaluateAttestation(
  * present box is *honest* is `evaluateAttestation`'s job, not this rule's.
  *
  * No-op when the repo ships no template (or a template with no markers), or
- * when no body was provided (the caller then leaves CI authoritative). Pure;
+ * when no body was provided (see `evaluateTemplateRequiredButMissing` for the
+ * `--fill` / no-body-flag case). Pure;
  * returns only ids/counts, never body/template *content* (S6).
  */
 export function evaluateTemplatePresence(templateText: string, bodyRows: ChecklistRow[]): CheckResult[] {
@@ -179,7 +180,32 @@ export function evaluateTemplatePresence(templateText: string, bodyRows: Checkli
         `PR body omits ${missing.length} of ${templateIds.size} template checklist item(s) ` +
         `(${missing.join(', ')}) — the body was not built from the repo's PR template. ` +
         `Copy .github/PULL_REQUEST_TEMPLATE.md, work each box, and pass it via ` +
-        `\`gh pr create --body-file <file>\`; do not inline \`--body\` (it skips the template).`,
+        `\`gh pr create --body-file <file>\` (or a quoted heredoc body); a short inline \`--body\` skips the template.`,
+    },
+  ];
+}
+
+/**
+ * A body the command cannot show us (`--fill*`, or no body flag at all) is a
+ * body gh builds from commit messages — it can never carry the repo template's
+ * checklist. When the template declares markers that is a fail with the same
+ * remedy as `evaluateTemplatePresence`; a marker-less or absent template is a
+ * no-op (the caller keeps the degraded "attest-unverified" note). Pure; returns
+ * only ids/counts (S6).
+ */
+export function evaluateTemplateRequiredButMissing(templateText: string, reason: string): CheckResult[] {
+  const ids = [...new Set(parseChecklist(templateText).map((r) => r.id))];
+  if (ids.length === 0) return [];
+  return [
+    {
+      id: 'pr-template',
+      status: 'fail',
+      summary:
+        `PR body is not on the command line (${reason}) but the repo's PR template declares ` +
+        `${ids.length} checklist item(s) (${ids.join(', ')}) — gh would not include them. ` +
+        `Build the body from the template (.github/pull_request_template.md), work each box, and ` +
+        `pass it via \`--body-file <file inside the repo/worktree>\` or a quoted heredoc ` +
+        `(\`--body "$(cat <<'EOF' … EOF)"\`); do not use \`--fill\` or omit the body.`,
     },
   ];
 }
