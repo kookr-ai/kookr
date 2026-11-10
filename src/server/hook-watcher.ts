@@ -662,6 +662,8 @@ export class HookFileWatcher {
       // boundary overlap; the common truncate-to-0 case has none at all.
       if (prevInode !== undefined && fileStat.ino !== prevInode) {
         await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, untrusted, options);
+        // stop() during the recovery dropped the offset: do not re-create it (that would revive a detached session).
+        if (untrusted && !this.offsets.has(tmuxName)) return false;
         offset = 0;
         this.offsets.set(tmuxName, 0);
         this.untrustedWindow.delete(tmuxName);
@@ -843,6 +845,9 @@ export class HookFileWatcher {
         // until the generation is drained so a lagging reader loses nothing. Records only; no growing window here
         // (a line over one window is dropped and counted as a health error).
         let pos = offset;
+        // After an oversized no-newline chunk is skipped, the rest of THAT record must be dropped up to its newline, or
+        // its tail would be injected as a fragment that looks like a record.
+        let discarding = false;
         while (pos < rotatedStat.size) {
           const buf = await readFileRange(
             rotatedPath,
@@ -850,13 +855,22 @@ export class HookFileWatcher {
             Math.min(rotatedStat.size - pos, MAX_UNTRUSTED_READ_BYTES),
             { expectedIno: rotatedStat.ino },
           );
+          if (!this.offsets.has(tmuxName)) return; // stopped while reading
           this.cumulativeReadChars += buf.length;
           this.cumulativeReadCount += 1;
+          if (discarding) {
+            const nl = buf.indexOf(0x0a);
+            if (nl === -1) { pos += buf.length; continue; }
+            pos += nl + 1;
+            discarding = false;
+            continue;
+          }
           const lastNl = buf.lastIndexOf(0x0a);
           if (lastNl === -1) {
             if (buf.length < MAX_UNTRUSTED_READ_BYTES) break; // partial last line: nothing more to recover
             this.recordHealthError(tmuxName, new Error(`untrusted ledger ${rotatedPath}: record over ${MAX_UNTRUSTED_READ_BYTES} bytes in rotated tail; skipping`));
             pos += buf.length;
+            discarding = true;
             continue;
           }
           for (const line of buf.subarray(0, lastNl + 1).toString('utf-8').split('\n')) {

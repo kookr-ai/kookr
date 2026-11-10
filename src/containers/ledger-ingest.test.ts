@@ -279,6 +279,45 @@ describe('real HookFileWatcher on a spool ledger', () => {
     expect(seen.at(-1)?.raw).toBe('{"n":"fresh"}');
   });
 
+  test('rotation: an oversized record in the rotated tail is dropped to its newline, never injected as a fragment (#3571)', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":"first"}\n');
+    await until(() => seen.length >= 1);
+    // one record of ~2.5 MiB with no newline inside (over two read windows), followed by a normal one
+    const giant = `{"hook_event_name":"PostToolUse","pad":"${'z'.repeat(2.5 * 1024 * 1024)}"}`;
+    appendFileSync(loc.file, `${giant}\n{"n":"after-giant"}\n`);
+    renameSync(loc.file, `${loc.file}.1`);
+    writeFileSync(loc.file, '{"n":"fresh"}\n', { mode: 0o600 });
+    await until(() => seen.some((x) => x.raw === '{"n":"fresh"}'));
+    const raws = seen.map((x) => x.raw);
+    expect(raws).toContain('{"n":"after-giant"}');
+    expect(raws).toContain('{"n":"fresh"}');
+    // no injected fragment of the giant record (its tail would end with the closing quote+brace)
+    expect(raws.some((r) => r.includes('zzzz'))).toBe(false);
+  });
+
+  test('stop() while the rotated tail is being recovered does not revive the detached session (#3571)', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":"first"}\n');
+    await until(() => seen.length >= 1);
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'q'.repeat(1000) });
+    appendFileSync(loc.file, `${line}\n`.repeat(2500));
+    renameSync(loc.file, `${loc.file}.1`);
+    writeFileSync(loc.file, '{"n":"fresh"}\n', { mode: 0o600 });
+    ing.detach('task1', 'tok123'); // detached before/while the tick recovers the tail
+    await new Promise((r) => setTimeout(r, 400));
+    expect(watcher.isWatching(loc.sessionKey)).toBe(false);
+    const countAfterDetach = seen.length;
+    appendFileSync(loc.file, '{"n":"post-detach"}\n');
+    await new Promise((r) => setTimeout(r, 400));
+    expect(seen.length).toBe(countAfterDetach);
+    expect(watcher['offsets'].has(loc.sessionKey)).toBe(false);
+  });
+
   test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {
     writeFileSync(join(hooksDir, 'kookr-tui1.jsonl'), '');
     watcher.watch('kookr-tui1');
