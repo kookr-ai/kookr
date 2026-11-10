@@ -139,7 +139,7 @@ describe('StatusBar completed-task count (issue #2618)', () => {
     expect(container.textContent).toContain('2 tasks · 1 finding');
   });
 
-  test('keeps the task/finding counts and median-unblock chip next to the completed count', async () => {
+  test('keeps the task/finding counts next to the completed count', async () => {
     stubTimeToUnblock({
       schemaVersion: 'time-to-unblock.v1',
       medianMs: 8 * 60_000,
@@ -166,8 +166,8 @@ describe('StatusBar completed-task count (issue #2618)', () => {
       .toBe('3 completed / 24h');
     expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')?.textContent)
       .toContain('oldest');
-    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')?.textContent)
-      .toBe('5 unblocked (24h) · median 8m');
+    // The median-unblock chip moved behind the System indicator (#3561 slice 2).
+    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)
       .not.toContain('unblocked');
   });

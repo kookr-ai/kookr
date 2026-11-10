@@ -171,8 +171,8 @@ describe('StatusBar launched-task count (issue #2632)', () => {
       .toBe('3 completed / 24h');
     expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')?.textContent)
       .toContain('oldest');
-    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')?.textContent)
-      .toBe('5 unblocked (24h) · median 8m');
+    // The median-unblock chip moved behind the System indicator (#3561 slice 2).
+    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
     expect(container.querySelector('[data-testid="launched-24h-chip"]')?.textContent)
       .not.toContain('completed');
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)

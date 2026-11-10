@@ -10,7 +10,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { SystemStatusDetails } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -62,7 +62,7 @@ async function flushEffects() {
   });
 }
 
-describe('StatusBar live friction chip (issue #2596)', () => {
+describe('System detail live friction chip (moved from the status bar, #3561 slice 2) (issue #2596)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -106,10 +106,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -135,10 +132,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -158,10 +152,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -190,10 +181,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -213,10 +201,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -240,10 +225,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
         }),
       );
     });
@@ -265,10 +247,7 @@ describe('StatusBar live friction chip (issue #2596)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
           onOpenLiveFriction,
           onOpenDiagnostics,
         }),

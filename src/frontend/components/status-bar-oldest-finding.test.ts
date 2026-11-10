@@ -223,7 +223,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     expect(onSelectOldestFinding).not.toHaveBeenCalled();
   });
 
-  test('keeps the historical median-unblock chip next to the live oldest wait', async () => {
+  test('shows the live oldest wait without the historical median (moved to System)', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({
       ok: true,
       json: async () => ({
@@ -251,8 +251,10 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
 
     expect(container.textContent).toContain('oldest 4m');
-    expect(container.textContent).toContain('5 unblocked (24h) · median 12m');
     expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).not.toBeNull();
+    // The historical median moved behind the System indicator (#3561 slice 2);
+    // only the live oldest wait stays in the status bar.
+    expect(container.textContent).not.toContain('unblocked');
+    expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
   });
 });

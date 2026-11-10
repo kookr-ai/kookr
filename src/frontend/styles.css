@@ -158,38 +158,103 @@ kbd {
   pointer-events: none;
 }
 
-.version-badge {
-  font-family: var(--font-mono);
+/* System indicator (issue #3561 slice 2): one quiet top-bar control that
+   opens status detail and build info ("About"). Fixed width so the top bar
+   does not shift when the attention dot appears. */
+.system-indicator-wrap { position: relative; display: inline-flex; }
+.system-indicator {
+  font: inherit;
   font-size: 12px;
   color: var(--text-secondary);
-  background: var(--bg-card);
-  border: 1px solid var(--border-dim);
-  padding: 1px 7px;
-  border-radius: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 10px;
+  border-radius: 8px;
   cursor: pointer;
-  position: relative;
   user-select: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  min-width: 84px;
   line-height: inherit;
+  white-space: nowrap;
 }
-.version-badge:hover,
-.version-badge:focus-visible { border-color: var(--border); color: var(--text); }
-.version-badge.dev { color: var(--amber); border-color: rgba(251,191,36,0.3); }
-.version-built { color: var(--text-muted); }
+.system-indicator:hover,
+.system-indicator:focus-visible { background: var(--bg-card-hover); color: var(--text-bright); }
+.system-indicator[aria-expanded="true"] { border-color: var(--border); color: var(--text-bright); }
+.system-update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--state-neutral);
+  box-sizing: border-box;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.system-attention-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--state-need);
+  display: inline-block;
+  flex-shrink: 0;
+}
 
-.version-popover {
+/* Bypass mode is a mode the operator chose, not an alarm: a quiet neutral
+   chip instead of the old full-width red banner. */
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.system-popover {
   position: absolute;
-  top: 30px;
-  left: 0;
+  top: calc(100% + 6px);
+  right: 0;
   z-index: 100;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px 14px;
   min-width: 320px;
+  max-width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  text-align: left;
+}
+.system-popover-heading {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.system-popover-heading + .version-row,
+.system-status-details + .system-popover-heading {
+  margin-top: 10px;
+}
+.system-attention-summary {
+  font-size: 12px;
+  color: var(--state-need);
+  margin-bottom: 6px;
+}
+.system-status-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.system-status-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .version-row {
   font-size: 12px;
@@ -212,7 +277,6 @@ kbd {
   color: var(--text-secondary);
   font-size: 12px;
 }
-.version-badge.has-updates { border-color: var(--green); }
 
 /* Deploy section in version popover */
 .deploy-divider {
@@ -341,14 +405,6 @@ kbd {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-.update-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  display: inline-block;
-  margin-left: 2px;
-}
 
 .queue-info {
   display: flex;
@@ -401,7 +457,7 @@ kbd {
   gap: 4px;
 }
 .metric-group { display: inline-flex; align-items: center; gap: 12px; }
-/* --- Health Dot (version badge) --- */
+/* --- Health Dot (System indicator) --- */
 .health-dot {
   width: 6px;
   height: 6px;
@@ -750,24 +806,63 @@ button.topbar-spend:focus-visible {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
-.btn-abort-active {
-  border: 1px solid var(--red);
+/* Rail "More actions" menu (issue #3561 slice 2): destructive bulk actions
+   never sit on screen at rest. */
+.rail-actions-menu { position: relative; display: inline-flex; }
+.rail-actions-trigger {
+  border: 1px solid var(--border-dim);
   background: transparent;
-  color: var(--red);
+  color: var(--text-secondary);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 0 6px;
   font: inherit;
   letter-spacing: 0;
   text-transform: none;
   cursor: pointer;
+  line-height: 18px;
 }
-.btn-abort-active:hover {
-  background: rgba(248, 113, 113, 0.15);
+.rail-actions-trigger:hover,
+.rail-actions-trigger[aria-expanded="true"] {
+  color: var(--text-bright);
+  border-color: var(--border);
 }
-.btn-abort-active:focus-visible {
-  outline: 2px solid var(--red);
+.rail-actions-trigger:focus-visible {
+  outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
+.rail-actions-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  /* Open toward the rail body: the trigger sits near the rail's left edge,
+     and a right-anchored popup would slide under the project sidebar. */
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.rail-actions-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rail-actions-item:hover,
+.rail-actions-item:focus-visible { background: var(--bg-card-hover); outline: none; }
+.rail-actions-item-danger { color: var(--state-bad); }
 .btn-snooze-all {
   border: 1px solid var(--amber);
   background: transparent;
@@ -2450,7 +2545,8 @@ a.overview-tour-link:visited:hover {
 .detail-badge.stuck { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .detail-badge.turn-complete { background: rgba(251,191,36,0.12); color: var(--state-need); }
-.detail-badge.permission-bypassed { background: rgba(248,113,113,0.14); color: var(--red); }
+/* A mode the operator chose, not a failure: neutral, not red (issue #3561 slice 2). */
+.detail-badge.permission-bypassed { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
 
 .detail-header-right {
   display: flex;
@@ -4440,34 +4536,6 @@ a.playbook-empty-docs-link:visited:hover {
 }
 .read-only-banner__learn-more:hover {
   color: var(--text-primary);
-}
-
-.permission-bypass-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  background: rgba(127, 29, 29, 0.36);
-  border-bottom: 1px solid rgba(248, 113, 113, 0.55);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.permission-bypass-banner__badge {
-  flex: 0 0 auto;
-  text-transform: uppercase;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(248, 113, 113, 0.2);
-  color: var(--red);
-}
-
-.permission-bypass-banner__text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .drain-mode-banner {
@@ -7065,8 +7133,12 @@ label.task-share-row {
   flex: 1;
   min-width: 0;
 }
-.statusbar-left .btn-sound-toggle {
-  margin-left: auto;
+/* Spend and quota sit at the right end of the status bar (issue #3561 slice 2). */
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .focus-zone-pill {
   font-size: 12px;

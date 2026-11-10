@@ -1,7 +1,7 @@
 /**
  * E2E tests for build version info display and server restart mechanics.
  *
- * - Build info UI: verifies the TopBar badge and popover show real commit data
+ * - Build info UI: verifies the System detail (About) shows real commit data
  * - Restart: verifies the `kill $(lsof -tiTCP:PORT -sTCP:LISTEN)` approach works to restart
  *   the server, preserving build info with a new serverStartedAt
  */
@@ -37,24 +37,30 @@ test.describe('Build version info', () => {
     expect(new Date(data.serverStartedAt).getTime()).not.toBeNaN();
   });
 
-  test('TopBar badge shows commit hash, not DEV', async ({ page }) => {
+  test('System detail shows the commit hash under About, not DEV', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('.logo')).toHaveText('KOOKR');
 
-    const badge = page.locator('.version-badge');
-    await expect(badge).toBeVisible();
-    await expect(badge).not.toHaveClass(/\bdev\b/);
+    // Quiet chrome (#3561 slice 2): the build hash left the top bar; it lives
+    // under About in the System detail.
+    const system = page.locator('.system-indicator');
+    await expect(system).toBeVisible();
+    await expect(page.locator('.topbar')).not.toContainText('DEV');
 
-    const text = await badge.textContent();
+    await system.click();
+    const popover = page.locator('.system-popover');
+    await expect(popover).toBeVisible();
+    await expect(popover.getByRole('heading', { name: 'About' })).toBeVisible();
+    const text = await popover.textContent();
     expect(text).toMatch(/[0-9a-f]{7}/);
-    expect(text).not.toContain('DEV');
+    expect(text).not.toContain('dev mode');
   });
 
-  test('clicking badge opens popover with full build details', async ({ page }) => {
+  test('clicking System opens About with full build details', async ({ page }) => {
     await page.goto('/');
-    await page.locator('.version-badge').click();
+    await page.locator('.system-indicator').click();
 
-    const popover = page.locator('.version-popover');
+    const popover = page.locator('.system-popover');
     await expect(popover).toBeVisible();
     await expect(popover.locator('.version-label').filter({ hasText: 'Commit' })).toBeVisible();
     await expect(popover.locator('.version-label').filter({ hasText: 'Branch' })).toBeVisible();
@@ -66,11 +72,11 @@ test.describe('Build version info', () => {
 
   test('popover closes on outside click', async ({ page }) => {
     await page.goto('/');
-    await page.locator('.version-badge').click();
-    await expect(page.locator('.version-popover')).toBeVisible();
+    await page.locator('.system-indicator').click();
+    await expect(page.locator('.system-popover')).toBeVisible();
 
     await page.mouse.click(10, 10);
-    await expect(page.locator('.version-popover')).not.toBeVisible();
+    await expect(page.locator('.system-popover')).not.toBeVisible();
   });
 });
 

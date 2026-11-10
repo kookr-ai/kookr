@@ -25,6 +25,7 @@ import {
   type DeployStatus,
 } from '../api/index.js';
 import { loadDeployIntent } from '../store/deploy-intent-storage.js';
+import { SystemStatusDetails, useSystemAttentionReasons } from './SystemStatusDetails.js';
 
 interface Props {
   findings: number;
@@ -64,6 +65,13 @@ interface Props {
    * Optional so isolated TopBar tests keep today's non-interactive span.
    */
   onOpenCostComparison?: () => void;
+  /** Openers for the readouts inside the System detail (moved from the status
+   *  bar, issue #3561 slice 2). Optional so isolated TopBar tests need no App
+   *  wiring. */
+  onOpenCapacity?: () => void;
+  onOpenLiveFriction?: () => void;
+  onOpenDiagnostics?: () => void;
+  onOpenSchedules?: () => void;
 }
 
 function timeAgo(isoString: string): string {
@@ -102,6 +110,10 @@ export function TopBar({
   scheduleHintActive = false,
   shortcutBindings = getDefaultShortcutBindings(detectShortcutPlatform()),
   onOpenCostComparison,
+  onOpenCapacity,
+  onOpenLiveFriction,
+  onOpenDiagnostics,
+  onOpenSchedules,
 }: Props) {
   const {
     connected,
@@ -113,7 +125,9 @@ export function TopBar({
     coordinator,
     deploying,
     setDeploying,
+    bypassAllPermissions,
   } = useKookrStore();
+  const attentionReasons = useSystemAttentionReasons();
   const paletteHint = commandPaletteHint(detectShortcutPlatform());
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -124,6 +138,7 @@ export function TopBar({
   const [pluginUpdateError, setPluginUpdateError] = useState<string | null>(null);
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
+  const systemWrapRef = useRef<HTMLDivElement>(null);
 
   // Restore sticky pre-deploy commit after remount so completion clear still works.
   useEffect(() => {
@@ -137,12 +152,19 @@ export function TopBar({
   useEffect(() => {
     if (!showPopover) return;
     function handleClick(e: MouseEvent) {
-      if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
+      if (systemWrapRef.current && !systemWrapRef.current.contains(e.target as Node)) {
         setShowPopover(false);
       }
     }
+    function handleKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setShowPopover(false);
+    }
     document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
+    document.addEventListener('keydown', handleKey);
+    return () => {
+      document.removeEventListener('mousedown', handleClick);
+      document.removeEventListener('keydown', handleKey);
+    };
   }, [showPopover]);
 
   // Check deploy status when popover opens
@@ -270,15 +292,11 @@ export function TopBar({
   }
 
   const isDev = !buildInfo || buildInfo.commitShort === 'dev';
-  const versionLabel = isDev
-    ? 'DEV'
-    : `${buildInfo.commitShort}`;
-  const builtAgo = buildInfo?.buildTimestamp ? timeAgo(buildInfo.buildTimestamp) : '';
   const uptimeLabel = serverStartedAt ? timeAgo(serverStartedAt) : '';
 
   // Treat a non-prod backend (e.g. `pnpm dev` on :4801) as "deploy doesn't apply
   // here" — clicking would update an unrelated sibling process. We hide the
-  // controls and the version-badge update pulse so users aren't nudged toward
+  // controls and the System indicator update dot so users aren't nudged toward
   // a misleading action. See issue #15.
   const onNonProdPort =
     deployStatus?.runningPort !== undefined &&
@@ -323,6 +341,17 @@ export function TopBar({
     ? 'All-time agent spend recorded by this Kookr server — includes cleared and deleted tasks'
     : undefined;
   const connectionLabel = connected ? 'Dashboard WebSocket connected' : 'Dashboard WebSocket disconnected';
+  // One quiet indicator for everything the chrome no longer shows at rest:
+  // amber (waiting on you) when a hidden readout is degraded. An available
+  // update is not urgent, so it gets a neutral ring instead. Disconnection
+  // keeps its own red dot.
+  const systemNeedsAttention = attentionReasons.length > 0;
+  const systemLabel = [
+    'System status and build info',
+    connected ? null : 'disconnected',
+    attentionReasons.length > 0 ? `needs a look: ${attentionReasons.join(', ')}` : null,
+    hasUpdates ? 'update available' : null,
+  ].filter(Boolean).join('. ');
   const lastRestart = deployStatus?.lastRestart;
   const blackoutTier = lastRestart ? apiBlackoutTier(lastRestart.apiBlackoutSeconds) : null;
 
@@ -333,216 +362,6 @@ export function TopBar({
           <img src="/kookr-mark-32.png" alt="" aria-hidden="true" width={18} height={18} className="logo-mark" />
           KOOKR
         </span>
-        <button
-          type="button"
-          className={`version-badge ${isDev ? 'dev' : ''} ${hasUpdates ? 'has-updates' : ''}`}
-          onClick={() => setShowPopover((v) => !v)}
-          aria-label="Build info"
-          aria-expanded={showPopover}
-          aria-controls="version-popover"
-        >
-          <span
-            className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`}
-            role="img"
-            aria-label={connectionLabel}
-            title={connectionLabel}
-          />
-          {deploying && <span className="deploy-spinner" />}
-          {versionLabel}
-          {!compact && !isDev && builtAgo && <span className="version-built"> · {builtAgo}</span>}
-          {hasUpdates && <span className="update-dot" />}
-        </button>
-        {showPopover && (
-          <div className="version-popover" id="version-popover" ref={popoverRef}>
-            {isDev ? (
-              <div className="version-row">Running in dev mode (no build info)</div>
-            ) : (
-              <>
-                <div className="version-row"><span className="version-label">Commit</span> <code>{buildInfo.commitHash}</code></div>
-                <div className="version-row"><span className="version-label">Branch</span> {buildInfo.branch}</div>
-                <div className="version-row"><span className="version-label">Built</span> {formatDateTime(buildInfo.buildTimestamp)}</div>
-                <div className="version-row"><span className="version-label">Version</span> {buildInfo.version}</div>
-                {serverStartedAt && (
-                  <div className="version-row"><span className="version-label">Server up</span> {formatDateTime(serverStartedAt)} ({uptimeLabel})</div>
-                )}
-              </>
-            )}
-
-            {/* Deploy section */}
-            <div className="deploy-divider" />
-            {onNonProdPort ? (
-              <div className="deploy-uptodate">
-                This dashboard is on dev (port {deployStatus?.runningPort}). The deploy button updates the prod instance on port {deployStatus?.prodPort}.
-              </div>
-            ) : (
-              <>
-                {deployLoading && !deployStatus && (
-                  <div className="version-row deploy-checking">Checking for updates...</div>
-                )}
-                {deployStatus?.error && (
-                  <div className="version-row deploy-error">{deployStatus.error}</div>
-                )}
-                {deployStatus?.toolkitError && (
-                  <div className="version-row deploy-error">{deployStatus.toolkitError}</div>
-                )}
-                {deployStatus && !deployStatus.configured && !deployStatus.error && (
-                  <div className="deploy-uptodate">No production instance configured</div>
-                )}
-                {deploying && (
-                  <div className="deploy-status-row">
-                    <span className="deploy-spinner" /> Deploying to production...
-                  </div>
-                )}
-                {deployStatus?.configured && !deploying && (
-                  <>
-                    {deployStatus.available ? (
-                      <>
-                        <div className="deploy-available">
-                          {deployStatus.behindCount} commit{deployStatus.behindCount !== 1 ? 's' : ''} ahead of production
-                          <span className="deploy-range">{deployStatus.currentShort} &rarr; {deployStatus.latestShort}</span>
-                        </div>
-                        {deployStatus.commits && deployStatus.commits.length > 0 && (
-                          <div className="deploy-commits">
-                            {deployStatus.commits.slice(0, 8).map((c) => (
-                              <div key={c.hash} className="deploy-commit">
-                                <code>{c.hash}</code> {c.subject}
-                              </div>
-                            ))}
-                            {deployStatus.commits.length > 8 && (
-                              <div className="deploy-commit deploy-more">
-                                ...and {deployStatus.commits.length - 8} more
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        <button className="btn-deploy" onClick={triggerDeploy}>
-                          Deploy to production
-                        </button>
-                      </>
-                    ) : (
-                      <div className="deploy-uptodate">Production is up to date</div>
-                    )}
-                    <button className="deploy-refresh" onClick={checkDeployStatus} disabled={deployLoading}>
-                      {deployLoading ? 'Checking...' : 'Refresh'}
-                    </button>
-                  </>
-                )}
-              </>
-            )}
-
-            {/* Last restart blackout + phase timings (issue #1979). Optional field
-                from #1973; omit entire block when API has no lastRestart. */}
-            {lastRestart && blackoutTier && (
-              <>
-                <div className="deploy-divider" />
-                <div
-                  className={`deploy-blackout deploy-blackout--${blackoutTier}`}
-                  data-testid="deploy-last-restart"
-                  role="status"
-                  aria-label={`API blackout ${formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}; ideal under 1 second, SLO under 5 seconds; last restart ${formatDateTime(lastRestart.at)}`}
-                  title={`Ideal <1s · SLO max <5s · last restart ${formatDateTime(lastRestart.at)}`}
-                >
-                  <span className="deploy-blackout-label">API blackout</span>{' '}
-                  <strong data-testid="deploy-api-blackout">
-                    {formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}
-                  </strong>
-                  <span className="deploy-range">
-                    ideal &lt;1s · SLO &lt;5s · {timeAgo(lastRestart.at)}
-                  </span>
-                </div>
-                <div className="deploy-phase-timings" data-testid="deploy-phase-timings">
-                  M1 {formatBlackoutSeconds(lastRestart.m1Seconds)}
-                  {' · '}
-                  M2 {formatBlackoutSeconds(lastRestart.m2Seconds)}
-                  {' · '}
-                  dominant {lastRestart.dominantPhase}
-                </div>
-              </>
-            )}
-
-            {deployStatus?.configured && showToolkitSection && (
-              <>
-                <div className="deploy-divider" />
-                <div className="toolkit-stale">
-                  Toolkit links {toolkitStale ? 'need refresh' : toolkitRefreshing ? 'refreshing' : 'unavailable'}
-                  {deployStatus.toolkit && (
-                    <span className="deploy-range">
-                      {deployStatus.toolkit.checkedCount - deployStatus.toolkit.staleCount}/{deployStatus.toolkit.checkedCount} current
-                    </span>
-                  )}
-                </div>
-                <button
-                  className="deploy-refresh"
-                  onClick={refreshToolkitLinks}
-                  disabled={toolkitRefreshing || !deployStatus.toolkit?.stale}
-                >
-                  {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
-                </button>
-              </>
-            )}
-
-            {deployStatus?.plugin && (pluginNotInstalled || pluginStale || pluginUpdating || pluginUpdateMessage || pluginUpdateError) && (
-              <>
-                <div className="deploy-divider" />
-                {pluginNotInstalled ? (
-                  <>
-                    <div className="toolkit-stale">
-                      Toolkit plugin not installed
-                      {deployStatus.plugin.availableVersion && (
-                        <span className="deploy-range">v{deployStatus.plugin.availableVersion} available</span>
-                      )}
-                    </div>
-                    <div className="version-row deploy-checking">
-                      Install in Claude Code: <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
-                      <code>/plugin install {deployStatus.plugin.pluginId}</code>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="toolkit-stale">
-                      {pluginStale ? 'Toolkit plugin update available' : 'Toolkit plugin'}
-                      {deployStatus.plugin.installedVersion && deployStatus.plugin.availableVersion && (
-                        <span className="deploy-range">
-                          {pluginStale
-                            ? `${deployStatus.plugin.installedVersion} -> ${deployStatus.plugin.availableVersion}`
-                            : `v${deployStatus.plugin.installedVersion} installed`}
-                        </span>
-                      )}
-                    </div>
-                    {pluginUpdateMessage && (
-                      <div className="deploy-status-row" role="status" aria-live="polite">
-                        {pluginUpdateMessage}
-                      </div>
-                    )}
-                    {pluginUpdateError && (
-                      <div className="version-row deploy-error" role="alert">{pluginUpdateError}</div>
-                    )}
-                    {pluginStale && (
-                      <button
-                        className="btn-deploy"
-                        onClick={updateToolkitPlugin}
-                        disabled={pluginUpdating}
-                      >
-                        {pluginUpdating ? 'Updating plugin...' : 'Update plugin'}
-                      </button>
-                    )}
-                    <details className="deploy-help" open={Boolean(pluginUpdateError)}>
-                      <summary>Manual commands</summary>
-                      <div className="version-row">
-                        In Claude Code: <code>{pluginManualCommands.slash[0]}</code> then{' '}
-                        <code>{pluginManualCommands.slash[1]}</code>
-                      </div>
-                      <div className="version-row">
-                        Terminal: <code>{pluginManualCommands.cli[0]}</code> then{' '}
-                        <code>{pluginManualCommands.cli[1]}</code>
-                      </div>
-                    </details>
-                  </>
-                )}
-              </>
-            )}
-          </div>
-        )}
         <button
           type="button"
           className={`queue-info${hasQueueInfo ? '' : ' queue-info-reserved'}`}
@@ -599,6 +418,250 @@ export function TopBar({
           )}
         </div>
         <div className="metric-group">
+          {bypassAllPermissions && (
+            <span
+              className="mode-chip"
+              role="status"
+              data-testid="permission-mode-chip"
+              title="Bypass mode: new agent launches run without permission prompts"
+            >
+              Bypass mode
+            </span>
+          )}
+          <div className="system-indicator-wrap" ref={systemWrapRef}>
+            <button
+              type="button"
+              className={`system-indicator${hasUpdates ? ' has-updates' : ''}${systemNeedsAttention ? ' needs-attention' : ''}`}
+              onClick={() => setShowPopover((v) => !v)}
+              aria-label={systemLabel}
+              title={systemLabel}
+              aria-expanded={showPopover}
+              aria-controls="system-popover"
+              data-testid="system-indicator"
+            >
+              <span
+                className={`health-dot ${connected ? 'health-dot-connected' : 'health-dot-disconnected'}`}
+                role="img"
+                aria-label={connectionLabel}
+                title={connectionLabel}
+              />
+              {deploying && <span className="deploy-spinner" />}
+              <span className="system-indicator-label">System</span>
+              {systemNeedsAttention && <span className="system-attention-dot" aria-hidden="true" />}
+              {!systemNeedsAttention && hasUpdates && <span className="system-update-dot" aria-hidden="true" />}
+            </button>
+            {showPopover && (
+              <div
+                className="system-popover"
+                id="system-popover"
+                ref={popoverRef}
+                role="dialog"
+                aria-label="System"
+              >
+                <h3 className="system-popover-heading">Status</h3>
+                {attentionReasons.length > 0 && (
+                  <div className="system-attention-summary" role="status" data-testid="system-attention-summary">
+                    Needs a look: {attentionReasons.join(', ')}
+                  </div>
+                )}
+                <SystemStatusDetails
+                  onOpenCapacity={onOpenCapacity}
+                  onOpenLiveFriction={onOpenLiveFriction}
+                  onOpenDiagnostics={onOpenDiagnostics}
+                  onOpenSchedules={onOpenSchedules}
+                  shortcutBindings={shortcutBindings}
+                />
+                <h3 className="system-popover-heading" data-testid="system-about-heading">About</h3>
+                {isDev ? (
+                  <div className="version-row">Running in dev mode (no build info)</div>
+                ) : (
+                  <>
+                    <div className="version-row"><span className="version-label">Commit</span> <code>{buildInfo.commitHash}</code></div>
+                    <div className="version-row"><span className="version-label">Branch</span> {buildInfo.branch}</div>
+                    <div className="version-row"><span className="version-label">Built</span> {formatDateTime(buildInfo.buildTimestamp)}</div>
+                    <div className="version-row"><span className="version-label">Version</span> {buildInfo.version}</div>
+                    {serverStartedAt && (
+                      <div className="version-row"><span className="version-label">Server up</span> {formatDateTime(serverStartedAt)} ({uptimeLabel})</div>
+                    )}
+                  </>
+                )}
+
+                {/* Deploy section */}
+                <div className="deploy-divider" />
+                {onNonProdPort ? (
+                  <div className="deploy-uptodate">
+                    This dashboard is on dev (port {deployStatus?.runningPort}). The deploy button updates the prod instance on port {deployStatus?.prodPort}.
+                  </div>
+                ) : (
+                  <>
+                    {deployLoading && !deployStatus && (
+                      <div className="version-row deploy-checking">Checking for updates...</div>
+                    )}
+                    {deployStatus?.error && (
+                      <div className="version-row deploy-error">{deployStatus.error}</div>
+                    )}
+                    {deployStatus?.toolkitError && (
+                      <div className="version-row deploy-error">{deployStatus.toolkitError}</div>
+                    )}
+                    {deployStatus && !deployStatus.configured && !deployStatus.error && (
+                      <div className="deploy-uptodate">No production instance configured</div>
+                    )}
+                    {deploying && (
+                      <div className="deploy-status-row">
+                        <span className="deploy-spinner" /> Deploying to production...
+                      </div>
+                    )}
+                    {deployStatus?.configured && !deploying && (
+                      <>
+                        {deployStatus.available ? (
+                          <>
+                            <div className="deploy-available">
+                              {deployStatus.behindCount} commit{deployStatus.behindCount !== 1 ? 's' : ''} ahead of production
+                              <span className="deploy-range">{deployStatus.currentShort} &rarr; {deployStatus.latestShort}</span>
+                            </div>
+                            {deployStatus.commits && deployStatus.commits.length > 0 && (
+                              <div className="deploy-commits">
+                                {deployStatus.commits.slice(0, 8).map((c) => (
+                                  <div key={c.hash} className="deploy-commit">
+                                    <code>{c.hash}</code> {c.subject}
+                                  </div>
+                                ))}
+                                {deployStatus.commits.length > 8 && (
+                                  <div className="deploy-commit deploy-more">
+                                    ...and {deployStatus.commits.length - 8} more
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                            <button className="btn-deploy" onClick={triggerDeploy}>
+                              Deploy to production
+                            </button>
+                          </>
+                        ) : (
+                          <div className="deploy-uptodate">Production is up to date</div>
+                        )}
+                        <button className="deploy-refresh" onClick={checkDeployStatus} disabled={deployLoading}>
+                          {deployLoading ? 'Checking...' : 'Refresh'}
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {/* Last restart blackout + phase timings (issue #1979). Optional field
+                    from #1973; omit entire block when API has no lastRestart. */}
+                {lastRestart && blackoutTier && (
+                  <>
+                    <div className="deploy-divider" />
+                    <div
+                      className={`deploy-blackout deploy-blackout--${blackoutTier}`}
+                      data-testid="deploy-last-restart"
+                      role="status"
+                      aria-label={`API blackout ${formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}; ideal under 1 second, SLO under 5 seconds; last restart ${formatDateTime(lastRestart.at)}`}
+                      title={`Ideal <1s · SLO max <5s · last restart ${formatDateTime(lastRestart.at)}`}
+                    >
+                      <span className="deploy-blackout-label">API blackout</span>{' '}
+                      <strong data-testid="deploy-api-blackout">
+                        {formatBlackoutSeconds(lastRestart.apiBlackoutSeconds)}
+                      </strong>
+                      <span className="deploy-range">
+                        ideal &lt;1s · SLO &lt;5s · {timeAgo(lastRestart.at)}
+                      </span>
+                    </div>
+                    <div className="deploy-phase-timings" data-testid="deploy-phase-timings">
+                      M1 {formatBlackoutSeconds(lastRestart.m1Seconds)}
+                      {' · '}
+                      M2 {formatBlackoutSeconds(lastRestart.m2Seconds)}
+                      {' · '}
+                      dominant {lastRestart.dominantPhase}
+                    </div>
+                  </>
+                )}
+
+                {deployStatus?.configured && showToolkitSection && (
+                  <>
+                    <div className="deploy-divider" />
+                    <div className="toolkit-stale">
+                      Toolkit links {toolkitStale ? 'need refresh' : toolkitRefreshing ? 'refreshing' : 'unavailable'}
+                      {deployStatus.toolkit && (
+                        <span className="deploy-range">
+                          {deployStatus.toolkit.checkedCount - deployStatus.toolkit.staleCount}/{deployStatus.toolkit.checkedCount} current
+                        </span>
+                      )}
+                    </div>
+                    <button
+                      className="deploy-refresh"
+                      onClick={refreshToolkitLinks}
+                      disabled={toolkitRefreshing || !deployStatus.toolkit?.stale}
+                    >
+                      {toolkitRefreshing ? 'Refreshing...' : 'Refresh toolkit links'}
+                    </button>
+                  </>
+                )}
+
+                {deployStatus?.plugin && (pluginNotInstalled || pluginStale || pluginUpdating || pluginUpdateMessage || pluginUpdateError) && (
+                  <>
+                    <div className="deploy-divider" />
+                    {pluginNotInstalled ? (
+                      <>
+                        <div className="toolkit-stale">
+                          Toolkit plugin not installed
+                          {deployStatus.plugin.availableVersion && (
+                            <span className="deploy-range">v{deployStatus.plugin.availableVersion} available</span>
+                          )}
+                        </div>
+                        <div className="version-row deploy-checking">
+                          Install in Claude Code: <code>/plugin marketplace add {TOOLKIT_MARKETPLACE_SLUG}</code> then{' '}
+                          <code>/plugin install {deployStatus.plugin.pluginId}</code>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="toolkit-stale">
+                          {pluginStale ? 'Toolkit plugin update available' : 'Toolkit plugin'}
+                          {deployStatus.plugin.installedVersion && deployStatus.plugin.availableVersion && (
+                            <span className="deploy-range">
+                              {pluginStale
+                                ? `${deployStatus.plugin.installedVersion} -> ${deployStatus.plugin.availableVersion}`
+                                : `v${deployStatus.plugin.installedVersion} installed`}
+                            </span>
+                          )}
+                        </div>
+                        {pluginUpdateMessage && (
+                          <div className="deploy-status-row" role="status" aria-live="polite">
+                            {pluginUpdateMessage}
+                          </div>
+                        )}
+                        {pluginUpdateError && (
+                          <div className="version-row deploy-error" role="alert">{pluginUpdateError}</div>
+                        )}
+                        {pluginStale && (
+                          <button
+                            className="btn-deploy"
+                            onClick={updateToolkitPlugin}
+                            disabled={pluginUpdating}
+                          >
+                            {pluginUpdating ? 'Updating plugin...' : 'Update plugin'}
+                          </button>
+                        )}
+                        <details className="deploy-help" open={Boolean(pluginUpdateError)}>
+                          <summary>Manual commands</summary>
+                          <div className="version-row">
+                            In Claude Code: <code>{pluginManualCommands.slash[0]}</code> then{' '}
+                            <code>{pluginManualCommands.slash[1]}</code>
+                          </div>
+                          <div className="version-row">
+                            Terminal: <code>{pluginManualCommands.cli[0]}</code> then{' '}
+                            <code>{pluginManualCommands.cli[1]}</code>
+                          </div>
+                        </details>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
           <FollowPill shortcutBindings={shortcutBindings} />
           <DndPill />
           <button

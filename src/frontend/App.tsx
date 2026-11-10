@@ -41,7 +41,6 @@ import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { PluginManagerDialog } from './components/PluginManagerDialog.js';
 import { relaunchFromAgent } from './relaunch-from-agent.js';
-import { PermissionBypassBanner } from './components/PermissionBypassBanner.js';
 import { DrainModeBanner } from './components/DrainModeBanner.js';
 import { SafeModeBanner } from './components/SafeModeBanner.js';
 import { ConnectionBanner } from './components/ConnectionBanner.js';
@@ -1629,7 +1628,6 @@ export function App() {
       <SafeModeBanner />
       <DrainModeBanner />
       <ConnectionBanner />
-      <PermissionBypassBanner />
       <SweepProgress />
       <SweepReport send={send} />
       <TopBar
@@ -1661,6 +1659,10 @@ export function App() {
         }}
         shortcutBindings={shortcutBindings}
         onOpenCostComparison={() => openModal('costComparison')}
+        onOpenCapacity={openSettingsAtMaxActiveTasks}
+        onOpenLiveFriction={openLiveFrictionDiagnostics}
+        onOpenDiagnostics={openDiagnostics}
+        onOpenSchedules={() => openModal('schedules')}
       />
       <HermesFleetObservedLane />
       {showOperations && (
@@ -1792,17 +1794,13 @@ export function App() {
         launchedLast24h={launchedLast24h}
         compact={isMobileViewport}
         onShowShortcuts={() => openModal('shortcuts')}
-        onOpenCapacity={openSettingsAtMaxActiveTasks}
-        onOpenLiveFriction={openLiveFrictionDiagnostics}
         onOpenDiagnostics={openDiagnostics}
-        onOpenSchedules={() => openModal('schedules')}
         onOpenCostComparison={() => openModal('costComparison')}
         onExpandCompleted={expandCompletedRail}
         onSelectOldestFinding={oldestWaitingFinding ? selectOldestWaitingFinding : undefined}
         reflectionSuggestion={reflectionSuggestion}
         onReflect={triggerReflection}
         onDismissReflection={dismissReflectionSuggestion}
-        shortcutBindings={shortcutBindings}
       />
       <Toasts />
       <DestructiveUndoToasts

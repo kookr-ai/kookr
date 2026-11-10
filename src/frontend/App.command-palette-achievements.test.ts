@@ -76,7 +76,7 @@ function setInputValue(input: HTMLInputElement, value: string): void {
 }
 
 // #3407: the command palette gained a second door to the Achievements panel,
-// beside the status-bar trophy. These tests exercise the App-level wiring: the
+// beside the trophy (now in the System detail). These tests exercise the App-level wiring: the
 // palette row is searchable by label and keyword (and the search actually
 // narrows to it), it toggles the same panel the trophy opens, and choosing it
 // twice closes it again.
@@ -186,12 +186,16 @@ describe('App command-palette achievements', () => {
     expect(useKookrStore.getState().showAchievements).toBe(false);
   });
 
-  test('the palette row opens the same panel as the status-bar trophy', async () => {
+  test('the palette row opens the same panel as the System trophy', async () => {
     await act(async () => {
       root.render(React.createElement(App));
     });
 
-    // The status-bar trophy opens the panel.
+    // The trophy lives in the System detail (#3561 slice 2): open System first.
+    const system = await waitForElement<HTMLButtonElement>(container, '[data-testid="system-indicator"]');
+    await act(async () => {
+      system.click();
+    });
     const trophy = await waitForElement<HTMLButtonElement>(container, 'button[aria-label="Achievements"]');
     await act(async () => {
       trophy.click();

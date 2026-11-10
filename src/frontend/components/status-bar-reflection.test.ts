@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { StatusBar } from './StatusBar.js';
+import { SystemStatusDetails } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests, recordAudioAlertDecision } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -122,11 +123,7 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 0,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await flush();
@@ -165,11 +162,7 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 0,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await flush();
@@ -215,12 +208,7 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 0,
-          total: 2,
-          compact: true,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await flush();
@@ -242,11 +230,7 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await act(async () => {
@@ -272,11 +256,7 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await act(async () => {
