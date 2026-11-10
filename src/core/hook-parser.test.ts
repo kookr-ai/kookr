@@ -139,6 +139,94 @@ describe('Hook Event Parser', () => {
     });
   });
 
+  test('does not count the passive artifact live-update listener as background work', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Published the artifact.',
+      background_tasks: [
+        // Auto-armed on every Artifact publish — passive bookkeeping, not
+        // work the agent is waiting on. Both observed description variants.
+        { id: 'm1', type: 'monitor', status: 'running', description: 'live updates for artifact https://claude.ai/artifact/abc (auto-armed on publish)' },
+        { id: 'm2', type: 'monitor', status: 'running', description: 'live updates for artifact https://claude.ai/artifact/def (re-armed on session resume)' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toMatchObject({
+      type: 'stop',
+      activeBackgroundTaskCount: 0,
+      activeSessionCronCount: 0,
+    });
+  });
+
+  test('still counts real background work alongside the passive artifact listener', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Waiting on verify.',
+      background_tasks: [
+        { id: 'm1', type: 'monitor', status: 'running', description: 'live updates for artifact https://claude.ai/artifact/abc (auto-armed on publish)' },
+        // Explicit Monitor-tool waits report as type "shell" — they are real
+        // background work the agent parks on.
+        { id: 'b1', type: 'shell', status: 'running', description: 'Wait for verify to finish', command: 'until grep -q EXIT /tmp/v.log; do sleep 20; done' },
+        { id: 'sub1', type: 'subagent', status: 'running', description: 'Independent review' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toMatchObject({
+      type: 'stop',
+      activeBackgroundTaskCount: 2,
+    });
+  });
+
+  test('counts a non-artifact monitor item as background work', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Watching the deploy.',
+      background_tasks: [
+        { id: 'm1', type: 'monitor', status: 'running', description: 'watch deploy until healthy' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toMatchObject({
+      type: 'stop',
+      activeBackgroundTaskCount: 1,
+    });
+  });
+
+  test('the passive-listener exemption needs BOTH monitor type and the artifact description', () => {
+    const event = parseHookEvent(JSON.stringify({
+      session_id: 's1',
+      transcript_path: '/tmp/t.jsonl',
+      cwd: '/workspace/kookr',
+      hook_event_name: 'Stop',
+      last_assistant_message: 'Waiting on my artifact poller.',
+      background_tasks: [
+        // A real shell whose description happens to match the listener's
+        // prefix — the type conjunct must keep it counted.
+        { id: 'b1', type: 'shell', status: 'running', description: 'live updates for artifact poller loop', command: 'while true; do curl -s …; sleep 30; done' },
+        // A monitor with NO description — unknown, so it must stay counted.
+        { id: 'm1', type: 'monitor', status: 'running' },
+      ],
+      session_crons: [],
+    }));
+
+    expect(event).toMatchObject({
+      type: 'stop',
+      activeBackgroundTaskCount: 2,
+    });
+  });
+
   test('parses active session crons in Stop hook background-work counts', () => {
     const event = parseHookEvent(JSON.stringify({
       session_id: 's1',

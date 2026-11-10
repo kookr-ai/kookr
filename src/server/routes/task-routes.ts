@@ -1697,7 +1697,7 @@ function attachStuckReason<
   T extends { status: Task['status']; pendingSignal?: Task['pendingSignal']; sessions: Array<{ tmuxSession: string }> },
 >(
   task: T,
-  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress'> },
+  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress' | 'isBackgroundParked'> },
   now: number,
 ): T & { stuckReason?: TaskStuckReason } {
   const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;

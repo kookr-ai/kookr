@@ -1553,6 +1553,9 @@ export function startLifecycleTimers(deps: TimerDeps): TimerHandles {
           // Reusing `stale_agent` here means a task genuinely waiting on the
           // user or a permission prompt is excluded for free: those verdicts
           // (`needs_input`, `permission_blocked`, …) never reach this branch.
+          // So is a task parked on its own background work: the watchdog
+          // reports the bounded `background_parked` instead of `stale_agent`
+          // while the park is within `backgroundParkGracePeriodMs`.
           if (verdict.status === 'stale_agent' && (deps.getHungTaskReapEnabled?.() ?? true)) {
             if (await maybeReapHungTask(agentId, paneContent, deps, taskStore, lifecycleDeps)) {
               changed = true;

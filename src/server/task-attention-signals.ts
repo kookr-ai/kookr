@@ -74,7 +74,7 @@ const NO_SIGNALS: TaskAttentionSignals = {
  */
 export function resolveTaskAttentionSignals(
   task: TaskAttentionSubject,
-  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress'> },
+  deps: { queue?: Pick<AttentionQueue, 'peek'>; watchdog?: Pick<Watchdog, 'getState' | 'getConfig' | 'hasToolInProgress' | 'isBackgroundParked'> },
   now: number,
 ): TaskAttentionSignals {
   const agentId = task.sessions[task.sessions.length - 1]?.tmuxSession;
@@ -92,6 +92,10 @@ export function resolveTaskAttentionSignals(
       queuedAnomalyType,
       liveness,
       toolInProgress: deps.watchdog?.hasToolInProgress(agentId) ?? false,
+      // A turn parked on its own background work is silent by design — keep
+      // it out of hungSuspect (and the TTL reclaim that keys off it) while
+      // the park is within the watchdog's grace bound.
+      backgroundParked: deps.watchdog?.isBackgroundParked(agentId, now) ?? false,
       unconditionalStaleThresholdMs: deps.watchdog?.getConfig().unconditionalStaleThresholdMs ?? Infinity,
     },
     { now },
