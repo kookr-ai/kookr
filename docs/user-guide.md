@@ -8,7 +8,7 @@ Kookr is a supervision surface for many AI coding agents. The main workflow is: 
 
 **Tasks** are the unit of work. A task has a prompt, working directory, agent session, lifecycle state, and optional completion criteria.
 
-**Terminal panel** is the live attach surface for the selected agent's managed `dtach` session. It replays recent output and streams live bytes. (`dtach` is a small Unix tool, in the family of `screen` and `tmux`, that keeps a process running after whatever started it goes away — which is why an agent survives a browser refresh or a Kookr restart.)
+**Terminal panel** is the live attach surface for the selected agent's managed `dtach` session. It replays recent output and streams live bytes. To show the agent a picture, drag an image onto the terminal, or copy a screenshot and choose **Paste** from the terminal's right-click menu: it appears in the agent's prompt as an attachment, and you press Enter when your message is ready. (Plain Ctrl+V goes to the agent itself, which reads the clipboard of the machine Kookr runs on.) (`dtach` is a small Unix tool, in the family of `screen` and `tmux`, that keeps a process running after whatever started it goes away — which is why an agent survives a browser refresh or a Kookr restart.)
 
 **Ralph loops** are tasks that repeat. Instead of running a playbook once, a Ralph loop relaunches it in a fresh agent iteration over and over until its completion criteria are met or it escalates for a human. Each pass is one iteration, recorded in the loop's iteration log.
 

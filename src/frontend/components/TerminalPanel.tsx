@@ -7,6 +7,14 @@ import '@xterm/xterm/css/xterm.css';
 import { useKookrStore } from '../store/useStore.js';
 import { registerTerminalSend } from '../terminal-send.js';
 import { isMultilinePaste } from '../terminal-paste.js';
+import {
+  attachImagesToTerminal,
+  dragCarriesFiles,
+  imageFilesFromClipboard,
+  planImageAttach,
+  readClipboardImages,
+  uploadTerminalImage,
+} from '../terminal-image-attach.js';
 import { TERMINAL_V2_PROTOCOL } from '../../shared/terminal-protocol.js';
 import { ABSOLUTE_TUI_COLS } from '../../shared/absolute-tui-geometry.js';
 import { createTerminalStreamClient, type TerminalStreamClient, type TerminalContinuity,
@@ -167,6 +175,13 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
   const pendingJumpLinesRef = useRef(0);
   const jumpLatestTimerRef = useRef<number | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // Image drop/paste: `dropActive` shows the "drop here" overlay while a file
+  // is dragged over the terminal; `imageNotice` reports upload progress and
+  // results. `busy` marks the in-flight "Uploading…" text; every other notice
+  // stays until the user dismisses it (no timer: an error that vanishes on its
+  // own is easy to miss, especially with a screen reader).
+  const [dropActive, setDropActive] = useState(false);
+  const [imageNotice, setImageNotice] = useState<{ text: string; busy: boolean } | null>(null);
   const [jumpLatest, setJumpLatest] = useState<JumpLatestState>({ visible: false, lines: 0 });
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -549,7 +564,28 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     // through the explicit "Paste raw" context-menu action.
     function handlePasteCapture(e: ClipboardEvent) {
       const pasted = e.clipboardData?.getData('text') ?? '';
-      if (!pasted || !isMultilinePaste(pasted)) return;
+      if (!pasted) {
+        // An image on the clipboard with no text: upload it and paste its path
+        // instead of silently doing nothing. A clipboard that also holds text
+        // (spreadsheet cells, a web selection) deliberately stays a text paste;
+        // a text-less clipboard with no image falls through untouched.
+        //
+        // This runs only when the browser delivers a `paste` event: macOS
+        // Cmd+V, Shift+Insert, or the browser's Edit ▸ Paste. Plain Ctrl+V
+        // never gets here — xterm forwards it to the agent as ^V, and Claude
+        // Code / Codex treat ^V as their own "paste image from the host
+        // clipboard" key. Intercepting it as well would attach the image twice
+        // wherever the agent can read the same clipboard. The right-click
+        // "Paste" action (handlePaste) is the explicit clipboard-image path.
+        const images = imageFilesFromClipboard(e.clipboardData);
+        if (images.length > 0 && visibleRef.current) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          void attachImageFiles(images);
+        }
+        return;
+      }
+      if (!isMultilinePaste(pasted)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       sendSafePaste(pasted);
@@ -694,10 +730,90 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
    * one structured WS frame the SessionBridge turns into a single atomic
    * paste, instead of raw bytes whose newlines each submit a prompt.
    */
-  function sendSafePaste(text: string) {
+  function sendSafePaste(text: string): boolean {
     if (controllerRef.current?.paste(text)) {
       lastSafePasteAtRef.current = Date.now();
       terminalInputDraftRef.current += text;
+      return true;
+    }
+    return false;
+  }
+
+  /** Show (or with `null`, clear) the notice about an image drop/paste. */
+  function showImageNotice(text: string | null, busy = false) {
+    setImageNotice(text === null ? null : { text, busy });
+  }
+
+  // Drag & drop images. These sit on the panel root, not the xterm element,
+  // so a drop that lands on an overlay sibling (a notice, the search bar, the
+  // jump-to-latest button) is claimed too. Cancelling `dragenter`/`dragover`
+  // is what makes the browser deliver `drop` — and stops Chrome from
+  // navigating the whole dashboard tab to the dropped file. Only file drags
+  // are claimed; dragged text and links keep their default behavior.
+  function handlePanelDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (!dragCarriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    if (visibleRef.current) setDropActive(true);
+  }
+  function handlePanelDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    // Moving between the panel's child elements also fires dragleave; only
+    // hide the overlay when the pointer actually leaves the panel.
+    if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return;
+    setDropActive(false);
+  }
+  function handlePanelDrop(e: React.DragEvent<HTMLDivElement>) {
+    if (!dragCarriesFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropActive(false);
+    if (!visibleRef.current) return;
+    void attachImageFiles(Array.from(e.dataTransfer.files ?? []));
+  }
+
+  /**
+   * Upload dropped / pasted images and paste their host paths into the agent's
+   * prompt (see terminal-image-attach.ts for why a path, not the bytes).
+   * Never submits: the user adds their question and presses Enter themselves.
+   */
+  async function attachImageFiles(files: File[]) {
+    const targetSession = currentTmuxRef.current;
+    const controller = controllerRef.current;
+    const isStillTarget = () => visibleRef.current
+      && currentTmuxRef.current === targetSession
+      && controllerRef.current === controller
+      && !!controller?.isEstablished()
+      && !attachPendingRef.current;
+    if (!targetSession || !isStillTarget()) {
+      showImageNotice('Terminal is not connected — image not attached.');
+      return;
+    }
+    const plan = planImageAttach(files);
+    if (plan.accepted.length === 0) {
+      showImageNotice(plan.skipped.join('; ') || 'No image to attach.');
+      return;
+    }
+    showImageNotice(
+      plan.accepted.length === 1 ? 'Uploading image…' : `Uploading ${plan.accepted.length} images…`,
+      true,
+    );
+    const outcome = await attachImagesToTerminal(plan.accepted, {
+      upload: (file) => uploadTerminalImage(file),
+      isStillTarget,
+      paste: (text) => sendSafePaste(text),
+    });
+    if (outcome.status === 'stale') {
+      showImageNotice('The terminal changed while the image was uploading — it was not attached.');
+      return;
+    }
+    const problems = [...outcome.failures, ...plan.skipped];
+    if (outcome.status === 'attached') {
+      showImageNotice(problems.length > 0
+        ? `Attached ${outcome.attached} image${outcome.attached === 1 ? '' : 's'}; skipped: ${problems.join('; ')}`
+        : null);
+      terminalRef.current?.focus();
+    } else {
+      showImageNotice(`Image not attached — ${problems.join('; ')}`);
     }
   }
 
@@ -726,15 +842,23 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
    * context-menu paste actions so their clipboard-permission handling and
    * menu dismissal cannot drift apart.
    */
-  async function pasteFromClipboard(route: (text: string) => void) {
+  async function pasteFromClipboard(route: (text: string) => void, routeImages?: (images: File[]) => void) {
     const controller = controllerRef.current;
     if (!visibleRef.current || !controller?.isEstablished()) return;
+    // Clipboard permission prompts can outlive a selection change. Never send
+    // their result to the newly selected agent, even if it is already ready.
+    const sameTerminal = () => visibleRef.current && controllerRef.current === controller
+      && controller.isEstablished();
     try {
       const text = await navigator.clipboard.readText();
-      // Clipboard permission prompts can outlive a selection change. Never send
-      // their result to the newly selected agent, even if it is already ready.
-      if (text && visibleRef.current && controllerRef.current === controller
-        && controller.isEstablished()) route(text);
+      if (text) {
+        if (sameTerminal()) route(text);
+      } else if (routeImages) {
+        // No text: the clipboard may hold a screenshot. Only callers that opt
+        // in get it (the explicit "Paste" menu action, not the Ctrl+V fallback).
+        const images = await readClipboardImages(navigator.clipboard);
+        if (images.length > 0 && sameTerminal()) routeImages(images);
+      }
     } catch { /* clipboard denied */ }
     setMenu(null);
   }
@@ -745,7 +869,7 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
     void pasteFromClipboard((text) => {
       if (isMultilinePaste(text)) sendSafePaste(text);
       else terminalRef.current?.paste(text);
-    });
+    }, (images) => { void attachImageFiles(images); });
   }
 
   function handlePasteRaw() {
@@ -771,6 +895,8 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
       setSearchFound(null);
       setSearchResult(null);
       searchAddonRef.current?.clearDecorations();
+      showImageNotice(null);
+      setDropActive(false);
       currentTmuxRef.current = tmuxName;
     }
     if (!visible || !tmuxName) {
@@ -874,7 +1000,13 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
         : '';
 
   return (
-    <div className={`terminal-col kookr-tour-target-layout${focusZone === 'terminal' ? ' zone-active' : ''}`}>
+    <div
+      className={`terminal-col kookr-tour-target-layout${focusZone === 'terminal' ? ' zone-active' : ''}`}
+      onDragEnter={handlePanelDragOver}
+      onDragOver={handlePanelDragOver}
+      onDragLeave={handlePanelDragLeave}
+      onDrop={handlePanelDrop}
+    >
       {historyDiscarded && (
         <div className="terminal-history-notice" role="status">
           Older terminal lines were discarded.
@@ -997,6 +1129,32 @@ export const TerminalPanel = React.memo(function TerminalPanel({ tmuxName, visib
         </div>
       )}
       {!tmuxName && <div className="terminal-attach-pending terminal-attach-notice" role="status">Select an agent to view its terminal.</div>}
+      {dropActive && (
+        <div className="terminal-drop-overlay" aria-hidden="true" data-testid="terminal-drop-overlay">
+          Drop image to attach it to this agent
+        </div>
+      )}
+      {/* Always mounted: a live region inserted together with its text is not
+          reliably announced, so the region stays and only its content changes. */}
+      <div role="status" aria-live="polite" data-testid="terminal-image-notice-region">
+        {imageNotice && (
+          <div
+            className={`terminal-attach-pending terminal-image-notice${imageNotice.busy ? '' : ' terminal-attach-notice'}`}
+            data-testid="terminal-image-notice"
+          >
+            <span>{imageNotice.text}</span>
+            {!imageNotice.busy && (
+              <button
+                type="button"
+                aria-label="Dismiss image notice"
+                onClick={() => { showImageNotice(null); terminalRef.current?.focus(); }}
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )}
+      </div>
       {!attachPending && streamState.approximate && <div className="terminal-attach-pending terminal-attach-notice" role="status">Some earlier terminal output is unavailable.</div>}
       {jumpLatest.visible && (
         <button

@@ -28,6 +28,7 @@ import { registerCoordinatorRoutes } from './routes/coordinator-routes.js';
 import { registerAgentRoutes } from './routes/agent-routes.js';
 import { registerGrokAuthRoutes } from './routes/grok-auth-routes.js';
 import { registerFileRoutes } from './routes/file-routes.js';
+import { registerTerminalImageRoutes } from './routes/terminal-image-routes.js';
 import { registerCostComparisonRoutes } from './routes/cost-comparison-routes.js';
 import { registerOutcomeLedgerRoutes } from './routes/outcome-ledger-routes.js';
 import { registerTaskRelationsRoutes } from './routes/task-relations-routes.js';
@@ -54,6 +55,7 @@ import { registerAuthSessionRoutes, createCsrfMiddleware } from './auth-session.
 import { isShareGuardedRoute } from './routes/share-routes.js';
 import { readRequestBodyLimitBytesFromEnv } from './config.js';
 import { createJsonRequestBodyLimitMiddleware, type RouteDeps } from './routes/shared.js';
+import { TERMINAL_IMAGE_UPLOAD_PATH } from '../shared/contracts/terminal-image.js';
 import { createRequestDurationMiddleware, RequestDurationMetrics } from './request-duration-metrics.js';
 import { ControlPlaneLatencyMetrics } from './control-plane-latency-metrics.js';
 import { createDashboardSecurityHeadersMiddleware } from './security-headers-middleware.js';
@@ -95,12 +97,14 @@ export function createRoutes(deps: RouteDeps): Hono {
   const requestDurationMetrics = deps.requestDurationMetrics ?? new RequestDurationMetrics();
   const controlPlaneLatencyMetrics = deps.controlPlaneLatencyMetrics ?? new ControlPlaneLatencyMetrics();
   app.use('*', createInFlightRequestMiddleware(inFlightRequestRegistry));
-  app.use(
-    '/api/*',
-    createJsonRequestBodyLimitMiddleware(
-      deps.requestBodyLimitBytes ?? readRequestBodyLimitBytesFromEnv(),
-    ),
+  const jsonBodyLimit = createJsonRequestBodyLimitMiddleware(
+    deps.requestBodyLimitBytes ?? readRequestBodyLimitBytesFromEnv(),
   );
+  // The terminal-image upload carries a raw image (screenshots routinely exceed
+  // 1 MB), so it is exempt here and enforces its own larger cap in its route.
+  app.use('/api/*', (c, next) => (
+    c.req.path === TERMINAL_IMAGE_UPLOAD_PATH ? next() : jsonBodyLimit(c, next)
+  ));
   app.use('*', createRequestDurationMiddleware(requestDurationMetrics, controlPlaneLatencyMetrics));
 
   // Hoist the coordinator-suppression-store fallback so task-routes (PATCH /edges
@@ -175,6 +179,7 @@ export function createRoutes(deps: RouteDeps): Hono {
       : {}),
   });
   registerFileRoutes(app, sharedDeps);
+  registerTerminalImageRoutes(app, sharedDeps);
   registerTaskRelationsRoutes(app, sharedDeps);
   registerSupervisionRoutes(app, sharedDeps);
   if (sharedDeps.issueClaims) registerIssueClaimRoutes(app, sharedDeps.issueClaims);

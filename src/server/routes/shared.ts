@@ -238,6 +238,11 @@ export interface FileRouteDeps {
   worktreeRegistry?: Pick<WorktreeRegistry, 'all'>;
 }
 
+/** Deps for `POST /api/terminal-images`: only the Kookr state dir the image is saved under. */
+export interface TerminalImageRouteDeps {
+  kookrDir: string;
+}
+
 /** Narrower deps for the read-only /api/cost-comparison telemetry route. */
 export interface CostComparisonRouteDeps {
   taskStore: TaskStore;

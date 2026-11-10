@@ -68,7 +68,8 @@ Security-sensitive areas include, but are not limited to:
 
 - Agent subprocess launch and permission-bypass handling.
 - WebSocket terminal bridging to local dtach sessions.
-- Local task state and hook logs under `~/.kookr/`.
+- Local task state, hook logs, and images uploaded through the dashboard
+  terminal under `~/.kookr/`.
 - Optional integrations that use secrets from `.env`, including Telegram,
   speech services, and third-party LLM APIs.
 
