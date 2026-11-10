@@ -52,6 +52,27 @@ describe('buildResumeContext', () => {
     expect(fallbackReason).toContain('sess-1');
   });
 
+  // The inference "no file ⇒ no conversation" only holds for claude-code. The
+  // opencode adapter resolves a resume against its own session database, so an
+  // absent transcript path must not discard a conversation that is still there.
+  test('a non-claude session with an absent transcript still resumes by id', async () => {
+    const { resumeContext, fallbackReason } = await buildResumeContext(
+      session({
+        tmuxSession: 'a',
+        agentType: 'opencode',
+        claudeSessionId: 'ses_abc',
+        transcriptPath: '/does/not/exist.jsonl',
+      }),
+    );
+    // Resume is not refused, and the recorded path is passed through untouched:
+    // non-claude behavior is exactly what it was before the pre-flight existed.
+    expect(resumeContext).toEqual({
+      sessionId: 'ses_abc',
+      transcriptPath: '/does/not/exist.jsonl',
+    });
+    expect(fallbackReason).toBeUndefined();
+  });
+
   test('existing transcript path is preserved', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'resume-ctx-'));
     const transcriptPath = join(dir, 'transcript.jsonl');

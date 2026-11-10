@@ -56,6 +56,13 @@ async function fileExists(path: string): Promise<boolean> {
  *
  * A session that never recorded a `transcriptPath` at all is still resumed by id
  * alone: there is no evidence against it, and the id may well be valid.
+ *
+ * Scoped to `claude-code`, because the inference only holds where a local
+ * transcript file *is* the conversation. The opencode adapter also consumes a
+ * `ResumeContext` (`opencode --session <ses_id>`) but resolves it against its own
+ * per-task session database, with its own guard for a database it cannot read —
+ * so an absent transcript path says nothing about whether that conversation is
+ * recoverable, and refusing resume there would discard a live conversation.
  */
 export async function buildResumeContext(
   session: SessionInfo,
@@ -63,7 +70,11 @@ export async function buildResumeContext(
   if (!session.claudeSessionId) {
     return { resumeContext: undefined, fallbackReason: 'no claudeSessionId persisted' };
   }
-  if (session.transcriptPath && !(await fileExists(session.transcriptPath))) {
+  if (
+    session.agentType === 'claude-code' &&
+    session.transcriptPath &&
+    !(await fileExists(session.transcriptPath))
+  ) {
     return {
       resumeContext: undefined,
       fallbackReason: `transcript missing at ${session.transcriptPath} — conversation ${session.claudeSessionId} was never persisted or has been deleted`,
