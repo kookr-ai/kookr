@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { collectAndVerify, verifyChecklist } from './engine.js';
+import { ChecklistInputError } from './errors.js';
 import type { GitRunner } from './git.js';
 import type { DiffFacts } from './types.js';
 
@@ -337,6 +338,18 @@ describe('collectAndVerify (with injected git + fs)', () => {
       expect(report.ok).toBe(true);
       expect(report.noOpinion).toBe(true);
     });
+  });
+
+  it('a tracked PR template that fails the confinement/size guards fails CLOSED, not "no opinion"', async () => {
+    const git = fakeGit({ ...OPT_IN_GIT });
+    await expect(
+      collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, gitRunner: git,
+        readFileText: async () => {
+          throw new ChecklistInputError('path escapes repository root');
+        },
+      }),
+    ).rejects.toThrow(/PR template .*github.*cannot be read: path escapes repository root/);
   });
 
   it('P4a: reads .kookr/pr-checklist.json and honors { disable: ["env"] } end-to-end', async () => {

@@ -200,7 +200,7 @@ fi
 checklist_fail_open() {
   local reason="$1"
   # In-band, visible — never a silent degrade (failure-critic M4).
-  echo "kookr pr-checklist: checklist gate degraded (${reason}) — CI is authoritative" >&2
+  echo "kookr pr-checklist: checklist gate degraded (${reason}) — the PR body was NOT checked locally" >&2
   # Append a JSONL degrade record for `kookr pr-checklist doctor`.
   local ts
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts="unknown"
@@ -233,7 +233,11 @@ ${findings}"
 # declaring at least one kookr:check (or legacy pr:) marker, or a
 # .kookr/pr-checklist.json? Mirrors the engine's template locations.
 checklist_repo_opted_in() {
-  local dir="$1" f
+  local dir="$1" f top
+  # The session may sit in a subdirectory; templates live at the repo toplevel.
+  if top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]; then
+    dir="$top"
+  fi
   if [ -f "$dir/.kookr/pr-checklist.json" ]; then
     return 0
   fi
@@ -247,6 +251,23 @@ checklist_repo_opted_in() {
   return 1
 }
 
+# With an explicit `-R owner/repo`, the template probe only applies when that repo
+# is the session cwd's own repo (one of its remotes). Otherwise this is a PR for
+# some other repo (e.g. an upstream OSS repo, run from a kookr checkout) and the
+# cwd's template says nothing about it.
+checklist_targets_cwd_repo() {
+  local dir="$1" want
+  if [ -z "$REPO_FLAG" ]; then
+    return 0
+  fi
+  want=$(printf '%s' "$REPO_FLAG" | tr '[:upper:]' '[:lower:]')
+  want="${want//./\\.}"
+  if git -C "$dir" remote -v 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -qE "[:/]${want}(\.git)?[[:space:]]"; then
+    return 0
+  fi
+  return 1
+}
+
 pr_checklist_gate() {
   # --- Bash-side fast-exit BEFORE spawning Node (S3). ---
   # Kill-switch first: KOOKR_PR_CHECKLIST=0 force-disables regardless of scope.
@@ -256,8 +277,16 @@ pr_checklist_gate() {
   # Enabled iff the repo's own PR template opts in (primary), or — legacy,
   # deprecated — the env opt-in / the checklist scope file lists the repo.
   local enabled=0
-  if [ -n "$CHECKLIST_CWD" ] && [ -d "$CHECKLIST_CWD" ] && checklist_repo_opted_in "$CHECKLIST_CWD"; then
-    enabled=1
+  if [ -n "$CHECKLIST_CWD" ] && [ -d "$CHECKLIST_CWD" ]; then
+    if checklist_targets_cwd_repo "$CHECKLIST_CWD" && checklist_repo_opted_in "$CHECKLIST_CWD"; then
+      enabled=1
+    fi
+  elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ] \
+       && checklist_targets_cwd_repo "$CWD" && checklist_repo_opted_in "$CWD"; then
+    # The session repo opted in but the --head worktree could not be mapped, so
+    # the diff cannot be resolved: fail OPEN, but never silently.
+    checklist_fail_open "effective checklist cwd unavailable — cannot resolve the diff"
+    return 0
   fi
   if [ "${KOOKR_PR_CHECKLIST:-}" = "1" ]; then
     enabled=1  # legacy opt-in (also forces the gate for a repo with no markers: engine says "no opinion")

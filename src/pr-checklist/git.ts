@@ -35,6 +35,17 @@ export function execGit(cwd: string): GitRunner {
     });
 }
 
+/**
+ * The repo toplevel for `cwd` (a session may run from a subdirectory; template,
+ * `.env.example` and config paths are repo-root relative), or `cwd` itself when
+ * it is not inside a work tree.
+ */
+export async function resolveRepoRoot(cwd: string): Promise<string> {
+  const r = await execGit(cwd)(['rev-parse', '--show-toplevel']);
+  const top = r.exitCode === 0 ? r.stdout.trim() : '';
+  return top || cwd;
+}
+
 async function ok(runner: GitRunner, args: readonly string[]): Promise<string | null> {
   const r = await runner(args);
   return r.exitCode === 0 ? r.stdout.trim() : null;

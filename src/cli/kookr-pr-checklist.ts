@@ -14,7 +14,7 @@ import { BOX_EVIDENCE } from '../pr-checklist/checklist.js';
 import { degradeLogPath, parseDegradeLog, summarizeDegrades } from '../pr-checklist/degrade-log.js';
 import { collectAndVerify, MAX_BODY_BYTES } from '../pr-checklist/engine.js';
 import { ChecklistInputError } from '../pr-checklist/errors.js';
-import type { GitRunner } from '../pr-checklist/git.js';
+import { resolveRepoRoot, type GitRunner } from '../pr-checklist/git.js';
 import type { VerifyReport } from '../pr-checklist/types.js';
 
 export const EXIT_PASS = 0;
@@ -69,7 +69,7 @@ interface RunDeps {
   out?: Pick<typeof console, 'log' | 'error'>;
   gitRunner?: GitRunner;
   readStdin?: () => Promise<string>;
-  readBodyFile?: (cwd: string, path: string) => Promise<string>;
+  readBodyFile?: (cwd: string, path: string, root?: string) => Promise<string>;
   /** Test seam: how the engine reads repo-tracked files (template, .env.example, …). */
   readFileText?: (absPath: string, cap: number) => Promise<string>;
   now?: () => Date;
@@ -102,7 +102,11 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     return EXIT_PASS;
   }
 
+  // Body-file paths are relative to where the author ran the command (`cwd`, maybe
+  // a subdirectory); repo files (template, config, .env.example) and the
+  // confinement boundary are the repo toplevel (`root`).
   const cwd = deps.cwd ?? process.cwd();
+  const root = deps.gitRunner ? cwd : await resolveRepoRoot(cwd);
 
   let body: string | null = null;
   let templateRequiredReason: string | undefined;
@@ -128,7 +132,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
         body = src.text;
       } else {
         try {
-          body = await (deps.readBodyFile ?? readBodyFileConfined)(cwd, src.path);
+          body = await (deps.readBodyFile ?? readBodyFileConfined)(cwd, src.path, root);
         } catch (error) {
           // Body path is repo/author-controlled input → fail closed (S2).
           out.error(`Could not read the body file named on --from-command: ${errMessage(error)}`);
@@ -140,7 +144,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     try {
       body = args.prBody === '-'
         ? await (deps.readStdin ?? readStdin)()
-        : await (deps.readBodyFile ?? readBodyFileConfined)(cwd, args.prBody);
+        : await (deps.readBodyFile ?? readBodyFileConfined)(cwd, args.prBody, root);
     } catch (error) {
       // Body is repo/author-controlled input → fail closed (S2).
       out.error(`Could not read --pr-body: ${errMessage(error)}`);
@@ -151,7 +155,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
   let report: VerifyReport;
   try {
     report = await collectAndVerify({
-      cwd,
+      cwd: root,
       base,
       body,
       templateRequiredReason,
@@ -255,8 +259,8 @@ async function readStdin(): Promise<string> {
 }
 
 /** S4: a body file (--pr-body or the command's --body-file) must resolve inside the repo root, be regular, and be capped. */
-async function readBodyFileConfined(cwd: string, path: string): Promise<string> {
-  const realRoot = await realpath(cwd);
+async function readBodyFileConfined(cwd: string, path: string, root: string = cwd): Promise<string> {
+  const realRoot = await realpath(root);
   let real: string;
   try {
     real = await realpath(resolve(cwd, path));

@@ -190,19 +190,26 @@ rm -rf "$H"; rm -f "$STATE_FILE"
 #       a .kookr/pr-checklist.json, enable the gate; a marker-less template or
 #       no template leaves it OFF (kookr never spawned).
 # ---------------------------------------------------------------------------
-tpl_case() { # <name> <relative template/config path> <content> <expect: deny|off>
-  local name="$1" rel="$2" content="$3" expect="$4"
-  local H; H=$(mktemp -d); mkdir -p "$H/.kookr" "$H/repo/$(dirname "$rel")"
+# mk_repo <dir> [remote-slug]: a real git repo (the hook resolves toplevel + remotes).
+mk_repo() {
+  mkdir -p "$1"
+  git -C "$1" init -q
+  git -C "$1" remote add origin "https://github.com/${2:-$REPO}.git"
+}
+tpl_case() { # <name> <relative template/config path> <content> <expect: deny|off> [session subdir] [command]
+  local name="$1" rel="$2" content="$3" expect="$4" sub="${5:-}" cmd="${6:-$CMD}"
+  local H; H=$(mktemp -d); mkdir -p "$H/.kookr"
+  mk_repo "$H/repo"; mkdir -p "$H/repo/$(dirname "$rel")" "$H/repo/$sub"
   write_valid_state "$H"
   printf '%s\n' "$content" > "$H/repo/$rel"
   local called="$H/called" out
-  out=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN" \
+  out=$(run_hook "$(mk_payload "$cmd" "$H/repo/$sub")" "$H" "$TOOLS_BIN:$KOOKR_BIN" \
         KOOKR_CALLED="$called" FAKE_KOOKR_RC=2 FAKE_KOOKR_OUT="TPL-DRIFT-MARKER")
   local r=0
   if [ "$expect" = "deny" ]; then
     grep -q '"permissionDecision": "deny"' <<<"$out" && grep -q 'TPL-DRIFT-MARKER' <<<"$out" && [ -f "$called" ] && r=1
   else
-    ! grep -q '"permissionDecision": "deny"' <<<"$out" && [ ! -f "$called" ] && r=1
+    ! grep -q 'PR checklist verification failed' <<<"$out" && [ ! -f "$called" ] && r=1
   fi
   check "$name" "$r"
   rm -rf "$H"; rm -f "$STATE_FILE"
@@ -218,8 +225,26 @@ tpl_case "tracked .kookr/pr-checklist.json alone: gate ON" .kookr/pr-checklist.j
 tpl_case "template WITHOUT markers: gate OFF, kookr never spawned" .github/pull_request_template.md \
   '## Summary' off
 
+tpl_case "session cwd in a repo SUBDIRECTORY still finds the toplevel template: gate ON" \
+  .github/pull_request_template.md "$MARK" deny src/deep
+tpl_case "foreign repo via -R (cwd repo has a marker template): no opinion, gate OFF" \
+  .github/pull_request_template.md "$MARK" off "" \
+  "gh pr create -R upstream/oss-$SUFFIX --head me:fix --title x --body \"plain oss body\""
+
+# 13b. Marker template in the session repo but --head worktree unmappable → fail OPEN, logged.
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
+GHOST="gh pr create -R $REPO --head ghost-branch --body-file b.md"
+OUT=$(run_hook "$(mk_payload "$GHOST" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN")
+# (the separate pre-PR-review state gate may still deny a branch with no marker; only the checklist deny matters here)
+grep -q 'PR checklist verification failed' <<<"$OUT" && d=1 || d=0
+grep -q 'effective checklist cwd unavailable' "$H/.kookr/pr-checklist-degrade.log" 2>/dev/null && l=1 || l=0
+[ "$d" = "0" ] && [ "$l" = "1" ] && r=1 || r=0
+check "marker template + unmappable --head worktree: fail OPEN with a degrade-log record" "$r"
+rm -rf "$H"; rm -f "$STATE_FILE"
+
 # 14. Kill-switch still wins over a marker template.
-H=$(mktemp -d); mkdir -p "$H/.kookr" "$H/repo/.github"; write_valid_state "$H"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
 printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
 CALLED="$H/called"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_PR_CHECKLIST=0 KOOKR_CALLED="$CALLED" FAKE_KOOKR_RC=2)
@@ -229,7 +254,7 @@ check "kill-switch =0 overrides a marker template: OFF" "$r"
 rm -rf "$H"; rm -f "$STATE_FILE"
 
 # 15. Marker template + kookr missing → still fail OPEN with degrade log + note.
-H=$(mktemp -d); mkdir -p "$H/.kookr" "$H/repo/.github"; write_valid_state "$H"
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
 printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
 OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN")
 grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0

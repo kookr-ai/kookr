@@ -1,4 +1,5 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -396,6 +397,27 @@ describe('runPrChecklistCli doctor', () => {
       await run(heredoc('SECRET-BODY-TEXT'), o);
       expect(printed(o)).not.toContain('SECRET-BODY-TEXT');
     });
+  });
+
+  it('run from a repo SUBDIRECTORY it still finds the toplevel template (real git repo)', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'kookr-prc-sub-'));
+    try {
+      const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
+      git('init', '-q');
+      await mkdir(join(repo, '.github'), { recursive: true });
+      await mkdir(join(repo, 'src', 'deep'), { recursive: true });
+      await writeFile(join(repo, '.github', 'pull_request_template.md'), '- [ ] <!-- kookr:check:tests --> t\n');
+      git('add', '.github/pull_request_template.md');
+      const o = out();
+      const code = await runPrChecklistCli(['verify', '--from-command', 'gh pr create --fill'], {
+        out: o,
+        cwd: join(repo, 'src', 'deep'),
+      });
+      expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+      expect(o.log.mock.calls.flat().join('\n')).toMatch(/pr-template/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it('a --body-file outside the repo root fails closed (2) with an actionable message', async () => {

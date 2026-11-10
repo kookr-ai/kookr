@@ -174,7 +174,16 @@ async function readTemplate(
   cwd: string,
 ): Promise<string> {
   for (const path of PR_TEMPLATE_PATHS) {
-    const text = await readTracked(runner, read, cwd, path, MAX_BODY_BYTES);
+    const listed = await runner(['ls-files', '--', path]);
+    if (listed.exitCode !== 0 || !listed.stdout.trim()) continue;
+    // A tracked template that fails the confinement/size guards is repo input
+    // we cannot trust: fail CLOSED (S2) rather than report a false "no opinion".
+    const text = await read(resolve(cwd, path), MAX_BODY_BYTES).catch((error: unknown) => {
+      if (error instanceof ChecklistInputError) {
+        throw new ChecklistInputError(`PR template ${path} cannot be read: ${error.message}`);
+      }
+      return '';
+    });
     if (text.trim()) return text;
   }
   return '';
