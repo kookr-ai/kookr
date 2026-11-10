@@ -1,4 +1,6 @@
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { truncateSync, appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -117,6 +119,43 @@ describe('real HookFileWatcher on a spool ledger', () => {
     const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
     expect(h?.errorCount).toBeGreaterThan(0);
     expect(h?.lastError).toContain('not a regular file');
+  });
+
+  test('a worker that swaps the ledger for a fifo cannot hang the host read', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    rmSync(loc.file);
+    execFileSync('mkfifo', [loc.file]);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(seen).toEqual([]);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.lastError).toContain('not a regular file');
+    // The watcher is still alive: the thread pool is not pinned, so unrelated async fs work completes.
+    await expect(readFile(join(dir, 'does-not-exist')).catch(() => 'ok')).resolves.toBe('ok');
+  });
+
+  test('a huge sparse ledger is read in bounded chunks and skipped, not allocated whole', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    truncateSync(loc.file, 3 * 1024 * 1024 * 1024);
+    const before = process.memoryUsage().arrayBuffers;
+    await new Promise((r) => setTimeout(r, 500));
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(64 * 1024 * 1024);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.errorCount).toBeGreaterThan(0); // lastError is cleared by the next healthy read
+  });
+
+  test('adopt replay never reads through a symlinked ledger', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    rmSync(loc.file);
+    writeFileSync(join(dir, 'hostsecret'), '{"stolen":1}\n');
+    symlinkSync(join(dir, 'hostsecret'), loc.file);
+    ing.attach('task1', 'tok123', { adopt: true });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen).toEqual([]);
   });
 
   test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {

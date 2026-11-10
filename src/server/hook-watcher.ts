@@ -1,6 +1,8 @@
 import {
   chmodSync,
   closeSync,
+  fstatSync,
+  lstatSync,
   existsSync,
   mkdirSync,
   openSync,
@@ -337,12 +339,12 @@ export class HookFileWatcher {
     if (replay) {
       this.offsets.set(
         tmuxName,
-        options?.useReplayCheckpoint === true ? this.resolveReplayOffset(tmuxName, filePath) : 0,
+        options?.useReplayCheckpoint === true ? this.resolveReplayOffset(tmuxName, filePath, this.untrustedSessions.has(tmuxName)) : 0,
       );
     } else {
       try {
-        const stats = statSync(filePath);
-        this.offsets.set(tmuxName, stats.size);
+        const stats = this.untrustedSessions.has(tmuxName) ? lstatSync(filePath) : statSync(filePath);
+        this.offsets.set(tmuxName, stats.isFile() || !this.untrustedSessions.has(tmuxName) ? stats.size : 0);
       } catch {
         this.offsets.set(tmuxName, 0);
       }
@@ -649,8 +651,10 @@ export class HookFileWatcher {
       }
 
       const start = offset;
-      const length = fileStat.size - start;
-      const buffer = await readFileRange(filePath, start, length, this.untrustedSessions.has(tmuxName));
+      const untrusted = this.untrustedSessions.has(tmuxName);
+      // A worker controls the ledger's size (a sparse `truncate -s 3G` is free), so an untrusted read is chunked.
+      const length = untrusted ? Math.min(fileStat.size - start, MAX_UNTRUSTED_READ_BYTES) : fileStat.size - start;
+      const buffer = await readFileRange(filePath, start, length, untrusted ? { expectedIno: fileStat.ino } : undefined);
       // Meter actual bytes pulled off disk (the ledger's churn signal).
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
@@ -661,7 +665,12 @@ export class HookFileWatcher {
       // partial record is left unconsumed so the next append re-reads it once
       // complete. Buffer.byteLength of the consumed prefix is correct for any
       // valid UTF-8 JSONL (hook writers emit complete UTF-8 records).
-      const consumedBytes = Buffer.byteLength(newContent.slice(0, consumedChars), 'utf-8');
+      let consumedBytes = Buffer.byteLength(newContent.slice(0, consumedChars), 'utf-8');
+      if (untrusted && consumedBytes === 0 && buffer.length === MAX_UNTRUSTED_READ_BYTES) {
+        // A full chunk with no complete record: a hostile or corrupt ledger. Skip it rather than re-read it forever.
+        consumedBytes = buffer.length;
+        this.recordHealthError(tmuxName, new Error(`untrusted ledger ${filePath}: skipped ${buffer.length} bytes with no complete record`));
+      }
       this.offsets.set(tmuxName, start + consumedBytes);
 
       const health = this.getOrCreateHealth(tmuxName);
@@ -743,7 +752,12 @@ export class HookFileWatcher {
       if (rotatedStat === undefined || rotatedStat.ino !== prevInode) return;
       if (rotatedStat.size <= offset) return; // caught up at rotation time — nothing unread
 
-      const buffer = await readFileRange(rotatedPath, offset, rotatedStat.size - offset, this.untrustedSessions.has(tmuxName));
+      const buffer = await readFileRange(
+        rotatedPath,
+        offset,
+        Math.min(rotatedStat.size - offset, this.untrustedSessions.has(tmuxName) ? MAX_UNTRUSTED_READ_BYTES : Infinity),
+        this.untrustedSessions.has(tmuxName) ? { expectedIno: rotatedStat.ino } : undefined,
+      );
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
 
@@ -986,13 +1000,14 @@ export class HookFileWatcher {
     }
   }
 
-  private resolveReplayOffset(tmuxName: string, filePath: string): number {
+  private resolveReplayOffset(tmuxName: string, filePath: string, untrusted = false): number {
     const checkpoint = this.replayCheckpoints.sessions[tmuxName];
     if (!checkpoint || checkpoint.filePath !== filePath) return 0;
     if (typeof checkpoint.offsetTail !== 'string') return 0;
 
     try {
-      const stats = statSync(filePath);
+      const stats = untrusted ? lstatSync(filePath) : statSync(filePath);
+      if (untrusted && !stats.isFile()) return 0;
       if (stats.dev !== checkpoint.dev || stats.ino !== checkpoint.ino) return 0;
       if (stats.size < checkpoint.sizeBytes) return 0;
       // `offsetChars` is a byte offset (see HookReplayCheckpoint). Tail is the
@@ -1007,6 +1022,7 @@ export class HookFileWatcher {
         filePath,
         offsetBytes - tailByteLen,
         tailByteLen,
+        untrusted,
       ).toString('latin1');
       if (actualTail !== checkpoint.offsetTail) return 0;
       return offsetBytes;
@@ -1022,12 +1038,13 @@ export class HookFileWatcher {
     if (!this.replayCheckpointPath) return;
 
     try {
-      const stats = await stat(filePath);
+      const untrusted = this.untrustedSessions.has(tmuxName);
+      const stats = await this.statFor(tmuxName, filePath);
       const offset = this.offsets.get(tmuxName) ?? 0;
       const tailByteLen = Math.min(REPLAY_CHECKPOINT_TAIL_BYTES, offset);
       const offsetTail = tailByteLen === 0
         ? ''
-        : (await readFileRange(filePath, offset - tailByteLen, tailByteLen)).toString('latin1');
+        : (await readFileRange(filePath, offset - tailByteLen, tailByteLen, untrusted ? { expectedIno: stats.ino } : undefined)).toString('latin1');
       // After awaits: stop()/prune may have unwatched this session. Do not
       // resurrect a key that is no longer live (issue #2385 race).
       if (!this.liveReplayCheckpointRetainKeys().has(tmuxName)) return;
@@ -1095,11 +1112,33 @@ export class HookFileWatcher {
   }
 }
 
-/** Positioned byte-range read (async). Used by the incremental hot path. */
-async function readFileRange(filePath: string, start: number, length: number, noFollow = false): Promise<Buffer> {
+/** Upper bound on bytes the host reads from a worker-writable ledger in one pass. */
+const MAX_UNTRUSTED_READ_BYTES = 1024 * 1024;
+
+/**
+ * Positioned byte-range read (async). Used by the incremental hot path.
+ * `strict` is for worker-writable files: open with O_NOFOLLOW|O_NONBLOCK (a swapped-in fifo must not block the
+ * thread-pool `open`), then `fstat` the handle and require a regular file (and the inode the caller `lstat`ed, if
+ * given), closing the check-then-open window.
+ */
+async function readFileRange(
+  filePath: string,
+  start: number,
+  length: number,
+  strict?: { expectedIno?: number },
+): Promise<Buffer> {
   if (length <= 0) return Buffer.alloc(0);
-  const handle = await open(filePath, noFollow ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW : 'r');
+  const handle = await open(
+    filePath,
+    strict ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK : 'r',
+  );
   try {
+    if (strict) {
+      const st = await handle.stat();
+      if (!st.isFile() || (strict.expectedIno !== undefined && st.ino !== strict.expectedIno)) {
+        throw new Error('untrusted ledger changed or is not a regular file; refusing to read it');
+      }
+    }
     const buf = Buffer.allocUnsafe(length);
     const { bytesRead } = await handle.read(buf, 0, length, start);
     return bytesRead === length ? buf : buf.subarray(0, bytesRead);
@@ -1109,10 +1148,14 @@ async function readFileRange(filePath: string, start: number, length: number, no
 }
 
 /** Positioned byte-range read (sync). Startup checkpoint verification only. */
-function readFileRangeSync(filePath: string, start: number, length: number): Buffer {
+function readFileRangeSync(filePath: string, start: number, length: number, strict = false): Buffer {
   if (length <= 0) return Buffer.alloc(0);
-  const fd = openSync(filePath, 'r');
+  const fd = openSync(
+    filePath,
+    strict ? fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK : 'r',
+  );
   try {
+    if (strict && !fstatSync(fd).isFile()) throw new Error('untrusted ledger is not a regular file');
     const buf = Buffer.allocUnsafe(length);
     const bytesRead = readSync(fd, buf, 0, length, start);
     return bytesRead === length ? buf : buf.subarray(0, bytesRead);

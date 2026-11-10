@@ -339,5 +339,7 @@ container's rw `/kookr-spool` mount, created 0700/0600 by the host before `docke
 `HookFileWatcher` that serves TUI sessions, under the event-session key `kookr-oc-<taskId first 8>-<launchToken>`, a pure
 function of persisted values, so a container adopted after a Kookr restart keeps its event identity. The spool is
 worker-writable, so the watcher is told the file is `untrusted`: it `lstat`s and opens with `O_NOFOLLOW` and refuses a
-symlink or any non-regular file (including a rotated `.1`), recording a watcher health error instead. Nothing writes the
+symlink or any non-regular file (including a rotated `.1`), recording a watcher health error instead. Untrusted reads open with
+`O_NOFOLLOW|O_NONBLOCK`, `fstat` the handle (regular file, same inode as the `lstat`), and are capped at 1 MiB per pass,
+so a swapped-in fifo or a sparse multi-GB file cannot hang or exhaust the host. Nothing writes the
 ledger yet; the in-container hook command arrives with the launch slice.
