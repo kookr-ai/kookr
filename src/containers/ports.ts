@@ -28,8 +28,35 @@ export interface NetworkInfo {
   labels: Record<string, string>;
 }
 
-/** Docker operations the reconciler and `kookr containers` need. `run` arrives with the launch slice (S2d). */
+export interface ContainerMount { source: string; target: string; readOnly: boolean }
+
+/** Everything `docker run` needs for one worker. The runner turns it into an argv array; it never builds a shell string. */
+export interface ContainerRunSpec {
+  name: string;
+  image: string;
+  labels: Record<string, string>;
+  /** `uid:gid` the worker runs as (the host user, so bind mounts and 0600 secrets work for any host user). */
+  user: string;
+  memory: string;
+  cpus: string;
+  pidsLimit: number;
+  mounts: ContainerMount[];
+  tmpfs: string[];
+  /** Container port published on 127.0.0.1 only, with an ephemeral host port. */
+  publishPort: number;
+  env: Record<string, string>;
+}
+
+/** Docker operations the reconciler, `kookr containers` and the container adapter need. */
 export interface DockerRunnerPort {
+  /** `docker run -d` with the hardening flags (read-only root, no caps, no-new-privileges). Returns the container id. */
+  runContainer(spec: ContainerRunSpec): Promise<string>;
+  /** Host port Docker bound for `containerPort` (loopback), or throws when none is published. */
+  publishedPort(name: string, containerPort: number): Promise<number>;
+  /** Docker `State.Health.Status` (`starting|healthy|unhealthy`), or undefined when the image has no healthcheck. */
+  healthStatus(name: string): Promise<string | undefined>;
+  /** `docker rm -f`: removes a running container (readiness failure and stop). */
+  forceRemoveContainer(name: string): Promise<void>;
   /** Containers (any state) whose label `key` equals `value`. */
   listContainers(label: { key: string; value: string }): Promise<ContainerInfo[]>;
   /** Stop with a grace period, then leave the container in place. */
@@ -47,6 +74,15 @@ export interface A2aClientPort {
   health(endpoint: string, timeoutMs: number): Promise<'ok' | 'degraded'>;
   /** State of the single task this worker runs; rejects on timeout or transport failure. */
   taskState(endpoint: string, token: string, timeoutMs: number): Promise<A2aTaskState>;
+  /**
+   * Send a user message. Without `contextId` it opens a new conversation; with one it continues it (a finished task
+   * cannot be messaged again, so a follow-up is a NEW task in the same context). Returns right away (`returnImmediately`).
+   */
+  sendMessage(endpoint: string, token: string, msg: { text: string; contextId?: string }, timeoutMs: number): Promise<{ taskId: string; contextId: string; state: A2aTaskState }>;
+  /** Cancel a task, then read its state back after the call settles (RFC F5: a stream close can flip it to FAILED). */
+  cancelTask(endpoint: string, token: string, taskId: string, timeoutMs: number): Promise<A2aTaskState>;
+  /** Id of the task currently WORKING (or the newest one), if any. */
+  currentTask(endpoint: string, token: string, timeoutMs: number): Promise<{ taskId: string; state: A2aTaskState } | undefined>;
 }
 
 export type KookrTaskLiveness =

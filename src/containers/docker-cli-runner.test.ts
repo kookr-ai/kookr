@@ -37,3 +37,38 @@ describe('DockerCliRunner', () => {
     expect(calls[0]).toEqual(['stop', '-t', '10', 'kookr-oc-1']);
   });
 });
+
+describe('DockerCliRunner container launch', () => {
+  const spec = {
+    name: 'kookr-oc-abcd1234-tok12345', image: 'opencode-worker-kookr:s1', labels: { 'kookr.task': 't', 'kookr.instance': 'I' },
+    user: '1234:1234', memory: '2g', cpus: '2', pidsLimit: 512,
+    mounts: [{ source: '/h/data', target: '/data', readOnly: false }, { source: '/h/secrets', target: '/run/secrets', readOnly: true }],
+    tmpfs: ['/tmp:rw,size=128m'], publishPort: 8000, env: { HOME: '/home/worker' },
+  };
+  test('argv has the hardening flags, loopback-only publish, and no shell string', () => {
+    const a = DockerCliRunner.runArgs(spec);
+    for (const f of ['--read-only', '--init']) expect(a).toContain(f);
+    expect(a.slice(a.indexOf('--cap-drop'), a.indexOf('--cap-drop') + 2)).toEqual(['--cap-drop', 'ALL']);
+    expect(a).toContain('no-new-privileges');
+    expect(a).toContain('127.0.0.1::8000');
+    expect(a).toContain('/h/secrets:/run/secrets:ro');
+    expect(a).toContain('/h/data:/data:rw');
+    expect(a).toContain('--user');
+    expect(a[a.indexOf('--user') + 1]).toBe('1234:1234');
+    expect(a.at(-1)).toBe('opencode-worker-kookr:s1');
+    expect(a.join(' ')).not.toMatch(/--privileged|--network host|-v \/var\/run\/docker\.sock/);
+  });
+  test('refuses names outside the kookr-oc- prefix and unsafe images', () => {
+    expect(() => DockerCliRunner.runArgs({ ...spec, name: 'other-1' })).toThrow('not a kookr-oc- container');
+    expect(() => DockerCliRunner.runArgs({ ...spec, image: 'x --privileged' })).toThrow('unsafe image');
+  });
+  test('forceRemove / port / health use the prefix-checked name', async () => {
+    const calls: string[][] = [];
+    const r = new DockerCliRunner(async (a) => { calls.push(a); return a[0] === 'port' ? '127.0.0.1:51228\n[::1]:51228\n' : 'healthy\n'; });
+    expect(await r.publishedPort('kookr-oc-a-b1', 8000)).toBe(51228);
+    expect(await r.healthStatus('kookr-oc-a-b1')).toBe('healthy');
+    await r.forceRemoveContainer('kookr-oc-a-b1');
+    expect(calls.at(-1)).toEqual(['rm', '-f', 'kookr-oc-a-b1']);
+    await expect(r.forceRemoveContainer('postgres')).rejects.toThrow('unsafe');
+  });
+});
