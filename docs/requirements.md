@@ -1143,7 +1143,8 @@ indices and transport acknowledgements.
   the agent has waited for about 90 seconds. The server therefore replays the
   retained ring through a terminal emulator and sends the serialized screen,
   cursor position, colors, and persistent input modes (cursor visibility and
-  style, scroll regions, and the mouse encoding are not carried), followed by
+  style, scroll regions, saved-cursor state, and the mouse encoding are not
+  carried), followed by
   any bytes after the last clean parser boundary (at most 4 KiB) so an
   unfinished escape sequence continues into live output. Scrollback is trimmed
   to fit the viewport budget; the visible screen and that short tail are always
