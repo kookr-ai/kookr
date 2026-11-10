@@ -162,8 +162,11 @@ for `jeanibarz-agent-notebook`: the 15 other-project shelves are hidden, and the
 
 ### D2. Layer-aware end of task (Claude Code)
 
-`plugin/hooks/nb-retro.mjs` text is synced to upstream's current retrospective
-(batch vote `id1,id2`, reason codes `wrong|obsolete`, "aim ~150 chars"), and its
+`plugin/hooks/nb-retro.mjs` text follows upstream's retrospective where that is
+right and goes beyond it where it is not (batch vote `id1,id2`, reason codes
+`wrong|obsolete`, "aim ~150 chars"; as built in #3595, upstream's own
+`nb-retrospective.sh` still teaches single-id votes and restates the 200-character
+cap, so those two points are Kookr's, not synced), and its
 `nb add` step names the placement rule: "add to `<situation>@<slug>` unless the
 lesson would be true in another repo; never write `fleet-global` directly". The
 sentinel claim becomes atomic (`wx` flag, exit 0 only on `EEXIST`, as upstream
