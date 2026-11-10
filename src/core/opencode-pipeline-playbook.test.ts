@@ -41,6 +41,8 @@ describe('opencode-scoped-fix-pipeline playbook', () => {
     ['claim held by orchestrator only', /Never pass `--claim-issue`/],
     ['claim released on every terminal path', /Every terminal path releases the claim/],
     ['FINDINGS line parsed fail-closed', /missing\/malformed = findings present/],
+    ['preflight gates on server readiness, not kookr doctor', /`kookr status --require-ready` exits 0.*do NOT gate on `kookr doctor`/],
+    ['helper files namespaced per issue', /directory `ocpipe-\{\{issueNumber\}\}\/`/],
     ['no prod actions', /Do not run `prod:update`, restart the server or flip `KOOKR_OPENCODE_ENABLED`/],
   ])('pins: %s', (_label, re) => {
     expect(pb.body).toMatch(re);

@@ -31,7 +31,7 @@ checklist:
 
 ## Derived values
 
-Issue `{{issueNumber}}` in `{{repoFullName}}`. `<repo>` = repo name part, `<wt>` = `../<repo>-ocpipe-{{issueNumber}}`, `<branch>` = `ocpipe/{{issueNumber}}`, `<state>` = `$KOOKR_TASK_DATA_DIR/ocpipe-{{issueNumber}}.json` (or `~/.kookr/ocpipe/<issue>.json` when unset). Your own task id is `$KOOKR_TASK_ID`.
+Issue `{{issueNumber}}` in `{{repoFullName}}`. `<repo>` = repo name part, `<wt>` = `../<repo>-ocpipe-{{issueNumber}}`, `<branch>` = `ocpipe/{{issueNumber}}`, `<state>` = `$KOOKR_TASK_DATA_DIR/ocpipe-{{issueNumber}}.json` when that variable is set (Kookr does not set it; an operator or harness may), else `<kookr data dir>/ocpipe/{{issueNumber}}.json` where the data dir is `~/.kookr` on port 4800 and `~/.kookr-<port>` otherwise, the port being the one in `$KOOKR_API_BASE_URL`. Your own task id is `$KOOKR_TASK_ID`.
 
 ## Objective
 
@@ -47,7 +47,7 @@ Deliver one small, well-scoped issue through a cheap opencode worker, then make 
 
 ## State file
 
-Write the JSON state file after EVERY transition and read it first on start (resume): `{stage, round, head, branch, worktree, pr, children:[{id,role,startedAt,endedAt,usd,tokens}], usdSpent, startedAt}`. On resume, `kookr stop` every child still listed as live, confirm terminal state, then continue from the recorded stage.
+Write the JSON state file after EVERY transition and read it first on start (resume): `{stage, round, head, branch, worktree, pr, children:[{id,role,startedAt,endedAt,usd,tokens}], usdSpent, startedAt}`. On resume, `kookr stop` every child still listed as live, confirm terminal state, then continue from the recorded stage. Keep every helper/scratch file (prompts, spawn output, review text) in a directory `ocpipe-{{issueNumber}}/` next to the state file, never loose beside it: pipelines for different issues share the state directory and must not read each other's leftovers.
 
 ## Child task protocol (applies to every spawn below)
 
@@ -59,7 +59,7 @@ Write the JSON state file after EVERY transition and read it first on start (res
 ## Stage 0 — Preflight
 
 1. `gh issue view {{issueNumber}} --repo {{repoFullName}} --json state,labels,title,body`: must be open, labelled `opencode-eligible`, NOT labelled `opencode-pipeline-failed`. Otherwise report and exit (no claim).
-2. `kookr doctor` ok and `kookr issue owner {{issueNumber}}` answers (claim registry active); then `kookr issue claim {{issueNumber}} --repo {{repoFullName}}` (task id = you). Claim conflict -> report and exit; any other claim failure (e.g. server unreachable) also exits without proceeding (fail closed).
+2. `kookr status --require-ready` exits 0 (server ready; do NOT gate on `kookr doctor`: it exits non-zero for unrelated checks such as another agent's expired auth, and its dtach lookup is cwd-relative) and `kookr issue owner {{issueNumber}}` answers (claim registry active); then `kookr issue claim {{issueNumber}} --repo {{repoFullName}}` (task id = you). Claim conflict -> report and exit; any other claim failure (e.g. server unreachable) also exits without proceeding (fail closed).
 3. Create the worktree (on resume, reuse an existing `<wt>`/`<branch>` instead): `git worktree add -b <branch> <wt> origin/<default branch>`. (The spawn CLI does not forward `KOOKR_OPENCODE_ISSUE`, so the worker's own `Closes #N` gate does not run: you verify it in stage 1.)
 
 ## Stage 1 — Work

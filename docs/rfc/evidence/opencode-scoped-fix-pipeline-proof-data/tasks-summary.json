@@ -1,0 +1,274 @@
+[
+ {
+  "id": "56d805aa-97ed-4051-b1f1-1900a51fc929",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:26:44.181Z",
+  "updatedAt": "2026-11-10T18:01:39.914Z",
+  "tokenUsage": {
+   "inputTokens": 220,
+   "outputTokens": 127600,
+   "cacheReadTokens": 15947426,
+   "cacheWriteTokens": 519918,
+   "costUsd": 11.2238151,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "41c1d436-15e4-47be-ada8-31c81f66e51d",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:30:17.238Z",
+  "updatedAt": "2026-11-10T17:32:06.006Z",
+  "tokenUsage": {
+   "inputTokens": 16312,
+   "outputTokens": 2555,
+   "cacheReadTokens": 247040,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.006277640000000002,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "4d88418a-724e-4bc4-a002-00957c8df869",
+  "agent": "opencode",
+  "role": "reviewer",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:34:51.667Z",
+  "updatedAt": "2026-11-10T17:36:05.268Z",
+  "tokenUsage": {
+   "inputTokens": 15211,
+   "outputTokens": 2381,
+   "cacheReadTokens": 156672,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.005410832,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "335e7848-6d6c-423a-befd-02bd996aa84a",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:36:26.581Z",
+  "updatedAt": "2026-11-10T17:38:06.001Z",
+  "tokenUsage": {
+   "inputTokens": 20666,
+   "outputTokens": 4761,
+   "cacheReadTokens": 401024,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.009395944000000002,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "46745659-10e7-4552-b468-f8cc97145f8e",
+  "agent": "opencode",
+  "role": "reviewer",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:39:10.967Z",
+  "updatedAt": "2026-11-10T17:41:20.235Z",
+  "tokenUsage": {
+   "inputTokens": 21808,
+   "outputTokens": 4223,
+   "cacheReadTokens": 369536,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.009112616000000002,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "4c5f9913-2f3f-4e7b-9977-087053f9a6c3",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:46:05.953Z",
+  "updatedAt": "2026-11-10T17:47:22.315Z",
+  "tokenUsage": {
+   "inputTokens": 19516,
+   "outputTokens": 3412,
+   "cacheReadTokens": 282880,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.00764768,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "db704684-f61b-4c6a-83d2-85d4f2ac6d9b",
+  "agent": "opencode",
+  "role": "reviewer",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T17:47:47.405Z",
+  "updatedAt": "2026-11-10T17:50:42.184Z",
+  "tokenUsage": {
+   "inputTokens": 25199,
+   "outputTokens": 9202,
+   "cacheReadTokens": 618752,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.014273511999999999,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "18726291-b6c7-41d2-ac76-46d19ce0ef44",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:02:09.311Z",
+  "updatedAt": "2026-11-10T18:06:47.930Z",
+  "tokenUsage": {
+   "inputTokens": 12,
+   "outputTokens": 3153,
+   "cacheReadTokens": 380744,
+   "cacheWriteTokens": 47105,
+   "costUsd": 0.18739090000000003,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "d3ee66f9-bef8-451c-9273-36d51bace0e7",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "terminated",
+  "createdAt": "2026-11-10T18:07:00.510Z",
+  "updatedAt": "2026-11-10T18:09:55.826Z",
+  "tokenUsage": {
+   "inputTokens": 18,
+   "outputTokens": 4007,
+   "cacheReadTokens": 601366,
+   "cacheWriteTokens": 47636,
+   "costUsd": 0.2193326,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "f73adca4-d326-4f8b-bf59-3dd7f10ce995",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "completed",
+  "createdAt": "2026-11-10T18:07:32.965Z",
+  "updatedAt": "2026-11-10T18:08:45.168Z",
+  "tokenUsage": {
+   "inputTokens": 17555,
+   "outputTokens": 2684,
+   "cacheReadTokens": 314880,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.007010679999999999,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "4dba9dd9-1a9d-49a0-9790-9954c20cdc84",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:09:40.290Z",
+  "updatedAt": "2026-11-10T18:20:55.159Z",
+  "tokenUsage": {
+   "inputTokens": 50,
+   "outputTokens": 14490,
+   "cacheReadTokens": 1745802,
+   "cacheWriteTokens": 130359,
+   "costUsd": 0.8562518000000001,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "817e5edb-dcb7-484b-b4f9-7732a2daa7e8",
+  "agent": "opencode",
+  "role": "reviewer",
+  "status": "completed",
+  "createdAt": "2026-11-10T18:12:06.218Z",
+  "updatedAt": "2026-11-10T18:17:55.214Z",
+  "tokenUsage": {
+   "inputTokens": 16915,
+   "outputTokens": 2579,
+   "cacheReadTokens": 206592,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.006169952,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "71e25363-84e1-483f-8ae8-039fb6965375",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "terminated",
+  "createdAt": "2026-11-10T18:20:55.569Z",
+  "updatedAt": "2026-11-10T18:22:30.454Z",
+  "tokenUsage": {
+   "inputTokens": 18,
+   "outputTokens": 3631,
+   "cacheReadTokens": 602589,
+   "cacheWriteTokens": 48607,
+   "costUsd": 0.2181224,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "b2697493-ece7-4dc7-8ad3-3af00f1a2a5b",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:21:27.190Z",
+  "updatedAt": "2026-11-10T18:22:14.808Z",
+  "tokenUsage": {
+   "inputTokens": 16909,
+   "outputTokens": 4790,
+   "cacheReadTokens": 99328,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.006851767999999999,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "84139651-96bd-4fb9-9c75-de9a63d4a4af",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:21:49.701Z",
+  "updatedAt": "2026-11-10T18:55:34.370Z",
+  "tokenUsage": {
+   "inputTokens": 52,
+   "outputTokens": 11883,
+   "cacheReadTokens": 1913345,
+   "cacheWriteTokens": 60479,
+   "costUsd": 0.461466,
+   "pricingQuality": "exact"
+  }
+ },
+ {
+  "id": "1a5511f9-8f70-493e-b8cb-2d9391fa853c",
+  "agent": "opencode",
+  "role": "scoped-fix",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:22:43.536Z",
+  "updatedAt": "2026-11-10T18:53:34.381Z",
+  "tokenUsage": {
+   "inputTokens": 32290,
+   "outputTokens": 32346,
+   "cacheReadTokens": 2593664,
+   "cacheWriteTokens": 0,
+   "costUsd": 0.04142758400000002,
+   "model": "deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017"
+  }
+ },
+ {
+  "id": "ed004f18-406b-4f14-8dbc-70250f30b790",
+  "agent": "claude-code",
+  "role": "orchestrator",
+  "status": "cancelled",
+  "createdAt": "2026-11-10T18:55:35.413Z",
+  "updatedAt": "2026-11-10T18:57:43.023Z",
+  "tokenUsage": {
+   "inputTokens": 8,
+   "outputTokens": 1207,
+   "cacheReadTokens": 162868,
+   "cacheWriteTokens": 40552,
+   "costUsd": 0.1297528,
+   "pricingQuality": "exact"
+  }
+ }
+]
