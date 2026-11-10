@@ -45,6 +45,12 @@
 
 html, body, #root { height: 100%; }
 
+/* Browser defaults shrink h5/h6 (0.83em / 0.67em) and <small> ("smaller")
+   below the 12 px floor (#3561). Pin them to the type scale; component rules
+   still override these element defaults. */
+h5 { font-size: 13px; }
+h6, small { font-size: 12px; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   background: var(--bg);
@@ -954,8 +960,9 @@ button.topbar-spend:focus-visible {
 .finding-card.input { border-left-color: var(--state-need); }
 .finding-card.stuck { border-left-color: var(--state-bad); }
 .finding-card.error { border-left-color: var(--state-bad); }
-/* A completed turn is idle, not hung — neutral edge rather than an alert color. */
-.finding-card.turn-complete { border-left-color: var(--state-neutral); }
+/* Every finding wants the operator: a finished turn awaits review, so it is
+   "waiting on you" like a permission or question (#3561). */
+.finding-card.turn-complete { border-left-color: var(--state-need); }
 .root-cause-badge {
   display: inline-flex;
   align-items: center;
@@ -1227,13 +1234,19 @@ button.topbar-spend:focus-visible {
 .finding-severity.input { background: rgba(251,191,36,0.12); color: var(--state-need); }
 .finding-severity.stuck { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .finding-severity.error { background: rgba(248,113,113,0.1); color: var(--state-bad); }
-.finding-severity.turn-complete { background: rgba(255,255,255,0.05); color: var(--state-neutral); }
+.finding-severity.turn-complete { background: rgba(251,191,36,0.12); color: var(--state-need); }
 
 /* State marker shapes (#3561): every state role has its own shape so colour
    is never the only cue. Dot = waiting on you, diamond = failed or stuck,
    ring = working, dash = neutral/idle. */
 .finding-severity::before,
-.finding-turn-state::before {
+.finding-turn-state::before,
+.detail-badge.permission::before,
+.detail-badge.input::before,
+.detail-badge.turn-complete::before,
+.detail-badge.stuck::before,
+.detail-badge.error::before,
+.stuck-reason-badge::before {
   content: '';
   flex-shrink: 0;
   width: 8px;
@@ -1242,13 +1255,24 @@ button.topbar-spend:focus-visible {
 }
 .finding-severity.permission::before,
 .finding-severity.input::before,
+.finding-severity.turn-complete::before,
 .finding-turn-state.turn-state--waiting::before,
-.finding-turn-state.turn-state--blocked::before {
+.finding-turn-state.turn-state--blocked::before,
+.detail-badge.permission::before,
+.detail-badge.input::before,
+.detail-badge.turn-complete::before,
+.stuck-reason-badge--awaiting_completion_ack::before,
+.stuck-reason-badge--provider_paused::before,
+.stuck-reason-badge--waiting_on_input::before,
+.stuck-reason-badge--permission_blocked::before {
   border-radius: 50%;
   background: currentColor;
 }
 .finding-severity.stuck::before,
-.finding-severity.error::before {
+.finding-severity.error::before,
+.detail-badge.stuck::before,
+.detail-badge.error::before,
+.stuck-reason-badge--hung_suspect::before {
   width: 7px;
   height: 7px;
   margin: 0 1px;
@@ -1260,7 +1284,6 @@ button.topbar-spend:focus-visible {
   background: transparent;
   border: 2px solid currentColor;
 }
-.finding-severity.turn-complete::before,
 .finding-turn-state.turn-state--complete::before {
   height: 2px;
   background: currentColor;
@@ -1449,32 +1472,23 @@ button.topbar-spend:focus-visible {
   font-size: 12px;
   font-weight: 600;
   line-height: 14px;
+  gap: 5px;
 }
-.stuck-reason-badge--awaiting_completion_ack {
-  border: 1px solid rgba(52,211,153,0.35);
-  background: rgba(52,211,153,0.12);
-  color: var(--green);
-}
-/* Issue #1667: billing/quota pause — amber so it reads as "hold, not dead". */
-.stuck-reason-badge--provider_paused {
+/* State roles (#3561): every reason that needs the operator (review a
+   completion, answer, approve, sort out a billing/quota pause) is amber;
+   a suspected hang is red. Shapes come from the shared marker rules below. */
+.stuck-reason-badge--awaiting_completion_ack,
+.stuck-reason-badge--provider_paused,
+.stuck-reason-badge--waiting_on_input,
+.stuck-reason-badge--permission_blocked {
   border: 1px solid rgba(251,191,36,0.4);
   background: rgba(251,191,36,0.12);
-  color: var(--amber);
+  color: var(--state-need);
 }
 .stuck-reason-badge--hung_suspect {
   border: 1px solid rgba(248,113,113,0.35);
   background: rgba(248,113,113,0.12);
-  color: var(--red);
-}
-.stuck-reason-badge--waiting_on_input {
-  border: 1px solid rgba(96,165,250,0.35);
-  background: rgba(96,165,250,0.12);
-  color: var(--blue);
-}
-.stuck-reason-badge--permission_blocked {
-  border: 1px solid rgba(251,146,60,0.35);
-  background: rgba(251,146,60,0.12);
-  color: #fb923c;
+  color: var(--state-bad);
 }
 
 /* Hung-task reap grace warning (RFC rfc-reap-grace-warning.md). */
@@ -2078,7 +2092,6 @@ button.section-header.detection-stats-header:focus-visible {
 .detail-empty-hint {
   font-size: 12px;
   color: var(--text-muted);
-  opacity: 0.7;
 }
 
 /* --- Overview empty state (detail area, no task selected) --- */
@@ -2426,12 +2439,15 @@ a.overview-tour-link:visited:hover {
   border-radius: 4px;
   font-weight: 600;
   text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 .detail-badge.permission { background: rgba(251,191,36,0.12); color: var(--state-need); }
 .detail-badge.input { background: rgba(251,191,36,0.12); color: var(--state-need); }
 .detail-badge.stuck { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--state-bad); }
-.detail-badge.turn-complete { background: rgba(255,255,255,0.05); color: var(--state-neutral); }
+.detail-badge.turn-complete { background: rgba(251,191,36,0.12); color: var(--state-need); }
 .detail-badge.permission-bypassed { background: rgba(248,113,113,0.14); color: var(--red); }
 
 .detail-header-right {
@@ -2860,7 +2876,6 @@ a.overview-tour-link:visited:hover {
 }
 .dependency-edge-empty {
   color: var(--text-muted);
-  opacity: 0.75;
   padding-top: 3px;
 }
 .dependency-chip {
@@ -4024,7 +4039,7 @@ a.playbook-empty-docs-link:visited:hover {
 .ralph-needs-human-badge {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 8px;
+  border-radius: 999px;
   background: var(--red, #d45a5a);
   color: #fff;
   font-weight: 600;
@@ -6800,7 +6815,7 @@ label.task-share-row {
 .gh-label {
   font-size: 12px;
   padding: 1px 6px;
-  border-radius: 8px;
+  border-radius: 999px;
   border: 1px solid var(--border);
   color: var(--text-secondary);
 }
@@ -7378,7 +7393,6 @@ label.task-share-row {
   font-size: 12px;
   color: var(--text-secondary);
   padding: 1px 6px;
-  opacity: 0.7;
   transition: opacity 0.15s, border-color 0.15s;
 }
 .btn-resume-all:hover {
@@ -8656,8 +8670,8 @@ button.completed-row-rating:focus-visible {
   color: var(--red);
 }
 .act-tool-icon {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   border: 1.5px solid var(--border);
   display: inline-flex;
@@ -9116,15 +9130,15 @@ button.completed-row-rating:focus-visible {
 }
 .btn-speak-finding-stop {
   position: absolute;
-  top: -3px;
-  right: -3px;
-  width: 12px;
-  height: 12px;
+  top: -4px;
+  right: -4px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--bg);
   color: var(--text);
   font-size: 12px;
-  line-height: 12px;
+  line-height: 14px;
   text-align: center;
   pointer-events: none;
 }
@@ -9411,7 +9425,6 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   color: var(--text-secondary);
   padding: 1px 6px;
   margin-left: auto;
-  opacity: 0.7;
   transition: opacity 0.15s, border-color 0.15s;
 }
 .btn-clear-completed:hover {
@@ -9467,7 +9480,6 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   font-size: 12px;
   color: var(--text-secondary);
   padding: 1px 6px;
-  opacity: 0.8;
   transition: opacity 0.15s, border-color 0.15s;
 }
 .btn-load-older-history:hover {
@@ -9719,7 +9731,7 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   height: 8px;
   border-radius: 50%;
 }
-.project-icon-dot.active { background: var(--green); }
+.project-icon-dot.active { background: var(--state-work); }
 
 .project-icon-paused {
   position: absolute;
@@ -10665,7 +10677,6 @@ button.project-drawer-link:focus-visible {
   text-transform: none;
   letter-spacing: 0;
   color: var(--text-muted);
-  opacity: 0.7;
 }
 .detection-stats-body {
   display: flex;
@@ -11693,7 +11704,6 @@ button.project-drawer-link:focus-visible {
 
 .settings-radio-meta {
   color: var(--text-muted);
-  opacity: 0.85;
 }
 
 .settings-audio-controls {
@@ -11750,7 +11760,7 @@ button.project-drawer-link:focus-visible {
   position: relative;
   width: 40px;
   height: 22px;
-  border-radius: 8px;
+  border-radius: 999px;
   border: none;
   background: var(--surface);
   cursor: pointer;
@@ -12305,7 +12315,7 @@ a.project-drawer-stat-row-link:focus-visible {
   padding: 2px 8px;
   font-size: 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 999px;
   background: none;
   color: var(--text-muted);
   cursor: pointer;
@@ -12620,7 +12630,7 @@ a.oss-productivity-empty-docs-link:visited:hover {
 .oss-stale-count {
   display: inline-block;
   padding: 1px 8px;
-  border-radius: 8px;
+  border-radius: 999px;
   background: rgba(251, 191, 36, 0.15);
   color: var(--amber);
   font-weight: 600;
@@ -12884,7 +12894,7 @@ a.oss-productivity-empty-docs-link:visited:hover {
 .oss-state-pill {
   display: inline-block;
   padding: 2px 8px;
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -13254,6 +13264,10 @@ a.oss-productivity-empty-docs-link:visited:hover {
   font-weight: 600;
   color: var(--text);
 }
+/* Markdown # / ## / ### render as h4 / h5 / h6 (see markdown.ts). */
+h4.md-h { font-size: 16px; }
+h5.md-h { font-size: 14px; }
+h6.md-h { font-size: 13px; }
 .act-msg-text .md-code {
   background: var(--bg-dim, rgba(255, 255, 255, 0.06));
   border-radius: 4px;
@@ -14470,7 +14484,7 @@ button.act-tool-entry:focus-visible {
   background: rgba(251, 191, 36, 0.14);
   color: var(--amber);
   border: 1px solid rgba(251, 191, 36, 0.35);
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
   text-transform: uppercase;
@@ -14985,7 +14999,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: inherit;
   padding: 3px 10px;
-  border-radius: 8px;
+  border-radius: 999px;
   font-size: 12px;
   cursor: pointer;
 }

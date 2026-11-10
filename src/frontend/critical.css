@@ -34,6 +34,12 @@
 
 html, body, #root { height: 100%; }
 
+/* Browser defaults shrink h5/h6 (0.83em / 0.67em) and <small> ("smaller")
+   below the 12 px floor (#3561). Pin them to the type scale; component rules
+   still override these element defaults. */
+h5 { font-size: 13px; }
+h6, small { font-size: 12px; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
   background: var(--bg);
@@ -323,7 +329,7 @@ code, kbd { font-family: var(--font-mono); }
 .project-icon-task-count { position: absolute; }
 .project-icon-badge { top: -4px; right: -4px; min-width: 16px; height: 16px; border-radius: 8px; background: var(--state-need); color: #241a02; font-size: 12px; }
 .project-icon-dot { top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; }
-.project-icon-dot.active { background: var(--green); }
+.project-icon-dot.active { background: var(--state-work); }
 .project-icon-task-count { bottom: -6px; right: -8px; font-size: 12px; line-height: 14px; padding: 0 2px; border-radius: 4px; background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-dim); }
 
 .findings-panel {

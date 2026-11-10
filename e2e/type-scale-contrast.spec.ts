@@ -16,7 +16,7 @@ import {
   injectToolUse,
   injectPermissionEvent,
   injectAskUserQuestion,
-  injectStopEvent,
+  injectAgentMessage,
 } from './battle-helpers.js';
 
 const MIN_FONT_PX = 12;
@@ -60,7 +60,7 @@ test.describe('Type scale at runtime (#3561)', () => {
     await expect(page.locator('.logo')).toHaveText('KOOKR');
   });
 
-  test('no visible text renders below 12 px with no agents, with findings, or with a task open', async ({ page, request }) => {
+  test('no visible text renders below 12 px across the main dashboard states and dialogs', async ({ page, request }) => {
     await expect(page.locator('.findings-empty')).toBeVisible();
     expect(await textBelowMinimum(page), 'empty dashboard').toEqual([]);
 
@@ -74,13 +74,25 @@ test.describe('Type scale at runtime (#3561)', () => {
     const question = await launchWithSession(page, request, 'Add cursor pagination', '/test/api');
     await injectAskUserQuestion(request, question);
     const stopped = await launchWithSession(page, request, 'Migrate CI to pnpm 10', '/test/ci');
-    await injectStopEvent(request, stopped, 'I need your help.');
+    // Markdown #/##/### render as h4/h5/h6, whose browser defaults shrink text.
+    await injectAgentMessage(request, stopped, '# Report\n\n## Summary\n\n### Next steps\n\nI need your help.');
     await expect(page.locator('.finding-card')).toHaveCount(3);
     expect(await textBelowMinimum(page), 'three findings').toEqual([]);
 
-    await page.locator('.finding-card').first().click();
+    await page.locator('.finding-card', { hasText: 'Migrate CI to pnpm 10' }).click();
     await expect(page.locator('.detail-header')).toBeVisible();
-    expect(await textBelowMinimum(page), 'task open in detail panel').toEqual([]);
+    await expect(page.locator('.act-msg-text h6.md-h')).toBeVisible();
+    expect(await textBelowMinimum(page), 'task open in detail panel, markdown headings').toEqual([]);
+
+    await page.getByRole('button', { name: 'Share this task' }).click();
+    await expect(page.getByRole('dialog', { name: 'Share this task' })).toBeVisible();
+    expect(await textBelowMinimum(page), 'share dialog').toEqual([]);
+    await page.keyboard.press('Escape');
+
+    await page.locator('.btn-launch').click();
+    await expect(page.getByRole('dialog', { name: 'Launch New Task' })).toBeVisible();
+    expect(await textBelowMinimum(page), 'launch dialog').toEqual([]);
+    await page.keyboard.press('Escape');
 
     await page.setViewportSize({ width: 1180, height: 950 });
     expect(await textBelowMinimum(page), 'narrow window').toEqual([]);

@@ -51,16 +51,27 @@ function declarations(prop: string): Array<{ where: string; value: string }> {
   return out;
 }
 
-/** Innermost `selector { body }` blocks, keyed by each comma-separated selector. */
-function rules(css: string): Map<string, string> {
-  const map = new Map<string, string>();
+/**
+ * Declarations per selector, in source order, from innermost `selector { body }`
+ * blocks (a selector list is split so each selector gets the shared body).
+ * `lookup` returns the LAST declared value of a property, which is what the
+ * cascade applies for equal specificity — a later override must not hide
+ * behind an earlier matching rule.
+ */
+function rules(css: string): { lookup: (selector: string, prop: string) => string | undefined } {
+  const map = new Map<string, Array<[string, string]>>();
   for (const match of stripComments(css).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const decls = [...match[2].matchAll(/([\w-]+)\s*:\s*([^;]+)/g)].map(
+      (d) => [d[1], d[2].replace(/!important/, '').trim()] as [string, string],
+    );
     for (const selector of match[1].split(',')) {
       const key = selector.trim().replace(/\s+/g, ' ');
-      map.set(key, `${map.get(key) ?? ''};${match[2]}`);
+      map.set(key, [...(map.get(key) ?? []), ...decls]);
     }
   }
-  return map;
+  return {
+    lookup: (selector, prop) => map.get(selector)?.filter(([p]) => p === prop).at(-1)?.[1],
+  };
 }
 
 function rootTokens(css: string): Record<string, string> {
@@ -130,8 +141,9 @@ describe('type scale', () => {
           // The onboarding diagram is a scaled illustration (SVG viewBox),
           // not UI text; its user units are not CSS pixels.
           if (entry.name === 'OnboardingLayoutDiagram.tsx') continue;
-          for (const m of src.matchAll(/fontSize\s*:\s*(\d+(?:\.\d+)?)\b/g)) {
-            if (!TYPE_SCALE.has(`${m[1]}px`)) offenders.push(`${path}: fontSize ${m[1]}`);
+          // Numbers (fontSize: 11) and strings (fontSize: '11px' / '0.8em').
+          for (const m of src.matchAll(/fontSize\s*:\s*['"`]?(\d+(?:\.\d+)?)(px|r?em)?\b/g)) {
+            if (!TYPE_SCALE.has(`${m[1]}${m[2] ?? 'px'}`)) offenders.push(`${path}: fontSize ${m[0]}`);
           }
         }
       }
@@ -139,6 +151,19 @@ describe('type scale', () => {
     walk(frontendDir);
     expect(offenders).toEqual([]);
   });
+});
+
+describe('browser default sizes', () => {
+  // h5/h6 default to 0.83em/0.67em and <small> to "smaller": inside 12-13 px
+  // text they render at 8-11 px unless pinned (markdown renders ##/### as h5/h6).
+  for (const file of ['styles.css', 'critical.css']) {
+    test(`${file} pins h5, h6 and small to the scale`, () => {
+      const css = rules(STYLESHEETS[file]);
+      expect(css.lookup('h5', 'font-size')).toBe('13px');
+      expect(css.lookup('h6', 'font-size')).toBe('12px');
+      expect(css.lookup('small', 'font-size')).toBe('12px');
+    });
+  }
 });
 
 describe('radii', () => {
@@ -177,6 +202,29 @@ describe('text contrast', () => {
     ['selected card', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-card'], t))],
   ];
 
+  test('muted and secondary text is never dimmed further with opacity', () => {
+    // Opacity multiplies contrast down: --text-muted at 0.7 fell to 3.6:1.
+    // Exempt: decorative separators, disabled controls, and icon-only
+    // buttons that reveal on hover (their glyphs are not running text).
+    const exempt = new Set([
+      '.finding-context-sep',
+      '.healthy-row-sep',
+      '.agent-provider-mark--snoozed',
+      '.playbook-launch-mode .launch-mode-option:disabled',
+      '.btn-reply',
+      '.playbook-pin-btn',
+      '.md-copy-btn',
+    ]);
+    const offenders: string[] = [];
+    for (const match of stripComments(STYLESHEETS['styles.css']).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = match[1].trim().replace(/\s+/g, ' ');
+      const opacity = match[2].match(/(?<![\w-])opacity\s*:\s*(0?\.\d+)/);
+      const muted = /(?<![\w-])color\s*:\s*var\(--text-(muted|secondary)\)/.test(match[2]);
+      if (opacity && muted && !exempt.has(selector)) offenders.push(`${selector} opacity ${opacity[1]}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   for (const tier of ['--text-bright', '--text', '--text-secondary', '--text-muted']) {
     test(`${tier} reaches 4.5:1 on every surface`, () => {
       const failures = surfaces
@@ -200,12 +248,13 @@ const ROLE_COLOR = {
 } as const;
 type Role = keyof typeof ROLE_COLOR;
 
+/** Every finding wants the operator, so findings are "need" or "bad". */
 const FINDING_KIND_ROLE: Record<string, Role> = {
   permission: 'need',
   input: 'need',
+  'turn-complete': 'need',
   stuck: 'bad',
   error: 'bad',
-  'turn-complete': 'neutral',
 };
 
 const TURN_STATE_ROLE: Record<string, Role> = {
@@ -215,10 +264,30 @@ const TURN_STATE_ROLE: Record<string, Role> = {
   complete: 'neutral',
 };
 
+/** `StuckReasonBadge` reasons shown on healthy rows. */
+const STUCK_REASON_ROLE: Record<string, Role> = {
+  awaiting_completion_ack: 'need',
+  provider_paused: 'need',
+  waiting_on_input: 'need',
+  permission_blocked: 'need',
+  hung_suspect: 'bad',
+};
+
 describe('state colours: four roles, one shape each', () => {
   const css = rules(STYLESHEETS['styles.css']);
   const tokens = rootTokens(STYLESHEETS['styles.css']);
-  const body = (selector: string) => css.get(selector) ?? '';
+
+  /** Which shape a `::before` marker draws (last declaration wins), or null if none/ambiguous. */
+  function shapeOf(selector: string): Role | null {
+    const get = (prop: string) => css.lookup(selector, prop);
+    const matches: Role[] = [];
+    const filled = get('background') === 'currentColor';
+    if (get('border-radius') === '50%' && filled) matches.push('need'); // dot
+    if (get('transform')?.startsWith('rotate(45deg)') && filled) matches.push('bad'); // diamond
+    if (get('background') === 'transparent' && get('border') === '2px solid currentColor') matches.push('work'); // ring
+    if (get('height') === '2px' && filled) matches.push('neutral'); // dash
+    return matches.length === 1 ? matches[0] : null;
+  }
 
   test('role tokens resolve to amber, red, teal and the neutral text tier', () => {
     expect(tokens['--state-need']).toBe('var(--amber)');
@@ -228,38 +297,42 @@ describe('state colours: four roles, one shape each', () => {
   });
 
   for (const [kind, role] of Object.entries(FINDING_KIND_ROLE)) {
-    test(`finding kind "${kind}" is ${role}: card edge and severity label`, () => {
-      expect(body(`.finding-card.${kind}`)).toContain(`border-left-color: ${ROLE_COLOR[role]}`);
-      expect(body(`.finding-severity.${kind}`)).toContain(`color: ${ROLE_COLOR[role]}`);
+    test(`finding kind "${kind}" is ${role}: card edge, label, detail badge and their shape`, () => {
+      expect(css.lookup(`.finding-card.${kind}`, 'border-left-color')).toBe(ROLE_COLOR[role]);
+      expect(css.lookup(`.finding-severity.${kind}`, 'color')).toBe(ROLE_COLOR[role]);
+      expect(css.lookup(`.detail-badge.${kind}`, 'color')).toBe(ROLE_COLOR[role]);
+      expect(shapeOf(`.finding-severity.${kind}::before`)).toBe(role);
+      expect(shapeOf(`.detail-badge.${kind}::before`)).toBe(role);
     });
   }
 
   for (const [state, role] of Object.entries(TURN_STATE_ROLE)) {
-    test(`turn state "${state}" is ${role}`, () => {
-      expect(body(`.finding-turn-state.turn-state--${state}`)).toContain(`color: ${ROLE_COLOR[role]}`);
+    test(`turn state "${state}" is ${role} with its shape`, () => {
+      expect(css.lookup(`.finding-turn-state.turn-state--${state}`, 'color')).toBe(ROLE_COLOR[role]);
+      expect(shapeOf(`.finding-turn-state.turn-state--${state}::before`)).toBe(role);
     });
   }
 
-  /** Which shape a marker's role-specific rule draws, or null if none/ambiguous. */
-  function shapeOf(declarations: string): Role | null {
-    const has = (re: RegExp) => re.test(declarations);
-    const matches: Role[] = [];
-    if (has(/border-radius: 50%/) && has(/background: currentColor/)) matches.push('need'); // filled dot
-    if (has(/transform: rotate\(45deg\)/)) matches.push('bad'); // diamond
-    if (has(/background: transparent/) && has(/border: 2px solid currentColor/)) matches.push('work'); // ring
-    if (has(/height: 2px/)) matches.push('neutral'); // short dash
-    return matches.length === 1 ? matches[0] : null;
+  for (const [reason, role] of Object.entries(STUCK_REASON_ROLE)) {
+    test(`stuck reason "${reason}" is ${role} with its shape`, () => {
+      expect(css.lookup(`.stuck-reason-badge--${reason}`, 'color')).toBe(ROLE_COLOR[role]);
+      expect(shapeOf(`.stuck-reason-badge--${reason}::before`)).toBe(role);
+    });
   }
 
-  test('finding severity labels draw their role shape', () => {
-    for (const [kind, role] of Object.entries(FINDING_KIND_ROLE)) {
-      expect(shapeOf(body(`.finding-severity.${kind}::before`)), kind).toBe(role);
+  test('project-drawer task status dots use the role colours and shapes', () => {
+    expect(css.lookup('.task-status-dot.inProgress', 'border')).toBe(`2px solid ${ROLE_COLOR.work}`);
+    expect(css.lookup('.task-status-dot.terminated', 'background')).toBe(ROLE_COLOR.bad);
+    expect(css.lookup('.task-status-dot.terminated', 'transform')).toMatch(/^rotate\(45deg\)/);
+    for (const status of ['completed', 'cancelled', 'pending', 'open']) {
+      expect(css.lookup(`.task-status-dot.${status}`, 'background'), status).toBe(ROLE_COLOR.neutral);
+      expect(css.lookup(`.task-status-dot.${status}`, 'height'), status).toBe('2px');
     }
   });
 
-  test('turn-state lines draw their role shape', () => {
-    for (const [state, role] of Object.entries(TURN_STATE_ROLE)) {
-      expect(shapeOf(body(`.finding-turn-state.turn-state--${state}::before`)), state).toBe(role);
-    }
+  test('running and active markers are teal, not green', () => {
+    expect(css.lookup('.project-icon-dot.active', 'background')).toBe(ROLE_COLOR.work);
+    expect(css.lookup('.agent-provider-mark--running::after', 'border-top-color')).toBe(ROLE_COLOR.work);
+    expect(rules(STYLESHEETS['critical.css']).lookup('.project-icon-dot.active', 'background')).toBe(ROLE_COLOR.work);
   });
 });
