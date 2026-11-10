@@ -26,7 +26,11 @@
  * that redraw every frame set most of those again on the next frame; a
  * full-screen program that sets a scroll region or a mouse encoding once and
  * never again would behave differently until it does. The byte-tail seed lost
- * the same state, so this is not a regression.
+ * this state too when it was set more than 64 KiB before the end of the ring,
+ * but it did restore state set within the last 64 KiB, which a snapshot
+ * cannot. That is a small step back for a program that sets a scroll region or
+ * a saved cursor once and keeps it; it was not seen in any of the real rings
+ * checked, and the byte tail painted a blank pane for the common case.
  *
  * The snapshot is only as good as the bytes it is given. A ring that has
  * itself lost the base screen (wrapped during a very long quiet period, or
