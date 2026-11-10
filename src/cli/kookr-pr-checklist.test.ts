@@ -12,6 +12,11 @@ import {
 } from './kookr-pr-checklist.js';
 import type { GitRunner } from '../pr-checklist/git.js';
 
+const GIT_REDIRECT_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX', 'GIT_WORK_TREE',
+];
+
 function out() {
   return { log: vi.fn(), error: vi.fn() };
 }
@@ -401,6 +406,13 @@ describe('runPrChecklistCli doctor', () => {
 
   it('run from a repo SUBDIRECTORY it still finds the toplevel template (real git repo)', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'kookr-prc-sub-'));
+    // Under a git hook (pre-push runs `pnpm test`) git exports repo-redirecting vars;
+    // strip them (also for the code under test) so `git -C <tmp>` hits the fixture.
+    const saved: Record<string, string | undefined> = {};
+    for (const name of GIT_REDIRECT_VARS) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
     try {
       const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
       git('init', '-q');
@@ -416,6 +428,10 @@ describe('runPrChecklistCli doctor', () => {
       expect(code).toBe(EXIT_VERIFICATION_FAILURE);
       expect(o.log.mock.calls.flat().join('\n')).toMatch(/pr-template/);
     } finally {
+      for (const name of GIT_REDIRECT_VARS) {
+        if (saved[name] === undefined) delete process.env[name];
+        else process.env[name] = saved[name];
+      }
       await rm(repo, { recursive: true, force: true });
     }
   });

@@ -14,6 +14,10 @@
 
 set -euo pipefail
 
+# Under a git hook (pre-push) git exports repo-redirecting vars; clear them so the
+# fixture repos below (`git -C <tmp> …`) never touch the real checkout.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
 HOOK="$REPO_ROOT/hooks/pr-workflow-gate.sh"
