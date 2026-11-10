@@ -1710,7 +1710,7 @@ delta sequence number.
 | `stop` | Stop an agent session. | `agentId` |
 | `reflect` | Launch session-friction reflection. | none |
 | `listPlaybooks` | Discover playbooks for a cwd. | `cwd` |
-| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `scope`, `projectId`, `parentTaskId` (user-relaunch lineage) |
+| `launchPlaybook` | Launch a playbook. | `playbookPath`, `parameterValues`, legacy `cwd` or `playbookSourceCwd` plus `taskTargetCwd`, optional `agentType`, `effort`, `model` (per-launch pins, same semantics as `launch`), `scope`, `projectId`, `parentTaskId` (user-relaunch lineage) |
 | `telemetry` | Send frontend telemetry events. | `events` |
 | `setProjectConfig` | Patch a tracked project's configuration. Omitted `config` keys preserve stored values; explicit `null` clears `dailyPrLimit`, `budgetWarnUsd`, `zeroDrainIssueLimit`, or `notes`. `config.automationEnabled` is a boolean (`false` pauses autonomous launches for that project). | `project`, `config` |
 | `clearCompleted` | Clear completed tasks, optionally including terminated tasks or scoping to a project. | optional `includeTerminated`, `projectId` |

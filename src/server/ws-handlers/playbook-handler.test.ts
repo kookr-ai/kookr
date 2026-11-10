@@ -70,6 +70,39 @@ describe('PlaybookHandler.listPlaybooks', () => {
     expect(playbooksMsg.capabilities).toBeUndefined();
   });
 
+  test('forwards effort and model pins from the message into launchTask opts', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'playbook-handler-pins-'));
+    try {
+      await mkdir(join(cwd, '.kookr', 'playbooks'), { recursive: true });
+      await writeFile(join(cwd, '.kookr', 'playbooks', 'scout.md'), `---\nname: Scout\n---\n\nScout it.\n`);
+      const launchTask = vi.fn().mockResolvedValue({ task: { id: 'task-1' }, queued: false });
+      const handler = new PlaybookHandler({ send: () => {}, launchTask });
+
+      await handler.handle({
+        type: 'launchPlaybook',
+        cwd,
+        playbookPath: 'scout.md',
+        parameterValues: {},
+        agentType: 'claude-code',
+        effort: 'high',
+        model: 'claude-fable-5-2',
+      });
+      expect(launchTask.mock.calls[0]![0]).toMatchObject({ effort: 'high', model: 'claude-fable-5-2' });
+
+      await handler.handle({
+        type: 'launchPlaybook',
+        cwd,
+        playbookPath: 'scout.md',
+        parameterValues: {},
+      });
+      const unpinned = launchTask.mock.calls[1]![0];
+      expect(unpinned).not.toHaveProperty('effort');
+      expect(unpinned).not.toHaveProperty('model');
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
   test('passes parsed delivery and relaunch policy as server-only launch metadata', async () => {
     const cwd = await mkdtemp(join(tmpdir(), 'playbook-handler-'));
     try {
