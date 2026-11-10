@@ -10,7 +10,7 @@ output, verdict and accounting comments, kill logs, per-task token and cost rows
 The playbook works as designed on real runs: the pipeline went worker -> cheap review -> fix round -> gate review,
 a killed orchestrator was resumed and cleaned up its live orphan, the exhausted path never merged, and a re-run on a
 failed issue was refused at preflight. It also showed that the **orchestrator, not the workers, is the cost**
-(about $13.30 against $0.11 for all ten opencode children) and exposed four playbook problems, two fixed here
+(about $13.30 against $0.11 for all ten opencode children) and exposed six playbook problems, three fixed here
 and three filed (#3580, #3581, #3582). Merge (slice C) was **not** exercised and stays off. n is three issues on
 a tiny repo: this is proof that the mechanism functions, not a measurement of its quality rate.
 
@@ -33,7 +33,7 @@ a tiny repo: this is proof that the mechanism functions, not a measurement of it
   Orchestrator: Claude. `mergeEnabled=false` and `usdCap=3` in every run.
 * Launch: a `launchPlaybook` WebSocket message (playbook from this worktree, task cwd in the scratch clone). Run 1
   used the operator default model (`fable`); runs 2-4 pinned `claude-sonnet-5-5` through
-  `POST /api/tasks` with the playbook-rendered prompt (see defect 4).
+  `POST /api/tasks` with the playbook-rendered prompt (see defect 6).
 
 ## Results against the RFC proof list
 
@@ -58,8 +58,7 @@ a tiny repo: this is proof that the mechanism functions, not a measurement of it
 
 Round budget exhausted with one LOW finding left, so the playbook took the failure exit. Verified afterwards: issue
 labelled `opencode-pipeline-failed`, summary comment on the issue, accounting table on the PR, claim released
-(`no active claim`), PR #4 left open and unmerged, no merge. Children total $0.052; the orchestrator was at about
-$9.5 at the failure exit.
+(`no active claim`), PR #4 left open and unmerged, no merge. Children total $0.052; the fable orchestrator cost $11.22 by the time it was stopped.
 
 What the reviewers caught: the cheap reviewer found a real HIGH defect in the first draft for half a cent. It then
 **passed a head the gate blocked**, which is the RFC's stated reason for a mandatory stage 4. The gate found a
@@ -102,7 +101,7 @@ worktree, no spawn, no label or comment change, $0.13 of orchestrator cost.
 | Resume | `4dba9dd9` marked the finished child terminal (18:10:10), pushed and opened PR #5, finished the pipeline | `84139651` launched 4 s after the kill |
 
 Conclusions: the state file does hold the child id before the kill (so "record at once" is satisfiable);
-`kookr stop` on resume cleans a live orphan; the orphan is bounded by its own wait and profile limits and cost about
+`kookr stop` on resume cleans a live orphan; no unbounded orphan was observed (run 2's finished in about 10 s, run 3's was stopped at about 29 s; how long an unsupervised orphan would run was not measured) and it cost about
 a cent here; the server reaped the dead orchestrator and freed the claim without help. The RFC's conditional item,
 **server cascade-stop, is not justified by this evidence**: nothing was observed that resume did not already fix.
 Caveat: only one live-orphan observation (run 3, a 24-second window).
@@ -119,13 +118,13 @@ real-repo supervised run first.
 | | USD | Notes |
 |---|---|---|
 | 10 opencode children (6 workers, 4 reviewers; Kookr `costUsd`) | 0.114 | $0.005 to $0.041 each; the 30-minute failed worker is the largest |
-| Claude orchestrators, fable (run 1) | 11.22 | about $9.5 at the failure exit; the rest was report polishing before it was stopped |
+| Claude orchestrators, fable (run 1) | 11.22 | $11.22 is the final figure when stopped (about 7 minutes after the failure exit, while it drafted its own report); the exact figure at the failure exit was not recorded (a mid-run reading was about $9.5) |
 | Claude orchestrators, sonnet (runs 2-4 incl. one blocked start) | 2.07 | $0.19 blocked start, $0.22 + $0.86 run 2, $0.22 + $0.46 run 3, $0.13 run 4 |
-| Gate reviews (Claude subagents) | not metered | token counts only; see defect 4 |
+| Gate reviews (Claude subagents) | not metered | token counts only; see defect 6 |
 
 Wall time: run 1 from launch to failure exit about 28 minutes (about 10.5 minutes of child stages; the rest is
 orchestrator thinking and the first cold launch); run 2 from launch to ready-for-merge about 12 minutes including
-the kill and the resume. A normal opencode worker or reviewer stage took 46-175 s.
+the kill and the resume. Opencode worker and reviewer stages took 46-175 s per the orchestrators' accounting (one reviewer task in run 2 shows about 344 s by task timestamps, which includes idle time before it was stopped).
 Cost per merged PR (RFC section 5) is not computable: nothing was merged and the gate is unmetered.
 
 ## Playbook defects found
@@ -133,7 +132,7 @@ Cost per merged PR (RFC section 5) is not computable: nothing was merged and the
 | # | Defect | Action |
 |---|---|---|
 | 1 | State file path used `$KOOKR_TASK_DATA_DIR`, which Kookr never sets; the fallback `~/.kookr/ocpipe` is the **production** data dir even when the server is a throwaway. | Fixed here: documented fallback derived from the server port; harness sets the variable. |
-| 2 | Preflight `kookr doctor ok` is not a usable gate. It exits 1 on this host from the kookr checkout (an unrelated required Grok-auth check) and its dtach lookup is cwd-relative, so it also fails (EACCES/ENOENT) from the scratch repo. The fable orchestrator waved the failure through and the sonnet orchestrator failed closed (run 2 first start, $0.19). Behaviour therefore depended on the model. | Fixed here: gate on `kookr status --require-ready`; wording pinned by a new contract test. |
+| 2 | Preflight `kookr doctor ok` is not a usable gate. It exited 1 on this host from the kookr checkout when re-run later (the run-1 orchestrator saw exit 0 from there; the result varies with host state) (an unrelated required Grok-auth check) and its dtach lookup is cwd-relative, so it also fails (EACCES/ENOENT) from the scratch repo. The fable orchestrator waved the failure through and the sonnet orchestrator failed closed (run 2 first start, $0.19). Behaviour therefore depended on the model. | Fixed here: gate on `kookr status --require-ready`; wording pinned by a new contract test. |
 | 3 | Helper files written by the orchestrator landed loose in the shared state directory, so a later issue would read an earlier one's leftovers (observed after run 1). | Fixed here: namespace helpers per issue; pinned by test. |
 | 4 | `kookr spawn --wait` returns exit 0 after about 10 s on a cold first opencode launch (reconcile-probe path ignores `--wait`), breaking the "0 = done" contract. Seen in run 1 on the first spawn. | #3580 |
 | 5 | A single LOW cheap-review finding after the last round fails the pipeline without gating the final head; the stage-2 prompt is orchestrator-authored and added a category the playbook does not define. | #3581 |

@@ -60,7 +60,7 @@ An automated pipeline produced this PR for #1. A cheap worker model writes the c
 
 The Task column gives the first 8 characters of each Kookr task id. The gate review was a Claude subagent, not a Kookr task, and its wall time is the reviewer's own run time.
 
-**Fix rounds used:** 2 of 2. **Total cost:** $0.0521 for the six worker and reviewer tasks, against a cap of $3. All six ran on `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017`. The gate review ran on a subscription, so it has a token count but no dollar figure. The run took about 20 minutes from its start to the end of the last review.
+**Fix rounds used:** 2 of 2. **Total cost:** $0.0521 for the six worker and reviewer tasks, against a cap of $3. All six ran on `deepinfra/deepseek-ai/DeepSeek-V4.1-Flash-1017`. The run took about 20 minutes from its start to the end of the last review.
 
 ### What each review found
 
