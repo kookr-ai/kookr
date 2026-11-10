@@ -43,6 +43,8 @@ interface StartupRecoveryDeps {
   watchdog: Watchdog;
   terminalBackend: TerminalBackend;
   hookWatcher: HookFileWatcher;
+  /** Sessions whose hook file is NOT `<hooksDir>/<name>.jsonl` (opencode worker containers, RFC #3541): their ledger path, read untrusted. */
+  hookWatchOverride?: (tmuxName: string) => { filePath: string; untrusted: boolean } | undefined;
   suppressionTracker: SnoozeSuppressionTracker;
   interactionLog: DeferredInteractionLogWriter;
   adapterRegistry: AdapterRegistry;
@@ -144,6 +146,7 @@ export async function runStartupRecoveryPhase({
   watchdog,
   terminalBackend,
   hookWatcher,
+  hookWatchOverride,
   suppressionTracker,
   interactionLog,
   adapterRegistry,
@@ -463,6 +466,7 @@ export async function runStartupRecoveryPhase({
           replayLiveState: true,
         });
         hookWatcher.watch(tmuxName, {
+          ...(hookWatchOverride?.(tmuxName) ?? {}),
           replayExisting: true,
           suppressParseAlertsForExisting: true,
           useReplayCheckpoint: hydration.liveStateReplayed,
@@ -472,7 +476,7 @@ export async function runStartupRecoveryPhase({
         console.warn(`[hook-ingestion] hydrate failed for ${tmuxName}:`, err);
       }
     }
-    hookWatcher.watch(tmuxName, { replayExisting: true, suppressParseAlertsForExisting: true });
+    hookWatcher.watch(tmuxName, { ...(hookWatchOverride?.(tmuxName) ?? {}), replayExisting: true, suppressParseAlertsForExisting: true });
   }
 
   // Drop durable resume offsets for sessions that were not re-armed above

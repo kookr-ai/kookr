@@ -21,3 +21,15 @@ describe('resolveOpenCodeLaunchMode', () => {
     expect(resolveOpenCodeLaunchMode({ containersAvailable: true })).toEqual({ ok: true, mode: 'tui' });
   });
 });
+
+describe('resolveOpenCodeLaunchMode: flag-requested containers (S2d)', () => {
+  test('requested + available + nothing persisted => container', () => {
+    expect(resolveOpenCodeLaunchMode({ containersRequested: true, containersAvailable: true })).toEqual({ ok: true, mode: 'container' });
+  });
+  test('requested but unavailable => tui (never a refusal for a task with no history)', () => {
+    expect(resolveOpenCodeLaunchMode({ containersRequested: true })).toEqual({ ok: true, mode: 'tui' });
+  });
+  test('a persisted tui stays tui even when the flag is on (decided once)', () => {
+    expect(resolveOpenCodeLaunchMode({ persisted: 'tui', containersRequested: true, containersAvailable: true })).toEqual({ ok: true, mode: 'tui' });
+  });
+});

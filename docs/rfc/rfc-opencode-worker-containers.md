@@ -1,6 +1,6 @@
 # RFC: opencode worker containers: A2A, scaling, shared layered memory
 
-**Status:** Draft v4 (post review rounds 1-2 and consensus attack; awaiting independent review)
+**Status:** v4 merged (#3541); slices S1-S2d shipped (see "S2d result"); S3 and S4 pending, and S3 now builds on plain opencode REST instead of the A2A wrapper
 **Date:** 2026-11-09
 **Author:** Jean Ibarz (with Claude)
 
@@ -368,7 +368,7 @@ claimed as such.
   (ships the sweeper first).
 - **S2c**: hook spool ingest keyed by taskId + launch token (shared ingest port);
   TUI events unchanged and tested.
-- **S2d**: `OpenCodeRoutingAdapter` + `OpenCodeContainerAdapter` launch/stop/
+- **S2d** (shipped, see result below): `OpenCodeRoutingAdapter` + `OpenCodeContainerAdapter` launch/stop/
   `sendInput`, clone/extract, hook path map, behind `KOOKR_OPENCODE_CONTAINERS`,
   cap 1, static memory pack, no writer. Live script: 10x cancel (incl. `setsid`/
   `nohup`/background tools and cancel during a model call), `kill -9` opencode,
@@ -379,6 +379,46 @@ claimed as such.
   verbs for vote/rm/retro, worker `nb` shim (image rebuild + pin bump), docs.
 - **S4 capacity**: real-model 4 then 8 concurrent run, record peak RSS, disk, p95
   launch; raise the cap default from the measurement; reference doc and runbook.
+
+### S2d result (2026-11-10): what shipped, and the wrapper-vs-REST decision
+
+Shipped behind `KOOKR_OPENCODE_CONTAINERS` (+ `KOOKR_OPENCODE_CONTAINER_IMAGE`), hard cap of one live container:
+`OpenCodeRoutingAdapter` (one `opencode` registration; routes by persisted mode and by handle, so it needs no
+in-memory map after a restart), `OpenCodeContainerAdapter` (launch / stop / `sendInput`; `sendKeystroke` throws a typed
+`Unsupported`), `git clone --local --no-hardlinks` + host-side `git fetch` of the deliverable under isolated git config,
+the container hook path map (per-task immutable copy at `/kookr-hooks`, MANIFEST self-tested by the entrypoint, ledger
+at `/kookr-spool`), `DockerRunnerPort.runContainer` with the Spike-2 hardening flags, an `A2aClientPort` HTTP client,
+reconciler wired into the server, adopt after restart (ledger re-attach under the taskId+token key; control from a
+private 0600 `runtime.json`, never from task metadata), startup-recovery watcher override for container sessions.
+Static memory pack = the profile's AGENTS.md plus shelf lessons (as in TUI mode); there is no memory writer.
+The provider key reaches opencode as `{file:/run/secrets/provider_key}` in `opencode.json`, so no image change was needed.
+
+**Decision: the A2A wrapper is a usable command channel and an unusable state channel; plain opencode REST replaces it
+before S3.** Evidence (live, `scripts/opencode-containers-live.ts`, real image):
+
+| Question | Result |
+| --- | --- |
+| Submit a prompt, `returnImmediately` | works; returns in milliseconds with task + context ids |
+| Follow-up on the same context | works (a finished or cancelled task cannot be messaged; the follow-up is a NEW task in the same context) |
+| Cancel | 10/10 `CANCELED`, including during a held model call and with `setsid`/`nohup`/background tools; stable on re-read 3 s and 10 s later (F5 did **not** reproduce, real model included) |
+| Detached tool after cancel | a `setsid`-detached tool survives the cancel (2 of 2 runs; the `nohup` and plain-background variants did not); `docker stop` always kills it, so Stop is cancel then container stop |
+| **Does a task ever finish?** | **No.** With `returnImmediately:true` the task stays `WORKING` forever, even against an instant mock model and after the Stop hook passed (real model: still `WORKING` 4 min after `hello.txt` was committed). Only a blocking `message:send` returns `COMPLETED` (189 ms against the mock), which would hold one HTTP request open for a whole turn including gate re-prompt cycles |
+| Rate limit | the wrapper answers `429 Too many requests` when polled every 500 ms; Kookr's 30 s probe is fine |
+
+So A2A task state cannot say "done"; the ledger plus container state already carry that (the RFC's stated precedence),
+and everything else the wrapper provides (auth, submit, cancel) is reachable through opencode's own authenticated REST
+(`prompt_async`, `abort`, `/session/status`), which also drops a Python process and ~40 MB from the image. Until that swap,
+S2d uses A2A only for submit, follow-up and cancel; `a2aState` in the read-model must not be read as progress.
+
+**First real-model RSS** (DeepInfra `deepseek-ai/DeepSeek-V4.1-Flash-1017`, one worker, commit task + a follow-up that is
+cancelled mid model call): **peak 410 / 460 / 441 MiB** in three runs (`docker stats`, includes page cache; limit 2 GiB),
+0.0002-0.003 USD per run. S4 still replaces the planning number with a 4- then 8-way run.
+
+Not done in S2d (deliberate, listed so nobody assumes them): per-worker private docker network (only the S3 memory writer
+needs it); toolchain-layer eligibility (`toolchain_missing`) and offline pnpm install; the plugin-side fail-closed for exit
+126/127 and the `hook_broken` event (the immutable read-only hook copy plus the entrypoint's MANIFEST self-test, exit 14,
+block the launch instead); watchdog container-mode rules, the periodic probe loop and the `kookr status/peek` read-model
+(S2b built them; nothing calls them yet); the real-task comparison against a TUI run of the same fixture.
 
 ## Non-goals
 
@@ -413,7 +453,7 @@ format, egress filtering (Phase A).
 4. Upgrade path: a new opencode pin changes the image digest and the plugin
    API; the version check and the image tag must move together.
 
-5. Toolchain fit: disk and fidelity cost of per-repo toolchain layers and `node_modules` per clone (S2d measures); host-sandboxed tool execution as the fallback.
+5. Toolchain fit: disk and fidelity cost of per-repo toolchain layers and `node_modules` per clone (not measured in S2d: the live gate used a repo-neutral commit task, not a toolchain run); host-sandboxed tool execution as the fallback.
 
 ## Appendix B: Phase B (do not build now)
 

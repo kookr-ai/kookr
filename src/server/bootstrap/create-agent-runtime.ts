@@ -6,6 +6,8 @@ import { CodexCliAdapter } from '../../adapters/codex-cli-adapter.js';
 import { GrokBuildAdapter } from '../../adapters/grok-build-adapter.js';
 import type { GrokInstalledState } from '../../adapters/grok-build-preflight.js';
 import { OpenCodeAdapter } from '../../adapters/opencode-adapter.js';
+import { createOpenCodeContainerRuntime, type OpenCodeContainerRuntime } from '../../adapters/opencode-container-runtime.js';
+import { OpenCodeRoutingAdapter } from '../../adapters/opencode-routing-adapter.js';
 import { isOpenCodeEnabled, OPENCODE_ENABLED_ENV } from '../../adapters/opencode-preflight.js';
 import type { ProbeExecRunner } from '../../adapters/probe-agent-binary.js';
 import { RoutingAgentAdapter } from '../../adapters/routing-agent-adapter.js';
@@ -82,6 +84,8 @@ export interface AgentRuntime {
   grokBuildAdapter: GrokBuildAdapter;
   /** Constructed only when `KOOKR_OPENCODE_ENABLED=1`; registered (and thus launchable) only when its pinned-version preflight passed. */
   openCodeAdapter?: OpenCodeAdapter;
+  /** Set only when `KOOKR_OPENCODE_CONTAINERS` is on and configured (RFC #3541 S2d). */
+  openCodeContainers?: OpenCodeContainerRuntime;
   adapterRegistry: AdapterRegistry;
   adapter: AgentAdapter;
   agentPreflight: Record<string, AgentPreflightSnapshot>;
@@ -217,6 +221,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
   // agent must not stop the server from booting.
   const openCodeEnv = deps.opencodeEnv ?? process.env;
   let openCodeAdapter: OpenCodeAdapter | undefined;
+  let openCodeContainers: OpenCodeContainerRuntime | undefined;
   if (isOpenCodeEnabled(openCodeEnv)) {
     openCodeAdapter = new OpenCodeAdapter(deps.terminalBackend, deps.taskStore, {
       terminalInputWriter,
@@ -230,7 +235,14 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     });
     const openCodePreflight = await openCodeAdapter.preflight();
     if (openCodePreflight.kind === 'ok') {
-      adapterRegistry.register(openCodeAdapter);
+      // Container mode (RFC #3541): one routing adapter under `opencode` picks TUI or container per task.
+      openCodeContainers = await createOpenCodeContainerRuntime({
+        taskStore: deps.taskStore, backend: deps.terminalBackend, env: openCodeEnv, hooksDir: deps.hooksDir,
+        warn: (m) => preflightLogger.warn(m),
+      });
+      adapterRegistry.register(
+        openCodeContainers ? new OpenCodeRoutingAdapter(openCodeAdapter, openCodeContainers.adapter, deps.taskStore) : openCodeAdapter,
+      );
     } else {
       preflightLogger.warn(
         `[startup] warning: opencode unavailable (${openCodePreflight.reason}); ` +
@@ -282,6 +294,7 @@ export async function createAgentRuntime(deps: AgentRuntimeDeps): Promise<AgentR
     codexCliAdapter,
     grokBuildAdapter,
     openCodeAdapter,
+    openCodeContainers,
     adapterRegistry,
     adapter,
     agentPreflight,

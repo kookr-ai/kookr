@@ -1572,6 +1572,15 @@ export class TaskStore {
     this.markTaskDirty(taskId);
   }
 
+  /** Persist how an opencode task launches (host TUI or worker container; RFC #3541). Decided once, then honoured by every relaunch. */
+  recordOpenCodeLaunchMode(taskId: string, mode: 'tui' | 'container'): void {
+    const task = this.tasks.get(taskId);
+    if (!task || task.metadata?.opencodeLaunchMode === mode) return;
+    task.metadata = { ...(task.metadata ?? {}), opencodeLaunchMode: mode };
+    task.updatedAt = new Date();
+    this.markTaskDirty(taskId);
+  }
+
   updateTokenUsage(taskId: string, usage: TokenUsage): Task {
     const task = this.tasks.get(taskId);
     if (!task) {

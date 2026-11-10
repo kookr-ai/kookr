@@ -796,7 +796,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     });
   }
 
-  const { adapterRegistry, adapter, agentPreflight } = await createAgentRuntime({
+  const { adapterRegistry, adapter, agentPreflight, openCodeContainers } = await createAgentRuntime({
     ...config.agentPreflight,
     terminalBackend,
     terminalInputWriter: terminalInputCoordinator,
@@ -1586,6 +1586,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
     },
   });
   realtime.setCoordinatorAuditTailProvider(hookIngestion);
+  // opencode worker containers (RFC #3541 S2d): hand over the watcher, re-attach running containers' ledgers (adopt
+  // after a restart), start the reconciler. No-op unless KOOKR_OPENCODE_CONTAINERS is configured.
+  if (openCodeContainers) {
+    const adopted = await openCodeContainers.bindWatcher(hookWatcher);
+    if (adopted.length > 0) console.log(`[containers] adopted ${adopted.length} opencode worker container(s): ${adopted.join(', ')}`);
+    openCodeContainers.startReconciler();
+  }
 
   // Register transcripts for resumed sessions so token tracker picks up existing
   // data. Filtered to non-terminal Claude Code sessions (issue #1620, change a):
@@ -4081,6 +4088,7 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       watchdog,
       terminalBackend,
       hookWatcher,
+      hookWatchOverride: openCodeContainers ? (name) => openCodeContainers.adapter.ledgerFor(name) : undefined,
       suppressionTracker,
       interactionLog,
       adapterRegistry,

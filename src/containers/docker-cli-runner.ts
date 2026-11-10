@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ContainerInfo, DockerRunnerPort, NetworkInfo } from './ports.js';
+import { CONTAINER_NAME_PREFIX, type ContainerInfo, type ContainerRunSpec, type DockerRunnerPort, type NetworkInfo } from './ports.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -30,6 +30,49 @@ export class DockerCliRunner implements DockerRunnerPort {
     return name;
   }
 
+  /** Container operations are limited to Kookr's own `kookr-oc-` names, whatever the caller passes (#3557). */
+  private static safeContainer(name: string): string {
+    DockerCliRunner.safeName(name);
+    if (!name.startsWith(CONTAINER_NAME_PREFIX)) throw new Error(`refusing unsafe docker object name ${JSON.stringify(name)} (not a ${CONTAINER_NAME_PREFIX} container)`);
+    return name;
+  }
+
+  /** The argv for `docker run` (exported for tests). Values are single argv entries; nothing goes through a shell. */
+  static runArgs(spec: ContainerRunSpec): string[] {
+    DockerCliRunner.safeContainer(spec.name);
+    if (!/^[A-Za-z0-9][A-Za-z0-9_./:@-]*$/.test(spec.image)) throw new Error(`refusing unsafe image reference ${JSON.stringify(spec.image)}`);
+    const a = ['run', '-d', '--pull', 'never', '--name', spec.name, '--init', '--read-only', '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+      '--memory', spec.memory, '--cpus', spec.cpus, '--pids-limit', String(spec.pidsLimit), '--user', spec.user,
+      '--log-opt', 'max-size=10m', '--log-opt', 'max-file=3', '-p', `127.0.0.1::${spec.publishPort}`];
+    for (const [k, v] of Object.entries(spec.labels)) a.push('--label', `${k}=${v}`);
+    for (const t of spec.tmpfs) a.push('--tmpfs', t);
+    for (const m of spec.mounts) a.push('-v', `${m.source}:${m.target}:${m.readOnly ? 'ro' : 'rw'}`);
+    for (const [k, v] of Object.entries(spec.env)) a.push('-e', `${k}=${v}`);
+    a.push(spec.image);
+    return a;
+  }
+
+  async runContainer(spec: ContainerRunSpec): Promise<string> {
+    return (await this.exec(DockerCliRunner.runArgs(spec), this.timeoutMs)).trim();
+  }
+
+  async publishedPort(name: string, containerPort: number): Promise<number> {
+    const out = await this.exec(['port', DockerCliRunner.safeContainer(name), `${containerPort}/tcp`], this.timeoutMs);
+    // One line per binding, e.g. `127.0.0.1:51228` (and possibly an IPv6 line); take the loopback IPv4 one.
+    const m = /^127\.0\.0\.1:(\d+)$/m.exec(out);
+    if (!m) throw new Error(`no loopback port published for ${name}:${containerPort}`);
+    return Number(m[1]);
+  }
+
+  async healthStatus(name: string): Promise<string | undefined> {
+    const out = (await this.exec(['inspect', '-f', '{{if .State.Health}}{{.State.Health.Status}}{{end}}', DockerCliRunner.safeContainer(name)], this.timeoutMs)).trim();
+    return out || undefined;
+  }
+
+  async forceRemoveContainer(name: string): Promise<void> {
+    await this.exec(['rm', '-f', DockerCliRunner.safeContainer(name)], this.timeoutMs);
+  }
+
   async listContainers(label: { key: string; value: string }): Promise<ContainerInfo[]> {
     const ids = (await this.exec(['ps', '-a', '-q', '--no-trunc', '--filter', `label=${label.key}=${label.value}`], this.timeoutMs))
       .split('\n').map((s) => s.trim()).filter(Boolean);
@@ -48,11 +91,11 @@ export class DockerCliRunner implements DockerRunnerPort {
   }
 
   async stopContainer(name: string, graceSeconds: number): Promise<void> {
-    await this.exec(['stop', '-t', String(Math.max(0, Math.floor(graceSeconds))), DockerCliRunner.safeName(name)], this.timeoutMs + graceSeconds * 1000);
+    await this.exec(['stop', '-t', String(Math.max(0, Math.floor(graceSeconds))), DockerCliRunner.safeContainer(name)], this.timeoutMs + graceSeconds * 1000);
   }
 
   async removeContainer(name: string): Promise<void> {
-    await this.exec(['rm', DockerCliRunner.safeName(name)], this.timeoutMs);
+    await this.exec(['rm', DockerCliRunner.safeContainer(name)], this.timeoutMs);
   }
 
   async listNetworks(label: { key: string; value: string }): Promise<NetworkInfo[]> {
