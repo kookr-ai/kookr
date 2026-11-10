@@ -1,0 +1,289 @@
+import { execFileSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { renameSync, truncateSync, appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { HookFileWatcher } from '../server/hook-watcher.js';
+import type { HookEventInjector } from '../server/hook-ingestion.js';
+import { ContainerLedgerIngest, containerSessionKey, ledgerLocation, type LedgerWatcherPort } from './ledger-ingest.js';
+
+describe('ledger identity and paths', () => {
+  test('session key is a pure function of task id + launch token and matches the container name shape', () => {
+    expect(containerSessionKey('abcdef1234567890', 'tok123')).toBe('kookr-oc-abcdef12-tok123');
+    expect(containerSessionKey('abcdef1234567890', 'tok123')).toBe(containerSessionKey('abcdef1234567890', 'tok123'));
+    expect(containerSessionKey('abcdef1234567890', 'tok124')).not.toBe(containerSessionKey('abcdef1234567890', 'tok123'));
+  });
+  test('rejects ids that could escape the spool dir', () => {
+    for (const bad of ['../x', 'a/b', '', 'a b', '.']) expect(() => ledgerLocation('/s', bad, 'tok123')).toThrow('invalid task id');
+    for (const bad of ['../x', 'ab', 'a/b', 'tok 12', 'x'.repeat(40)]) expect(() => ledgerLocation('/s', 'task1', bad)).toThrow('invalid launch token');
+  });
+  test('layout is <spool>/<task>/<token>/ledger.jsonl', () => {
+    expect(ledgerLocation('/s', 'task1', 'tok123').file).toBe('/s/task1/tok123/ledger.jsonl');
+  });
+});
+
+describe('ContainerLedgerIngest.prepare', () => {
+  let dir: string;
+  const noWatch: LedgerWatcherPort = { watch() {}, stop() {}, isWatching: () => false };
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'oc-spool-')); });
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  test('creates private dirs and an empty 0600 ledger, idempotently and without truncating', async () => {
+    const ing = new ContainerLedgerIngest(dir, noWatch);
+    const loc = await ing.prepare('task1', 'tok123');
+    expect(statSync(loc.dir).mode & 0o777).toBe(0o700);
+    expect(statSync(loc.file).mode & 0o777).toBe(0o600);
+    appendFileSync(loc.file, '{"a":1}\n');
+    await ing.prepare('task1', 'tok123');
+    expect(readFileSync(loc.file, 'utf8')).toBe('{"a":1}\n');
+  });
+  test('refuses a symlinked spool component or ledger', async () => {
+    const ing = new ContainerLedgerIngest(dir, noWatch);
+    mkdirSync(join(dir, 'real'));
+    symlinkSync(join(dir, 'real'), join(dir, 'task2'));
+    await expect(ing.prepare('task2', 'tok123')).rejects.toThrow('not a plain directory');
+    const loc = await ing.prepare('task3', 'tok123');
+    rmSync(loc.file);
+    writeFileSync(join(dir, 'secret'), 'hostdata');
+    symlinkSync(join(dir, 'secret'), loc.file);
+    await expect(ing.prepare('task3', 'tok123')).rejects.toThrow('not a regular file');
+  });
+  test('attach starts one untrusted watch under the derived key; adopt replays from the checkpoint; detach stops', async () => {
+    const calls: Array<[string, unknown]> = [];
+    let watching = false;
+    const w: LedgerWatcherPort = {
+      watch: (k, o) => { calls.push([k, o]); watching = true; },
+      stop: (k) => { calls.push([`stop:${k}`, null]); watching = false; },
+      isWatching: () => watching,
+    };
+    const ing = new ContainerLedgerIngest(dir, w);
+    const key = ing.attach('task1', 'tok123');
+    ing.attach('task1', 'tok123'); // idempotent
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toMatchObject({ untrusted: true, replayExisting: false, filePath: join(dir, 'task1', 'tok123', 'ledger.jsonl') });
+    ing.detach('task1', 'tok123');
+    ing.attach('task1', 'tok123', { adopt: true });
+    expect(calls[2]![1]).toMatchObject({ replayExisting: true, suppressParseAlertsForExisting: true, useReplayCheckpoint: true });
+    expect(key).toBe('kookr-oc-task1-tok123');
+  });
+});
+
+describe('real HookFileWatcher on a spool ledger', () => {
+  let dir: string;
+  let hooksDir: string;
+  let seen: Array<{ key: string; raw: string }>;
+  let replayFlags: boolean[];
+  let watcher: HookFileWatcher;
+  const injector: HookEventInjector = {
+    injectHookEvent(tmux, raw, _a, opts) {
+      seen.push({ key: tmux, raw });
+      replayFlags.push((opts as { startupReplay?: boolean } | undefined)?.startupReplay === true);
+      return { parseStatus: 'parsed', agentType: 'opencode', sequence: seen.length, origin: 'live' } as never;
+    },
+  };
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'oc-spool-w-'));
+    hooksDir = mkdtempSync(join(tmpdir(), 'oc-hooks-'));
+    seen = [];
+    replayFlags = [];
+    watcher = new HookFileWatcher(hooksDir, injector, { pollIntervalMs: 50 });
+  });
+  afterEach(() => { watcher.stopAll(); rmSync(dir, { recursive: true, force: true }); rmSync(hooksDir, { recursive: true, force: true }); });
+  const until = async (f: () => boolean) => { for (let i = 0; i < 100 && !f(); i++) await new Promise((r) => setTimeout(r, 30)); };
+
+  test('events appended to the ledger reach the injector under the taskId+token key (not under hooksDir)', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"hook_event_name":"SessionStart"}\n');
+    await until(() => seen.length > 0);
+    expect(seen).toEqual([{ key: 'kookr-oc-task1-tok123', raw: '{"hook_event_name":"SessionStart"}' }]);
+  });
+
+  test('adopt after a restart replays existing records under the same key', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":1}\n{"n":2}\n');
+    ing.attach('task1', 'tok123', { adopt: true });
+    await until(() => seen.length >= 2);
+    expect(seen.map((s) => s.key)).toEqual(['kookr-oc-task1-tok123', 'kookr-oc-task1-tok123']);
+  });
+
+  test('a worker that swaps the ledger for a symlink to a host file never gets that file read', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    rmSync(loc.file);
+    writeFileSync(join(dir, 'hostsecret'), '{"stolen":"host-file-content"}\n');
+    symlinkSync(join(dir, 'hostsecret'), loc.file);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(seen).toEqual([]);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.errorCount).toBeGreaterThan(0);
+    expect(h?.lastError).toContain('not a regular file');
+  });
+
+  test('a worker that swaps the ledger for a fifo cannot hang the host read', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    rmSync(loc.file);
+    execFileSync('mkfifo', [loc.file]);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(seen).toEqual([]);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.lastError).toContain('not a regular file');
+    // The watcher is still alive: the thread pool is not pinned, so unrelated async fs work completes.
+    await expect(readFile(join(dir, 'does-not-exist')).catch(() => 'ok')).resolves.toBe('ok');
+  });
+
+  test('a huge sparse ledger is read in bounded chunks and skipped, not allocated whole', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    truncateSync(loc.file, 3 * 1024 * 1024 * 1024);
+    const before = process.memoryUsage().arrayBuffers;
+    await new Promise((r) => setTimeout(r, 500));
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(1024 * 1024 * 1024); // 3 GiB file: never allocated whole (garbage from 16 MiB passes may not be collected yet)
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.errorCount).toBeGreaterThan(0); // lastError is cleared by the next healthy read
+  });
+
+  test('adopt replay never reads through a symlinked ledger', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    rmSync(loc.file);
+    writeFileSync(join(dir, 'hostsecret'), '{"stolen":1}\n');
+    symlinkSync(join(dir, 'hostsecret'), loc.file);
+    ing.attach('task1', 'tok123', { adopt: true });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen).toEqual([]);
+  });
+
+  test('a valid record bigger than one read chunk arrives intact, followed by the next record', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    const big = JSON.stringify({ hook_event_name: 'PostToolUse', out: 'x'.repeat(1_500_000) });
+    appendFileSync(loc.file, `${big}\n{"hook_event_name":"Stop"}\n`);
+    await until(() => seen.length >= 2);
+    expect(seen.map((s) => s.raw)).toEqual([big, '{"hook_event_name":"Stop"}']);
+  });
+
+  test.each([0, 1, 2])('multi-byte text straddling a chunk boundary (pad %i) keeps the byte offset exact', async (pad) => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    const big = JSON.stringify({ o: 'p'.repeat(pad) + '\u20ac'.repeat(500_000) });
+    appendFileSync(loc.file, `${big}\n{"n":"after"}\n`);
+    await until(() => seen.length >= 2);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen.map((s) => s.raw)).toEqual([big, '{"n":"after"}']);
+  });
+
+  test('a record over the cap is discarded up to its newline; the next record still arrives', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, `{"o":"${'y'.repeat(17 * 1024 * 1024)}"}\n{"n":"after"}\n`);
+    await until(() => seen.length >= 1);
+    expect(seen.map((s) => s.raw)).toEqual(['{"n":"after"}']);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.errorCount).toBeGreaterThan(0);
+  });
+
+  test('adopt replays a ledger larger than one chunk entirely as startup replay', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'z'.repeat(2000) });
+    const n = 1300; // ~2.6 MiB
+    appendFileSync(loc.file, `${line}\n`.repeat(n));
+    ing.attach('task1', 'tok123', { adopt: true });
+    await until(() => seen.length >= n);
+    expect(seen.length).toBe(n);
+    expect(replayFlags.every(Boolean)).toBe(true);
+  });
+
+  test('a torn line does not swallow the valid records after it', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"torn":"abc\n{"n":1}\n{"n":2}\n');
+    await until(() => seen.length >= 3);
+    expect(seen.map((s) => s.raw).slice(1)).toEqual(['{"n":1}', '{"n":2}']);
+  });
+
+  test('truncating the ledger clears an in-progress oversize discard', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, 'y'.repeat(17 * 1024 * 1024));
+    await new Promise((r) => setTimeout(r, 1500));
+    truncateSync(loc.file, 0);
+    appendFileSync(loc.file, '{"n":"first"}\n{"n":"second"}\n');
+    await until(() => seen.length >= 2);
+    expect(seen.map((s) => s.raw)).toEqual(['{"n":"first"}', '{"n":"second"}']);
+  });
+
+  test('a ~120 MiB replay backlog drains completely under the single read lock', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'z'.repeat(2000) });
+    const n = 60_000; // ~120 MiB
+    for (let i = 0; i < 10; i++) appendFileSync(loc.file, `${line}\n`.repeat(n / 10));
+    ing.attach('task1', 'tok123', { adopt: true });
+    await until(() => seen.length >= n);
+    expect(seen.length).toBe(n);
+  }, 60_000);
+
+  test('a stop() landing mid-poll does not downgrade the in-flight read to the symlink-following trusted path', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":1}\n');
+    await until(() => seen.length >= 1);
+    const key = 'kookr-oc-task1-tok123';
+    const w = watcher as unknown as { statFor: (...a: unknown[]) => Promise<unknown>; stop: (k: string) => void };
+    const orig = w.statFor.bind(w);
+    let armed = true;
+    w.statFor = async (...a: unknown[]) => {
+      const r = await orig(...a);
+      if (armed) {
+        armed = false;
+        watcher.stop(key);
+        rmSync(loc.file);
+        writeFileSync(join(dir, 'hostsecret'), '{"host":"SECRET"}\n');
+        symlinkSync(join(dir, 'hostsecret'), loc.file);
+      }
+      return r;
+    };
+    appendFileSync(loc.file, '{"n":2}\n');
+    await new Promise((r) => setTimeout(r, 600));
+    expect(seen.map((s) => s.raw)).not.toContain('{"host":"SECRET"}');
+  });
+
+  test('rotation: a lagging untrusted reader recovers the whole rotated tail (more than one window)', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"n":"first"}\n');
+    await until(() => seen.length >= 1);
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'q'.repeat(1000) });
+    const n = 3000; // ~3 MiB, over the 1 MiB window
+    appendFileSync(loc.file, `${line}\n`.repeat(n));
+    renameSync(loc.file, `${loc.file}.1`);
+    writeFileSync(loc.file, '{"n":"fresh"}\n', { mode: 0o600 });
+    await until(() => seen.length >= n + 2);
+    expect(seen.length).toBe(n + 2);
+    expect(seen.at(-1)?.raw).toBe('{"n":"fresh"}');
+  });
+
+  test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {
+    writeFileSync(join(hooksDir, 'kookr-tui1.jsonl'), '');
+    watcher.watch('kookr-tui1');
+    appendFileSync(join(hooksDir, 'kookr-tui1.jsonl'), '{"x":1}\n');
+    await until(() => seen.length > 0);
+    expect(seen[0]).toEqual({ key: 'kookr-tui1', raw: '{"x":1}' });
+  });
+});

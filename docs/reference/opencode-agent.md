@@ -331,3 +331,15 @@ not named `kookr-oc-*` with this instance's label, are never touched. Reconciler
 ## Pipeline playbook
 
 `.kookr/playbooks/opencode-scoped-fix-pipeline.md` chains a `scoped-fix` worker, a fresh `reviewer`, at most two fix rounds and the Claude independent-merge-review gate (see `docs/rfc/rfc-opencode-scoped-fix-pipeline.md`). Operators create two labels first: `opencode-eligible` (issues the pipeline may take) and `opencode-pipeline-failed` (set by the pipeline on a failure exit; remove it to allow a retry). Merging is off unless the `mergeEnabled` parameter is `true`.
+
+### Container hook ledger (internal)
+
+A container worker's hook events are appended to `<spool>/<taskId>/<launchToken>/ledger.jsonl` (the dir is the
+container's rw `/kookr-spool` mount, created 0700/0600 by the host before `docker run`). The host tails it with the same
+`HookFileWatcher` that serves TUI sessions, under the event-session key `kookr-oc-<taskId first 8>-<launchToken>`, a pure
+function of persisted values, so a container adopted after a Kookr restart keeps its event identity. The spool is
+worker-writable, so the watcher is told the file is `untrusted`: it `lstat`s and opens with `O_NOFOLLOW` and refuses a
+symlink or any non-regular file (including a rotated `.1`), recording a watcher health error instead. Untrusted reads open with
+`O_NOFOLLOW|O_NONBLOCK`, `fstat` the handle (regular file, same inode as the `lstat`), and are read in 1 MiB passes (the window doubles to 16 MiB for one large record; a longer record is discarded up to its newline), framed on raw bytes at newlines,
+so a swapped-in fifo or a sparse multi-GB file cannot hang or exhaust the host. Nothing writes the
+ledger yet; the in-container hook command arrives with the launch slice.
