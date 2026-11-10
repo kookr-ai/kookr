@@ -13,15 +13,28 @@ function setup() {
 }
 
 describe('OpenCodeRoutingAdapter', () => {
-  test('a new task launches as a container and the mode is persisted only after the launch succeeds', async () => {
+  test('a new task launches as a container and the mode is persisted before the launch starts', async () => {
     const { store, container, tui, router } = setup();
     const t = store.createTask({ prompt: 'p', cwd: '/w' });
-    container.launch.mockRejectedValueOnce(new Error('cap'));
-    await expect(router.launch(t.id, 'p', '/w')).rejects.toThrow('cap');
-    expect(store.getTask(t.id)!.metadata?.opencodeLaunchMode).toBeUndefined();
     await router.launch(t.id, 'p', '/w');
     expect(store.getTask(t.id)!.metadata?.opencodeLaunchMode).toBe('container');
     expect(tui.launch).not.toHaveBeenCalled();
+    expect(container.launch).toHaveBeenCalledOnce();
+  });
+
+  test('a container launch that fails AFTER registering its session is retried as a container, never on the host TUI', async () => {
+    const { store, container, tui, router } = setup();
+    const t = store.createTask({ prompt: 'p', cwd: '/w' });
+    container.launch.mockImplementationOnce(async (id: string) => {
+      store.addSession(id, { tmuxSession: 'kookr-oc-abcd1234-tok123456789', agentType: 'opencode', cwd: '/w', createdAt: new Date() });
+      store.updateSession(id, 'kookr-oc-abcd1234-tok123456789', { lastStatus: 'aborted' });
+      throw new Error('plugin_not_loaded');
+    });
+    await expect(router.launch(t.id, 'p', '/w')).rejects.toThrow('plugin_not_loaded');
+    await router.launch(t.id, 'p', '/w', { sessionId: 'ses_1' });
+    expect(tui.launch).not.toHaveBeenCalled();
+    expect(container.launch).toHaveBeenCalledTimes(2);
+    expect(store.getTask(t.id)!.metadata?.opencodeLaunchMode).toBe('container');
   });
 
   test('a task persisted as tui stays tui (no silent switch when the flag turns on later)', async () => {

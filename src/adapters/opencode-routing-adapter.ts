@@ -40,9 +40,10 @@ export class OpenCodeRoutingAdapter implements AgentAdapter {
       this.taskStore.recordOpenCodeLaunchMode(taskId, 'tui');
       return handle;
     }
-    const handle = await this.container.launch(taskId, prompt, cwd, resume, opts);
+    // Decided once, BEFORE anything can fail: a container launch that dies after registering its session (canary,
+    // A2A auth) must not leave a task that a retry would read as a pre-flag host task and run on the host TUI.
     this.taskStore.recordOpenCodeLaunchMode(taskId, 'container');
-    return handle;
+    return this.container.launch(taskId, prompt, cwd, resume, opts);
   }
 
   stop(handle: string): Promise<void> {
