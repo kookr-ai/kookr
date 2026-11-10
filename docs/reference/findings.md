@@ -155,9 +155,13 @@ relaunch.
 
 **Suppression / tuning.** Thresholds live in `WatchdogConfig`
 (`staleThresholdMs`, `unconditionalStaleThresholdMs`, `maxToolExecutionTimeMs`,
-`tokenActivityThresholdMs`, `gracePeriodMs`, `mcpStartupGracePeriodMs`) rather
-than environment variables. Snooze the finding to pause monitoring for a chosen
-duration (F3.7).
+`tokenActivityThresholdMs`, `gracePeriodMs`, `mcpStartupGracePeriodMs`,
+`backgroundParkGracePeriodMs`) rather than environment variables. An agent
+whose last turn ended parked on its own background work (a
+`run_in_background` shell or session cron reported by the Stop hook) is not
+flagged at all while the park is younger than `backgroundParkGracePeriodMs`
+(default 60 min) — its silence is expected. Snooze the finding to pause
+monitoring for a chosen duration (F3.7).
 
 ## `hook_disconnected`
 

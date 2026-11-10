@@ -578,7 +578,7 @@ export class Watchdog {
     // (dead background process, lost notification) still surfaces — the same
     // reason a hung tool call doesn't hide behind indefinite `tool_running`
     // suppression.
-    if (state.backgroundParkedAt > 0 && (now - state.backgroundParkedAt) < this.config.backgroundParkGracePeriodMs) {
+    if (this.isBackgroundParked(agentId, now)) {
       return { status: 'background_parked' };
     }
 
