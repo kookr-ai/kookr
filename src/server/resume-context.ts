@@ -38,10 +38,24 @@ async function fileExists(path: string): Promise<boolean> {
  * context with a `fallbackReason` when resume is not applicable, so the caller
  * can surface the reason.
  *
- * Performs a best-effort transcript-existence pre-flight. A stale transcript
- * path must not force a fresh launch when the provider session id is still
- * known: Claude Code can validate the id itself, and preserving the
- * conversation is more important than trusting Kookr's cached path.
+ * Performs a transcript-existence pre-flight, and treats a recorded-but-absent
+ * transcript as NOT resumable.
+ *
+ * That pre-flight is load-bearing rather than advisory, because `transcriptPath`
+ * is not a path Kookr guesses: the agent reports it on its `session_start` hook,
+ * so it is the provider's own answer for where this conversation lives. If the
+ * agent named a path and nothing is there, the conversation was never persisted
+ * (for example a session spawned with transcript saving suppressed) or has since
+ * been deleted — either way there is nothing to resume.
+ *
+ * Handing such an id to the adapter anyway does not degrade gracefully. Claude
+ * Code answers `No conversation found with session ID: <id>` and exits
+ * immediately, so the replacement worker dies on startup and the task is reaped
+ * as hung instead of being recovered. Reporting a `fallbackReason` here lets the
+ * caller launch fresh from the original prompt, which at least runs.
+ *
+ * A session that never recorded a `transcriptPath` at all is still resumed by id
+ * alone: there is no evidence against it, and the id may well be valid.
  */
 export async function buildResumeContext(
   session: SessionInfo,
@@ -51,8 +65,8 @@ export async function buildResumeContext(
   }
   if (session.transcriptPath && !(await fileExists(session.transcriptPath))) {
     return {
-      resumeContext: { sessionId: session.claudeSessionId },
-      fallbackReason: undefined,
+      resumeContext: undefined,
+      fallbackReason: `transcript missing at ${session.transcriptPath} — conversation ${session.claudeSessionId} was never persisted or has been deleted`,
     };
   }
   return {
@@ -88,14 +102,22 @@ export function hasResumableSession(task: Task): boolean {
 }
 
 /**
- * Build the resume context for a task's newest recoverable session, or
- * `undefined` when none is resumable. Convenience wrapper over
- * {@link pickResumableSession} + {@link buildResumeContext} for the
+ * Build the resume context for a task's newest recoverable session. Convenience
+ * wrapper over {@link pickResumableSession} + {@link buildResumeContext} for the
  * reopen/relaunch path.
+ *
+ * Returns the `fallbackReason` alongside the context so the caller can say why a
+ * reopen that the operator expected to resume launched fresh instead. An
+ * operator who presses Reopen and silently gets a blank restart has no way to
+ * tell that apart from a resume that worked, which is exactly the confusion this
+ * path exists to remove.
  */
-export async function buildTaskResumeContext(task: Task): Promise<ResumeContext | undefined> {
+export async function buildTaskResumeContext(
+  task: Task,
+): Promise<{ resumeContext: ResumeContext | undefined; fallbackReason: string | undefined }> {
   const session = pickResumableSession(task);
-  if (!session) return undefined;
-  const { resumeContext } = await buildResumeContext(session);
-  return resumeContext;
+  if (!session) {
+    return { resumeContext: undefined, fallbackReason: 'no session carries a provider conversation id' };
+  }
+  return buildResumeContext(session);
 }
