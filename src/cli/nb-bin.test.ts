@@ -3,10 +3,10 @@
 // NB_DIR to the kookr location, and (Objective C) commits every notebook
 // mutation when NB_DIR is a git repo so a daily job can push the history.
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 // The .gitignore the host setup writes into the notebook repo so only the
 // lesson files are versioned (not the churny usage ring / retro sentinels).
@@ -207,5 +207,121 @@ describe('bin/nb.js — discovery passes through to the package (no shim interce
     const before = Number(git(['rev-list', '--count', 'HEAD']));
     nb(['list']);
     expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before); // list is not mutating
+  });
+});
+
+describe('bin/nb.js — `move` (promotion) is auto-committed', () => {
+  test('nb move produces a commit in a git-backed NB_DIR and the lesson lands in the target', () => {
+    initRepo();
+    expect(nb(['add', 'topic@acme-widgets', 'a lesson that deserves promotion']).code).toBe(0);
+    const before = Number(git(['rev-list', '--count', 'HEAD']));
+    const r = nb(['move', 'topic@acme-widgets', 'topic', 'promotion']);
+    expect(r.code).toBe(0); // a refused move must not pass silently
+    expect(Number(git(['rev-list', '--count', 'HEAD']))).toBe(before + 1);
+    expect(git(['log', '-1', '--format=%s'])).toMatch(/^nb move topic@acme-widgets/);
+    expect(nb(['show', 'topic']).out).toContain('a lesson that deserves promotion');
+  });
+});
+
+describe('bin/nb.js — MUTATING set does not drift from `nb --help`', () => {
+  /** The verbs `nb --help` says write the notebook: the union of the two notes that
+   *  name them ("... accept --json" and "... accept an optional `--reason`"). */
+  function helpMutatingVerbs(): Set<string> {
+    const help = nb(['--help']).out;
+    const verbs = new Set<string>();
+    for (const re of [/^\s*- ([a-z/]+) accept --json/m, /^\s*- ([a-z/]+) accept an optional `--reason/m]) {
+      const m = re.exec(help);
+      if (!m) throw new Error(`nb --help no longer matches ${re}; update this drift test`);
+      for (const v of m[1].split('/')) verbs.add(v);
+    }
+    return verbs;
+  }
+
+  function shimMutatingVerbs(): Set<string> {
+    const m = /const MUTATING = new Set\(\[([^\]]*)\]\)/.exec(readFileSync(BIN, 'utf-8'));
+    if (!m) throw new Error('bin/nb.js MUTATING is no longer a single `new Set([...])` literal');
+    return new Set([...m[1].matchAll(/'([a-z-]+)'/g)].map((x) => x[1]));
+  }
+
+  test('every verb --help lists as mutating is in the shim set', () => {
+    const fromHelp = helpMutatingVerbs();
+    // non-vacuous: the parse must at least see the two verbs this guards
+    expect(fromHelp.has('add')).toBe(true);
+    expect(fromHelp.has('move')).toBe(true);
+    const shim = shimMutatingVerbs();
+    const missing = [...fromHelp].filter((v) => !shim.has(v));
+    expect(missing).toEqual([]);
+  });
+
+  test('the shim set holds no read-only verb (it would commit on every read)', () => {
+    for (const v of ['show', 'stale', 'search', 'stats', 'path', 'config', 'list', 'ls', 'shelves', 'roles']) {
+      expect(shimMutatingVerbs().has(v)).toBe(false);
+    }
+  });
+});
+
+describe('bin/nb.js — placement advisories on `add` (stderr only, never a refusal)', () => {
+  /** Like nb() but keeps stderr and pins the two env vars the advisories read. */
+  function nbErr(args: string[], env: Record<string, string | undefined>): { code: number; err: string } {
+    const base = cleanGitEnv();
+    delete base.KOOKR_REPO_SLUG;
+    delete base.KOOKR_NB_CURATOR;
+    for (const [k, v] of Object.entries(env)) {
+      if (v === undefined) delete base[k];
+      else base[k] = v;
+    }
+    const r = spawnSync('node', [BIN, ...args], { env: { ...base, NB_DIR: dir }, encoding: 'utf-8' });
+    return { code: r.status ?? -1, err: r.stderr ?? '' };
+  }
+
+  test('add to fleet-global without KOOKR_NB_CURATOR warns, but the lesson is still written', () => {
+    const r = nbErr(['add', 'fleet-global', 'host fact'], {});
+    expect(r.code).toBe(0);
+    expect(r.err).toMatch(/advisory: fleet-global is written only by promotion/);
+    expect(nb(['show', 'fleet-global']).out).toContain('host fact');
+  });
+
+  test('add to fleet-global is silent when KOOKR_NB_CURATOR is set', () => {
+    const r = nbErr(['add', 'fleet-global', 'host fact'], { KOOKR_NB_CURATOR: '1' });
+    expect(r.code).toBe(0);
+    expect(r.err).not.toMatch(/advisory/);
+  });
+
+  test("add to another repo's project shelf warns; the lesson is still written", () => {
+    const r = nbErr(['add', 'code-review@someone-else', 'x'], { KOOKR_REPO_SLUG: 'acme-widgets' });
+    expect(r.code).toBe(0);
+    expect(r.err).toMatch(/advisory: shelf code-review@someone-else is scoped to 'someone-else'.*'acme-widgets'/);
+    expect(nb(['show', 'code-review@someone-else']).out).toContain('x');
+  });
+
+  test('add to this repo\'s own project shelf, an unscoped shelf, or with no slug set is silent', () => {
+    expect(nbErr(['add', 'code-review@acme-widgets', 'a'], { KOOKR_REPO_SLUG: 'acme-widgets' }).err).toBe('');
+    expect(nbErr(['add', 'code-review', 'b'], { KOOKR_REPO_SLUG: 'acme-widgets' }).err).toBe('');
+    expect(nbErr(['add', 'code-review@someone-else', 'c'], {}).err).toBe(''); // no slug → nothing to compare
+  });
+
+  test('a --json flag before the shelf does not hide the shelf from the advisory', () => {
+    const r = nbErr(['add', '--json', 'fleet-global', 'host fact two'], {});
+    expect(r.err).toMatch(/advisory: fleet-global/);
+  });
+
+  test('a --reason value before the shelf is not mistaken for the shelf', () => {
+    const r = nbErr(['add', '--reason', 'other', 'fleet-global', 'host fact three'], {});
+    expect(r.err).toMatch(/advisory: fleet-global/);
+  });
+
+  test('an empty KOOKR_NB_CURATOR counts as unset', () => {
+    expect(nbErr(['add', 'fleet-global', 'host fact four'], { KOOKR_NB_CURATOR: '' }).err).toMatch(/advisory/);
+  });
+
+  test('a rejected add (too long) prints no advisory: nothing was written to the wrong shelf', () => {
+    const r = nbErr(['add', 'fleet-global', 'x'.repeat(300)], {});
+    expect(r.code).not.toBe(0);
+    expect(r.err).not.toMatch(/advisory/);
+  });
+
+  test('a read of fleet-global prints no advisory', () => {
+    nbErr(['add', 'fleet-global', 'host fact'], { KOOKR_NB_CURATOR: '1' });
+    expect(nbErr(['show', 'fleet-global'], {}).err).not.toMatch(/advisory/);
   });
 });
