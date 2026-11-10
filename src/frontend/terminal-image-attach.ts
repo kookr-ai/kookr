@@ -172,12 +172,17 @@ export async function attachImagesToTerminal(
   files: readonly File[],
   io: ImageAttachIo,
 ): Promise<ImageAttachOutcome> {
-  const results = await Promise.allSettled(files.map((file) => io.upload(file)));
   const paths: string[] = [];
   const failures: string[] = [];
-  for (const result of results) {
-    if (result.status === 'fulfilled') paths.push(result.value.path);
-    else failures.push(result.reason instanceof Error ? result.reason.message : 'upload failed');
+  // One upload at a time: each has its own timeout, and parallel uploads would
+  // share the link, so a multi-image drop over a slow remote connection could
+  // time out every upload even though each fits on its own.
+  for (const file of files) {
+    try {
+      paths.push((await io.upload(file)).path);
+    } catch (error) {
+      failures.push(error instanceof Error ? error.message : 'upload failed');
+    }
   }
   if (paths.length === 0) return { status: 'failed', failures };
   if (!io.isStillTarget()) return { status: 'stale' };

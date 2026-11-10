@@ -195,19 +195,26 @@ describe('attachImagesToTerminal', () => {
     expect(paste.mock.calls).toEqual([['/up/a.png '], ['/up/c.png ']]);
   });
 
-  it('pastes in drop order even when a later upload finishes first', async () => {
+  it('uploads one image at a time and pastes them in drop order', async () => {
     const paste = vi.fn().mockReturnValue(true);
+    const started: string[] = [];
     let releaseFirst!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const pending = attachImagesToTerminal([file('a.png', 'image/png'), file('b.png', 'image/png')], {
-      // The first (say, larger) image is still uploading after the second has finished.
-      upload: async (f) => { if (f.name === 'a.png') await firstGate; return uploadOk(`/up/${f.name}`); },
+      upload: async (f) => {
+        started.push(f.name);
+        if (f.name === 'a.png') await firstGate;
+        return uploadOk(`/up/${f.name}`);
+      },
       isStillTarget: () => true,
       paste,
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
+    // The second upload must not compete with the first for the link.
+    expect(started).toEqual(['a.png']);
     releaseFirst();
     await pending;
+    expect(started).toEqual(['a.png', 'b.png']);
     expect(paste.mock.calls).toEqual([['/up/a.png '], ['/up/b.png ']]);
   });
 
