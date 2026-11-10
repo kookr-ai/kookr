@@ -1,4 +1,7 @@
-// src/adapters/session-inherited-env.ts — markers the server must not pass down.
+// src/adapters/session-spawn-env.ts — the environment a spawned agent receives.
+//
+// Owns one choke point, `composeSessionSpawnEnv`, for both env modes, the
+// inherited-marker strip below, and TERM normalization.
 //
 // Spawned agent sessions inherit the Kookr server's own `process.env` (the
 // `envMode: 'inherit'` path in local-dtach-backend.ts). That is normally what we
@@ -27,6 +30,8 @@
 // and for however the marker reached the server, which is why this lives in the
 // backend rather than in one adapter.
 
+import { ensureInteractiveTermEnv } from './session-term-env.js';
+
 /**
  * Environment variables describing the *server's* process-tree position, which
  * must never be inherited by a spawned agent CLI.
@@ -35,8 +40,6 @@
  * agent reads them as self-describing belong here. Anything an agent legitimately
  * needs — credentials, PATH, locale — must keep flowing through.
  */
-import { ensureInteractiveTermEnv } from './session-term-env.js';
-
 export const NON_INHERITABLE_AGENT_ENV_VARS: readonly string[] = [
   // Claude Code: suppresses transcript persistence for nested sessions, which
   // silently disables conversation resume for every task Kookr launches.

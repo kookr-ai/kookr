@@ -87,12 +87,14 @@ describe('composeSessionSpawnEnv', () => {
     expect('ANTHROPIC_API_KEY' in env).toBe(false);
   });
 
+  // A distinct value proves precedence rather than passthrough: processEnv has
+  // '1', so asserting '1' would also pass if the strip never ran.
   test('an explicit specEnv value wins over the strip', () => {
     const env = composeSessionSpawnEnv({
       processEnv,
-      specEnv: { CLAUDE_CODE_CHILD_SESSION: '1' },
+      specEnv: { CLAUDE_CODE_CHILD_SESSION: 'explicit' },
     });
-    expect(env.CLAUDE_CODE_CHILD_SESSION).toBe('1');
+    expect(env.CLAUDE_CODE_CHILD_SESSION).toBe('explicit');
   });
 
   test('specEnv overrides an inherited value', () => {
@@ -111,6 +113,42 @@ describe('composeSessionSpawnEnv', () => {
       specEnv: { PATH: '/opt/bin', TERM: 'dumb' },
     });
     expect(replaced.TERM).not.toBe('dumb');
+  });
+
+  test('replace mode with no specEnv yields only the normalized TERM', () => {
+    expect(composeSessionSpawnEnv({ processEnv, envMode: 'replace' })).toEqual({
+      TERM: 'xterm-256color',
+    });
+  });
+
+  test('replace mode keeps a marker the caller put in its allowlist', () => {
+    const env = composeSessionSpawnEnv({
+      processEnv,
+      envMode: 'replace',
+      specEnv: { PATH: '/opt/bin', CLAUDE_CODE_CHILD_SESSION: 'explicit' },
+    });
+    expect(env.CLAUDE_CODE_CHILD_SESSION).toBe('explicit');
+  });
+
+  test('replace mode omits PATH when the allowlist omits it', () => {
+    const env = composeSessionSpawnEnv({ processEnv, envMode: 'replace', specEnv: {} });
+    expect('PATH' in env).toBe(false);
+  });
+
+  // Nothing else pins the `processEnv = process.env` default, so swapping it for
+  // an empty object would leave every other case in this file green.
+  test('defaults to the real process environment', () => {
+    const had = Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_CODE_CHILD_SESSION');
+    const previous = process.env.CLAUDE_CODE_CHILD_SESSION;
+    process.env.CLAUDE_CODE_CHILD_SESSION = '1';
+    try {
+      const env = composeSessionSpawnEnv({});
+      expect('CLAUDE_CODE_CHILD_SESSION' in env).toBe(false);
+      expect(env.PATH).toBe(process.env.PATH);
+    } finally {
+      if (had) process.env.CLAUDE_CODE_CHILD_SESSION = previous;
+      else delete process.env.CLAUDE_CODE_CHILD_SESSION;
+    }
   });
 
   test('does not mutate the supplied process environment', () => {
