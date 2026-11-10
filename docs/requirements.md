@@ -45,7 +45,7 @@ The system SHOULD display agent metadata: display name, agent type, working dire
 - Agent type shown in detail header (Claude Code for V1)
 - Session duration shown in finding card header (`Xm`), healthy rows, and status bar — computed from session `startedAt` relative to now. The detail timeline distinguishes task age from session age and shows runtime only when a reliable execution-end time exists; a terminal status transition is not presented as execution runtime.
 - `AgentState` carries `taskName`, `cwd`, `agentType`, `taskCreatedAt`, and `sessionCreatedAt` fields populated via `Monitor.getSnapshot()`. The legacy `startedAt` field remains a compatibility projection; consumers that need task or session provenance use the explicit timestamp fields.
-- Healthy agent rows show a status dot: green for running agents, grey for completed agents (last event is `stop` with no anomaly)
+- Healthy agent rows show a state marker: a teal spinning ring for running agents, neutral grey for completed agents (last event is `stop` with no anomaly). State colours follow the four-role scheme from #3561: amber = waiting on you, red = failed or stuck, teal = working or selected, neutral otherwise, each with its own marker shape
 
 **Evidence:** Task store (`src/core/tasks.ts`) holds `cwd`, `agentType`, `createdAt`. The display name is projected in `src/server/use-cases/snapshot-projection.ts` (`promptTitle`, single-line, 200-char cap). Frontend components render metadata in FindingsPanel and DetailPanel; `TaskTimeline` distinguishes task age, session age, and terminal status time.
 
