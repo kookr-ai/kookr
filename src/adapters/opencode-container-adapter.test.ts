@@ -8,6 +8,7 @@ import { IntentStore } from '../containers/intent-store.js';
 import { ContainerLedgerIngest, type LedgerWatcherPort } from '../containers/ledger-ingest.js';
 import type { A2aClientPort, A2aTaskState } from '../containers/ports.js';
 import { TaskStore } from '../core/tasks.js';
+import { gitExecEnv } from '../core/git-helpers.js';
 import { FakeTerminalBackend } from './fake-terminal-backend.js';
 import { ContainerUnsupportedError, OpenCodeContainerAdapter, type OpenCodeContainerAdapterConfig } from './opencode-container-adapter.js';
 
@@ -45,7 +46,7 @@ let backend: FakeTerminalBackend;
 let watcher: FakeWatcher;
 const SECRET = 'sk-test-provider-key-0123456789';
 
-const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8', env: gitExecEnv() }).trim();
 
 function make(over: Partial<OpenCodeContainerAdapterConfig> = {}, env: Record<string, string | undefined> = { OPENAI_API_KEY: SECRET, PATH: process.env.PATH }) {
   return new OpenCodeContainerAdapter(
@@ -64,7 +65,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'oc-container-'));
   src = join(root, 'src');
   mkdirSync(src);
-  execFileSync('git', ['init', '-q', '-b', 'main', src]);
+  execFileSync('git', ['init', '-q', '-b', 'main', src], { env: gitExecEnv() });
   writeFileSync(join(src, 'a.txt'), 'one\n');
   g(src, 'add', '.');
   g(src, 'commit', '-qm', 'init');

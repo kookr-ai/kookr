@@ -3,16 +3,17 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync, readdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { gitExecEnv } from '../core/git-helpers.js';
 import { cloneForWorker, extractDeliverable, fsckClean, readDeliverableFile } from './clone-extract.js';
 
-const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8' }).trim();
+const g = (cwd: string, ...a: string[]) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...a], { encoding: 'utf8', env: gitExecEnv() }).trim();
 let root: string;
 let src: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'clone-extract-'));
   src = join(root, 'src');
   mkdirSync(src);
-  execFileSync('git', ['init', '-q', '-b', 'main', src]);
+  execFileSync('git', ['init', '-q', '-b', 'main', src], { env: gitExecEnv() });
   writeFileSync(join(src, 'a.txt'), 'one\n');
   g(src, 'add', '.');
   g(src, 'commit', '-qm', 'init');
