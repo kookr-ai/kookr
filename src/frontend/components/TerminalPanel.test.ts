@@ -1231,6 +1231,91 @@ describe('TerminalPanel', () => {
     expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
   });
 
+  test('does not navigate when a question menu is followed by blank screen rows', () => {
+    // A real xterm buffer always holds a full screen. Until the session's output
+    // fills it, the rows below the agent's menu are blank, so the menu is not at
+    // the end of the buffer. Rows are from Claude Code v2.1.321 in a 50-row pane.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      emitTerminalData(ws, 'seed');
+    });
+    terminal.rows = 50;
+    setTerminalBufferLines(terminal, [
+      '❯ Which color should the button be?',
+      '─'.repeat(80),
+      ' ☐ Color',
+      '',
+      'Which color do you prefer?',
+      '',
+      '❯ 1. Red (warm)',
+      '     A warm, energetic color.',
+      '  2. Green (calm)',
+      '     A calm, natural color.',
+      '  3. Type something.',
+      '─'.repeat(80),
+      '  4. Chat about this',
+      '',
+      'Enter to select · ↑/↓ to navigate · Esc to cancel',
+      ...Array.from({ length: 35 }, () => ''),
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'input', text: '\r' }));
+  });
+
+  test('navigates when the only menu sits in scrollback above an idle live screen', () => {
+    // The live screen (the last `terminal.rows` buffer rows) holds a short idle
+    // composer; an old, already-dismissed menu sits just above it in scrollback.
+    // That menu must not be read as current — Enter still advances. The buffer
+    // is longer than the screen on purpose: a regression that feeds the buffer
+    // length as the screen height (disabling the scrollback clamp) fails here.
+    const onEmptySubmit = vi.fn();
+    act(() => {
+      root.render(React.createElement(TerminalPanel, { tmuxName: 'kookr-test', visible: true, onEmptySubmit }));
+    });
+
+    const terminal = mocks.terminalInstances[0];
+    const ws = mocks.webSocketInstances[0];
+    act(() => {
+      emitTerminalData(ws, 'seed');
+    });
+    terminal.rows = 24;
+    setTerminalBufferLines(terminal, [
+      // scrollback (6 rows): the menu the operator already answered
+      'Which color do you prefer?',
+      '❯ 1. Red (warm)',
+      '  2. Green (calm)',
+      '',
+      'Enter to select · ↑/↓ to navigate · Esc to cancel',
+      '',
+      // live screen (24 rows): idle composer, then blank bottom
+      '─'.repeat(80),
+      '❯ ',
+      '─'.repeat(80),
+      '  ⏵⏵ auto mode on (shift+tab to cycle)',
+      ...Array.from({ length: 20 }, () => ''),
+    ]);
+    ws.send.mockClear();
+
+    act(() => {
+      terminal.dataHandler?.('\r');
+    });
+
+    expect(onEmptySubmit).toHaveBeenCalledOnce();
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+
   test('real keyboard Enter on a Codex selection menu is forwarded, not navigated', () => {
     const onEmptySubmit = vi.fn();
     act(() => {
