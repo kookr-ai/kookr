@@ -56,6 +56,12 @@ export interface DefaultKookrClaudeHooksOptions {
   nodePath?: string;
   /** Profile deliverable. Adds the gate as the FIRST Stop command (before retrospective and nudge). */
   deliverable?: OpenCodeDeliverableSpec;
+  /**
+   * Container mode (RFC #3541 S2d): existence is still checked against the host dirs above, but the generated
+   * commands name the paths the worker sees (node in the image, the per-task immutable copy at `/kookr-hooks`).
+   * A command that points at a host path would exit 127 in the container, which the plugin reads as "pass".
+   */
+  containerPaths?: { node: string; pluginHooksDir: string; binDir: string };
 }
 
 /** Gate (and its retries) may run a PR-body lint, so it gets a generous hook timeout. */
@@ -73,12 +79,15 @@ export function defaultKookrClaudeHooks(opts: DefaultKookrClaudeHooksOptions = {
   const hooks: ClaudeHooksConfig['hooks'] = {};
   const env: Record<string, string> = {};
   const stop: ReturnType<typeof cmd>[] = [];
+  const cp = opts.containerPaths;
 
   const gateKind = opts.deliverable ? gateKindArg(opts.deliverable) : undefined;
   if (gateKind) {
     const gate = opts.binDir ? join(opts.binDir, 'kookr-opencode-gate.js') : undefined;
     if (gate && existsSync(gate)) {
-      stop.push(cmd(`${shq(opts.nodePath ?? process.execPath)} ${shq(gate)} --kind ${shq(gateKind)}`, GATE_TIMEOUT_SEC));
+      const node = cp ? cp.node : opts.nodePath ?? process.execPath;
+      const gatePath = cp ? join(cp.binDir, 'kookr-opencode-gate.js') : gate;
+      stop.push(cmd(`${shq(node)} ${shq(gatePath)} --kind ${shq(gateKind)}`, GATE_TIMEOUT_SEC));
     } else {
       console.warn(`[opencode-adapter] deliverable gate skipped: ${gate ?? 'no bin dir'} missing`);
     }
@@ -89,16 +98,20 @@ export function defaultKookrClaudeHooks(opts: DefaultKookrClaudeHooksOptions = {
   // thing the worker does: a retrospective re-prompt arriving after it would silently clear it.
   const dir = opts.pluginHooksDir;
   if (dir && existsSync(join(dir, 'nb-inject.sh')) && existsSync(join(dir, 'nb-retro.sh'))) {
-    hooks.SessionStart = [{ matcher: '', hooks: [cmd(`bash ${shq(join(dir, 'nb-inject.sh'))}`, 15)] }];
-    stop.push(cmd(`bash ${shq(join(dir, 'nb-retro.sh'))}`, 15));
-    env.CLAUDE_PLUGIN_ROOT = dirname(dir);
+    const runDir = cp ? cp.pluginHooksDir : dir;
+    hooks.SessionStart = [{ matcher: '', hooks: [cmd(`bash ${shq(join(runDir, 'nb-inject.sh'))}`, 15)] }];
+    stop.push(cmd(`bash ${shq(join(runDir, 'nb-retro.sh'))}`, 15));
+    env.CLAUDE_PLUGIN_ROOT = dirname(runDir);
   } else {
     console.warn(`[opencode-adapter] nb hooks skipped: ${dir ? `${dir}/nb-inject.sh missing` : 'no plugin hooks dir'}`);
   }
 
   const nudge = opts.binDir ? join(opts.binDir, 'kookr-stop-nudge.js') : undefined;
   if (nudge && existsSync(nudge)) {
-    stop.push(cmd(buildStopNudgeCommand({ nudgePath: nudge, nodePath: opts.nodePath }), 10));
+    stop.push(cmd(buildStopNudgeCommand({
+      nudgePath: cp ? join(cp.binDir, 'kookr-stop-nudge.js') : nudge,
+      nodePath: cp ? cp.node : opts.nodePath,
+    }), 10));
     // The nudge is the only thing that makes an unattended worker raise completion-ready, and these
     // workers routinely finish in well under its default 45 s "trivial first stop" age gate.
     env.KOOKR_NUDGE_MIN_TASK_AGE_MS = '0';
