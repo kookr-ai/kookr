@@ -205,6 +205,38 @@ describe('real HookFileWatcher on a spool ledger', () => {
     expect(replayFlags.every(Boolean)).toBe(true);
   });
 
+  test('a torn line does not swallow the valid records after it', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, '{"torn":"abc\n{"n":1}\n{"n":2}\n');
+    await until(() => seen.length >= 3);
+    expect(seen.map((s) => s.raw).slice(1)).toEqual(['{"n":1}', '{"n":2}']);
+  });
+
+  test('truncating the ledger clears an in-progress oversize discard', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, 'y'.repeat(17 * 1024 * 1024));
+    await new Promise((r) => setTimeout(r, 1500));
+    truncateSync(loc.file, 0);
+    appendFileSync(loc.file, '{"n":"first"}\n{"n":"second"}\n');
+    await until(() => seen.length >= 2);
+    expect(seen.map((s) => s.raw)).toEqual(['{"n":"first"}', '{"n":"second"}']);
+  });
+
+  test('a ~120 MiB replay backlog drains completely under the single read lock', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'z'.repeat(2000) });
+    const n = 60_000; // ~120 MiB
+    for (let i = 0; i < 10; i++) appendFileSync(loc.file, `${line}\n`.repeat(n / 10));
+    ing.attach('task1', 'tok123', { adopt: true });
+    await until(() => seen.length >= n);
+    expect(seen.length).toBe(n);
+  }, 60_000);
+
   test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {
     writeFileSync(join(hooksDir, 'kookr-tui1.jsonl'), '');
     watcher.watch('kookr-tui1');

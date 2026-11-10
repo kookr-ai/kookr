@@ -502,6 +502,10 @@ export class HookFileWatcher {
     this.inodes.clear();
     this.reading.clear();
     this.healthBySession.clear();
+    this.pathOverrides.clear();
+    this.untrustedSessions.clear();
+    this.untrustedWindow.clear();
+    this.untrustedDiscarding.clear();
   }
 
   /**
@@ -610,13 +614,32 @@ export class HookFileWatcher {
   ): Promise<void> {
     if (this.reading.has(tmuxName)) return;
     this.reading.add(tmuxName);
-    // Untrusted ledgers are drained in bounded passes within this one call, so replay flags apply to every pass.
+    try {
+      // An untrusted ledger is drained in bounded passes under one lock (a loop, not recursion, so each pass's
+      // buffer is freed before the next); replay flags apply to every pass.
+      while (await this.readPass(tmuxName, filePath, options)) {
+        if (!this.untrustedSessions.has(tmuxName)) break;
+      }
+    } finally {
+      this.reading.delete(tmuxName);
+    }
+  }
+
+  /** One bounded read pass. Returns true when an untrusted backlog remains and another pass should run. */
+  private async readPass(
+    tmuxName: string,
+    filePath: string,
+    options?: { startupReplay?: boolean; replay?: boolean },
+  ): Promise<boolean> {
+    // Captured before any await: a stop() mid-pass must not downgrade this pass to the trusted read path.
+    const untrusted = this.untrustedSessions.has(tmuxName);
     let continueDraining = false;
 
     try {
       const prevInode = this.inodes.get(tmuxName);
       const fileStat = await this.statFor(tmuxName, filePath).catch(() => undefined);
-      if (fileStat === undefined) return;
+      if (fileStat === undefined) return false;
+      if (untrusted && !this.untrustedSessions.has(tmuxName)) return false; // stopped mid-pass
 
       let offset = this.offsets.get(tmuxName) ?? 0;
 
@@ -643,9 +666,13 @@ export class HookFileWatcher {
         await this.recoverRotatedTail(tmuxName, filePath, offset, prevInode, options);
         offset = 0;
         this.offsets.set(tmuxName, 0);
+        this.untrustedWindow.delete(tmuxName);
+        this.untrustedDiscarding.delete(tmuxName);
       } else if (offset > fileStat.size) {
         offset = 0;
         this.offsets.set(tmuxName, 0);
+        this.untrustedWindow.delete(tmuxName);
+        this.untrustedDiscarding.delete(tmuxName);
       }
 
       // Record the active inode so the next read can classify a shrink as a
@@ -654,15 +681,15 @@ export class HookFileWatcher {
 
       // Stat-first guard: no growth → no disk read, no allocation.
       if (fileStat.size === offset) {
-        return;
+        return continueDraining;
       }
 
       const start = offset;
-      const untrusted = this.untrustedSessions.has(tmuxName);
       // A worker controls the ledger's size (a sparse `truncate -s 3G` is free), so an untrusted read is chunked.
       const window = this.untrustedWindow.get(tmuxName) ?? MAX_UNTRUSTED_READ_BYTES;
       const length = untrusted ? Math.min(fileStat.size - start, window) : fileStat.size - start;
       const buffer = await readFileRange(filePath, start, length, untrusted ? { expectedIno: fileStat.ino } : undefined);
+      if (untrusted && !this.untrustedSessions.has(tmuxName)) return false; // stopped mid-pass
       // Meter actual bytes pulled off disk (the ledger's churn signal).
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
@@ -678,7 +705,7 @@ export class HookFileWatcher {
           if (nl === -1) {
             this.offsets.set(tmuxName, start + buffer.length);
             continueDraining = start + buffer.length < fileStat.size;
-            return;
+            return continueDraining;
           }
           this.untrustedDiscarding.delete(tmuxName);
           from = nl + 1;
@@ -698,12 +725,13 @@ export class HookFileWatcher {
           } else if (from > 0) {
             continueDraining = start + from < fileStat.size;
           }
-          if (from === 0) return;
+          if (from === 0) return continueDraining;
           records = [];
           consumedBytes = from;
         } else {
           this.untrustedWindow.delete(tmuxName);
-          records = splitHookRecords(buffer.subarray(from, lastNl + 1).toString('utf-8')).records;
+          // One line, one record: a torn or unbalanced line must not swallow the valid lines after it.
+          records = buffer.subarray(from, lastNl + 1).toString('utf-8').split('\n').map((l) => l.trim()).filter(Boolean);
           consumedBytes = lastNl + 1;
           continueDraining = start + consumedBytes < fileStat.size;
         }
@@ -758,13 +786,8 @@ export class HookFileWatcher {
     } catch (err) {
       this.recordHealthError(tmuxName, err);
       console.error(`Error reading hook file for ${tmuxName}:`, err);
-    } finally {
-      this.reading.delete(tmuxName);
-      // After the lock is released (also on the early returns above): keep draining a backlog of untrusted data.
-      if (continueDraining && this.untrustedSessions.has(tmuxName)) {
-        await this.readNewLines(tmuxName, filePath, options);
-      }
     }
+    return continueDraining;
   }
 
   /**
