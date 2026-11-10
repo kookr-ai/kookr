@@ -133,10 +133,15 @@ that runs its `.mjs`) run for every session:
   description — into context. The agent reads the index and opens the shelves
   that fit its task; nothing picks one for it.
 - **Stop / SubagentStop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first
-  stop of a session once (per-session sentinel; `stop_hook_active` lets a re-run
-  through) and shows the maintenance checklist — vote up what helped, vote down
-  what misled, **`nb rm`** what proved incorrect, `nb merge`/`split` redundant or
-  overloaded entries, and `nb add` at most one new lesson — then allows the stop.
+  stop of a session once (per-session sentinel file claimed atomically, so parallel
+  subagent stops yield exactly one nudge; `stop_hook_active` lets a re-run
+  through) and shows the maintenance checklist — vote up what helped and vote down
+  what misled (several ids per call), **`nb rm --reason wrong|obsolete`** what proved
+  incorrect, `nb merge`/`split` redundant or overloaded entries, and `nb add` at
+  most one new lesson (aim ~150 characters; the text also carries the placement
+  rule: `<situation>@<slug>` unless the lesson is true in another repo, never
+  `fleet-global` directly) — then allows the stop. Sentinels older than
+  `NB_RETRO_TTL_DAYS` (default 7) are pruned.
   No-op when `NB_RETRO_DISABLED` is set (operator opt-out).
 
 **`KOOKR_REPO_SLUG`.** The launcher exposes the `<owner>-<repo>` slug, derived
@@ -186,6 +191,7 @@ All optional; defaults match the RFC.
 | `NB_GIT_AUTOCOMMIT` | `1` (when `NB_DIR` is a git repo) | `0` disables the per-change commit in `bin/nb.js` |
 | `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. Never set it for ordinary tasks. |
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
+| `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
 | `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to keep new lessons ≤120 chars — a style floor well under this ceiling. |
 | `NB_USAGE_RING` | `5000` | max lines in the usage log ring |
