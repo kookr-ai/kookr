@@ -182,7 +182,10 @@ async function readTemplate(
       if (error instanceof ChecklistInputError) {
         throw new ChecklistInputError(`PR template ${path} cannot be read: ${error.message}`);
       }
-      return '';
+      // Tracked but deleted from the work tree: nothing to enforce. Any other
+      // read failure (e.g. EACCES) is unreadable repo input — fail closed.
+      if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return '';
+      throw new ChecklistInputError(`PR template ${path} cannot be read: ${(error as Error)?.message ?? String(error)}`);
     });
     if (text.trim()) return text;
   }

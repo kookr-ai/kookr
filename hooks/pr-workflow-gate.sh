@@ -151,7 +151,7 @@ elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ]; then
     git -C "$CWD" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null \
       | head -1 \
       | sed -E 's/^remote\.([^.]+)\.gh-resolved .*$/\1/'
-  )
+  ) || RESOLVED_REMOTE=""  # no gh-resolved config (git exits 1) is normal, not a crash into the ERR trap
   URL=""
   if [ -n "$RESOLVED_REMOTE" ]; then
     URL=$(git -C "$CWD" remote get-url "$RESOLVED_REMOTE" 2>/dev/null || true)
@@ -244,6 +244,9 @@ checklist_repo_opted_in() {
   for f in .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
            PULL_REQUEST_TEMPLATE.md pull_request_template.md \
            docs/PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md; do
+    if [ -f "$dir/$f" ] && [ ! -r "$dir/$f" ]; then
+      return 0  # unreadable template: opt in so the engine fails CLOSED instead of the gate vanishing
+    fi
     if [ -f "$dir/$f" ] && grep -qE '<!--[[:space:]]*(kookr:check:|pr:)[a-z0-9-]+' "$dir/$f" 2>/dev/null; then
       return 0
     fi
@@ -255,13 +258,36 @@ checklist_repo_opted_in() {
 # is the session cwd's own repo (one of its remotes). Otherwise this is a PR for
 # some other repo (e.g. an upstream OSS repo, run from a kookr checkout) and the
 # cwd's template says nothing about it.
+#
+# `REPO_FLAG` above is a loose sed over the whole raw command, so a `-R x/y` that
+# merely appears inside a heredoc or quoted `--body` text would be mistaken for a
+# real flag (silently turning the gate off). Re-derive the flag here from the
+# command with heredoc bodies and quoted strings removed.
+checklist_cli_repo_flag() {
+  printf '%s\n' "$COMMAND" | awk -v dq='"' -v sq="'" '
+    heredoc != "" { l = $0; sub(/^\t+/, "", l); if ($0 == heredoc || l == heredoc) heredoc = ""; next }
+    {
+      line = $0
+      if (match(line, /<<-?[ \t]*["\x27]?[A-Za-z_][A-Za-z0-9_.-]*["\x27]?/)) {
+        tok = substr(line, RSTART, RLENGTH)
+        gsub(/<<-?[ \t]*/, "", tok); gsub(/["\x27]/, "", tok)
+        heredoc = tok
+      }
+      gsub(dq "[^" dq "]*" dq, "", line)
+      gsub(sq "[^" sq "]*" sq, "", line)
+      print line
+    }' \
+    | sed -nE 's/.*(-R|--repo)[[:space:]]+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+).*/\2/p' | head -1
+}
+
 checklist_targets_cwd_repo() {
-  local dir="$1" want
-  if [ -z "$REPO_FLAG" ]; then
+  local dir="$1" want cli_flag
+  cli_flag=$(checklist_cli_repo_flag) || cli_flag=""
+  if [ -z "$cli_flag" ]; then
     return 0
   fi
-  want=$(printf '%s' "$REPO_FLAG" | tr '[:upper:]' '[:lower:]')
-  want="${want//./\\.}"
+  want=$(printf '%s' "$cli_flag" | tr '[:upper:]' '[:lower:]')
+  want="${want//./[.]}"
   if git -C "$dir" remote -v 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -qE "[:/]${want}(\.git)?[[:space:]]"; then
     return 0
   fi

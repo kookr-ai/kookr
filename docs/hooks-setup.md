@@ -123,9 +123,9 @@ exits `0`, and runs none of its structural diff rules).
 
 The probe looks at the repo toplevel (a session inside a subdirectory still
 finds the template) and, when the command names `-R owner/repo`, applies only if
-that repo is one of the session repo's own remotes — a PR for some other repo
+that repo is one of the session repo's own remotes (the `-R` is read from the command with heredoc and quoted body text removed, so prose in the body cannot fake it) — a PR for some other repo
 run from a Kookr checkout is not judged by Kookr's template. A tracked template
-that cannot be read safely (outside the repo, over the size cap) fails the check
+that cannot be read safely (outside the repo, over the size cap, unreadable) fails the check
 closed rather than reporting "no opinion". If the session repo opted in but the
 `--head` worktree cannot be mapped, the gate fails open **with** a degrade-log
 record.

@@ -199,6 +199,8 @@ mk_repo() {
   mkdir -p "$1"
   git -C "$1" init -q
   git -C "$1" remote add origin "https://github.com/${2:-$REPO}.git"
+  # A commit so `rev-parse --abbrev-ref HEAD` works for commands without --head.
+  git -C "$1" -c user.name=t -c user.email=t@t.invalid commit -q --allow-empty -m init
 }
 tpl_case() { # <name> <relative template/config path> <content> <expect: deny|off> [session subdir] [command]
   local name="$1" rel="$2" content="$3" expect="$4" sub="${5:-}" cmd="${6:-$CMD}"
@@ -234,6 +236,26 @@ tpl_case "session cwd in a repo SUBDIRECTORY still finds the toplevel template: 
 tpl_case "foreign repo via -R (cwd repo has a marker template): no opinion, gate OFF" \
   .github/pull_request_template.md "$MARK" off "" \
   "gh pr create -R upstream/oss-$SUFFIX --head me:fix --title x --body \"plain oss body\""
+
+# -R / --repo text INSIDE a heredoc or quoted body must not be mistaken for the real flag.
+HD_BODY=$'gh pr create --title t --body "$(cat <<\'EOF\'\nMention: use gh -R src/lib to list, or --repo a/b.\nEOF\n)"'
+tpl_case "-R text inside a heredoc body is not a foreign-repo flag: gate ON" \
+  .github/pull_request_template.md "$MARK" deny "" "$HD_BODY"
+tpl_case "-R text inside a quoted inline body is not a foreign-repo flag: gate ON" \
+  .github/pull_request_template.md "$MARK" deny "" 'gh pr create --title t --body "see gh -R src/lib"'
+tpl_case "a real -R flag AFTER a quoted body still marks a foreign repo: gate OFF" \
+  .github/pull_request_template.md "$MARK" off "" "gh pr create --body \"x\" -R upstream/oss-$SUFFIX"
+
+# An unreadable tracked template must not make the gate vanish (engine fails closed).
+if [ "$(id -u)" != "0" ]; then
+  H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+  printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"; chmod 000 "$H/repo/.github/pull_request_template.md"
+  CALLED="$H/called"
+  OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_CALLED="$CALLED" FAKE_KOOKR_RC=2 FAKE_KOOKR_OUT=UNREADABLE-TPL)
+  grep -q 'UNREADABLE-TPL' <<<"$OUT" && [ -f "$CALLED" ] && r=1 || r=0
+  check "unreadable (chmod 000) marker template: gate stays ON (engine decides)" "$r"
+  chmod 644 "$H/repo/.github/pull_request_template.md"; rm -rf "$H"; rm -f "$STATE_FILE"
+fi
 
 # 13b. Marker template in the session repo but --head worktree unmappable → fail OPEN, logged.
 H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"

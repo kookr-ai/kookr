@@ -352,6 +352,26 @@ describe('collectAndVerify (with injected git + fs)', () => {
     ).rejects.toThrow(/PR template .*github.*cannot be read: path escapes repository root/);
   });
 
+  it('a tracked template that is unreadable (EACCES) fails closed; one deleted from the tree (ENOENT) is no opinion', async () => {
+    const git = fakeGit({ ...OPT_IN_GIT });
+    const deps = { cwd: '/repo', base: 'main', body: null, gitRunner: git } as const;
+    await expect(
+      collectAndVerify({
+        ...deps,
+        readFileText: async () => {
+          throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' });
+        },
+      }),
+    ).rejects.toThrow(/cannot be read: EACCES/);
+    const gone = await collectAndVerify({
+      ...deps,
+      readFileText: async () => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    expect(gone.noOpinion).toBe(true);
+  });
+
   it('P4a: reads .kookr/pr-checklist.json and honors { disable: ["env"] } end-to-end', async () => {
     const git = fakeGit({
       'merge-base origin/main HEAD': { stdout: base },
