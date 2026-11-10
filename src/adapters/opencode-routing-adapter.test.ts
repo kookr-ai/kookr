@@ -32,6 +32,16 @@ describe('OpenCodeRoutingAdapter', () => {
     expect(container.launch).not.toHaveBeenCalled();
   });
 
+  test('a pre-flag host task (has sessions, no recorded mode) stays on the TUI and is recorded as tui', async () => {
+    const { store, container, tui, router } = setup();
+    const t = store.createTask({ prompt: 'p', cwd: '/w' });
+    store.addSession(t.id, { tmuxSession: 'kookr-old1', agentType: 'opencode', cwd: '/w', createdAt: new Date() });
+    await router.launch(t.id, 'p', '/w', { sessionId: 'ses_1' });
+    expect(tui.launch).toHaveBeenCalledOnce();
+    expect(container.launch).not.toHaveBeenCalled();
+    expect(store.getTask(t.id)!.metadata?.opencodeLaunchMode).toBe('tui');
+  });
+
   test('a relaunch of a container task goes to the container adapter', async () => {
     const { store, container, router } = setup();
     const t = store.createTask({ prompt: 'p', cwd: '/w', metadata: { opencodeLaunchMode: 'container' } });

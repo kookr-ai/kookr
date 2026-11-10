@@ -69,6 +69,13 @@ describe('clone + extract', () => {
     expect(() => g(src, 'rev-parse', '--verify', 'refs/kookr/opencode/task-3')).toThrow();
   });
 
+  test('a clone with an objects/info/alternates file is refused (it would read another host repo)', async () => {
+    const clone = join(root, 'clone');
+    await cloneForWorker(src, clone);
+    writeFileSync(join(clone, '.git', 'objects', 'info', 'alternates'), `${join(root, 'other', '.git', 'objects')}\n`);
+    await expect(extractDeliverable(src, clone, 'task-4')).rejects.toThrow('alternates');
+  });
+
   test('rejects a task id that is not a plain id; deliverable reads refuse symlinks', async () => {
     await expect(extractDeliverable(src, src, '../x')).rejects.toThrow('invalid task id');
     const clone = join(root, 'clone');

@@ -30,13 +30,16 @@ export class OpenCodeRoutingAdapter implements AgentAdapter {
   ) {}
 
   async launch(taskId: string, prompt: string, cwd: string, resume?: ResumeContext, opts?: AdapterLaunchOptions): Promise<string> {
-    const policy = resolveOpenCodeLaunchMode({
-      persisted: this.taskStore.getTask(taskId)?.metadata?.opencodeLaunchMode,
-      containersAvailable: true,
-      containersRequested: true,
-    });
+    const task = this.taskStore.getTask(taskId);
+    // A task that already ran (has sessions) before any mode was recorded is a pre-flag host-TUI task: it must stay TUI.
+    const persisted = task?.metadata?.opencodeLaunchMode ?? (task && task.sessions.length > 0 ? 'tui' : undefined);
+    const policy = resolveOpenCodeLaunchMode({ persisted, containersAvailable: true, containersRequested: true });
     if (!policy.ok) throw new Error(policy.message);
-    if (policy.mode === 'tui') return this.tui.launch(taskId, prompt, cwd, resume, opts);
+    if (policy.mode === 'tui') {
+      const handle = await this.tui.launch(taskId, prompt, cwd, resume, opts);
+      this.taskStore.recordOpenCodeLaunchMode(taskId, 'tui');
+      return handle;
+    }
     const handle = await this.container.launch(taskId, prompt, cwd, resume, opts);
     this.taskStore.recordOpenCodeLaunchMode(taskId, 'container');
     return handle;

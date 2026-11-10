@@ -205,7 +205,11 @@ export class OpenCodeContainerAdapter {
       await writeSecret(join(secretsDir, PROVIDER_KEY_SECRET), providerKey);
 
       const hooksDir = join(rt, 'hooks');
-      await stageContainerHooks({ hostBinDir: this.cfg.hostBinDir, hostPluginHooksDir: this.cfg.hostPluginHooksDir, destDir: hooksDir });
+      try {
+        await stageContainerHooks({ hostBinDir: this.cfg.hostBinDir, hostPluginHooksDir: this.cfg.hostPluginHooksDir, destDir: hooksDir });
+      } catch (err) {
+        throw new ContainerLaunchError('hook_assets_missing', (err as Error).message);
+      }
 
       const spool = await this.d.ledger.prepare(taskId, token);
       const cfgDir = await this.composeConfig(taskId, sessionKey, rt, dataHome, taskDir, workDir, resuming, priorGateBase, opts);
@@ -264,7 +268,7 @@ export class OpenCodeContainerAdapter {
       this.d.ledger.attach(taskId, token, { adopt: true });
 
       opts?.onPhase?.('ack');
-      const sent = await this.sendWithAuthCheck(record, resuming && record.contextId ? CONTINUE_PROMPT : prompt, record.contextId);
+      const sent = await this.sendWithAuthCheck(record, resuming ? CONTINUE_PROMPT : prompt, record.contextId);
       record.contextId = sent.contextId;
       record.a2aTaskId = sent.taskId;
       await this.writeRecord(record);
@@ -452,13 +456,15 @@ export class OpenCodeContainerAdapter {
 
   // ---- adopt / records ---------------------------------------------------------------------------------------
 
-  /** Re-attach the ledger of every non-terminal container task after a Kookr restart (event identity is taskId+token). */
+  /** Re-load every running container's control record after a Kookr restart (event identity is taskId+token). */
   async adoptRunning(): Promise<string[]> {
     const adopted: string[] = [];
     for (const rec of await this.listRecords()) {
       if (!LIVE_STATES.has((await this.safeContainerState(rec.containerName)) ?? '')) continue;
       this.records.set(rec.containerName, rec);
-      this.d.ledger.attach(rec.taskId, rec.launchToken, { adopt: true });
+      // A surviving supervisor session is re-armed by startup recovery (checkpoint + hydration + the ledger override).
+      // Attaching here first would pin its replay mode before recovery runs, so only attach when no session survived.
+      if (!(await this.d.backend.isAlive(rec.containerName).catch(() => false))) this.d.ledger.attach(rec.taskId, rec.launchToken, { adopt: true });
       adopted.push(rec.containerName);
     }
     return adopted;
@@ -504,7 +510,7 @@ export class OpenCodeContainerAdapter {
   private async writeRecord(rec: ContainerRuntimeRecord): Promise<void> {
     const p = this.recordPath(rec.taskId);
     await mkdir(dirname(p), { recursive: true, mode: 0o700 });
-    const tmp = `${p}.tmp`;
+    const tmp = `${p}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
     await writeFile(tmp, JSON.stringify(rec), { mode: 0o600 });
     await chmod(tmp, 0o600);
     await rename(tmp, p);

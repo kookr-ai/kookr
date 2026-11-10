@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdir, readFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { lstat, mkdir, open } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 const execFileAsync = promisify(execFile);
@@ -41,6 +42,10 @@ export interface ExtractResult {
 export async function extractDeliverable(sourceRepo: string, cloneDir: string, taskId: string): Promise<ExtractResult> {
   if (!TASK_ID.test(taskId)) throw new Error(`invalid task id ${JSON.stringify(taskId)}`);
   const ref = `refs/kookr/opencode/${taskId}`;
+  // `objects/info/alternates` is repo DATA a worker can write: it would make the fetch read another host repo's objects.
+  if (await lstat(join(cloneDir, '.git', 'objects', 'info', 'alternates')).then(() => true, () => false)) {
+    throw new Error('clone has an objects/info/alternates file; refusing to fetch from it');
+  }
   await execFileAsync('git', ['-C', sourceRepo, 'fetch', '--quiet', '--no-tags', '--no-write-fetch-head', '--', cloneDir, `+HEAD:${ref}`], { env: SAFE_GIT_ENV(), timeout: 120_000 });
   const { stdout } = await execFileAsync('git', ['-C', sourceRepo, 'rev-parse', '--verify', ref], { env: SAFE_GIT_ENV() });
   return { ref, head: stdout.trim() };
@@ -59,9 +64,14 @@ export async function fsckClean(repo: string): Promise<boolean> {
 /** Plain-file read of a deliverable the worker wrote (`PR_BODY.md`, `REVIEW.md`): no symlink following out of the clone. */
 export async function readDeliverableFile(cloneDir: string, name: string): Promise<string | undefined> {
   if (!/^[A-Za-z0-9._-]{1,64}$/.test(name)) throw new Error(`invalid deliverable name ${JSON.stringify(name)}`);
-  const { lstat } = await import('node:fs/promises');
-  const p = join(cloneDir, name);
-  const st = await lstat(p).catch(() => undefined);
-  if (!st || !st.isFile() || st.size > 1_000_000) return undefined;
-  return readFile(p, 'utf8');
+  // O_NOFOLLOW closes the lstat-then-read window: a symlink swapped in after a check still cannot be read through.
+  const fh = await open(join(cloneDir, name), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW).catch(() => undefined);
+  if (!fh) return undefined;
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.size > 1_000_000) return undefined;
+    return await fh.readFile('utf8');
+  } finally {
+    await fh.close();
+  }
 }

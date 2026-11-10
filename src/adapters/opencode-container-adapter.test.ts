@@ -244,8 +244,12 @@ describe('OpenCodeContainerAdapter control, including after a Kookr restart', ()
     const task = newTask();
     const h = await make().launch(task.id, 'x', src);
     watcher.watched.clear();
-    const restarted = make();
-    expect(await restarted.adoptRunning()).toEqual([h]);
+    // the supervisor session survived the restart: startup recovery re-arms the watch, adopt must NOT pre-empt it
+    expect(await make().adoptRunning()).toEqual([h]);
+    expect(watcher.watched.size).toBe(0);
+    // no supervisor session survived: adopt attaches the ledger itself, under the same key
+    await backend.killSession(h);
+    expect(await make().adoptRunning()).toEqual([h]);
     expect(watcher.watched.get(h)).toMatchObject({ untrusted: true, replayExisting: true });
     watcher.watched.clear();
     docker.containers[0]!.state = 'exited';
