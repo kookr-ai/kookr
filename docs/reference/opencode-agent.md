@@ -327,3 +327,7 @@ kookr containers prune --instance [--yes] [--force] [--dir PATH]
 container and network of this instance; it is a dry run unless `--yes`, and refuses while any container or network belongs to a live task, is younger than 120 s, has an open launch intent, or the task store cannot be read, unless `--force`, which kills those workers. A container stopped by quarantine is not restarted if its task later reappears; `ls` then reports it as dead with a live task. Another Kookr instance's objects, and anything
 not named `kookr-oc-*` with this instance's label, are never touched. Reconciler actions are appended to
 `<data dir>/container-reconcile.jsonl`.
+
+## Pipeline playbook
+
+`.kookr/playbooks/opencode-scoped-fix-pipeline.md` chains a `scoped-fix` worker, a fresh `reviewer`, at most two fix rounds and the Claude independent-merge-review gate (see `docs/rfc/rfc-opencode-scoped-fix-pipeline.md`). Operators create two labels first: `opencode-eligible` (issues the pipeline may take) and `opencode-pipeline-failed` (set by the pipeline on a failure exit; remove it to allow a retry). Merging is off unless the `mergeEnabled` parameter is `true`.
