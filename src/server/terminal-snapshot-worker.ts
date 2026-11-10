@@ -8,8 +8,8 @@ import {
   type StreamingAttachSnapshotUnavailableReason,
 } from './streaming-attach-snapshot.js';
 
-/** Options that survive a trip to the worker thread (functions do not). */
-type WorkerOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
+/** Options that survive a trip to the worker thread: the injected test clock, a function, does not. */
+export type TerminalSnapshotWorkerOptions = Omit<StreamingAttachSnapshotOptions, 'nowMs'>;
 
 interface Pending {
   bytes: number;
@@ -70,7 +70,7 @@ export class TerminalSnapshotWorker {
     return worker;
   }
 
-  snapshot(bytes: Uint8Array, options: StreamingAttachSnapshotOptions): Promise<StreamingAttachSnapshotResult> {
+  snapshot(bytes: Uint8Array, options: TerminalSnapshotWorkerOptions): Promise<StreamingAttachSnapshotResult> {
     const startedAt = performance.now();
     const unavailable = (reason: StreamingAttachSnapshotUnavailableReason): StreamingAttachSnapshotResult =>
       ({ kind: 'unavailable', reason, elapsedMs: performance.now() - startedAt });
@@ -81,8 +81,6 @@ export class TerminalSnapshotWorker {
     const worker = this.start();
     if (!worker) return Promise.resolve(unavailable('failed'));
 
-    const { nowMs: _nowMs, ...cloneable }: StreamingAttachSnapshotOptions = options;
-    const workerOptions: WorkerOptions = cloneable;
     const id = ++this.nextId;
     const owned = Uint8Array.from(bytes); // the caller keeps its copy of the ring
     return new Promise((resolve) => {
@@ -93,7 +91,7 @@ export class TerminalSnapshotWorker {
       timer.unref?.();
       this.pending.set(id, { bytes: bytes.length, startedAt, resolve, timer });
       this.retainedBytes += bytes.length;
-      try { worker.postMessage({ id, bytes: owned, options: workerOptions }, [owned.buffer]); }
+      try { worker.postMessage({ id, bytes: owned, options }, [owned.buffer]); }
       catch { this.finish(id, unavailable('failed')); }
     });
   }
@@ -136,7 +134,7 @@ let shared: TerminalSnapshotWorker | null = null;
  */
 export function snapshotStreamingAttachSeedIsolated(
   bytes: Uint8Array,
-  options: StreamingAttachSnapshotOptions,
+  options: TerminalSnapshotWorkerOptions,
 ): Promise<StreamingAttachSnapshotResult> {
   shared ??= new TerminalSnapshotWorker();
   return shared.snapshot(bytes, options);

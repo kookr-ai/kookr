@@ -1,3 +1,4 @@
+import { Worker } from 'node:worker_threads';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { snapshotStreamingAttachSeed } from './streaming-attach-snapshot.js';
 import { TerminalSnapshotWorker } from './terminal-snapshot-worker.js';
@@ -32,9 +33,11 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
 
   it('terminates a worker stuck in the parser without blocking the host thread, and recovers', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
+    const terminate = vi.spyOn(Worker.prototype, 'terminate');
     const worker = newWorker();
     // Warm the worker so its start-up time does not count against the tight deadline below.
     expect((await worker.snapshot(encode('warm up\r\n'), geometry)).kind).toBe('snapshot');
+    expect(terminate).not.toHaveBeenCalled();
 
     let longestGapMs = 0;
     let last = performance.now();
@@ -45,6 +48,8 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
     clearInterval(ticker);
 
     expect(result).toMatchObject({ kind: 'unavailable', reason: 'budget-exceeded' });
+    // Giving up is not enough: the thread must actually be stopped, or it keeps a core busy.
+    expect(terminate).toHaveBeenCalledTimes(1);
     // The same ring takes more than three seconds in the calling thread. The host
     // waited for its 700 ms deadline and no longer, and its own timers kept running.
     expect(waitedMs).toBeLessThan(2500);
