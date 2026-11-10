@@ -73,10 +73,12 @@ describe('real HookFileWatcher on a spool ledger', () => {
   let dir: string;
   let hooksDir: string;
   let seen: Array<{ key: string; raw: string }>;
+  let replayFlags: boolean[];
   let watcher: HookFileWatcher;
   const injector: HookEventInjector = {
-    injectHookEvent(tmux, raw) {
+    injectHookEvent(tmux, raw, _a, opts) {
       seen.push({ key: tmux, raw });
+      replayFlags.push((opts as { startupReplay?: boolean } | undefined)?.startupReplay === true);
       return { parseStatus: 'parsed', agentType: 'opencode', sequence: seen.length, origin: 'live' } as never;
     },
   };
@@ -84,6 +86,7 @@ describe('real HookFileWatcher on a spool ledger', () => {
     dir = mkdtempSync(join(tmpdir(), 'oc-spool-w-'));
     hooksDir = mkdtempSync(join(tmpdir(), 'oc-hooks-'));
     seen = [];
+    replayFlags = [];
     watcher = new HookFileWatcher(hooksDir, injector, { pollIntervalMs: 50 });
   });
   afterEach(() => { watcher.stopAll(); rmSync(dir, { recursive: true, force: true }); rmSync(hooksDir, { recursive: true, force: true }); });
@@ -142,7 +145,7 @@ describe('real HookFileWatcher on a spool ledger', () => {
     truncateSync(loc.file, 3 * 1024 * 1024 * 1024);
     const before = process.memoryUsage().arrayBuffers;
     await new Promise((r) => setTimeout(r, 500));
-    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(64 * 1024 * 1024);
+    expect(process.memoryUsage().arrayBuffers - before).toBeLessThan(1024 * 1024 * 1024); // 3 GiB file: never allocated whole (garbage from 16 MiB passes may not be collected yet)
     const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
     expect(h?.errorCount).toBeGreaterThan(0); // lastError is cleared by the next healthy read
   });
@@ -156,6 +159,50 @@ describe('real HookFileWatcher on a spool ledger', () => {
     ing.attach('task1', 'tok123', { adopt: true });
     await new Promise((r) => setTimeout(r, 300));
     expect(seen).toEqual([]);
+  });
+
+  test('a valid record bigger than one read chunk arrives intact, followed by the next record', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    const big = JSON.stringify({ hook_event_name: 'PostToolUse', out: 'x'.repeat(1_500_000) });
+    appendFileSync(loc.file, `${big}\n{"hook_event_name":"Stop"}\n`);
+    await until(() => seen.length >= 2);
+    expect(seen.map((s) => s.raw)).toEqual([big, '{"hook_event_name":"Stop"}']);
+  });
+
+  test.each([0, 1, 2])('multi-byte text straddling a chunk boundary (pad %i) keeps the byte offset exact', async (pad) => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    const big = JSON.stringify({ o: 'p'.repeat(pad) + '\u20ac'.repeat(500_000) });
+    appendFileSync(loc.file, `${big}\n{"n":"after"}\n`);
+    await until(() => seen.length >= 2);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen.map((s) => s.raw)).toEqual([big, '{"n":"after"}']);
+  });
+
+  test('a record over the cap is discarded up to its newline; the next record still arrives', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    ing.attach('task1', 'tok123');
+    appendFileSync(loc.file, `{"o":"${'y'.repeat(17 * 1024 * 1024)}"}\n{"n":"after"}\n`);
+    await until(() => seen.length >= 1);
+    expect(seen.map((s) => s.raw)).toEqual(['{"n":"after"}']);
+    const h = watcher.getHealthSnapshot().sessions.find((x) => x.tmuxName === 'kookr-oc-task1-tok123');
+    expect(h?.errorCount).toBeGreaterThan(0);
+  });
+
+  test('adopt replays a ledger larger than one chunk entirely as startup replay', async () => {
+    const ing = new ContainerLedgerIngest(dir, watcher);
+    const loc = await ing.prepare('task1', 'tok123');
+    const line = JSON.stringify({ hook_event_name: 'PostToolUse', pad: 'z'.repeat(2000) });
+    const n = 1300; // ~2.6 MiB
+    appendFileSync(loc.file, `${line}\n`.repeat(n));
+    ing.attach('task1', 'tok123', { adopt: true });
+    await until(() => seen.length >= n);
+    expect(seen.length).toBe(n);
+    expect(replayFlags.every(Boolean)).toBe(true);
   });
 
   test('TUI sessions are unaffected: the default path under hooksDir still works', async () => {

@@ -270,6 +270,9 @@ export class HookFileWatcher {
   /** Per-session file path overrides and untrusted (worker-writable) sessions; see WatchOptions. */
   private pathOverrides = new Map<string, string>();
   private untrustedSessions = new Set<string>();
+  /** Untrusted-read state: current read window (grows to fit one big record) and a resync-to-next-newline flag. */
+  private untrustedWindow = new Map<string, number>();
+  private untrustedDiscarding = new Set<string>();
   private reading = new Set<string>(); // Mutex: prevent concurrent reads for same agent
   /**
    * Sessions whose backup poll is logically active (issue #2776). Gates the
@@ -468,6 +471,8 @@ export class HookFileWatcher {
     this.healthBySession.delete(tmuxName);
     this.pathOverrides.delete(tmuxName);
     this.untrustedSessions.delete(tmuxName);
+    this.untrustedWindow.delete(tmuxName);
+    this.untrustedDiscarding.delete(tmuxName);
     // Session intentionally ended — drop its durable resume offset so the
     // checkpoint map does not accumulate forever (issue #2385).
     this.deleteReplayCheckpoint(tmuxName);
@@ -605,6 +610,8 @@ export class HookFileWatcher {
   ): Promise<void> {
     if (this.reading.has(tmuxName)) return;
     this.reading.add(tmuxName);
+    // Untrusted ledgers are drained in bounded passes within this one call, so replay flags apply to every pass.
+    let continueDraining = false;
 
     try {
       const prevInode = this.inodes.get(tmuxName);
@@ -653,23 +660,62 @@ export class HookFileWatcher {
       const start = offset;
       const untrusted = this.untrustedSessions.has(tmuxName);
       // A worker controls the ledger's size (a sparse `truncate -s 3G` is free), so an untrusted read is chunked.
-      const length = untrusted ? Math.min(fileStat.size - start, MAX_UNTRUSTED_READ_BYTES) : fileStat.size - start;
+      const window = this.untrustedWindow.get(tmuxName) ?? MAX_UNTRUSTED_READ_BYTES;
+      const length = untrusted ? Math.min(fileStat.size - start, window) : fileStat.size - start;
       const buffer = await readFileRange(filePath, start, length, untrusted ? { expectedIno: fileStat.ino } : undefined);
       // Meter actual bytes pulled off disk (the ledger's churn signal).
       this.cumulativeReadChars += buffer.length;
       this.cumulativeReadCount += 1;
 
-      const newContent = buffer.toString('utf-8');
-      const { records, consumedChars } = splitHookRecords(newContent);
-      // Map framed char consumption back to byte consumption. A trailing
-      // partial record is left unconsumed so the next append re-reads it once
-      // complete. Buffer.byteLength of the consumed prefix is correct for any
-      // valid UTF-8 JSONL (hook writers emit complete UTF-8 records).
-      let consumedBytes = Buffer.byteLength(newContent.slice(0, consumedChars), 'utf-8');
-      if (untrusted && consumedBytes === 0 && buffer.length === MAX_UNTRUSTED_READ_BYTES) {
-        // A full chunk with no complete record: a hostile or corrupt ledger. Skip it rather than re-read it forever.
-        consumedBytes = buffer.length;
-        this.recordHealthError(tmuxName, new Error(`untrusted ledger ${filePath}: skipped ${buffer.length} bytes with no complete record`));
+      let consumedBytes: number;
+      let records: string[];
+      if (untrusted) {
+        // Byte-exact framing on a worker-controlled file: work in raw bytes up to newlines, never re-derive a byte
+        // offset from decoded text (invalid UTF-8 would inflate it), and never decode a partial trailing line.
+        let from = 0;
+        if (this.untrustedDiscarding.has(tmuxName)) {
+          const nl = buffer.indexOf(0x0a);
+          if (nl === -1) {
+            this.offsets.set(tmuxName, start + buffer.length);
+            continueDraining = start + buffer.length < fileStat.size;
+            return;
+          }
+          this.untrustedDiscarding.delete(tmuxName);
+          from = nl + 1;
+        }
+        const lastNl = buffer.lastIndexOf(0x0a);
+        if (lastNl < from) {
+          if (buffer.length === window && from === 0) {
+            if (window < MAX_UNTRUSTED_RECORD_BYTES) {
+              this.untrustedWindow.set(tmuxName, Math.min(window * 2, MAX_UNTRUSTED_RECORD_BYTES));
+              continueDraining = true;
+            } else {
+              this.recordHealthError(tmuxName, new Error(`untrusted ledger ${filePath}: record over ${MAX_UNTRUSTED_RECORD_BYTES} bytes; discarding it`));
+              this.untrustedDiscarding.add(tmuxName);
+              this.offsets.set(tmuxName, start + buffer.length);
+              continueDraining = start + buffer.length < fileStat.size;
+            }
+          } else if (from > 0) {
+            continueDraining = start + from < fileStat.size;
+          }
+          if (from === 0) return;
+          records = [];
+          consumedBytes = from;
+        } else {
+          this.untrustedWindow.delete(tmuxName);
+          records = splitHookRecords(buffer.subarray(from, lastNl + 1).toString('utf-8')).records;
+          consumedBytes = lastNl + 1;
+          continueDraining = start + consumedBytes < fileStat.size;
+        }
+      } else {
+        const newContent = buffer.toString('utf-8');
+        const split = splitHookRecords(newContent);
+        records = split.records;
+        // Map framed char consumption back to byte consumption. A trailing
+        // partial record is left unconsumed so the next append re-reads it once
+        // complete. Buffer.byteLength of the consumed prefix is correct for any
+        // valid UTF-8 JSONL (hook writers emit complete UTF-8 records).
+        consumedBytes = Buffer.byteLength(newContent.slice(0, split.consumedChars), 'utf-8');
       }
       this.offsets.set(tmuxName, start + consumedBytes);
 
@@ -714,6 +760,10 @@ export class HookFileWatcher {
       console.error(`Error reading hook file for ${tmuxName}:`, err);
     } finally {
       this.reading.delete(tmuxName);
+      // After the lock is released (also on the early returns above): keep draining a backlog of untrusted data.
+      if (continueDraining && this.untrustedSessions.has(tmuxName)) {
+        await this.readNewLines(tmuxName, filePath, options);
+      }
     }
   }
 
@@ -1114,6 +1164,8 @@ export class HookFileWatcher {
 
 /** Upper bound on bytes the host reads from a worker-writable ledger in one pass. */
 const MAX_UNTRUSTED_READ_BYTES = 1024 * 1024;
+/** Largest single record accepted from a worker ledger; a longer one is discarded up to its newline. */
+const MAX_UNTRUSTED_RECORD_BYTES = 16 * 1024 * 1024;
 
 /**
  * Positioned byte-range read (async). Used by the incremental hot path.
