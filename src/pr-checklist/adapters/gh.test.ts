@@ -162,6 +162,19 @@ describe('extractFromGhCommand', () => {
       expect(r?.bodySource.kind).toBe('unverifiable');
     });
 
+    it('a literal placeholder-looking --body cannot alias a heredoc from a later command', () => {
+      const cmd = `gh pr create --body __KOOKR_HEREDOC_BODY_0__ && gh pr edit 1 --body "$(cat <<'EOF'\nx\nEOF\n)"`;
+      const r = extractFromGhCommand(cmd);
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: '__KOOKR_HEREDOC_BODY_0__' });
+    });
+
+    it('stays fast on many unterminated openers (linear scan)', () => {
+      const cmd = `gh pr create ` + `--body "$(cat <<'EOF'\n`.repeat(5000);
+      const t0 = Date.now();
+      extractFromGhCommand(cmd);
+      expect(Date.now() - t0).toBeLessThan(2000);
+    });
+
     it('does not resolve a heredoc belonging to an earlier, non-gh command', () => {
       const cmd = `cat > /tmp/x <<'EOF'\n-b "$(cat <<'EOF2'\nfake\nEOF2\n)"\nEOF\ngh pr create --title T`;
       const r = extractFromGhCommand(cmd);

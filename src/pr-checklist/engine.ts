@@ -102,6 +102,29 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
   const runner = deps.gitRunner ?? execGit(deps.cwd);
   const read = deps.readFileText ?? ((p, cap) => readConfined(deps.cwd, p, cap));
 
+  // Opt-in is template-driven: a repo takes part by shipping a PR template that
+  // declares `kookr:check` markers, or a tracked `.kookr/pr-checklist.json`.
+  // Read both first (cheap; no diff needed) so a repo with neither — e.g. an
+  // upstream OSS repo — gets no opinion at all, not the structural rules.
+  const templateText = await readTemplate(runner, read, deps.cwd);
+  // P4a: per-repo declarative rule config (may also disable a rule that would
+  // otherwise fire on this very diff).
+  const configText = await readTracked(runner, read, deps.cwd, '.kookr/pr-checklist.json', MAX_CONFIG_BYTES);
+  const bodyHasMarkers = deps.body !== null && parseChecklist(deps.body).length > 0;
+  if (!isChecklistOptedIn(templateText, configText) && !bodyHasMarkers) {
+    return {
+      ok: true,
+      bodyChecked: false,
+      results: [],
+      notes: [
+        'no opinion: the repo PR template declares no kookr:check markers and there is no tracked ' +
+          '.kookr/pr-checklist.json — the checklist gate only applies to repos that opt in that way',
+      ],
+      noOpinion: true,
+    };
+  }
+  const config = parseChecklistConfig(configText);
+
   const facts = await collectDiffFacts(runner, deps.base);
 
   // Only gather env/test inputs when the diff actually needs them.
@@ -110,17 +133,6 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
 
   const envFileText = needsEnv ? await readTracked(runner, read, deps.cwd, '.env.example', MAX_ENV_FILE_BYTES) : '';
   const testCorpus = needsTests ? await readTestCorpus(runner, read, deps.cwd) : '';
-
-  // Only meaningful when a body was provided — the presence rule compares the
-  // body against the template, and needs no diff (so it runs even when the
-  // base is unresolved).
-  const templateText =
-    deps.body !== null || deps.templateRequiredReason !== undefined ? await readTemplate(runner, read, deps.cwd) : '';
-
-  // P4a: per-repo declarative rule config. Read unconditionally (cheap; a repo
-  // may disable a structural rule that would otherwise fire on this very diff).
-  const configText = await readTracked(runner, read, deps.cwd, '.kookr/pr-checklist.json', MAX_CONFIG_BYTES);
-  const config = parseChecklistConfig(configText);
 
   return verifyChecklist({
     body: deps.body,
@@ -132,6 +144,11 @@ export async function collectAndVerify(deps: CollectDeps): Promise<VerifyReport>
     configNotes: config.notes,
     templateRequiredReason: deps.body === null ? deps.templateRequiredReason : undefined,
   });
+}
+
+/** Pure: does the repo opt in to the checklist gate (marker template or rule config)? */
+export function isChecklistOptedIn(templateText: string, configText: string): boolean {
+  return parseChecklist(templateText).length > 0 || configText.trim() !== '';
 }
 
 /**

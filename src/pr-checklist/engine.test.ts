@@ -187,13 +187,17 @@ function fakeGit(map: Record<string, { stdout?: string; exitCode?: number }>): G
   };
 }
 
+const MARKER_TEMPLATE = '- [ ] <!-- kookr:check:readme --> README\n';
+const OPT_IN_GIT = { 'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' } };
+const readOptIn = async () => MARKER_TEMPLATE;
+
 describe('collectAndVerify (with injected git + fs)', () => {
   const base = 'BASE';
   const range = 'BASE...HEAD';
 
   it('reports baseUnresolved as a skip, never a bogus verdict (S2)', async () => {
-    const git = fakeGit({}); // every merge-base attempt fails
-    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git });
+    const git = fakeGit({ ...OPT_IN_GIT }); // every merge-base attempt fails
+    const report = await collectAndVerify({ cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readOptIn });
     expect(report.results.some((r) => r.status === 'skipped')).toBe(true);
     expect(report.ok).toBe(true);
   });
@@ -204,13 +208,14 @@ describe('collectAndVerify (with injected git + fs)', () => {
       [`diff --name-status ${range}`]: { stdout: 'M\tsrc/config.ts' },
       [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/config.ts\n+const k = process.env.BRAND_NEW' },
       'ls-files -- .env.example': { stdout: '.env.example' },
+      ...OPT_IN_GIT,
     });
     const report = await collectAndVerify({
       cwd: '/repo',
       base: 'main',
       body: null,
       gitRunner: git,
-      readFileText: async () => 'EXISTING=1\n',
+      readFileText: async (p) => (p.endsWith('.env.example') ? 'EXISTING=1\n' : MARKER_TEMPLATE),
     });
     expect(report.ok).toBe(false);
     expect(report.results.find((r) => r.id === 'env')?.summary).toMatch(/BRAND_NEW/);
@@ -259,6 +264,77 @@ describe('collectAndVerify (with injected git + fs)', () => {
     });
     expect(report.results.some((r) => r.id === 'pr-template')).toBe(false);
     expect(report.ok).toBe(true);
+  });
+
+  describe('template-driven opt-in', () => {
+    // A diff that WOULD trip the env rule if structural checks ran.
+    const diff = {
+      'merge-base origin/main HEAD': { stdout: base },
+      [`diff --name-status ${range}`]: { stdout: 'M\tsrc/config.ts' },
+      [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/config.ts\n+const k = process.env.BRAND_NEW' },
+      'ls-files -- .env.example': { stdout: '.env.example' },
+    };
+    const readEnvOr = (other: string) => async (p: string) => (p.endsWith('.env.example') ? 'EXISTING=1\n' : other);
+
+    it('a repo with no PR template and no config gets no opinion: no structural checks, ok, noted', async () => {
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, gitRunner: fakeGit(diff), readFileText: readEnvOr(''),
+      });
+      expect(report.ok).toBe(true);
+      expect(report.noOpinion).toBe(true);
+      expect(report.results).toEqual([]);
+      expect(report.notes.join(' ')).toMatch(/no opinion/);
+    });
+
+    it('a template WITHOUT markers is no opinion too', async () => {
+      const git = fakeGit({ ...diff, ...OPT_IN_GIT });
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readEnvOr('## Summary\n'),
+      });
+      expect(report.noOpinion).toBe(true);
+      expect(report.ok).toBe(true);
+    });
+
+    it('a template WITH markers runs the structural checks', async () => {
+      const git = fakeGit({ ...diff, ...OPT_IN_GIT });
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, gitRunner: git, readFileText: readEnvOr(MARKER_TEMPLATE),
+      });
+      expect(report.noOpinion).toBeUndefined();
+      expect(report.results.find((r) => r.id === 'env')?.status).toBe('fail');
+    });
+
+    it('a tracked .kookr/pr-checklist.json (no template) runs the structural checks', async () => {
+      const git = fakeGit({ ...diff, 'ls-files -- .kookr/pr-checklist.json': { stdout: '.kookr/pr-checklist.json' } });
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, gitRunner: git,
+        readFileText: async (p) => (p.endsWith('.env.example') ? 'EXISTING=1\n' : '{ "disable": [] }'),
+      });
+      expect(report.noOpinion).toBeUndefined();
+      expect(report.results.find((r) => r.id === 'env')?.status).toBe('fail');
+    });
+
+    it('--pr-body mode: a body that itself carries markers is still attested even with no template', async () => {
+      const git = fakeGit({
+        'merge-base origin/main HEAD': { stdout: base },
+        [`diff --name-status ${range}`]: { stdout: 'M\tsrc/x.ts' },
+        [`diff --unified=0 ${range}`]: { stdout: '+++ b/src/x.ts\n+code' },
+      });
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', gitRunner: git,
+        body: '- [x] <!-- kookr:check:mbse --> refreshed',
+      });
+      expect(report.noOpinion).toBeUndefined();
+      expect(report.ok).toBe(false);
+    });
+
+    it('--fill / no body flag with no marker template is no opinion (does not fail)', async () => {
+      const report = await collectAndVerify({
+        cwd: '/repo', base: 'main', body: null, templateRequiredReason: '--fill', gitRunner: fakeGit(diff),
+      });
+      expect(report.ok).toBe(true);
+      expect(report.noOpinion).toBe(true);
+    });
   });
 
   it('P4a: reads .kookr/pr-checklist.json and honors { disable: ["env"] } end-to-end', async () => {

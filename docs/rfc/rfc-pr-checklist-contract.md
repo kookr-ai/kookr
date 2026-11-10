@@ -14,7 +14,12 @@ Draft (revised after critic round 1 — see "Critic Feedback Incorporated")
 > `--body-file` inside the repo, and `cat` heredoc substitutions
 > (`--body "$(cat <<'EOF' … EOF)"`), and it fails `--fill` / a missing body flag
 > when the repo template declares markers. Only stdin (`--body-file -`), `--web`,
-> and non-heredoc expansions remain attest-unverified. See `docs/hooks-setup.md`.
+> and non-heredoc expansions remain attest-unverified. Opt-in is template-driven:
+> a repo takes part by shipping markers in its PR template (or a tracked
+> `.kookr/pr-checklist.json`); a repo with neither gets no opinion, and the
+> structural rules (env, new-tests, secrets) only run for opted-in repos. This is
+> unrelated to `~/.kookr/pr-gated-repos.json`, which scopes only the pre-PR review
+> state-file gate. See `docs/hooks-setup.md`.
 
 ## Date
 
@@ -236,7 +241,9 @@ critic fix) to avoid duplicated/inconsistent verdicts:
   sees problems *before* attempting `gh pr create`. Never the gate of record (that is CI when enabled; the local hook while CI is disabled).
 - **User-global hook `pr-workflow-gate.sh` (P3) — local pre-create authority,
   opt-in.** Gated exactly like `kb-context-inject.sh`: a bash-side fast-exit
-  (default OFF; env `KOOKR_PR_CHECKLIST=1` and/or a `~/.kookr/pr-checklist-repos.json`
+  (template-driven since 2026-11: ON when the repo's PR template declares
+  `kookr:check` markers or a tracked `.kookr/pr-checklist.json` exists, probed with
+  `grep` before Node; legacy opt-ins `KOOKR_PR_CHECKLIST=1` and/or a `~/.kookr/pr-checklist-repos.json`
   scope list) **before** spawning Node; a `command -v kookr`/`node` guard; and the
   call written as `if ! kookr pr-checklist verify …; then` (NOT bare — a bare
   non-zero would trip the existing `set -euo pipefail` + `trap ERR fail_open` and

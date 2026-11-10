@@ -109,16 +109,27 @@ your own repo (verifying the final PR body with the engine checked out from the
 PR's base SHA so a PR cannot weaken its own verifier), it becomes a second layer
 and can be made a required status check.
 
-**OFF by default.** Like `kb-context-inject.sh`, the gate is inert until you
-opt in, in either of two ways:
+**A repo opts in by putting markers in its PR template.** The gate turns itself
+on for a `gh pr create` whenever the target repo (the session cwd, or the
+worktree of `--head`) ships a PR template — `.github/pull_request_template.md`
+or `PULL_REQUEST_TEMPLATE.md`, at the repo root, `.github/` or `docs/` — that
+contains at least one `<!-- kookr:check:id -->` (or legacy `<!-- pr:id -->`)
+marker, or a `.kookr/pr-checklist.json` rule config. No per-repo entry in any
+`~/.kookr` file is needed. The probe is a `grep` in bash **before** Node is
+spawned, so a repo without markers (for example an upstream OSS repo such as
+`rust-lang/rust`) gets no opinion and pays no startup cost; the engine applies
+the same rule (`kookr pr-checklist verify` on such a repo prints "No opinion" and
+exits `0`, and runs none of its structural diff rules).
 
-```bash
-# (a) per-session / per-shell env opt-in
-export KOOKR_PR_CHECKLIST=1
+This is **separate from `~/.kookr/pr-gated-repos.json`**, which only scopes the
+heavy pre-PR review (state-file) gate described above. The checklist gate never
+reads that file.
 
-# (b) a persistent per-repo scope list (owner/repo, case-insensitive)
-printf '["kookr-ai/kookr","your-org/your-repo"]\n' > ~/.kookr/pr-checklist-repos.json
-```
+Legacy opt-ins still work but are deprecated now that the template decides: the
+env var `KOOKR_PR_CHECKLIST=1` and the scope list
+`~/.kookr/pr-checklist-repos.json` (`["owner/repo", …]`) force the gate on for a
+repo even when it has no marker template (the engine then reports no opinion
+unless the repo has markers or a rule config).
 
 `KOOKR_PR_CHECKLIST=0` is a **kill-switch** — it force-disables the gate even
 when a repo is in the scope list. When the gate is off it exits *before*

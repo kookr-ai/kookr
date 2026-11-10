@@ -14,6 +14,8 @@
 // so the CLI can still fail them when the repo ships a marker template; the rest
 // are only reported as attest-unverified (printed, never a silent pass).
 
+import { randomBytes } from 'node:crypto';
+
 /** What the raw command yields for the body. */
 export type GhBodySource =
   | { kind: 'file'; path: string }
@@ -44,7 +46,6 @@ function hasExpansion(value: string): boolean {
   return /\$\(|`|\$\{/.test(value);
 }
 
-const HEREDOC_PLACEHOLDER_PREFIX = '__KOOKR_HEREDOC_BODY_';
 
 /**
  * `--body|-b` (plain or `=`-joined) followed by a `$(cat <<DELIM` opener, with
@@ -67,6 +68,9 @@ const HEREDOC_OPENER =
  */
 function resolveHeredocBodies(command: string): { command: string; bodies: Map<string, string> } {
   const bodies = new Map<string, string>();
+  // Per-call nonce: a literal `--body <placeholder>` typed by the author must not
+  // be able to alias a heredoc the pre-pass replaced.
+  const nonce = randomBytes(8).toString('hex');
   const start = command.search(/\bgh\s+pr\s+create\b/);
   if (start < 0) return { command, bodies };
 
@@ -96,7 +100,9 @@ function resolveHeredocBodies(command: string): { command: string; bodies: Map<s
       if (nl < 0) break;
       lineStart = nl + 1;
     }
-    if (terminatorStart < 0) continue;
+    // No terminator anywhere after this opener means none exists for any later
+    // opener either — stop (also keeps adversarial input linear).
+    if (terminatorStart < 0) break;
 
     // After the terminator: the substitution's closing `)` (and `"` if opened).
     const close = /^\s*\)/.exec(command.slice(terminatorEnd));
@@ -108,7 +114,7 @@ function resolveHeredocBodies(command: string): { command: string; bodies: Map<s
     }
 
     const text = command.slice(bodyStart, terminatorStart).replace(/\r?\n$/, '');
-    const placeholder = `${HEREDOC_PLACEHOLDER_PREFIX}${bodies.size}__`;
+    const placeholder = `__KOOKR_HEREDOC_${nonce}_${bodies.size}__`;
     bodies.set(placeholder, text);
     out += `${command.slice(pos, m.index)}${m[1]}'${placeholder}'`;
     pos = end;

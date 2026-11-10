@@ -273,7 +273,7 @@ export function evaluateStructural(
     results.push({
       id: 'structural',
       status: 'skipped',
-      summary: 'diff base unresolved — structural checks skipped (CI is authoritative)',
+      summary: 'diff base unresolved — structural checks skipped',
     });
     return results;
   }

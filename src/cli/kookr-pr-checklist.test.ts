@@ -376,6 +376,20 @@ describe('runPrChecklistCli doctor', () => {
       }
     });
 
+    it('a repo with no marker template and no config gets no opinion (0, noted) for any body shape', async () => {
+      const git = fakeGit({
+        'merge-base origin/main HEAD': { stdout: 'B' },
+        'diff --name-status B...HEAD': { stdout: 'M\tsrc/x.ts' },
+        'diff --unified=0 B...HEAD': { stdout: '+++ b/src/x.ts\n+const k = process.env.NEW_ONE' },
+      });
+      for (const cmd of ['gh pr create --fill', 'gh pr create --body "plain"', heredoc('plain')]) {
+        const o = out();
+        const code = await runPrChecklistCli(['verify', '--from-command', cmd], { out: o, cwd: '/repo', gitRunner: git });
+        expect(code).toBe(EXIT_PASS);
+        expect(printed(o)).toMatch(/No opinion/);
+      }
+    });
+
     it('never echoes the heredoc body text', async () => {
       const o = out();
       await run(heredoc('SECRET-BODY-TEXT'), o);

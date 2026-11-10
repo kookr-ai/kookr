@@ -232,7 +232,9 @@ function printHuman(report: VerifyReport, out: Pick<typeof console, 'log' | 'err
     const glyph = r.status === 'pass' ? '✓' : r.status === 'fail' ? '✗' : r.status === 'waived' ? '~' : '–';
     out.log(`  ${glyph} [${r.status}] ${r.id}: ${r.summary}${r.reason ? ` — ${r.reason}` : ''}`);
   }
-  if (report.ok) {
+  if (report.noOpinion) {
+    out.log('✓ No opinion — this repo has not opted in to the PR checklist (no kookr:check markers in its PR template).');
+  } else if (report.ok) {
     out.log(report.bodyChecked
       ? '✓ PR checklist passed (attestation + structural checks).'
       : '✓ Structural checks passed (run with --pr-body in CI for attestation).');

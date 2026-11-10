@@ -1893,7 +1893,7 @@ rules plus optional PR-body attestation boxes.
 | Option | Argument | Default | Description |
 | --- | --- | --- | --- |
 | `--pr-body` | path or `-` | unset | PR body to check attestation boxes against (`-` reads stdin). Omit for structural checks only (typical local preflight; CI supplies the body). Mutually exclusive with `--from-command`. |
-| `--from-command` | raw shell string | unset | Derive body + base from a raw `gh pr create …` command (used by the local hook). A `--fill` / `$(…)` / stdin body is unverifiable — attestation is skipped locally and CI stays authoritative (never a silent pass). |
+| `--from-command` | raw shell string | unset | Derive body + base from a raw `gh pr create …` command (used by the local hook). A literal `--body`, an in-repo `--body-file`, and a `cat` heredoc body (`--body "$(cat <<'EOF' … EOF)"`) are verified. `--fill` or no body flag fails when the repo PR template declares `kookr:check` markers; stdin and other `$(…)` bodies are unverifiable — attestation is skipped with a printed note (the CI workflow is disabled, so nothing else checks them). A repo with no marker template and no `.kookr/pr-checklist.json` gets no opinion (exit `0`). |
 | `--run-commands` | `none` or `ci` | `none` | `none` runs no repo commands. `ci` is reserved and currently rejected. |
 | `--base` | git ref | `main` | Diff base branch (`--from-command`'s base wins when present). |
 | `--json` | none | false | Emit one machine-readable JSON report to stdout. |
