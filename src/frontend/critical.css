@@ -323,7 +323,7 @@ code, kbd { font-family: var(--font-mono); }
 }
 
 .project-icon.all { background: var(--bg-card); margin-bottom: 4px; }
-.project-icon.selected { border-color: var(--blue); background: var(--bg-card); }
+.project-icon.selected { border-color: var(--state-work); background: var(--bg-card); }
 .project-icon-badge,
 .project-icon-dot,
 .project-icon-task-count { position: absolute; }

@@ -1458,9 +1458,9 @@ button.topbar-spend:focus-visible {
 }
 /* stuckReason badge (issue #1526 Phase B / FM9) — distinguishes a task that
    only LOOKS like it's still running (healthy row, no active finding) from
-   one genuinely doing work. Base layout matches .task-priority-badge; color
-   varies by reason so "done, needs you" (green) reads differently from
-   "may be hung" (red). */
+   one genuinely doing work. Base layout matches .task-priority-badge; the
+   colour and marker follow the state roles, so "needs you" (amber dot)
+   reads differently from "may be hung" (red diamond). */
 .stuck-reason-badge {
   display: inline-flex;
   align-items: center;
@@ -2051,7 +2051,6 @@ button.section-header.detection-stats-header:focus-visible {
 }
 .branch-label.detached {
   font-style: italic;
-  opacity: 0.7;
 }
 .worktree-indicator {
   margin-left: 3px;
@@ -2065,7 +2064,6 @@ button.section-header.detection-stats-header:focus-visible {
 }
 .detail-branch.detached {
   font-style: italic;
-  opacity: 0.7;
 }
 .worktree-badge {
   font-size: 12px;
@@ -8526,7 +8524,6 @@ button.completed-row-rating:focus-visible {
   border-style: dashed;
 }
 .act-msg-delivery-submitted {
-  opacity: 0.9;
 }
 .act-msg-delivery-failed {
   background: rgba(239, 68, 68, 0.08);
@@ -8877,7 +8874,6 @@ button.completed-row-rating:focus-visible {
   background: transparent;
   color: var(--red);
   cursor: pointer;
-  opacity: 0.7;
 }
 .btn-danger-xs:hover { opacity: 1; background: rgba(239, 68, 68, 0.1); }
 
@@ -9162,7 +9158,7 @@ button.completed-row-rating:focus-visible {
 .quota-pill.quota-medium { background: rgba(251,191,36,0.12); color: var(--amber); }
 .quota-pill.quota-high { background: rgba(251,146,60,0.15); color: #fb923c; }
 .quota-pill.quota-critical { background: rgba(248,113,113,0.15); color: var(--red); }
-.quota-reset { margin-left: 3px; opacity: 0.7; font-weight: 400; }
+.quota-reset { margin-left: 3px; font-weight: 400; }
 
 .resource-status {
   position: relative;
@@ -9673,7 +9669,7 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 }
 
 .project-icon:hover { background: var(--bg-card-hover); }
-.project-icon.selected { border-color: var(--blue); background: var(--bg-card); }
+.project-icon.selected { border-color: var(--state-work); background: var(--bg-card); }
 .project-icon.inactive { opacity: 0.5; }
 .project-icon.drag-active { opacity: 0.45; transform: scale(0.96); }
 
@@ -14953,7 +14949,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .cost-est-badge {
   font-size: 12px;
-  opacity: 0.6;
   margin-left: 6px;
   font-weight: 400;
 }
@@ -15010,7 +15005,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .cost-comparison-meta {
   font-size: 12px;
-  opacity: 0.55;
 }
 
 .cost-coverage-summary {
@@ -15053,7 +15047,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-size: 12px;
   font-weight: 500;
   margin: 0;
-  opacity: 0.72;
 }
 .cost-unbound-line {
   display: flex;
@@ -15077,14 +15070,12 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   cursor: pointer;
   font-size: 12px;
   align-self: flex-start;
-  opacity: 0.7;
 }
 
 .cost-loading,
 .cost-empty {
   padding: 16px;
   font-size: 14px;
-  opacity: 0.6;
 }
 .cost-comparison-error {
   background: rgba(239, 68, 68, 0.12);
@@ -15106,7 +15097,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-size: 14px;
   font-weight: 500;
   margin: 0;
-  opacity: 0.75;
 }
 
 .cost-table {
@@ -15127,7 +15117,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .cost-table th {
   font-weight: 500;
-  opacity: 0.65;
 }
 .cost-sort-btn {
   background: none;
@@ -15157,7 +15146,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 .cost-row.dq-codex-rollout-abandoned td,
 .cost-row.dq-missing-usage td,
 .cost-row.dq-codex-no-tokens    td {
-  opacity: 0.6;
 }
 
 .cost-agent-metric {
@@ -15174,7 +15162,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   background: rgba(255, 255, 255, 0.055);
   padding: 1px 6px;
   font-size: 12px;
-  opacity: 0.75;
 }
 
 .cost-quality-badge {
@@ -15228,7 +15215,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-size: 13px;
   padding: 1px 0;
 }
-.cost-stat-label { opacity: 0.55; }
+.cost-stat-label { }
 .cost-stat-val   { font-variant-numeric: tabular-nums; }
 
 @media (max-width: 820px) {
@@ -15569,7 +15556,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .related-task-entry--inferred {
   border-style: dashed;
-  opacity: 0.85;
 }
 
 .related-task-entry-row {
@@ -16035,7 +16021,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   transition: color 0.15s, border-color 0.15s;
 }
 .dep-rail-node:hover { color: var(--text-bright); border-color: var(--border); background: var(--bg-card-hover); }
-.dep-rail-node--inferred { border-style: dashed; opacity: 0.9; }
+.dep-rail-node--inferred { border-style: dashed; }
 .dep-rail-node-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
 .dep-rail-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dep-rail-dot.done { background: var(--green); }

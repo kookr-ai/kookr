@@ -16,6 +16,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
+import { TASK_STUCK_REASONS, type TaskStuckReason } from '../shared/contracts/task-stuck-reason.js';
 
 const frontendDir = dirname(fileURLToPath(import.meta.url));
 
@@ -141,8 +142,8 @@ describe('type scale', () => {
           // The onboarding diagram is a scaled illustration (SVG viewBox),
           // not UI text; its user units are not CSS pixels.
           if (entry.name === 'OnboardingLayoutDiagram.tsx') continue;
-          // Numbers (fontSize: 11) and strings (fontSize: '11px' / '0.8em').
-          for (const m of src.matchAll(/fontSize\s*:\s*['"`]?(\d+(?:\.\d+)?)(px|r?em)?\b/g)) {
+          // Style objects (fontSize: 11 / '11px' / '0.8em') and JSX attributes (fontSize="11").
+          for (const m of src.matchAll(/fontSize\s*[:=]\s*\{?\s*['"`]?(\d+(?:\.\d+)?)(px|r?em)?\b/g)) {
             if (!TYPE_SCALE.has(`${m[1]}${m[2] ?? 'px'}`)) offenders.push(`${path}: fontSize ${m[0]}`);
           }
         }
@@ -202,25 +203,37 @@ describe('text contrast', () => {
     ['selected card', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-card'], t))],
   ];
 
-  test('muted and secondary text is never dimmed further with opacity', () => {
-    // Opacity multiplies contrast down: --text-muted at 0.7 fell to 3.6:1.
-    // Exempt: decorative separators, disabled controls, and icon-only
-    // buttons that reveal on hover (their glyphs are not running text).
-    const exempt = new Set([
-      '.finding-context-sep',
-      '.healthy-row-sep',
-      '.agent-provider-mark--snoozed',
-      '.playbook-launch-mode .launch-mode-option:disabled',
+  test('text is never dimmed with partial opacity at rest', () => {
+    // Opacity multiplies contrast down (--text-muted at 0.7 fell to 3.6:1),
+    // and it applies to inherited colour too, so any partial opacity on a
+    // text-bearing rule is suspect. Allowed: inactive states (disabled,
+    // hover, stale, paused, locked, …), decorative separators, and the
+    // icon-only buttons listed below, whose glyphs are not running text.
+    const inactive = /disabled|:hover|-sep\b|inactive|locked|is-revoked|is-expired|stale|muted|paused|blacklisted|drag-active|pending-deletion|snoozed/;
+    const iconOnly = new Set([
+      '.copy-explanation.btn-icon',
+      '.task-id-copy-icon',
+      '.branch-icon',
+      '.task-actions-mini',
       '.btn-reply',
       '.playbook-pin-btn',
       '.md-copy-btn',
+      '.btn-speak-finding-ring',
+      '.btn-sound-toggle',
+      '.btn-trophy',
+      '.healthy-row-controls',
+      '.hook-inventory-lock',
     ]);
     const offenders: string[] = [];
-    for (const match of stripComments(STYLESHEETS['styles.css']).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-      const selector = match[1].trim().replace(/\s+/g, ' ');
-      const opacity = match[2].match(/(?<![\w-])opacity\s*:\s*(0?\.\d+)/);
-      const muted = /(?<![\w-])color\s*:\s*var\(--text-(muted|secondary)\)/.test(match[2]);
-      if (opacity && muted && !exempt.has(selector)) offenders.push(`${selector} opacity ${opacity[1]}`);
+    for (const file of ['styles.css', 'critical.css']) {
+      const css = stripComments(STYLESHEETS[file]).replace(/@keyframes[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, '');
+      for (const match of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const selector = match[1].trim().replace(/\s+/g, ' ');
+        const opacity = match[2].match(/(?<![\w-])opacity\s*:\s*(0?\.\d+)/);
+        if (!opacity || Number(opacity[1]) === 0) continue;
+        if (inactive.test(selector) || iconOnly.has(selector)) continue;
+        offenders.push(`${file} ${selector} opacity ${opacity[1]}`);
+      }
     }
     expect(offenders).toEqual([]);
   });
@@ -264,8 +277,8 @@ const TURN_STATE_ROLE: Record<string, Role> = {
   complete: 'neutral',
 };
 
-/** `StuckReasonBadge` reasons shown on healthy rows. */
-const STUCK_REASON_ROLE: Record<string, Role> = {
+/** `StuckReasonBadge` reasons shown on healthy rows (every contract value). */
+const STUCK_REASON_ROLE: Record<TaskStuckReason, Role> = {
   awaiting_completion_ack: 'need',
   provider_paused: 'need',
   waiting_on_input: 'need',
@@ -274,6 +287,12 @@ const STUCK_REASON_ROLE: Record<string, Role> = {
 };
 
 describe('state colours: four roles, one shape each', () => {
+  test('selection is teal everywhere, including the project sidebar', () => {
+    for (const file of ['styles.css', 'critical.css']) {
+      expect(rules(STYLESHEETS[file]).lookup('.project-icon.selected', 'border-color'), file).toBe('var(--state-work)');
+    }
+  });
+
   const css = rules(STYLESHEETS['styles.css']);
   const tokens = rootTokens(STYLESHEETS['styles.css']);
 
@@ -312,6 +331,10 @@ describe('state colours: four roles, one shape each', () => {
       expect(shapeOf(`.finding-turn-state.turn-state--${state}::before`)).toBe(role);
     });
   }
+
+  test('every stuck reason in the contract has a role', () => {
+    expect(Object.keys(STUCK_REASON_ROLE).sort()).toEqual([...TASK_STUCK_REASONS].sort());
+  });
 
   for (const [reason, role] of Object.entries(STUCK_REASON_ROLE)) {
     test(`stuck reason "${reason}" is ${role} with its shape`, () => {
