@@ -5,7 +5,7 @@
 // unit-tested in isolation.
 
 import type { AgentState } from '../../../shared/protocol.js';
-import { projectLabel, projectColor, findingTypeLabel } from '../../presentation.js';
+import { projectLabel, projectColor, findingTypeLabel, findingKindClass } from '../../presentation.js';
 import { groupFindings, groupIdenticalPendingPrompts } from '../../group-findings.js';
 import {
   MIN_BOTTOM_SECTIONS_HEIGHT,
@@ -48,13 +48,7 @@ export function agentProjectColor(agent: AgentState): number {
 
 export function severityClass(agent: AgentState): string {
   if (!agent.anomaly) return '';
-  switch (agent.anomaly.type) {
-    case 'permission_blocked': return 'permission';
-    case 'repeated_error': return 'error';
-    // A normal completed turn is a review-ready signal, not a hung turn — tone it down vs an explicit
-    // mid-turn AskUserQuestion, which still reads as `input`. See issue #358.
-    case 'needs_input': return agent.turnState === 'completed_turn' ? 'turn-complete' : 'input';
-  }
+  return findingKindClass(agent.anomaly.type, agent.turnState);
 }
 
 export function severityLabel(agent: AgentState): string {

@@ -1,6 +1,7 @@
 import { describe, test, expect, vi } from 'vitest';
 import { AGENT_TYPES } from '../shared/contracts/agent-types.js';
-import { agentProviderPresentation, anomalyTypeLabel, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitAgent, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
+import { ANOMALY_TYPES } from '../shared/contracts/anomalies.js';
+import { agentProviderPresentation, anomalyTypeLabel, findingKindClass, archivedTaskToAgentState, cacheHitRatio, deriveTaskNextStepRecommendations, findingTypeLabel, findingWaitStartedAt, formatAge, formatCacheHit, formatCostRate, formatDuration, formatOldestFindingWait, healthyCurrentToolLabel, healthyDotClass, healthyStatusLabel, oldestFindingWaitAgent, oldestFindingWaitStartedAt, projectLabel, projectColor, taskStatusLabel, turnStateLabel, turnStateClass, worktreeHealthLabel, worktreeHealthTitle } from './presentation.js';
 import type { AgentEvent, AgentState, GitHubPRState, TokenUsage } from '../shared/protocol.js';
 
 function makeCompletedAgent(overrides: Partial<AgentState> = {}): AgentState {
@@ -43,6 +44,35 @@ function makePr(overrides: Partial<GitHubPRState> = {}): GitHubPRState {
     ...overrides,
   };
 }
+
+describe('findingKindClass', () => {
+  test('maps every anomaly type to a styled finding kind (none renders as "undefined")', () => {
+    for (const type of ANOMALY_TYPES) {
+      expect(['permission', 'input', 'error', 'stuck'], type).toContain(findingKindClass(type, 'running'));
+    }
+  });
+
+  test('a completed turn on needs_input is turn-complete; a mid-turn question is input', () => {
+    expect(findingKindClass('needs_input', 'completed_turn')).toBe('turn-complete');
+    expect(findingKindClass('needs_input', 'waiting_for_input')).toBe('input');
+    expect(findingKindClass('needs_input', undefined)).toBe('input');
+  });
+
+  test('only needs_input becomes turn-complete', () => {
+    expect(findingKindClass('stale_agent', 'completed_turn')).toBe('stuck');
+    expect(findingKindClass('permission_blocked', 'completed_turn')).toBe('permission');
+  });
+
+  test('failures read as error, stalls as stuck, operator decisions as waiting', () => {
+    expect(findingKindClass('repeated_error', 'running')).toBe('error');
+    expect(findingKindClass('api_error', 'running')).toBe('error');
+    expect(findingKindClass('backend_unreachable', 'running')).toBe('error');
+    expect(findingKindClass('stale_agent', 'running')).toBe('stuck');
+    expect(findingKindClass('merge_conflict', 'running')).toBe('stuck');
+    expect(findingKindClass('permission_blocked', 'running')).toBe('permission');
+    expect(findingKindClass('budget_exceeded', 'running')).toBe('input');
+  });
+});
 
 describe('healthyDotClass', () => {
   test('returns "running" for agent with no events', () => {

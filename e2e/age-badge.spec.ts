@@ -226,8 +226,10 @@ test.describe('Initial-load sort and auto-scroll suppression', () => {
     // (We can verify by checking the findings panel is still in isInitialLoad state
     //  — the new finding should appear but not force a scroll)
 
-    // Click on the findings panel to clear isInitialLoad
-    await page.locator('.findings-panel').click();
+    // Click on the findings panel to clear isInitialLoad. Any click inside the
+    // panel clears it; aim at the panel's top-left padding rather than its
+    // centre, which lands on whichever card button happens to sit there.
+    await page.locator('.findings-panel').click({ position: { x: 4, y: 4 } });
 
     // Now launch a third agent — auto-scroll should be re-enabled
     await launchViaUI(page, 'Agent 3', '/test/project');

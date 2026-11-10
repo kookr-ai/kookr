@@ -14,6 +14,15 @@ Kookr is a supervision surface for many AI coding agents. The main workflow is: 
 
 **Healthy agents** are still visible, but they are not the focus. Kookr keeps them out of the urgent queue until something changes.
 
+**State colours** mean the same thing everywhere, and each one also has its own marker shape, so you can tell states apart without relying on colour:
+
+| Colour | Shape | Meaning |
+|---|---|---|
+| Amber | filled dot | Waiting on you: a permission request, a question, a budget warning, or a finished turn waiting for your review. |
+| Red | diamond | Failed or stuck: an error (repeated tool errors, an API error, a hook or backend failure), a stalled or suspected-hung agent, a merge conflict, a terminated task. |
+| Teal | ring | Working, or the item you have selected. |
+| Grey | dash | Everything else: a completed, cancelled or queued task. |
+
 ## Launching Agents
 
 Use the dashboard **Launch** button for an interactive start:

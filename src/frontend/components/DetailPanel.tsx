@@ -7,7 +7,7 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations } from '../presentation.js';
+import { formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations, findingKindClass } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
@@ -958,12 +958,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     && agent.taskStatus !== 'pending'
     && !isTerminalTaskStatus(agent.taskStatus);
   const signalCompleteReady = showSignalBanner && isCompletedTurn;
-  const badgeClass = agent.anomaly
-    ? agent.anomaly.type === 'permission_blocked' ? 'permission'
-      : agent.anomaly.type === 'repeated_error' ? 'error'
-      : isCompletedTurn ? 'turn-complete'
-      : 'input'
-    : '';
+  const badgeClass = agent.anomaly ? findingKindClass(agent.anomaly.type, agent.turnState) : '';
   const badgeLabel = agent.anomaly
     ? isCompletedTurn ? 'SIGNALED COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
