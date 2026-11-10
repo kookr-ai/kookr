@@ -192,13 +192,14 @@ describe('TopBar: System indicator and About', () => {
     expect(container.querySelector('#system-popover')).toBeNull();
   });
 
-  test('Escape closes the System detail', async () => {
+  test('Escape closes the System detail and returns focus to the indicator', async () => {
     await renderTopBar();
     await openSystem();
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
     });
     expect(container.querySelector('#system-popover')).toBeNull();
+    expect(document.activeElement).toBe(systemButton());
   });
 
   test('a degraded hidden readout turns the indicator amber and names it', async () => {

@@ -256,6 +256,30 @@ kbd {
   align-items: center;
   gap: 6px;
 }
+/* The CPU/RAM detail opened upward from the old bottom status bar. Inside the
+   scrolling System panel it would be clipped, so show it inline instead. */
+.system-popover .resource-status {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.system-popover .resource-status-popover {
+  position: static;
+  min-width: 0;
+  max-width: none;
+  box-shadow: none;
+}
+/* On a compact (phone) top bar the System indicator sits near the left of the
+   second row, so a right-anchored panel would run off-screen. Anchor it to the
+   whole top bar with the 16 px page gutter instead. */
+.topbar.compact { position: relative; }
+.topbar.compact .system-indicator-wrap { position: static; }
+.topbar.compact .system-popover {
+  left: 16px;
+  right: 16px;
+  min-width: 0;
+  max-width: none;
+}
 .version-row {
   font-size: 12px;
   color: var(--text);
@@ -13260,10 +13284,6 @@ a.oss-productivity-empty-docs-link:visited:hover {
 
   .statusbar.compact .statusbar-left {
     gap: 6px;
-  }
-
-  .statusbar.compact .statusbar-left .btn-sound-toggle {
-    margin-left: 0;
   }
 
   .reflection-prompt {

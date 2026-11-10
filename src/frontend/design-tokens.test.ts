@@ -437,6 +437,17 @@ describe('quiet chrome (issue #3561 slice 2)', () => {
     expect(styles.lookup(selector, 'color')).toBeDefined();
   });
 
+  test('the System panel stays on screen on a phone and shows the CPU/RAM detail inline', () => {
+    // Right-anchored at 320 px wide, the panel ran off the left edge at 375 px.
+    expect(styles.lookup('.topbar.compact .system-indicator-wrap', 'position')).toBe('static');
+    expect(styles.lookup('.topbar.compact .system-popover', 'left')).toBe('16px');
+    expect(styles.lookup('.topbar.compact .system-popover', 'right')).toBe('16px');
+    expect(styles.lookup('.topbar.compact .system-popover', 'min-width')).toBe('0');
+    // The resource detail opened upward from the old bottom bar; inside the
+    // scrolling panel it would be clipped above the panel's top edge.
+    expect(styles.lookup('.system-popover .resource-status-popover', 'position')).toBe('static');
+  });
+
   test('the System attention dot uses the "waiting on you" role, not red', () => {
     expect(styles.lookup('.system-attention-dot', 'background')).toBe('var(--state-need)');
   });

@@ -139,6 +139,7 @@ export function TopBar({
   const preDeployCommitRef = useRef<string | null>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const systemWrapRef = useRef<HTMLDivElement>(null);
+  const systemButtonRef = useRef<HTMLButtonElement>(null);
 
   // Restore sticky pre-deploy commit after remount so completion clear still works.
   useEffect(() => {
@@ -157,7 +158,9 @@ export function TopBar({
       }
     }
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') setShowPopover(false);
+      if (e.key !== 'Escape') return;
+      setShowPopover(false);
+      systemButtonRef.current?.focus();
     }
     document.addEventListener('mousedown', handleClick);
     document.addEventListener('keydown', handleKey);
@@ -430,6 +433,7 @@ export function TopBar({
           )}
           <div className="system-indicator-wrap" ref={systemWrapRef}>
             <button
+              ref={systemButtonRef}
               type="button"
               className={`system-indicator${hasUpdates ? ' has-updates' : ''}${systemNeedsAttention ? ' needs-attention' : ''}`}
               onClick={() => setShowPopover((v) => !v)}

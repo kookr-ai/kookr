@@ -51,9 +51,9 @@ test.describe('Build version info', () => {
     const popover = page.locator('.system-popover');
     await expect(popover).toBeVisible();
     await expect(popover.getByRole('heading', { name: 'About' })).toBeVisible();
-    const text = await popover.textContent();
-    expect(text).toMatch(/[0-9a-f]{7}/);
-    expect(text).not.toContain('dev mode');
+    const commitRow = popover.locator('.version-row').filter({ hasText: 'Commit' });
+    await expect(commitRow.locator('code')).toHaveText(/^[0-9a-f]{40}$/);
+    await expect(popover.getByText('dev mode')).not.toBeVisible();
   });
 
   test('clicking System opens About with full build details', async ({ page }) => {
