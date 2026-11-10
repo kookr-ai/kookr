@@ -163,6 +163,10 @@ describe('isolated screen-snapshot seeds (issue #3564)', { timeout: 30_000 }, ()
     const worker = newWorker({ backoffMs: 60_000 });
     await warmUp(worker);
     terminate.mockClear();
+    // Start from the check phase: the next loop turn then runs timers before it polls for
+    // the worker's reply, so the expired timer really does come first. (Started from the
+    // poll phase, the reply would be delivered first whatever the code does.)
+    await new Promise((resolve) => setImmediate(resolve));
     // Deadline for these options: 0 ms queue + 1000 ms budget + 500 ms slack = 1500 ms.
     const job = worker.snapshot(encode('answered long ago\r\n'), { ...geometry, maxQueueWaitMs: 0, sessionKey: 'healthy' });
     // Stall this thread past the deadline: the worker answers meanwhile, and both the
