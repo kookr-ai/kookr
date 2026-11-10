@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachImagesToTerminal,
   dragCarriesFiles,
-  formatImagePathsForPaste,
+  formatImagePathForPaste,
   imageFilesFromClipboard,
   isSupportedImageFile,
   planImageAttach,
@@ -90,10 +90,9 @@ describe('planImageAttach', () => {
   });
 });
 
-describe('formatImagePathsForPaste', () => {
-  it('joins paths with spaces and ends with a space so the user can keep typing', () => {
-    expect(formatImagePathsForPaste(['/a.png'])).toBe('/a.png ');
-    expect(formatImagePathsForPaste(['/a.png', '/b.png'])).toBe('/a.png /b.png ');
+describe('formatImagePathForPaste', () => {
+  it('is the path plus a trailing space so the user can keep typing', () => {
+    expect(formatImagePathForPaste('/a.png')).toBe('/a.png ');
   });
 });
 
@@ -139,7 +138,9 @@ describe('uploadTerminalImage', () => {
 describe('attachImagesToTerminal', () => {
   const uploadOk = (path: string) => ({ path, mime: 'image/png' as const, size: 4 });
 
-  it('pastes the paths of the successful uploads, keeping drop order, and reports the failures', async () => {
+  // One paste PER image: Codex CLI only attaches a paste that is exactly one
+  // image path (two paths in one paste stay plain text). Verified on the real TUIs.
+  it('pastes each successful upload as its own paste, in drop order, and reports the failures', async () => {
     const paste = vi.fn().mockReturnValue(true);
     const outcome = await attachImagesToTerminal(
       [file('a.png', 'image/png'), file('b.png', 'image/png'), file('c.png', 'image/png')],
@@ -153,7 +154,7 @@ describe('attachImagesToTerminal', () => {
       },
     );
     expect(outcome).toEqual({ status: 'attached', attached: 2, failures: ['b.png: larger than 10 MB'] });
-    expect(paste).toHaveBeenCalledExactlyOnceWith('/up/a.png /up/c.png ');
+    expect(paste.mock.calls).toEqual([['/up/a.png '], ['/up/c.png ']]);
   });
 
   it('pastes nothing and reports failure when every upload fails', async () => {
@@ -176,6 +177,19 @@ describe('attachImagesToTerminal', () => {
     });
     expect(outcome).toEqual({ status: 'stale' });
     expect(paste).not.toHaveBeenCalled();
+  });
+
+  it('reports the images it could not paste when the terminal disconnects partway through', async () => {
+    const paste = vi.fn().mockReturnValueOnce(true).mockReturnValue(false);
+    const outcome = await attachImagesToTerminal(
+      [file('a.png', 'image/png'), file('b.png', 'image/png'), file('c.png', 'image/png')],
+      { upload: async (f) => uploadOk(`/up/${f.name}`), isStillTarget: () => true, paste },
+    );
+    expect(outcome).toEqual({
+      status: 'attached', attached: 1, failures: ['2 images not attached: the terminal disconnected'],
+    });
+    // It stops at the first refusal instead of pasting later images out of order.
+    expect(paste).toHaveBeenCalledTimes(2);
   });
 
   it('reports stale (not attached) when the terminal refuses the paste', async () => {

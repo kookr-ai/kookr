@@ -73,9 +73,17 @@ export function planImageAttach(files: readonly File[]): ImageAttachPlan {
   return { accepted, skipped };
 }
 
-/** One paste for all images, space-separated, ending in a space so typing can continue. */
-export function formatImagePathsForPaste(paths: readonly string[]): string {
-  return `${paths.join(' ')} `;
+/**
+ * The text pasted for ONE image: its path plus a trailing space, so the user
+ * can keep typing after the attachment.
+ *
+ * Each image must be its own paste. Checked against the real TUIs: Codex CLI
+ * only attaches a paste that is exactly one image path — two space-separated
+ * paths in a single paste stay plain text — while Claude Code accepts either.
+ * Separate back-to-back pastes attach every image in both.
+ */
+export function formatImagePathForPaste(path: string): string {
+  return `${path} `;
 }
 
 function describeUploadFailure(status: number, error: TerminalImageUploadError | null): string {
@@ -122,7 +130,7 @@ export interface ImageAttachIo {
 }
 
 /**
- * Upload `files`, then paste their paths into the terminal — but only if it is
+ * Upload `files`, then paste each path into the terminal — but only if it is
  * still the terminal the user dropped onto. Uploading takes time, and the
  * dashboard can switch to another agent meanwhile (auto-advance, a click);
  * pasting then would put an image into the wrong agent's prompt.
@@ -139,6 +147,17 @@ export async function attachImagesToTerminal(
     else failures.push(result.reason instanceof Error ? result.reason.message : 'upload failed');
   }
   if (paths.length === 0) return { status: 'failed', failures };
-  if (!io.isStillTarget() || !io.paste(formatImagePathsForPaste(paths))) return { status: 'stale' };
-  return { status: 'attached', attached: paths.length, failures };
+  if (!io.isStillTarget()) return { status: 'stale' };
+  // One paste per image, in drop order (see formatImagePathForPaste for why).
+  let pasted = 0;
+  for (const path of paths) {
+    if (!io.paste(formatImagePathForPaste(path))) break;
+    pasted += 1;
+  }
+  if (pasted === 0) return { status: 'stale' };
+  if (pasted < paths.length) {
+    const missed = paths.length - pasted;
+    failures.push(`${missed} image${missed === 1 ? '' : 's'} not attached: the terminal disconnected`);
+  }
+  return { status: 'attached', attached: pasted, failures };
 }

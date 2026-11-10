@@ -1989,7 +1989,8 @@ describe('TerminalPanel', () => {
       expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: `${IMG_PATH} ` }));
     });
 
-    test('pastes several dropped images as one space-separated paste, in drop order', async () => {
+    // One paste frame PER image: Codex CLI leaves two paths in a single paste as plain text.
+    test('pastes several dropped images as one paste frame each, in drop order', async () => {
       let n = 0;
       vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => savedImageResponse(`/img/${++n}.png`)));
       const { ws, xterm } = mountReady();
@@ -1997,8 +1998,10 @@ describe('TerminalPanel', () => {
       act(() => { dispatchFileDrag(xterm, 'drop', [PNG_FILE(), PNG_FILE()]); });
       await flush();
 
-      expect(sentTypes(ws)).toEqual(['paste']);
-      expect(ws.send).toHaveBeenCalledWith(terminalFrame(ws, { type: 'paste', text: '/img/1.png /img/2.png ' }));
+      expect(ws.send.mock.calls.map(([frame]) => frame)).toEqual([
+        terminalFrame(ws, { type: 'paste', text: '/img/1.png ' }),
+        terminalFrame(ws, { type: 'paste', text: '/img/2.png ' }),
+      ]);
     });
 
     test('claims file drags (overlay + cancelled dragover) but leaves dragged text alone', () => {

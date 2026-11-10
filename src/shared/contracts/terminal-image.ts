@@ -8,7 +8,8 @@
  * — e.g. Chrome on Windows, Kookr in WSL). So the dashboard uploads the bytes
  * here, the server saves them to a file on the host, and the dashboard then
  * pastes that host path into the agent's prompt. Claude Code and Codex CLI both
- * turn a pasted image path into an image attachment.
+ * turn a pasted image path into an image attachment (one path per paste: Codex
+ * ignores a paste that holds several paths).
  *
  * The request body is the raw image (not JSON / multipart), so the route has
  * its own size cap instead of the 1 MB JSON limit the other `/api/*` routes use.

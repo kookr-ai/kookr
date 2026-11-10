@@ -3157,10 +3157,12 @@ a.overview-tour-link:visited:hover {
   font-size: 13px;
   pointer-events: none;
 }
+/* Bottom-left: the bottom-right corner belongs to the "jump to latest" button. */
 .terminal-image-notice {
   top: auto;
   bottom: 12px;
-  right: 12px;
+  left: 12px;
+  right: auto;
   height: auto;
   max-width: min(420px, calc(100% - 24px));
   white-space: normal;
