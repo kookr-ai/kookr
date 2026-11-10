@@ -46,8 +46,13 @@ export interface WatchdogConfig {
    * Bounded for the same reason `maxToolExecutionTimeMs` bounds
    * `tool_running`: a wake that never comes (dead background process, lost
    * notification) must eventually surface to the operator. 60 minutes covers
-   * ~99% of observed parks (p99 ≈ 55min) and never hides a park longer than
-   * the hungSuspect-TTL ceiling, so reap timing is unchanged for dead parks.
+   * ~99% of observed parks (p99 ≈ 55min). Trade-off for a DEAD park: while
+   * parked the task is excluded from hungSuspect, so its slot is reclaimed
+   * at max(hungSuspect TTL, this bound) after the park — with the default
+   * 25-min TTL that is ~60 min instead of ~25 min, and never earlier than
+   * before. Raising this bound delays dead-park reclaim by the same amount;
+   * it is deliberately capped at the hungSuspect-TTL ceiling (60 min) by
+   * default so a dead park becomes visible and reapable at the same moment.
    */
   backgroundParkGracePeriodMs: number;
 }
@@ -361,10 +366,17 @@ export class Watchdog {
       // operator input, next tool call). Bookkeeping overlays — Notification
       // and SubagentStop — do not change turn state, so they leave the park
       // alone (same overlay set as `turn-state.ts#isTrailingStateOverlay`).
-      // `now` is the replay-aware event time, so a restart that replays a
-      // parked Stop restores the park with its original age, not the boot time.
+      //
+      // Re-arming is gated off for replay (`updateLastEventAt: false`), the
+      // same guard `mcpStartupAt` uses above: the replay pipeline stamps
+      // events with ingest time, not their historical time, so re-arming on
+      // a restart's history replay would grant a dead park a fresh full
+      // grace window on EVERY restart. Not restoring the park merely reverts
+      // a live parked agent to pre-park behavior until its next parked Stop.
+      // Clears stay ungated — replayed turn-advancing events still end a park.
       if (event.type === 'stop') {
-        state.backgroundParkedAt = isBackgroundParkedStop(event) ? now : 0;
+        state.backgroundParkedAt =
+          options.updateLastEventAt !== false && isBackgroundParkedStop(event) ? now : 0;
       } else if (event.type !== 'notification' && event.type !== 'subagent_stop') {
         state.backgroundParkedAt = 0;
       }
@@ -550,6 +562,24 @@ export class Watchdog {
       return { status: 'healthy' };
     }
 
+    // Background park: the agent's last turn ended with still-running
+    // background work (a `run_in_background` shell or a session cron), so it
+    // is waiting to be woken by a task notification — hook silence and a
+    // static ❯ prompt are the EXPECTED shape of that wait, not evidence of a
+    // hang. Checked before the tool-in-progress branch because the Stop that
+    // parked the agent proves the turn ended: any unmatched PreToolUse left
+    // behind at that point is a lost PostToolUse, and letting it ride the
+    // 10-minute tool override would re-mint the very stale_agent ping the
+    // park exists to suppress. Checked before the input-prompt pane branch
+    // because the pane always shows the prompt while parked. Bounded: past
+    // the grace period this falls through to the normal verdicts so a wake
+    // that never came (dead background process, lost notification) still
+    // surfaces — the same reason a hung tool call doesn't hide behind
+    // indefinite `tool_running` suppression.
+    if (this.isBackgroundParked(agentId, now)) {
+      return { status: 'background_parked' };
+    }
+
     // Tool in progress: suppress stale_agent unless tool has been running too long
     if (toolInProgress) {
       if (timeSinceLastEvent >= this.config.maxToolExecutionTimeMs) {
@@ -566,20 +596,6 @@ export class Watchdog {
         };
       }
       return { status: 'tool_running' };
-    }
-
-    // Background park: the agent's last turn ended with still-running
-    // background work (a `run_in_background` shell or a session cron), so it
-    // is waiting to be woken by a task notification — hook silence and a
-    // static ❯ prompt are the EXPECTED shape of that wait, not evidence of a
-    // hang. Checked before the input-prompt pane branch because the pane
-    // always shows the prompt while parked. Bounded: past the grace period
-    // this falls through to the normal verdicts so a wake that never came
-    // (dead background process, lost notification) still surfaces — the same
-    // reason a hung tool call doesn't hide behind indefinite `tool_running`
-    // suppression.
-    if (this.isBackgroundParked(agentId, now)) {
-      return { status: 'background_parked' };
     }
 
     // Pane shows input prompt AND agent is stale — genuinely waiting for input.

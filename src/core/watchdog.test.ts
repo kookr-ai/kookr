@@ -1617,15 +1617,45 @@ describe('Watchdog', () => {
       expect(watchdog.isBackgroundParked(agentId, t0 + 60_000)).toBe(false);
     });
 
-    test('replayed parked stop restores the park with its original age', () => {
+    test('replayed events never re-arm a park (but still clear one)', () => {
+      // The replay pipeline stamps events with INGEST time, not historical
+      // time (event-pipeline.ts passes meta.observedAt, which the adapter
+      // mints at Date.now()). Re-arming on replay would therefore grant a
+      // dead park a fresh full grace window on every server restart — so the
+      // park set is gated off for replay, like mcpStartupAt.
       const t0 = 1000;
-      watchdog.registerAgent(agentId, t0, t0 + 50_000);
-      // Restart replay: event recorded with its HISTORICAL observation time.
+      watchdog.registerAgent(agentId, t0, t0);
       watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0, { updateLastEventAt: false });
-      // 30s after the original park → still parked.
-      expect(watchdog.isBackgroundParked(agentId, t0 + 30_000)).toBe(true);
-      // 61s after the original park → aged out, despite the recent restart.
-      expect(watchdog.isBackgroundParked(agentId, t0 + 61_000)).toBe(false);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 1)).toBe(false);
+
+      // A LIVE park followed by a replayed turn-advancing event: the clear
+      // still applies (replayed history proves the turn moved on).
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0 + 5_000);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 5_001)).toBe(true);
+      watchdog.recordEvents(agentId, [{ type: 'user_prompt', sessionId: 's1', prompt: 'wake' }], t0 + 6_000, { updateLastEventAt: false });
+      expect(watchdog.isBackgroundParked(agentId, t0 + 6_001)).toBe(false);
+    });
+
+    test('a parked stop beats leftover unmatched-tool debris, even past the tool override', () => {
+      // A Stop proves the turn ended; an unmatched PreToolUse remaining at
+      // that point is a lost PostToolUse, not a running tool. Without the
+      // park-before-tool ordering in tick(), the debris would ride the
+      // maxToolExecutionTimeMs override into a fresh stale_agent mid-park —
+      // the very ping the park suppresses. Local config: the tool override
+      // (20s) expires INSIDE the park bound (60s) so the decisive moment is
+      // reachable.
+      const local = new Watchdog({ ...PARK_CONFIG, maxToolExecutionTimeMs: 20_000 });
+      const t0 = 1000;
+      local.registerAgent(agentId, t0, t0);
+      local.recordEvents(agentId, [makeToolUse('s1', 'Bash', 'lost-post')], t0);
+      local.recordEvents(agentId, [makeParkedStop('s1')], t0 + 1_000);
+
+      local.tick(agentId, 'frozen pane', [], t0 + 2_000);
+      // 31s after the last event: past the 20s tool override (stale_agent
+      // without the ordering fix), inside the 60s park bound.
+      expect(local.tick(agentId, 'frozen pane', [], t0 + 32_000).status).toBe('background_parked');
+      // Past the park bound the debris surfaces again via the override.
+      expect(local.tick(agentId, 'frozen pane', [], t0 + 62_000).status).toBe('stale_agent');
     });
   });
 });
