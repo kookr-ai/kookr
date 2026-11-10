@@ -14,9 +14,12 @@
   /* Three text tiers, each at 4.5:1 or better on every surface (#3561).
      --text-muted is kept as a name for existing rules but is the same tier
      as --text-secondary; it used to sit at 3.0-3.8:1. */
-  --text-secondary: #8f9ab2;
+  --text-secondary: #959fb7;
   --text-bright: #dfe4f0;
   --text-muted: var(--text-secondary);
+  /* Used by ~24 rules but never defined, so they silently inherited muted
+     text (#3561); it names the bright tier. */
+  --text-primary: var(--text-bright);
   --green: #34d399;
   --amber: #fbbf24;
   --red: #f87171;

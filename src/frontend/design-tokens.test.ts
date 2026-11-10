@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { TASK_STUCK_REASONS, type TaskStuckReason } from '../shared/contracts/task-stuck-reason.js';
 import { ANOMALY_TYPES } from '../shared/contracts/anomalies.js';
-import { findingKindClass, type FindingKindClass } from './presentation.js';
+import { FINDING_KIND_CLASS, findingKindClass, type FindingKindClass } from './presentation.js';
 
 const frontendDir = dirname(fileURLToPath(import.meta.url));
 
@@ -186,9 +186,18 @@ describe('text contrast', () => {
     expect(rootTokens(STYLESHEETS['critical.css'])).toEqual(styles);
   });
 
+  test('every text colour token used in the stylesheets is defined', () => {
+    // An undefined var() makes `color` inherit from the parent, which is how
+    // 24 rules using --text-primary silently rendered muted text.
+    const used = new Set(
+      [...(STYLESHEETS['styles.css'] + STYLESHEETS['critical.css']).matchAll(/var\((--text-[\w-]+)\s*\)/g)].map((m) => m[1]),
+    );
+    expect([...used].filter((name) => !(name in styles))).toEqual([]);
+  });
+
   test('text resolves to exactly three tiers', () => {
     const tiers = new Set(
-      ['--text-bright', '--text', '--text-secondary', '--text-muted'].map((name) =>
+      ['--text-bright', '--text', '--text-secondary', '--text-muted', '--text-primary'].map((name) =>
         parseColor(styles[name], styles).join(','),
       ),
     );
@@ -201,8 +210,11 @@ describe('text contrast', () => {
     ['--bg-card', (t) => parseColor(t['--bg-card'], t)],
     ['--bg-card-hover', (t) => parseColor(t['--bg-card-hover'], t)],
     ['--bg-input', (t) => parseColor(t['--bg-input'], t)],
-    // Selected rows: --bg-card-selected is teal at 10% over a card.
+    // Selected rows: --bg-card-selected is teal at 10% over a card or panel.
     ['selected card', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-card'], t))],
+    ['selected over panel', (t) => mix(parseColor(t['--teal'], t), 0.1, parseColor(t['--bg-panel'], t))],
+    // Selected/active chips (filters, role chips, cost chips) tint teal at 18%.
+    ['selected chip', (t) => mix(parseColor(t['--teal'], t), 0.18, parseColor(t['--bg-panel'], t))],
   ];
 
   test('text is never dimmed with partial opacity at rest', () => {
@@ -237,7 +249,7 @@ describe('text contrast', () => {
     expect(offenders).toEqual([]);
   });
 
-  for (const tier of ['--text-bright', '--text', '--text-secondary', '--text-muted']) {
+  for (const tier of ['--text-bright', '--text', '--text-secondary', '--text-muted', '--text-primary']) {
     test(`${tier} reaches 4.5:1 on every surface`, () => {
       const failures = surfaces
         .map(([name, surface]) => [name, contrast(parseColor(styles[tier], styles), surface(styles))] as const)
@@ -341,6 +353,10 @@ describe('state colours: four roles, one shape each', () => {
     expect(tokens['--state-bad']).toBe('var(--red)');
     expect(tokens['--state-work']).toBe('var(--teal)');
     expect(tokens['--state-neutral']).toBe('var(--text-secondary)');
+  });
+
+  test('the kind table covers exactly the anomaly types (no fallback needed)', () => {
+    expect(Object.keys(FINDING_KIND_CLASS).sort()).toEqual([...ANOMALY_TYPES].sort());
   });
 
   test('the styled finding kinds are exactly the kinds the frontend emits', () => {

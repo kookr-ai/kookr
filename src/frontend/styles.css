@@ -25,9 +25,12 @@
   /* Three text tiers, each at 4.5:1 or better on every surface (#3561).
      --text-muted is kept as a name for existing rules but is the same tier
      as --text-secondary; it used to sit at 3.0-3.8:1. */
-  --text-secondary: #8f9ab2;
+  --text-secondary: #959fb7;
   --text-bright: #dfe4f0;
   --text-muted: var(--text-secondary);
+  /* Used by ~24 rules but never defined, so they silently inherited muted
+     text (#3561); it names the bright tier. */
+  --text-primary: var(--text-bright);
   --green: #34d399;
   --amber: #fbbf24;
   --red: #f87171;
@@ -2010,9 +2013,9 @@ button.section-header.detection-stats-header:focus-visible {
 /* 8-color muted palette for project badges */
 .project-badge.color-0 { background: rgba(96,165,250,0.12); color: #7db4fc; }
 .project-badge.color-1 { background: rgba(52,211,153,0.12); color: #5ee0b0; }
-.project-badge.color-2 { background: rgba(251,191,36,0.12); color: #f5c542; }
+.project-badge.color-2 { background: rgba(245,168,91,0.12); color: #f5a85b; }
 .project-badge.color-3 { background: rgba(168,85,247,0.12); color: #b88ef5; }
-.project-badge.color-4 { background: rgba(248,113,113,0.12); color: #f98e8e; }
+.project-badge.color-4 { background: rgba(183,156,255,0.12); color: #b79cff; }
 .project-badge.color-5 { background: rgba(45,212,191,0.12); color: #5ad8c5; }
 .project-badge.color-6 { background: rgba(244,114,182,0.12); color: #f589b7; }
 .project-badge.color-7 { background: rgba(163,163,163,0.12); color: #b0b0b0; }

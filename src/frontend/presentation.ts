@@ -354,7 +354,7 @@ export function anomalyTypeLabel(anomalyType: string): string {
  */
 export type FindingKindClass = 'permission' | 'input' | 'turn-complete' | 'error' | 'stuck';
 
-const FINDING_KIND_CLASS: Record<AnomalyType, Exclude<FindingKindClass, 'turn-complete'>> = {
+export const FINDING_KIND_CLASS: Record<AnomalyType, Exclude<FindingKindClass, 'turn-complete'>> = {
   needs_input: 'input',
   permission_blocked: 'permission',
   // The operator decides whether to keep spending.
