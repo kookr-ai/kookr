@@ -196,6 +196,36 @@ describe('evaluateHungTaskReap', () => {
   describe('isTaskHungSuspect', () => {
     const SUSPECT_THRESHOLD_MS = 60_000; // matches Watchdog's default unconditionalStaleThresholdMs
 
+    test('an in-bounds background park is never hung suspect, even with a queued stale_agent and long silence', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: 'stale_agent', // may predate the park — park wins
+          liveness: silentSince(NOW - SUSPECT_THRESHOLD_MS * 10),
+          toolInProgress: false,
+          backgroundParked: true,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(false);
+    });
+
+    test('backgroundParked: false keeps the silence fallback intact', () => {
+      const suspect = isTaskHungSuspect(
+        { status: 'inProgress' },
+        {
+          queuedAnomalyType: null,
+          liveness: silentSince(NOW - SUSPECT_THRESHOLD_MS - 1),
+          toolInProgress: false,
+          backgroundParked: false,
+          unconditionalStaleThresholdMs: SUSPECT_THRESHOLD_MS,
+        },
+        { now: NOW },
+      );
+      expect(suspect).toBe(true);
+    });
+
     test('a queued stale_agent verdict is trusted directly, even with fresh liveness', () => {
       const suspect = isTaskHungSuspect(
         { status: 'inProgress' },

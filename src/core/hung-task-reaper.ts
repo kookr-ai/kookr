@@ -162,6 +162,19 @@ export interface HungSuspectEvidence {
    */
   toolInProgress: boolean;
   /**
+   * `Watchdog.isBackgroundParked(agentId, now)`. True while the agent's last
+   * turn ended parked on its own still-running background work (a
+   * `run_in_background` shell or session cron) and the park is younger than
+   * the watchdog's `backgroundParkGracePeriodMs` bound. A parked agent is
+   * hook/pane/token-silent BY DESIGN — it is waiting to be woken by a task
+   * notification — so neither the queued-verdict path nor the silence
+   * fallback below may classify it hung while the park is in bounds. Past
+   * the bound the flag flips false and normal classification resumes, so a
+   * wake that never came still becomes reap-eligible. Optional: callers
+   * without watchdog access omit it, keeping prior behavior.
+   */
+  backgroundParked?: boolean;
+  /**
    * The watchdog's own `unconditionalStaleThresholdMs` (`Watchdog.getConfig()`),
    * NOT the (much larger) hung-task reap threshold — this flags a suspect
    * early, well before the reaper would act.
@@ -194,6 +207,10 @@ export function isTaskHungSuspect(
   evidence: HungSuspectEvidence,
   opts: { now: number },
 ): boolean {
+  // An in-bounds background park wins even over a queued `stale_agent`: the
+  // verdict may predate the park (and is purged on the next watchdog tick,
+  // which reports the non-actionable `background_parked` instead).
+  if (evidence.backgroundParked) return false;
   if (evidence.queuedAnomalyType === 'stale_agent') return true;
   if (evidence.toolInProgress) return false;
   if (!evidence.liveness) return false;

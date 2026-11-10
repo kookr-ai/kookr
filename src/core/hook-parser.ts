@@ -74,10 +74,35 @@ const KNOWN_HOOK_EVENTS: Set<string> = new Set([
   'SessionEnd',
 ]);
 
+/**
+ * The artifact live-update listener Claude Code arms automatically whenever
+ * the agent publishes an Artifact ("live updates for artifact <url>
+ * (auto-armed on publish)" / "(re-armed on session resume)"). It is passive
+ * bookkeeping, not work the agent is waiting on: it may never fire, and an
+ * agent whose ONLY remaining background item is this listener is genuinely
+ * idle. Counting it made such turns read as background-parked, which both
+ * mislabeled the turn state as `running` and (since the park predicate
+ * gates `needs_input`) hid a real waiting-for-input agent. Over 14 days of
+ * production hook logs, every `type: "monitor"` background item was this
+ * listener — explicit Monitor-tool waits report as `type: "shell"` and keep
+ * counting as real background work.
+ */
+function isPassiveArtifactListener(item: object): boolean {
+  if ((item as { type?: unknown }).type !== 'monitor') return false;
+  const description = (item as { description?: unknown }).description;
+  return typeof description === 'string' && description.startsWith('live updates for artifact');
+}
+
+/**
+ * Count the collection's items that represent still-running background work
+ * the agent is waiting on: not finished, and not the passive artifact
+ * live-update listener (see {@link isPassiveArtifactListener}).
+ */
 function activeCollectionCount(value: unknown): number | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item) => {
     if (!item || typeof item !== 'object') return true;
+    if (isPassiveArtifactListener(item)) return false;
     const status = (item as { status?: unknown }).status;
     return status !== 'completed' && status !== 'stopped';
   }).length;

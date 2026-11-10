@@ -54,9 +54,23 @@ describe('resolveTaskAttentionSignals', () => {
       getState: () => ({ lastEventAt: stale, lastPaneChangeAt: stale, lastTokenActivityAt: stale }) as never,
       getConfig: () => ({ unconditionalStaleThresholdMs: HOUR_MS }) as never,
       hasToolInProgress: () => toolInProgress,
+      isBackgroundParked: () => false,
     });
     expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(false) }, now).hungSuspect).toBe(true);
     expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(true) }, now).hungSuspect).toBe(false);
+  });
+
+  it('never flags a task parked on its own background work, however silent', () => {
+    const now = Date.now();
+    const stale = now - 10 * HOUR_MS;
+    const watchdog = (parked: boolean) => ({
+      getState: () => ({ lastEventAt: stale, lastPaneChangeAt: stale, lastTokenActivityAt: stale }) as never,
+      getConfig: () => ({ unconditionalStaleThresholdMs: HOUR_MS }) as never,
+      hasToolInProgress: () => false,
+      isBackgroundParked: () => parked,
+    });
+    expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(true) }, now).hungSuspect).toBe(false);
+    expect(resolveTaskAttentionSignals(subject(), { watchdog: watchdog(false) }, now).hungSuspect).toBe(true);
   });
 
   it('#1653: exposes the agent liveness timestamps mapped from watchdog state', () => {
@@ -69,6 +83,7 @@ describe('resolveTaskAttentionSignals', () => {
           getState: () => state as never,
           getConfig: () => ({ unconditionalStaleThresholdMs: HOUR_MS }) as never,
           hasToolInProgress: () => false,
+          isBackgroundParked: () => false,
         },
       },
       now,
@@ -89,6 +104,7 @@ describe('resolveTaskAttentionSignals', () => {
           getState: () => undefined,
           getConfig: () => ({ unconditionalStaleThresholdMs: HOUR_MS }) as never,
           hasToolInProgress: () => false,
+          isBackgroundParked: () => false,
         },
       },
       now,

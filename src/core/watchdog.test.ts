@@ -1429,5 +1429,172 @@ describe('Watchdog', () => {
       expect(watchdog.getState(agentId)?.firstHookAt).toBe(last);
     });
   });
+
+  describe('background park suppression (attention false positives)', () => {
+    // An agent that ends its turn with still-running background work (a
+    // run_in_background shell, a session cron) is PARKED: hook-silent and
+    // showing the input prompt by design, waiting for a task notification to
+    // wake it. The watchdog must report the non-actionable `background_parked`
+    // instead of stale_agent / needs_input / hook_disconnected — but only for
+    // backgroundParkGracePeriodMs, so a wake that never comes still surfaces.
+    const PARK_CONFIG: Partial<WatchdogConfig> = {
+      ...FAST_CONFIG,
+      backgroundParkGracePeriodMs: 60_000,
+    };
+
+    function makeParkedStop(sessionId: string, bg = 1, crons = 0): AgentEvent {
+      return {
+        type: 'stop',
+        sessionId,
+        lastMessage: 'waiting on background verify',
+        activeBackgroundTaskCount: bg,
+        activeSessionCronCount: crons,
+      };
+    }
+
+    beforeEach(() => {
+      watchdog = new Watchdog(PARK_CONFIG);
+    });
+
+    test('parked stop + frozen pane past stale threshold → background_parked, not stale_agent', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+      const verdict = watchdog.tick(agentId, 'frozen pane', [], t0 + 11_000);
+      expect(verdict.status).toBe('background_parked');
+    });
+
+    test('parked stop + idle prompt pane past stale threshold → background_parked, not needs_input', () => {
+      const t0 = 1000; // non-zero: a park recorded at epoch 0 reads as "not parked"
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.tick(agentId, '› ', [], t0 + 5_000);
+      const verdict = watchdog.tick(
+        agentId,
+        '› \n\n  gpt-5.4 fast · 100% left · /tmp/project',
+        [],
+        t0 + 11_000,
+      );
+      expect(verdict.status).toBe('background_parked');
+    });
+
+    test('parked stop + changing pane past unconditional threshold → background_parked, not hook_disconnected', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.tick(agentId, 'pane v1', [], t0 + 15_000);
+      const verdict = watchdog.tick(agentId, 'pane v2 background output', [], t0 + 31_000);
+      expect(verdict.status).toBe('background_parked');
+    });
+
+    test('a session-cron-only park also suppresses', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1', 0, 1)], t0);
+
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+      const verdict = watchdog.tick(agentId, 'frozen pane', [], t0 + 11_000);
+      expect(verdict.status).toBe('background_parked');
+    });
+
+    test('plain stop (zero counts) does not park — stale_agent still fires', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1', 0, 0)], t0);
+
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+      const verdict = watchdog.tick(agentId, 'frozen pane', [], t0 + 11_000);
+      expect(verdict.status).toBe('stale_agent');
+    });
+
+    test('park is bounded: past backgroundParkGracePeriodMs the normal verdicts resume', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 5_000);
+      // Just inside the 60s test bound → still suppressed.
+      expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 59_000).status).toBe('background_parked');
+      // Past the bound → the silent park surfaces as stale_agent again.
+      expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 61_000).status).toBe('stale_agent');
+    });
+
+    test('a wake event (user_prompt) ends the park; a later parked stop re-parks', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 1)).toBe(true);
+
+      // Task notification wakes the agent → turn resumes.
+      watchdog.recordEvents(agentId, [{ type: 'user_prompt', sessionId: 's1', prompt: '<task-notification>done</task-notification>' }], t0 + 20_000);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 20_001)).toBe(false);
+
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 21_000);
+      // Stale again relative to the wake → normal stale_agent, no park left.
+      expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 31_000).status).toBe('stale_agent');
+
+      // Parks again at the next parked stop.
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0 + 32_000);
+      expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 43_000).status).toBe('background_parked');
+    });
+
+    test('a stop with zero counts clears a previous park', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1', 0, 0)], t0 + 5_000);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 5_001)).toBe(false);
+    });
+
+    test('bookkeeping overlays (notification, subagent_stop) do not end the park', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+
+      watchdog.recordEvents(agentId, [
+        { type: 'notification', sessionId: 's1', notificationType: 'idle_prompt', message: 'idle' },
+        { type: 'subagent_stop', sessionId: 's1', agentId: 'sub-1', agentType: 'general-purpose', lastMessage: 'done' },
+      ], t0 + 5_000);
+
+      expect(watchdog.isBackgroundParked(agentId, t0 + 5_001)).toBe(true);
+      // The overlay refreshed lastEventAt; go stale relative to it and check
+      // the verdict is still the park, not stale_agent.
+      watchdog.tick(agentId, 'frozen pane', [], t0 + 6_000);
+      expect(watchdog.tick(agentId, 'frozen pane', [], t0 + 16_000).status).toBe('background_parked');
+    });
+
+    test('tool_use ends the park (agent resumed work)', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+      watchdog.recordEvents(agentId, [makeToolUse('s1', 'Bash', 't1')], t0 + 2_000);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 2_001)).toBe(false);
+    });
+
+    test('isBackgroundParked is false for unknown agents and ages out with the bound', () => {
+      expect(watchdog.isBackgroundParked('unknown', 1000)).toBe(false);
+
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0);
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 59_999)).toBe(true);
+      expect(watchdog.isBackgroundParked(agentId, t0 + 60_000)).toBe(false);
+    });
+
+    test('replayed parked stop restores the park with its original age', () => {
+      const t0 = 1000;
+      watchdog.registerAgent(agentId, t0, t0 + 50_000);
+      // Restart replay: event recorded with its HISTORICAL observation time.
+      watchdog.recordEvents(agentId, [makeParkedStop('s1')], t0, { updateLastEventAt: false });
+      // 30s after the original park → still parked.
+      expect(watchdog.isBackgroundParked(agentId, t0 + 30_000)).toBe(true);
+      // 61s after the original park → aged out, despite the recent restart.
+      expect(watchdog.isBackgroundParked(agentId, t0 + 61_000)).toBe(false);
+    });
+  });
 });
 
