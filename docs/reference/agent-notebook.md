@@ -32,18 +32,19 @@ nb list                                 the index: every shelf + lesson count + 
 nb search <kw>                          secondary keyword fallback across shelves
 nb show   <role> [--json]               print the shelf (highest-scored first)
 nb add    <role> "<lesson>"             add a lesson (dedup-skipped, capped; a full shelf evicts to admit it)
-nb vote   <role> <id|query> +1|-1       upvote/downvote an entry you used
+nb vote   <role> <id[,id…]|query> +1|-1 upvote/downvote entries you used (several ids at once is fine)
 nb merge  <role> <idA> <idB> "<merged>" consolidate two entries into one
 nb rm     <role> <id|query>             delete an entry
 nb describe <role> "<desc>"             set the shelf's one-line description (shown by nb list)
 nb split  <role> <id> "<a>" "<b>"       split one overloaded entry into two (reverse of merge)
+nb move   <from> <to> <id|query>        move an entry to another shelf, keeping its score (promotion)
 nb path                                 print NB_DIR
 nb stats  [<role>] [--since 7d]         usage analytics + anomaly flags
 nb --help                               this help
 nb --version                            print the tool name
 ```
 
-- Mutating commands accept `--reason` / `--note`.
+- `add` / `merge` / `rm` / `split` / `describe` accept an optional `--reason <code>` (+ `--note`); `vote` does not.
 - `<role>` is a shelf name like `patch-author`. For knowledge that is
   repo-specific, scope it: `patch-author@<owner>-<repo>`.
 - `<id>` is the short **stable** token `nb show` prints at the start of each line
@@ -132,6 +133,10 @@ that runs its `.mjs`) run for every session:
   index — every shelf, its lesson count, and its one-line "open me when…"
   description — into context. The agent reads the index and opens the shelves
   that fit its task; nothing picks one for it.
+  The index is capped at 60 rows / 8 KB (richest shelves first, with a
+  "N more shelves not shown" tail). If `nb list` times out or exits non-zero the
+  hook prints a one-line `WARNING` on stdout, so a broken store is not mistaken
+  for an empty one; a missing `nb` stays silent. It always exits 0.
 - **Stop / SubagentStop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first
   stop of a session once (per-session sentinel file claimed atomically, so parallel
   subagent stops yield exactly one nudge; `stop_hook_active` lets a re-run
@@ -141,7 +146,8 @@ that runs its `.mjs`) run for every session:
   most one new lesson (aim ~150 characters; the text also carries the placement
   rule: `<situation>@<slug>` unless the lesson is true in another repo, never
   `fleet-global` directly) — then allows the stop. Sentinels older than
-  `NB_RETRO_TTL_DAYS` (default 7) are pruned.
+  `NB_RETRO_TTL_DAYS` (default 7) are pruned; an event with no `session_id`
+  shares one sentinel, so it is nudged at most once per TTL window.
   No-op when `NB_RETRO_DISABLED` is set (operator opt-out).
 
 **`KOOKR_REPO_SLUG`.** The launcher exposes the `<owner>-<repo>` slug, derived
@@ -150,6 +156,13 @@ from the repo's remote (`src/adapters/agent-launch-context.ts`) — e.g.
 shelves, such as the reviewer fan-out's `code-review@<owner>-<repo>`, can be
 addressed. Derivation is fail-open: when no safe slug forms, the variable is
 unset and callers fall back to the unscoped shelf name.
+
+**Placement advisories.** After a successful `nb add`, `bin/nb.js` prints a one-line
+stderr advisory (never a refusal; the lesson is still written) when the shelf is
+`fleet-global` (unless `KOOKR_NB_CURATOR` is set), or a `<situation>@<slug>` shelf
+whose slug differs from `KOOKR_REPO_SLUG`. They make a lesson written to the wrong
+layer, or into another repo's shelf, visible to the agent that wrote it. The slug
+check is skipped when `KOOKR_REPO_SLUG` is unset.
 
 Specialized subagents invoked via the `Agent` tool get no SessionStart
 injection (they are subagents), so each agent definition instructs the same
