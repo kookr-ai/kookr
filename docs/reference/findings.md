@@ -160,8 +160,10 @@ relaunch.
 whose last turn ended parked on its own background work (a
 `run_in_background` shell or session cron reported by the Stop hook) is not
 flagged at all while the park is younger than `backgroundParkGracePeriodMs`
-(default 60 min) — its silence is expected. Snooze the finding to pause
-monitoring for a chosen duration (F3.7).
+(default 45 min) — its silence is expected. The default sits below the
+hungSuspect-TTL ceiling (60 min) on purpose: a park that outlives the bound
+surfaces as `stale_agent` before the TTL reclaim can act on it. Snooze the
+finding to pause monitoring for a chosen duration (F3.7).
 
 ## `hook_disconnected`
 

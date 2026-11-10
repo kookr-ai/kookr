@@ -1607,6 +1607,17 @@ describe('Watchdog', () => {
       expect(verdict.status).toBe('permission_blocked');
     });
 
+    test('default park bound stays below the hungSuspect-TTL ceiling (pre-reclaim notice window)', async () => {
+      // A dead park surfaces as stale_agent when the bound expires; the
+      // hungSuspect-TTL reclaim needs silence >= TTL. Keeping the DEFAULT
+      // bound under the TTL ceiling guarantees a notice window of
+      // (TTL − bound) at the ceiling before the reclaim can act — raise the
+      // bound past the ceiling and a dead park becomes visible and reapable
+      // in the same sweep, with no warning to the operator.
+      const { MAX_HUNG_SUSPECT_TTL_MS } = await import('./hung-suspect-ttl.js');
+      expect(new Watchdog().getConfig().backgroundParkGracePeriodMs).toBeLessThan(MAX_HUNG_SUSPECT_TTL_MS);
+    });
+
     test('isBackgroundParked is false for unknown agents and ages out with the bound', () => {
       expect(watchdog.isBackgroundParked('unknown', 1000)).toBe(false);
 

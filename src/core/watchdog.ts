@@ -32,7 +32,7 @@ export interface WatchdogConfig {
    */
   mcpStartupGracePeriodMs: number;
   /**
-   * How long a background park excuses hook silence (ms). Default: 3600000 (60min).
+   * How long a background park excuses hook silence (ms). Default: 2700000 (45min).
    *
    * A "background park" is a turn the agent ended specifically to wait on its
    * own still-running background work — a `run_in_background` shell or a
@@ -45,14 +45,16 @@ export interface WatchdogConfig {
    *
    * Bounded for the same reason `maxToolExecutionTimeMs` bounds
    * `tool_running`: a wake that never comes (dead background process, lost
-   * notification) must eventually surface to the operator. 60 minutes covers
-   * ~99% of observed parks (p99 ≈ 55min). Trade-off for a DEAD park: while
-   * parked the task is excluded from hungSuspect, so its slot is reclaimed
-   * at max(hungSuspect TTL, this bound) after the park — with the default
-   * 25-min TTL that is ~60 min instead of ~25 min, and never earlier than
-   * before. Raising this bound delays dead-park reclaim by the same amount;
-   * it is deliberately capped at the hungSuspect-TTL ceiling (60 min) by
-   * default so a dead park becomes visible and reapable at the same moment.
+   * notification) must eventually surface to the operator. 45 minutes covers
+   * ~98–99% of observed parks (p99 ≈ 55min), and is deliberately BELOW the
+   * hungSuspect-TTL ceiling (60 min): a dead park surfaces as `stale_agent`
+   * at the bound, giving the operator a notice window of (TTL − bound)
+   * before the TTL reclaim can act. Trade-off for a DEAD park: while parked
+   * the task is excluded from hungSuspect, so its slot is reclaimed at
+   * max(hungSuspect TTL, this bound) after the park — with the default
+   * 25-min TTL that is ~45 min instead of ~25 min, and never earlier than
+   * before. Raising this bound past the TTL removes the pre-reclaim notice;
+   * keep it under the deployed TTL.
    */
   backgroundParkGracePeriodMs: number;
 }
@@ -65,7 +67,7 @@ const DEFAULT_CONFIG: WatchdogConfig = {
   gracePeriodMs: 10_000,
   tokenActivityThresholdMs: 60_000,
   mcpStartupGracePeriodMs: 120_000,
-  backgroundParkGracePeriodMs: 3_600_000,
+  backgroundParkGracePeriodMs: 2_700_000,
 };
 
 /**
