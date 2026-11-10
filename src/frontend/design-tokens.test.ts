@@ -17,6 +17,8 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, test } from 'vitest';
 import { TASK_STUCK_REASONS, type TaskStuckReason } from '../shared/contracts/task-stuck-reason.js';
+import { ANOMALY_TYPES } from '../shared/contracts/anomalies.js';
+import { findingKindClass, type FindingKindClass } from './presentation.js';
 
 const frontendDir = dirname(fileURLToPath(import.meta.url));
 
@@ -221,7 +223,6 @@ describe('text contrast', () => {
       '.btn-speak-finding-ring',
       '.btn-sound-toggle',
       '.btn-trophy',
-      '.healthy-row-controls',
       '.hook-inventory-lock',
     ]);
     const offenders: string[] = [];
@@ -262,7 +263,7 @@ const ROLE_COLOR = {
 type Role = keyof typeof ROLE_COLOR;
 
 /** Every finding wants the operator, so findings are "need" or "bad". */
-const FINDING_KIND_ROLE: Record<string, Role> = {
+const FINDING_KIND_ROLE: Record<FindingKindClass, Role> = {
   permission: 'need',
   input: 'need',
   'turn-complete': 'need',
@@ -293,6 +294,24 @@ describe('state colours: four roles, one shape each', () => {
     }
   });
 
+  test('no selected, active or pressed state is drawn in blue', () => {
+    const blue = /var\(--blue\)|#60a5fa|rgba\(\s*(96,\s*165,\s*250|120,\s*200,\s*255|122,\s*162,\s*247)\s*,/i;
+    const offenders: string[] = [];
+    for (const file of ['styles.css', 'critical.css']) {
+      for (const match of stripComments(STYLESHEETS[file]).matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const selector = match[1].trim().replace(/\s+/g, ' ');
+        if (!/\.(selected|active)\b|\[aria-(pressed|selected)="true"\]/.test(selector)) continue;
+        if (blue.test(match[2])) offenders.push(`${file} ${selector}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test('a pending (queued) task badge is neutral with a dash, not amber', () => {
+    expect(css.lookup('.detail-badge.pending', 'color')).toBe(ROLE_COLOR.neutral);
+    expect(shapeOf('.detail-badge.pending::before')).toBe('neutral');
+  });
+
   const css = rules(STYLESHEETS['styles.css']);
   const tokens = rootTokens(STYLESHEETS['styles.css']);
 
@@ -313,6 +332,13 @@ describe('state colours: four roles, one shape each', () => {
     expect(tokens['--state-bad']).toBe('var(--red)');
     expect(tokens['--state-work']).toBe('var(--teal)');
     expect(tokens['--state-neutral']).toBe('var(--text-secondary)');
+  });
+
+  test('the styled finding kinds are exactly the kinds the frontend emits', () => {
+    const emitted = new Set(
+      ANOMALY_TYPES.flatMap((type) => [findingKindClass(type, 'running'), findingKindClass(type, 'completed_turn')]),
+    );
+    expect([...emitted].sort()).toEqual(Object.keys(FINDING_KIND_ROLE).sort());
   });
 
   for (const [kind, role] of Object.entries(FINDING_KIND_ROLE)) {

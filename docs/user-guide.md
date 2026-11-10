@@ -18,8 +18,8 @@ Kookr is a supervision surface for many AI coding agents. The main workflow is: 
 
 | Colour | Shape | Meaning |
 |---|---|---|
-| Amber | filled dot | Waiting on you: a permission request, a question, or a finished turn waiting for your review. |
-| Red | diamond | Failed or stuck: an error, a stalled or suspected-hung agent, a terminated task. |
+| Amber | filled dot | Waiting on you: a permission request, a question, a budget warning, or a finished turn waiting for your review. |
+| Red | diamond | Failed or stuck: an error (repeated tool errors, an API error, a hook or backend failure), a stalled or suspected-hung agent, a merge conflict, a terminated task. |
 | Teal | ring | Working, or the item you have selected. |
 | Grey | dash | Everything else: a completed, cancelled or queued task. |
 

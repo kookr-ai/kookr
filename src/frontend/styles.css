@@ -691,8 +691,8 @@ button.topbar-spend:focus-visible {
   background: rgba(255, 255, 255, 0.03);
 }
 .findings-type-chip.selected {
-  background: rgba(120, 200, 255, 0.18);
-  border-color: rgba(120, 200, 255, 0.45);
+  background: rgba(45, 212, 191, 0.18);
+  border-color: rgba(45, 212, 191, 0.45);
   color: var(--text-primary);
 }
 .findings-type-chip:focus-visible {
@@ -1246,6 +1246,7 @@ button.topbar-spend:focus-visible {
 .detail-badge.turn-complete::before,
 .detail-badge.stuck::before,
 .detail-badge.error::before,
+.detail-badge.pending::before,
 .stuck-reason-badge::before {
   content: '';
   flex-shrink: 0;
@@ -1284,7 +1285,8 @@ button.topbar-spend:focus-visible {
   background: transparent;
   border: 2px solid currentColor;
 }
-.finding-turn-state.turn-state--complete::before {
+.finding-turn-state.turn-state--complete::before,
+.detail-badge.pending::before {
   height: 2px;
   background: currentColor;
 }
@@ -1524,7 +1526,7 @@ button.topbar-spend:focus-visible {
 }
 .reap-warning-detail {
   margin-top: 2px;
-  color: var(--text-dim, #9aa0a6);
+  color: var(--text-secondary);
 }
 .reap-warning-keepalive {
   flex: 0 0 auto;
@@ -1546,7 +1548,7 @@ button.topbar-spend:focus-visible {
   opacity: 0.5;
   cursor: not-allowed;
   background: transparent;
-  color: var(--text-dim, #9aa0a6);
+  color: var(--text-secondary);
 }
 .btn-xs {
   background: none;
@@ -1800,7 +1802,6 @@ button.section-header.detection-stats-header:focus-visible {
   margin-left: auto;
   justify-content: flex-end;
   flex: 0 0 auto;
-  opacity: 0.85;
   transition: opacity 0.12s;
 }
 .healthy-row:hover .healthy-row-controls,
@@ -3366,7 +3367,7 @@ a.overview-tour-link:visited:hover {
   background: var(--bg-input);
 }
 .terminal-context-menu button:disabled {
-  color: var(--text-dim);
+  color: var(--text-secondary);
   cursor: default;
 }
 
@@ -3518,7 +3519,7 @@ a.overview-tour-link:visited:hover {
 /* AI-generated suggestions: dimmer, dashed border */
 .btn-quick-action.ai-suggestion {
   border-style: dashed;
-  color: var(--text-dim);
+  color: var(--text-secondary);
   border-color: var(--border);
 }
 .btn-quick-action.ai-suggestion:hover {
@@ -4046,7 +4047,7 @@ a.playbook-empty-docs-link:visited:hover {
   letter-spacing: 0.04em;
 }
 .ralph-needs-human-exit {
-  color: var(--text-dim, #8a8a8a);
+  color: var(--text-secondary);
   font-family: var(--font-mono, monospace);
   font-size: 12px;
 }
@@ -4166,8 +4167,8 @@ a.playbook-empty-docs-link:visited:hover {
   color: var(--teal);
 }
 .detail-badge.pending {
-  background: rgba(245,158,11,0.1);
-  color: var(--amber);
+  background: rgba(255,255,255,0.05);
+  color: var(--state-neutral);
 }
 
 /* --- Token Usage / Cost --- */
@@ -6456,7 +6457,7 @@ label.task-share-row {
 }
 .achievement-toast-desc {
   font-size: 12px;
-  color: var(--text-dim);
+  color: var(--text-secondary);
 }
 @keyframes achievement-in {
   from { opacity: 0; transform: translateY(12px); }
@@ -8306,8 +8307,8 @@ button.completed-row-rating:focus-visible {
   background: rgba(255, 255, 255, 0.03);
 }
 .act-role-chip.selected {
-  background: rgba(120, 200, 255, 0.18);
-  border-color: rgba(120, 200, 255, 0.45);
+  background: rgba(45, 212, 191, 0.18);
+  border-color: rgba(45, 212, 191, 0.45);
   color: var(--text-primary);
 }
 .act-role-chip:focus-visible {
@@ -9810,8 +9811,8 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 }
 
 .project-sidebar-drop-zone.active {
-  background: rgba(96,165,250,0.18);
-  outline: 1px dashed rgba(96,165,250,0.55);
+  background: rgba(45, 212, 191, 0.18);
+  outline: 1px dashed rgba(45, 212, 191, 0.55);
 }
 
 .project-sidebar-menu {
@@ -12319,8 +12320,8 @@ a.project-drawer-stat-row-link:focus-visible {
 }
 .cleanup-filter-pill:hover { color: var(--text-bright); border-color: var(--text-muted); }
 .cleanup-filter-pill.active {
-  background: rgba(122, 162, 247, 0.15);
-  border-color: var(--blue);
+  background: rgba(45, 212, 191, 0.15);
+  border-color: var(--state-work);
   color: var(--text-bright);
 }
 
@@ -12346,8 +12347,8 @@ a.project-drawer-stat-row-link:focus-visible {
 }
 .cleanup-list-item:hover { background: var(--bg-card-hover); }
 .cleanup-list-item.selected {
-  background: rgba(122, 162, 247, 0.1);
-  border-left: 2px solid var(--blue);
+  background: rgba(45, 212, 191, 0.1);
+  border-left: 2px solid var(--state-work);
   padding-left: 10px;
 }
 .cleanup-list-item:focus-visible {
@@ -14461,9 +14462,9 @@ button.act-tool-entry:focus-visible {
   border-color: var(--border);
 }
 .settings-quiet-hours-day.active {
-  color: var(--blue);
-  border-color: rgba(96, 165, 250, 0.5);
-  background: rgba(96, 165, 250, 0.1);
+  color: var(--state-work);
+  border-color: rgba(45, 212, 191, 0.5);
+  background: rgba(45, 212, 191, 0.1);
 }
 .settings-quiet-hours-day:focus-visible {
   outline: 2px solid var(--teal);
@@ -14999,8 +15000,8 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   cursor: pointer;
 }
 .cost-agent-chip.selected {
-  background: rgba(120, 200, 255, 0.18);
-  border-color: rgba(120, 200, 255, 0.45);
+  background: rgba(45, 212, 191, 0.18);
+  border-color: rgba(45, 212, 191, 0.45);
 }
 
 .cost-comparison-meta {
@@ -15215,7 +15216,6 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   font-size: 13px;
   padding: 1px 0;
 }
-.cost-stat-label { }
 .cost-stat-val   { font-variant-numeric: tabular-nums; }
 
 @media (max-width: 820px) {

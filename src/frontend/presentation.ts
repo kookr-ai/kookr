@@ -1,4 +1,5 @@
 import type { AgentEvent, TokenUsage, AgentType, TurnState, AgentState, GitHubPRState } from '../shared/protocol.js';
+import type { AnomalyType } from '../shared/contracts/anomalies.js';
 import { isTerminalStatus, type TaskStatus } from '../shared/contracts/task-status.js';
 import type { TaskCompletionFeedback } from '../shared/contracts/task.js';
 import { AGENT_TYPES, isAgentType } from '../shared/contracts/agent-types.js';
@@ -339,6 +340,38 @@ export function anomalyTypeLabel(anomalyType: string): string {
     case 'needs_input': return 'Needs Input';
     default: return anomalyType.replace(/_/g, ' ');
   }
+}
+
+/**
+ * CSS class naming a finding's kind on the card (`.finding-card.<kind>`), its
+ * severity label and the detail-header badge. The stylesheet maps each kind to
+ * one of the four state roles (#3561): `permission`, `input` and
+ * `turn-complete` read as "waiting on you" (amber dot); `error` and `stuck`
+ * read as "failed or stuck" (red diamond). Typed as a full `Record` so a new
+ * anomaly type cannot ship without a kind (it used to render as `undefined`).
+ */
+export type FindingKindClass = 'permission' | 'input' | 'turn-complete' | 'error' | 'stuck';
+
+const FINDING_KIND_CLASS: Record<AnomalyType, Exclude<FindingKindClass, 'turn-complete'>> = {
+  needs_input: 'input',
+  permission_blocked: 'permission',
+  // The operator decides whether to keep spending.
+  budget_exceeded: 'input',
+  repeated_error: 'error',
+  api_error: 'error',
+  hook_disconnected: 'error',
+  hook_missing: 'error',
+  hook_parse_degraded: 'error',
+  backend_unreachable: 'error',
+  stale_agent: 'stuck',
+  merge_conflict: 'stuck',
+};
+
+export function findingKindClass(anomalyType: AnomalyType, turnState: TurnState | undefined): FindingKindClass {
+  // A normal completed turn is a review-ready signal, not a hung turn; an
+  // explicit mid-turn AskUserQuestion still reads as `input`. See issue #358.
+  if (anomalyType === 'needs_input' && turnState === 'completed_turn') return 'turn-complete';
+  return FINDING_KIND_CLASS[anomalyType];
 }
 
 /**
