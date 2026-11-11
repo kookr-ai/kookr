@@ -316,9 +316,9 @@ it relies on is described and alias-covered.
 | Slice | Content | Depends on |
 |---|---|---|
 | K1 | Three small fixes, one commit each, one PR: `bin/nb.js` `move` in `MUTATING` + drift test + `fleet-global` advisory; retro hook sync (batch vote, reason codes, ~150 chars, placement rule, atomic sentinel); `nb list` failure warning in the inject hook. | none |
-| K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + `fleet-global` trigger; `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default. | K1 (`move` auto-commit) |
+| K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + `fleet-global` trigger; `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default; the reflection playbook's promotion step (it runs the promotion script, sets `KOOKR_NB_CURATOR=1`, and only reports). | K1 (`move` auto-commit) |
 | K3 | `notebook-layers.mjs`, layered index, `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
-| K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to all 25 agent docs by script + guard test; skill scope rule ("open both layers"). Reflection playbook promotion step (sets `KOOKR_NB_CURATOR=1`). | K1 (can ship before or with K3) |
+| K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to all 25 agent docs by script + guard test; skill scope rule ("open both layers"). | K1 (can ship before or with K3) |
 
 Upstream (`jeanibarz/agent-notebook`): **A2** (neutral janitor signals), **A3**
 (layers documentation; written to describe what Kookr does, no code).
