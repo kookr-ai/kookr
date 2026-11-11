@@ -463,6 +463,25 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector<HTMLElement>('.right-pane-slot-diff')?.style.display).toBe('flex');
   });
 
+  test('#3618: after the pane Terminal button is clicked, closing the diff stays on the Terminal tab', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    await flush();
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+
+    const paneTab = (label: string) => Array.from(container.querySelectorAll<HTMLButtonElement>('.detail-pane-header .pane-tab'))
+      .find((button) => button.textContent === label);
+    act(() => { paneTab('Terminal')!.click(); });
+    act(() => { paneTab('Diff')!.click(); });
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
+  });
+
   test('#3561 4a: a diff opened in split view leaves the remembered tab alone', async () => {
     useKookrStore.getState().setDetailPaneMode('split');
     root = renderDetailPanel(container, makeAgent());
