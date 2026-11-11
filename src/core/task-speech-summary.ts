@@ -108,6 +108,14 @@ function redactSecrets(value: string | null | undefined): string {
     .replace(/<<<\s*(?:TASK_CONTEXT|END)\s*>>>/gi, '[delimiter]');
 }
 
+/**
+ * The speech path's secret and delimiter hiding for any text that is about to be spoken or shown
+ * (for example a model's recap): the same patterns as everything else here, untouched.
+ */
+export function redactSpeechSecrets(value: string): string {
+  return redactSecrets(value);
+}
+
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
   const compact = redactSecrets(value).replace(/\s+/g, ' ').trim();
   return truncate(compact, max);

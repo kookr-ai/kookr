@@ -8,7 +8,7 @@ import type {
 } from '../shared/contracts/speech.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
 import { isGenericTaskName, spokenTaskName } from './spoken-task-name.js';
-import { redactedTaskName } from './task-speech-summary.js';
+import { redactedTaskName, redactSpeechSecrets } from './task-speech-summary.js';
 
 /**
  * Verbs that imply an action recommendation. Carried forward from the v1 spec
@@ -109,7 +109,8 @@ export function buildSystemPrompt(mode: SpeakMode, verbosity: VerbosityScale): s
 
 function renderUserMessage(context: AgentSpeakContext): string {
   const lines: string[] = [];
-  lines.push(`<<<TASK_NAME>>>\n${context.taskName}\n<<<END>>>`);
+  // The title is redacted like everything spoken: the model may repeat it in its recap.
+  lines.push(`<<<TASK_NAME>>>\n${redactedTaskName(context.taskName) ?? 'Untitled task'}\n<<<END>>>`);
   lines.push(`<<<AGENT_TYPE>>>\n${context.agentType}\n<<<END>>>`);
   lines.push(`<<<CWD>>>\n${context.cwd}\n<<<END>>>`);
   lines.push(`<<<DESCRIPTION>>>\n${context.descriptionExcerpt}\n<<<END>>>`);
@@ -349,5 +350,6 @@ export async function summarizeAgent(
     return fallbackResult(context, verbosity, validated.reason);
   }
 
-  return withSpeakable(renderSuccessText(context.taskName, validated.recap), false, null);
+  // The recap is model output and may repeat a secret from its context: hide it before it is spoken, shown or logged.
+  return withSpeakable(renderSuccessText(context.taskName, redactSpeechSecrets(validated.recap)), false, null);
 }

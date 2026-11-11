@@ -208,6 +208,31 @@ describe('summarizeAgent', () => {
     expect(result.rawText).toBe('Refactor auth. Edited `src/core/foo-bar.ts` for #3608.');
   });
 
+  describe('a secret in the task title or in the model recap', () => {
+    const secretTitle = 'Rotate sk-abcdefghijklmnop';
+
+    test('is hidden in the prompt and in the spoken text when the model repeats the title', async () => {
+      let prompt = '';
+      const client = mkClient('{"recap":"Working on Rotate sk-abcdefghijklmnop now."}', (req) => {
+        prompt = (req as { userMessage: string }).userMessage;
+      });
+      const result = await summarizeAgent(client, { ...baseContext, taskName: secretTitle }, 'medium', 'activity');
+      expect(prompt).not.toContain('sk-abcdefghijklmnop');
+      expect(prompt).toContain('Rotate [redacted]');
+      expect(result.text).not.toContain('sk-abcdefghijklmnop');
+      expect(result.rawText ?? '').not.toContain('sk-abcdefghijklmnop');
+      expect(result.usedFallback).toBe(false);
+    });
+
+    test('is hidden when the recap carries a secret that is not in the title', async () => {
+      const client = mkClient('{"recap":"Used key sk-abcdefghijklmnop to deploy."}');
+      const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
+      expect(result.text).not.toContain('sk-abcdefghijklmnop');
+      expect(result.text).toContain('Used key');
+      expect(result.text).toContain('to deploy');
+    });
+  });
+
   test('rawText is absent when the recap needed no changes', async () => {
     const client = mkClient('{"recap":"All tests passed."}');
     const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
