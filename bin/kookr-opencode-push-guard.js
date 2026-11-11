@@ -27,6 +27,10 @@ const GIT_BLOCKED = new Set(['push', 'send-pack']);
 const GIT_OPTS_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
 const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reopen', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
 const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'edit', 'upload']);
+// Every subcommand of `gh pr` / `gh release`: the action is the FIRST of these words, so a flag value that happens to
+// spell a blocked action (`gh pr list --search merge`, `--label review`) is not mistaken for it.
+const GH_PR_ACTIONS = new Set(['checkout', 'checks', 'close', 'comment', 'create', 'new', 'diff', 'edit', 'list', 'lock', 'merge', 'ready', 'reopen', 'revert', 'review', 'status', 'unlock', 'update-branch', 'view']);
+const GH_RELEASE_ACTIONS = new Set(['create', 'delete', 'delete-asset', 'download', 'edit', 'list', 'upload', 'verify', 'verify-asset', 'view']);
 const GH_GLOBAL_OPTS_WITH_ARG = new Set(['-R', '--repo', '--hostname']);
 const GH_API_OPTS_WITH_ARG = new Set([
   '-X', '--method', '-f', '-F', '--field', '--raw-field', '--input', '-H', '--header', '-q', '--jq', '-t', '--template',
@@ -140,6 +144,8 @@ function toSegments(text) {
     if (c === '#' && !has && (i === 0 || /\s/.test(text[i - 1]))) { while (i < text.length && text[i] !== '\n') i++; pushSeg(); continue; }
     if (c === '\n' || c === ';' || c === '|' || c === '&' || c === '(' || c === ')') { pushSeg(); continue; }
     if (/\s/.test(c)) { pushTok(); continue; }
+    // Redirections end a word (`git push>/dev/null`); the target becomes its own, harmless, word.
+    if (c === '>' || c === '<') { pushTok(); continue; }
     cur += c;
     has = true;
   }
@@ -190,11 +196,12 @@ function ghVerdict(t) {
   const sub = t[i];
   if (sub === 'pr' || sub === 'release') {
     // Flags (some taking an argument) may sit between the command group and the action
-    // (`gh pr --repo x merge 3`, `gh pr --title t create`), so take the first blocked action word anywhere after it.
-    // A harmless command that merely has such a word as a flag value (`gh pr list --search merge`) is blocked too.
+    // (`gh pr --repo x merge 3`, `gh pr --title t create`), so the action is found by its name, not its position.
+    // The action is the first real subcommand word, so a flag value spelling a blocked action is not mistaken for it.
     const blocked = sub === 'pr' ? GH_PR_BLOCKED : GH_RELEASE_BLOCKED;
-    const action = t.slice(i + 1).find((tok) => blocked.has(tok));
-    return action ? `gh ${sub} ${action}` : null;
+    const known = sub === 'pr' ? GH_PR_ACTIONS : GH_RELEASE_ACTIONS;
+    const action = t.slice(i + 1).find((tok) => known.has(tok));
+    return action && blocked.has(action) ? `gh ${sub} ${action}` : null;
   }
   if (sub === 'api') return ghApiVerdict(t, i + 1);
   return null;
