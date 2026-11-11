@@ -15950,6 +15950,17 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 @media (max-width: 900px) {
   .command-trigger-kbd { display: none; }
 }
+/* Same squeeze for the all-time spend figure: below 1180 px drop its
+   "all-time" scope word (the tooltip keeps it), and below 900 px hide the
+   figure, which Cost Comparison and the 24-hour cost chip still show. It must
+   never print over the logo or the Bypass mode chip. Desktop only: the compact
+   (phone) bar already hides this group. */
+@media (min-width: 769px) and (max-width: 1179px) {
+  .topbar-spend-scope { display: none; }
+}
+@media (min-width: 769px) and (max-width: 900px) {
+  .topbar-spend-group { display: none; }
+}
 .command-trigger-kbd {
   margin-left: auto;
   font-family: var(--font-mono);
