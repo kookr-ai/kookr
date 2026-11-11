@@ -349,31 +349,37 @@ describe('startTTS', () => {
     }
   });
 
-  it('keeps treating a healthy service as stale when its rebuild fails', async () => {
+  it('keeps the running service when the rebuild of a stale one fails, and tries again next start', async () => {
     const ttsDir = await createTTSFixture();
     const stampPath = join(ttsDir, '.kookr-tts-build.hash');
     const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
-    const upCalls = () => execFileMock.mock.calls.filter((c) => (c[1] as string[]).includes('up')).length;
+    const calls = (verb: string) => execFileMock.mock.calls.filter((c) => (c[1] as string[]).includes(verb)).length;
 
     try {
       // A stamp from an earlier build of different files: the running service is stale.
       await writeFile(stampPath, 'hash-of-older-files\n');
       execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
-        if (args.includes('up')) cb(new Error('build failed'), '', '');
+        if (args.includes('build')) cb(new Error('package index unreachable'), '', '');
         else cb(null, '', '');
       });
 
-      await expect(start()).rejects.toThrow('Failed to start Docker container');
-      expect(upCalls()).toBe(1);
-      // The failed build must not be stamped, or the stale container would be reused from now on.
+      const manager = await start();
+
+      // The build failed before anything touched the container: it is still the one in use.
+      expect(manager.url).toBe('http://localhost:8004');
+      expect(calls('build')).toBe(1);
+      expect(calls('up')).toBe(0);
+      expect(calls('down')).toBe(0);
+      // The failed build is not stamped, or the stale service would be reused from now on.
       expect((await readFile(stampPath, 'utf-8')).trim()).toBe('hash-of-older-files');
 
-      // The next start tries the rebuild again, and stamps it once it succeeds.
+      // The next start tries again, replaces the container, and stamps the new files.
       execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
         cb(null, '', '');
       });
       await start();
-      expect(upCalls()).toBe(2);
+      expect(calls('build')).toBe(2);
+      expect(calls('up')).toBe(1);
       expect((await readFile(stampPath, 'utf-8')).trim()).not.toBe('hash-of-older-files');
     } finally {
       await rm(ttsDir, { recursive: true, force: true });

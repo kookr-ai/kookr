@@ -33,13 +33,35 @@ KOKORO_VOICES = ("af_heart", "af_sky", "af_sarah")
 KOKORO_REPO_ID = "hexgrad/Kokoro-82M"
 KOKORO_SAMPLE_RATE = 24_000
 # 0.88 is the pace these voices were chosen at; 1.0 is Kokoro's own default.
-KOKORO_SPEED = float(os.environ.get("TTS_KOKORO_SPEED", "0.88"))
+DEFAULT_KOKORO_SPEED = 0.88
+
+
+def read_kokoro_speed() -> float:
+    """A value that is not a positive number falls back to the default: raising here
+    would stop the whole service from starting, Pocket TTS voices included."""
+    raw = os.environ.get("TTS_KOKORO_SPEED", "").strip()
+    if not raw:
+        return DEFAULT_KOKORO_SPEED
+    try:
+        speed = float(raw)
+    except ValueError:
+        speed = 0.0
+    if speed <= 0:
+        logger.warning(f"Ignoring TTS_KOKORO_SPEED={raw!r}; using {DEFAULT_KOKORO_SPEED}")
+        return DEFAULT_KOKORO_SPEED
+    return speed
+
+
+KOKORO_SPEED = read_kokoro_speed()
 
 # Global model state
 model = None            # Pocket TTS
 kokoro_pipeline = None  # Kokoro
 voice_states = {}
-_load_lock = threading.Lock()
+# One load lock per engine: a slow first load of one engine must not hold up requests
+# for the other, which is already loaded.
+_pocket_load_lock = threading.Lock()
+_kokoro_load_lock = threading.Lock()
 _kokoro_generate_lock = threading.Lock()
 
 
@@ -96,23 +118,25 @@ def load_model():
 
 def ensure_pocket_model():
     """Load Pocket TTS on first use. Safe to call from concurrent requests."""
-    with _load_lock:
-        if model is None:
-            load_model()
+    if model is None:
+        with _pocket_load_lock:
+            if model is None:
+                load_model()
     return model
 
 
 def ensure_kokoro():
     """Load Kokoro on first use. Safe to call from concurrent requests."""
     global kokoro_pipeline
-    with _load_lock:
-        if kokoro_pipeline is None:
-            # Imported here so an install that never uses a Kokoro voice does not load it.
-            from kokoro import KPipeline
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            logger.info(f"Loading Kokoro on {device}")
-            kokoro_pipeline = KPipeline(lang_code="a", repo_id=KOKORO_REPO_ID, device=device)
-            logger.info("Kokoro loaded")
+    if kokoro_pipeline is None:
+        with _kokoro_load_lock:
+            if kokoro_pipeline is None:
+                # Imported here so an install that never uses a Kokoro voice does not load it.
+                from kokoro import KPipeline
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                logger.info(f"Loading Kokoro on {device}")
+                kokoro_pipeline = KPipeline(lang_code="a", repo_id=KOKORO_REPO_ID, device=device)
+                logger.info("Kokoro loaded")
     return kokoro_pipeline
 
 

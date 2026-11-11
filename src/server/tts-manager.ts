@@ -110,6 +110,24 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     console.log(
       `[tts] Healthy TTS service at port ${port} was built from older inputs; rebuilding instead of reusing it`,
     );
+    // Build before touching the running container. A build can fail for reasons that have
+    // nothing to do with this machine (a package index or model host is down); the service
+    // that is running still works, so keep it and try again on the next start.
+    try {
+      await execFileAsync('docker', ['compose', ...composeFlags, 'build'], {
+        env,
+        timeout: 600_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[tts] Rebuilding the TTS image failed (${msg}); keeping the running service, which was built from older files`,
+      );
+      return {
+        url: `http://localhost:${port}`,
+        stop: () => stopTTS(composeFlags, env),
+      };
+    }
   } else if (reuseResult.ok) {
     console.log(
       `[tts] Reusing healthy TTS service at port ${port}` +

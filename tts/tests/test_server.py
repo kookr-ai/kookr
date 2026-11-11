@@ -159,12 +159,24 @@ def test_soften_for_kokoro_lengthens_only_the_pause_between_sentences(server, te
     assert server.soften_for_kokoro(text) == expected
 
 
-def test_kokoro_speed_is_configurable_from_environment(monkeypatch):
-    monkeypatch.setenv("TTS_KOKORO_SPEED", "1.0")
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1.0", 1.0), (" 0.95 ", 0.95), ("", 0.88), ("fast", 0.88), ("0", 0.88), ("-1", 0.88)],
+)
+def test_kokoro_speed_comes_from_the_environment_and_a_bad_value_falls_back(monkeypatch, raw, expected):
+    monkeypatch.setenv("TTS_KOKORO_SPEED", raw)
 
     server = load_server_module()
 
-    assert server.KOKORO_SPEED == 1.0
+    assert server.KOKORO_SPEED == expected
+
+
+def test_kokoro_speed_defaults_to_the_pace_the_voices_were_chosen_at(monkeypatch):
+    monkeypatch.delenv("TTS_KOKORO_SPEED", raising=False)
+
+    server = load_server_module()
+
+    assert server.KOKORO_SPEED == 0.88
 
 
 @pytest.mark.parametrize(
