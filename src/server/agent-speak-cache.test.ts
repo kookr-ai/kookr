@@ -57,6 +57,16 @@ describe('computeCacheKey', () => {
   });
 });
 
+describe('computeCacheKey voice', () => {
+  test('differs for different voices', () => {
+    const base = {
+      agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'medium' as const,
+      lastEventSeq: 1, anomalyDetectedAt: null,
+    };
+    expect(computeCacheKey({ ...base, voice: 'af_heart' })).not.toBe(computeCacheKey({ ...base, voice: 'af_sky' }));
+  });
+});
+
 describe('AgentSpeakCache.get', () => {
   let originalFetch: typeof globalThis.fetch;
   beforeEach(() => {
@@ -89,6 +99,26 @@ describe('AgentSpeakCache.get', () => {
     expect(second.cached).toBe(true);
     expect(second.result.rawText).toBe(first.result.rawText);
     expect(cache.getCachedEntry(first.cacheKey)?.rawText).toBe(first.result.rawText);
+  });
+
+  test('a different voice misses and synthesizes in that voice; the same voice hits', async () => {
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a3', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+    const voiceOfCall = (n: number) =>
+      (JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[n][1]?.body)) as { voice: string }).voice;
+
+    const first = await cache.get(key, fakeContext);
+    expect(first.cached).toBe(false);
+    expect(voiceOfCall(0)).toBe('matilda');
+
+    const heart = await cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    expect(heart.cached).toBe(false);
+    expect(heart.cacheKey).not.toBe(first.cacheKey);
+    expect(voiceOfCall(1)).toBe('af_heart');
+
+    expect((await cache.get({ ...key, voice: 'af_heart' }, fakeContext)).cached).toBe(true);
+    expect((await cache.get(key, fakeContext)).cached).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 
   test('omits rawText when nothing needed rewriting', async () => {

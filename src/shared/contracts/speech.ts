@@ -102,6 +102,26 @@ export interface SpeakTaskSummaryResponse extends SpeakAudioResponse {}
  */
 export type VerbosityScale = 'terse' | 'brief' | 'medium' | 'detailed';
 
+/** Voice id of the bundled Matilda clip (the install default). */
+export const MATILDA_VOICE_ID = '/app/voices/matilda.mp3';
+
+/**
+ * Voices the speech service accepts and Settings can choose from. `af_*` ids
+ * are Kokoro voices; Matilda is the bundled reference clip.
+ */
+export const SPEAK_VOICE_OPTIONS = [
+  { id: 'af_heart', label: 'Heart' },
+  { id: 'af_sky', label: 'Sky' },
+  { id: 'af_sarah', label: 'Sarah' },
+  { id: MATILDA_VOICE_ID, label: 'Matilda' },
+] as const;
+
+export type SpeakVoiceId = (typeof SPEAK_VOICE_OPTIONS)[number]['id'];
+
+export function isSpeakVoiceId(value: unknown): value is SpeakVoiceId {
+  return typeof value === 'string' && SPEAK_VOICE_OPTIONS.some((option) => option.id === value);
+}
+
 /**
  * Speak-agent mode. `finding` summarizes the active supervisor anomaly;
  * `activity` summarizes the recent task activity window.

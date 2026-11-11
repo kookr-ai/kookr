@@ -531,6 +531,61 @@ describe('validateSettings', () => {
     });
   });
 
+  describe('speakVoice', () => {
+    it('is absent by default (install default applies)', () => {
+      expect('speakVoice' in validateSettings({})).toBe(false);
+      expect('speakVoice' in DEFAULT_SETTINGS).toBe(false);
+    });
+
+    it('accepts every known voice id without a warning', () => {
+      for (const value of ['af_heart', 'af_sky', 'af_sarah', '/app/voices/matilda.mp3']) {
+        const result = validateSettingsWithWarnings({ speakVoice: value });
+        expect(result.settings.speakVoice).toBe(value);
+        expect(result.warnings).toEqual([]);
+      }
+    });
+
+    it.each([
+      { value: 'bogus', serialized: '"bogus"' },
+      { value: 42, serialized: '42' },
+      { value: '/etc/passwd', serialized: '"/etc/passwd"' },
+    ])('drops an unknown value ($serialized) with a warning', ({ value, serialized }) => {
+      const result = validateSettingsWithWarnings({ speakVoice: value });
+      expect('speakVoice' in result.settings).toBe(false);
+      expect(result.warnings).toEqual([
+        `Unknown speakVoice value ${serialized}; dropped (using the install default)`,
+      ]);
+    });
+
+    it('clears when omitted or null on a full-object update, with no warning', () => {
+      const withVoice = validateSettings({ speakVoice: 'af_sky' });
+      expect(withVoice.speakVoice).toBe('af_sky');
+      const { speakVoice: _omit, ...withoutVoice } = withVoice;
+      expect('speakVoice' in validateSettings(withoutVoice)).toBe(false);
+      const nulled = validateSettingsWithWarnings({ speakVoice: null });
+      expect('speakVoice' in nulled.settings).toBe(false);
+      expect(nulled.warnings).toEqual([]);
+    });
+
+    it('round-trips through save and load, and an unknown stored value is not persisted', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kookr-voice-'));
+      try {
+        const file = join(dir, 'settings.json');
+        await saveSettings(file, validateSettings({ speakVoice: 'af_sarah' }));
+        expect((await loadSettings(file)).settings.speakVoice).toBe('af_sarah');
+
+        await writeFile(file, JSON.stringify({ speakVoice: 'bogus' }));
+        const loaded = await loadSettings(file);
+        expect(loaded.settings.speakVoice).toBeUndefined();
+        expect(loaded.warnings.some((w) => w.includes('speakVoice'))).toBe(true);
+        await saveSettings(file, loaded.settings);
+        expect(await readFile(file, 'utf-8')).not.toContain('speakVoice');
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('accepts valid speakVerbosity values', () => {
     for (const value of ['terse', 'brief', 'medium', 'detailed'] as const) {
       const result = validateSettingsWithWarnings({ speakVerbosity: value });

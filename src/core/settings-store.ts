@@ -30,7 +30,7 @@ import {
   validateReplySnippets,
   type ReplySnippet,
 } from '../shared/contracts/reply-snippets.js';
-import type { VerbosityScale } from '../shared/contracts/speech.js';
+import { isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../shared/contracts/speech.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from './quota-headroom-admission.js';
 
 export type { QuietHoursWindow } from '../shared/contracts/quiet-hours.js';
@@ -102,6 +102,12 @@ export interface KookrSettings {
    * summarizer (see docs/rfc/rfc-speak-agent-summary-v2.md).
    */
   speakVerbosity: VerbosityScale;
+  /**
+   * Voice the speech service renders spoken clips in. Absent means "use the
+   * install default" (`TTS_VOICE`). Unknown values are dropped with a warning.
+   * Read live, so a change applies to the next clip. Clear by omitting it.
+   */
+  speakVoice?: SpeakVoiceId;
   /**
    * Keep a local JSONL log of what the avatar ("Lucy") says and how the operator
    * reacts (`<kookrDir>/lucy-interactions.jsonl`, issue #3605). Default true; the
@@ -964,6 +970,17 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
     }
   }
 
+  let speakVoice: SpeakVoiceId | undefined;
+  if (raw.speakVoice !== undefined && raw.speakVoice !== null) {
+    if (isSpeakVoiceId(raw.speakVoice)) {
+      speakVoice = raw.speakVoice;
+    } else {
+      verbosityWarnings.push(
+        `Unknown speakVoice value ${JSON.stringify(raw.speakVoice)}; dropped (using the install default)`,
+      );
+    }
+  }
+
   const lucyInteractionLog = typeof raw.lucyInteractionLog === 'boolean'
     ? raw.lucyInteractionLog
     : DEFAULT_SETTINGS.lucyInteractionLog;
@@ -1004,6 +1021,7 @@ export function validateSettingsWithWarnings(raw: Record<string, unknown>): { se
       roundRobinIndex,
       shortcutBindings: shortcutValidation.overrides,
       speakVerbosity,
+      ...(speakVoice !== undefined ? { speakVoice } : {}),
       lucyInteractionLog,
       agentEffort,
       quietHours: quietHoursValidation.windows,

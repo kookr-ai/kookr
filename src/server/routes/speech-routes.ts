@@ -215,6 +215,9 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     return clampVerbosity(fromSettings, DEFAULT_VERBOSITY);
   });
 
+  // Settings override the install default (`TTS_VOICE`); read per request so a change applies to the next clip.
+  const resolveVoice = (): string | undefined => deps.settings?.get?.()?.speakVoice ?? options.ttsVoice;
+
   async function handleSpeakAgent(c: Context): Promise<Response> {
     const requestId = newRequestId();
     const agentId = c.req.param('agentId') ?? '';
@@ -257,6 +260,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
 
     const context = buildAgentSpeakContext(agent);
     const requestSignal = c.req.raw.signal;
+    const voice = resolveVoice();
 
     try {
       const { cacheKey, cached, result } = await options.cache.get(
@@ -266,6 +270,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
           verbosity,
           lastEventSeq,
           anomalyDetectedAt: agent.anomaly?.detectedAt ?? null,
+          voice,
         },
         context,
         requestSignal,
@@ -304,7 +309,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         usedFallback: result.usedFallback,
         cached,
         verbosity,
-        voice: options.ttsVoice,
+        voice,
         findingType: resolvedMode === 'finding' ? agent.anomaly?.type : undefined,
         llmMs: result.llmMs,
         ttsMs: result.ttsMs,
@@ -394,7 +399,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
       entries: options.cache.listRedactedEntries(),
       featureEnabled: options.enabled,
       ttsConfigured: Boolean(options.ttsUrl),
-      voice: options.ttsVoice ?? null,
+      voice: resolveVoice() ?? null,
     });
   });
 
@@ -433,9 +438,10 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
     }
 
     const requestSignal = c.req.raw.signal;
+    const voice = resolveVoice();
     try {
       const startedAt = Date.now();
-      const result = await options.taskCache.get(subject.input, requestSignal);
+      const result = await options.taskCache.get(subject.input, requestSignal, voice);
       const clipId = randomUUID();
       const taskName = redactedTaskName(subject.input.taskName);
       const response = buildTaskResponse(clipId, taskName, result);
@@ -449,7 +455,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         rawText: result.rawText,
         usedFallback: result.usedFallback,
         cached: result.cached,
-        voice: options.ttsVoice,
+        voice,
         findingType: subject.input.activeFinding?.type,
         llmMs: result.llmMs,
         ttsMs: result.ttsMs,

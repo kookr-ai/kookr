@@ -84,8 +84,13 @@ export class TaskSpeechSummaryCache {
     this.maxBytes = config.maxBytes ?? DEFAULT_MAX_BYTES;
   }
 
-  async get(input: TaskSpeechSummaryInput, signal?: AbortSignal): Promise<TaskSpeakResult> {
-    const cacheKey = computeTaskSpeechCacheKey(input, this.config.voice);
+  /**
+   * @param voice Per-call voice; falls back to `config.voice`. It is part of the
+   * cache key, so a voice change never replays a clip rendered in another voice.
+   */
+  async get(input: TaskSpeechSummaryInput, signal?: AbortSignal, voice?: string): Promise<TaskSpeakResult> {
+    const resolvedVoice = voice ?? this.config.voice;
+    const cacheKey = computeTaskSpeechCacheKey(input, resolvedVoice);
     const cached = this.entries.get(cacheKey);
     if (cached) return { ...cached.result, cached: true, llmMs: 0, ttsMs: 0 };
 
@@ -95,7 +100,7 @@ export class TaskSpeechSummaryCache {
       return { ...shared, cached: true, llmMs: 0, ttsMs: 0 };
     }
 
-    const work = this.fetchFresh(cacheKey, input);
+    const work = this.fetchFresh(cacheKey, input, resolvedVoice);
     this.inflight.set(cacheKey, work);
     work.finally(() => {
       if (this.inflight.get(cacheKey) === work) {
@@ -109,6 +114,7 @@ export class TaskSpeechSummaryCache {
   private async fetchFresh(
     cacheKey: string,
     input: TaskSpeechSummaryInput,
+    voice: string,
   ): Promise<Omit<TaskSpeakResult, 'cached'>> {
     const now = this.config.now ?? Date.now;
     const llmStart = now();
@@ -119,7 +125,7 @@ export class TaskSpeechSummaryCache {
     const ttsResult = await synthesizeWithCircuitBreaker(this.config.ttsBreaker, {
       ttsUrl: this.config.ttsUrl,
       text: summary.text,
-      voice: this.config.voice,
+      voice,
     });
     const ttsMs = now() - ttsStart;
 

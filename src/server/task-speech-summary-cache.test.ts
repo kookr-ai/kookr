@@ -27,6 +27,28 @@ describe('TaskSpeechSummaryCache', () => {
     globalThis.fetch = originalFetch;
   });
 
+  test('a per-call voice is part of the cache key and the synthesis request', async () => {
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string };
+      return new Response(JSON.stringify(ttsResponse(body.text)), { status: 200 });
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof globalThis.fetch;
+    const cache = new TaskSpeechSummaryCache({
+      llmClient: mockClient('Auth task completed.'), ttsUrl: 'http://tts.local', voice: 'matilda',
+    });
+    const input = { taskName: 'Auth task', taskStatus: 'completed' as const, completionDigest: { bullets: ['x'], filesChanged: [] } };
+    const voiceOfCall = (n: number) =>
+      (JSON.parse(String(fetchSpy.mock.calls[n][1]?.body)) as { voice: string }).voice;
+
+    expect((await cache.get(input)).cached).toBe(false);
+    expect(voiceOfCall(0)).toBe('matilda');
+    expect((await cache.get(input, undefined, 'af_sky')).cached).toBe(false);
+    expect(voiceOfCall(1)).toBe('af_sky');
+    expect((await cache.get(input, undefined, 'af_sky')).cached).toBe(true);
+    expect((await cache.get(input)).cached).toBe(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
   test('runs LLM + TTS once and then cache-hits by normalized speech input', async () => {
     const client = mockClient('Auth task completed with tests passing.');
     const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

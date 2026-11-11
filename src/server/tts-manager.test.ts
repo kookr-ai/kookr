@@ -288,6 +288,54 @@ describe('startTTS', () => {
     }
   });
 
+  it('reuses a healthy service whose build inputs are unchanged, and rebuilds it once they change', async () => {
+    const ttsDir = await createTTSFixture();
+    const upArgs = ['compose', '-f', join(ttsDir, 'docker-compose.yml'), 'up', '-d', '--build'];
+    const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+    const synthesisProbes = () =>
+      vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/synthesize')).length;
+
+    try {
+      // First start: nothing is running, so the image is built and its inputs are stamped.
+      let down = true;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          if (down && String(url).includes('/health')) {
+            down = false;
+            throw new Error('down');
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+      await start();
+      expect(execFileMock).toHaveBeenCalledWith('docker', upArgs, expect.anything(), expect.any(Function));
+
+      // Second start: healthy, same inputs. Reused without touching docker.
+      execFileMock.mockClear();
+      vi.mocked(fetch).mockClear();
+      await start();
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(synthesisProbes()).toBe(0);
+
+      // The service code changes while the old container is still healthy.
+      await writeFile(join(ttsDir, 'src', 'server.py'), 'print("a new voice")\n');
+      execFileMock.mockClear();
+      vi.mocked(fetch).mockClear();
+      await start();
+      expect(execFileMock).toHaveBeenCalledWith('docker', upArgs, expect.anything(), expect.any(Function));
+      // The rebuilt service is probed like a cold start before it is reported ready.
+      expect(synthesisProbes()).toBe(1);
+
+      // And the new inputs are stamped: the next start reuses it again.
+      execFileMock.mockClear();
+      await start();
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
   it('rebuilds when the TTS web server file changes', async () => {
     const ttsDir = await createTTSFixture();
 
