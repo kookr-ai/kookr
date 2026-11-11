@@ -9,6 +9,7 @@ import {
   formatResourcePercent,
   isResourceStatusStale,
   memorySeverity,
+  RESOURCE_STATUS_STALE_AFTER_MS,
 } from '../resource-status.js';
 import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
 import {
@@ -112,6 +113,35 @@ export function systemAttentionReasons(input: SystemAttentionInput): string[] {
   return reasons;
 }
 
+/**
+ * Whether the latest resource sample is stale, re-evaluated as time passes.
+ * One timeout fires when the current sample crosses the stale threshold, so a
+ * frozen sample stops raising attention without a new store update and without
+ * a per-second render loop in the top bar.
+ */
+export function useResourceStatusStale(): boolean {
+  const receivedAtMs = useKookrStore((s) => s.resourceStatusReceivedAtMs);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const stale = isResourceStatusStale(receivedAtMs, nowMs);
+
+  useEffect(() => {
+    if (receivedAtMs == null) return;
+    const now = Date.now();
+    // A new sample arrived: re-read the clock so a fresh sample is not judged
+    // against an old `nowMs`.
+    if (isResourceStatusStale(receivedAtMs, now) !== stale) {
+      setNowMs(now);
+      return;
+    }
+    if (stale) return;
+    const delayMs = receivedAtMs + RESOURCE_STATUS_STALE_AFTER_MS - now + 1;
+    const timer = setTimeout(() => setNowMs(Date.now()), Math.max(0, delayMs));
+    return () => clearTimeout(timer);
+  }, [receivedAtMs, stale]);
+
+  return stale;
+}
+
 /** Live attention reasons for the System indicator, read from the store. */
 export function useSystemAttentionReasons(): string[] {
   const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
@@ -121,10 +151,7 @@ export function useSystemAttentionReasons(): string[] {
   const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
   const timerHealth = useKookrStore((s) => s.timerHealth);
   const resourceStatus = useKookrStore((s) => s.resourceStatus);
-  const receivedAtMs = useKookrStore((s) => s.resourceStatusReceivedAtMs);
-  // Staleness is re-evaluated on each store update; a frozen sample stops
-  // raising attention the next time anything in the store changes.
-  const resourceStale = isResourceStatusStale(receivedAtMs, Date.now());
+  const resourceStale = useResourceStatusStale();
   return useMemo(() => systemAttentionReasons({
     prodSmokeTick,
     resourceWatchdog,
@@ -144,6 +171,56 @@ export function useSystemAttentionReasons(): string[] {
     resourceStatus,
     resourceStale,
   ]);
+}
+
+export interface SystemQuietNotesInput {
+  resourceStatus?: SystemResourceStatus | null;
+  resourceStale?: boolean;
+  soundMuted?: boolean;
+}
+
+export interface SystemQuietNotes {
+  soundMuted: boolean;
+  /** CPU or RAM is "elevated" (below high) on a fresh sample. */
+  resourceElevated: boolean;
+  /** One short label per note, for the indicator's accessible name. */
+  labels: string[];
+}
+
+/**
+ * Non-urgent states that the status bar used to show at rest: muted alert
+ * sounds and "elevated" (below high) CPU or RAM. They are not "waiting on
+ * you", so they never turn System amber; the indicator shows them neutrally
+ * (a muted glyph, a grey dot) and names them in its label.
+ */
+export function systemQuietNotes(input: SystemQuietNotesInput): SystemQuietNotes {
+  const labels: string[] = [];
+  const soundMuted = input.soundMuted === true;
+  if (soundMuted) labels.push('alert sounds muted');
+  const resources = input.resourceStatus;
+  let resourceElevated = false;
+  if (resources && !input.resourceStale) {
+    if (cpuSeverity(resources.host.cpuUsagePercent) === 'elevated') {
+      labels.push('CPU elevated');
+      resourceElevated = true;
+    }
+    if (memorySeverity(resources) === 'elevated') {
+      labels.push('memory elevated');
+      resourceElevated = true;
+    }
+  }
+  return { soundMuted, resourceElevated, labels };
+}
+
+/** Live quiet notes for the System indicator, read from the store. */
+export function useSystemQuietNotes(): SystemQuietNotes {
+  const resourceStatus = useKookrStore((s) => s.resourceStatus);
+  const resourceStale = useResourceStatusStale();
+  const soundMuted = !useSoundPreference().enabled;
+  return useMemo(
+    () => systemQuietNotes({ resourceStatus, resourceStale, soundMuted }),
+    [resourceStatus, resourceStale, soundMuted],
+  );
 }
 
 function formatRelativeAge(timestamp: string): string {

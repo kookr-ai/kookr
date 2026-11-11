@@ -1327,7 +1327,7 @@ The system SHOULD show lightweight host and Kookr-server resource status in the 
 - The backend samples host CPU and approximate RAM usage every 2 seconds using Node built-in APIs.
 - The backend samples Kookr server event-loop delay and process memory without persisting resource samples.
 - WebSocket clients receive `resourceStatus` updates and a newly connected client receives the latest cached status after the initial snapshot when one exists.
-- The frontend shows CPU and RAM in the System detail, renders unavailable metrics as `--`, and marks data stale when no resource message has arrived for more than 10 seconds. A fresh high or critical CPU, RAM or event-loop reading turns the System indicator amber.
+- The frontend shows CPU and RAM in the System detail, renders unavailable metrics as `--`, and marks data stale when no resource message has arrived for more than 10 seconds. A fresh high or critical CPU, RAM or event-loop reading turns the System indicator amber. A fresh elevated (below high) CPU or RAM reading shows a neutral grey dot instead. Staleness is re-evaluated when the sample crosses the 10-second threshold, not only when the store next changes, so a frozen sample stops raising attention on its own.
 - Resource detail is available through keyboard/touch-accessible System detail controls and includes event-loop delay, Kookr RSS, RAM free/total, and sample timing.
 - Resource status is passive context only; it does not alert, throttle, schedule, or create findings.
 

@@ -191,6 +191,21 @@ kbd {
   display: inline-block;
   flex-shrink: 0;
 }
+.system-usage-slot { display: contents; }
+.system-note-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--state-neutral);
+  display: inline-block;
+  flex-shrink: 0;
+}
+/* Muted alert sounds: a setting, not a problem, so a neutral glyph. */
+.system-muted-glyph {
+  font-size: 12px;
+  line-height: 1;
+  flex-shrink: 0;
+}
 .system-attention-dot {
   width: 8px;
   height: 8px;
@@ -299,6 +314,11 @@ kbd {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.version-row-commit {
+  /* The 40-character SHA is wider than a phone panel: wrap it, never cut it. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .version-row code {
   font-size: 12px;
@@ -9943,10 +9963,12 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   color: var(--text-secondary);
   border: 1px solid var(--border-dim);
 }
+/* A stalled count means "failed or stuck", so it uses the red role; amber is
+   reserved for "waiting on you" (issue #3619). */
 .project-icon-task-count.has-stalled {
-  color: var(--amber);
-  border-color: var(--amber);
-  background: rgba(251,191,36,0.1);
+  color: var(--state-bad);
+  border-color: var(--state-bad);
+  background: rgba(248,113,113,0.1);
 }
 .project-icon-task-count.has-pending {
   border-color: var(--state-neutral);
@@ -10122,6 +10144,8 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
      badge beside it already flags, so the fraction stays neutral here. */
   .project-sidebar.labelled .project-icon-task-count.has-stalled {
     color: var(--text-secondary);
+    border-color: var(--border-dim);
+    background: var(--bg-card);
   }
 
   .project-sidebar.labelled .project-icon.all.at-cap .project-icon-task-count {
@@ -10399,6 +10423,7 @@ button.usage-value:hover {
 
 .project-sidebar-drop-zone.active {
   background: rgba(45, 212, 191, 0.18);
+  color: var(--text-bright);
   outline: 1px dashed rgba(45, 212, 191, 0.55);
 }
 
@@ -15209,11 +15234,14 @@ button.act-tool-entry:focus-visible {
   color: var(--accent, #61dafb);
 }
 
+/* Drawn at 1:1 (480 user units = 480 px), so labels render at their 12 px+
+   type-scale size in the tour card; narrower viewports scale it down. */
 .onboarding-layout-diagram {
+  display: block;
   width: 100%;
+  max-width: 480px;
   height: auto;
-  max-height: 220px;
-  margin-top: 4px;
+  margin: 4px auto 0;
 }
 
 .onboarding-footer {
@@ -15569,6 +15597,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .cost-agent-chip.selected {
   background: rgba(45, 212, 191, 0.18);
+  color: var(--text-bright);
   border-color: rgba(45, 212, 191, 0.45);
 }
 
@@ -16067,7 +16096,7 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 
 .related-tasks-scope-btn--active {
   background: rgba(45, 212, 191, 0.18);
-  color: var(--accent-fg, currentColor);
+  color: var(--text-bright);
   font-weight: 600;
 }
 

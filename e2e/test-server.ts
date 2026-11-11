@@ -28,6 +28,12 @@ let relayHandle: RelayServerHandle | null = null;
 let runtimeRelayCredentials: { relayUrl: string; nodeId: string; nodeToken: string } | null = null;
 
 process.env.KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE ??= '0';
+// The disk admission floors (5% / 2 GiB free by default) would refuse every
+// task launch on a nearly full developer disk, which has nothing to do with
+// what an e2e spec checks. Off by default here; a spec that tests disk
+// admission can still set them through the fixture env (issue #3619).
+process.env.KOOKR_ADMISSION_DATA_DIR_FREE_PERCENT ??= '0';
+process.env.KOOKR_ADMISSION_DATA_DIR_FREE_BYTES ??= '0';
 
 function stableInjectedSessionId(tmuxName: string): string {
   return `e2e-${tmuxName.replace(/[^A-Za-z0-9_-]/g, '_')}`;
@@ -109,6 +115,9 @@ async function main() {
     terminalBackend: terminal,
     useFakeTerminalBridge: true,
     claudeDir,
+    // Worker option `bypassAllPermissions` (e2e/fixtures.ts): the dashboard
+    // then shows the Bypass mode chip, as with KOOKR_BYPASS_ALL_PERMISSIONS.
+    bypassAllPermissions: process.env.E2E_BYPASS_ALL_PERMISSIONS === '1',
     // FakeTerminalBackend never runs these commands. Fixed preflight results
     // keep the agent picker independent of the operator's installed binaries.
     agentBin: '/e2e/claude',
@@ -574,6 +583,22 @@ async function main() {
   // Disable achievements server-side (prevents toasts from firing during demo recording).
   // Achievement watcher isn't exposed on the server object, so we use a WebSocket message
   // approach: the recording script should hide achievement toasts via CSS instead.
+
+  // Broadcast a plan-quota sample to connected dashboards (the real one comes
+  // from a provider poll the test server never runs). Not replayed on reload.
+  server.app.post('/api/test/broadcast-quota', async (c) => {
+    const body = await c.req.json() as { fiveHour?: number; sevenDay?: number };
+    const resetsAt = new Date(Date.now() + 3 * 3_600_000).toISOString();
+    server.broadcastToAll({
+      type: 'quotaStatus',
+      quota: {
+        fiveHour: body.fiveHour === undefined ? null : { utilization: body.fiveHour, resetsAt },
+        sevenDay: body.sevenDay === undefined ? null : { utilization: body.sevenDay, resetsAt },
+        updatedAt: Date.now(),
+      },
+    });
+    return c.json({ ok: true });
+  });
 
   // Set lifetime spend and per-task token usage (for demo recording)
   server.app.post('/api/test/set-spend', async (c) => {

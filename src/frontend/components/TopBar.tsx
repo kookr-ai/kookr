@@ -24,7 +24,7 @@ import {
   type DeployStatus,
 } from '../api/index.js';
 import { loadDeployIntent } from '../store/deploy-intent-storage.js';
-import { SystemStatusDetails, useSystemAttentionReasons } from './SystemStatusDetails.js';
+import { SystemStatusDetails, useSystemAttentionReasons, useSystemQuietNotes } from './SystemStatusDetails.js';
 
 interface Props {
   findings: number;
@@ -132,6 +132,7 @@ export function TopBar({
     bypassAllPermissions,
   } = useKookrStore();
   const attentionReasons = useSystemAttentionReasons();
+  const quietNotes = useSystemQuietNotes();
   const paletteHint = commandPaletteHint(detectShortcutPlatform());
   const [showPopover, setShowPopover] = useState(false);
   const [deployStatus, setDeployStatus] = useState<DeployStatus | null>(null);
@@ -358,8 +359,19 @@ export function TopBar({
     'System status and build info',
     connected ? null : 'disconnected',
     attentionReasons.length > 0 ? `needs a look: ${attentionReasons.join(', ')}` : null,
+    quietNotes.labels.length > 0 ? quietNotes.labels.join(', ') : null,
     hasUpdates ? 'update available' : null,
   ].filter(Boolean).join('. ');
+  const { soundMuted, resourceElevated } = quietNotes;
+  // A pill that opens a dialog closes System first, so the dialog is not
+  // stacked over a panel that stays open underneath. Focus moves to the
+  // System button first, so a dialog that restores focus on close lands there
+  // rather than on the unmounted pill.
+  const closeSystemThen = (open?: () => void) => open && (() => {
+    systemButtonRef.current?.focus();
+    setShowPopover(false);
+    open();
+  });
   const lastRestart = deployStatus?.lastRestart;
   const blackoutTier = lastRestart ? apiBlackoutTier(lastRestart.apiBlackoutSeconds) : null;
 
@@ -435,7 +447,13 @@ export function TopBar({
               />
               {deploying && <span className="deploy-spinner" />}
               <span className="system-indicator-label">System</span>
+              {soundMuted && (
+                <span className="system-muted-glyph" data-testid="system-muted-glyph" aria-hidden="true">{'\u{1F507}\uFE0E'}</span>
+              )}
               {systemNeedsAttention && <span className="system-attention-dot" aria-hidden="true" />}
+              {!systemNeedsAttention && resourceElevated && (
+                <span className="system-note-dot" data-testid="system-note-dot" aria-hidden="true" />
+              )}
               {!systemNeedsAttention && hasUpdates && <span className="system-update-dot" aria-hidden="true" />}
             </button>
             {showPopover && (
@@ -453,14 +471,28 @@ export function TopBar({
                   </div>
                 )}
                 <SystemStatusDetails
-                  onOpenCapacity={onOpenCapacity}
-                  onOpenLiveFriction={onOpenLiveFriction}
-                  onOpenDiagnostics={onOpenDiagnostics}
-                  onOpenSchedules={onOpenSchedules}
+                  onOpenCapacity={closeSystemThen(onOpenCapacity)}
+                  onOpenLiveFriction={closeSystemThen(onOpenLiveFriction)}
+                  onOpenDiagnostics={closeSystemThen(onOpenDiagnostics)}
+                  onOpenSchedules={closeSystemThen(onOpenSchedules)}
                   shortcutBindings={shortcutBindings}
                 />
-                {/* Usage (#3561 5b): the summary renders its own heading. */}
-                {usage}
+                {/* Usage (#3561 5b): the summary renders its own heading. Its
+                    buttons open dialogs or expand the rail, so System closes
+                    first instead of staying open under them. */}
+                {usage && (
+                  <div
+                    className="system-usage-slot"
+                    onClickCapture={(event) => {
+                      if ((event.target as Element).closest('button')) {
+                        systemButtonRef.current?.focus();
+                        setShowPopover(false);
+                      }
+                    }}
+                  >
+                    {usage}
+                  </div>
+                )}
                 {onShowShortcuts && (
                   <button
                     type="button"
@@ -479,7 +511,7 @@ export function TopBar({
                   <div className="version-row">Running in dev mode (no build info)</div>
                 ) : (
                   <>
-                    <div className="version-row"><span className="version-label">Commit</span> <code>{buildInfo.commitHash}</code></div>
+                    <div className="version-row version-row-commit"><span className="version-label">Commit</span> <code>{buildInfo.commitHash}</code></div>
                     <div className="version-row"><span className="version-label">Branch</span> {buildInfo.branch}</div>
                     <div className="version-row"><span className="version-label">Built</span> {formatDateTime(buildInfo.buildTimestamp)}</div>
                     <div className="version-row"><span className="version-label">Version</span> {buildInfo.version}</div>

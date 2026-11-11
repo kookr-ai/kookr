@@ -18,6 +18,7 @@ export const test = base.extend<{
 }, {
   serverURL: string;
   promptBracketedPaste: boolean;
+  bypassAllPermissions: boolean;
 }>({
   // Test-level option: when true (default), the fixture pre-marks the
   // onboarding tour as seen so its overlay does not intercept clicks meant
@@ -27,9 +28,12 @@ export const test = base.extend<{
   // fake backend path for speed. Specs that validate Claude prompt delivery
   // can opt into the production bracketed-paste launch path.
   promptBracketedPaste: [false, { option: true, scope: 'worker' }],
+  // Worker/server option: start the server in bypass-all-permissions mode, so
+  // a spec can check the Bypass mode chip against real top-bar content.
+  bypassAllPermissions: [false, { option: true, scope: 'worker' }],
 
   // Worker-scoped: one server per Playwright worker process
-  serverURL: [async ({ promptBracketedPaste }, use) => {
+  serverURL: [async ({ promptBracketedPaste, bypassAllPermissions }, use) => {
     const proc: ChildProcess = spawn(
       'node',
       ['--import', 'tsx', join(__dirname, 'test-server.ts')],
@@ -38,6 +42,7 @@ export const test = base.extend<{
           E2E_PORT: '0',
           KOOKR_PROMPT_SUBMIT_BRACKETED_PASTE: promptBracketedPaste ? '1' : '0',
           E2E_PROMPT_SUBMIT_AUTO_HOOK: promptBracketedPaste ? '1' : '0',
+          E2E_BYPASS_ALL_PERMISSIONS: bypassAllPermissions ? '1' : '0',
         }),
         stdio: ['pipe', 'pipe', 'pipe'],
       },
