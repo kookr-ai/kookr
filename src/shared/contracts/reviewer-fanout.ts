@@ -66,17 +66,19 @@ export const REVIEWER_SPECIALIST_ROLES: readonly ReviewerSpecialistRole[] = [
  * (before this, the specialists were launched as prompts with no notebook at
  * all, while adjacent roles like `change-verifier` did keep one).
  *
- * Repo-specific defect classes scope by repo as `code-review@<owner>-<repo>`;
- * portable heuristics (a11y, cross-platform) use the bare base. Both are
- * distinct files under one base name — the `<name>@<slug>` namespacing the
- * notebook store uses to scope any shelf to a repo.
+ * Two layers share this base: the **project** shelf `code-review@<owner>-<repo>`
+ * (defect classes true only in that repo) and the **domain** shelf, the bare base
+ * (portable heuristics: a11y, cross-platform). They are distinct files under one
+ * base name — the `<name>@<slug>` namespacing the notebook store uses to scope
+ * any shelf to a repo. A specialist opens both and writes to the narrower one
+ * that is true (see {@link reviewerNotebookLayers}).
  */
 export const REVIEWER_NOTEBOOK_ROLE_BASE = 'code-review';
 
 /**
  * Resolve the fan-out's code-review shelf name from a repo slug (`<owner>-<repo>`).
- * Returns `code-review@<slug>` for a usable slug, else the global
- * `code-review`. The slug is flattened to the notebook-name charset
+ * Returns the project shelf `code-review@<slug>` for a usable slug, else the
+ * domain shelf `code-review`. The slug is flattened to the notebook-name charset
  * (`[a-z0-9._-]`, no leading/trailing punctuation, no `..`) so an unexpected
  * value can never produce a name the `nb` CLI rejects; the sanitization is
  * belt-and-suspenders and keeps this pure.
@@ -94,6 +96,32 @@ export function reviewerNotebookRole(slug?: string | null): string {
     .replace(/^[^a-z0-9]+/, '')
     .replace(/[^a-z0-9]+$/, '');
   return safe ? `${REVIEWER_NOTEBOOK_ROLE_BASE}@${safe}` : REVIEWER_NOTEBOOK_ROLE_BASE;
+}
+
+/** The two notebook layers a fan-out specialist reads. `project` is absent when no repo slug is known. */
+export interface ReviewerNotebookLayers {
+  /** The bare shelf (true in any repo). Always present. */
+  domain: string;
+  /** `<domain>@<slug>` (true only in the session's repo), or undefined when the shelf has no slug. */
+  project?: string;
+}
+
+/**
+ * Split a fan-out shelf name into its domain and project layers. A layer is
+ * derived from the name alone: everything before the LAST `@` is the domain
+ * shelf, and a name with an `@` is the project shelf. A name with no `@`, or with
+ * an empty part on either side of it (`x@`, `@x`), has no project layer: the
+ * whole name is the domain shelf, so no caller ever builds a name ending in `@`.
+ *
+ * This is the same last-`@` rule as `classifyShelf` in
+ * `plugin/hooks/lib/notebook-layers.mjs` (RFC docs/rfc/rfc-notebook-memory-layers.md,
+ * D3); a parity test in `reviewer-fanout.test.ts` keeps the two in step, because
+ * this pure module cannot import the hook's ES module.
+ */
+export function reviewerNotebookLayers(notebookRole: string): ReviewerNotebookLayers {
+  const at = notebookRole.lastIndexOf('@');
+  if (at <= 0 || at === notebookRole.length - 1) return { domain: notebookRole };
+  return { domain: notebookRole.slice(0, at), project: notebookRole };
 }
 
 /** Lifecycle status of a single specialist run and of the overall workflow. */
@@ -153,10 +181,10 @@ export interface ReviewerFanoutWorkflow {
   docsDrift: 'active' | 'inactive';
   /**
    * The Agent Notebook role the specialists share for this fan-out, e.g.
-   * `code-review@owner-repo`. Resolved from the repo slug via
-   * {@link reviewerNotebookRole} at creation; omitted when no slug was
-   * available, in which case launches fall back to the global
-   * {@link REVIEWER_NOTEBOOK_ROLE_BASE}. Optional and additive — it does not
+   * `code-review@owner-repo` (the project layer; its domain layer is the part
+   * before the `@`). Resolved from the repo slug via {@link reviewerNotebookRole}
+   * at creation; omitted when no slug was available, in which case launches use
+   * the domain shelf {@link REVIEWER_NOTEBOOK_ROLE_BASE} alone. Optional and additive — it does not
    * change the serialized schema version.
    */
   notebookRole?: string;

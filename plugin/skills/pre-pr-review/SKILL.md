@@ -383,14 +383,14 @@ Use when the change touches module boundaries, imports, or public APIs:
 2. Launch the selected agents **in parallel** as subagents, passing the diff and repo path. Compose the consolidated `lint-like` reviewer as described above; spawn `correctness` (and `test` when selected) standalone.
    For the test-focused reviewer, explicitly ask whether the changed runtime path is tested directly or only inferred through helper/unit coverage.
 
-   **Give every specialist the shared code-review shelf.** A fan-out specialist is a `general-purpose` subagent — it gets no SessionStart index injection, so the shelf to open reaches it only through the launch prompt. Add a `Notebook shelf:` line to the header of every specialist prompt. Derive the shelf name from this session's `KOOKR_REPO_SLUG` (the bare `<owner>-<repo>` the launcher exposes): the fan-out shelf is `code-review@<owner>-<repo>` (`code-review` base + that slug). If `KOOKR_REPO_SLUG` is unset, fall back to the bare global `code-review`. The specialist loads it with `nb show <shelf>` before reviewing and maintains it afterward (the specialist `.md` bodies spell out the ritual).
+   **Give every specialist both code-review shelves.** A fan-out specialist is a `general-purpose` subagent — it gets no SessionStart index injection, so the shelves to open reach it only through the launch prompt. Add a `Notebook shelf:` line to the header of every specialist prompt that names both layers: the domain shelf `code-review` (true in any repo) and the project shelf `code-review@<owner>-<repo>` (true only in this repo; `<owner>-<repo>` is this session's `KOOKR_REPO_SLUG`). Name the project shelf only when the diff under review belongs to the session's own repo. For an external upstream PR, or when `KOOKR_REPO_SLUG` is unset, name `code-review` alone and tell the specialist why. The how (open both layers, project wins on conflict, write to the narrowest layer that is true) is the shared **Notebook Protocol** section that ends every `plugin/reviewer-specialists/*.md` body. It has one source, `plugin/skills/notebook-role-reuse/references/notebook-protocol.md`, stamped in by `node scripts/apply-notebook-protocol.mjs`, so do not restate it in the prompt. `buildSpecialistLaunch` in `src/core/reviewer-fanout.ts` builds this header line.
 
    **Claude Code:** spawn each Layer-1 specialist via the `Agent` tool, reading the specialist's `.md` file from `plugin/reviewer-specialists/` as the prompt body, prefixed with the machine-event marker header (see *Structured fan-out* above):
    ```
    # correctness + test: strong model (deep audit) — no model override, inherits the session default
-   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", prompt: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo> (project layer) and code-review (domain layer)\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>" })
    # lint-like (consolidated nits): cheap, fast model — see "Per-lane model" above
-   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
+   Agent({ subagent_type: "general-purpose", model: "sonnet", prompt: "[[kookr-workflow:reviewer-fanout]] role=lint-like workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo> (project layer) and code-review (domain layer)\n<conventions + deadcode (+ docs-drift when active) bodies, with {repoDir} and the diff inlined>" })
    ```
    For Layer-2 architecture agents use `Agent({ subagent_type: "kookr-toolkit:<name>" })`.
 
@@ -398,7 +398,7 @@ Use when the change touches module boundaries, imports, or public APIs:
    ```
    spawn_agent({
      task_name: "review_correctness",
-     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo>\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
+     instructions: "[[kookr-workflow:reviewer-fanout]] role=correctness workflow=reviewer-fanout:<branch>\nNotebook shelf: code-review@<owner>-<repo> (project layer) and code-review (domain layer)\n<contents of plugin/reviewer-specialists/correctness-specialist.md, with {repoDir} and the diff inlined>"
    })
    ```
    For the `lint-like` lane, pass the equivalent **lightweight/cheap model**

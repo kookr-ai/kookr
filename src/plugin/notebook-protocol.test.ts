@@ -6,7 +6,9 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_AGENTS_DIR,
+  DEFAULT_SPECIALISTS_DIR,
   DEFAULT_TEMPLATE,
+  SPECIALIST_SHELF,
   applyToDoc,
   checkAgentDocs,
   findSection,
@@ -15,7 +17,9 @@ import {
 } from '../../scripts/apply-notebook-protocol.mjs';
 
 // Guards the shared "Notebook Protocol" block of the agent definitions
-// (RFC docs/rfc/rfc-notebook-memory-layers.md, D2b / issue #3593).
+// (RFC docs/rfc/rfc-notebook-memory-layers.md, D2b / issue #3593) and, since issue #3598 (slice K5),
+// of the reviewer specialists (plugin/reviewer-specialists/*.md, one shared `code-review` shelf) and the
+// pre-pr-review skill step that launches them.
 //
 // A subagent gets no SessionStart index, so its agent doc is the only place it
 // learns which shelves to open and where a new lesson belongs. That text has one
@@ -30,6 +34,9 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptPath = join(repoRoot, 'scripts', 'apply-notebook-protocol.mjs');
 const template = readFileSync(DEFAULT_TEMPLATE as string, 'utf-8');
 const agentsDir = DEFAULT_AGENTS_DIR as string;
+const specialistsDir = DEFAULT_SPECIALISTS_DIR as string;
+const specialistShelf = SPECIALIST_SHELF as string;
+const specialistFiles = readdirSync(specialistsDir).filter((f) => f.endsWith('.md')).sort();
 
 /** Agent docs that deliberately have no notebook section (a role that never wrote the notebook must not start). */
 const NO_NOTEBOOK = ['product-owner.md', 'user-test-simulator.md'];
@@ -175,6 +182,68 @@ describe('plugin/agents/*.md carry the shared Notebook Protocol', () => {
   }
 });
 
+// ---- the reviewer specialists (issue #3598) ---------------------------------------------
+
+describe('plugin/reviewer-specialists/*.md carry the shared Notebook Protocol for the code-review shelf', () => {
+  test('the specialists share one fixed shelf, code-review', () => {
+    expect(specialistShelf).toBe('code-review');
+    expect(specialistFiles.length).toBeGreaterThan(0);
+  });
+
+  test('every specialist body is matched to the single source (the script finds nothing to change)', () => {
+    const drifted = (checkAgentDocs(specialistsDir, template, specialistShelf) as { file: string; drifted: boolean }[])
+      .filter((r) => r.drifted)
+      .map((r) => r.file);
+    expect(drifted, 'run `node scripts/apply-notebook-protocol.mjs` to resync these docs').toEqual([]);
+  });
+
+  for (const f of specialistFiles) {
+    describe(f, () => {
+      const doc = readFileSync(join(specialistsDir, f), 'utf-8');
+
+      test('has the section (a new specialist cannot dodge the checks) and opens both layers', () => {
+        expect(findSection(doc), `${f} has no Notebook Protocol section`).not.toBeNull();
+        expect(doc).toContain(`nb show ${specialistShelf}\``);
+        expect(doc).toContain(`nb show ${specialistShelf}@$KOOKR_REPO_SLUG`);
+      });
+
+      test('no bare shelf without a project line, no restated nb rule, no old single-shelf wording', () => {
+        expect(layerViolations(doc)).toEqual([]);
+        expect(restatedRules(doc)).toEqual([]);
+        expect(doc).not.toContain('<that shelf>');
+        expect(doc).not.toContain('code-review@<owner>-<repo>');
+      });
+    });
+  }
+});
+
+describe('the pre-pr-review skill hands the specialists both layers and points at the protocol', () => {
+  const skill = readFileSync(join(repoRoot, 'plugin', 'skills', 'pre-pr-review', 'SKILL.md'), 'utf-8');
+  const headerLines = skill.split('\n').filter((l) => l.includes('\\nNotebook shelf:'));
+
+  test('every launch example names the project and the domain shelf', () => {
+    expect(headerLines.length).toBeGreaterThanOrEqual(3);
+    for (const l of headerLines) {
+      expect(l).toContain('code-review@<owner>-<repo> (project layer) and code-review (domain layer)');
+    }
+  });
+
+  test('states the slug caveat and points at the single source instead of restating the rule', () => {
+    expect(skill).toMatch(/only when the diff under review belongs to the session's own repo/);
+    expect(skill).toMatch(/`code-review` alone/);
+    expect(skill).toContain('plugin/skills/notebook-role-reuse/references/notebook-protocol.md');
+    expect(skill).toContain('scripts/apply-notebook-protocol.mjs');
+  });
+
+  test('restates no nb rule and no longer teaches a single shelf', () => {
+    expect(restatedRules(skill)).toEqual([]);
+    // The skill's launch headers legitimately show the `@<owner>-<repo>` placeholder (the parent
+    // substitutes the slug), so only the bare-shelf-without-project-line check applies here.
+    expect(layerViolations(skill).filter((v) => !v.startsWith('legacy "@<owner>-<repo>"'))).toEqual([]);
+    expect(skill).not.toMatch(/fall back to the bare global `code-review`/);
+  });
+});
+
 // ---- the guards fail when they should ---------------------------------------------------
 
 describe('the guards fail on drift (so a green run means something)', () => {
@@ -207,6 +276,28 @@ describe('the guards fail on drift (so a green run means something)', () => {
       // Without --check the script repairs it, and the next check is clean.
       execFileSync('node', [scriptPath, '--agents-dir', dir]);
       expect(spawnSync('node', [scriptPath, '--check', '--agents-dir', dir]).status).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('check mode also covers the specialists: one hand edit fails, and --agents-dir alone leaves them alone', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'nb-protocol-spec-'));
+    try {
+      cpSync(specialistsDir, dir, { recursive: true });
+      const target = join(dir, 'test-specialist.md');
+      writeFileSync(target, readFileSync(target, 'utf-8').replace('about 150 characters', 'at most 120 chars'));
+      const r = spawnSync('node', [scriptPath, '--check', '--agents-dir', agentsDir, '--specialists-dir', dir], {
+        encoding: 'utf-8',
+      });
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain('test-specialist.md');
+      expect(r.stderr).not.toContain('correctness-specialist.md');
+      // A bare --agents-dir (fixture) never reads or rewrites the real specialists.
+      expect(spawnSync('node', [scriptPath, '--check', '--agents-dir', agentsDir], { encoding: 'utf-8' }).status).toBe(0);
+      // The repair rewrites the specialist with the fixed shelf (no frontmatter `name` needed).
+      execFileSync('node', [scriptPath, '--agents-dir', agentsDir, '--specialists-dir', dir]);
+      expect(readFileSync(target, 'utf-8')).toContain('nb show code-review@$KOOKR_REPO_SLUG');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

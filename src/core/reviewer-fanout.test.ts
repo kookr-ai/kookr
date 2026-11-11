@@ -1,10 +1,17 @@
 import { describe, expect, test } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+// The hook-side classifier this module cannot import (it is an ES module under plugin/); used for a parity check only.
+import { classifyShelf } from '../../plugin/hooks/lib/notebook-layers.mjs';
 import {
   REVIEWER_FANOUT_LAUNCH_MARKER,
   REVIEWER_FANOUT_SCHEMA_VERSION,
   REVIEWER_NOTEBOOK_ROLE_BASE,
   deserializeReviewerFanoutWorkflow,
   isReviewerFanoutLaunch,
+  reviewerNotebookLayers,
   reviewerNotebookRole,
   serializeReviewerFanoutWorkflow,
   type ReviewerDiffScope,
@@ -203,12 +210,137 @@ describe('buildSpecialistLaunch', () => {
     expect(launch.prompt).toContain('Notebook shelf: code-review@owner-repo');
     expect(launch.prompt).toContain('nb show code-review@owner-repo');
     expect(launch.prompt).toContain('(correctness)'); // lens tag
+    expect(launch.prompt).toContain('nb show code-review`'); // the domain layer too
   });
 
-  test('falls back to the global code-review role when the workflow has none', () => {
+  test('falls back to the domain code-review shelf when the workflow has none', () => {
     const launch = buildSpecialistLaunch(wf, wf.specialists[0], loader({}));
     expect(launch.prompt).toContain(`Notebook shelf: ${REVIEWER_NOTEBOOK_ROLE_BASE}`);
     expect(launch.prompt).not.toContain('code-review@');
+  });
+});
+
+describe('reviewerNotebookLayers', () => {
+  test('splits a project shelf into its domain and project layers', () => {
+    expect(reviewerNotebookLayers('code-review@owner-repo')).toEqual({
+      domain: 'code-review',
+      project: 'code-review@owner-repo',
+    });
+  });
+
+  test('a bare shelf, or a name with an empty side of the @, has no project layer', () => {
+    expect(reviewerNotebookLayers('code-review')).toEqual({ domain: 'code-review' });
+    expect(reviewerNotebookLayers('code-review@')).toEqual({ domain: 'code-review@' });
+    expect(reviewerNotebookLayers('@owner-repo')).toEqual({ domain: '@owner-repo' });
+  });
+
+  test('splits on the LAST @, as the hook classifier does', () => {
+    expect(reviewerNotebookLayers('a@b@slug')).toEqual({ domain: 'a@b', project: 'a@b@slug' });
+  });
+
+  test.each(['code-review', 'code-review@owner-repo', 'a@b@slug', 'x@', '@x', 'plain', 'Code-Review@Kookr-AI-Kookr'])(
+    'agrees with plugin/hooks/lib/notebook-layers.mjs classifyShelf on %j',
+    (name) => {
+      const hook = classifyShelf(name);
+      const here = reviewerNotebookLayers(name);
+      if (hook.layer === 'project') {
+        expect(here).toEqual({ domain: hook.base, project: name });
+      } else {
+        // domain or malformed: this module has no project layer and keeps the whole name.
+        expect(here.project).toBeUndefined();
+        expect(here.domain).toBe(name);
+      }
+    },
+  );
+});
+
+describe('specialist launch: both notebook layers', () => {
+  const lineOf = (prompt: string): string => prompt.split('\n').find((l) => l.startsWith('Notebook shelf:')) ?? '';
+  const launchFor = (slug?: string | null) => {
+    const wf = createReviewerFanoutWorkflow({
+      roles: ['correctness'],
+      diffScope,
+      ...(slug === undefined ? {} : { notebookRole: reviewerNotebookRole(slug) }),
+    });
+    return buildSpecialistLaunch(wf, wf.specialists[0], loader({ 'correctness-specialist.md': 'BODY {repoDir}' }));
+  };
+
+  test('slug set: names the project and the domain shelf, domain read first', () => {
+    const line = lineOf(launchFor('owner-repo').prompt);
+    expect(line).toContain('code-review@owner-repo (project layer)');
+    expect(line).toContain('code-review (domain layer)');
+    expect(line).toMatch(/`nb show code-review` then `nb show code-review@owner-repo`/);
+    expect(line).toContain('Notebook Protocol');
+    expect(line).toContain('lens (correctness)');
+  });
+
+  test('slug unset: names the domain shelf alone and never builds a name ending in @', () => {
+    for (const unset of [undefined, null, '', '   ']) {
+      const line = lineOf(launchFor(unset).prompt);
+      expect(line).toContain('Notebook shelf: code-review (domain layer only');
+      expect(line).toMatch(/`nb show code-review`/);
+      expect(line).not.toContain('@');
+      expect(line).not.toContain('project layer');
+    }
+  });
+
+  test('the header points at the shared protocol and restates no placement, cap or eviction rule', () => {
+    for (const slug of ['owner-repo', undefined]) {
+      const line = lineOf(launchFor(slug).prompt);
+      expect(line).not.toMatch(/\d+[\s-]*char|[\u2264<]=?\s*\d|evict|fleet-global|narrowest|unless/i);
+    }
+  });
+
+  test('keeps the launch shape existing callers rely on', () => {
+    const launch = launchFor('owner-repo');
+    expect(Object.keys(launch).sort()).toEqual(['label', 'machineEvent', 'prompt', 'role']);
+    expect(launch.role).toBe('correctness');
+    expect(launch.label).toBe('review_correctness');
+    expect(launch.machineEvent).toBe(true);
+    expect(isReviewerFanoutLaunch(launch.prompt)).toBe(true);
+    const lines = launch.prompt.split('\n');
+    expect(lines[0]).toBe(`${REVIEWER_FANOUT_LAUNCH_MARKER} role=correctness workflow=reviewer-fanout:feat/x`);
+    expect(lines[1]).toBe('Repo: /repo/worktree');
+    expect(lines[2]).toBe('Diff scope: origin/main..feat/x (2 changed file(s))');
+    expect(lines[3]).toMatch(/^Notebook shelf: /);
+    // The header is still exactly four lines, then a blank line, then the body.
+    expect(lines[4]).toBe('');
+    expect(lines.slice(5).join('\n')).toBe('BODY /repo/worktree');
+  });
+
+  test('the workflow still serializes with a single notebookRole string (no schema change)', () => {
+    const wf = createReviewerFanoutWorkflow({ roles: ['correctness'], diffScope, notebookRole: 'code-review@owner-repo' });
+    expect(wf.notebookRole).toBe('code-review@owner-repo');
+    expect(wf.schemaVersion).toBe(REVIEWER_FANOUT_SCHEMA_VERSION);
+    expect(deserializeReviewerFanoutWorkflow(serializeReviewerFanoutWorkflow(wf))).toEqual(wf);
+  });
+
+  describe('against a real store whose project shelf does not exist yet', () => {
+    test('both reads the header names succeed (exit 0), the missing one is told so, and nothing is created', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'fanout-nb-'));
+      try {
+        const env = { ...process.env, NB_DIR: dir, NB_GIT_AUTOCOMMIT: '0' };
+        const nb = (args: string[]) =>
+          spawnSync('node', [join(process.cwd(), 'bin', 'nb.js'), ...args], { env, encoding: 'utf-8' });
+        expect(nb(['add', 'code-review', 'throwaway domain lesson for the test']).status).toBe(0);
+        const before = readdirSync(dir).sort();
+
+        const line = lineOf(launchFor('owner-repo').prompt);
+        const shelves = [...line.matchAll(/`nb show ([^`]+)`/g)].map((m) => m[1]);
+        expect(shelves).toEqual(['code-review', 'code-review@owner-repo']);
+
+        const domain = nb(['show', shelves[0]]);
+        expect(domain.status).toBe(0);
+        expect(domain.stdout).toContain('throwaway domain lesson');
+        const project = nb(['show', shelves[1]]);
+        expect(project.status).toBe(0);
+        expect(project.stdout + project.stderr).toContain('no notebook for shelf "code-review@owner-repo"');
+        // A read of a missing shelf must not create the file.
+        expect(readdirSync(dir).sort()).toEqual(before);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
   });
 });
 

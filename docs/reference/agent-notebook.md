@@ -153,8 +153,8 @@ that runs its `.mjs`) run for every session:
 **`KOOKR_REPO_SLUG`.** The launcher exposes the `<owner>-<repo>` slug, derived
 from the repo's remote (`src/adapters/agent-launch-context.ts`) — e.g.
 `github.com/kookr-ai/kookr` → `kookr-ai-kookr`. It is used only so repo-scoped
-shelves, such as the reviewer fan-out's `code-review@<owner>-<repo>`, can be
-addressed. Derivation is fail-open: when no safe slug forms, the variable is
+shelves, such as the reviewer fan-out's project shelf `code-review@<owner>-<repo>`
+(read together with the domain shelf `code-review`), can be addressed. Derivation is fail-open: when no safe slug forms, the variable is
 unset and callers fall back to the unscoped shelf name.
 
 **Placement advisories.** After a successful `nb add`, `bin/nb.js` prints a one-line

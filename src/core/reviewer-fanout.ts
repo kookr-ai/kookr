@@ -18,6 +18,7 @@ import {
   REVIEWER_FANOUT_SCHEMA_VERSION,
   REVIEWER_NOTEBOOK_ROLE_BASE,
   REVIEWER_SPECIALIST_ROLES,
+  reviewerNotebookLayers,
   type ReviewerAggregateReview,
   type ReviewerDiffScope,
   type ReviewerFanoutWorkflow,
@@ -64,9 +65,10 @@ export interface CreateReviewerFanoutInput {
   id?: string;
   /**
    * The shared code-review notebook shelf for this fan-out (e.g.
-   * `code-review@owner-repo`), usually from {@link reviewerNotebookRole}.
-   * Carried onto the workflow and inlined into every specialist launch.
-   * Omit it and launches fall back to the global `code-review`.
+   * `code-review@owner-repo`, the project layer), usually from
+   * {@link reviewerNotebookRole}. Carried onto the workflow and inlined into every
+   * specialist launch, which names it together with its domain layer (`code-review`).
+   * Omit it and launches name the domain shelf `code-review` alone.
    */
   notebookRole?: string;
 }
@@ -105,6 +107,27 @@ export function createReviewerFanoutWorkflow(
     docsDrift,
     ...(input.notebookRole ? { notebookRole: input.notebookRole } : {}),
   };
+}
+
+/**
+ * The `Notebook shelf:` header line of a launch. A fan-out specialist is a
+ * general-purpose subagent that gets no SessionStart index injection, so this line
+ * is the only way it learns the exact shelf names. It names both layers and the
+ * two reads, and leaves the rest (project wins on conflict, write to the narrowest
+ * layer that is true, the slug caveat, votes) to the shared Notebook Protocol
+ * section at the end of the specialist body, so the rule is stated once. Only the
+ * lens tag is added here, because that shared block is the same for every lens.
+ */
+function notebookHeaderLine(notebookRole: string, lens: ReviewerSpecialistRole): string {
+  const { domain, project } = reviewerNotebookLayers(notebookRole);
+  const layers = project
+    ? `${project} (project layer) and ${domain} (domain layer)`
+    : `${domain} (domain layer only: no repo slug)`;
+  const shows = (project ? [domain, project] : [domain]).map((s) => `\`nb show ${s}\``).join(' then ');
+  return (
+    `Notebook shelf: ${layers} — run ${shows} first, and follow the Notebook Protocol ` +
+    `section at the end of your instructions. Tag a new defect class with your lens (${lens}).`
+  );
 }
 
 /** A single specialist launch derived from the workflow. */
@@ -146,12 +169,7 @@ export function buildSpecialistLaunch(
     `Repo: ${workflow.diffScope.repoDir}`,
     `Diff scope: ${workflow.diffScope.baseRef}..${workflow.diffScope.headRef}` +
       ` (${workflow.diffScope.changedFiles.length} changed file(s))`,
-    // Shared code-review shelf: load it before reviewing, maintain it after.
-    // This is the only path by which a fan-out specialist (a general-purpose
-    // subagent that gets no SessionStart index injection) learns which shelf to open.
-    `Notebook shelf: ${notebookRole} — run \`nb show ${notebookRole}\` first and apply its defect classes; ` +
-      `at the end vote +1/-1 on the lessons you used and \`nb add ${notebookRole}\` at most one new ` +
-      `defect class, tagged with your lens (${run.role}).`,
+    notebookHeaderLine(notebookRole, run.role),
   ].join('\n');
 
   return {
