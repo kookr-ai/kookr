@@ -7,10 +7,6 @@
 import type { AgentState } from '../../../shared/protocol.js';
 import { projectLabel, projectColor, findingTypeLabel, findingKindClass } from '../../presentation.js';
 import { groupFindings, groupIdenticalPendingPrompts } from '../../group-findings.js';
-import {
-  MIN_BOTTOM_SECTIONS_HEIGHT,
-  MAX_BOTTOM_SECTIONS_HEIGHT,
-} from '../../store/bottom-sections-height-prefs.js';
 
 export const HEALTHY_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.healthy';
 export const PENDING_SECTION_COLLAPSED_KEY = 'kookr:findingsPanel.pending';
@@ -183,18 +179,4 @@ export function groupHealthyAgents(agents: AgentState[]): { standalone: AgentSta
   }
 
   return { standalone, groups: realGroups };
-}
-
-// Headroom kept above the bottom sections for the findings header + at least a
-// couple of findings, so neither the drag nor a persisted height can grow the
-// bottom area to the point of hiding the list it sits below.
-const BOTTOM_SECTIONS_RESERVED_ABOVE_PX = 160;
-
-/** Live upper bound for the bottom-sections height, given the current panel size. */
-export function maxBottomSectionsHeightFor(panel: HTMLElement | null): number {
-  if (!panel) return MAX_BOTTOM_SECTIONS_HEIGHT;
-  return Math.max(
-    MIN_BOTTOM_SECTIONS_HEIGHT,
-    panel.getBoundingClientRect().height - BOTTOM_SECTIONS_RESERVED_ABOVE_PX,
-  );
 }

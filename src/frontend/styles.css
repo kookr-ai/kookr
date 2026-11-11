@@ -967,49 +967,42 @@ button.topbar-spend:focus-visible {
   gap: 8px;
 }
 
-.bottom-sections {
-  min-height: 76px;
-  max-height: 30%;
-  overflow-y: auto;
-  overflow-x: hidden;
-  flex-shrink: 0;
+/* One list (#3561 slice 3): the state sections (Working, Pending, Snoozed,
+   Finished) sit in the same scroll container as the findings, below them.
+   They keep their full-width rule and padding by cancelling the container's
+   side padding, and never shrink, so the container scrolls instead. */
+.findings-scroll-area > .healthy-section,
+.findings-scroll-area > .pending-section,
+.findings-scroll-area > .snoozed-section,
+.findings-scroll-area > .completed-section {
+  flex: 0 0 auto;
+  margin: 0 -8px;
 }
-/* When the user has dragged the resize handle, an explicit inline height (plus
-   max-height:none) takes over from the default 30% cap. */
-.bottom-sections-resized {
-  flex-shrink: 0;
-}
-.bottom-sections-reserved {
-  border-top: 1px solid var(--border-dim);
-  pointer-events: none;
-}
-/* Drag handle above the bottom sections — a thin, quiet strip that highlights
-   on hover/focus, mirroring the findings-panel width resizer. */
-.bottom-sections-resizer {
-  flex-shrink: 0;
-  height: 9px;
+/* "Needs you" heads the list in every state. It reads like the section
+   toggles below it but is not one: findings are always expanded. */
+.findings-group-header {
+  flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ns-resize;
-  border-top: 1px solid var(--border-dim);
-  touch-action: none;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0 2px 18px;
 }
-.bottom-sections-resizer:hover,
-.bottom-sections-resizer:focus-visible {
-  background: rgba(45, 212, 191, 0.08);
-  outline: none;
+.findings-group-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
-.bottom-sections-grip {
-  width: 34px;
-  height: 3px;
-  border-radius: 4px;
-  background: var(--border);
-  transition: background 0.12s;
-}
-.bottom-sections-resizer:hover .bottom-sections-grip,
-.bottom-sections-resizer:focus-visible .bottom-sections-grip {
-  background: var(--teal);
+.findings-group-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 
 .findings-empty {

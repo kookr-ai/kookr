@@ -1,12 +1,5 @@
-import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useKookrStore } from '../store/useStore.js';
-import {
-  MIN_BOTTOM_SECTIONS_HEIGHT,
-  clampBottomSectionsHeight,
-  loadBottomSectionsHeight,
-  saveBottomSectionsHeight,
-  clearBottomSectionsHeight,
-} from '../store/bottom-sections-height-prefs.js';
 import type { AgentState, ClientMessage } from '../../shared/protocol.js';
 import type { AnomalySeverity } from '../../shared/contracts/anomalies.js';
 import { track } from '../telemetry.js';
@@ -40,7 +33,6 @@ import {
   agentRowKey,
   buildFindingDisplayItems,
   groupHealthyAgents,
-  maxBottomSectionsHeightFor,
   type QueueDeleteTaskHandler,
   type QueueClearCompletedHandler,
 } from './FindingsPanel/shared.js';
@@ -58,7 +50,6 @@ import { SnoozeAllButton } from './FindingsPanel/SnoozeAllButton.js';
 import { ResumeAllButton } from './FindingsPanel/ResumeAllButton.js';
 import { MigrateInterruptedButton } from './FindingsPanel/MigrateInterruptedButton.js';
 import { SectionToggleButton } from './FindingsPanel/SectionToggleButton.js';
-import { BottomSectionsResizer } from './FindingsPanel/BottomSectionsResizer.js';
 
 // Re-export the section-collapsed storage keys so existing importers
 // (App.tsx, the collapsed/keyboard tests) keep resolving them from this module.
@@ -166,7 +157,7 @@ interface Props {
    */
   consumedExpandNonceRef?: { current: number };
   /**
-   * Nonce bumped by the overview "+N more in Healthy" overflow (issue #3406).
+   * Nonce bumped by the overview "+N more in Working" overflow (issue #3406).
    * Each increase expands the Healthy rail (if it was collapsed) and scrolls
    * it into view. Unchanged values, including the default 0, are ignored so a
    * count refresh never pops the section open. Sibling of
@@ -179,6 +170,21 @@ interface Props {
    * per-instance ref.
    */
   consumedExpandHealthyNonceRef?: { current: number };
+}
+
+/** Class names of the state sections that follow the findings in the list. */
+const STATE_SECTION_SELECTOR = '.healthy-section, .pending-section, .snoozed-section, .completed-section';
+
+/**
+ * True while the top of the visible list is still above the first state
+ * section, i.e. the reader is looking at findings rather than at Working,
+ * Pending, Snoozed or Finished rows further down.
+ */
+function isReadingFindings(area: HTMLElement): boolean {
+  const firstSection = area.querySelector<HTMLElement>(STATE_SECTION_SELECTOR);
+  if (!firstSection) return true;
+  const sectionTop = firstSection.getBoundingClientRect().top - area.getBoundingClientRect().top + area.scrollTop;
+  return area.scrollTop < sectionTop;
 }
 
 function persistAllSectionsCollapsed(collapsed: boolean): void {
@@ -239,47 +245,11 @@ export function FindingsPanel({
     && !archiveError
     && !archiveLoading;
   const totalAgents = findings.length + healthy.length + pending.length + visibleCompleted.length + snoozed.length;
+  // One list (#3561 slice 3): findings ("Needs you") and every other state
+  // section share this single scroll container, so the rail fills with tasks
+  // whatever the mix instead of reserving space for findings that are absent.
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const panelRef = useRef<HTMLDivElement>(null);
-  const bottomSectionsRef = useRef<HTMLDivElement>(null);
   const prevFindingIds = useRef<Set<string>>(new Set());
-  // User-set height of the bottom sections (Healthy/Pending/Snoozed/Completed).
-  // `null` means "use the CSS default"; a number is an explicit, persisted px
-  // height set via the drag handle.
-  const [bottomSectionsHeight, setBottomSectionsHeight] = useState<number | null>(() => loadBottomSectionsHeight());
-  const currentBottomHeight = useCallback(
-    () => bottomSectionsHeight ?? bottomSectionsRef.current?.getBoundingClientRect().height ?? MIN_BOTTOM_SECTIONS_HEIGHT,
-    [bottomSectionsHeight],
-  );
-  const commitBottomHeight = useCallback((height: number) => {
-    setBottomSectionsHeight(height);
-    saveBottomSectionsHeight(height);
-  }, []);
-  const resetBottomHeight = useCallback(() => {
-    setBottomSectionsHeight(null);
-    clearBottomSectionsHeight();
-  }, []);
-  // Re-clamp the explicit height to the live panel size on mount and whenever the
-  // panel resizes (window shrink, detail pane opening, etc.). A height persisted
-  // on a tall window must not survive onto a short one and collapse the findings
-  // list — the interactive drag guards this, but the mount/apply path otherwise
-  // would not. Mirrors the findings-panel width resizer's ResizeObserver.
-  useEffect(() => {
-    const panel = panelRef.current;
-    if (!panel || typeof ResizeObserver === 'undefined') return;
-    const reclamp = () => {
-      const liveMax = maxBottomSectionsHeightFor(panel);
-      setBottomSectionsHeight((current) => {
-        if (current == null) return current;
-        const clamped = clampBottomSectionsHeight(current, liveMax);
-        return clamped === current ? current : clamped;
-      });
-    };
-    reclamp();
-    const observer = new ResizeObserver(reclamp);
-    observer.observe(panel);
-    return () => observer.disconnect();
-  }, []);
   const [healthyCollapsed, toggleHealthy, expandHealthy] = usePersistedCollapsed(HEALTHY_SECTION_COLLAPSED_KEY, false);
   const [pendingCollapsed, togglePending, expandPending] = usePersistedCollapsed(PENDING_SECTION_COLLAPSED_KEY, false);
   const [snoozedCollapsed, toggleSnoozed] = usePersistedCollapsed(SNOOZED_SECTION_COLLAPSED_KEY, true);
@@ -310,7 +280,7 @@ export function FindingsPanel({
   const healthySectionRef = useRef<HTMLDivElement>(null);
   const fallbackConsumedExpandHealthyNonceRef = useRef(0);
   const consumedHealthyNonceRef = consumedExpandHealthyNonceRef ?? fallbackConsumedExpandHealthyNonceRef;
-  // Overview "+N more in Healthy" overflow click (#3406): expand immediately,
+  // Overview "+N more in Working" overflow click (#3406): expand immediately,
   // then scroll after paint. Mirrors the Completed effect above, including the
   // StrictMode-safe deferred high-water mark. Healthy defaults to expanded, so
   // most clicks only scroll; `expandHealthy` never collapses the section.
@@ -327,7 +297,7 @@ export function FindingsPanel({
   const [nameQuery, setNameQuery] = useFindingNameFilter();
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const showCompletedSection = visibleCompleted.length > 0;
-  const hasBottomSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || showCompletedSection;
+  const hasStateSections = healthy.length > 0 || pending.length > 0 || snoozed.length > 0 || showCompletedSection;
   const renderedSectionCollapsedStates = [
     ...(healthy.length > 0 ? [healthyCollapsed] : []),
     ...(pending.length > 0 ? [pendingCollapsed] : []),
@@ -345,7 +315,10 @@ export function FindingsPanel({
   }, []);
 
   // Auto-scroll to top when a genuinely new finding arrives (ID-set comparison)
-  // Suppressed during initial load so the user sees oldest-first without jarring scroll
+  // Suppressed during initial load so the user sees oldest-first without jarring scroll.
+  // The list also holds Working/Pending/Snoozed/Finished rows below the findings,
+  // so it only jumps while the reader is still in the findings part; someone
+  // reading a lower section keeps their place.
   useEffect(() => {
     const currentIds = new Set(findings.map(f => f.agentId));
     const hasNew = findings.some(f => !prevFindingIds.current.has(f.agentId));
@@ -353,7 +326,9 @@ export function FindingsPanel({
 
     if (hasNew && !isInitialLoad) {
       const timer = setTimeout(() => {
-        scrollAreaRef.current?.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+        const area = scrollAreaRef.current;
+        if (!area || !isReadingFindings(area)) return;
+        area.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
       }, 150);
       return () => clearTimeout(timer);
     }
@@ -429,10 +404,10 @@ export function FindingsPanel({
   }
 
   return (
-    <div ref={panelRef} className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
+    <div className="findings-panel kookr-tour-target-findings kookr-tour-target-layout" onClick={handlePanelClick}>
       <div className="findings-header">
         <div className="findings-header-main">
-          <span className="findings-header-title">Supervisor Findings</span>
+          <span className="findings-header-title">Tasks</span>
           <span className="findings-header-actions">
             <SnoozeAllButton findings={visibleFindings} send={send} />
             <AbortActiveMenu taskIds={abortActiveTaskIds} send={send} />
@@ -441,7 +416,7 @@ export function FindingsPanel({
               type="button"
               className="findings-collapse-all-button"
               onClick={toggleAllSections}
-              disabled={!hasBottomSections}
+              disabled={!hasStateSections}
               aria-label={allRenderedSectionsCollapsed ? 'Expand all findings sections' : 'Collapse all findings sections'}
             >
               {allRenderedSectionsCollapsed ? 'Expand all' : 'Collapse all'}
@@ -550,6 +525,18 @@ export function FindingsPanel({
             )}
           </div>
         )}
+        {totalAgents > 0 && (
+          // "Needs you" heads the list in every state; with nothing waiting it
+          // takes one line instead of holding space (#3561 slice 3). It is not a
+          // toggle: findings always stay expanded.
+          <div
+            className={`findings-group-header${findings.length === 0 ? ' findings-group-header-empty' : ''}`}
+            data-testid="findings-needs-you-header"
+          >
+            <span className="findings-group-label">Needs you ({findings.length})</span>
+            {findings.length === 0 && <span className="findings-group-hint">nothing waiting</span>}
+          </div>
+        )}
         {nameFilterMatchedNothing && (
           <div className="findings-empty findings-empty-no-match" data-testid="findings-name-filter-empty">
             No findings match “{nameQuery.trim()}”.
@@ -589,144 +576,121 @@ export function FindingsPanel({
             />
           );
         })}
-      </div>
-      {hasBottomSections && (
-        <BottomSectionsResizer
-          panelRef={panelRef}
-          getHeight={currentBottomHeight}
-          onResize={setBottomSectionsHeight}
-          onCommit={commitBottomHeight}
-          onReset={resetBottomHeight}
-        />
-      )}
-      <div
-        ref={bottomSectionsRef}
-        className={`bottom-sections${hasBottomSections ? '' : ' bottom-sections-reserved'}${hasBottomSections && bottomSectionsHeight != null ? ' bottom-sections-resized' : ''}`}
-        aria-hidden={hasBottomSections ? undefined : true}
-        // The explicit height applies only while there are sections to size; an
-        // empty reserved placeholder stays at its thin default, not the last
-        // dragged height.
-        style={hasBottomSections && bottomSectionsHeight != null ? { height: `${bottomSectionsHeight}px`, maxHeight: 'none' } : undefined}
-      >
-        {hasBottomSections && (
-          <>
-          {healthy.length > 0 && (
-            <div className="healthy-section" ref={healthySectionRef}>
-              <SectionToggleButton
-                collapsed={healthyCollapsed}
-                label="Healthy"
-                count={healthy.length}
-                labelClassName="healthy-label"
-                onToggle={toggleHealthy}
-              />
-              {!healthyCollapsed && (
-                <>
-                  {Array.from(groups.entries()).map(([playbookId, agents]) => (
-                    <PlaybookGroup
-                      key={playbookId}
-                      playbookId={playbookId}
-                      agents={agents}
-                      selectedAgentId={selectedAgentId}
-                      selectedTaskId={selectedTaskId}
-                      send={send}
-                      onSchedulePlaybook={onSchedulePlaybook}
-                    />
-                  ))}
-                  {standalone.map((agent) => (
-                    <HealthyRow
-                      key={agentRowKey(agent)}
-                      agent={agent}
-                      selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
-                      send={send}
-                      onSchedulePlaybook={onSchedulePlaybook}
-                    />
-                  ))}
-                </>
-              )}
-            </div>
-          )}
-          {pending.length > 0 && (
-            <div className="pending-section">
-              <SectionToggleButton
-                collapsed={pendingCollapsed}
-                label="Pending"
-                count={pending.length}
-                labelClassName="pending-label"
-                onToggle={togglePending}
-              />
-              {!pendingCollapsed && pending.map((agent) => (
-                <PendingRow
-                  key={agentRowKey(agent)}
-                  agent={agent}
-                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
-                  send={send}
-                  onSchedulePlaybook={onSchedulePlaybook}
-                />
-              ))}
-            </div>
-          )}
-          {snoozed.length > 0 && (
-            <div className="snoozed-section">
-              <div className="snoozed-section-header-row">
-                <SectionToggleButton
-                  collapsed={snoozedCollapsed}
-                  label="Snoozed"
-                  count={snoozed.length}
-                  labelClassName="snoozed-label"
-                  onToggle={toggleSnoozed}
-                />
-                <ResumeAllButton snoozed={snoozed} send={send} />
-              </div>
-              {!snoozedCollapsed && snoozed.map((agent) => (
-                <SnoozedRow
-                  key={agentRowKey(agent)}
-                  agent={agent}
-                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
-                  send={send}
-                />
-              ))}
-            </div>
-          )}
-          {showCompletedSection && (
-            <div className="completed-section" ref={completedSectionRef}>
-              <div className="completed-section-header-row">
-                <SectionToggleButton
-                  collapsed={completedCollapsed}
-                  label="Completed"
-                  count={visibleCompleted.length}
-                  labelClassName="completed-label"
-                  onToggle={toggleCompleted}
-                />
-                <span className="completed-sort-hint">
-                  Newest first{latestCompletedLabel ? ` · latest ${latestCompletedLabel}` : ''}
-                </span>
-                {olderHistoryControl}
-                <ClearCompletedButton
-                  finishedCount={clearCompletedFinishedCount}
-                  terminatedCount={clearCompletedTerminatedCount}
-                  finishedTaskIds={clearCompletedFinishedTaskIds}
-                  terminatedTaskIds={clearCompletedTerminatedTaskIds}
-                  projectId={clearCompletedProjectId}
-                  onQueueClearCompleted={onQueueClearCompleted}
-                />
-              </div>
-              {!completedCollapsed && visibleCompleted.map((agent) => (
-                <CompletedRow
-                  key={agentRowKey(agent)}
-                  agent={agent}
-                  selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
-                  send={send}
-                  pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
-                  onQueueDeleteTask={onQueueDeleteTask}
-                  onSchedulePlaybook={onSchedulePlaybook}
-                />
-              ))}
-            </div>
-          )}
-          </>
+        {healthy.length > 0 && (
+          <div className="healthy-section" ref={healthySectionRef}>
+            <SectionToggleButton
+              collapsed={healthyCollapsed}
+              label="Working"
+              count={healthy.length}
+              labelClassName="healthy-label"
+              onToggle={toggleHealthy}
+            />
+            {!healthyCollapsed && (
+              <>
+                {Array.from(groups.entries()).map(([playbookId, agents]) => (
+                  <PlaybookGroup
+                    key={playbookId}
+                    playbookId={playbookId}
+                    agents={agents}
+                    selectedAgentId={selectedAgentId}
+                    selectedTaskId={selectedTaskId}
+                    send={send}
+                    onSchedulePlaybook={onSchedulePlaybook}
+                  />
+                ))}
+                {standalone.map((agent) => (
+                  <HealthyRow
+                    key={agentRowKey(agent)}
+                    agent={agent}
+                    selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
+                    send={send}
+                    onSchedulePlaybook={onSchedulePlaybook}
+                  />
+                ))}
+              </>
+            )}
+          </div>
         )}
+        {pending.length > 0 && (
+          <div className="pending-section">
+            <SectionToggleButton
+              collapsed={pendingCollapsed}
+              label="Pending"
+              count={pending.length}
+              labelClassName="pending-label"
+              onToggle={togglePending}
+            />
+            {!pendingCollapsed && pending.map((agent) => (
+              <PendingRow
+                key={agentRowKey(agent)}
+                agent={agent}
+                selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
+                send={send}
+                onSchedulePlaybook={onSchedulePlaybook}
+              />
+            ))}
+          </div>
+        )}
+        {snoozed.length > 0 && (
+          <div className="snoozed-section">
+            <div className="snoozed-section-header-row">
+              <SectionToggleButton
+                collapsed={snoozedCollapsed}
+                label="Snoozed"
+                count={snoozed.length}
+                labelClassName="snoozed-label"
+                onToggle={toggleSnoozed}
+              />
+              <ResumeAllButton snoozed={snoozed} send={send} />
+            </div>
+            {!snoozedCollapsed && snoozed.map((agent) => (
+              <SnoozedRow
+                key={agentRowKey(agent)}
+                agent={agent}
+                selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
+                send={send}
+              />
+            ))}
+          </div>
+        )}
+        {showCompletedSection && (
+          <div className="completed-section" ref={completedSectionRef}>
+            <div className="completed-section-header-row">
+              <SectionToggleButton
+                collapsed={completedCollapsed}
+                label="Finished"
+                count={visibleCompleted.length}
+                labelClassName="completed-label"
+                onToggle={toggleCompleted}
+              />
+              <span className="completed-sort-hint">
+                Newest first{latestCompletedLabel ? ` · latest ${latestCompletedLabel}` : ''}
+              </span>
+              {olderHistoryControl}
+              <ClearCompletedButton
+                finishedCount={clearCompletedFinishedCount}
+                terminatedCount={clearCompletedTerminatedCount}
+                finishedTaskIds={clearCompletedFinishedTaskIds}
+                terminatedTaskIds={clearCompletedTerminatedTaskIds}
+                projectId={clearCompletedProjectId}
+                onQueueClearCompleted={onQueueClearCompleted}
+              />
+            </div>
+            {!completedCollapsed && visibleCompleted.map((agent) => (
+              <CompletedRow
+                key={agentRowKey(agent)}
+                agent={agent}
+                selected={isSelectedAgent(agent, selectedAgentId, selectedTaskId)}
+                send={send}
+                pendingDeletion={Boolean(agent.taskId && pendingDeletionTaskIds.has(agent.taskId))}
+                onQueueDeleteTask={onQueueDeleteTask}
+                onSchedulePlaybook={onSchedulePlaybook}
+              />
+            ))}
+          </div>
+        )}
+        {!showCompletedSection && olderHistoryControl}
       </div>
-      {!showCompletedSection && olderHistoryControl}
       <ScheduleSection schedules={useKookrStore((s) => s.schedules)} />
     </div>
   );

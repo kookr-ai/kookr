@@ -195,14 +195,14 @@ interface Props {
    */
   onOpenCostComparison?: () => void;
   /**
-   * Expand and scroll the Completed rail when the "+N more in Completed"
+   * Expand and scroll the Completed rail when the "+N more in Finished"
    * overflow is clicked (issue #3392). Same opener as the status-bar 24h
    * completed chip. Optional so isolated overview tests keep today's
    * non-interactive overflow line.
    */
   onExpandCompleted?: () => void;
   /**
-   * Expand and scroll the Healthy rail when the "+N more in Healthy"
+   * Expand and scroll the Healthy rail when the "+N more in Working"
    * overflow is clicked (issue #3406). Sibling of {@link onExpandCompleted}:
    * bumps an App-owned nonce so the app expands Healthy if it was collapsed
    * and scrolls that section into view. Optional so isolated overview tests
@@ -415,14 +415,14 @@ export function OverviewEmptyState({
                   type="button"
                   className="overview-waiting-more"
                   data-testid="overview-running-overflow"
-                  aria-label={`+${runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy. Show healthy agents`}
+                  aria-label={`+${runningCount - OVERVIEW_RUNNING_LIMIT} more in Working. Show working tasks`}
                   onClick={onExpandHealthy}
                 >
-                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
+                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Working
                 </button>
               ) : (
                 <p className="overview-waiting-more">
-                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Healthy
+                  +{runningCount - OVERVIEW_RUNNING_LIMIT} more in Working
                 </p>
               )
             )}
@@ -485,14 +485,14 @@ export function OverviewEmptyState({
                   type="button"
                   className="overview-waiting-more"
                   data-testid="overview-completed-overflow"
-                  aria-label={`+${completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed. Show completed tasks`}
+                  aria-label={`+${completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Finished. Show finished tasks`}
                   onClick={onExpandCompleted}
                 >
-                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
+                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Finished
                 </button>
               ) : (
                 <p className="overview-waiting-more">
-                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Completed
+                  +{completed.length - OVERVIEW_RECENT_COMPLETED_LIMIT} more in Finished
                 </p>
               )
             )}

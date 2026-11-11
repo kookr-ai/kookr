@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * App wiring for the overview "+N more in Healthy" overflow (issue #3406).
+ * App wiring for the overview "+N more in Working" overflow (issue #3406).
  * OverviewEmptyState tests inject the opener; this file checks that App
  * threads expandHealthyRail through DetailPanel so clicking the overflow
  * bumps the FindingsPanel healthy-expand nonce — the sibling of the completed
@@ -161,7 +161,7 @@ describe('App overview running overflow wiring (issue #3406)', () => {
     const before = findingsPanelProps.current?.expandHealthyNonce ?? 0;
     const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-running-overflow"]');
     expect(overflow?.tagName).toBe('BUTTON');
-    expect(overflow?.textContent).toBe('+1 more in Healthy');
+    expect(overflow?.textContent).toBe('+1 more in Working');
 
     await act(async () => {
       overflow!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -180,6 +180,6 @@ describe('App overview running overflow wiring (issue #3406)', () => {
     await flush();
 
     expect(container.querySelector('[data-testid="overview-running-overflow"]')).toBeNull();
-    expect(container.textContent).not.toContain('more in Healthy');
+    expect(container.textContent).not.toContain('more in Working');
   });
 });

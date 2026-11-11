@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * App wiring for the overview "+N more in Completed" overflow (issue #3392).
+ * App wiring for the overview "+N more in Finished" overflow (issue #3392).
  * OverviewEmptyState tests inject the opener; this file checks that App
  * threads expandCompletedRail through DetailPanel so clicking the overflow
  * bumps the FindingsPanel expand nonce — the same opener the status-bar
@@ -162,7 +162,7 @@ describe('App overview completed overflow wiring (issue #3392)', () => {
     const before = findingsPanelProps.current?.expandCompletedNonce ?? 0;
     const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-completed-overflow"]');
     expect(overflow?.tagName).toBe('BUTTON');
-    expect(overflow?.textContent).toBe('+1 more in Completed');
+    expect(overflow?.textContent).toBe('+1 more in Finished');
 
     await act(async () => {
       overflow!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -202,7 +202,7 @@ describe('App overview completed overflow wiring (issue #3392)', () => {
     await flush();
 
     expect(container.querySelector('[data-testid="overview-completed-overflow"]')).toBeNull();
-    expect(container.textContent).not.toContain('more in Completed');
+    expect(container.textContent).not.toContain('more in Finished');
     expect(container.querySelector('[data-testid="completed-24h-chip"]')).not.toBeNull();
   });
 });

@@ -386,7 +386,7 @@ export function App() {
   // task; the modal's own state lives there alongside the header Share button.
   const [shareTaskRequest, setShareTaskRequest] = useState(0);
   // Nonce bumped by the status-bar 24h completed chip (#3333) and the
-  // overview "+N more in Completed" overflow (#3392). FindingsPanel
+  // overview "+N more in Finished" overflow (#3392). FindingsPanel
   // watches it to expand the Completed rail and scroll it into view; both
   // controls stay a no-op in isolated tests that omit the opener. Count
   // refreshes do not bump this, so the section stays collapsed until the
@@ -399,7 +399,7 @@ export function App() {
     setMobileTab('findings');
     setExpandCompletedNonce((n) => n + 1);
   }, []);
-  // Sibling of expandCompletedRail for the overview "+N more in Healthy"
+  // Sibling of expandCompletedRail for the overview "+N more in Working"
   // overflow (#3406). FindingsPanel watches this nonce to expand the Healthy
   // rail (if collapsed) and scroll it into view; the control is a no-op in
   // isolated tests that omit the opener. Switch to the findings tab first so
