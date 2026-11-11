@@ -95,11 +95,20 @@ nb describe <new-shelf> "<the situation in which a future agent should open this
 Keep it a situation ("reviewing a diff for logic bugs"), not a summary of its
 lessons. This is what keeps the index selectable as it grows.
 
-**Scope rule.** Resolution is exact, and `code-review` and `code-review@owner-repo`
-are different files. Pick one per spawn:
-- repo-specific lessons → `<shelf>@<owner>-<repo>` (use `KOOKR_REPO_SLUG` as the
-  `@` suffix — it is already `<owner>-<repo>`)
-- portable, cross-repo lessons → the unscoped `<shelf>`
+**Scope rule: open both layers, write to the narrowest layer that is true.**
+Resolution is exact, and `code-review` and `code-review@owner-repo` are different
+files, each a *layer*: the project shelf `<shelf>@<owner>-<repo>` holds lessons
+true only in that repo (use `KOOKR_REPO_SLUG` as the `@` suffix — it is already
+`<owner>-<repo>`), and the unscoped domain shelf `<shelf>` holds lessons true in
+any repo.
+- **Read both** when the task works in the session's own repo: `nb show <shelf>`,
+  then `nb show <shelf>@$KOOKR_REPO_SLUG` if it exists. The project shelf wins on
+  conflict. A missing shelf is fine.
+- **Write to the narrowest layer that is true:** the project shelf, unless the
+  lesson would be true in another repo, then the unscoped shelf. Never write
+  `fleet-global` directly; it is filled by promotion.
+- **Another repo?** A subagent inherits its parent's `KOOKR_REPO_SLUG` even when
+  its task is in a different repo. Then skip the project read and write, and say so.
 
 ## 2. Put the ritual in the spawn prompt
 
@@ -107,20 +116,29 @@ Drop this block into the prompt of any domain agent you spawn, filling in the on
 shelf you chose:
 
 ```
-You work with Agent Notebook shelf **<SHELF>**.
-1. Start: run `nb show <SHELF>` and apply its lessons (it may be empty — fine).
+You work with Agent Notebook shelf **<SHELF>** (domain layer) and, when your task
+works in the session's own repo, its project layer <SHELF>@$KOOKR_REPO_SLUG.
+1. Start: run `nb show <SHELF>` and, if KOOKR_REPO_SLUG is set,
+   `nb show <SHELF>@$KOOKR_REPO_SLUG`. Apply their lessons (project wins on
+   conflict; a missing shelf is fine).
 2. <the actual task>
-3. Before you return: `nb vote <SHELF> "<id>" +1` the lessons you used, and
-   `nb add <SHELF> "<one reusable lesson, ideally ≤120 chars, hard cap 200>"` if you confirmed something
-   a future agent on this shelf would want. Do this BEFORE composing your final
-   message — the agent that spawned you only sees your last message, so the
+3. Before you return: `nb vote <shelf> <id1,id2> +1` the lessons you used, and
+   `nb add <SHELF>@$KOOKR_REPO_SLUG "<one reusable lesson, about 150 chars>"` if you
+   confirmed something a future agent would want (use the unscoped <SHELF> when the
+   lesson is true in any repo; never fleet-global). Do this BEFORE composing your
+   final message — the agent that spawned you only sees your last message, so the
    notebook write must already be done when you return.
 ```
 
-For a **named** agent (e.g. `patch-author`) the shelf is fixed by its definition,
-so you need only confirm the scope suffix. For a **general-purpose** agent doing
-domain work, name the shelf explicitly. For throwaway work (a one-shot search),
-attach no shelf at all — not everything deserves a notebook.
+For a **named** agent (e.g. `patch-author`) the shelf and the full ritual are fixed
+by its definition: every `plugin/agents/*.md` that has a notebook section carries the
+same **Notebook Protocol** block, so you need not paste the block above. That block
+has one source, `references/notebook-protocol.md` in this skill, stamped into the
+agent docs by `node scripts/apply-notebook-protocol.mjs` (a test fails when a doc
+drifts). Edit the source, run the script, never edit the block in one agent doc.
+For a **general-purpose** agent doing domain work, name the shelf explicitly. For
+throwaway work (a one-shot search), attach no shelf at all — not everything
+deserves a notebook.
 
 ## 3. Why "before you return" matters
 
@@ -137,7 +155,7 @@ maintenance chatter.)
   empty near-duplicate that splits lessons across two files.
 - **Scope mismatch** — writing a repo-specific lesson to the bare `<shelf>` (or a
   portable one to `<shelf>@repo`), so the agent that needs it looks in the other
-  file and sees nothing.
+  file and sees nothing. Open both layers so a lesson in either is found.
 - **Bare `nb add`** — the shelf is a required argument; there is no implicit
   "current shelf" for a subagent.
 - **Notebook on throwaway work** — a one-grep agent has no reusable lesson;

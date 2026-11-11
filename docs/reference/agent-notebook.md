@@ -46,7 +46,7 @@ nb --version                            print the tool name
 
 - `add` / `merge` / `rm` / `split` / `describe` accept an optional `--reason <code>` (+ `--note`); `vote` does not.
 - `<role>` is a shelf name like `patch-author`. For knowledge that is
-  repo-specific, scope it: `patch-author@<owner>-<repo>`.
+  repo-specific, scope it: `patch-author@<owner>-<repo>` (the project layer; the unscoped name is the domain layer).
 - `<id>` is the short **stable** token `nb show` prints at the start of each line
   (content-derived, so it does not shift when other lessons are added or
   reordered). Pass it — or a unique prefix of it — to `vote`/`rm`/`merge`. A
@@ -165,15 +165,36 @@ layer, or into another repo's shelf, visible to the agent that wrote it. The slu
 check is skipped when `KOOKR_REPO_SLUG` is unset.
 
 Specialized subagents invoked via the `Agent` tool get no SessionStart
-injection (they are subagents), so each agent definition instructs the same
-`nb show <name>` / vote / `rm` / `add` / `merge` steps explicitly. **Every
-specialized agent** carries a Notebook Protocol: review subagents keep a
-cross-repo methodology shelf; task-role and repo-analysis agents scope theirs
-per repo.
+injection (they are subagents), so each agent definition carries the same
+**Notebook Protocol** block and runs the steps itself. **Every specialized agent
+that has a notebook section** (23 of the 25 `plugin/agents/*.md`; `product-owner`
+and `user-test-simulator` have none and write nothing) opens both layers of its
+shelf: `nb show <shelf>`, then `nb show <shelf>@$KOOKR_REPO_SLUG` when the slug is
+set and the task works in the session's own repo (the project layer wins on
+conflict). At the end it batch-votes by id, removes with
+`nb rm … --reason wrong|obsolete`, and adds at most one lesson (about 150
+characters) to the project shelf unless the lesson is true in another repo, then
+to the unscoped shelf. It never writes `fleet-global`. This is the same placement
+rule the retrospective nudge above states.
+
+Two limits are accepted. (1) A subagent inherits its parent's `KOOKR_REPO_SLUG`
+even when its task is in another repo, so the block tells it to use the slug only
+when the task works in the session's own repo. (2) The block reads the literal
+name `<shelf>@$KOOKR_REPO_SLUG`, so a shelf written earlier under a different
+spelling of the repo's slug (a legacy slug) is not read until it is migrated to
+the current slug. Opening a project shelf that does not exist is harmless: `nb show`
+exits 0 and creates nothing, though `nb stats` may list it as shown but never voted.
+
+The block has one source, `plugin/skills/notebook-role-reuse/references/notebook-protocol.md`.
+`node scripts/apply-notebook-protocol.mjs` copies it into each agent doc (with the
+agent's own shelf name), and `src/plugin/notebook-protocol.test.ts` fails when a
+doc differs from the source, hardcodes a bare shelf with no project line, or
+restates `nb`'s own limits. Edit the source and rerun the script; do not edit the
+block inside an agent doc.
 
 ## The task-specialist agents
 
-The four **task specialists** each own a repo-scoped shelf:
+The four **task specialists** each own a shelf, read at both layers:
 
 | Agent (shelf) | Does one thing |
 |---|---|
@@ -186,12 +207,12 @@ The main agent stays the orchestrator: it delegates a unit of work to the
 specialist that owns it, and composes the result.
 
 Beyond these four, **every specialized review subagent also carries a shelf**
-(see each `plugin/agents/*.md` Notebook Protocol). Review/critic agents
-(`boundary-critic`, `design-minimalist`, `failure-mode-analyst`, …) keep a single
-cross-repo **methodology** notebook; repo-analysis agents (`dependency-graph-analyzer`,
-`architecture-drift-detector`, `api-surface-auditor`, `state-machine-verifier`,
-`module-interface-auditor`, `architecture-smell-scanner`, `test-fixer`) scope
-theirs per repo. The top-level session reads the `nb list` index and opens
+(see each `plugin/agents/*.md` Notebook Protocol). All of them use the same two
+layers: the domain shelf named after the agent (`boundary-critic`,
+`design-minimalist`, `failure-mode-analyst`, …) for cross-repo methodology, and the
+project shelf `<agent>@$KOOKR_REPO_SLUG` for facts true only in one repo
+(`dependency-graph-analyzer`, `architecture-drift-detector`, `test-fixer`, … mostly
+write the project layer). The top-level session reads the `nb list` index and opens
 whichever shelves fit its task.
 
 ## Tuning (env)
@@ -206,7 +227,7 @@ All optional; defaults match the RFC.
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
 | `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |
-| `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to keep new lessons ≤120 chars — a style floor well under this ceiling. |
+| `NB_MAX_CHARS` | `200` | hard cap per lesson (over-long adds are rejected, not truncated). Agents are *instructed* to aim for about 150 characters — a style target under this ceiling. |
 | `NB_USAGE_RING` | `5000` | max lines in the usage log ring |
 | `NB_LOOP_N` / `NB_LOOP_WINDOW_S` | `10` / `120` | loop anomaly: N calls within S seconds |
 | `NB_SILENT_H` | `48` | went-silent anomaly: hours since last use |
