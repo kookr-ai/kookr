@@ -47,6 +47,7 @@ function envWith(extra: Record<string, string | undefined>, path: string): NodeJ
   const env: NodeJS.ProcessEnv = { ...process.env, NB_DIR: join(work, 'nbdir'), PATH: path };
   delete env.KOOKR_REPO_SLUG;
   delete env.KOOKR_NB_LAYERS;
+  delete env.NB_RETRO_DISABLED; // would make the retro hook exit 0 in the placement-parity test
   for (const [k, v] of Object.entries(extra)) {
     if (v === undefined) delete env[k];
     else env[k] = v;
@@ -223,6 +224,7 @@ describe('nb-inject layered index — when the flat index is shown instead', () 
     ['KOOKR_REPO_SLUG empty', { KOOKR_REPO_SLUG: '' }],
     ['KOOKR_REPO_SLUG only whitespace', { KOOKR_REPO_SLUG: '   ' }],
     ['kill switch KOOKR_NB_LAYERS=0', { KOOKR_REPO_SLUG: 'mine', KOOKR_NB_LAYERS: '0' }],
+    ['kill switch with surrounding spaces', { KOOKR_REPO_SLUG: 'mine', KOOKR_NB_LAYERS: ' 0 ' }],
   ])('%s -> today\'s flat, capped index (no grouping, nothing hidden)', (_name, env) => {
     const r = inject([{ shelf: 'a@mine' }], env, { flatOut: flat });
     expect(r.code).toBe(0);
@@ -242,6 +244,7 @@ describe('nb-inject layered index — when the flat index is shown instead', () 
 
   test('`nb list --json` output that is not the expected JSON falls back to the flat index', () => {
     const r = inject('this is not json', { KOOKR_REPO_SLUG: 'mine' }, { flatOut: flat });
+    expect(r.calls.trim().split('\n')).toEqual(['list --json --limit 1000', 'list --limit 1000']); // tried layered first
     expect(r.out).toContain('other@theirs');
     expect(r.out).not.toContain('hidden');
     // JSON of the wrong shape too
@@ -338,6 +341,14 @@ describe('nb-inject layered index — the 60-row / 8 KB cap', () => {
     expect(shown).toBeLessThan(100);
     expect(r.out).toContain(`${110 - 10 - shown} more shelves not shown`);
     for (const row of r.out.split('\n').filter((l) => l.startsWith('  '))) expect(row.endsWith(wide)).toBe(true); // whole rows
+  });
+
+  test('a project group larger than 8 KB is still shown whole (only the other layers are byte-capped)', () => {
+    const wide = 'é'.repeat(80);
+    const r = inject([...project(70, wide), ...domain(5), { shelf: 'fleet-global' }], { KOOKR_REPO_SLUG: 'mine' });
+    expect(Buffer.byteLength(index(r.out))).toBeGreaterThan(8 * 1024);
+    expect(group(r.out, PROJECT)).toHaveLength(70);
+    expect(group(r.out, DOMAIN)).toHaveLength(0);
   });
 
   test('a store under both caps shows no "more" tail', () => {

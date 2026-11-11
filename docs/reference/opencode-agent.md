@@ -244,9 +244,12 @@ lessons (about 65% of the cap) and reserves the rest for the most recently added
 ones (the tail of the score-ordered listing, skipping non-positive scores), and
 ends with a marker naming the omitted count and telling the worker to run
 `nb show <shelf>` for the rest. The notebook index that
-`nb-inject.sh` injects at SessionStart stays intentionally global (shelf names
-and descriptions only), so a worker can still discover other shelves, but only
-its own shelves' lesson text is preloaded. The profiles also carry a short `kb`
+`nb-inject.sh` injects at SessionStart is layered when `KOOKR_REPO_SLUG` is set
+(this repo's shelves, then domain shelves, then `fleet-global`, with other repos'
+shelves hidden behind a count; see `docs/reference/agent-notebook.md`). It carries
+shelf names and descriptions only, and `nb list` still shows every shelf, so a
+worker can still discover other shelves, but only its own shelves' lesson text is
+preloaded. The profiles also carry a short `kb`
 usage block (one focused `kb search "<question>" --kb=<name>`, tolerate
 failure: `kb search` needs an embedding provider and an initialised index).
 

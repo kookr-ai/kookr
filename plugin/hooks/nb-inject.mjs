@@ -4,11 +4,12 @@
 // spending a call.
 //
 // This follows the published agent-notebook harness recipe
-// (examples/hooks/claude-code/nb-session-start.sh): inject `nb list` — the index
-// of every notebook (shelf) with its one-line "open me when…" description — and
+// (examples/hooks/claude-code/nb-session-start.sh): inject the `nb list`
+// index — each notebook (shelf) with its one-line "open me when…" description — and
 // let the agent open the shelves that fit its task. It is deliberately
-// role-agnostic: there is no NB_ROLE and nothing guesses a per-repo shelf. The
-// same injection runs for every session, so a lesson the agent would never
+// role-agnostic: there is no NB_ROLE and the hook never opens a shelf for the agent.
+// With a repo slug it only groups and filters the index by shelf name (see "Layered
+// view" below). The same injection runs for every session, so a lesson the agent would never
 // think to search for still reaches it by meeting a shelf's trigger in the index.
 //
 // The index is small by construction (one line per shelf), so we inject it directly
@@ -177,8 +178,7 @@ function layeredIndex(raw, slug) {
     else if (c.layer === 'project') {
       if (c.canonical === mine) project.push(r);
       else hidden++;
-    }
-    else malformed++; // an `@` with an empty base or slug belongs to no layer
+    } else malformed++; // an `@` with an empty base or slug belongs to no layer
   }
 
   const width = (group) => ({
@@ -191,21 +191,24 @@ function layeredIndex(raw, slug) {
   };
 
   const noun = (n) => `${n} shel${n === 1 ? 'f' : 'ves'}`;
-  const hiddenLine = project.length
-    ? `${noun(hidden)} for other projects hidden (slug: ${slug}); \`nb list\` shows all`
-    : `No shelf is scoped to this project yet (slug: ${slug}); ${noun(hidden)} for other projects hidden; \`nb list\` shows all`;
-  const fixed = [
-    `Project shelves — true only in this repo (${slug}):`,
-    `Domain shelves — true in any repo:`,
-    `Global — host-wide facts, written only by promotion:`,
-    hiddenLine + (malformed ? `; ${noun(malformed)} with a malformed name skipped` : ''),
-    'Precedence: when shelves disagree, the more specific layer wins: project > domain > global.',
+  const projectTitle = `Project shelves — true only in this repo (${slug}):`;
+  const domainTitle = 'Domain shelves — true in any repo:';
+  const globalTitle = 'Global — host-wide facts, written only by promotion:';
+  const hiddenLine =
+    (project.length
+      ? `${noun(hidden)} for other projects hidden (slug: ${slug}); \`nb list\` shows all`
+      : `No shelf is scoped to this project yet (slug: ${slug}); ${noun(hidden)} for other projects hidden; \`nb list\` shows all`) +
+    (malformed ? `; ${noun(malformed)} with a malformed name skipped` : '');
+  const precedence = 'Precedence: when shelves disagree, the more specific layer wins: project > domain > global.';
+  const placement =
     `Placement: add to <situation>@<slug> (slug = $KOOKR_REPO_SLUG (here: ${slug})) unless the lesson ` +
-      `would be true in another repo, then add it to the unscoped <situation> shelf instead. ` +
-      `Never write fleet-global directly.`,
-    `agent-notebook notebooks — ${rows.length} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`,
-    `… ${rows.length} more shelves not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`,
-  ];
+    `would be true in another repo, then add it to the unscoped <situation> shelf instead. ` +
+    `Never write fleet-global directly.`;
+  const header = `agent-notebook notebooks — ${rows.length} of ${rows.length} in ${listing.dir ?? 'the notebook store'}`;
+  const moreTail = `… ${rows.length} more shelves not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`;
+  // Bytes every line that is always printed takes, plus the header and the "more" tail
+  // at their longest, so the rows below can fill exactly what is left of the budget.
+  const fixed = [projectTitle, domainTitle, globalTitle, hiddenLine, precedence, placement, header, moreTail];
   let used = fixed.reduce((n, l) => n + Buffer.byteLength(l) + 1, 0);
 
   const projectRows = render(project);
@@ -230,11 +233,11 @@ function layeredIndex(raw, slug) {
   const section = (title, lines) => {
     if (lines.length) out.push(title, ...lines);
   };
-  section(fixed[0], projectRows);
-  section(fixed[1], domainRows);
-  section(fixed[2], globalRows);
+  section(projectTitle, projectRows);
+  section(domainTitle, domainRows);
+  section(globalTitle, globalRows);
   if (cut > 0) out.push(`… ${cut} more shel${cut === 1 ? 'f' : 'ves'} not shown: run \`nb list --limit 1000\` (or \`nb list <prefix>\`) to see them`);
-  out.push(fixed[3], fixed[4], fixed[5]);
+  out.push(hiddenLine, precedence, placement);
   return out.join('\n');
 }
 

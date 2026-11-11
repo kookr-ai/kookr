@@ -153,9 +153,12 @@ that runs its `.mjs`) run for every session:
     `KOOKR_NB_LAYERS=0` (the kill switch), if the layers module cannot be
     loaded, or if `nb list --json` answers in a shape the hook does not
     recognise, it prints the flat `nb list --limit 1000` index instead.
-  - **Bounds.** Both views are capped at 60 rows / 8 KB. In the layered view the
-    project group is never truncated; the domain and global rows fill what is left
-    (`fleet-global` first), with a "N more shelves not shown" tail.
+  - **Bounds.** The flat view is capped at 60 rows / 8 KB (richest shelves first,
+    with a "N more shelves not shown" tail). The layered view applies the same cap
+    to everything except the project group: this repo's own shelves are never
+    truncated (they are the ones most likely to apply, and a repo has few), so a
+    repo with more than 60 project shelves would exceed the cap. The domain and
+    global rows fill what is left (`fleet-global` first), with the same tail.
   - **Failure.** If `nb list` times out or exits non-zero the hook prints a
     one-line `WARNING` on stdout, so a broken store is not mistaken for an empty
     one; a missing `nb` stays silent. It always exits 0.

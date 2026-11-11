@@ -148,7 +148,7 @@ export function classifyShelf(name, aliases = loadSlugAliases()) {
   };
 }
 
-/** `<base>@<slug>`. Callers still check {@link MAX_SHELF_NAME_LENGTH}. Used by tests. */
+/** `<base>@<slug>`. Callers still check {@link MAX_SHELF_NAME_LENGTH}. Used by scripts/migrate-notebook-slugs.mjs and tests. */
 export function projectShelfName(base, slug) {
   return `${base}@${slug}`;
 }

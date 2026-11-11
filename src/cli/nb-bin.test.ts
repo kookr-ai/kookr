@@ -381,10 +381,10 @@ describe('bin/nb.js — the advisory classifies shelves with the shared layers m
     });
 
     test('module missing: nb add still succeeds and the advisory falls back to the first-@, case-sensitive check', () => {
-      const r = nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'a'], 'kookr-ai-kookr', shim());
+      const r = nbErr(['add', 'Code-Review@Kookr-AI-Kookr', 'lesson-xyz'], 'kookr-ai-kookr', shim());
       expect(r.code).toBe(0); // the nb call is unaffected
       expect(r.err).toMatch(/advisory: shelf Code-Review@Kookr-AI-Kookr is scoped to 'Kookr-AI-Kookr'/); // old, case-sensitive rule
-      expect(nb(['show', 'Code-Review@Kookr-AI-Kookr']).out).toContain('a');
+      expect(nb(['show', 'Code-Review@Kookr-AI-Kookr']).out).toContain('lesson-xyz');
       expect(nbErr(['add', 'x@mine', 'b'], 'mine', shim()).err).toBe(''); // own shelf is still silent
       expect(nbErr(['show', 'x@mine'], 'mine', shim()).code).toBe(0); // reads are untouched
     });
