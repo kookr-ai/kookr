@@ -1200,7 +1200,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                     type="button"
                     className={`pane-tab ${rightPane === 'terminal' ? 'active' : ''}`}
                     aria-pressed={rightPane === 'terminal'}
-                    onClick={() => setRightPane('terminal')}
+                    onClick={() => {
+                      // Choosing the terminal here makes the Terminal tab the
+                      // operator's own pick, so closing the diff later must not
+                      // jump back to the tab the diff was opened from (#3618).
+                      tabBeforeRightPaneRef.current = null;
+                      setRightPane('terminal');
+                    }}
                   >
                     Terminal
                   </button>
