@@ -98,7 +98,7 @@ import {
   storeAtTag,
   tagStore,
 } from './lib/nb-client.mjs';
-import { applyMove, applyRemove, cloneStore, decideStep, entryId, exactKey, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
+import { applyMove, applyRemove, baselineScores, cloneBaselines, cloneStore, decideStep, entryId, exactKey, maxLines, noteMoved, shelfNameProblem } from './lib/nb-sim.mjs';
 
 export const DEFAULT_TAG = 'pre-lesson-promotion';
 export const DEFAULT_THRESHOLD = 0.6;
@@ -252,7 +252,8 @@ export function destinationFor(group, toGlobal) {
  * Build the step list for the groups an `--apply` would act on, simulating them
  * in order against `store` (mutated). `selected` is a Set of group ids.
  */
-export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false, floors = fullShelfFloors(store, cap) }) {
+export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false, baselines = baselineScores(store) }) {
+  const bars = cloneBaselines(baselines);
   const steps = [];
   // Highest-scored groups first, so a strong lesson is admitted before weaker ones can crowd a full shelf.
   const ordered = [...groups].sort((a, b) => b.best.score - a.best.score || (a.id < b.id ? -1 : 1));
@@ -272,9 +273,10 @@ export function planPromotion({ groups, selected, toGlobal, store, cap = maxLine
     if (dest.problem) {
       step.decision = { action: 'skip', reason: 'bad-destination', detail: dest.problem, prediction: {} };
     } else {
-      step.decision = decideStep(store, step, { cap, forceLow, floors });
+      step.decision = decideStep(store, step, { cap, forceLow, baselines: bars });
       if (chosen && step.decision.action === 'move') {
         applyMove(store, step.from, step.to, step.id, cap);
+        noteMoved(bars, step.to, step.id, step.score);
         // An exact group's other copies go only after the move; model it so
         // later steps see the shelves as they will be.
         for (const m of step.removes) applyRemove(store, m.shelf, m.id);
@@ -331,7 +333,7 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
     } else if (d.reason === 'duplicate') {
       log(`    SKIP: ${step.to} already holds this lesson (${d.prediction.collidedId}); nb would refuse ("skipped", exit 0). Nothing is removed; decide by hand.`);
     } else if (d.reason === 'low-score') {
-      log(`    SKIP: ${fmtScore(step.score)} does not score above the full target's lowest lesson (${fmtScore(d.prediction.targetMin)}); it would evict a lesson that is no worse. --force-low overrides.`);
+      log(`    SKIP: ${fmtScore(step.score)} does not score above the full target's bar (${fmtScore(d.bar)}, the lowest un-aged score there); it would evict a lesson that is no worse. --force-low overrides.`);
     } else if (d.reason === 'over-cap') {
       log(`    SKIP: ${step.to} already holds more than ${cap} lessons, so this move would evict ${d.prediction.evictedAll.length} of them at once. --force-low overrides.`);
     } else if (d.reason === 'bad-destination') {
@@ -411,9 +413,10 @@ export function runPromotion({
   // run): the tag's tree is then the baseline, so the aging its moves caused cannot
   // lower the bar. Without an existing tag, the store as it is now.
   const baseline = (tag && isStoreGitRepo(snapshot.dir) ? storeAtTag(snapshot.dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
-  const floors = fullShelfFloors(baseline, cap);
+  const baselines = baselineScores(baseline);
+  const applyBars = cloneBaselines(baselines);
   const sim = cloneStore(snapshot.store);
-  const steps = planPromotion({ groups: found.groups, selected, toGlobal, store: sim, cap, forceLow, floors });
+  const steps = planPromotion({ groups: found.groups, selected, toGlobal, store: sim, cap, forceLow, baselines });
   printReport({ snapshot, found, steps, cap, threshold, toGlobal, only, log });
 
   const result = { ok: true, steps, performed: [], skipped: [], removed: [], warnings: [], error: null };
@@ -463,7 +466,7 @@ export function runPromotion({
       continue;
     }
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow, floors });
+    const d = decideStep(working, step, { cap, forceLow, baselines: applyBars });
     if (d.action === 'skip' && d.reason !== 'already-moved') {
       result.skipped.push({ id: g.id, reason: d.reason });
       log(`  SKIP ${d.reason.padEnd(10)} ${label}`);
@@ -488,6 +491,7 @@ export function runPromotion({
         log(`  SKIP ${String(r.reason).padEnd(10)} ${label}   (copies left in place)`);
         continue;
       }
+      noteMoved(applyBars, step.to, step.id, step.score);
       result.performed.push({ id: g.id, from: step.from, to: step.to, lesson: step.id });
       if (client.expectsCommits && headSha(dir) === headBefore) {
         result.ok = false;

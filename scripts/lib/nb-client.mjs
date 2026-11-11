@@ -10,7 +10,7 @@
 // raw package CLI).
 import { spawnSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
-import { basename, dirname, join, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { entryId } from './nb-sim.mjs';
 
@@ -232,6 +232,21 @@ export function checkArgv(argv, { switches = [], values = [] }) {
 // running nb
 // ---------------------------------------------------------------------------
 
+/** The file a command name refers to: itself if it has a path separator, else the first match on PATH (like a shell). */
+function resolveCommand(cmd, env = process.env) {
+  if (cmd.includes('/') || cmd.includes(sep)) return cmd;
+  for (const d of (env.PATH ?? '').split(delimiter)) {
+    if (d === '') continue;
+    const candidate = join(d, cmd);
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      /* not here */
+    }
+  }
+  return cmd;
+}
+
 /** True when two paths name the same file, following symlinks (`which nb` is a symlink to the shim). */
 function samePath(a, b) {
   try {
@@ -270,7 +285,7 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
    * so --apply refuses when they are switched off. (A custom --nb is the caller's
    * responsibility.)
    */
-  const usesShim = samePath(nb, DEFAULT_NB);
+  const usesShim = samePath(resolveCommand(nb, runEnv), DEFAULT_NB);
   const autocommitOff = usesShim && runEnv.NB_GIT_AUTOCOMMIT === '0';
   return { run, runJson, dir: runEnv.NB_DIR, autocommitOff, expectsCommits: usesShim && !autocommitOff };
 }

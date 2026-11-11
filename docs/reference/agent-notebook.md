@@ -242,8 +242,8 @@ recently (`nb` calls this aging), so moving a weak lesson into a
 full shelf destroys a better one. The script therefore simulates the moves one at
 a time (highest score first), prints every eviction and point it would cost, and
 refuses a move whose lesson does not score strictly **above** a **full** target's
-lowest lesson (or to the lowest it had when the run started, so the aging that
-earlier moves cause cannot lower the bar) unless `--force-low` is given (an equal
+lowest lesson, counting each lesson at the score it had when the run started (or
+when it arrived), so the aging that earlier moves cause cannot lower the bar unless `--force-low` is given (an equal
 swap would only trade one lesson for another that is no better, and equal-scored lessons would push each
 other out one by one). A target already holding more than the cap would lose
 several lessons at once, so that is refused too. It also predicts the cases `nb` refuses: a lesson the
@@ -261,6 +261,8 @@ re-reads the store, the bar a lesson must clear is taken from the store as the
 rollback tag recorded it (so the aging that the first run's moves caused cannot
 let through, on the second run, a lesson the first run refused), and a run after
 completion changes nothing.
+
+When the migration is finished and verified, delete its tag (`git -C "$NB_DIR" tag -d pre-slug-migration`): an existing tag is treated as a resumed run, whose baseline and rollback range start at that old state.
 
 Rollback: each `nb move` is its own commit in the store (the shim commits every
 change), and so is each 0-byte deletion. Run the migration while no tasks are

@@ -47,6 +47,10 @@
 // confirms every legacy shelf is gone from disk AND from `nb list --json`,
 // reporting any that remain.
 //
+// When the migration is finished and verified, delete its tag (`git -C "$NB_DIR" tag -d
+// pre-slug-migration`): an existing tag is treated as a resumed run, whose baseline
+// and rollback range start at that old state.
+//
 // A run with nothing to migrate but undescribed canonical shelves only describes
 // them (`nb describe`, itself a commit through the shim); it does not tag.
 //
@@ -66,7 +70,7 @@
 //          [--map <slug-aliases.json>] [--manifest <shelves.json>] [--nb <nb path>]
 //          [--tag <name>]
 // Environment: NB_DIR selects the store (as for `nb`); NB_MAX_LINES is honored.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyShelf, loadSlugAliases, normalizeSlug, projectShelfName } from '../plugin/hooks/lib/notebook-layers.mjs';
@@ -86,7 +90,7 @@ import {
   storeAtTag,
   tagStore,
 } from './lib/nb-client.mjs';
-import { cloneStore, applyMove, decideStep, entryId, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
+import { baselineScores, cloneBaselines, cloneStore, applyMove, decideStep, entryId, maxLines, noteMoved, shelfNameProblem } from './lib/nb-sim.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_TAG = 'pre-slug-migration';
@@ -116,12 +120,13 @@ function chooseTarget(cls, canonicalAsWritten, shelfNames, aliases) {
  * step is `{ from, to, id, score, text, decision }` with `decision` from
  * {@link decideStep} as simulated in order.
  */
-export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = false, floors = fullShelfFloors(snapshot.store, cap) }) {
+export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = false, baselines = baselineScores(snapshot.store) }) {
   const names = [...snapshot.store.keys()].sort();
   const legacy = [];
   const invalid = [];
   const steps = [];
   const sim = cloneStore(snapshot.store);
+  const bars = cloneBaselines(baselines);
 
   for (const name of names) {
     const cls = classifyShelf(name, aliases);
@@ -140,9 +145,12 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
     const ordered = entries.map((e, i) => ({ e, i })).sort((a, b) => b.e.score - a.e.score || a.i - b.i);
     for (const { e } of ordered) {
       const step = { from: name, to: target, id: e.id, score: e.score, text: e.text };
-      const decision = decideStep(sim, step, { cap, forceLow, floors });
+      const decision = decideStep(sim, step, { cap, forceLow, baselines: bars });
       step.decision = decision;
-      if (decision.action === 'move') applyMove(sim, step.from, step.to, step.id, cap);
+      if (decision.action === 'move') {
+        applyMove(sim, step.from, step.to, step.id, cap);
+        noteMoved(bars, step.to, step.id, step.score);
+      }
       steps.push(step);
     }
   }
@@ -186,7 +194,7 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
           log(`       and docks ${d.prediction.docked.id} ${fmtScore(d.prediction.docked.from)} -> ${fmtScore(d.prediction.docked.to)}`);
         }
       } else if (d.reason === 'low-score') {
-        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) does not score above the full target's lowest lesson (${fmtScore(d.prediction.targetMin)}); moving it would evict a lesson that is no worse. Re-run with --force-low to move anyway.`);
+        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) does not score above the full target's bar (${fmtScore(d.bar)}, the lowest un-aged score there); moving it would evict a lesson that is no worse. Re-run with --force-low to move anyway.`);
       } else if (d.reason === 'over-cap') {
         log(`${n}. SKIP over-cap: ${s.to} already holds more than ${cap} lessons, so moving ${s.from} ${s.id} would evict ${d.prediction.evictedAll.length} of them at once. Trim the target by hand or re-run with --force-low.`);
       } else if (d.reason === 'duplicate') {
@@ -212,9 +220,10 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
   for (const s of steps) {
     if (s.decision.action !== 'move') continue;
     const { evictedAll, docked } = s.decision.prediction;
-    if (docked && !moverIds.has(docked.id)) {
+    if (docked) {
       const t = touched.get(`${s.to}|${docked.id}`) ?? { shelf: s.to, id: docked.id, text: docked.text, start: docked.from };
       t.end = docked.to;
+      if (moverIds.has(docked.id)) t.wasMoved = true;
       touched.set(`${s.to}|${docked.id}`, t);
     }
     for (const evicted of evictedAll) {
@@ -230,7 +239,7 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
   log(`  existing lessons evicted from full targets (lost): ${lost.length}`);
   for (const t of lost) log(`    ${t.shelf} ${t.id} (${fmtScore(t.start)}) ${clip(t.text, 60)}${t.wasMoved ? '   [a lesson moved earlier in this plan]' : ''}`);
   log(`  existing lessons lowered by one point (aging): ${lowered.length}`);
-  for (const t of lowered) log(`    ${t.shelf} ${t.id} ${fmtScore(t.start)} -> ${fmtScore(t.end)} ${clip(t.text, 60)}`);
+  for (const t of lowered) log(`    ${t.shelf} ${t.id} ${fmtScore(t.start)} -> ${fmtScore(t.end)} ${clip(t.text, 60)}${t.wasMoved ? '   [a lesson moved earlier in this plan]' : ''}`);
   log(`  moves: ${steps.filter((s) => s.decision.action === 'move').length}   skipped: ${steps.filter((s) => s.decision.action === 'skip').length}`);
   log(`  legacy shelves emptied (their 0-byte leftovers will be deleted): ${emptied.length ? emptied.join(', ') : 'none'}`);
   log(`  legacy shelves that will still hold lessons (manual decision): ${holding.length ? holding.join(', ') : 'none'}`);
@@ -262,8 +271,9 @@ export function runMigration({
   // began: the rollback tag's tree on a resumed run, else the store now. Otherwise
   // the aging that run 1's moves caused would lower the bar for run 2.
   const baseline = (isStoreGitRepo(dir) ? storeAtTag(dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
-  const floors = fullShelfFloors(baseline, cap);
-  const plan = planMigration({ snapshot, aliases, cap, forceLow, floors });
+  const baselines = baselineScores(baseline);
+  const plan = planMigration({ snapshot, aliases, cap, forceLow, baselines });
+  const applyBars = cloneBaselines(baselines);
   printPlan({ plan, snapshot, cap, forceLow, log });
 
   const result = { ok: true, plan, performed: [], skipped: [], reaped: [], remaining: [], warnings: [], error: null };
@@ -322,7 +332,7 @@ export function runMigration({
   for (const step of plan.steps) {
     if (moved >= stopAfter) break;
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow, floors });
+    const d = decideStep(working, step, { cap, forceLow, baselines: applyBars });
     const label = `${step.from} ${step.id} -> ${step.to}`;
     if (d.action === 'skip') {
       if (d.reason === 'already-moved') {
@@ -349,6 +359,7 @@ export function runMigration({
       continue;
     }
     moved++;
+    noteMoved(applyBars, step.to, step.id, step.score);
     result.performed.push({ ...step, evicted: r.evicted });
     if (client.expectsCommits && headSha(dir) === headBefore) {
       result.ok = false;
@@ -426,7 +437,7 @@ export function runMigration({
   // Confirm.
   const finalSnap = snapshotStore(client);
   for (const shelf of legacyNames) {
-    const onDisk = listedOrOnDisk(finalSnap, shelf);
+    const onDisk = listedOrOnDisk(finalSnap, shelf, dir);
     if (onDisk) result.remaining.push({ shelf, lessons: (finalSnap.store.get(shelf) ?? []).length, reason: onDisk });
   }
   if (result.remaining.length === 0) {
@@ -452,9 +463,11 @@ function isLegacyShelf(name, aliases) {
 }
 
 /** Why a legacy shelf is still around: it is still listed by `nb list` (it holds lessons, or is an emptied shelf that kept a description), a 0-byte file is still on disk, or null when it is gone. */
-function listedOrOnDisk(snap, shelf) {
+function listedOrOnDisk(snap, shelf, dir) {
   if (snap.store.has(shelf)) return 'listed by nb list';
-  if (snap.zeroByte.includes(shelf)) return '0-byte file still on disk';
+  // "Gone" means absent on disk too: a hidden file (0 bytes, or only metadata) still counts.
+  const file = join(dir, `${shelf}.md`);
+  if (existsSync(file)) return statSync(file).size === 0 ? '0-byte file still on disk' : 'file still on disk (hidden from nb list)';
   return null;
 }
 

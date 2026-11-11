@@ -79,15 +79,25 @@ export function cloneStore(store) {
 }
 
 /**
- * For every shelf that is full in `store`, its lowest score. Taken once at the
- * start of a run and passed to {@link decideStep} as the bar a mover must clear.
+ * Each lesson's score at the START of a run, per shelf: Map<shelf, Map<id, score>>.
+ * It is the un-aged yardstick for the minimum-score rule (see {@link decideStep}).
  */
-export function fullShelfFloors(store, cap = maxLines()) {
-  const floors = new Map();
-  for (const [shelf, entries] of store) {
-    if (entries.length >= cap) floors.set(shelf, minScore(entries));
-  }
-  return floors;
+export function baselineScores(store) {
+  const out = new Map();
+  for (const [shelf, entries] of store) out.set(shelf, new Map(entries.map((e) => [e.id, e.score])));
+  return out;
+}
+
+/** Copy a baselines map so a plan can add to it without touching the caller's. */
+export function cloneBaselines(baselines) {
+  return new Map([...baselines].map(([shelf, m]) => [shelf, new Map(m)]));
+}
+
+/** Record that lesson `id` arrived on `shelf` carrying `score`, so later aging of it does not lower the bar. */
+export function noteMoved(baselines, shelf, id, score) {
+  if (!baselines.has(shelf)) baselines.set(shelf, new Map());
+  baselines.get(shelf).set(id, score);
+  return baselines;
 }
 
 /** The lowest score on a shelf, or `undefined` when it is empty. */
@@ -197,14 +207,14 @@ export function applyRemove(store, shelf, id) {
  *                    would evict several lessons at once (`nb move --json`
  *                    reports only the first)
  *   'ambiguous'      the id is not unique on the source shelf
- * `floors` maps shelf -> the lowest score it had at the start of the run, for
- * shelves that were full then (see {@link fullShelfFloors}).
+ * `baselines` is {@link baselineScores} of the store at the start of the run (or of
+ * the rollback tag, on a resume), extended by {@link noteMoved} as lessons arrive.
  * `--force-low` (`forceLow`) overrides 'low-score' and 'over-cap' only.
  * Used by the dry-run (on a cloned snapshot, advanced one move at a time) and by
  * --apply (on a fresh re-read of just the two shelves), so both apply the same
  * rules.
  */
-export function decideStep(store, step, { cap = maxLines(), forceLow = false, floors = new Map() } = {}) {
+export function decideStep(store, step, { cap = maxLines(), forceLow = false, baselines = new Map() } = {}) {
   const p = predictMove(store, step.from, step.to, step.id, cap);
   switch (p.outcome) {
     case 'missing':
@@ -218,11 +228,14 @@ export function decideStep(store, step, { cap = maxLines(), forceLow = false, fl
       if (p.evictedAll.length > 1 && !forceLow) {
         return { action: 'skip', reason: 'over-cap', prediction: p };
       }
-      // The bar is the target's lowest lesson now, or the lowest it had when the run
-      // started if that was higher: the one-point aging that earlier moves cause
-      // must not lower the bar and let equal-scored lessons in afterwards.
-      if (p.targetFull && p.entry.score <= Math.max(p.targetMin, floors.get(step.to) ?? -Infinity) && !forceLow) {
-        return { action: 'skip', reason: 'low-score', prediction: p };
+      // The bar is the lowest UN-AGED score among the target's lessons: each lesson
+      // counts at the higher of its current score and the score it had when the run
+      // started (or arrived with). The one-point aging that earlier moves cause can
+      // therefore never lower the bar and let an equal-scored lesson in afterwards.
+      if (p.targetFull && !forceLow) {
+        const base = baselines.get(step.to);
+        const bar = Math.min(...(store.get(step.to) ?? []).map((e) => Math.max(e.score, base?.get(e.id) ?? -Infinity)));
+        if (p.entry.score <= bar) return { action: 'skip', reason: 'low-score', bar, prediction: p };
       }
       return { action: 'move', reason: null, prediction: p };
   }

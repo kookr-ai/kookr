@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'vitest';
-import { applyMove, cloneStore, decideStep, dedupKey, entryId, exactKey, maxLines, predictMove, shelfNameProblem } from './nb-sim.mjs';
+import { applyMove, baselineScores, cloneStore, decideStep, noteMoved, dedupKey, entryId, exactKey, maxLines, predictMove, shelfNameProblem } from './nb-sim.mjs';
 import { createNbClient, nbMove, readShelf, reapZeroByteShelf, readFileOrderIds } from './nb-client.mjs';
 import { RAW_NB, cleanEnv, destroy, makeStore, readLessons, writeShelf, type Lesson } from './nb-test-helpers';
 import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -126,6 +126,28 @@ describe('decideStep', () => {
   test('a lesson that already left the source is "already-moved"', () => {
     expect(decideStep(full(), step('gone'), { cap: 3 })).toMatchObject({ action: 'skip', reason: 'already-moved' });
   });
+  test('the bar uses UN-AGED scores: a lesson docked from +1 to 0 still counts as +1, and a lesson that arrived counts at its arrival score', () => {
+    const store = new Map([
+      ['a', [mk('m', 1)]],
+      ['t', [mk('aged', 0), mk('b', 5), mk('c', 5)]],
+    ]);
+    const step = { from: 'a', to: 't', id: 'm' };
+    // Without baselines the aged lesson (0) is the minimum, so a +1 is let in...
+    expect(decideStep(store, step, { cap: 3 }).action).toBe('move');
+    // ...with the start-of-run baseline (aged was +1) it is not.
+    const baselines = baselineScores(new Map([['t', [mk('aged', 1), mk('b', 5), mk('c', 5)]]]));
+    expect(decideStep(store, step, { cap: 3, baselines })).toMatchObject({ action: 'skip', reason: 'low-score', bar: 1 });
+    // A lesson that arrived at +4 and was docked to +3 keeps counting as +4: a +4 mover ties it and is refused, a +5 mover is let in.
+    const arrived = noteMoved(new Map(), 't', 'c', 4);
+    const s2 = (score: number) =>
+      new Map([
+        ['a', [mk('m', score)]],
+        ['t', [mk('aged', 5), mk('b', 5), mk('c', 3)]],
+      ]);
+    expect(decideStep(s2(4), step, { cap: 3, baselines: arrived })).toMatchObject({ action: 'skip', reason: 'low-score', bar: 4 });
+    expect(decideStep(s2(5), step, { cap: 3, baselines: arrived }).action).toBe('move');
+  });
+
   test('a target already OVER the cap would lose several lessons at once: refused unless forced', () => {
     const over = new Map([
       ['a', [mk('hi', 9)]],

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
@@ -528,6 +528,30 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
   });
 
+  test('a target that FILLS UP during the run: aging by the strong movers must not let a tying lesson in afterwards', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([1, 'old one'], [1, 'old two'])); // 2 of 3: not full at the start
+    writeShelf(dir, 'code-review@agent-notebook', L([5, 'strong one'], [5, 'strong two'], [1, 'weak mover']));
+    commitAll(dir);
+    const dry = run(dir, { cap: 3 });
+    expect(dry.text).toContain('SKIP low score');
+    run(dir, { apply: true, cap: 3 });
+    const target = readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort();
+    expect(target).toEqual(['old two', 'strong one', 'strong two']); // 'old one' made room; 'weak mover' did not displace 'old two'
+    expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[1, 'weak mover']]);
+  });
+
+  test('an emptied legacy shelf whose file keeps a non-description metadata line is hidden by nb list but NOT gone: it is reported', () => {
+    const dir = store();
+    writeFileSync(join(dir, 'tester@agent-notebook.md'), '# note: keep me\n+2\ttester one\n');
+    commitAll(dir);
+    const { result } = run(dir, { apply: true });
+    expect(readLessons(dir, `tester@${CANON}`)).toEqual([[2, 'tester one']]);
+    expect(fileExists(dir, 'tester@agent-notebook')).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.remaining).toEqual([{ shelf: 'tester@agent-notebook', lessons: 0, reason: 'file still on disk (hidden from nb list)' }]);
+  });
+
   test('RESUME keeps the bar: re-running the same command does not let through what the first run refused, even after its aging', () => {
     const dir = store();
     writeShelf(dir, `code-review@${CANON}`, L([1, 'o1'], [1, 'o2'], [1, 'o3']));
@@ -590,6 +614,13 @@ describe('store/client guards', () => {
     const client = createNbClient({ dir: holder, nb: link, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) });
     expect(client.autocommitOff).toBe(true);
     expect(createNbClient({ dir: holder, nb: RAW_NB, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) }).autocommitOff).toBe(false);
+  });
+
+  test('a bare `nb` found on PATH that is the shim is still the shim', () => {
+    const holder = store({ git: false });
+    symlinkSync(DEFAULT_NB, join(holder, 'nb'));
+    const client = createNbClient({ dir: holder, nb: 'nb', env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0', PATH: `${holder}:${process.env.PATH}` }) });
+    expect(client.autocommitOff).toBe(true);
   });
 
   test('a stray .git that is not a repository, inside a real repository, does not count as the store\'s own repo', () => {
