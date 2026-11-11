@@ -378,6 +378,27 @@ microphone level. It falls flat during silence or a capture interruption, with
 text distinguishing quiet input from missing audio. This helps the operator
 notice gaps while speaking without treating every natural pause as a fault.
 
+### Avatar panel (optional, off by default)
+
+A small floating window showing a 3D character who lip-syncs Kookr's spoken task summaries — the
+clips played by the speaker (🔊) buttons on tasks. It gives those summaries a face: it shows
+"preparing" while a summary is being generated, moves its mouth while the clip plays, and shows the
+spoken text as a caption.
+
+- **Off unless you turn it on.** Settings → Notifications & Alerts → **Avatar panel**. The choice is
+  stored per browser. While it is off, the browser downloads nothing for it: no 3D renderer, no
+  avatar file.
+- **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
+  and stays inside the viewport when the window is resized. Minimising collapses it to a round
+  bubble that shows a badge with the number of tasks waiting for you. A minimised panel shuts its 3D
+  view down and uses no graphics memory.
+- **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still
+  play normally. It only has something to say when the speech service is on (`KOOKR_TTS`).
+- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for. Its
+  mouth follows the loudness of the clip, not the individual sounds, so the lip-sync is approximate.
+- **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
+  `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
+
 ## What Kookr Does NOT Do (explicit non-goals)
 
 | Non-goal | Reason |
