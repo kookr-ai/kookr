@@ -132,6 +132,23 @@ test.describe('resizable left navigation', () => {
     expect(await storedNavWidth(page)).toBe(String(DEFAULT_NAV_WIDTH + 60));
   });
 
+  test('the divider leaves the navigation and the task list clickable right up to their shared edge', async ({ page, request }) => {
+    await openWithProject(page, request);
+    const nav = await page.getByTestId('project-sidebar').boundingBox();
+    const divider = await page.getByTestId('nav-resizer').boundingBox();
+    expect(nav).not.toBeNull();
+    expect(divider).not.toBeNull();
+    const navRight = nav!.x + nav!.width;
+    // At most 2 px over the navigation (whose scrollbar sits at that edge) and
+    // at most 4 px over the task list's padding.
+    expect(divider!.x).toBeGreaterThanOrEqual(navRight - 2);
+    expect(divider!.x + divider!.width).toBeLessThanOrEqual(navRight + 4);
+
+    // A click 4 px inside the task list reaches the task list, not the divider.
+    await page.locator('.findings-panel').click({ position: { x: 4, y: 4 }, timeout: 3000 });
+    expect(await storedNavWidth(page)).toBeNull();
+  });
+
   test('a click with a slightly unsteady hand is still a click, not a resize', async ({ page, request }) => {
     await openWithProject(page, request);
     const box = await page.getByTestId('nav-resizer').boundingBox();

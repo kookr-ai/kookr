@@ -10187,15 +10187,17 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   }
 
   /* Divider on the navigation's right edge (NavResizer.tsx). Negative margins
-     make it take no layout width. It covers the navigation's 1 px border and
-     the first 5 px of the task list's padding, not the navigation itself:
-     the navigation's scrollbar sits against that border and must stay easy
-     to grab when the project list is long. */
+     make it take no layout width. Its 6 px are placed off-centre on purpose:
+     2 px over the navigation (its 1 px border plus 1 px), 4 px over the task
+     list's left padding. More over the navigation would eat into its
+     scrollbar, which sits against that border and must stay easy to grab
+     when the project list is long. More over the task list would swallow
+     clicks aimed at the task list's edge. */
   .project-sidebar.labelled + .nav-resizer {
     display: block;
     flex: 0 0 6px;
     align-self: stretch;
-    margin: 0 -5px 0 -1px;
+    margin: 0 -4px 0 -2px;
     z-index: 2;
     cursor: col-resize;
     background: transparent;
@@ -10212,7 +10214,7 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 0;
+    left: 1px;
     width: 1px;
     background: transparent;
     transition: background 0.12s ease;
