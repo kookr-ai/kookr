@@ -129,14 +129,36 @@ The integration is **role-agnostic**: kookr does not pick a shelf for a session.
 Two plugin hooks (registered in `plugin/hooks/hooks.json`, each a `.sh` wrapper
 that runs its `.mjs`) run for every session:
 
-- **SessionStart → `nb-inject.sh`** (runs `nb-inject.mjs`): injects the `nb list`
-  index — every shelf, its lesson count, and its one-line "open me when…"
+- **SessionStart → `nb-inject.sh`** (runs `nb-inject.mjs`): injects the notebook
+  index — each shelf, its lesson count, and its one-line "open me when…"
   description — into context. The agent reads the index and opens the shelves
   that fit its task; nothing picks one for it.
-  The index is capped at 60 rows / 8 KB (richest shelves first, with a
-  "N more shelves not shown" tail). If `nb list` times out or exits non-zero the
-  hook prints a one-line `WARNING` on stdout, so a broken store is not mistaken
-  for an empty one; a missing `nb` stays silent. It always exits 0.
+  - **Layered view (default when the repo is known).** Memory is layered
+    project > domain > global, and a shelf's layer comes from its name alone
+    (`plugin/hooks/lib/notebook-layers.mjs`): `<situation>@<slug>` is a *project*
+    shelf (true only in that repo), a bare `<situation>` is a *domain* shelf (true
+    in any repo), and `fleet-global` is the *global* shelf. When `KOOKR_REPO_SLUG`
+    is set, the hook runs `nb list --json --limit 1000` and prints this repo's
+    shelves first, then the domain shelves, then `fleet-global`. Shelves of other
+    repos are not listed; a line such as `22 shelves for other projects hidden
+    (slug: kookr-ai-kookr); nb list shows all` is always printed (it also says so
+    plainly when this repo has no shelf yet). It then states the precedence
+    (project > domain > global when shelves disagree) and the placement rule
+    (the same wording as the retro nudge below). The slug is split on the **last**
+    `@` and compared case-insensitively after trimming;
+    `plugin/notebooks/slug-aliases.json` maps a legacy slug (`agent-notebook`) to
+    its canonical one (`jeanibarz-agent-notebook`) so the filter is right before
+    the store migration finishes.
+  - **Flat view.** With no `KOOKR_REPO_SLUG` (unset, empty or whitespace), with
+    `KOOKR_NB_LAYERS=0` (the kill switch), if the layers module cannot be
+    loaded, or if `nb list --json` answers in a shape the hook does not
+    recognise, it prints the flat `nb list --limit 1000` index instead.
+  - **Bounds.** Both views are capped at 60 rows / 8 KB. In the layered view the
+    project group is never truncated; the domain and global rows fill what is left
+    (`fleet-global` first), with a "N more shelves not shown" tail.
+  - **Failure.** If `nb list` times out or exits non-zero the hook prints a
+    one-line `WARNING` on stdout, so a broken store is not mistaken for an empty
+    one; a missing `nb` stays silent. It always exits 0.
 - **Stop / SubagentStop → `nb-retro.sh`** (runs `nb-retro.mjs`): blocks the first
   stop of a session once (per-session sentinel file claimed atomically, so parallel
   subagent stops yield exactly one nudge; `stop_hook_active` lets a re-run
@@ -160,7 +182,11 @@ unset and callers fall back to the unscoped shelf name.
 **Placement advisories.** After a successful `nb add`, `bin/nb.js` prints a one-line
 stderr advisory (never a refusal; the lesson is still written) when the shelf is
 `fleet-global` (unless `KOOKR_NB_CURATOR` is set), or a `<situation>@<slug>` shelf
-whose slug differs from `KOOKR_REPO_SLUG`. They make a lesson written to the wrong
+whose slug differs from `KOOKR_REPO_SLUG` (classified by the same
+`notebook-layers.mjs` module as the index: last `@`, case-insensitive, legacy slugs
+resolved; the shim imports it through a guarded dynamic import and falls back to a
+first-`@`, case-sensitive check if the file cannot be loaded, so a missing file
+never breaks an `nb` call). They make a lesson written to the wrong
 layer, or into another repo's shelf, visible to the agent that wrote it. The slug
 check is skipped when `KOOKR_REPO_SLUG` is unset.
 

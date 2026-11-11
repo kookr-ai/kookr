@@ -17,10 +17,12 @@
 //     `agent-notebook`) is the SAME repo as its canonical slug
 //     (`jeanibarz-agent-notebook`); resolve it before comparing or grouping.
 //
-// Dependency-free on purpose (node builtins only). Today the K2 store scripts
+// Dependency-free on purpose (node builtins only). Importers: the K2 store scripts
 // (scripts/migrate-notebook-slugs.mjs, promote-notebook-lessons.mjs,
-// apply-shelf-descriptions.mjs) import it; K3 will make the session-start hook and
-// the `bin/nb.js` shim import it too, the shim through a guarded dynamic import.
+// apply-shelf-descriptions.mjs), the SessionStart index (plugin/hooks/nb-inject.mjs)
+// and the `bin/nb.js` shim's `nb add` advisory. The hook and the shim both load it
+// through a guarded dynamic import and fall back to a simpler behavior if it is
+// missing, so this file can never break a session start or an `nb` call.
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -146,7 +148,7 @@ export function classifyShelf(name, aliases = loadSlugAliases()) {
   };
 }
 
-/** `<base>@<slug>`. Callers still check {@link MAX_SHELF_NAME_LENGTH}. Used by the K3 index and shim advisory as well as tests. */
+/** `<base>@<slug>`. Callers still check {@link MAX_SHELF_NAME_LENGTH}. Used by tests. */
 export function projectShelfName(base, slug) {
   return `${base}@${slug}`;
 }
