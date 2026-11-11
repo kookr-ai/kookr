@@ -44,7 +44,8 @@ const SPECS: Record<Exclude<DetailHeaderActionId, 'migrate'>, ActionSpec> = {
 /**
  * One main action plus a "More actions" menu for the reading-pane header
  * (issue #3561 slice 4b). The menu follows the rail's slice 2 menu: Escape and
- * an outside click close it, and focus returns to the trigger.
+ * an outside click close it, and focus returns to the trigger. Arrow keys,
+ * Home and End move between items; Tab closes the menu.
  */
 export function DetailHeaderActions({
   taskId,
@@ -81,10 +82,33 @@ export function DetailHeaderActions({
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setMenuOpen(false);
     };
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setMenuOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (e.key === 'Tab') {
+        // Close and hand focus to the trigger; the browser's default Tab then
+        // moves on from there instead of from an item that is about to unmount.
+        setMenuOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return;
+      const items = Array.from(
+        wrapRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [],
+      );
+      if (items.length === 0) return;
+      e.preventDefault();
       e.stopPropagation();
-      setMenuOpen(false);
-      triggerRef.current?.focus();
+      const current = items.indexOf(document.activeElement as HTMLButtonElement);
+      let next: number;
+      if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = items.length - 1;
+      else if (e.key === 'ArrowDown') next = (current + 1) % items.length;
+      else next = current <= 0 ? items.length - 1 : current - 1;
+      items[next]?.focus();
     };
     document.addEventListener('mousedown', onMouseDown);
     document.addEventListener('keydown', onKeyDown, true);
