@@ -16,6 +16,7 @@ The stable surfaces other software — and your own scripts — depend on.
 - [CLI](cli.md) — the `kookr` command and its subcommands (`spawn`, `status`, and the rest).
 - [Spawn contract (`POST /api/tasks`)](spawn-contract.md) — the authoritative request/response shape for launching a task programmatically.
 - [Environment variables](environment-variables.md) — canonical list of every `KOOKR_*` variable Kookr reads or injects.
+- [Lucy live](lucy-live.md) — setting up the hands-free spoken conversation with the avatar, how a turn works, measured timings and limits.
 - [Data directory](data-directory.md) — what Kookr stores under `~/.kookr/`, and which files are operator-owned state rather than repository content.
 - [opencode agent](opencode-agent.md) — enabling the opencode agent type, worker profiles (`scoped-fix`, `reviewer`, `test-auditor`), deliverable gates, usage accounting and limits.
 - [Playbooks](playbooks.md) — the frontmatter and body format for the Markdown task templates Kookr can launch.

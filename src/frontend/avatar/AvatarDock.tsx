@@ -8,6 +8,12 @@
  * image, so a minimised panel uses no GPU. Hovering or focusing the bubble
  * shows a small card that spells out what its badge and dot mean.
  *
+ * A "Talk" button in the header switches on hands-free conversation with Lucy
+ * (`lucy-live/useLucyLive.ts`): she listens through the microphone, answers out loud
+ * and can be interrupted by speaking over her. It lives in this component, not in the
+ * 3D view, so it keeps running while the panel is minimised, and it is never saved:
+ * every page load starts with the microphone closed.
+ *
  * Under the 3D view the panel lists the last few spoken messages in full (what, about
  * which task, how long ago, heard or not), each with its own Replay button. The list is
  * a keyboard-focusable scroll region, so a long message is read by scrolling, not cut off.
@@ -26,6 +32,8 @@ import { getLastClip, useClipHistory, useLastClip } from '../audio/last-clip.js'
 import { replayClip, replayLastClip, stopReplay, type ReplayResult } from '../audio/clip-playback.js';
 import { useSoundPreference } from '../audio/sound-preference.js';
 import { track } from '../telemetry.js';
+import { SOUND_OFF_REASON, useLucyLive } from '../lucy-live/useLucyLive.js';
+import type { LucyLiveState } from '../../shared/contracts/lucy-live.js';
 import {
   AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
@@ -44,6 +52,18 @@ const STATE_LABEL: Record<AvatarState, string> = {
   speaking: 'speaking',
 };
 const IDLE_HINT = 'Press a speaker button on a task and I will read its summary to you.';
+const LIVE_HINT = 'Talk to me \u2014 I\u2019m listening.';
+/** What the state label says while hands-free is on, from what the server reports Lucy is doing. */
+const LIVE_STATE_LABEL: Record<LucyLiveState, string> = {
+  idle: 'listening',
+  listening: 'listening',
+  transcribing: 'listening',
+  thinking: 'thinking',
+  speaking: 'speaking',
+};
+const TALK_LABEL = 'Talk to Lucy hands-free';
+const TALK_STOP_LABEL = 'Stop hands-free';
+const TALK_REASON_ID = 'avatar-talk-reason';
 const REPLAY_LABEL = 'Replay last message';
 /** Re-render the "N min ago" labels this often while the message list is on screen. */
 const RELATIVE_TIME_REFRESH_MS = 30_000;
@@ -137,6 +157,9 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const lastClip = useLastClip();
   const clips = useClipHistory();
   const sound = useSoundPreference();
+  const live = useLucyLive();
+  // Why a press on the unavailable Talk button did nothing, for people who cannot see its tooltip.
+  const [talkNotice, setTalkNotice] = useState<string | null>(null);
 
   const viewRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<AvatarStage | null>(null);
@@ -318,6 +341,28 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     setDragPos(null);
   }, []);
 
+  // Hands-free is on and connected: the label and hint follow what the server says Lucy is doing.
+  const liveReady = live.status === 'ready';
+  // The Talk button is shown when it works, and when we can say why it does not (sound off, or the server's reason).
+  // If the server could not be asked, or said "no" without a reason, there is nothing useful to say, so it stays hidden.
+  const serverReason = live.serverStatus && !live.serverStatus.available ? (live.serverStatus.reason ?? null) : null;
+  const talkUnavailable = live.enabled ? null : !sound.enabled ? SOUND_OFF_REASON : serverReason;
+  const talkVisible = live.enabled || live.status !== 'off' || live.serverStatus?.available === true || serverReason !== null;
+  useEffect(() => {
+    setTalkNotice(null);
+  }, [talkUnavailable]);
+  const onTalk = (): void => {
+    if (talkUnavailable) {
+      setTalkNotice(talkUnavailable);
+      return;
+    }
+    setTalkNotice(null);
+    live.setEnabled(!live.enabled);
+  };
+  const liveMessage = talkNotice ?? live.errorMessage;
+  const liveStateLabel = liveReady ? LIVE_STATE_LABEL[live.lucyState] : live.status === 'connecting' ? 'connecting' : null;
+  const showLive = live.enabled || liveMessage !== null;
+
   // Replay is unavailable (not hidden) when there is nothing to play, she is busy, or sound is off in Settings.
   const replayUnavailable = !lastClip.hasClip
     ? 'No message to replay yet'
@@ -380,7 +425,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const onBubbleBlur = (): void => setFocused(false);
 
   if (prefs.minimized) {
-    const activity = state === 'idle' ? '' : `, ${STATE_LABEL[state]}`;
+    const activity = state !== 'idle' ? `, ${STATE_LABEL[state]}` : liveReady ? ', listening' : '';
     const label = [
       `Open ${NAME}${activity}`,
       attentionCount > 0 ? findingsText(attentionCount) : null,
@@ -395,7 +440,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <button
           type="button"
           ref={bubbleRef}
-          className={`avatar-bubble avatar-bubble-${state}`}
+          className={`avatar-bubble avatar-bubble-${state}${live.enabled ? ' avatar-bubble-live' : ''}`}
           style={{ left: bubblePosition.x, top: bubblePosition.y, backgroundImage: still ? `url(${still})` : undefined }}
           onClick={open}
           onMouseEnter={onBubbleEnter}
@@ -408,6 +453,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           data-testid="avatar-bubble"
         >
           {!still && <span className="avatar-bubble-initial" aria-hidden="true">{NAME[0]}</span>}
+          {live.enabled && <span className="avatar-bubble-mic" data-testid="avatar-bubble-mic" aria-hidden="true" />}
           {lastClip.unheard && <span className="avatar-unheard-dot avatar-bubble-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />}
           {attentionCount > 0 && (
             <span className="avatar-bubble-badge" aria-hidden="true">{attentionCount > 99 ? '99+' : attentionCount}</span>
@@ -451,11 +497,12 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const newestId = clips[0]?.clipId;
   return (
     <section
-      className={`avatar-dock avatar-dock-${state}${dragPos ? ' avatar-dock-dragging' : ''}`}
+      className={`avatar-dock avatar-dock-${state}${liveReady ? ' avatar-dock-live' : ''}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
       aria-label={`${NAME} avatar`}
       data-testid="avatar-dock"
       data-avatar-state={state}
+      data-lucy-live={live.status}
       data-avatar-loaded={loaded ? 'true' : 'false'}
     >
       <div
@@ -466,8 +513,28 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         onPointerCancel={onDragEnd}
       >
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
-        <span className="avatar-dock-state">{STATE_LABEL[state]}</span>
+        <span className="avatar-dock-state" data-testid="avatar-state-label">{liveStateLabel ?? STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
+        {talkVisible && (
+          <button
+            type="button"
+            className={`avatar-dock-button avatar-dock-talk${live.enabled ? ' avatar-dock-talk-on' : ''}`}
+            onClick={onTalk}
+            aria-pressed={live.enabled}
+            // aria-disabled, like Replay: it stays focusable so the reason can be read and pressing it can say why.
+            aria-disabled={talkUnavailable ? 'true' : undefined}
+            aria-label={live.enabled ? TALK_STOP_LABEL : TALK_LABEL}
+            aria-describedby={talkUnavailable ? TALK_REASON_ID : undefined}
+            title={talkUnavailable ?? (live.enabled ? TALK_STOP_LABEL : TALK_LABEL)}
+            data-testid="avatar-talk"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <rect x="6" y="1.5" width="4" height="8" rx="2" />
+              <path d="M3.5 7.5a4.5 4.5 0 0 0 9 0M8 12v2.5M5.5 14.5h5" />
+            </svg>
+            {talkUnavailable && <span id={TALK_REASON_ID} className="sr-only">{talkUnavailable}</span>}
+          </button>
+        )}
         <button
           type="button"
           className="avatar-dock-button avatar-dock-replay"
@@ -506,6 +573,35 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
                 : 'Loading…'}
         </span>
       </div>
+      {showLive && (
+        <div
+          className="avatar-live"
+          role="region"
+          aria-label="Conversation with Lucy"
+          aria-live="polite"
+          tabIndex={0}
+          data-testid="avatar-live"
+        >
+          {liveMessage && <p className="avatar-live-notice" data-testid="avatar-live-notice">{liveMessage}</p>}
+          {live.status === 'connecting' && <p className="avatar-live-notice">Connecting{'\u2026'}</p>}
+          {live.operatorText && (
+            // A draft changes under the reader every moment, so only the final text is read out.
+            <p
+              className={`avatar-live-you${live.operatorFinal ? '' : ' avatar-live-draft'}`}
+              aria-hidden={live.operatorFinal ? undefined : true}
+              data-testid="avatar-live-you"
+              data-final={live.operatorFinal ? 'true' : 'false'}
+            >
+              <span className="avatar-live-who">You</span> {live.operatorText}
+            </p>
+          )}
+          {live.lucyText && (
+            <p className="avatar-live-lucy" data-testid="avatar-live-lucy">
+              <span className="avatar-live-who">{NAME}</span> {live.lucyText}
+            </p>
+          )}
+        </div>
+      )}
       {/* With messages, the list is a scroll region of its own that the keyboard can reach: the full text of a
           long message is in the layout, so scrolling is the only way to the rest of it. */}
       <div
@@ -514,7 +610,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         {...(clips.length > 0 ? { role: 'region', 'aria-label': 'Recent messages', tabIndex: 0 } : {})}
       >
         {clips.length === 0 ? (
-          <p className="avatar-dock-hint" data-testid="avatar-hint">{IDLE_HINT}</p>
+          <p className="avatar-dock-hint" data-testid="avatar-hint">{liveReady ? LIVE_HINT : IDLE_HINT}</p>
         ) : (
           <>
             {replayUnavailable && <span id={REPLAY_REASON_ID} className="sr-only">{replayUnavailable}</span>}

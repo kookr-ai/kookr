@@ -25,6 +25,8 @@ import {
 } from '../auth.js';
 import type { SocketRegistrar } from '../viewer-connection-registry.js';
 import type { IsActorAllowedTerminalSession } from '../terminal-scope.js';
+import { LUCY_LIVE_WS_PATH } from '../../shared/contracts/lucy-live.js';
+import { MAX_LUCY_LIVE_FRAME_BYTES } from '../lucy-live/ws-handler.js';
 import { maybeOpenDashboardBrowser } from './open-dashboard-browser.js';
 
 type WebSocketServerOptions = ConstructorParameters<typeof WebSocketServer>[0];
@@ -78,6 +80,12 @@ export interface HttpAndWebSocketsDeps {
   onLocalTerminalActivity?: (sessionId: string) => void;
   onDashboardConnection: (ws: WebSocket) => void;
   /**
+   * Lucy live voice conversation (`/ws/lucy-live`). When absent the path is treated
+   * like any unknown one and the socket is destroyed. Upgrades reach it only after the
+   * same authentication gate as `/ws`.
+   */
+  lucyLive?: { handleConnection(ws: WebSocket, req: IncomingMessage): void };
+  /**
    * Registry that owns the terminal socket pool (#805). When present, every
    * terminal socket is registered here on open (`actor` + `sessionName`) and
    * unregistered on close, so the revocation sweep can drop or re-check viewer
@@ -124,6 +132,7 @@ export interface HttpAndWebSockets {
   httpServer: Server;
   wss: WebSocketServer;
   terminalWss: WebSocketServer;
+  lucyLiveWss: WebSocketServer;
   activeBridges: Map<WebSocket, FakeTerminalBridge | SessionBridge>;
   close(options?: HttpAndWebSocketsCloseOptions): Promise<void>;
 }
@@ -202,12 +211,13 @@ function closeHttpServer(httpServer: Server, gracefulShutdownMs: number): Promis
 }
 
 async function closeHttpAndWebSockets(
-  runtime: Pick<HttpAndWebSockets, 'httpServer' | 'wss' | 'terminalWss'>,
+  runtime: Pick<HttpAndWebSockets, 'httpServer' | 'wss' | 'terminalWss' | 'lucyLiveWss'>,
   options: HttpAndWebSocketsCloseOptions = {},
 ): Promise<void> {
   const gracefulShutdownMs = options.gracefulShutdownMs ?? DEFAULT_GRACEFUL_WEBSOCKET_SHUTDOWN_MS;
   await Promise.all([
     closeWebSocketServer(runtime.terminalWss, gracefulShutdownMs),
+    closeWebSocketServer(runtime.lucyLiveWss, gracefulShutdownMs),
     closeWebSocketServer(runtime.wss, gracefulShutdownMs),
   ]);
   await closeHttpServer(runtime.httpServer, gracefulShutdownMs);
@@ -220,6 +230,11 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     noServer: true,
     maxPayload: DASHBOARD_WEBSOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: WEBSOCKET_PER_MESSAGE_DEFLATE,
+  });
+  const lucyLiveWss = new WebSocketServer({
+    noServer: true,
+    maxPayload: MAX_LUCY_LIVE_FRAME_BYTES,
+    perMessageDeflate: false,
   });
   const terminalWss = new WebSocketServer({
     noServer: true,
@@ -282,6 +297,11 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
     if (path === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => {
         wss.emit('connection', ws, req);
+      });
+    } else if (path === LUCY_LIVE_WS_PATH && deps.lucyLive) {
+      const lucyLive = deps.lucyLive;
+      lucyLiveWss.handleUpgrade(req, socket, head, (ws) => {
+        lucyLive.handleConnection(ws, req);
       });
     } else if (path.startsWith('/ws/terminal/')) {
       // #810 terminal scope gate. Resolve the actor + canonical (query-stripped)
@@ -511,7 +531,7 @@ export async function startHttpAndWebSockets(deps: HttpAndWebSocketsDeps): Promi
   });
 
   let closePromise: Promise<void> | undefined;
-  const runtime = { httpServer, wss, terminalWss, activeBridges };
+  const runtime = { httpServer, wss, terminalWss, lucyLiveWss, activeBridges };
   return {
     ...runtime,
     close: (options) => {

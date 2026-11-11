@@ -1056,3 +1056,59 @@ describe('dashboard auto-open on listen', () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 });
+
+describe('Lucy live upgrade routing', () => {
+  let runtime: HttpAndWebSockets | undefined;
+  afterEach(async () => {
+    await runtime?.close({ gracefulShutdownMs: 10 });
+    runtime = undefined;
+  });
+
+  async function start(extra: Partial<Parameters<typeof startHttpAndWebSockets>[0]>): Promise<number> {
+    runtime = await startHttpAndWebSockets({
+      app: new Hono(),
+      port: 0,
+      host: '127.0.0.1',
+      tasksFile: '/tmp/tasks.json',
+      hooksDir: '/tmp/hooks',
+      terminalBackend: new FakeTerminalBackend(),
+      terminalDeps: { monitor: {} as never, abortPendingSuggestion: () => {}, broadcastToAll: () => {}, serverCwd: '/repo' },
+      onDashboardConnection: (ws) => ws.close(),
+      ...extra,
+    });
+    return (runtime.httpServer.address() as { port: number }).port;
+  }
+
+  function open(port: number, headers: Record<string, string> = {}): Promise<'open' | number | 'closed'> {
+    return new Promise((resolve) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/lucy-live`, { headers });
+      ws.on('open', () => { ws.close(); resolve('open'); });
+      ws.on('unexpected-response', (_req, res) => { res.resume(); resolve(res.statusCode ?? 0); });
+      ws.on('error', () => resolve('closed'));
+    });
+  }
+
+  test('an upgrade reaches the Lucy live handler', async () => {
+    const handled: string[] = [];
+    const port = await start({ lucyLive: { handleConnection: (ws, req) => { handled.push(req.url ?? ''); ws.close(); } } });
+    expect(await open(port)).toBe('open');
+    expect(handled).toEqual(['/ws/lucy-live']);
+  });
+
+  test('without the dependency the socket is destroyed like an unknown path', async () => {
+    const port = await start({});
+    expect(await open(port)).toBe('closed');
+  });
+
+  test('the same authentication gate applies before the handler', async () => {
+    const handled: number[] = [];
+    const port = await start({
+      apiAuth: { required: true, token: 'secret' },
+      lucyLive: { handleConnection: (ws) => { handled.push(1); ws.close(); } },
+    });
+    expect(await open(port)).toBe(401);
+    expect(handled).toEqual([]);
+    expect(await open(port, { authorization: 'Bearer secret' })).toBe('open');
+    expect(handled).toEqual([1]);
+  });
+});

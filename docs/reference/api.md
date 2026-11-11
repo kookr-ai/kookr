@@ -261,6 +261,7 @@ capacity).
 | `GET /api/agents/:agentId/edit-events/:toolUseId` | Fetch a recorded Edit/Write tool event for diff display |
 | `GET /api/sessions/:sessionId/effective-hook-settings` | Resolved per-session hook settings |
 | `GET /api/grok-auth-status` | Offline Grok credential-cache verdict for the Launch dialog. Returns `{ status: "ok" \| "missing" \| "expired" \| "invalid", loginCommand, message, launchWouldRefuse, roundRobinIndex }`. Secret-free (no access tokens, refresh tokens, or API keys). `launchWouldRefuse` is true when an explicit `grok-build` launch would be refused before a terminal exists. `loginCommand` is `grok login --device-code`. The SPA fails open: a missing verdict must not disable Launch. |
+| `GET /api/lucy-live/status` | Whether Lucy live (the spoken conversation over `/ws/lucy-live`) can be switched on. Returns `{ available: boolean, reason?: string }`; `reason` names the missing piece (speech recogniser `KOOKR_LUCY_EARS_URL`, Baseten key, or speech service) and is absent when available. |
 
 ### Task id field naming
 

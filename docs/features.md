@@ -418,8 +418,31 @@ things she said.
 - **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
   `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
   It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
-- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for. Its
-  mouth follows the loudness of the clip, not the individual sounds, so the lip-sync is approximate.
+- **What it does not do.** It never speaks on its own; it only accompanies clips you asked for or
+  answers you while hands-free is on (below). Its mouth follows the loudness of the clip, not the
+  individual sounds, so the lip-sync is approximate.
+
+#### Talk to Lucy hands-free (optional, off by default)
+
+The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out
+loud about a second after you stop, and you can talk over her to stop her at once. She answers from
+the current task status (what is running, stopped or recently finished) and says so when she does not
+know something. She cannot act on tasks yet.
+
+- **The microphone is on only while Talk is on**, and Talk is off again after every page reload.
+  Audio goes to your own Kookr server and to a speech recogniser running on your machine; only the
+  text of what you said goes to the helper model, with the task status, to write her answer.
+- **Interrupting.** Start speaking while she is thinking or speaking and her audio stops immediately.
+  While she talks, the voice detector waits for clearer, longer speech before it cuts her off, so a
+  cough or a click does not stop her. Headphones work best; on speakers her own voice may be picked up.
+- **What you see.** Her state (listening, thinking, speaking), what you said as a draft that improves
+  while you talk, then the final text, and her answer as she speaks it.
+- **Language.** You can speak English or French (it follows the dictation language). She always answers
+  in English, because her voices are English voices.
+- **What it needs.** The speech service (`KOOKR_TTS`), a helper model on Baseten
+  (`KOOKR_BASETEN_API_KEY`), and Lucy's ears: a local speech recogniser (LFM3-Omni-2B in llama.cpp, about
+  3.2 GB of GPU memory, NVIDIA GPU) started from `lucy-ears/docker-compose.yml` and pointed to by
+  `KOOKR_LUCY_EARS_URL`. Setup and measured timings: [Lucy live](reference/lucy-live.md).
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
 

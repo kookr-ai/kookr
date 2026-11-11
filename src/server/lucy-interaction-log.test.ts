@@ -361,3 +361,24 @@ describe('helpers', () => {
     expect(countSpokenWords('')).toBe(0);
   });
 });
+
+describe('live_turn records', () => {
+  it('writes the documented fields and nothing else', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-log-live-'));
+    const file = join(dir, 'l.jsonl');
+    try {
+      const log = createLucyInteractionLog({ filePath: file, now: () => new Date('2026-11-11T10:00:00.000Z') });
+      log.recordLiveTurn({
+        turnId: 't1', language: 'en', end: 'answered', transcript: 'hello', answer: 'Hi.', voice: 'v',
+        asrMs: 200, firstSentenceMs: 470, firstAudioMs: 600, sentences: 1, transcriptWords: 1, answerWords: 1,
+        ...({ audioBase64: 'AAAA' } as object),
+      } as never);
+      await log.flush();
+      const rec = JSON.parse(readFileSync(file, 'utf8').trim()) as Record<string, unknown>;
+      expect(rec).toMatchObject({ v: 1, kind: 'live_turn', turnId: 't1', end: 'answered', asrMs: 200, firstAudioMs: 600 });
+      expect('audioBase64' in rec).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

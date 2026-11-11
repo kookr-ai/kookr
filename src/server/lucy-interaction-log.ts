@@ -4,10 +4,12 @@
  * (normally `~/.kookr/`), stays on this machine, and exists so the wording,
  * length and proactivity of her summaries can be analysed after the fact.
  *
- * Two kinds of line, both carrying `v: 1` and an ISO `ts`:
+ * Three kinds of line, all carrying `v: 1` and an ISO `ts`:
  *  - `said`: the server produced a clip (task summary or agent speak). Carries
  *    the final text, the pre-"speakable" wording when it differs, and timings.
  *    Audio bytes are never recorded.
+ *  - `live_turn`: one finished Lucy live conversation turn (issue #3659): the
+ *    transcript, the spoken answer, how it ended and the latencies. No audio.
  *  - `ui`: a `lucy_*` telemetry event the browser sent over the websocket.
  *    The browser is not trusted, so only the documented fields survive
  *    (see {@link sanitizeLucyUiEvent}): enums are validated, strings clamped,
@@ -48,6 +50,28 @@ export const MAX_LUCY_STRING_CHARS = 64;
 /** Client numbers are clamped to 0..one day in ms. */
 export const MAX_LUCY_DURATION_MS = 86_400_000;
 
+/**
+ * One finished Lucy live turn (a spoken conversation exchange). Timings are measured
+ * from the moment the operator stopped speaking. Audio is never recorded.
+ */
+export interface LucyLiveTurnRecordInput {
+  turnId: string;
+  language: string;
+  end: string;
+  reason?: string;
+  /** What the recogniser heard (secrets redacted by the caller). */
+  transcript?: string;
+  /** What Lucy said, as spoken. */
+  answer?: string;
+  voice?: string;
+  asrMs?: number;
+  firstSentenceMs?: number;
+  firstAudioMs?: number;
+  sentences: number;
+  transcriptWords: number;
+  answerWords: number;
+}
+
 export type LucySaidSource = 'task_summary' | 'agent_speak';
 
 export interface LucySaidRecordInput {
@@ -74,6 +98,8 @@ export interface LucySaidRecordInput {
 export interface LucyInteractionLog {
   /** Record a clip the server just delivered. Never throws. */
   recordSaid(input: LucySaidRecordInput): void;
+  /** Record a finished Lucy live turn. Never throws. */
+  recordLiveTurn(input: LucyLiveTurnRecordInput): void;
   /** Record a client `lucy_*` telemetry event as received. Never throws. */
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
@@ -103,6 +129,7 @@ export interface LucyInteractionLogOptions {
 /** Log that records nothing. Used when the feature is unwired (tests, partial harnesses). */
 export const DISABLED_LUCY_INTERACTION_LOG: LucyInteractionLog = {
   recordSaid: () => {},
+  recordLiveTurn: () => {},
   recordUi: () => {},
   flush: async () => {},
 };
@@ -179,6 +206,9 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
     recordSaid(input) {
       enqueue({ kind: 'said', ...pickSaidFields(input) }, MAX_PENDING_LUCY_LINES);
     },
+    recordLiveTurn(input) {
+      enqueue({ kind: 'live_turn', ...pickFields(input, LIVE_TURN_FIELDS) }, MAX_PENDING_LUCY_LINES);
+    },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
@@ -195,6 +225,19 @@ const SAID_FIELDS = [
   'usedFallback', 'cached', 'verbosity', 'voice', 'findingType',
   'llmMs', 'ttsMs', 'durationMs', 'words',
 ] as const;
+
+const LIVE_TURN_FIELDS = [
+  'turnId', 'language', 'end', 'reason', 'transcript', 'answer', 'voice',
+  'asrMs', 'firstSentenceMs', 'firstAudioMs', 'sentences', 'transcriptWords', 'answerWords',
+] as const;
+
+function pickFields<T extends object, K extends keyof T>(input: T, keys: readonly K[]): Partial<T> {
+  const out: Partial<T> = {};
+  for (const key of keys) {
+    if (input[key] !== undefined) out[key] = input[key];
+  }
+  return out;
+}
 
 /**
  * Copy only the documented fields. An allowlist (not a spread) so a caller that

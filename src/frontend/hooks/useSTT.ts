@@ -13,6 +13,7 @@
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 
+import { createScriptProcessorFallback, tryCreateWorkletNode } from '../audio/pcm-capture.js';
 import type { DictationDelivery, DictationField } from '../store/dictation-corpus.js';
 import type { STTLanguage } from '../store/stt-language.js';
 import {
@@ -140,56 +141,6 @@ function resampleToInt16(input: Float32Array, sourceSampleRate: number): Int16Ar
     out[i] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
   }
   return out;
-}
-
-/**
- * Set up AudioWorkletNode for audio capture (preferred — runs on audio thread).
- * Returns the worklet node, or null if AudioWorklet is not supported.
- */
-async function tryCreateWorkletNode(
-  audioContext: AudioContext,
-  source: MediaStreamAudioSourceNode,
-  onChunk: (data: Float32Array) => void,
-  isCurrent: () => boolean,
-  onFlushed: () => void,
-): Promise<AudioWorkletNode | null> {
-  if (!audioContext.audioWorklet) return null;
-
-  try {
-    await audioContext.audioWorklet.addModule('/pcm-processor.js');
-    if (!isCurrent()) return null;
-    const workletNode = new AudioWorkletNode(audioContext, 'pcm-processor');
-    workletNode.port.onmessage = (e: MessageEvent<Float32Array | { type: 'flushed' }>) => {
-      if (!isCurrent()) return;
-      if (e.data instanceof Float32Array) onChunk(e.data);
-      else if (e.data?.type === 'flushed') onFlushed();
-    };
-    source.connect(workletNode);
-    // AudioWorkletNode doesn't need to connect to destination to receive data
-    workletNode.connect(audioContext.destination);
-    return workletNode;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Set up ScriptProcessorNode as fallback (deprecated — runs on main thread).
- * Drops audio frames under heavy UI load.
- */
-function createScriptProcessorFallback(
-  audioContext: AudioContext,
-  source: MediaStreamAudioSourceNode,
-  onChunk: (data: Float32Array) => void,
-): ScriptProcessorNode {
-  const processor = audioContext.createScriptProcessor(4096, 1, 1);
-  processor.onaudioprocess = (e) => {
-    // Copy the data — the buffer is reused by the audio graph
-    onChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
-  };
-  source.connect(processor);
-  processor.connect(audioContext.destination);
-  return processor;
 }
 
 /** Older external services deliver text without promising a retained audio pair. */
