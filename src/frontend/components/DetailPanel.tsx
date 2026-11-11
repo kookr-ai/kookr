@@ -440,17 +440,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     };
   }, [agent?.taskId]);
 
-  // Clear diff/file state when the selected agent changes. Avoids showing stale
-  // content bound to a different agent's toolUseId or worktree.
-  useEffect(() => {
-    setActiveDiff(null);
-    setActiveFile(null);
-    setRightPane('terminal');
-    diffTriggerRef.current = null;
-    fileTriggerRef.current = null;
-    tabBeforeRightPaneRef.current = null;
-  }, [agent?.agentId]);
-
   // Bring the right pane (terminal, diff or file) on screen in the tabbed
   // layout, remembering the tab to return to. Reads the tab from the store
   // directly so the callbacks below keep a stable identity (FR-TERM-005).
@@ -467,6 +456,27 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     tabBeforeRightPaneRef.current = null;
     if (previousTab && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab(previousTab);
   }, [setNarrowTab]);
+
+  // Leaving the Terminal tab ends the diff's claim on it: if the operator
+  // comes back to Terminal later, that is their own pick, so closing the diff
+  // must then stay on Terminal rather than jump to the tab the diff was opened
+  // from (#3618).
+  useEffect(() => {
+    if (narrowTab !== 'terminal') tabBeforeRightPaneRef.current = null;
+  }, [narrowTab]);
+
+  // Clear diff/file state when the selected agent changes. Avoids showing stale
+  // content bound to a different agent's toolUseId or worktree. If only the
+  // diff put the pane on the Terminal tab, return to the tab it came from, so
+  // the next task does not open on Terminal by accident (#3618).
+  useEffect(() => {
+    setActiveDiff(null);
+    setActiveFile(null);
+    setRightPane('terminal');
+    diffTriggerRef.current = null;
+    fileTriggerRef.current = null;
+    restoreTabAfterRightPane();
+  }, [agent?.agentId, restoreTabAfterRightPane]);
 
   function handleOpenDiff(target: DiffClickTarget) {
     if (!agent) return;

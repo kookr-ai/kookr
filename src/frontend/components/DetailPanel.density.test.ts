@@ -482,6 +482,59 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
   });
 
+  function rerenderWith(agent: AgentState) {
+    act(() => {
+      root!.render(React.createElement(DetailPanel, {
+        agent,
+        send: vi.fn(() => true),
+        onLaunch: vi.fn(),
+        onRequestComplete: vi.fn(),
+      }));
+    });
+  }
+
+  test('#3618: moving to another task after a diff auto-selected Terminal returns to the tab the diff came from', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    await flush();
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+
+    rerenderWith(makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
+    await flush();
+
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-testid="diff-pane"]')).toBeNull();
+  });
+
+  test('#3618: a Terminal tab the operator chose survives moving to another task', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { tab('Terminal')!.click(); });
+    rerenderWith(makeAgent({ agentId: 'other-agent', taskId: 'other-task' }));
+    await flush();
+
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+  });
+
+  test('#3618: after leaving a diff for another tab and coming back through Terminal, closing it stays on Terminal', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    await flush();
+    act(() => { tab('Conversation')!.click(); });
+    act(() => { tab('Terminal')!.click(); });
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(container.querySelector<HTMLElement>('.right-pane-slot-diff')?.style.display).toBe('none');
+    expect(useKookrStore.getState().narrowTab).toBe('terminal');
+    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
   test('#3561 4a: a diff opened in split view leaves the remembered tab alone', async () => {
     useKookrStore.getState().setDetailPaneMode('split');
     root = renderDetailPanel(container, makeAgent());
