@@ -301,6 +301,8 @@ the migration's, from the run's own tag, reverting the commits whose subject sta
 `nb move`, `nb rm` or `lesson promotion:`. Like the migration, it deletes the
 0-byte leftover of a shelf it moved the last lesson out of.
 
+Group ids are stable between runs. Re-running an `--apply --only <ids>` command that already finished is a reported no-op (exit 0, naming the groups that exist now so a typo is obvious); if only some of the ids are gone, the rest are still applied.
+
 A group goes to `fleet-global` only when the reviewer names it in
 `--to-global <id>`; the default is always the bare domain shelf. Measured on the
 live store on 2026-11-11 (368 project lessons in 24 project shelves) there were **0 exact groups**,

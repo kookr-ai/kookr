@@ -47,6 +47,9 @@
 // confirms every legacy shelf is gone from disk AND from `nb list --json`,
 // reporting any that remain.
 //
+// A run with nothing to migrate but undescribed canonical shelves only describes
+// them (`nb describe`, itself a commit through the shim); it does not tag.
+//
 // ROLLBACK. Each `nb move` is its own commit in the store (the bin/nb.js shim
 // commits every mutation), and the 0-byte deletions are commits too. Run the
 // migration while no tasks are running: agents' own `nb add`/`nb vote` commits

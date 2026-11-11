@@ -211,7 +211,10 @@ export function findGroups({ store, aliases, threshold = DEFAULT_THRESHOLD }) {
 export function destinationFor(group, toGlobal) {
   if (toGlobal.has(group.id)) return { shelf: GLOBAL_SHELF, problem: null };
   const cls = classifyShelf(group.base);
-  if (cls.layer !== 'domain') return { shelf: group.base, problem: `base "${group.base}" is not a bare domain shelf name (it contains "@")` };
+  if (cls.layer !== 'domain') {
+    const why = cls.layer === 'global' ? 'it is the global shelf' : 'it contains "@"';
+    return { shelf: group.base, problem: `base "${group.base}" is not a bare domain shelf name (${why})` };
+  }
   const bad = shelfNameProblem(group.base);
   return { shelf: group.base, problem: bad };
 }
@@ -343,9 +346,13 @@ export function runPromotion({
     log(`Note: group ${id} was not found${coveredIds.has(id) ? ' (its lesson is already covered by a domain/global lesson)' : ' (already applied, or a typo)'}; skipping it.`);
   }
   if (only && only.size > 0 && [...only].every((id) => !known.has(id))) {
-    const error = `none of the --only group ids exist: ${[...only].join(', ')}. Known: ${[...known.keys()].join(', ') || 'none'}.`;
-    log(error);
-    return { ok: false, error, usage: true, steps: [], performed: [], skipped: [], removed: [], warnings: [] };
+    // Every named group is gone: either this exact command already ran to the end
+    // (a re-run must be a harmless no-op) or the ids were mistyped. Say which
+    // groups do exist so a typo is obvious, and change nothing.
+    const knownList = [...known.keys()].join(', ') || 'none';
+    const note = `None of the --only group ids exist (${[...only].join(', ')}). Nothing to apply. Groups found now: ${knownList}.`;
+    log(note);
+    return { ok: true, nothing: true, note, steps: [], performed: [], skipped: [], removed: [], warnings: [], error: null };
   }
   const selected = new Set(only ? [...only].filter((id) => known.has(id)) : found.groups.filter((g) => g.tier === 'exact').map((g) => g.id));
   const stray = [...toGlobal].filter((id) => known.has(id) && !selected.has(id));

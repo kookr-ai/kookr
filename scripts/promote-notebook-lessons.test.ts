@@ -355,16 +355,28 @@ describe('promote: candidate groups and the reviewer flags', { timeout: 120_000 
     expect(fileExists(dir, 'orchestrator')).toBe(false);
   });
 
-  test('an unknown group id is a usage error and nothing is changed', () => {
+  test('a group id that no longer exists is a reported no-op (a finished --only command can be re-run), and nothing is changed', () => {
     const dir = store();
     seed(dir);
     const before = dirContents(dir);
-    const { result } = run(dir, { apply: true, only: ['c-000000'], threshold: 0.5 });
-    expect(result.ok).toBe(false);
-    expect(result.usage).toBe(true);
-    expect(result.error).toMatch(/none of the --only group ids exist/);
+    const { result, text } = run(dir, { apply: true, only: ['c-000000'], threshold: 0.5 });
+    expect(result.ok).toBe(true);
+    expect(result.nothing).toBe(true);
+    expect(text).toContain('None of the --only group ids exist (c-000000)');
+    expect(text).toMatch(/Groups found now: c-[0-9a-f]{6}/); // so a typo is obvious
     expect(dirContents(dir)).toEqual(before);
     expect(git(dir, 'tag')).toBe('');
+  });
+
+  test('re-running a finished --apply --only command changes nothing and still succeeds', () => {
+    const dir = store();
+    seed(dir);
+    const id = /\[(c-[0-9a-f]{6})\]/.exec(run(dir, { threshold: 0.5 }).text)![1];
+    expect(run(dir, { apply: true, only: [id], threshold: 0.5, shim: true }).result.ok).toBe(true);
+    const head = git(dir, 'rev-parse', 'HEAD');
+    const again = run(dir, { apply: true, only: [id], threshold: 0.5, shim: true });
+    expect(again.result.ok).toBe(true);
+    expect(git(dir, 'rev-parse', 'HEAD')).toBe(head);
   });
 
   test('--to-global for a group that is not being applied is refused', () => {
