@@ -121,6 +121,45 @@ describe('AgentSpeakCache.get', () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
   });
 
+  test('requests in flight are shared per voice, never across voices', async () => {
+    // Synthesis stays pending until released, so all three requests overlap.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const voices: string[] = [];
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      const voice = (JSON.parse(String(init?.body)) as { voice: string }).voice;
+      voices.push(voice);
+      await gate;
+      return mockTtsResponse(`AUDIO:${voice}`);
+    }) as unknown as typeof globalThis.fetch;
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a4', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const heart = cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    const sky = cache.get({ ...key, voice: 'af_sky' }, fakeContext);
+    const heartAgain = cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    await vi.waitFor(() => expect(voices).toHaveLength(2));
+    release();
+
+    expect((await heart).result.audioBase64).toBe('AUDIO:af_heart');
+    expect((await sky).result.audioBase64).toBe('AUDIO:af_sky');
+    expect((await heartAgain).result.audioBase64).toBe('AUDIO:af_heart');
+    // One synthesis per voice: the second Heart request joined the first, Sky did not.
+    expect(voices.sort()).toEqual(['af_heart', 'af_sky']);
+  });
+
+  test('no voice and the configured voice share one cache entry', async () => {
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a5', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const implicit = await cache.get(key, fakeContext);
+    const explicit = await cache.get({ ...key, voice: 'matilda' }, fakeContext);
+
+    expect(explicit.cacheKey).toBe(implicit.cacheKey);
+    expect(explicit.cached).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+  });
+
   test('omits rawText when nothing needed rewriting', async () => {
     const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
     const key = { agentId: 'a2', resolvedMode: 'finding' as const, verbosity: 'terse' as const, lastEventSeq: 1, anomalyDetectedAt: null };

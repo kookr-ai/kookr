@@ -49,6 +49,35 @@ describe('TaskSpeechSummaryCache', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
+  test('requests in flight are shared per voice, never across voices', async () => {
+    // Synthesis stays pending until released, so all three requests overlap.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const voices: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = await new Request(input, init).json() as { text: string; voice: string };
+      voices.push(body.voice);
+      await gate;
+      return new Response(JSON.stringify({ ...ttsResponse(body.text), audioBase64: `AUDIO:${body.voice}` }), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    const cache = new TaskSpeechSummaryCache({
+      llmClient: mockClient('Auth task completed.'), ttsUrl: 'http://tts.local', voice: 'matilda',
+    });
+    const input = { taskName: 'Auth task', taskStatus: 'completed' as const, completionDigest: { bullets: ['x'], filesChanged: [] } };
+
+    const heart = cache.get(input, undefined, 'af_heart');
+    const sky = cache.get(input, undefined, 'af_sky');
+    const heartAgain = cache.get(input, undefined, 'af_heart');
+    await vi.waitFor(() => expect(voices).toHaveLength(2));
+    release();
+
+    expect((await heart).audioBase64).toBe('AUDIO:af_heart');
+    expect((await sky).audioBase64).toBe('AUDIO:af_sky');
+    expect((await heartAgain).audioBase64).toBe('AUDIO:af_heart');
+    // One synthesis per voice: the second Heart request joined the first, Sky did not.
+    expect(voices.sort()).toEqual(['af_heart', 'af_sky']);
+  });
+
   test('runs LLM + TTS once and then cache-hits by normalized speech input', async () => {
     const client = mockClient('Auth task completed with tests passing.');
     const fetchSpy = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

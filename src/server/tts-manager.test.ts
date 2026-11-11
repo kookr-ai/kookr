@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -331,6 +331,50 @@ describe('startTTS', () => {
       execFileMock.mockClear();
       await start();
       expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses a healthy service when no earlier build left a stamp', async () => {
+    const ttsDir = await createTTSFixture();
+
+    try {
+      await startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+
+      // Nothing is known about how the running service was built, so it is left alone.
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps treating a healthy service as stale when its rebuild fails', async () => {
+    const ttsDir = await createTTSFixture();
+    const stampPath = join(ttsDir, '.kookr-tts-build.hash');
+    const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+    const upCalls = () => execFileMock.mock.calls.filter((c) => (c[1] as string[]).includes('up')).length;
+
+    try {
+      // A stamp from an earlier build of different files: the running service is stale.
+      await writeFile(stampPath, 'hash-of-older-files\n');
+      execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args.includes('up')) cb(new Error('build failed'), '', '');
+        else cb(null, '', '');
+      });
+
+      await expect(start()).rejects.toThrow('Failed to start Docker container');
+      expect(upCalls()).toBe(1);
+      // The failed build must not be stamped, or the stale container would be reused from now on.
+      expect((await readFile(stampPath, 'utf-8')).trim()).toBe('hash-of-older-files');
+
+      // The next start tries the rebuild again, and stamps it once it succeeds.
+      execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        cb(null, '', '');
+      });
+      await start();
+      expect(upCalls()).toBe(2);
+      expect((await readFile(stampPath, 'utf-8')).trim()).not.toBe('hash-of-older-files');
     } finally {
       await rm(ttsDir, { recursive: true, force: true });
     }

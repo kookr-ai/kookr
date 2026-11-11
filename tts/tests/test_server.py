@@ -211,3 +211,68 @@ def test_a_kokoro_voice_that_yields_no_audio_is_a_server_error(server):
 
     assert response.status_code == 500
     assert "no audio" in response.json()["detail"]
+
+
+def test_kokoro_audio_is_a_24_khz_wav_of_the_joined_chunks(server):
+    import base64
+    import io
+
+    import scipy.io.wavfile
+
+    server.kokoro_pipeline = FakeKokoroPipeline()
+
+    response = TestClient(server.app).post("/synthesize", json={"text": "Hello.", "voice": "af_sky"})
+
+    rate, samples = scipy.io.wavfile.read(io.BytesIO(base64.b64decode(response.json()["audioBase64"])))
+    assert rate == 24_000
+    assert len(samples) == 24
+
+
+def test_kokoro_is_constructed_once_for_us_english_and_reused(server, monkeypatch):
+    constructed = []
+
+    class FakeKPipeline(FakeKokoroPipeline):
+        def __init__(self, **kwargs):
+            super().__init__()
+            constructed.append(kwargs)
+
+    kokoro = types.ModuleType("kokoro")
+    kokoro.KPipeline = FakeKPipeline
+    monkeypatch.setitem(sys.modules, "kokoro", kokoro)
+    monkeypatch.setattr(server.torch.cuda, "is_available", lambda: False)
+    server.kokoro_pipeline = None
+
+    first = server.ensure_kokoro()
+    second = server.ensure_kokoro()
+
+    assert first is second
+    assert constructed == [{"lang_code": "a", "repo_id": "hexgrad/Kokoro-82M", "device": "cpu"}]
+
+
+def test_a_pocket_voice_loads_pocket_on_first_use(server, monkeypatch):
+    fake_model = FakeModel()
+    loads = []
+
+    def fake_load():
+        loads.append(1)
+        server.model = fake_model
+
+    server.model = None
+    monkeypatch.setattr(server, "load_model", fake_load)
+    client = TestClient(server.app)
+
+    assert client.post("/synthesize", json={"text": "Hello.", "voice": "alba"}).status_code == 200
+    assert client.post("/synthesize", json={"text": "Again.", "voice": "alba"}).status_code == 200
+    assert loads == [1]
+    assert [call[1] for call in fake_model.generate_calls] == ["Hello.", "Again."]
+
+
+def test_a_failing_default_engine_stops_startup(server, monkeypatch):
+    def boom():
+        raise RuntimeError("no weights")
+
+    monkeypatch.setattr(server, "DEFAULT_VOICE", "af_heart")
+    monkeypatch.setattr(server, "ensure_kokoro", boom)
+
+    with pytest.raises(RuntimeError, match="no weights"):
+        server.load_default_engine()
