@@ -38,7 +38,6 @@ interface Props {
   events: AgentEvent[];
   description?: string;
   cwd?: string;
-  anomalyExplanation?: string;
   /** Called when the user clicks an Edit/Write file entry. */
   onOpenDiff?: (target: DiffClickTarget) => void;
   /** Counters from the Kookr-side ingestion so the panel can disclose
@@ -449,7 +448,6 @@ export function ActivityPanel({
   events,
   description,
   cwd,
-  anomalyExplanation,
   onOpenDiff,
   activityMeta,
   taskId,
@@ -508,7 +506,7 @@ export function ActivityPanel({
     }
     const distance = el.scrollHeight - (el.scrollTop + el.clientHeight);
     setHasUnreadBelow(distance > 8);
-  }, [visibleItems, showFilterEmpty, anomalyExplanation, inFlight, isActive]);
+  }, [visibleItems, showFilterEmpty, inFlight, isActive]);
 
   function handleScroll(e: React.UIEvent<HTMLDivElement>) {
     const el = e.currentTarget;
@@ -532,12 +530,6 @@ export function ActivityPanel({
     <div className="activity-panel-wrap">
       <ActivityRoleFilterChips value={roleFilter} onChange={setRoleFilter} />
       <div className="activity-panel" ref={scrollRef} onScroll={handleScroll}>
-        {anomalyExplanation && (
-          <div className="act-alert-banner">
-            <div className="act-alert-title">Kookr</div>
-            <div className="act-alert-body">{anomalyExplanation}</div>
-          </div>
-        )}
         {disclosure && <ActivityDisclosureBanner disclosure={disclosure} taskId={taskId} />}
         {showNoActivity && (
           <div className="act-empty">
