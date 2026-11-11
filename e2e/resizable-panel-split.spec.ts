@@ -7,6 +7,7 @@ import {
   injectSessionStart,
   injectEditEvent,
   injectStopEvent,
+  openTerminalTab,
 } from './battle-helpers.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { STORAGE_KEY as ONBOARDING_STORAGE_KEY } from '../src/frontend/store/onboarding-status.js';
@@ -79,6 +80,7 @@ test.describe('Resizable findings/terminal split', () => {
     await expect(resizer).toBeVisible();
     await expect(resizer).toHaveAttribute('role', 'separator');
     await expect(resizer).toHaveAttribute('aria-orientation', 'vertical');
+    await openTerminalTab(page);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
 
     const startWidth = await findingsWidth(page);

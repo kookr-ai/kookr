@@ -1,5 +1,5 @@
 import { test, expect } from './fixtures.js';
-import { injectSessionStart, injectStopEvent, resetServer } from './battle-helpers.js';
+import { injectSessionStart, injectStopEvent, openTerminalTab, resetServer } from './battle-helpers.js';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import type { Socket } from 'node:net';
@@ -72,6 +72,7 @@ test('a slow WebSocket upgrade still streams output and accepts input', async ({
     await injectStopEvent(request, tmuxName, 'Waiting for input.');
     await page.goto('/');
     await page.locator('.finding-card').first().click();
+    await openTerminalTab(page);
     await expect(page.locator('.xterm-rows')).toContainText('Output after delayed connection');
     await expect(page.getByTestId('terminal-attach-pending')).toHaveCount(0);
     await page.locator('.xterm-helper-textarea').press('x');
@@ -127,6 +128,7 @@ test('a truncated terminal keeps streaming and accepting input after repeated ta
   await injectStopEvent(request, tmuxName, 'Waiting for input.');
   await page.goto('/');
   await page.locator('.finding-card').first().click();
+  await openTerminalTab(page);
 
   for (let i = 0; i < 5; i++) {
     await expect.poll(() => connections).toBe(i + 1);

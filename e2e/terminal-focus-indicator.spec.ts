@@ -3,6 +3,7 @@ import {
   resetServer,
   injectSessionStart,
   injectStopEvent,
+  openTerminalTab,
 } from './battle-helpers.js';
 
 test.describe('Terminal focus indicator', () => {
@@ -34,6 +35,7 @@ test.describe('Terminal focus indicator', () => {
     await injectSessionStart(request, tmuxName!);
     await injectStopEvent(request, tmuxName!, 'Waiting for input.');
     await page.locator('.finding-card').first().click();
+    await openTerminalTab(page);
     await page.locator('.terminal-xterm').click();
 
     const terminal = page.locator('.terminal-col');

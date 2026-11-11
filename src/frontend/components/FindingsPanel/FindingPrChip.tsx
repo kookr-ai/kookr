@@ -33,8 +33,10 @@ export function FindingPrChip({
     onSelect();
     setLeftPane('github');
     setNarrowTab('github');
+    // Leave terminal focus for the default tabbed layout, where the GitHub tab
+    // is now selected; never opt the operator into a stored Split view.
     if (useKookrStore.getState().detailPaneMode === 'right') {
-      setDetailPaneMode('split');
+      setDetailPaneMode('tabs');
     }
   }
 

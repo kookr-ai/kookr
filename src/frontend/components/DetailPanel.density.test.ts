@@ -267,7 +267,7 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
     expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('true');
     expect(container.querySelector('.detail-split-left')).toBeNull();
-    expect(container.querySelector('.detail-tabs-narrow')).toBeNull();
+    expect(container.querySelector('.detail-tabs')).toBeNull();
     expect(container.querySelector('[data-testid="task-dependencies"]')).toBeNull();
     expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
   });
@@ -291,14 +291,15 @@ describe('DetailPanel dense metadata', () => {
       },
     ], []));
     await flush();
-    act(() => useKookrStore.getState().setLeftPane('github'));
+    const githubTab = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === 'GitHub (1)');
+    act(() => githubTab!.click());
     await flush();
 
     expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
   });
 
-  test('narrow detail tabs expose the active pane with aria-pressed', () => {
+  function seedGitHubIssue() {
     useKookrStore.getState().handleGitHubUpdate('task-1', [], [
       {
         ref: {
@@ -311,7 +312,7 @@ describe('DetailPanel dense metadata', () => {
           detectedFrom: 'test',
           taskId: 'task-1',
         },
-        title: 'Narrow tab accessibility',
+        title: 'Detail tab accessibility',
         status: 'open',
         author: 'jeanibarz',
         labels: [],
@@ -319,68 +320,168 @@ describe('DetailPanel dense metadata', () => {
         lastFetchedAt: new Date('2026-07-03T00:00:00.000Z'),
       },
     ], []);
+  }
+
+  function renderWithWidth(agent: AgentState, wideDetailActive: boolean): Root {
+    const r = createRoot(container);
+    act(() => {
+      r.render(React.createElement(DetailPanel, {
+        agent, send: vi.fn(() => true), onLaunch: vi.fn(), onRequestComplete: vi.fn(), wideDetailActive,
+      }));
+    });
+    return r;
+  }
+
+  function tab(name: string): HTMLButtonElement | undefined {
+    return [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs .detail-tab')].find((el) => el.textContent === name);
+  }
+
+  function splitToggle(): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>('[data-testid="detail-split-toggle"]');
+  }
+
+  function terminalVisible(): string | null | undefined {
+    return container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible');
+  }
+
+  test('#3561 4a: by default the pane shows Conversation, Terminal and GitHub as tabs with Conversation selected', () => {
+    seedGitHubIssue();
     root = renderDetailPanel(container, makeAgent());
 
-    const tabs = [...container.querySelectorAll<HTMLButtonElement>('.detail-tabs-narrow .detail-tab')];
-    const activity = tabs.find((tab) => tab.textContent === 'Activity');
-    const terminal = tabs.find((tab) => tab.textContent === 'Terminal');
-    const github = tabs.find((tab) => tab.textContent === 'GitHub (1)');
-
-    expect(activity?.getAttribute('aria-pressed')).toBe('true');
-    expect(terminal?.getAttribute('aria-pressed')).toBe('false');
-    expect(github?.getAttribute('aria-pressed')).toBe('false');
-
-    act(() => {
-      terminal?.click();
-    });
-
-    expect(activity?.getAttribute('aria-pressed')).toBe('false');
-    expect(terminal?.getAttribute('aria-pressed')).toBe('true');
-    expect(github?.getAttribute('aria-pressed')).toBe('false');
-
-    act(() => {
-      github?.click();
-    });
-
-    expect(activity?.getAttribute('aria-pressed')).toBe('false');
-    expect(terminal?.getAttribute('aria-pressed')).toBe('false');
-    expect(github?.getAttribute('aria-pressed')).toBe('true');
+    expect(useKookrStore.getState().detailPaneMode).toBe('tabs');
+    expect(container.querySelector('.detail-panel.detail-tabbed')).not.toBeNull();
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('false');
+    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelector('[data-testid="activity-panel"]')).not.toBeNull();
+    expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
+    // The hidden terminal must not hold the byte-stream subscription.
+    expect(terminalVisible()).toBe('false');
   });
 
-  test('left-only detail pane mode hides terminal chrome and keeps a restore control visible', () => {
-    useKookrStore.getState().setDetailPaneMode('left');
+  test('#3561 4a: choosing the Terminal tab swaps the conversation out and activates the terminal', () => {
+    seedGitHubIssue();
     root = renderDetailPanel(container, makeAgent());
 
-    expect(container.querySelector('.detail-panel.detail-left-only')).not.toBeNull();
-    expect(container.querySelector('.detail-split-left')).not.toBeNull();
-    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-wide');
-    expect(container.querySelector('[data-testid="activity-panel"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('false');
+    act(() => { tab('Terminal')!.click(); });
 
-    const restore = container.querySelector<HTMLButtonElement>('button[aria-label="Show terminal/diff pane"]');
-    expect(restore).not.toBeNull();
-    act(() => {
-      restore!.click();
-    });
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('false');
+    expect(tab('Terminal')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.detail-split-left')?.className).toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
+    expect(terminalVisible()).toBe('true');
+
+    act(() => { tab('GitHub (1)')!.click(); });
+
+    expect(tab('GitHub (1)')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
+    expect(terminalVisible()).toBe('false');
+  });
+
+  test('#3561 4a: the Split view toggle shows conversation and terminal side by side and persists', () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    const toggle = splitToggle();
+    expect(toggle?.textContent).toBe('Split view');
+    expect(toggle?.getAttribute('aria-pressed')).toBe('false');
+    act(() => { toggle!.click(); });
 
     expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(localStorage.getItem('kookr-detail-panel-mode')).toBe('split');
+    expect(splitToggle()?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.detail-panel.detail-tabbed')).toBeNull();
+    expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
+    expect(terminalVisible()).toBe('true');
+    // The terminal is already on screen, so it is not offered as a tab.
+    expect(tab('Terminal')).toBeUndefined();
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+
+    act(() => { splitToggle()!.click(); });
+
+    expect(useKookrStore.getState().detailPaneMode).toBe('tabs');
+    expect(localStorage.getItem('kookr-detail-panel-mode')).toBeNull();
+    expect(terminalVisible()).toBe('false');
   });
 
-  test('right-only detail pane mode hides activity chrome and restores split mode from the persistent control', () => {
+  test('#3561 4a: narrow windows keep tabs and offer no Split view, even when split is stored', () => {
+    useKookrStore.getState().setDetailPaneMode('split');
+    root = renderWithWidth(makeAgent(), false);
+
+    expect(splitToggle()).toBeNull();
+    expect(container.querySelector('.detail-panel.detail-tabbed')).not.toBeNull();
+    expect(tab('Terminal')).toBeDefined();
+    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
+  });
+
+  test('#3561 4a: opening a diff from the conversation reveals it, and Escape returns to the conversation', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    const openDiff = container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button');
+    act(() => { openDiff!.click(); });
+    await flush();
+
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+    expect(container.querySelector('.detail-split-right')?.className).not.toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-left')?.className).toContain('pane-hidden-tab');
+    expect(terminalVisible()).toBe('false');
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); });
+    await flush();
+
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector('.detail-split-left')?.className).not.toContain('pane-hidden-tab');
+    expect(container.querySelector('.detail-split-right')?.className).toContain('pane-hidden-tab');
+  });
+
+  test('#3561 4a: Escape leaves a diff alone while it sits behind the Conversation tab', async () => {
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    await flush();
+    act(() => { tab('Conversation')!.click(); });
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    act(() => { window.dispatchEvent(escape); });
+    await flush();
+
+    // The global handler (deselect) is free to act; the hidden diff stays open.
+    expect(escape.defaultPrevented).toBe(false);
+    act(() => { tab('Terminal')!.click(); });
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+    expect(container.querySelector<HTMLElement>('.right-pane-slot-diff')?.style.display).toBe('flex');
+  });
+
+  test('#3561 4a: a diff opened in split view leaves the remembered tab alone', async () => {
+    useKookrStore.getState().setDetailPaneMode('split');
+    root = renderDetailPanel(container, makeAgent());
+
+    act(() => { container.querySelector<HTMLButtonElement>('[data-testid="activity-panel"] button')!.click(); });
+    await flush();
+
+    expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+  });
+
+  test('right-only detail pane mode hides the conversation and returns to it from the persistent control', () => {
     useKookrStore.getState().setDetailPaneMode('right');
     root = renderDetailPanel(container, makeAgent());
 
     expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
     expect(container.querySelector('.detail-split-left')).toBeNull();
-    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('true');
+    expect(container.querySelector('.detail-tabs')).toBeNull();
+    expect(terminalVisible()).toBe('true');
 
-    const restore = container.querySelector<HTMLButtonElement>('button[aria-label="Show Activity/GitHub pane"]');
+    const restore = container.querySelector<HTMLButtonElement>('button[aria-label="Show conversation"]');
     expect(restore).not.toBeNull();
     act(() => {
       restore!.click();
     });
 
-    expect(useKookrStore.getState().detailPaneMode).toBe('split');
+    expect(useKookrStore.getState().detailPaneMode).toBe('tabs');
+    expect(useKookrStore.getState().narrowTab).toBe('activity');
+    expect(tab('Conversation')?.getAttribute('aria-pressed')).toBe('true');
   });
 
   test('right-only diff mode keeps hidden terminal inactive', async () => {
@@ -402,7 +503,7 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('.detail-panel.terminal-focus')).not.toBeNull();
     expect(container.querySelector('.detail-split-left')).toBeNull();
     expect(container.querySelector('[data-testid="diff-pane"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="terminal-panel"]')?.getAttribute('data-visible')).toBe('false');
+    expect(terminalVisible()).toBe('false');
   });
 
   test('empty state shortcut hint uses provided bindings', () => {

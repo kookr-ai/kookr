@@ -11,7 +11,7 @@ import { formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel,
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
-import { computeTerminalVisible } from './detail-panel-visibility.js';
+import { computeTerminalVisible, resolveDetailPaneLayout } from './detail-panel-visibility.js';
 import { TaskIdCopyButton } from './TaskIdCopyButton.js';
 import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
 import { PathCopyButton } from './PathCopyButton.js';
@@ -30,7 +30,7 @@ import {
   type ShortcutBindingMap,
 } from '../../shared/contracts/shortcut-bindings.js';
 import { OverviewEmptyState } from './OverviewEmptyState.js';
-import type { DetailPaneMode } from '../store/store-types.js';
+import type { DetailPaneMode, NarrowTab } from '../store/store-types.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
 import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
 import { appendDictation } from '../append-dictation.js';
@@ -53,7 +53,6 @@ const DiffPane = lazyWithReload(() => import('./DiffPane.js').then((m) => ({ def
 const EvolutionPanel = lazyWithReload(() => import('./EvolutionPanel.js').then((m) => ({ default: pickLazyExport<typeof m.EvolutionPanel>(m, 'EvolutionPanel') })));
 const FileViewerPane = lazyWithReload(() => import('./FileViewerPane.js').then((m) => ({ default: pickLazyExport<typeof m.FileViewerPane>(m, 'FileViewerPane') })));
 const EffectiveHookSettingsModal = lazyWithReload(() => import('./EffectiveHookSettingsModal.js').then((m) => ({ default: pickLazyExport<typeof m.EffectiveHookSettingsModal>(m, 'EffectiveHookSettingsModal') })));
-const NARROW_DETAIL_BREAKPOINT_PX = 1200;
 /** Max auto-grow height of the reply textarea (~6 rows incl. padding). */
 const REPLY_MAX_HEIGHT_PX = 140;
 /** Visible chip count in the response box; extras stay in the overflow dropdown. */
@@ -414,12 +413,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const [shareHeaderShares, setShareHeaderShares] = useState<TaskShareSummary[]>([]);
   const [replySnippets, setReplySnippets] = useState<ReplySnippet[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
-  const showRightPaneButtonRef = useRef<HTMLButtonElement>(null);
-  const hideRightPaneButtonRef = useRef<HTMLButtonElement>(null);
+  const conversationTabRef = useRef<HTMLButtonElement>(null);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
-  const [isNarrowViewport, setIsNarrowViewport] = useState(() =>
-    typeof window !== 'undefined' ? window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX : false,
-  );
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore(useShallow((state) => ({
     selectAgent: state.selectAgent,
@@ -447,6 +442,17 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     armShortcuts: state.armShortcuts,
   })));
   const hasAgent = agent !== null;
+  // #3561 4a: split view and terminal focus need a wide window; everything
+  // else, and every narrow window, renders one tab at a time.
+  const requestedDetailPaneMode: DetailPaneMode = detailPaneMode ?? (terminalFocusMode ? 'right' : storedDetailPaneMode);
+  const splitRenderingTaskVisible = !(agent && isTerminalTaskStatus(agent.taskStatus) && agent.completionDigest);
+  const layout = resolveDetailPaneLayout({
+    requestedMode: requestedDetailPaneMode,
+    wideDetailActive,
+    panesVisible: splitRenderingTaskVisible,
+  });
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
@@ -462,6 +468,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const diffTriggerRef = useRef<HTMLElement | null>(null);
   // Same for the file viewer pane.
   const fileTriggerRef = useRef<HTMLElement | null>(null);
+  // #3561 4a: in the tabbed layout a diff or file opened from the conversation
+  // switches to the Terminal tab so it is visible; closing it returns here.
+  const tabBeforeRightPaneRef = useRef<NarrowTab | null>(null);
   // #2754: highest palette share-request nonce already acted on. Seeded from
   // the incoming nonce rather than 0 so a remount (App keeps DetailPanel in
   // two layout subtrees and behind the mobile findings/task tabs, and the
@@ -469,16 +478,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   // as already-seen — otherwise a fresh 0 < an elevated nonce would spring the
   // modal open with no user action. Only a genuine later bump reopens it.
   const lastShareNonceRef = useRef(shareRequestNonce);
-
-  useEffect(() => {
-    function updateViewportMode() {
-      setIsNarrowViewport(window.innerWidth <= NARROW_DETAIL_BREAKPOINT_PX);
-    }
-
-    updateViewportMode();
-    window.addEventListener('resize', updateViewportMode);
-    return () => window.removeEventListener('resize', updateViewportMode);
-  }, []);
 
   useEffect(() => {
     function normalizeReplySnippets(raw: unknown): ReplySnippet[] {
@@ -579,7 +578,25 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     setRightPane('terminal');
     diffTriggerRef.current = null;
     fileTriggerRef.current = null;
+    tabBeforeRightPaneRef.current = null;
   }, [agent?.agentId]);
+
+  // Bring the right pane (terminal, diff or file) on screen in the tabbed
+  // layout, remembering the tab to return to. Reads the tab from the store
+  // directly so the callbacks below keep a stable identity (FR-TERM-005).
+  const revealRightPane = useCallback(() => {
+    if (layoutRef.current !== 'tabs') return;
+    const currentTab = useKookrStore.getState().narrowTab;
+    if (currentTab === 'terminal') return;
+    tabBeforeRightPaneRef.current = currentTab;
+    setNarrowTab('terminal');
+  }, [setNarrowTab]);
+
+  const restoreTabAfterRightPane = useCallback(() => {
+    const previousTab = tabBeforeRightPaneRef.current;
+    tabBeforeRightPaneRef.current = null;
+    if (previousTab && useKookrStore.getState().narrowTab === 'terminal') setNarrowTab(previousTab);
+  }, [setNarrowTab]);
 
   function handleOpenDiff(target: DiffClickTarget) {
     if (!agent) return;
@@ -593,6 +610,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
       openedAt: serverStartedAt,
     });
     setRightPane('diff');
+    revealRightPane();
   }
 
   const handleOpenFile = useCallback((filePath: string) => {
@@ -601,24 +619,29 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     fileTriggerRef.current = active instanceof HTMLElement ? active : null;
     setActiveFile({ filePath, openedAt: serverStartedAt });
     setRightPane('file');
-  }, [hasAgent, serverStartedAt]);
+    revealRightPane();
+  }, [hasAgent, serverStartedAt, revealRightPane]);
+
+  // Return focus to the element that opened the diff or file. In the tabbed
+  // layout that element sits in the conversation pane, which is still hidden
+  // until React re-renders the restored tab, and a browser ignores focus() on
+  // a hidden element; so focus on the next frame (#3561 4a).
+  function restoreFocusAfterRightPane(trigger: HTMLElement | null) {
+    window.requestAnimationFrame(() => {
+      if (trigger && document.body.contains(trigger)) trigger.focus();
+    });
+  }
 
   function handleCloseFile() {
     setRightPane('terminal');
-    const trigger = fileTriggerRef.current;
-    if (trigger && document.body.contains(trigger)) {
-      trigger.focus();
-    }
+    restoreTabAfterRightPane();
+    restoreFocusAfterRightPane(fileTriggerRef.current);
   }
 
   function handleCloseDiff() {
     setRightPane('terminal');
-    // Restore focus to the triggering element if it's still in the DOM.
-    // Falls back to the Diff mode button if not.
-    const trigger = diffTriggerRef.current;
-    if (trigger && document.body.contains(trigger)) {
-      trigger.focus();
-    }
+    restoreTabAfterRightPane();
+    restoreFocusAfterRightPane(diffTriggerRef.current);
   }
 
   // While the Diff or File pane is active, intercept Escape at capture phase so
@@ -632,8 +655,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   handleCloseDiffRef.current = handleCloseDiff;
   const handleCloseFileRef = useRef(handleCloseFile);
   handleCloseFileRef.current = handleCloseFile;
+  // In the tabbed layout an open diff can sit behind another tab; Escape then
+  // keeps its global meaning instead of closing something off screen.
+  const rightPaneOnScreen = layout !== 'tabs' || narrowTab === 'terminal';
   useEffect(() => {
     if (rightPane !== 'diff' && rightPane !== 'file') return;
+    if (!rightPaneOnScreen) return;
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
@@ -644,7 +671,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     }
     window.addEventListener('keydown', handleKeyDown, true);
     return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [rightPane]);
+  }, [rightPane, rightPaneOnScreen]);
 
   // Auto-focus the reply input only on a real anomaly *transition* (null→type,
   // type-change, or agent-switch), and never while the user has an active text
@@ -966,32 +993,28 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const taskGitHubState = agent.taskId ? githubState[agent.taskId] : undefined;
   const nextStepRecommendations = deriveTaskNextStepRecommendations(agent, taskGitHubState?.prs ?? []);
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
-  const requestedDetailPaneMode = detailPaneMode ?? (terminalFocusMode ? 'right' : storedDetailPaneMode);
-  const splitRenderingTaskVisible = !(isTerminalTaskStatus(agent.taskStatus) && agent.completionDigest);
-  const effectiveDetailPaneMode: DetailPaneMode = wideDetailActive && splitRenderingTaskVisible ? requestedDetailPaneMode : 'split';
-  const rightOnlyMode = effectiveDetailPaneMode === 'right';
-  const leftOnlyMode = effectiveDetailPaneMode === 'left';
-  const showLeftPane = !rightOnlyMode;
-  const showRightPane = !leftOnlyMode;
+  const rightOnlyMode = layout === 'focus';
+  const tabbedLayout = layout === 'tabs';
   const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
 
   function focusNextFrame(ref: React.RefObject<HTMLElement | null>) {
     window.requestAnimationFrame(() => ref.current?.focus());
   }
 
-  function hideRightPane() {
-    setDetailPaneMode('left');
-    focusNextFrame(showRightPaneButtonRef);
+  function selectConversationTab() {
+    track({ type: 'tab_switched', from: narrowTab, to: 'activity' });
+    setNarrowTab('activity');
+    setLeftPane('activity');
   }
 
-  function showBothPanesFromLeft() {
-    setDetailPaneMode('split');
-    focusNextFrame(hideRightPaneButtonRef);
+  function showConversationFromFocus() {
+    setDetailPaneMode('tabs');
+    selectConversationTab();
+    focusNextFrame(conversationTabRef);
   }
 
-  function showBothPanesFromRight() {
-    setDetailPaneMode('split');
-    focusNextFrame(hideRightPaneButtonRef);
+  function toggleSplitView() {
+    setDetailPaneMode(layout === 'split' ? 'tabs' : 'split');
   }
 
   function handleNextStepAction(recommendation: NextStepRecommendation) {
@@ -1003,7 +1026,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   }
 
   return (
-    <div className={`detail-panel kookr-tour-target-layout${rightOnlyMode ? ' terminal-focus' : ''}${leftOnlyMode ? ' detail-left-only' : ''}`} data-testid="detail-panel">
+    <div className={`detail-panel kookr-tour-target-layout${rightOnlyMode ? ' terminal-focus' : ''}${tabbedLayout ? ' detail-tabbed' : ''}`} data-testid="detail-panel">
       <div className="detail-header">
         <div className="detail-header-left">
           <EditableHeading agent={agent} send={send} />
@@ -1184,14 +1207,18 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         </Suspense>
       )}
 
-      {/* Side-by-side split (wide) + tab fallback (narrow) */}
+      {/* Reading pane body: tabs, split view or terminal focus (#3561 slice 4a) */}
       {(() => {
         const gh = taskGitHubState;
         const ghCount = (gh?.prs.length ?? 0) + (gh?.issues.length ?? 0);
         const isCompleted = isTerminalTaskStatus(agent.taskStatus);
-        const terminalVisible = showRightPane && (
-          rightOnlyMode ? rightPane === 'terminal' : computeTerminalVisible({ rightPane, isNarrowViewport, narrowTab })
-        );
+        const terminalVisible = computeTerminalVisible({ rightPane, layout, activeTab: narrowTab });
+        // In split view the tabs choose what the left pane shows; in the tabbed
+        // layout they choose the one pane on screen.
+        const selectedTab: NarrowTab = layout === 'split' ? leftPane : narrowTab;
+        const leftPaneHidden = tabbedLayout && narrowTab === 'terminal';
+        const rightPaneHidden = tabbedLayout && narrowTab !== 'terminal';
+        const showRightPaneHeader = !tabbedLayout || activeDiff !== null;
 
         // Completion digest replaces both panes. Pane selection stays here;
         // the digest's rendering + verification hydration lives in the
@@ -1207,68 +1234,57 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
 
         return (
           <>
-            {/* Narrow-mode tab bar (hidden on wide viewports via CSS) */}
-            {!rightOnlyMode && <div className="detail-tabs-narrow">
+            {/* #3561 4a: one tab bar at every width; Split view on wide windows */}
+            {!rightOnlyMode && <div className="detail-tabs" data-testid="detail-tabs">
               <button
-                className={`detail-tab ${narrowTab === 'activity' ? 'active' : ''}`}
-                aria-pressed={narrowTab === 'activity'}
-                onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'activity' }); setNarrowTab('activity'); setLeftPane('activity'); }}
+                ref={conversationTabRef}
+                type="button"
+                className={`detail-tab ${selectedTab === 'activity' ? 'active' : ''}`}
+                aria-pressed={selectedTab === 'activity'}
+                onClick={selectConversationTab}
               >
-                Activity
+                Conversation
               </button>
-              <button
-                className={`detail-tab ${narrowTab === 'terminal' ? 'active' : ''}`}
-                aria-pressed={narrowTab === 'terminal'}
-                onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'terminal' }); setNarrowTab('terminal'); }}
-              >
-                Terminal
-              </button>
+              {tabbedLayout && (
+                <button
+                  type="button"
+                  className={`detail-tab ${narrowTab === 'terminal' ? 'active' : ''}`}
+                  aria-pressed={narrowTab === 'terminal'}
+                  data-testid="detail-tab-terminal"
+                  onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'terminal' }); setNarrowTab('terminal'); }}
+                >
+                  Terminal
+                </button>
+              )}
               {ghCount > 0 && (
                 <button
-                  className={`detail-tab ${narrowTab === 'github' ? 'active' : ''}`}
-                  aria-pressed={narrowTab === 'github'}
+                  type="button"
+                  className={`detail-tab ${selectedTab === 'github' ? 'active' : ''}`}
+                  aria-pressed={selectedTab === 'github'}
                   onClick={() => { track({ type: 'tab_switched', from: narrowTab, to: 'github' }); setNarrowTab('github'); setLeftPane('github'); }}
                 >
                   GitHub ({ghCount})
                 </button>
               )}
+              {wideDetailActive && (
+                <button
+                  type="button"
+                  className={`detail-tab detail-split-toggle ${layout === 'split' ? 'active' : ''}`}
+                  aria-pressed={layout === 'split'}
+                  data-testid="detail-split-toggle"
+                  title="Show the conversation and the terminal side by side"
+                  onClick={toggleSplitView}
+                >
+                  Split view
+                </button>
+              )}
             </div>}
 
-            {/* Side-by-side split container */}
-            <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${leftOnlyMode ? ' detail-split-left-only' : ''}`}>
-              {/* Left pane: Activity or GitHub */}
-              {showLeftPane && <div className={`detail-split-left${narrowTab !== 'activity' && narrowTab !== 'github' ? ' pane-hidden-narrow' : ''}`}>
-                <div className="detail-pane-header">
-                  <button
-                    className={`pane-tab ${leftPane === 'activity' ? 'active' : ''}`}
-                    aria-pressed={leftPane === 'activity'}
-                    onClick={() => { track({ type: 'tab_switched', from: leftPane, to: 'activity' }); setLeftPane('activity'); setNarrowTab('activity'); }}
-                  >
-                    Activity
-                  </button>
-                  {ghCount > 0 && (
-                    <button
-                      className={`pane-tab ${leftPane === 'github' ? 'active' : ''}`}
-                      aria-pressed={leftPane === 'github'}
-                      onClick={() => { track({ type: 'tab_switched', from: leftPane, to: 'github' }); setLeftPane('github'); setNarrowTab('github'); }}
-                    >
-                      GitHub ({ghCount})
-                    </button>
-                  )}
-                  {leftOnlyMode && (
-                    <button
-                      ref={showRightPaneButtonRef}
-                      type="button"
-                      className="pane-control"
-                      aria-label="Show terminal/diff pane"
-                      title="Show terminal/diff pane"
-                      onClick={showBothPanesFromLeft}
-                    >
-                      Show terminal/diff
-                    </button>
-                  )}
-                </div>
-                {leftPane === 'github' && ghCount > 0 ? (
+            {/* Pane container: one pane in the tabbed layout, two in split view */}
+            <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${tabbedLayout ? ' detail-split-tabbed' : ''}`}>
+              {/* Left pane: Conversation or GitHub */}
+              {!rightOnlyMode && <div className={`detail-split-left${leftPaneHidden ? ' pane-hidden-tab' : ''}`}>
+                {selectedTab === 'github' && ghCount > 0 ? (
                   <Suspense fallback={null}>
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
                   </Suspense>
@@ -1295,8 +1311,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
 
               {/* Right pane: Terminal or Diff (terminal stays mounted for UI
                   state, but byte-stream subscription follows visibility) */}
-              <div className={`detail-split-right${!rightOnlyMode && narrowTab !== 'terminal' ? ' pane-hidden-narrow' : ''}${!showRightPane ? ' pane-hidden-wide' : ''}`}>
-                <div className="detail-pane-header">
+              <div className={`detail-split-right${rightPaneHidden ? ' pane-hidden-tab' : ''}`}>
+                {showRightPaneHeader && <div className="detail-pane-header">
                   <button
                     type="button"
                     className={`pane-tab ${rightPane === 'terminal' ? 'active' : ''}`}
@@ -1315,29 +1331,18 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       Diff
                     </button>
                   )}
-                  {rightOnlyMode ? (
+                  {rightOnlyMode && (
                     <button
                       type="button"
                       className="pane-control"
-                      aria-label="Show Activity/GitHub pane"
-                      title="Show Activity/GitHub pane"
-                      onClick={showBothPanesFromRight}
+                      aria-label="Show conversation"
+                      title="Leave terminal focus and show the conversation"
+                      onClick={showConversationFromFocus}
                     >
-                      Show Activity/GitHub
-                    </button>
-                  ) : (
-                    <button
-                      ref={hideRightPaneButtonRef}
-                      type="button"
-                      className="pane-control"
-                      aria-label="Hide terminal/diff pane"
-                      title="Hide terminal/diff pane"
-                      onClick={hideRightPane}
-                    >
-                      Hide terminal/diff
+                      Show conversation
                     </button>
                   )}
-                </div>
+                </div>}
                 <div className={`right-pane-stack right-pane-${rightPane}`}>
                   <div
                     className="right-pane-slot right-pane-slot-terminal"

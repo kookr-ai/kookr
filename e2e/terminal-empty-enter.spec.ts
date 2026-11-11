@@ -6,6 +6,7 @@ import {
   injectToolUse,
   launchViaUI,
   resetServer,
+  openTerminalTab,
 } from './battle-helpers.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 
@@ -40,14 +41,7 @@ async function showAllProjects(page: Page) {
 }
 
 async function showTerminalPane(page: Page) {
-  const restore = page.getByRole('button', { name: 'Show terminal/diff pane' });
-  if (await restore.isVisible()) {
-    await restore.click();
-  }
-  const terminalTab = page.locator('.detail-split-right').getByRole('button', { name: 'Terminal', exact: true });
-  if (await terminalTab.isVisible()) {
-    await terminalTab.click();
-  }
+  await openTerminalTab(page);
 }
 
 async function selectedFindingName(page: Page): Promise<string> {
@@ -72,6 +66,7 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect(page.locator('.finding-card')).toHaveCount(2);
 
     await page.keyboard.press('Alt+n');
+    await showTerminalPane(page);
     const firstSelected = await selectedFindingName(page);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     await page.locator('.terminal-xterm').click();
@@ -95,6 +90,7 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect(page.locator('.finding-card')).toHaveCount(2);
 
     await page.keyboard.press('Alt+n');
+    await showTerminalPane(page);
     const firstSelected = await selectedFindingName(page);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     await expect(page.locator('.terminal-xterm')).toContainText('❯');
@@ -120,6 +116,7 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect(page.locator('.finding-card')).toHaveCount(2);
 
     await page.keyboard.press('Alt+n');
+    await showTerminalPane(page);
     const firstSelected = await selectedFindingName(page);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     await expect(page.locator('.terminal-xterm')).toContainText('❯');
@@ -138,6 +135,7 @@ test.describe('Terminal empty Enter navigation', () => {
     await expect(page.locator('.finding-card')).toHaveCount(2);
 
     await page.keyboard.press('Alt+n');
+    await showTerminalPane(page);
     const firstSelected = await selectedFindingName(page);
     await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
     await expect(page.locator('.terminal-xterm')).toContainText('❯');

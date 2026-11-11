@@ -1,4 +1,4 @@
-import type { DetailPaneMode, TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
+import type { DetailPaneMode, NarrowTab, TriageNavigationSlice, StoreGet, StoreSet } from '../store-types.js';
 import type { AgentState } from '../../../shared/protocol.js';
 import { isDndEnabled } from '../../hooks/useDnd.js';
 import { buildRoutableOrder, compareRoutableAgents } from '../../agent-priority-order.js';
@@ -12,13 +12,18 @@ const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 const DETAIL_PANE_MODE_STORAGE_KEY = 'kookr-detail-panel-mode';
 
 function isDetailPaneMode(value: string | null): value is DetailPaneMode {
-  return value === 'split' || value === 'left' || value === 'right';
+  return value === 'tabs' || value === 'split' || value === 'right';
 }
 
+/** Value an earlier build stored for "activity pane only"; it now means the tabbed layout. */
+const LEGACY_LEFT_ONLY_MODE = 'left';
+
+// #3561 slice 4a: the tabbed layout is the default, so it is stored as the
+// absence of a key. Split view and terminal focus are stored explicitly.
 function saveDetailPaneMode(mode: DetailPaneMode): boolean {
   try {
     if (typeof localStorage === 'undefined') return false;
-    if (mode === 'split') {
+    if (mode === 'tabs') {
       localStorage.removeItem(DETAIL_PANE_MODE_STORAGE_KEY);
     } else {
       localStorage.setItem(DETAIL_PANE_MODE_STORAGE_KEY, mode);
@@ -34,13 +39,17 @@ function saveDetailPaneMode(mode: DetailPaneMode): boolean {
 
 function loadDetailPaneMode(): DetailPaneMode {
   try {
-    if (typeof localStorage === 'undefined') return 'split';
+    if (typeof localStorage === 'undefined') return 'tabs';
     const stored = localStorage.getItem(DETAIL_PANE_MODE_STORAGE_KEY);
     if (isDetailPaneMode(stored)) return stored;
+    if (stored === LEGACY_LEFT_ONLY_MODE) {
+      localStorage.removeItem(DETAIL_PANE_MODE_STORAGE_KEY);
+      return 'tabs';
+    }
     if (stored !== null) {
       console.warn(`Kookr: ignoring invalid detail pane mode "${stored}"`);
       localStorage.removeItem(DETAIL_PANE_MODE_STORAGE_KEY);
-      return 'split';
+      return 'tabs';
     }
 
     const legacy = localStorage.getItem(TERMINAL_FOCUS_STORAGE_KEY);
@@ -60,20 +69,30 @@ function loadDetailPaneMode(): DetailPaneMode {
     if (legacy !== null) {
       localStorage.removeItem(TERMINAL_FOCUS_STORAGE_KEY);
     }
-    return 'split';
+    return 'tabs';
   } catch {
-    return 'split';
+    return 'tabs';
   }
+}
+
+/**
+ * #3561 4a: the tab to show after moving to another task. An operator watching
+ * terminals keeps the Terminal tab; the GitHub tab belongs to one task, so it
+ * falls back to the conversation.
+ */
+function tabAfterTaskSwitch(current: NarrowTab): { leftPane: 'activity'; narrowTab: NarrowTab } {
+  return { leftPane: 'activity', narrowTab: current === 'terminal' ? 'terminal' : 'activity' };
 }
 
 function activateNavigationSelection(
   agent: AgentState,
   visibleProjectIds: Set<string>,
-): { selectedAgentId: string; selectedTaskId: string | null; selectedAgentSource: 'manual'; selectedProject: string | null } {
+  currentTab: NarrowTab,
+): { selectedAgentId: string; selectedTaskId: string | null; selectedAgentSource: 'manual'; selectedProject: string | null; leftPane: 'activity'; narrowTab: NarrowTab } {
   const projectId = agent?.projectId ?? null;
   const selectedProject = projectId && visibleProjectIds.has(projectId) ? projectId : null;
   saveSelectedProject(selectedProject);
-  return { selectedAgentId: agent.agentId, selectedTaskId: agent.taskId ?? null, selectedAgentSource: 'manual', selectedProject };
+  return { selectedAgentId: agent.agentId, selectedTaskId: agent.taskId ?? null, selectedAgentSource: 'manual', selectedProject, ...tabAfterTaskSwitch(currentTab) };
 }
 
 function matchesSelection(agent: AgentState, selectedAgentId: string | null, selectedTaskId: string | null): boolean {
@@ -185,6 +204,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
           ? activateNavigationSelection(
               selected,
               new Set(state.visibleProjectSummaries.map((project) => project.project)),
+              state.narrowTab,
             )
           : {
               selectedAgentId: agentId,
@@ -206,8 +226,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
           ...(keepAllProjects ? { selectedProject: null } : {}),
           ...(agentId === null ? { focusZone: 'none' as const } : {}),
           respondAllAgentIds: null,
-          leftPane: 'activity',
-          narrowTab: 'activity',
+          ...tabAfterTaskSwitch(state.narrowTab),
         });
       });
     },
@@ -238,7 +257,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       }
 
       withSelectionTransitionSource({ source: 'nextBottleneck', reason: 'cycle_active_findings' }, () => {
-        set({ ...activateNavigationSelection(findings[nextIdx], visibleProjectIds), shortcutsArmed: false });
+        set({ ...activateNavigationSelection(findings[nextIdx], visibleProjectIds, get().narrowTab), shortcutsArmed: false });
       });
     },
 
@@ -252,7 +271,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const currentIdx = all.findIndex((agent) => matchesSelection(agent, selectedAgentId, selectedTaskId));
       const nextIdx = currentIdx >= 0 ? (currentIdx + 1) % all.length : 0;
       withSelectionTransitionSource({ source: 'nextTask', reason: 'cycle_routable_tasks' }, () => {
-        set(activateNavigationSelection(all[nextIdx], visibleProjectIds));
+        set(activateNavigationSelection(all[nextIdx], visibleProjectIds, get().narrowTab));
       });
     },
 
@@ -284,7 +303,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
 
       withSelectionTransitionSource({ source: 'selectNextTaskAfterCompletion', reason: 'completed_task_advance' }, () => {
         set({
-          ...activateNavigationSelection(all[0], visibleProjectIds),
+          ...activateNavigationSelection(all[0], visibleProjectIds, get().narrowTab),
           respondAllAgentIds: null,
           shortcutsArmed: false,
         });
@@ -325,7 +344,7 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       const currentIdx = all.findIndex((agent) => matchesSelection(agent, selectedAgentId, selectedTaskId));
       const prevIdx = currentIdx >= 0 ? (currentIdx - 1 + all.length) % all.length : all.length - 1;
       withSelectionTransitionSource({ source: 'previousTask', reason: 'cycle_routable_tasks' }, () => {
-        set(activateNavigationSelection(all[prevIdx], visibleProjectIds));
+        set(activateNavigationSelection(all[prevIdx], visibleProjectIds, get().narrowTab));
       });
     },
 
@@ -380,12 +399,15 @@ export function createTriageNavigationSlice(set: StoreSet, get: StoreGet): Triag
       });
     },
 
+    // Leaving terminal focus returns to the default tabbed layout on the
+    // Terminal tab, so the terminal the operator was reading stays in view.
     setTerminalFocusMode: (enabled) => {
-      get().setDetailPaneMode(enabled ? 'right' : 'split');
+      get().setDetailPaneMode(enabled ? 'right' : 'tabs');
+      if (!enabled) set({ narrowTab: 'terminal' });
     },
 
     toggleTerminalFocusMode: () => {
-      get().setDetailPaneMode(get().detailPaneMode === 'right' ? 'split' : 'right');
+      get().setTerminalFocusMode(get().detailPaneMode !== 'right');
     },
 
     setFocusZone: (zone) => {

@@ -444,39 +444,51 @@ describe('detail-pane persistence', () => {
   });
 
   test('loads a persisted pane mode on construction', () => {
-    const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'left' });
-    vi.stubGlobal('localStorage', storage.impl);
-
-    const store = createKookrStore();
-
-    expect(store.getState().detailPaneMode).toBe('left');
-    expect(store.getState().terminalFocusMode).toBe(false);
-  });
-
-  test('defaults to split when nothing is persisted', () => {
-    const storage = fakeStorage();
+    const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'split' });
     vi.stubGlobal('localStorage', storage.impl);
 
     const store = createKookrStore();
 
     expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().terminalFocusMode).toBe(false);
   });
 
-  test('setDetailPaneMode persists non-split modes and clears the legacy key', () => {
+  test('defaults to the tabbed layout when nothing is persisted', () => {
+    const storage = fakeStorage();
+    vi.stubGlobal('localStorage', storage.impl);
+
+    const store = createKookrStore();
+
+    expect(store.getState().detailPaneMode).toBe('tabs');
+  });
+
+  test('migrates the old activity-only value "left" to the tabbed layout', () => {
+    const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'left' });
+    vi.stubGlobal('localStorage', storage.impl);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const store = createKookrStore();
+
+    expect(store.getState().detailPaneMode).toBe('tabs');
+    expect(storage.map.has(DETAIL_PANE_MODE_KEY)).toBe(false);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('setDetailPaneMode persists non-default modes and clears the legacy key', () => {
     // Seed a VALID persisted mode so construction returns it without running
     // the legacy migration — otherwise loadDetailPaneMode would consume the
     // legacy key at construction time and this test would pass without ever
     // exercising saveDetailPaneMode's own removeItem(TERMINAL_FOCUS_KEY).
-    const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'split', [TERMINAL_FOCUS_KEY]: '1' });
+    const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'right', [TERMINAL_FOCUS_KEY]: '1' });
     vi.stubGlobal('localStorage', storage.impl);
     const store = createKookrStore();
     // Precondition: the legacy key survived construction untouched.
     expect(storage.map.has(TERMINAL_FOCUS_KEY)).toBe(true);
 
-    store.getState().setDetailPaneMode('left');
+    store.getState().setDetailPaneMode('split');
 
-    expect(store.getState().detailPaneMode).toBe('left');
-    expect(storage.map.get(DETAIL_PANE_MODE_KEY)).toBe('left');
+    expect(store.getState().detailPaneMode).toBe('split');
+    expect(storage.map.get(DETAIL_PANE_MODE_KEY)).toBe('split');
     // saveDetailPaneMode is what drops the legacy key here.
     expect(storage.map.has(TERMINAL_FOCUS_KEY)).toBe(false);
   });
@@ -494,14 +506,14 @@ describe('detail-pane persistence', () => {
     expect(storage.map.get(DETAIL_PANE_MODE_KEY)).toBe('right');
   });
 
-  test('setDetailPaneMode("split") removes the persisted key', () => {
+  test('setDetailPaneMode("tabs") removes the persisted key', () => {
     const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'right' });
     vi.stubGlobal('localStorage', storage.impl);
     const store = createKookrStore();
 
-    store.getState().setDetailPaneMode('split');
+    store.getState().setDetailPaneMode('tabs');
 
-    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().detailPaneMode).toBe('tabs');
     expect(storage.map.has(DETAIL_PANE_MODE_KEY)).toBe(false);
   });
 
@@ -518,7 +530,7 @@ describe('detail-pane persistence', () => {
     expect(storage.map.has(TERMINAL_FOCUS_KEY)).toBe(false);
   });
 
-  test('prunes an invalid persisted value and falls back to split', () => {
+  test('prunes an invalid persisted value and falls back to tabs', () => {
     const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'bogus' });
     vi.stubGlobal('localStorage', storage.impl);
     // Silence the expected warn about the invalid stored value.
@@ -526,7 +538,7 @@ describe('detail-pane persistence', () => {
 
     const store = createKookrStore();
 
-    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().detailPaneMode).toBe('tabs');
     expect(storage.map.has(DETAIL_PANE_MODE_KEY)).toBe(false);
   });
 });

@@ -851,14 +851,12 @@ export function App() {
     URL.revokeObjectURL(url);
   }, [agents, buildInfo, selectedAgentId, selectedProject, serverStartedAt]);
 
+  // Terminal focus needs a wide window; on a narrow one it falls back to the
+  // tabbed layout on the Terminal tab (#3561 slice 4a).
   useEffect(() => {
     if (wideDetailActive) return;
-    if (detailPaneMode === 'right') {
-      setNarrowTab('terminal');
-    } else if (detailPaneMode === 'left') {
-      setNarrowTab(leftPane === 'github' ? 'github' : 'activity');
-    }
-  }, [detailPaneMode, leftPane, setNarrowTab, wideDetailActive]);
+    if (detailPaneMode === 'right') setNarrowTab('terminal');
+  }, [detailPaneMode, setNarrowTab, wideDetailActive]);
 
   useEffect(() => {
     if (!terminalFocusActive) return;

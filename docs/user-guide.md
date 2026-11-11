@@ -107,10 +107,10 @@ When grouped findings contain identical pending prompts, Kookr may show **Reply 
 When several agents are running, the useful screen area is usually split between the project rail, the findings list, project context, activity, dependency controls, GitHub state, and the terminal. Use this workflow when the terminal needs to stay readable while you still route attention quickly:
 
 1. Press `Alt+N` to jump to the next highest-severity finding.
-2. Inspect the explanation and recent activity first. If you need raw context, switch to the terminal.
+2. Inspect the explanation and recent activity first, on the **Conversation** tab. If you need raw context, switch to the **Terminal** tab (or turn on **Split view** on a wide window to keep both on screen).
 3. Press `Alt+T` on desktop to enter terminal focus mode. This keeps the selected task visible while hiding secondary project and dependency chrome.
 4. Press `Alt+R` to focus the reply input, type the answer, then press `Enter` to send the reply and continue.
-5. Press `Alt+T` again when you need project context, dependency controls, Activity, or GitHub details back.
+5. Press `Alt+T` again when you need project context, dependency controls, the conversation, or GitHub details back.
 
 Terminal focus mode is a desktop-only space-saving mode. On mobile, use the **Findings** and **Task** tabs instead; the task tab keeps the selected task and terminal surfaces in the foreground without adding a separate focus toggle.
 
@@ -126,7 +126,7 @@ Use these controls together before resizing the browser or abandoning the dashbo
 - `Alt+1` through `Alt+3` sends that digit to the terminal and moves to the next task, useful for simple agent menus.
 - `?` opens the shortcuts dialog.
 
-On narrower desktop windows, the detail panel uses **Activity**, **Terminal**, and **GitHub** tabs. Keep **Terminal** selected while reading or replying, then switch briefly to **Activity** or **GitHub** only when you need summarized context.
+The detail panel uses **Conversation**, **Terminal**, and **GitHub** tabs at every width. The tab you pick stays picked as you move between tasks (GitHub resets to Conversation, since it belongs to one task). On windows wider than 1200 px, **Split view** at the right of the tab bar shows the conversation and the terminal side by side and is remembered across reloads.
 
 ### Command Palette
 

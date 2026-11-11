@@ -266,7 +266,7 @@ test.describe('Full integration scenarios', () => {
     await page.keyboard.press('Alt+n');
     await expect(page.locator('.detail-badge')).toContainText('PERMISSION');
     await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-    await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+    await expect(page.locator('.detail-split-left .activity-panel')).toBeVisible();
 
     // Respond to permission agent
     await page.locator('.response-row textarea').fill('Approve the permission');
@@ -352,7 +352,7 @@ test.describe('Full integration scenarios', () => {
     const answered = new Set<string>();
     for (let i = 0; i < 4; i++) {
       await expect(page.getByTestId('project-detail-drawer')).toBeVisible();
-      await expect(page.locator('.terminal-xterm .xterm-screen')).toBeVisible();
+      await expect(page.locator('.detail-split-left .activity-panel')).toBeVisible();
       const selected = page.locator('.finding-card.selected .finding-task');
       await expect(selected).toHaveText(/^Rapid [0-3]$/);
       const prompt = (await selected.textContent())!;
