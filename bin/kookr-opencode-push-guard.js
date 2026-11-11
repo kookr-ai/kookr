@@ -25,7 +25,7 @@ const MAX_DEPTH = 5;
 
 const GIT_BLOCKED = new Set(['push', 'send-pack']);
 const GIT_OPTS_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
-const GH_PR_BLOCKED = new Set(['merge', 'create', 'ready', 'close', 'reopen', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
+const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reopen', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
 const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'edit', 'upload']);
 const GH_GLOBAL_OPTS_WITH_ARG = new Set(['-R', '--repo', '--hostname']);
 const GH_API_OPTS_WITH_ARG = new Set([
@@ -47,8 +47,8 @@ function findHeredoc(line) {
     if (c === "'" || c === '"') { quote = c; continue; }
     if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return null; // comment: nothing after it runs
     if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
-      const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))/.exec(line.slice(i));
-      if (m) return { index: i, delim: m[1] ?? m[2] ?? m[3], expands: m[3] !== undefined };
+      const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|(\\)?([^\s;&|<>()'"\\]+))/.exec(line.slice(i));
+      if (m) return { index: i, delim: m[1] ?? m[2] ?? m[4], expands: m[4] !== undefined && m[3] === undefined };
     }
   }
   return null;
@@ -71,7 +71,8 @@ function splitHeredocs(command) {
     const body = [];
     let j = i + 1;
     while (j < lines.length && lines[j].trim() !== h.delim) body.push(lines[j++]);
-    if (/(^|[\s;&|(])(?:bash|sh|zsh|dash|ksh|source|\.)\b/.test(line.slice(0, h.index))) shellBodies.push(body.join('\n'));
+    // Fed to a shell if any word on the line is a shell (`bash <<EOF`, `/bin/bash <<EOF`, `cat <<EOF | bash`, `source /dev/stdin <<EOF`).
+    if (toSegments(line).some((seg) => seg.some((tok) => SHELLS.has(basename(tok)) || tok === 'source' || tok === '.'))) shellBodies.push(body.join('\n'));
     else if (h.expands) expandingBodies.push(body.join('\n'));
     i = j; // skip body and the delimiter line
   }
@@ -166,10 +167,11 @@ function ghApiVerdict(t, from) {
       const eq = tok.indexOf('=');
       const name = eq > 0 ? tok.slice(0, eq) : tok;
       const value = eq > 0 ? tok.slice(eq + 1) : null;
-      if (name === '-X' || name === '--method') method = (value ?? t[i + 1] ?? '').toUpperCase();
-      else if (/^-X./.test(tok)) method = tok.slice(2).toUpperCase(); // attached form: -XPOST
+      const short = /^-([A-Za-z]*)X([A-Za-z]*)$/.exec(tok); // -X PUT, -XPUT, -iX PUT, -iXPUT
+      if (name === '--method') method = (value ?? t[i + 1] ?? '').toUpperCase();
+      else if (short) method = (short[2] || t[i + 1] || '').toUpperCase();
       if (GH_API_FIELD_FLAGS.has(name) || /^-[fF]./.test(tok)) hasField = true; // -fkey=value too
-      if (eq < 0 && GH_API_OPTS_WITH_ARG.has(name)) i++;
+      if (eq < 0 && (GH_API_OPTS_WITH_ARG.has(name) || /^-[A-Za-z]*X$/.test(tok))) i++;
     } else if (endpoint === null) {
       endpoint = tok;
     }
@@ -187,12 +189,12 @@ function ghVerdict(t) {
   }
   const sub = t[i];
   if (sub === 'pr' || sub === 'release') {
-    // `gh pr --repo x merge 3`: flags may sit between the command group and the action.
-    let j = i + 1;
-    while (j < t.length && t[j].startsWith('-')) j += GH_GLOBAL_OPTS_WITH_ARG.has(t[j]) ? 2 : 1;
-    const action = t[j];
+    // Flags (some taking an argument) may sit between the command group and the action
+    // (`gh pr --repo x merge 3`, `gh pr --title t create`), so take the first blocked action word anywhere after it.
+    // A harmless command that merely has such a word as a flag value (`gh pr list --search merge`) is blocked too.
     const blocked = sub === 'pr' ? GH_PR_BLOCKED : GH_RELEASE_BLOCKED;
-    return action && blocked.has(action) ? `gh ${sub} ${action}` : null;
+    const action = t.slice(i + 1).find((tok) => blocked.has(tok));
+    return action ? `gh ${sub} ${action}` : null;
   }
   if (sub === 'api') return ghApiVerdict(t, i + 1);
   return null;
