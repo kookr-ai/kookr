@@ -350,8 +350,27 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.text).not.toMatch(/\brun\b/i);
     });
 
-    test.each(['approve_request', 'push_notifications'])('an identifier that turns into a decision or action word when spoken is still rejected: %s', async (id) => {
-      const client = mockClient(JSON.stringify({ summary: `Waiting on ${id} from the user.` }));
+    test('an identifier that turns into a decision word when spoken is still rejected', async () => {
+      const client = mockClient(JSON.stringify({ summary: 'The agent renamed approve_request.' }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+    });
+
+    test.each([
+      ['a plain description is spoken', 'The agent renamed push_notifications.', false],
+      ['an instruction is rejected', 'Next step is run_tests on the branch.', true],
+    ])('an identifier that turns into an action word when spoken is judged like any other sentence: %s', async (_label, summary, usedFallback) => {
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(usedFallback);
+    });
+
+    test.each([
+      'The agent closed issue 4approve it.',
+      'The agent closed pull request 12allow and moved on.',
+      'The agent opened pull request 12merge it.',
+    ])('a decision or action word that only exists once a generated phrase is removed is rejected: %s', async (summary) => {
+      const client = mockClient(JSON.stringify({ summary }));
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(true);
     });
@@ -454,6 +473,9 @@ describe('summarizeTaskForSpeech', () => {
       // Shapes the first version of this rule got wrong.
       'The agent upgraded Node.js and will run the tests next.',
       'Pull request 42 is ready to merge.',
+      'After the rebase, the agent will push the branch.',
+      'When the tests passed, it started to merge the two branches.',
+      'Your permission is needed before the agent can push the branch.',
     ];
     // Summaries that must be replaced by the template: [what it shows, the summary].
     const REJECTED: Array<[string, string]> = [
@@ -516,6 +538,27 @@ describe('summarizeTaskForSpeech', () => {
       ['reassurance about an action', 'The agent says it is fine to delete the folder.'],
       ['a safety claim about an action', 'The cleanup is safe, and the agent will delete the folder.'],
       ['a recommendation with the verb in its base form', 'The agent recommends that we merge the pull request today.'],
+      ['a typographic apostrophe in "it\u2019s time to"', 'It\u2019s time to merge.'],
+      ['a typographic apostrophe in "let\u2019s"', 'The tests pass, so let\u2019s merge it.'],
+      ['a typographic apostrophe in "don\u2019t forget"', 'The agent is done, so don\u2019t forget to push.'],
+      ['a bare command after a comma', 'Tests pass, merge.'],
+      ['a command after a lead-in clause', 'When ready, merge.'],
+      ['a command with an unlisted object after a comma', 'When the tests pass, push to main.'],
+      ['a command after a comma with a noun object', 'The agent finished, run tests.'],
+      ['an opening verb that is also a noun', 'Test it and merge.'],
+      ['another opening verb that is also a noun', 'Work through the conflicts and push.'],
+      ['"issue" as an opening verb', 'Issue the fix and push it.'],
+      ['two hyphens used as a dash', 'The agent finished -- merge it.'],
+      ['a lead-in with no subject after it', 'After that merge it.'],
+      ['"in that case"', 'In that case run the tests.'],
+      ['"we can"', 'We can merge it now.'],
+      ['"I would"', 'I would merge it.'],
+      ['a prohibition', 'The tests failed, do not merge.'],
+      ['"your job is to"', 'Your job is to merge it.'],
+      ['"the right move is to"', 'The right move is to merge it.'],
+      ['"the thing to do is"', 'The thing to do is merge it.'],
+      ['"all that is left is to"', 'All that is left is to merge it.'],
+      ['a prohibition with a contraction', "The agent is done but don't merge yet."],
     ];
     /** The rule this one replaces: any of these words, anywhere. */
     const FORMER_RULE = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;

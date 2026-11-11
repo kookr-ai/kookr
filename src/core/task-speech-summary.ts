@@ -36,9 +36,10 @@ const MAX_SPOKEN_EXPLANATION_CHARS = 100;
 const FINDING_EXPLANATION_CHARS = 300;
 
 /**
- * Words for the operator's own decision on a prompt. A summary containing one is never
- * spoken, in any form: the text is built from untrusted agent output, and "approve" or
- * "allow" in the operator's ear is exactly what an injected instruction would aim for.
+ * Words for the operator's own decision on a prompt. A summary containing one of them as
+ * a whole word is never spoken, wherever it appears: the text is built from untrusted
+ * agent output, and "approve" or "allow" in the operator's ear is exactly what an
+ * injected instruction would aim for. Inflected forms ("approved") were never matched.
  * The prompt asks for "is waiting for your permission" instead.
  */
 const DECISION_WORD_DENYLIST = /\b(approve|deny|reject|allow|dismiss)\b/i;
@@ -58,39 +59,55 @@ const DECISION_WORD_DENYLIST = /\b(approve|deny|reject|allow|dismiss)\b/i;
 const ACTION = '(?:execute|run|delete|cancel|merge|push|commit|click)';
 const MENTIONS_ACTION = new RegExp(`\\b${ACTION}\\b`, 'i');
 
-/** How a descriptive sentence starts: with its subject, or with a clause that leads to it. Anything else may be a command. */
-const DESCRIPTIVE_OPENER = /^(?:the|it|its|it's|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|after|once|when|while|before|since|because|although|though|during|until|with|without|in|on|at|for|from|by|meanwhile|earlier|currently|agents?|tests?|pull request|issue|task|work|his|her|their|our|your|my|we|they|he|she|i)\b/i;
+/** How a descriptive main clause starts: with its subject. Words that can also be read as a command ("test", "work", "issue") are left out. */
+const SUBJECT_OPENER = /^(?:the|it|its|it['’]s|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|meanwhile|earlier|currently|agents?|pull request|his|her|their|your|they|he|she)\b/i;
+/** A sentence may also start with a clause that leads to the subject: "After the rebase, the agent …". */
+const LEAD_IN = /^(?:after|once|when|while|before|since|because|although|though|during|until|with|without|in|on|at|for|from|by)\b/i;
+
+/** True when the sentence opens with its subject, directly or after a lead-in clause and a comma. */
+function opensWithSubject(sentence: string): boolean {
+  if (SUBJECT_OPENER.test(sentence)) return true;
+  if (!LEAD_IN.test(sentence)) return false;
+  const comma = sentence.indexOf(',');
+  return comma !== -1 && SUBJECT_OPENER.test(sentence.slice(comma + 1).trim());
+}
 
 /**
  * Words that turn a sentence about an action into advice, reassurance or a request:
  * "you should run", "please merge", "the operator needs to push", "it is safe to
- * delete", "say yes so it can push". Only sentences that contain an action verb are
- * checked against this list, and all of those used to be rejected, so a broad list
- * costs nothing that was spoken before. "your" is not on it: "needs your permission
- * to push" describes.
+ * delete", "say yes so it can push", "do not merge yet". Only sentences that contain
+ * an action verb are checked against this list, and all of those used to be rejected,
+ * so a broad list costs nothing that was spoken before. "your" is not on it: "needs
+ * your permission to push" describes.
  */
-const LISTENER_CUE = /\b(?:you|please|kindly|let's|let us|let (?:it|them|him|her)|feel free|free to|don't forget|do not forget|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|(?:it's|it is) time to|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|yes|operator|user)\b/i;
+const LISTENER_CUE = /\b(?:you|we|i|please|kindly|let['’]s|let us|let (?:it|them|him|her)|feel free|free to|don['’]t|do not|never|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|good to|by all means|(?:it['’]s|it is) time to|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|yes|operator|user)\b/i;
 
 /**
- * A command inside a sentence: after a comma or an opening quote, after "so/then/now/
- * just", after "says/tells", or straight after punctuation with no space ("done.merge it").
+ * A command inside a sentence:
+ * - after a comma, unless the verb is one item of a list ("will rebase, push, and open");
+ * - after an opening quote;
+ * - after "so/then/now/just";
+ * - after "says/tells";
+ * - as what something "is": "the right move is to merge it", "the thing to do is merge it";
+ * - straight after punctuation with no space ("done.merge it").
  */
 const INNER_COMMAND = new RegExp(
-  `,\\s*(?:(?:then|and|now|just|so|go)\\s+)*${ACTION}\\s+(?:it|this|that|them|these|those|the|a|an|your|all|everything|now)\\b`
+  `,\\s*(?:(?:then|and|now|just|so|go|please|kindly)\\s+)*${ACTION}\\b(?!\\s*,|\\s+(?:and|or)\\b)`
   + `|["'\\u201c\\u2018(]\\s*${ACTION}\\b`
   + `|[.!?;:\\u2026]${ACTION}\\b`
   + `|\\b(?:so|then|now|just)\\s+${ACTION}\\b`
-  + `|\\b(?:says?|said|tells?|told)\\s+(?:to\\s+)?${ACTION}\\b`,
+  + `|\\b(?:says?|said|tells?|told)\\s+(?:to\\s+)?${ACTION}\\b`
+  + `|\\b(?:is|are|was|were)\\s+(?:to\\s+)?${ACTION}\\b`,
   'i',
 );
 
 /** A sentence with an action verb is a plain description when it opens with its subject, is not aimed at the listener and hides no command. */
 function describesAction(sentence: string): boolean {
-  return DESCRIPTIVE_OPENER.test(sentence) && !LISTENER_CUE.test(sentence) && !INNER_COMMAND.test(sentence);
+  return opensWithSubject(sentence) && !LISTENER_CUE.test(sentence) && !INNER_COMMAND.test(sentence);
 }
 
 /** Sentence ends: punctuation followed by a space or a capital. "Node.js" and "2.5" are not ends. */
-const SENTENCE_BREAK = /(?<=[.!?;:…])(?=\s|[A-Z"'“(])|[—–\n]|\s-\s/;
+const SENTENCE_BREAK = /(?<=[.!?;:…])(?=\s|[A-Z"'“(])|[—–\n]|\s-\s|--+/;
 
 /**
  * True when the text tells the listener what to do rather than describing what happened.
@@ -259,13 +276,25 @@ function withinSummaryLimits(summary: string): boolean {
  * that only appears once an identifier is spoken as words ("run_tests" -> "run tests",
  * "approve_request" -> "approve request").
  */
+/**
+ * The instruction check for the spoken form. The generated phrases are removed first, so
+ * that "a commit" (spoken for a hash) is not taken for an action. Removing "pull request
+ * 42" can also remove a sentence's subject, so the sentence shape is judged both with
+ * and without the phrases and the text is rejected only when both read as an
+ * instruction. A decision or action word that exists only once the phrases are removed
+ * ("issue 4approve it") is rejected outright, as it always was.
+ */
+function spokenGivesInstruction(spoken: string): boolean {
+  const stripped = stripGeneratedPhrases(spoken);
+  if (DECISION_WORD_DENYLIST.test(stripped)) return true;
+  if (MENTIONS_ACTION.test(stripped) && !MENTIONS_ACTION.test(spoken)) return true;
+  return givesInstruction(stripped) && givesInstruction(spoken);
+}
+
 function spokenWithinLimits(spoken: string): boolean {
   return spoken.length <= MAX_SUMMARY_CHARS * SPOKEN_CEILING
     && wordCount(spoken) <= MAX_SUMMARY_WORDS * SPOKEN_CEILING
-    // The generated phrases are removed so that "a commit" (spoken for a hash) is not taken for an
-    // action. Removing "pull request 42" can also remove a sentence's subject, so the text is only
-    // rejected when it reads as an instruction both with and without them.
-    && !(givesInstruction(stripGeneratedPhrases(spoken)) && givesInstruction(spoken));
+    && !spokenGivesInstruction(spoken);
 }
 
 function normalizeSummary(raw: string): string | null {
