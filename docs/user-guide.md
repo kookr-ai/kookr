@@ -141,7 +141,11 @@ Use `↑` and `↓` to move through results, `↵` to run the highlighted action
 
 ### Project-Scoped Triage
 
-For dense multi-repository sessions, start broad and narrow only when the queue is noisy:
+For dense multi-repository sessions, start broad and narrow only when the queue is noisy.
+
+On a window 1280 px or wider, the left navigation lists queues first: **Needs you**, **Working** and **Finished** jump to that section of the task list, and **Scheduled** opens Schedules. Below the queues are projects by name, with counts. Projects without a running task or a finding sit behind **All N projects** unless they are pinned or selected. On narrower windows, and while a project's detail drawer is open, the navigation shrinks back to one icon per project.
+
+To triage:
 
 1. Use **All projects** or `Alt+0` to catch global blockers.
 2. When the project rail is long, type in the compact filter under **All projects** to narrow rows by display name or local path. **All projects** stays visible; `Alt+4` through `Alt+9` still follow the unfiltered sidebar order.

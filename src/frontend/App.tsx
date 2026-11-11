@@ -92,6 +92,7 @@ import {
 } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
 import { findingTypeLabel, findingWaitStartedAt, oldestFindingWaitAgent } from './presentation.js';
+import { mergeCompletedHistory, scopeArchivedAgents } from './completed-history.js';
 import { activeModalReducer } from './app-modal-reducer.js';
 import type { ActiveModal } from './app-modal-reducer.js';
 import { useCompletionConfirmation } from './hooks/useCompletionConfirmation.js';
@@ -167,6 +168,10 @@ const WIDE_DETAIL_BREAKPOINT_PX = 1200;
 // reserved when the findings panel is resized, so the terminal can never be
 // squeezed to an unusable width on narrow desktops.
 const MIN_TERMINAL_RESERVE_PX = 480;
+// The reserve above assumes the 52 px icon rail. The labelled navigation
+// (#3561 slice 5a) is wider; the difference comes off the findings panel, not
+// the terminal (styles.css caps the rendered width the same way).
+const ICON_RAIL_WIDTH_PX = 52;
 
 function quotedTaskLabel(label: string): string {
   const trimmed = label.trim();
@@ -190,9 +195,11 @@ function reflectionDismissKey(sessionId: string): string {
  */
 function maxFindingsWidthFor(container: HTMLElement | null): number {
   if (!container) return MAX_FINDINGS_WIDTH;
+  const sidebar = container.querySelector<HTMLElement>(':scope > .project-sidebar');
+  const extraNavWidth = Math.max(0, (sidebar?.offsetWidth ?? 0) - ICON_RAIL_WIDTH_PX);
   return Math.max(
     MIN_FINDINGS_WIDTH,
-    Math.min(MAX_FINDINGS_WIDTH, container.clientWidth - MIN_TERMINAL_RESERVE_PX),
+    Math.min(MAX_FINDINGS_WIDTH, container.clientWidth - MIN_TERMINAL_RESERVE_PX - extraNavWidth),
   );
 }
 
@@ -247,6 +254,12 @@ function FindingsResizer({
     update();
     const observer = new ResizeObserver(update);
     observer.observe(main);
+    // The navigation can widen without resizing `main` (the labelled layout of
+    // #3561 slice 5a appears once projects load, or when a project drawer
+    // closes). The panes on either side of the divider do resize then.
+    for (const pane of [ref.current?.previousElementSibling, ref.current?.nextElementSibling]) {
+      if (pane) observer.observe(pane);
+    }
     return () => observer.disconnect();
     // panelWidth/onResize are stable across renders for our usage; observe once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1276,6 +1289,18 @@ export function App() {
     () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
     [agents, coordinator, projectPriorityRanks],
   );
+  // Queue counts for the labelled navigation (#3561 slice 5a). Finished uses
+  // the same live + archived merge as the list's Finished header, so the two
+  // never disagree once older history has been loaded.
+  const finishedListCount = useMemo(
+    () => mergeCompletedHistory(completed, scopeArchivedAgents(archivedAgents, selectedProject)).length,
+    [completed, archivedAgents, selectedProject],
+  );
+  // "Needs you" heads the one list, so its queue jumps back to the top.
+  const jumpToNeedsYou = useCallback(() => {
+    setMobileTab('findings');
+    document.querySelector('[data-testid="findings-needs-you-header"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
   const oldestWaitingFinding = useMemo(
     () => oldestFindingWaitAgent(findings),
     [findings],
@@ -1490,6 +1515,16 @@ export function App() {
     <ProjectSidebar
       onManage={() => openModal('projectSidebarManager')}
       onAdjustCap={openSettingsAtMaxActiveTasks}
+      labelled={!selectedProjectSummary}
+      queues={{
+        needsYou: findings.length,
+        working: healthy.length,
+        finished: finishedListCount,
+        onNeedsYou: jumpToNeedsYou,
+        onWorking: expandHealthyRail,
+        onFinished: expandCompletedRail,
+        onScheduled: () => openModal('schedules'),
+      }}
     />
   );
 

@@ -224,6 +224,8 @@ function ProjectIcon({
         type="button"
       >
         <span className="project-icon-letter">{letter}</span>
+        <span className={`project-nav-dot color-${summary.color}`} aria-hidden="true" />
+        <span className="project-nav-name">{summary.displayName}</span>
         {hasFindings && (
           <span className="project-icon-badge anomaly">{summary.findingCount}</span>
         )}
@@ -377,8 +379,59 @@ function OrganizerButton({ onManage }: { onManage: () => void }) {
   );
 }
 
+/**
+ * Queue entries at the top of the labelled navigation (#3561 slice 5a).
+ * Counts come from the same buckets the task list renders, so a queue and
+ * its list section always agree. A queue jumps to its section of the one
+ * list (or opens Schedules); it does not filter, so none shows a selected
+ * state.
+ */
+export interface ProjectSidebarQueues {
+  needsYou: number;
+  working: number;
+  finished: number;
+  onNeedsYou: () => void;
+  onWorking: () => void;
+  onFinished: () => void;
+  onScheduled: () => void;
+}
+
+function NavQueue({
+  id,
+  label,
+  count,
+  need = false,
+  onClick,
+}: {
+  id: string;
+  label: string;
+  count: number;
+  need?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="project-nav-queue"
+      data-testid={`nav-queue-${id}`}
+      onClick={onClick}
+    >
+      <span className="project-nav-name">{label}</span>
+      <span className={`project-nav-count${need ? ' need' : ''}`}>{count}</span>
+    </button>
+  );
+}
+
 interface Props {
   onManage: () => void;
+  /** Queue entries for the labelled navigation; omitted in isolated tests. */
+  queues?: ProjectSidebarQueues;
+  /**
+   * Allow the labelled layout at 1280 px and wider. App turns it off while a
+   * project's detail drawer is open: the drawer already names the project,
+   * and the 160 px the labels cost would come out of the reading pane.
+   */
+  labelled?: boolean;
   /**
    * Called when the user requests to adjust the server concurrency cap (e.g.
    * via right-click on the all-projects icon). The parent owns navigation —
@@ -387,7 +440,7 @@ interface Props {
   onAdjustCap?: () => void;
 }
 
-export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
+export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true }: Props) {
   const {
     visibleProjectSummaries,
     projectSummaries,
@@ -402,7 +455,17 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
     reorderSidebarProject,
     agents,
     maxActiveTasks,
+    schedules,
   } = useKookrStore();
+  const enabledScheduleCount = useMemo(
+    () => schedules.filter((schedule) => schedule.enabled).length,
+    [schedules],
+  );
+  // Labelled navigation lists projects with live work (and pinned or selected
+  // ones); the rest sit behind one toggle, as in the variant B frames. The
+  // icon rail under 1280 px still shows every project: the idle class only
+  // hides rows in the labelled layout (see styles.css).
+  const [showIdleProjects, setShowIdleProjects] = useState(false);
   const projectMute = useProjectNotificationMute();
   const pendingCount = useMemo(
     () => agents.filter((a) => a.taskStatus === 'pending').length,
@@ -530,6 +593,15 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   }
 
   const filterActive = filterQuery.trim() !== '';
+  const tuckIdle = !showIdleProjects && !filterActive;
+  const isIdleProject = (summary: ProjectSummary, pinned: boolean): boolean =>
+    !pinned
+    && summary.activeAgents <= 0
+    && summary.findingCount <= 0
+    && selectedProject !== summary.project;
+  const idleProjectCount = visibleProjectSummaries.filter(
+    (summary) => isIdleProject(summary, Boolean(visibleRowMap.get(summary.project)?.pinned)),
+  ).length;
   const menuRow = menuProjectId ? visibleRowMap.get(menuProjectId) ?? null : null;
   const menuSection = menuRow?.pinned ? pinnedSummaries : unpinnedSummaries;
   const menuIndex = menuProjectId ? menuSection.findIndex((summary) => summary.project === menuProjectId) : -1;
@@ -625,10 +697,13 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
 
   function renderProject(summary: ProjectSummary, pinned: boolean) {
     const isDragTarget = dragTarget?.project === summary.project;
-    const targetClass = isDragTarget ? `project-sidebar-drop-target ${dragTarget.position}` : '';
+    const targetClass = [
+      isDragTarget ? `project-sidebar-drop-target ${dragTarget.position}` : '',
+      tuckIdle && isIdleProject(summary, pinned) ? 'project-nav-idle' : '',
+    ].filter(Boolean).join(' ');
 
     return (
-      <div key={summary.project} className={targetClass}>
+      <div key={summary.project} className={targetClass || undefined}>
         <ProjectIcon
           summary={summary}
           pinned={pinned}
@@ -667,7 +742,16 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
   }
 
   return (
-    <div className="project-sidebar kookr-tour-target-layout" data-testid="project-sidebar">
+    <nav className={`project-sidebar${labelled ? ' labelled' : ''} kookr-tour-target-layout`} data-testid="project-sidebar" aria-label="Queues and projects">
+      {queues && (
+        <div className="project-nav-queues">
+          <NavQueue id="needs-you" label="Needs you" count={queues.needsYou} need={queues.needsYou > 0} onClick={queues.onNeedsYou} />
+          <NavQueue id="working" label="Working" count={queues.working} onClick={queues.onWorking} />
+          <NavQueue id="finished" label="Finished" count={queues.finished} onClick={queues.onFinished} />
+          <NavQueue id="scheduled" label="Scheduled" count={enabledScheduleCount} onClick={queues.onScheduled} />
+        </div>
+      )}
+      <div className="project-nav-heading">Projects</div>
       <Tooltip text={allTooltipText}>
         <button
           aria-label={allAriaLabel}
@@ -684,6 +768,7 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
           type="button"
         >
           <span className="project-icon-letter">*</span>
+          <span className="project-nav-name">All projects</span>
           <TaskCountBadge taskLoad={allTaskLoad} pendingCount={pendingCount} />
         </button>
       </Tooltip>
@@ -708,6 +793,18 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
         {filteredUnpinnedSummaries.map((summary) => renderProject(summary, false))}
         {renderSectionDropZone(false)}
       </div>
+
+      {!filterActive && idleProjectCount > 0 && (
+        <button
+          type="button"
+          className="project-nav-idle-toggle"
+          data-testid="project-nav-idle-toggle"
+          aria-expanded={showIdleProjects}
+          onClick={() => setShowIdleProjects((shown) => !shown)}
+        >
+          {showIdleProjects ? 'Hide idle projects' : `All ${visibleProjectSummaries.length} projects`}
+        </button>
+      )}
 
       <div className="project-sidebar-spacer" />
       <OrganizerButton onManage={onManage} />
@@ -751,6 +848,6 @@ export function ProjectSidebar({ onManage, onAdjustCap }: Props) {
           onClose={closeMenu}
         />
       )}
-    </div>
+    </nav>
   );
 }

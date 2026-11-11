@@ -309,6 +309,11 @@ code, kbd { font-family: var(--font-mono); }
 .project-sidebar-spacer { flex: 1 0 12px; min-height: 12px; }
 .project-sidebar-organizer { width: 36px; height: 36px; border-radius: 8px; font-size: 16px; }
 
+/* Labelled navigation (#3561 slice 5a): hidden in the icon rail; the full
+   layout lives in styles.css. The width rule keeps the first paint stable. */
+.project-nav-queues, .project-nav-heading, .project-nav-name, .project-nav-dot, .project-nav-idle-toggle { display: none; }
+@media (min-width: 1280px) { .project-sidebar.labelled { width: 212px; min-width: 212px; } }
+
 .project-icon {
   position: relative;
   display: flex;

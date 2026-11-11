@@ -10051,6 +10051,209 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   background: rgba(248,113,113,0.1);
 }
 
+/*
+ * Labelled navigation (#3561 slice 5a, variant B "triage inbox"). One DOM
+ * serves both layouts. Under 1280 px the queues, heading, labels and idle
+ * toggle are hidden and the rail stays the 52 px icon column. At 1280 px and
+ * wider it becomes a 212 px navigation: queues with counts first, then
+ * projects by name with counts, idle projects behind one toggle. The
+ * `labelled` class is dropped while a project's detail drawer is open, so
+ * that layout keeps main's widths (the drawer already names the project).
+ */
+.project-nav-queues,
+.project-nav-heading,
+.project-nav-name,
+.project-nav-dot,
+.project-nav-idle-toggle {
+  display: none;
+}
+
+@media (min-width: 1280px) {
+  .project-sidebar.labelled {
+    align-items: stretch;
+    gap: 2px;
+    width: 212px;
+    min-width: 212px;
+    padding: 8px;
+  }
+
+  .project-sidebar.labelled .project-sidebar-section {
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .project-sidebar.labelled .project-nav-queues {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .project-sidebar.labelled .project-nav-heading {
+    display: block;
+    padding: 12px 8px 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+
+  .project-sidebar.labelled .project-nav-queue,
+  .project-sidebar.labelled .project-icon,
+  .project-sidebar.labelled .project-nav-idle-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
+    width: 100%;
+    height: 32px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 400;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .project-sidebar.labelled .project-nav-queue:hover,
+  .project-sidebar.labelled .project-icon:hover,
+  .project-sidebar.labelled .project-nav-idle-toggle:hover {
+    background: var(--bg-card-hover);
+    color: var(--text-bright);
+  }
+
+  .project-sidebar.labelled .project-nav-idle-toggle {
+    color: var(--text-secondary);
+  }
+
+  .project-sidebar.labelled .project-icon.selected {
+    background: var(--bg-card-selected);
+    color: var(--text-bright);
+    box-shadow: inset 2px 0 0 var(--state-work);
+  }
+
+  .project-sidebar.labelled .project-icon.inactive {
+    opacity: 1;
+    color: var(--text-secondary);
+  }
+
+  .project-sidebar.labelled .project-icon.all {
+    margin-bottom: 0;
+  }
+
+  .project-sidebar.labelled .project-icon.all::after,
+  .project-sidebar.labelled .project-icon-letter {
+    display: none;
+  }
+
+  .project-sidebar.labelled .project-nav-name {
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .project-sidebar.labelled .project-nav-dot {
+    display: block;
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-secondary);
+  }
+  .project-sidebar.labelled .project-nav-dot.color-0 { background: #60a5fa; }
+  .project-sidebar.labelled .project-nav-dot.color-1 { background: #34d399; }
+  .project-sidebar.labelled .project-nav-dot.color-2 { background: #fbbf24; }
+  .project-sidebar.labelled .project-nav-dot.color-3 { background: #f87171; }
+  .project-sidebar.labelled .project-nav-dot.color-4 { background: #a78bfa; }
+  .project-sidebar.labelled .project-nav-dot.color-5 { background: #2dd4bf; }
+  .project-sidebar.labelled .project-nav-dot.color-6 { background: #f472b6; }
+  .project-sidebar.labelled .project-nav-dot.color-7 { background: #fb923c; }
+
+  .project-sidebar.labelled .project-nav-count,
+  .project-sidebar.labelled .project-icon-task-count {
+    position: static;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--text-secondary);
+  }
+
+  .project-sidebar.labelled .project-nav-count.need,
+  .project-sidebar.labelled .project-icon-badge {
+    position: static;
+    min-width: 0;
+    height: auto;
+    padding: 0 6px;
+    border-radius: 999px;
+    background: var(--state-need);
+    color: #241a02;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .project-sidebar.labelled .project-icon-paused {
+    position: static;
+    flex: none;
+  }
+
+  /* "Stalled" counts in-progress tasks that have a finding, which the amber
+     badge beside it already flags, so the fraction stays neutral here. */
+  .project-sidebar.labelled .project-icon-task-count.has-stalled {
+    color: var(--text-secondary);
+  }
+
+  .project-sidebar.labelled .project-icon.all.at-cap .project-icon-task-count {
+    color: var(--state-bad);
+  }
+
+  .project-sidebar.labelled .project-nav-idle {
+    display: none;
+  }
+
+  .project-sidebar.labelled .project-sidebar-filter {
+    width: 100%;
+    height: 28px;
+    margin: 4px 0;
+  }
+
+  .project-sidebar.labelled .project-sidebar-filter-input,
+  .project-sidebar.labelled .project-sidebar-filter-input:focus {
+    width: 196px;
+    height: 28px;
+    padding: 0 8px;
+  }
+
+  .project-sidebar.labelled .project-sidebar-divider {
+    width: auto;
+    margin: 4px 8px;
+  }
+
+  .project-sidebar.labelled .project-sidebar-organizer {
+    align-self: flex-start;
+  }
+
+  /* A saved or dragged findings width must not eat the 160 px the labels
+     cost out of the terminal: keep main's floor for the reading pane
+     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). */
+  .main:has(> .project-sidebar.labelled) > .findings-panel {
+    max-width: max(280px, calc(100% - 640px));
+  }
+
+  /* "All projects" is always the selected row in this layout; keep the red
+     at-cap ring visible over the selection inset. */
+  .project-sidebar.labelled .project-icon.all.at-cap {
+    box-shadow: inset 0 0 0 1px var(--state-bad);
+  }
+}
+
 .project-sidebar-drop-target {
   position: relative;
   width: 100%;
