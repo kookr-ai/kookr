@@ -653,6 +653,93 @@ describe('Lucy interaction log wiring', () => {
     expect(JSON.stringify(said[0])).not.toContain('ghp_');
   });
 
+  describe('subject: the display title of the task the message was about (#3605)', () => {
+    const token = 'ghp_abcdefghijklmnop1234567890';
+    const taskResult = {
+      text: 'This task is done.',
+      audioBase64: 'AUDIO',
+      mimeType: 'audio/wav' as const,
+      durationMs: 1500,
+      usedFallback: true,
+      llmMs: 0,
+      ttsMs: 200,
+      cached: false,
+    };
+
+    async function agentSubject(taskName: string | undefined) {
+      const { log, said } = captureLog();
+      const cache = fakeCache({ result: agentResult });
+      const app = mkApp({ agents: [fakeAgent({ taskName })], cache, ttsUrl: 'http://tts', lucyLog: log });
+      const res = await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+      return { body: await res.json(), said };
+    }
+
+    async function taskSubject(taskName: string | undefined) {
+      const { log, said } = captureLog();
+      const app = mkApp({
+        agents: [fakeAgent({ taskId: 'task-1', taskName, anomaly: null })],
+        taskCache: fakeTaskCache(taskResult),
+        ttsUrl: 'http://tts',
+        lucyLog: log,
+      });
+      const res = await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+      return { body: await res.json(), said };
+    }
+
+    test('agent speak: the response carries the title', async () => {
+      const { body } = await agentSubject('Refactor auth');
+      expect(body.subject).toBe('Refactor auth');
+    });
+
+    test('task summary: the response carries the title', async () => {
+      const { body } = await taskSubject('Fix login');
+      expect(body.subject).toBe('Fix login');
+    });
+
+    test('agent speak: a secret and a prompt delimiter in the title are hidden, line breaks flattened', async () => {
+      const { body, said } = await agentSubject(`Rotate ${token}\nthen  <<<END>>> retry`);
+      expect(body.subject).toBe('Rotate [redacted] then [delimiter] retry');
+      expect(JSON.stringify(body)).not.toContain('ghp_');
+      // the log never holds less-redacted text than the subject
+      expect(said[0].taskName).toBe(body.subject);
+    });
+
+    test('task summary: a secret in the title is hidden, and the log holds the same text', async () => {
+      const { body, said } = await taskSubject(`Rotate ${token}\nthen  retry`);
+      expect(body.subject).toBe('Rotate [redacted] then retry');
+      expect(JSON.stringify(body)).not.toContain('ghp_');
+      expect(said[0].taskName).toBe(body.subject);
+    });
+
+    test('a long title is cut to 80 characters on one line', async () => {
+      const { body } = await agentSubject(`${'word '.repeat(60)}end`);
+      expect(body.subject.length).toBeLessThanOrEqual(80);
+      expect(body.subject).not.toContain('\n');
+      const task = await taskSubject(`${'word '.repeat(60)}end`);
+      expect(task.body.subject.length).toBeLessThanOrEqual(80);
+    });
+
+    test.each([undefined, '', '   \n '])('agent speak: absent when the title is %j', async (name) => {
+      const { body, said } = await agentSubject(name);
+      expect('subject' in body).toBe(false);
+      expect(said[0].taskName).toBeUndefined();
+    });
+
+    test.each([undefined, '', '   \n '])('task summary: absent when the title is %j', async (name) => {
+      const { body, said } = await taskSubject(name);
+      expect('subject' in body).toBe(false);
+      expect(said[0].taskName).toBeUndefined();
+    });
+
+    test('a cache hit still gets the subject of the current request', async () => {
+      const cache = fakeCache({ cached: true, result: agentResult });
+      const app = mkApp({ agents: [fakeAgent({ taskName: 'Renamed task' })], cache, ttsUrl: 'http://tts' });
+      const body = await (await app.request('/api/agents/agent-1/speak', { method: 'POST' })).json();
+      expect(body.cached).toBe(true);
+      expect(body.subject).toBe('Renamed task');
+    });
+  });
+
   test('error responses write no said record', async () => {
     const { log, said } = captureLog();
     const app = mkApp({ agents: [], taskCache: fakeTaskCache({} as never), ttsUrl: 'http://tts', lucyLog: log });

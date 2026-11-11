@@ -331,7 +331,7 @@ describe('useSpeakAgent request shape', () => {
       expect(probeHandle!.state.status).toBe('playing');
       const ctx = FakeAudioContext.instances[0];
       expect(events.map((event) => event.type)).toEqual(['idle', 'generating', 'playing']);
-      expect(events[2]).toEqual({ type: 'playing', text: 'Two tasks need you.', analyser: ctx.analyser });
+      expect(events[2]).toEqual({ type: 'playing', analyser: ctx.analyser });
 
       const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
       // The tap is an extra connection: the clip still goes to the speakers exactly as before.
@@ -499,7 +499,7 @@ describe('useSpeakAgent request shape', () => {
       const clip = getLastClip()!;
       expect(clip).toMatchObject({ clipId: 'clip-srv-1', text: 'Two tasks need you.', durationMs: 2400 });
       expect(new Uint8Array(clip.audio)).toEqual(new Uint8Array([1, 2, 3]));
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
       expect(ofType('lucy_clip_started')).toEqual([
         { type: 'lucy_clip_started', clipId: 'clip-srv-1', trigger: 'click', panelState: 'off', tabVisible: true },
       ]);
@@ -537,7 +537,7 @@ describe('useSpeakAgent request shape', () => {
       await speakAndSettle();
 
       expect(probeHandle!.state.status).toBe('suppressed');
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
       expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'audio_suspended' }]);
       expect(ofType('lucy_clip_started')).toEqual([]);
     });
@@ -603,7 +603,19 @@ describe('useSpeakAgent request shape', () => {
       mount(async () => clipResponse({ clipId: 'clip-srv-2', text: 'Something else.' }));
       await speakAndSettle();
       expect(getLastClip()).toMatchObject({ clipId: 'clip-srv-2', text: 'Something else.' });
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
+    });
+
+    test('the task title the server sent is kept with the clip, and a clip without one has none', async () => {
+      mount(async () => clipResponse({ subject: 'UI refactor' }));
+      await speakAndSettle();
+      expect(getLastClip()).toMatchObject({ clipId: 'clip-srv-1', subject: 'UI refactor' });
+      expect(getLastClip()!.at).toBeGreaterThan(0);
+
+      __resetLastClipForTests();
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      expect(getLastClip()!.subject).toBeUndefined();
     });
 
     test('a failed request leaves the previous clip alone', async () => {
@@ -712,7 +724,7 @@ describe('useSpeakAgent request shape', () => {
       expect(probeHandle!.state.errorReason).toBe('start-failed');
       expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'error' }]);
       expect(ofType('lucy_clip_started')).toEqual([]);
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, unheardCount: 1 });
     });
 
     test('a clip that played while the tab was in the background stays unheard', async () => {

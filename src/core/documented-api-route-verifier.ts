@@ -88,10 +88,8 @@ export const INTERNAL_API_ROUTES: ReadonlySet<string> = new Set([
   // TTS sidecar health (paired with documented STT health when TTS is configured).
   'GET /api/health/tts',
 
-  // Speech / speak-summary dashboard helpers.
+  // Speech dashboard helper (the two speak routes themselves are documented: "Avatar speech").
   'GET /api/agents/:agentId/speak/preview',
-  'POST /api/agents/:agentId/speak',
-  'POST /api/tasks/:taskId/speak-summary',
 
   // File viewer endpoints for the dashboard.
   'GET /api/files/meta',

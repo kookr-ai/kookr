@@ -10,6 +10,7 @@ import {
   type ToolGroup,
 } from './activity-summary.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
+import { GENERIC_TASK_NAME, spokenTaskName } from './spoken-task-name.js';
 
 const TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 180;
@@ -76,7 +77,7 @@ export interface TaskSpeechSummaryInput {
 }
 
 export interface TaskSpeechSummary {
-  /** The speakable text: synthesised by TTS and shown as the avatar caption. */
+  /** The speakable text: synthesised by TTS and listed in the avatar's message list. */
   text: string;
   usedFallback: boolean;
   /** The wording before the speakable-text step. Set only when that step changed it. */
@@ -105,6 +106,14 @@ function redactSecrets(value: string | null | undefined): string {
   return (value ?? '')
     .replace(SECRET_PATTERN, '[redacted]')
     .replace(/<<<\s*(?:TASK_CONTEXT|END)\s*>>>/gi, '[delimiter]');
+}
+
+/**
+ * The speech path's secret and delimiter hiding for any text that is about to be spoken or shown
+ * (for example a model's recap): the same patterns as everything else here, untouched.
+ */
+export function redactSpeechSecrets(value: string): string {
+  return redactSecrets(value);
 }
 
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
@@ -194,8 +203,24 @@ export function redactedTaskName(name: string | null | undefined): string | unde
   return sanitizeText(name, 80) || undefined;
 }
 
+/**
+ * The full redacted title, as CONTEXT for the model prompt and the cache key. It is never
+ * spliced into the fallback wording: see {@link spokenName}.
+ */
 function taskName(input: TaskSpeechSummaryInput): string {
   return redactedTaskName(input.taskName) ?? 'Untitled task';
+}
+
+/**
+ * The title as it may be spoken in the fallback wording: the redacted title when it is
+ * short and complete, otherwise "This task" (see {@link spokenTaskName}). Redaction comes
+ * first, so a secret never reaches the length check or the sentence.
+ */
+function spokenName(input: TaskSpeechSummaryInput): string {
+  const spoken = spokenTaskName(redactedTaskName(input.taskName));
+  // The sentence adds its own end mark, so one the title ended with ("Fix login bug.") would be spliced
+  // into the middle of it; a title of nothing but marks ("?!") has nothing left to say.
+  return spoken.replace(/[.!?…\s]+$/u, '') || GENERIC_TASK_NAME;
 }
 
 function statusLabel(status: TaskStatus | null | undefined): string {
@@ -295,7 +320,7 @@ function findingSentence(name: string, finding: TaskSpeechFindingInput): string 
 
 /** Fallback wording before the speakable-text step (still truncated to the summary cap). */
 function rawFallbackTaskSpeechSummary(input: TaskSpeechSummaryInput): string {
-  const name = taskName(input);
+  const name = spokenName(input);
   const finding = input.activeFinding;
   if (finding) {
     return truncate(findingSentence(name, finding), MAX_SUMMARY_CHARS);

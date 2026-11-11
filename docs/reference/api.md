@@ -801,6 +801,16 @@ matched task within the request: a supervisor call needs a complete per-task
 result set back in one response. It still broadcasts the dashboard snapshot
 only once for the whole batch, not once per task.
 
+### Avatar speech (`POST /api/tasks/:taskId/speak-summary`, `POST /api/agents/:agentId/speak`)
+
+Both routes return the spoken clip (`text`, `audioBase64`, `mimeType`, `durationMs`, `usedFallback`, `llmMs`, `ttsMs`, `cached`) plus per-response fields that are never cached:
+
+- `clipId`: unique id of this delivery (new on every response, cache hits included); joins `lucy-interactions.jsonl` with the browser `lucy_*` events.
+- `rawText` (optional): the wording before the speakable-text rewrite; present only when the rewrite changed it.
+- `subject` (optional, issue #3605): display title of the task the message was about, for the avatar panel's message list. It is redacted exactly like the spoken wording (secret-shaped runs become `[redacted]`, prompt delimiters become `[delimiter]`), flattened to one line and at most 80 characters. Absent when the task has no title. The `said` record in `lucy-interactions.jsonl` logs the same text as `taskName`, so the log is never less redacted than `subject`.
+
+The spoken fallback wording never reads a long or cut-off title aloud: a title is spoken only when it is at most 6 words, at most 48 characters, not cut with `...` or `…`, and holds nothing the speakable rewrite would change (identifiers, paths, hashes, issue numbers). Otherwise the sentence says "This task" ("This task needs your input."). `subject` still carries the full (80-character) title.
+
 ## Issue Claims
 
 Present only when the server was started with `KOOKR_ISSUE_CLAIMS` enabled; with the flag off all three routes return `404` and clients proceed as pre-lock (RFC `rfc-issue-ownership-lock`).

@@ -161,6 +161,7 @@ function buildResponse(
   verbosity: VerbosityScale,
   requestId: string,
   clipId: string,
+  subject: string | undefined,
   result: AgentSpeakResultCore,
 ): SpeakAgentResponse {
   return {
@@ -178,12 +179,17 @@ function buildResponse(
     requestId,
     cacheKey,
     clipId,
+    ...(subject !== undefined ? { subject } : {}),
     ...(result.rawText !== undefined ? { rawText: result.rawText } : {}),
   };
 }
 
-function buildTaskResponse(clipId: string, result: TaskSpeakResult): SpeakTaskSummaryResponse {
-  return { ...result, clipId };
+function buildTaskResponse(
+  clipId: string,
+  subject: string | undefined,
+  result: TaskSpeakResult,
+): SpeakTaskSummaryResponse {
+  return { ...result, clipId, ...(subject !== undefined ? { subject } : {}) };
 }
 
 function parseSummaryDays(raw: string | undefined): number {
@@ -283,13 +289,16 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
       });
 
       const clipId = randomUUID();
-      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, clipId, result);
+      // The display title, redacted like the spoken wording. The log below reuses it, so the
+      // log is never less redacted than what the panel shows.
+      const subject = redactedTaskName(agent.taskName);
+      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, clipId, subject, result);
       recordSaid({
         clipId,
         source: 'agent_speak',
         taskId: agent.taskId,
         agentId: agent.agentId,
-        taskName: agent.taskName,
+        taskName: subject,
         text: result.text,
         rawText: result.rawText,
         usedFallback: result.usedFallback,
@@ -428,13 +437,14 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
       const startedAt = Date.now();
       const result = await options.taskCache.get(subject.input, requestSignal);
       const clipId = randomUUID();
-      const response = buildTaskResponse(clipId, result);
+      const taskName = redactedTaskName(subject.input.taskName);
+      const response = buildTaskResponse(clipId, taskName, result);
       recordSaid({
         clipId,
         source: 'task_summary',
         taskId,
         agentId: subject.agentState?.agentId,
-        taskName: redactedTaskName(subject.input.taskName),
+        taskName,
         text: result.text,
         rawText: result.rawText,
         usedFallback: result.usedFallback,

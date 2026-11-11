@@ -62,7 +62,7 @@ test.describe('avatar panel (optional)', () => {
     const dock = page.getByTestId('avatar-dock');
     await expect(dock).toBeVisible();
     await expect(dock).toHaveAttribute('data-avatar-state', 'idle');
-    await expect(page.getByTestId('avatar-caption')).toContainText('speaker button');
+    await expect(page.getByTestId('avatar-hint')).toContainText('speaker button');
     expect(requests.some((url) => /AvatarDock/.test(url)), 'the panel code is fetched on demand').toBe(true);
     // Positive control for the "downloads nothing" checks above: the 3D renderer really does live in a chunk
     // of its own with this name. If it were folded into a shared chunk, those checks would pass while every
@@ -256,9 +256,12 @@ test.describe('avatar panel: hearing a message again', () => {
     let speakRequests = 0;
     await page.route('**/api/tasks/*/speak-summary', async (route) => {
       speakRequests += 1;
+      // The first answer is the plain one the original tests rely on; later ones are told apart by id, text and task title.
+      const n = speakRequests;
       await route.fulfill({
         json: {
-          text: CLIP_TEXT,
+          text: n === 1 ? CLIP_TEXT : `${CLIP_TEXT} (${n})`,
+          subject: `Task ${n}`,
           audioBase64: silentWavBase64(),
           mimeType: 'audio/wav',
           durationMs: 400,
@@ -271,7 +274,7 @@ test.describe('avatar panel: hearing a message again', () => {
           effectiveVerbosity: 'medium',
           requestId: 'req-e2e',
           cacheKey: 'k',
-          clipId: 'e2e-clip-1',
+          clipId: `e2e-clip-${n}`,
         },
       });
     });
@@ -290,6 +293,7 @@ test.describe('avatar panel: hearing a message again', () => {
     await page.goto('/');
     await expect(page.getByTestId('avatar-dock')).toBeVisible();
     const replay = page.getByRole('button', { name: 'Replay last message' });
+    const newestMessage = page.getByTestId('avatar-message').first();
     await expect(replay).toHaveAttribute('aria-disabled', 'true');
 
     await test.step('launch a task with a finding card', async () => {
@@ -299,7 +303,9 @@ test.describe('avatar panel: hearing a message again', () => {
     await test.step('she speaks while the tab is in the background', async () => {
       await setTabHidden(true);
       await page.getByTestId('speak-button').first().click();
-      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      await expect(newestMessage.locator('.avatar-msg-text')).toHaveText(CLIP_TEXT);
+      await expect(newestMessage.locator('.avatar-msg-subject')).toHaveText('Task 1');
+      await expect(newestMessage.getByTestId('avatar-msg-unheard')).toHaveText('unheard');
       await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
       expect(speakRequests()).toBe(1);
 
@@ -311,13 +317,46 @@ test.describe('avatar panel: hearing a message again', () => {
       await expect(page.getByTestId('avatar-unheard-dot')).toBeVisible();
     }, { timeout: 15_000 });
 
+    await test.step('hovering or focusing the bubble explains its badge and dot, and Escape closes the explanation', async () => {
+      const bubble = page.getByTestId('avatar-bubble');
+      const card = page.getByTestId('avatar-bubble-card');
+      await expect(bubble).toHaveAttribute('aria-label', 'Open Lucy. 1 finding needs your attention. 1 unheard message.');
+      await expect(card).toHaveCount(0);
+
+      await bubble.hover();
+      await expect(card).toBeVisible();
+      await expect(card).toContainText('1 finding needs you');
+      await expect(card).toContainText('1 unheard message');
+      await expect(card).toContainText('Click to open Lucy');
+      // It is a visual duplicate of the label: hidden from assistive technology and never in the way of the pointer.
+      await expect(card).toHaveAttribute('aria-hidden', 'true');
+      const box = (await card.boundingBox())!;
+      const viewport = page.viewportSize()!;
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.y).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(viewport.width);
+      expect(box.y + box.height).toBeLessThanOrEqual((await bubble.boundingBox())!.y);
+
+      await page.keyboard.press('Escape');
+      await expect(card).toHaveCount(0);
+
+      await page.mouse.move(5, 5);
+      // A key press first, so the browser treats the next focus as keyboard focus (it draws a focus ring).
+      await page.keyboard.press('Shift');
+      await bubble.focus();
+      await expect(card).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(card).toHaveCount(0);
+      await bubble.blur();
+    }, { timeout: 15_000 });
+
     await test.step('back in front of the screen, she plays it again', async () => {
       const bubble = page.getByTestId('avatar-bubble');
       await setTabHidden(false);
       await bubble.click();
       await expect(page.getByTestId('avatar-dock')).toBeVisible();
-      // The caption still has the last text.
-      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      // The list still has the last message.
+      await expect(newestMessage.locator('.avatar-msg-text')).toHaveText(CLIP_TEXT);
       await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
       await replay.click();
       await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(0);
@@ -356,7 +395,7 @@ test.describe('avatar panel: hearing a message again', () => {
 
     await test.step('she speaks in front of the operator', async () => {
       await page.getByTestId('speak-button').first().click();
-      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      await expect(page.getByTestId('avatar-message').first().locator('.avatar-msg-text')).toHaveText(CLIP_TEXT);
       await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
       await expect(page.getByRole('button', { name: 'Replay last message' })).not.toHaveAttribute('aria-disabled', 'true');
       await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(0);
@@ -367,6 +406,68 @@ test.describe('avatar panel: hearing a message again', () => {
       expect(telemetryOf(telemetry, 'lucy_clip_started')()[0]).toMatchObject({ clipId: 'e2e-clip-1', trigger: 'click', tabVisible: true });
       expect(telemetryOf(telemetry, 'lucy_clip_ended')()[0]).toMatchObject({ clipId: 'e2e-clip-1', endedBy: 'finished' });
       expect(telemetryOf(telemetry, 'lucy_clip_unheard')()).toEqual([]);
+    }, { timeout: 15_000 });
+  });
+
+  test('the panel lists the last three messages newest first, and a message\'s own Replay button marks only that message heard', async ({ page, request }) => {
+    test.setTimeout(60_000);
+    await resetServer(request);
+    const { telemetry, speakRequests, setTabHidden } = await prepareSpeechPage(page);
+
+    await page.goto('/');
+    await expect(page.getByTestId('avatar-dock')).toBeVisible();
+    await expect(page.getByTestId('avatar-hint')).toBeVisible();
+    await test.step('launch a task with a finding card', async () => {
+      await launchTaskWithCard(page, request);
+    }, { timeout: 25_000 });
+
+    const items = page.getByTestId('avatar-message');
+    await test.step('four messages are spoken in the background; only the last three are listed, newest first', async () => {
+      await setTabHidden(true);
+      for (let n = 1; n <= 4; n += 1) {
+        await page.getByTestId('speak-button').first().click();
+        await expect.poll(() => speakRequests()).toBe(n);
+        await expect(page.getByTestId('avatar-message').first().locator('.avatar-msg-subject')).toHaveText(`Task ${n}`);
+        await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
+      }
+      await expect(page.getByTestId('avatar-hint')).toHaveCount(0);
+      await expect(page.getByRole('region', { name: 'Recent messages' })).toBeVisible();
+      await expect(items).toHaveCount(3);
+      await expect(items.locator('.avatar-msg-subject')).toHaveText(['Task 4', 'Task 3', 'Task 2']);
+      await expect(items.first().locator('.avatar-msg-text')).toHaveText(`${CLIP_TEXT} (4)`);
+      await expect(page.getByTestId('avatar-msg-unheard')).toHaveCount(3);
+      await expect(items.first().locator('.avatar-msg-time')).toHaveText('just now');
+    }, { timeout: 40_000 });
+
+    await test.step('the 3D view keeps a usable height next to the list, and the dock stays on screen', async () => {
+      const view = (await page.locator('.avatar-dock-view').boundingBox())!;
+      expect(view.height).toBeGreaterThan(100);
+      const dock = (await page.getByTestId('avatar-dock').boundingBox())!;
+      const viewport = page.viewportSize()!;
+      expect(dock.y + dock.height).toBeLessThanOrEqual(viewport.height);
+    });
+
+    await test.step('replaying the oldest listed message marks only that one heard', async () => {
+      await setTabHidden(false);
+      const oldest = items.nth(2).getByTestId('avatar-msg-replay');
+      await expect(oldest).toHaveAttribute('aria-label', 'Replay message about Task 2, just now');
+      await oldest.click();
+      await expect(items.nth(2).getByTestId('avatar-msg-unheard')).toHaveCount(0);
+      await expect(items.nth(0).getByTestId('avatar-msg-unheard')).toHaveCount(1);
+      await expect(items.nth(1).getByTestId('avatar-msg-unheard')).toHaveCount(1);
+      await expect(oldest).toBeFocused();
+      // The header dot follows the newest message, which is still unheard.
+      await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
+      expect(speakRequests(), 'replay asks the server for nothing').toBe(4);
+    }, { timeout: 15_000 });
+
+    await test.step('the page named the replayed message in its telemetry', async () => {
+      await expect
+        .poll(() => telemetryOf(telemetry, 'lucy_clip_started')().filter((event) => event.trigger === 'replay').map((event) => event.clipId))
+        .toEqual(['e2e-clip-2']);
+      expect(telemetryOf(telemetry, 'lucy_panel_action')().filter((event) => event.action === 'replay').map((event) => event.clipId)).toEqual([
+        'e2e-clip-2',
+      ]);
     }, { timeout: 15_000 });
   });
 });

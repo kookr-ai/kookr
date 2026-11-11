@@ -2,7 +2,7 @@
  * A tiny publish/subscribe channel announcing what Kookr's speech playback is
  * doing, so something else on the page (the optional avatar panel) can react:
  * show "thinking" while a spoken summary is being generated, move its mouth
- * while the clip plays, and show the spoken text as a caption.
+ * while the clip plays.
  *
  * Playback itself stays where it was (`useSpeakAgent`). The bus only observes.
  * With no subscriber it does nothing at all — in particular it creates no
@@ -16,7 +16,7 @@ export type SpeechBusEvent =
    * A clip started playing. `analyser` taps the clip's audio so a listener can
    * read its loudness; it is null when the tap could not be created.
    */
-  | { type: 'playing'; analyser: AnalyserNode | null; text: string | null }
+  | { type: 'playing'; analyser: AnalyserNode | null }
   /** Playback finished, failed or was cancelled. */
   | { type: 'idle' };
 
@@ -69,7 +69,6 @@ export function emitSpeechPlaying(
   by: object,
   ctx: Pick<AudioContext, 'createAnalyser'>,
   source: Pick<AudioNode, 'connect'>,
-  text: string | null = null,
 ): void {
   owner = by;
   let analyser: AnalyserNode | null = null;
@@ -83,7 +82,7 @@ export function emitSpeechPlaying(
       analyser = null;
     }
   }
-  emit({ type: 'playing', analyser, text });
+  emit({ type: 'playing', analyser });
 }
 
 /** Announce that `by` is no longer speaking. Ignored unless `by` made the latest announcement. */
