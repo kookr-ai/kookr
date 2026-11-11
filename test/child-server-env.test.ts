@@ -24,6 +24,36 @@ describe('sanitizedChildServerEnv (#2814)', () => {
     expect(env.KOOKR_LESSON_SPOOL).toBeUndefined();
   });
 
+  it('removes unprefixed provider credentials the LLM factory reads (#3585)', () => {
+    // These keys have no KOOKR_/CLAUDE_/ANTHROPIC_ prefix, yet the factory's
+    // `auto` chain (and the OpenRouter/Requesty/Baseten clients) reads them
+    // straight from the env — so an ambient key used to reach the child server
+    // and let the task namer call a live provider.
+    for (const key of [
+      'OPENROUTER_API_KEY',
+      'OPENAI_API_KEY',
+      'REQUESTY_API_KEY',
+      'BASETEN_API_KEY',
+      'GROQ_API_KEY',
+      'GEMINI_API_KEY',
+    ]) {
+      vi.stubEnv(key, `poisoned-${key}`);
+    }
+
+    const env = sanitizedChildServerEnv();
+
+    for (const key of [
+      'OPENROUTER_API_KEY',
+      'OPENAI_API_KEY',
+      'REQUESTY_API_KEY',
+      'BASETEN_API_KEY',
+      'GROQ_API_KEY',
+      'GEMINI_API_KEY',
+    ]) {
+      expect(env[key]).toBeUndefined();
+    }
+  });
+
   it('preserves required OS/CI variables', () => {
     vi.stubEnv('PATH', '/usr/bin:/bin');
     vi.stubEnv('HOME', '/home/tester');
