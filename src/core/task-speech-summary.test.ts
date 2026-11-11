@@ -244,6 +244,36 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.text).not.toMatch(/\brun\b/i);
     });
 
+    test.each(['approve_request', 'push_notifications'])('denylist still fires for identifier %s', async (id) => {
+      const client = mockClient(JSON.stringify({ summary: `Waiting on ${id} from the user.` }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+    });
+
+    test.each([
+      ['Tests pass on abc1234 after the refactor.', 'Tests pass on a commit after the refactor.'],
+      ['Rebased onto 3f2a9c1 and tests are green.', 'Rebased onto a commit and tests are green.'],
+    ])('a commit hash does not trip the denylist: %s', async (summary, text) => {
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result).toEqual({ text, usedFallback: false, rawText: summary });
+    });
+
+    test('an at-cap summary that grows when "#42" becomes "number 42" is still accepted', async () => {
+      const summary = `${Array(44).fill('word').join(' ')} #42`;
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(false);
+      expect(result.text.endsWith('number 42.')).toBe(true);
+    });
+
+    test('a summary over the caps before the transform is still rejected', async () => {
+      const summary = `${Array(46).fill('word').join(' ')} #42`;
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+    });
+
     test('fallback output is made speakable and reports rawText when it changed', async () => {
       const result = await summarizeTaskForSpeech(null, {
         taskName: 'Docs pass',

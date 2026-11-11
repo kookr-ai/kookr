@@ -17,7 +17,8 @@
  * Writes go through a serial promise queue (so the stat/rotate/append sequence
  * cannot race) using the shared size-capped rotation helper. The queue is
  * bounded: when {@link MAX_PENDING_LUCY_LINES} lines are already waiting, new
- * lines are dropped (counted, warned once). A failure is swallowed and
+ * lines are dropped (counted, warned once); browser `ui` lines stop earlier, at
+ * {@link MAX_PENDING_LUCY_UI_LINES}, to leave room for `said` lines. A failure is swallowed and
  * reported once per failure kind via `console.warn`. The file is created
  * owner-only (0600, directory 0700) because it holds task names and spoken text.
  */
@@ -34,6 +35,12 @@ export const DEFAULT_LUCY_LOG_MAX_BYTES = 10 * 1024 * 1024;
 export const DEFAULT_LUCY_LOG_ROTATED_GENERATIONS = 3;
 /** New lines are dropped while this many are already waiting to be written. */
 export const MAX_PENDING_LUCY_LINES = 500;
+/**
+ * Browser `ui` lines are dropped once this many are waiting, so a flood of
+ * browser events cannot crowd out the server's own `said` lines, which may use
+ * the remaining capacity up to {@link MAX_PENDING_LUCY_LINES}.
+ */
+export const MAX_PENDING_LUCY_UI_LINES = 400;
 /** Most `lucy_*` events recorded from one telemetry message; the rest are ignored. */
 export const MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE = 20;
 /** Longest string kept from a client event (clipId, sessionId, timestamp...). */
@@ -71,8 +78,10 @@ export interface LucyInteractionLog {
   recordUi(sessionId: string, event: Record<string, unknown>): void;
   /** Await queued writes (tests, orderly shutdown). Never rejects. */
   flush(): Promise<void>;
-  /** Lines discarded because the write queue was full. */
+  /** Lines discarded because the write queue was full (`said` and `ui` together). */
   droppedLines?(): number;
+  /** The part of {@link droppedLines} that were browser `ui` lines. */
+  droppedUiLines?(): number;
 }
 
 export interface LucyInteractionLogOptions {
@@ -118,6 +127,7 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
   let queue: Promise<void> = Promise.resolve();
   let pending = 0;
   let dropped = 0;
+  let droppedUi = 0;
 
   function warnOnce(kind: string, err: unknown): void {
     if (warnedKinds.has(kind)) return;
@@ -135,7 +145,7 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
     }
   }
 
-  function enqueue(record: Record<string, unknown>): void {
+  function enqueue(record: Record<string, unknown>, limit: number): void {
     if (!enabled()) return;
     let line: string;
     try {
@@ -144,9 +154,13 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
       warnOnce('serialize-failed', err);
       return;
     }
-    if (pending >= MAX_PENDING_LUCY_LINES) {
+    if (pending >= limit) {
       dropped++;
-      warnOnce('queue-full', new Error(`more than ${MAX_PENDING_LUCY_LINES} lines pending; dropping new lines`));
+      if (limit < MAX_PENDING_LUCY_LINES) droppedUi++;
+      warnOnce(
+        limit < MAX_PENDING_LUCY_LINES ? 'queue-full-ui' : 'queue-full',
+        new Error(`more than ${limit} lines pending; dropping new lines`),
+      );
       return;
     }
     pending++;
@@ -163,15 +177,16 @@ export function createLucyInteractionLog(options: LucyInteractionLogOptions = {}
 
   return {
     recordSaid(input) {
-      enqueue({ kind: 'said', ...pickSaidFields(input) });
+      enqueue({ kind: 'said', ...pickSaidFields(input) }, MAX_PENDING_LUCY_LINES);
     },
     recordUi(sessionId, event) {
       const clean = sanitizeLucyUiEvent(event);
       if (!clean) return;
-      enqueue({ kind: 'ui', sessionId: clampString(sessionId) ?? 'unknown', event: clean });
+      enqueue({ kind: 'ui', sessionId: clampString(sessionId) ?? 'unknown', event: clean }, MAX_PENDING_LUCY_UI_LINES);
     },
     flush: () => queue.catch(() => {}),
     droppedLines: () => dropped,
+    droppedUiLines: () => droppedUi,
   };
 }
 

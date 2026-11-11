@@ -9,7 +9,7 @@ import {
   type ActivityItem,
   type ToolGroup,
 } from './activity-summary.js';
-import { identifierToWords, makeSpeakable, spokenFindingPhrase } from './speakable-text.js';
+import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
 
 const TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 180;
@@ -110,10 +110,25 @@ function wordCount(value: string): number {
   return value.split(/\s+/).filter(Boolean).length;
 }
 
+/** Hard ceiling for the spoken text, as a multiple of the caps the model text must meet. */
+const SPOKEN_CEILING = 1.5;
+
 function withinSummaryLimits(summary: string): boolean {
   return summary.length <= MAX_SUMMARY_CHARS
     && wordCount(summary) <= MAX_SUMMARY_WORDS
     && !ADVICE_VERB_DENYLIST.test(summary);
+}
+
+/**
+ * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
+ * so only a generous ceiling applies, and the denylist ignores phrases the
+ * rewrite generates itself ("a commit" for a hash) but still catches words that
+ * come from identifiers ("run_tests" -> "run tests").
+ */
+function spokenWithinLimits(spoken: string): boolean {
+  return spoken.length <= MAX_SUMMARY_CHARS * SPOKEN_CEILING
+    && wordCount(spoken) <= MAX_SUMMARY_WORDS * SPOKEN_CEILING
+    && !ADVICE_VERB_DENYLIST.test(stripGeneratedPhrases(spoken));
 }
 
 function normalizeSummary(raw: string): string | null {
@@ -314,7 +329,7 @@ export async function summarizeTaskForSpeech(
     // ("run_tests" -> "run tests") or change the length.
     const summary = parsed ? normalizeSummary(parsed) : null;
     const speakable = summary ? toSpeakableSummary(summary, false) : null;
-    return speakable && withinSummaryLimits(speakable.text.replace(/[.!?]+$/, '')) ? speakable : fallbackSummary(input);
+    return speakable && spokenWithinLimits(speakable.text.replace(/[.!?]+$/, '')) ? speakable : fallbackSummary(input);
   } catch {
     return fallbackSummary(input);
   }

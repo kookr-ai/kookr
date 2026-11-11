@@ -41,6 +41,8 @@ const IDLE_HINT = 'Press a speaker button on a task and I will read its summary 
 const REPLAY_LABEL = 'Replay last message';
 
 /** Shown in the status region when a replay could not start; the three other results need no message. */
+const REPLAY_MUTED_TITLE = 'Sound is off in Settings';
+
 const REPLAY_NOTICE: Partial<Record<ReplayResult, string>> = {
   muted: 'Sound is off in Settings, so the message was not replayed.',
   blocked: 'Your browser blocked audio. Press Replay again to allow it.',
@@ -76,6 +78,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const [replayNotice, setReplayNotice] = useState<string | null>(null);
   // Why a press on the unavailable Replay button did nothing; cleared as soon as that reason changes or goes away.
   const [unavailableNotice, setUnavailableNotice] = useState<string | null>(null);
+  // Bumped on every press of the unavailable button so the live region speaks the same text again.
+  const [unavailableNoticeSeq, setUnavailableNoticeSeq] = useState(0);
   const lastClip = useLastClip();
   const sound = useSoundPreference();
 
@@ -248,7 +252,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     : state !== 'idle' || replayPending
       ? `${NAME} is busy; replay is available when she has finished`
       : !sound.enabled
-        ? 'Sound is off in Settings'
+        ? REPLAY_MUTED_TITLE
         : null;
   useEffect(() => {
     setUnavailableNotice(null);
@@ -256,7 +260,9 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const onReplay = (): void => {
     if (replayUnavailable) {
       // The button stays focusable and `title` does not reach keyboard or touch users, so say it in the live region.
-      setUnavailableNotice(sound.enabled ? replayUnavailable : (REPLAY_NOTICE.muted ?? replayUnavailable));
+      // The longer muted wording only when sound-off is the real reason; "nothing to replay" and "busy" are not.
+      setUnavailableNotice(replayUnavailable === REPLAY_MUTED_TITLE ? (REPLAY_NOTICE.muted ?? replayUnavailable) : replayUnavailable);
+      setUnavailableNoticeSeq((n) => n + 1);
       return;
     }
     trackPanelAction('replay');
@@ -350,7 +356,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           {error
             ? `The 3D view could not start (${error}). Spoken summaries still play.`
             : statusNotice
-              ? statusNotice
+              ? <span key={replayNotice ? 'replay' : `unavailable-${unavailableNoticeSeq}`}>{statusNotice}</span>
               : loaded
                 ? ''
                 : 'Loading…'}

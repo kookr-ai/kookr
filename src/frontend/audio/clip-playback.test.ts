@@ -379,6 +379,20 @@ describe('replayLastClip', () => {
     expect(await replayLastClip()).toBe('started');
   });
 
+  test('a replay cancelled by a live clip resolves as cancelled, not error, even when the decode then fails', async () => {
+    capture();
+    let release!: () => void;
+    FakeAudioContext.decodeGate = new Promise<void>((resolve) => { release = resolve; });
+    FakeAudioContext.decodeFails = true;
+    const pending = replayLastClip();
+    await Promise.resolve();
+    stopReplay('superseded');
+    release();
+    expect(await pending).toBe('cancelled');
+    expect(FakeAudioContext.instances[0].close).toHaveBeenCalled();
+    expect(ofType('lucy_clip_unheard')).toEqual([]);
+  });
+
   test('a replay failing or blocked on a clip that was already heard does not report it as unheard', async () => {
     capture();
     markClipHeard('c1');

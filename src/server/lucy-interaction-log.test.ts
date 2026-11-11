@@ -9,6 +9,7 @@ import {
   countSpokenWords,
   sanitizeLucyUiEvent,
   MAX_PENDING_LUCY_LINES,
+  MAX_PENDING_LUCY_UI_LINES,
   type LucySaidRecordInput,
 } from './lucy-interaction-log.js';
 
@@ -307,6 +308,37 @@ describe('LucyInteractionLog hardening (client-controlled input)', () => {
     await log.flush();
     expect(written).toHaveLength(MAX_PENDING_LUCY_LINES + 1);
     expect(log.droppedLines?.()).toBe(25);
+  });
+
+  it('a flood of browser ui events cannot crowd out the server said lines', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const written: string[] = [];
+    const log = createLucyInteractionLog({
+      filePath: file,
+      now,
+      appendLines: async (_f, line) => { await gate; written.push(line); },
+    });
+    const flood = MAX_PENDING_LUCY_UI_LINES + 30;
+    for (let i = 0; i < flood; i++) log.recordUi('s1', { type: 'lucy_clip_unheard', clipId: `u${i}`, reason: 'muted' });
+    expect(log.droppedUiLines?.()).toBe(30);
+    expect(log.droppedLines?.()).toBe(30);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('queue-full-ui');
+
+    // said lines still get in, up to the full capacity
+    const room = MAX_PENDING_LUCY_LINES - MAX_PENDING_LUCY_UI_LINES;
+    for (let i = 0; i < room + 5; i++) log.recordSaid({ ...said, clipId: `s${i}` });
+    expect(log.droppedUiLines?.()).toBe(30);
+    expect(log.droppedLines?.()).toBe(35);
+
+    release();
+    await log.flush();
+    const lines = written.map((l) => JSON.parse(l) as { kind: string });
+    expect(lines).toHaveLength(MAX_PENDING_LUCY_LINES);
+    expect(lines.filter((l) => l.kind === 'said')).toHaveLength(room);
+    expect(lines.filter((l) => l.kind === 'ui')).toHaveLength(MAX_PENDING_LUCY_UI_LINES);
   });
 
   it.skipIf(process.platform === 'win32')('creates the log owner-only (file 0600, new directory 0700)', async () => {

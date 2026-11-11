@@ -6,7 +6,7 @@ import type {
   SpeakModeRequest,
   VerbosityScale,
 } from '../shared/contracts/speech.js';
-import { identifierToWords, makeSpeakable, spokenFindingPhrase } from './speakable-text.js';
+import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
 
 /**
  * Verbs that imply an action recommendation. Carried forward from the v1 spec
@@ -161,6 +161,23 @@ function checkRecapLimits(text: string, verbosity: VerbosityScale): RecapCheck {
   return { ok: true, recap: text };
 }
 
+/** Hard ceiling for the spoken text, as a multiple of the caps the model text must meet. */
+const SPOKEN_CEILING = 1.5;
+
+/**
+ * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
+ * so only a generous ceiling applies, and the denylist ignores phrases the
+ * rewrite generates itself ("a commit" for a hash) but still catches words that
+ * come from identifiers ("run_tests" -> "run tests").
+ */
+function checkSpokenLimits(text: string, verbosity: VerbosityScale): RecapCheck {
+  const cfg = RUNG_CONFIG[verbosity];
+  if (text.length > cfg.maxChars * SPOKEN_CEILING) return { ok: false, reason: 'validator-reject' };
+  if (countWords(text) > cfg.maxWords * SPOKEN_CEILING) return { ok: false, reason: 'validator-reject' };
+  if (ADVICE_VERB_DENYLIST.test(stripGeneratedPhrases(text))) return { ok: false, reason: 'denylist' };
+  return { ok: true, recap: text };
+}
+
 /**
  * Validates the model recap, then validates its spoken form again: the
  * speakable rewrite can create denylisted words ("approve_request" ->
@@ -175,7 +192,7 @@ function validateRecap(raw: string, verbosity: VerbosityScale): RecapCheck {
   const spoken = makeSpeakable(trimmed);
   if (spoken) {
     // The rewrite may append a sentence-final period; do not count it against the caps.
-    const spokenCheck = checkRecapLimits(stripTrailingTerminalPunctuation(spoken), verbosity);
+    const spokenCheck = checkSpokenLimits(stripTrailingTerminalPunctuation(spoken), verbosity);
     if (!spokenCheck.ok) return spokenCheck;
   }
   return { ok: true, recap: trimmed };

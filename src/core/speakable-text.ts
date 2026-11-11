@@ -86,6 +86,11 @@ const GITHUB_REF = /github\.com\/[^/\s]+\/[^/\s]+\/(pull|issues)\/(\d+)/i;
 const DOMAIN_WITH_PATH = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|ai|app|co|gov|edu)(?:[/:?#]|$)/i;
 const PATH_SEGMENT = /^[\w.@~+-]+$/;
 const FILE_NAME = /^[\w@~+-][\w.@~+-]*\.[A-Za-z][A-Za-z0-9]{0,4}$/;
+const KNOWN_FILE_EXTENSIONS = new Set([
+  'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'md', 'mdx', 'py', 'rs', 'go', 'java', 'kt', 'rb',
+  'php', 'css', 'scss', 'html', 'yml', 'yaml', 'toml', 'ini', 'txt', 'sh', 'sql', 'lock', 'xml', 'csv',
+  'svg', 'png', 'jpg',
+]);
 const COMMIT_WORDS = new Set(['commit', 'commits', 'sha', 'hash', 'rev', 'revision']);
 const TIMESTAMP_LEAD_WORDS = new Set(['at', 'on', 'since', 'until', 'from', 'to', 'by', 'as', 'of', '@']);
 
@@ -135,7 +140,21 @@ function isPathLike(core: string): boolean {
     if (/^\d+$/.test(last)) return false;
     return true;
   }
-  return withoutDrive.length >= 2 && FILE_NAME.test(last);
+  return withoutDrive.length >= 2 && isUnanchoredFileName(last);
+}
+
+/**
+ * A file name an unanchored `a/b` token may end in. The extension must be a known
+ * one and the base name must look like a file (starts lower-case, a digit, `_` or
+ * `.`, or is ALL-CAPS like README), so product and library names such as
+ * `Next.js`, `Node.js` and `owner/repo.git` stay ordinary prose.
+ */
+function isUnanchoredFileName(name: string): boolean {
+  if (!FILE_NAME.test(name)) return false;
+  const dot = name.lastIndexOf('.');
+  const base = name.slice(0, dot);
+  if (!KNOWN_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())) return false;
+  return /^[a-z0-9_.]/.test(base) || (/[A-Z]/.test(base) && !/[a-z]/.test(base));
 }
 
 function stripLineSuffix(segment: string): string {
@@ -348,6 +367,20 @@ function ensureSentenceEnd(text: string): string {
   if (!text) return text;
   if (/[.!?]["')\]]?$/.test(text)) return text;
   return `${stripTrailing(text, ',;: \t\n\r\f\v')}.`;
+}
+
+/**
+ * Remove the phrases {@link makeSpeakable} itself generates ("a commit" for a
+ * hash, "a link" for a URL, "pull request 7", "issue 7", "number 42"), so a
+ * check run on spoken text does not mistake them for words the author wrote.
+ * Words that come from identifiers ("run_tests" -> "run tests") are kept.
+ */
+export function stripGeneratedPhrases(text: string): string {
+  return text
+    .replace(/\ba (?:commit|link)\b/gi, ' ')
+    .replace(/\b(?:pull request|issue|number) \d+/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 const MAX_PASSES = 6;

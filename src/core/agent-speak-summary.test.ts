@@ -207,6 +207,35 @@ describe('summarizeAgent', () => {
     expect(result.fallbackReason).toBe('denylist');
   });
 
+  test('denylist still fires for push_notifications-style identifiers', async () => {
+    const client = mkClient('{"recap":"Agent edited push_notifications settings"}');
+    const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
+    expect(result.usedFallback).toBe(true);
+    expect(result.fallbackReason).toBe('denylist');
+  });
+
+  test.each<[VerbosityScale]>([['terse'], ['brief'], ['medium'], ['detailed']])(
+    'a commit hash does not trip the denylist at verbosity=%s',
+    async (rung) => {
+      for (const recap of ['Tests pass on abc1234 after the refactor.', 'Rebased onto 3f2a9c1 and tests are green.']) {
+        const result = await summarizeAgent(mkClient(JSON.stringify({ recap })), baseContext, rung, 'activity');
+        expect(result.usedFallback).toBe(false);
+        expect(result.fallbackReason).toBeNull();
+        expect(result.text).toContain('a commit');
+      }
+    },
+  );
+
+  test.each<[VerbosityScale, number]>([['terse', 15], ['brief', 30], ['medium', 60], ['detailed', 120]])(
+    'an at-cap recap that grows when "#42" becomes "number 42" is accepted at verbosity=%s',
+    async (rung, maxWords) => {
+      const recap = `${Array(maxWords - 1).fill('ok').join(' ')} #42`;
+      const result = await summarizeAgent(mkClient(JSON.stringify({ recap })), baseContext, rung, 'activity');
+      expect(result.usedFallback).toBe(false);
+      expect(result.text).toContain('number 42');
+    },
+  );
+
   test.each<[VerbosityScale]>([['terse'], ['brief'], ['medium'], ['detailed']])(
     'rejects over-cap recap at verbosity=%s with reason=validator-reject',
     async (rung) => {

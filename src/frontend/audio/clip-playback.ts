@@ -230,7 +230,9 @@ export async function replayLastClip(): Promise<ReplayResult> {
     return 'started';
   } catch {
     if (ctx && ctx.state !== 'closed') void ctx.close();
-    if (generation === startGeneration) reportReplayUnheard(clip.clipId, 'error');
+    // Cancelled by a newer clip or by closing the panel: that is not a failure to report.
+    if (generation !== startGeneration) return 'cancelled';
+    reportReplayUnheard(clip.clipId, 'error');
     return 'error';
   } finally {
     starting = false;

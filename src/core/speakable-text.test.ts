@@ -5,6 +5,7 @@ import {
   identifierToWords,
   makeSpeakable,
   spokenFindingPhrase,
+  stripGeneratedPhrases,
 } from './speakable-text.js';
 
 const CASES: Array<[label: string, input: string, expected: string]> = [
@@ -18,6 +19,15 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['keeps image alt text', '![diagram](https://x.io/a.png) shows flow.', 'diagram shows flow.'],
   ['strips code fence markers', '```ts\nconst a = 1;\n```', 'const a = 1.'],
   ['strips blockquote marker', '> quoted line', 'quoted line.'],
+
+  // Dotted product and library names are prose, not files
+  ['keeps Next.js in a slash pair', 'Migrated from React/Next.js to Remix.', 'Migrated from React/Next.js to Remix.'],
+  ['keeps Koa.js in a slash pair', 'Express.js/Koa.js servers are fast.', 'Express.js/Koa.js servers are fast.'],
+  ['keeps npm/Node.js', 'Installed npm/Node.js today.', 'Installed npm/Node.js today.'],
+  ['keeps owner/repo.git', 'owner/repo.git cloned.', 'owner/repo.git cloned.'],
+  ['still shortens a lower-case source path', 'Edited src/foo.ts today.', 'Edited foo.ts today.'],
+  ['still shortens an all-caps doc path', 'Read docs/README.md first.', 'Read README.md first.'],
+  ['still shortens a path with a line suffix', 'See a/b.json:12 now.', 'See b.json now.'],
 
   // URLs
   ['generic url', 'See https://example.com/a/b for details.', 'See a link for details.'],
@@ -218,6 +228,15 @@ describe('makeSpeakable', () => {
 
   test('keeps relative parent segments out of ellipsis handling', () => {
     expect(makeSpeakable('Edited ../shared/types.ts.')).toBe('Edited types.ts.');
+  });
+});
+
+describe('stripGeneratedPhrases', () => {
+  test('removes the phrases makeSpeakable generates but keeps identifier words', () => {
+    expect(stripGeneratedPhrases('Tests pass on a commit after a link, pull request 7, issue 8, number 42.'))
+      .toBe('Tests pass on after , , , .');
+    expect(stripGeneratedPhrases('Next step is run tests.')).toBe('Next step is run tests.');
+    expect(stripGeneratedPhrases('Waiting on approve request')).toBe('Waiting on approve request');
   });
 });
 

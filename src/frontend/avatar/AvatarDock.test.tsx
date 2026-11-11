@@ -567,6 +567,38 @@ describe('AvatarDock', () => {
       expect(status()).toContain('busy');
     });
 
+    test('the unavailable notice names the real reason: nothing to replay or busy win over sound being off', () => {
+      startWith({});
+      render();
+      const status = () => container.querySelector('[role="status"]')!.textContent;
+
+      // no clip and sound off: the reason is that there is nothing to replay
+      act(() => setSoundEnabled(false));
+      act(() => replayButton()!.click());
+      expect(status()).toBe('No message to replay yet');
+      expect(status()).not.toContain('Sound is off');
+
+      // busy and sound off: the reason is that she is busy
+      playClip();
+      busy();
+      act(() => replayButton()!.click());
+      expect(status()).toContain('busy');
+      expect(status()).not.toContain('Sound is off');
+    });
+
+    test('pressing the unavailable button again re-announces the notice by replacing the live-region node', () => {
+      startWith({});
+      render();
+      const notice = () => container.querySelector('[role="status"] > span');
+      act(() => replayButton()!.click());
+      const first = notice();
+      expect(first?.textContent).toBe('No message to replay yet');
+      act(() => replayButton()!.click());
+      const second = notice();
+      expect(second?.textContent).toBe('No message to replay yet');
+      expect(second).not.toBe(first);
+    });
+
     test('while a replay is starting, a second press is ignored and the button counts as busy', async () => {
       startWith({});
       render();
