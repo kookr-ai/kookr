@@ -272,6 +272,33 @@ describe('snapshot projection', () => {
     expect(hugeName!.endsWith('…')).toBe(true);
   });
 
+  it('drops prompt openers from prompt-derived names on live, pending and terminal tasks (#3561 slice 3)', () => {
+    const taskStore = new TaskStore();
+    const prompt = 'You are continuing a sequential task chain.\n\nGoal: ship slice 3';
+    const legacyName = 'You are continuing a sequential task chain.';
+    // Names stored by the old fallback lost their autoNamed flag; reproduce that.
+    const ids = ['live', 'pending', 'terminal'].map(() => {
+      const task = createTaskForMutation(taskStore, prompt, '/cwd');
+      taskStore.renameTask(task.id, legacyName);
+      return task.id;
+    });
+    taskStore.addSession(ids[0], { tmuxSession: 'agent-opener', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() });
+    taskStore.getTaskForMutation(ids[1])!.status = 'pending';
+    taskStore.addSession(ids[2], { tmuxSession: 'agent-opener-done', agentType: 'claude-code', cwd: '/cwd', createdAt: new Date() });
+    taskStore.completeTask(ids[2]);
+    const authoritative = createTaskForMutation(taskStore, prompt, '/cwd');
+    authoritative.status = 'pending';
+    taskStore.renameTask(authoritative.id, 'You are here map');
+
+    const snapshot = project(taskStore, [liveAgent('agent-opener')]);
+    for (const id of ids) {
+      expect(snapshot.find((state) => state.taskId === id)?.taskName).toBe('Continuing a sequential task chain.');
+    }
+    expect(snapshot.find((state) => state.taskId === authoritative.id)?.taskName).toBe('You are here map');
+    // The full prompt stays available as the description (tooltip, detail pane).
+    expect(snapshot.find((state) => state.taskId === ids[0])?.description).toBe(prompt);
+  });
+
   it('strips launch guardrail preambles from live, pending, and terminal task descriptions', () => {
     const taskStore = new TaskStore();
     const live = createTaskForMutation(taskStore, {

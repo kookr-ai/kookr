@@ -1719,22 +1719,31 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
       }));
     };
 
-    if (!llmClient) {
+    // The deterministic fallback only fills a task that has no name yet. A
+    // task already carrying its creation-time placeholder keeps it, and keeps
+    // `autoNamed`, so the name stays marked as prompt-derived and a later
+    // launch can still upgrade it once the LLM namer works again (#3561).
+    const applyFallbackName = (): void => {
+      if (taskStore.getTask(taskId)?.name) return;
       applyName(deterministicTaskName(prompt, cwd));
+    };
+
+    if (!llmClient) {
+      applyFallbackName();
       return;
     }
     generateTaskName(llmClient, prompt, cwd, criteria)
       .then((name) => {
         if (!name) {
-          console.warn(`[task-naming] LLM returned empty name for task ${taskId}; using deterministic fallback`);
-          applyName(deterministicTaskName(prompt, cwd));
+          console.warn(`[task-naming] LLM returned empty name for task ${taskId}; keeping the deterministic name`);
+          applyFallbackName();
           return;
         }
         applyName(name);
       })
       .catch((err) => {
         console.warn(`[task-naming] Failed to name task ${taskId}:`, err instanceof Error ? err.message : err);
-        applyName(deterministicTaskName(prompt, cwd));
+        applyFallbackName();
       });
   }
 

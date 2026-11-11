@@ -5,6 +5,7 @@ import { toClientAgentState } from '../../core/monitor-agent-state.js';
 import type { AgentType } from '../../core/agent-types.js';
 import { deriveLatestCompletionSignal } from '../../core/completion-signal.js';
 import { displayPromptForTask } from '../../core/prompt-display.js';
+import { presentTaskName } from '../../core/task-naming.js';
 import { projectDisplayLabel } from '../../core/project-identity.js';
 import { isAgedTerminalTask, isTerminalStatus, taskSnapshotRecencyMs, type Task, type TaskLaunchHealthSummary } from '../../core/tasks.js';
 import type { AgentStatus, Anomaly, TaskStatus, WorktreeHealth } from '../../core/types.js';
@@ -269,7 +270,7 @@ function resolveTerminalCap(deps: {
 function enrichLiveState(state: AgentState, meta: SessionSnapshotMeta): void {
   const task = meta.task;
   state.taskId = meta.taskId;
-  state.taskName = meta.name ?? promptTitle(meta.displayPrompt);
+  state.taskName = presentTaskName({ name: meta.name, autoNamed: meta.task.autoNamed }, meta.displayPrompt, promptTitle);
   state.description = meta.displayPrompt;
   state.cwd = meta.cwd;
   state.agentType = meta.agentType;
@@ -325,7 +326,7 @@ function buildPendingTaskEntry(task: Task): AgentState {
     anomaly: null,
     lastEventSeq: 0,
     taskId: task.id,
-    taskName: task.name ?? promptTitle(displayPrompt),
+    taskName: presentTaskName(task, displayPrompt, promptTitle),
     taskStatus: 'pending',
     ...(taskCreatedAt ? { taskCreatedAt } : {}),
     parentTaskId: task.parentTaskId,
@@ -362,7 +363,7 @@ function buildTerminalTaskEntry(task: Task): AgentState {
     anomaly: null,
     lastEventSeq: 0,
     taskId: task.id,
-    taskName: task.name ?? promptTitle(displayPrompt),
+    taskName: presentTaskName(task, displayPrompt, promptTitle),
     taskStatus: task.status,
     ...(taskCreatedAt ? { taskCreatedAt } : {}),
     ...(lastSession && validDateIso(lastSession.createdAt) ? { sessionCreatedAt: validDateIso(lastSession.createdAt)! } : {}),

@@ -337,6 +337,28 @@ describe('AI task naming integration', () => {
     expect(name).toBe('Fix bug');
   });
 
+  test('an LLM naming failure keeps the creation-time name marked autoNamed (#3561 slice 3)', async () => {
+    mockGenerateTaskName.mockResolvedValue(null);
+
+    const res = await fetch(`${baseUrl}/api/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: 'Your job is to fix the login bug', cwd: PROJECT_DIR }),
+    });
+    const task = await res.json();
+
+    await vi.waitFor(() => {
+      expect(mockGenerateTaskName).toHaveBeenCalledOnce();
+    }, { timeout: 3000 });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // The fallback no longer renames the task, so the name stays flagged as
+    // prompt-derived (and upgradable) instead of turning authoritative.
+    const stored = server.taskStore.getTask(task.id);
+    expect(stored?.name).toBe('Fix the login bug');
+    expect(stored?.autoNamed).toBe(true);
+  });
+
   test('deterministic fallback applies on API rejection (no crash, task still named)', async () => {
     mockGenerateTaskName.mockRejectedValue(new Error('API error'));
 
