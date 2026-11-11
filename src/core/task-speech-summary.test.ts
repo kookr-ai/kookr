@@ -86,7 +86,8 @@ describe('summarizeTaskForSpeech', () => {
       taskName: 'Secret sk-1234567890abcdefghijklmnop',
       taskStatus: 'pending',
     });
-    expect(text).toContain('[redacted]');
+    expect(text).toContain('redacted');
+    expect(text).not.toContain('[redacted]');
     expect(text).not.toContain('sk-1234567890');
   });
 
@@ -164,9 +165,111 @@ describe('summarizeTaskForSpeech', () => {
       ],
     });
 
-    expect(text).toContain('permission_blocked finding');
-    expect(text).toContain('Waiting on Bash approval');
+    expect(text).toBe('Permission task is waiting for your permission. Waiting on Bash approval.');
+    expect(text).not.toContain('permission_blocked');
     expect(text).not.toContain('Recent activity');
+  });
+
+  describe('finding fallback wording', () => {
+    const finding = (over: Partial<NonNullable<TaskSpeechSummaryInput['activeFinding']>>) => ({
+      taskName: 'Repository Idea Scout',
+      taskStatus: 'inProgress' as const,
+      activeFinding: { type: 'needs_input', severity: 'info', explanation: '', ...over },
+    });
+
+    test('speaks a needs_input finding as a plain predicate', () => {
+      expect(fallbackTaskSpeechSummary(finding({}))).toBe('Repository Idea Scout needs your input.');
+    });
+
+    test('does not mention warning severity when it adds nothing', () => {
+      expect(fallbackTaskSpeechSummary(finding({ severity: 'warning' }))).toBe(
+        'Repository Idea Scout needs your input.',
+      );
+    });
+
+    test('mentions critical severity when it adds information', () => {
+      expect(fallbackTaskSpeechSummary(finding({ severity: 'critical' }))).toBe(
+        'Repository Idea Scout urgently needs your input.',
+      );
+    });
+
+    test('appends a short explanation as a second sentence, made speakable', () => {
+      expect(
+        fallbackTaskSpeechSummary(finding({ explanation: 'Agent asked a question about `src/core/foo.ts`' })),
+      ).toBe('Repository Idea Scout needs your input. Agent asked a question about foo.ts.');
+    });
+
+    test('drops an explanation longer than about 100 characters', () => {
+      const text = fallbackTaskSpeechSummary(finding({ explanation: 'The agent has been waiting. '.repeat(8) }));
+      expect(text).toBe('Repository Idea Scout needs your input.');
+    });
+
+    test('falls back to plain words for an unknown finding type', () => {
+      expect(fallbackTaskSpeechSummary(finding({ type: 'disk_almost_full' }))).toBe(
+        'Repository Idea Scout reported disk almost full.',
+      );
+    });
+  });
+
+  describe('speakable-text step', () => {
+    test('LLM summary is made speakable and the pre-transform text is kept as rawText', async () => {
+      const client = mockClient(
+        '{"summary":"Fixed `src/core/foo-bar.ts` and opened https://github.com/o/r/pull/3608 for review."}',
+      );
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result).toEqual({
+        text: 'Fixed foo-bar.ts and opened pull request 3608 for review.',
+        usedFallback: false,
+        rawText: 'Fixed `src/core/foo-bar.ts` and opened https://github.com/o/r/pull/3608 for review.',
+      });
+    });
+
+    test('rawText is absent when the transform changes nothing', async () => {
+      const client = mockClient('{"summary":"Fix auth completed."}');
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result).toEqual({ text: 'Fix auth completed.', usedFallback: false });
+      expect('rawText' in result).toBe(false);
+    });
+
+    test('validation runs on the model text before the transform (denylist still wins)', async () => {
+      const client = mockClient('{"summary":"Merge `src/a/b.ts` into main."}');
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+    });
+
+    test('fallback output is made speakable and reports rawText when it changed', async () => {
+      const result = await summarizeTaskForSpeech(null, {
+        taskName: 'Docs pass',
+        taskStatus: 'completed',
+        completionDigest: {
+          bullets: ['Updated /home/jean/git/kookr/docs/guide.md and fixed max_retry_count'],
+          filesChanged: [],
+          testSummary: '',
+        },
+      });
+      expect(result.usedFallback).toBe(true);
+      expect(result.text).toBe('Docs pass is completed: Updated guide.md and fixed max retry count.');
+      expect(result.rawText).toBe(
+        'Docs pass is completed: Updated /home/jean/git/kookr/docs/guide.md and fixed max_retry_count.',
+      );
+    });
+
+    test('finding fallback needs no transform, so rawText is absent', async () => {
+      const result = await summarizeTaskForSpeech(null, {
+        taskName: 'Repository Idea Scout',
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'needs_input', severity: 'info', explanation: '' },
+      });
+      expect(result).toEqual({ text: 'Repository Idea Scout needs your input.', usedFallback: true });
+    });
+
+    test('system prompt tells the model to write speakable text', async () => {
+      const client = mockClient('{"summary":"Task is running."}');
+      await summarizeTaskForSpeech(client, baseInput);
+      const call = vi.mocked(client.complete).mock.calls[0][0];
+      expect(call.system).toContain('Never include file paths, URLs, commit hashes');
+      expect(call.system).toContain('needs your input');
+    });
   });
 
   test('LLM prompt prioritizes activity and omits provider/worktree metadata', async () => {

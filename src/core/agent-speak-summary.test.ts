@@ -70,8 +70,28 @@ describe('buildFallbackText (rung-aware)', () => {
       'terse',
     );
     expect(text.split(/\s+/).filter(Boolean).length).toBeLessThanOrEqual(8);
-    expect(text).toContain('Refactor auth');
-    expect(text).toContain('needs_input');
+    expect(text).toBe('Refactor auth needs your input.');
+    expect(text).not.toContain('needs_input');
+  });
+
+  test('terse speaks an unknown anomaly type as plain words', () => {
+    const text = buildFallbackText(
+      { ...baseContext, anomaly: { type: 'disk_almost_full', severity: 'info', explanation: 'x' } },
+      'terse',
+    );
+    expect(text).toBe('Refactor auth. disk almost full.');
+  });
+
+  test('medium finding fallback makes the explanation speakable', () => {
+    const text = buildFallbackText(
+      {
+        ...baseContext,
+        anomaly: { type: 'api_error', severity: 'warning', explanation: 'Call to /v1/messages failed: max_retries hit' },
+      },
+      'medium',
+    );
+    expect(text).toContain('max retries hit');
+    expect(text).not.toContain('max_retries');
   });
 
   test('terse without anomaly uses the "working" placeholder', () => {
@@ -92,7 +112,54 @@ describe('buildFallbackText (rung-aware)', () => {
   });
 });
 
+describe('system prompt speakability rules', () => {
+  test.each<['finding' | 'activity']>([['finding'], ['activity']])('mode %s forbids paths, urls and identifiers', (mode) => {
+    const prompt = buildSystemPrompt(mode, 'medium');
+    expect(prompt).toContain('Never include file paths, URLs, commit hashes');
+    expect(prompt).toContain('plain spoken English');
+  });
+
+  test('finding mode asks for plain-word finding phrasing', () => {
+    expect(buildSystemPrompt('finding', 'brief')).toContain('needs your input');
+  });
+});
+
 describe('summarizeAgent', () => {
+  test('success text is made speakable and rawText keeps the pre-transform wording', async () => {
+    const client = mkClient('{"recap":"Edited `src/core/foo-bar.ts` for #3608."}');
+    const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
+    expect(result.usedFallback).toBe(false);
+    expect(result.text).toBe('Refactor auth. Edited foo-bar.ts for number 3608.');
+    expect(result.rawText).toBe('Refactor auth. Edited `src/core/foo-bar.ts` for #3608.');
+  });
+
+  test('rawText is absent when the recap needed no changes', async () => {
+    const client = mkClient('{"recap":"All tests passed."}');
+    const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
+    expect(result.text).toBe('Refactor auth. All tests passed.');
+    expect('rawText' in result).toBe(false);
+  });
+
+  test('fallback text is made speakable and rawText is set only when it changed', async () => {
+    const changed = await summarizeAgent(
+      null,
+      { ...baseContext, recentActivity: 'edited src/core/foo.ts' },
+      'medium',
+      'activity',
+    );
+    expect(changed.text).toContain('edited foo.ts');
+    expect(changed.rawText).toContain('src/core/foo.ts');
+
+    const unchanged = await summarizeAgent(
+      null,
+      { ...baseContext, anomaly: { type: 'needs_input', severity: 'info', explanation: 'x' } },
+      'terse',
+      'finding',
+    );
+    expect(unchanged.text).toBe('Refactor auth needs your input.');
+    expect('rawText' in unchanged).toBe(false);
+  });
+
   test('falls back when client is null with reason=no-llm-client', async () => {
     const result = await summarizeAgent(null, baseContext, 'medium', 'activity');
     expect(result.usedFallback).toBe(true);

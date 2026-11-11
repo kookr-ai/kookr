@@ -12,6 +12,8 @@ import {
 import { getSoundPreferenceState } from '../audio/sound-preference.js';
 import { getDndState } from './useDnd.js';
 import { emitSpeechGenerating, emitSpeechIdle, emitSpeechPlaying } from '../audio/speech-bus.js';
+import { captureLastClip, discardLastClip } from '../audio/last-clip.js';
+import { beginClipPlayback, reportClipUnheard, stopReplay, type ClipPlayback } from '../audio/clip-playback.js';
 import type {
   SpeakAgentErrorResponse,
   SpeakAgentRequest,
@@ -155,6 +157,8 @@ export function useSpeakAgent(
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Identifies this speaker button on the speech bus, so only the button that is speaking can announce the end.
   const busOwnerRef = useRef<object>({});
+  // The clip currently playing from this button, so telemetry and "heard" bookkeeping close exactly once.
+  const playbackRef = useRef<ClipPlayback | null>(null);
 
   const clearClientTimeout = useCallback(() => {
     if (timeoutRef.current) {
@@ -165,6 +169,10 @@ export function useSpeakAgent(
 
   const cleanup = useCallback(() => {
     clearClientTimeout();
+    // A clip still playing when we get here was cut short (stop button, other agent selected, unmounted).
+    // The normal end of a clip clears the ref first, so this does not double-count.
+    playbackRef.current?.end('user_stop');
+    playbackRef.current = null;
     // Tell observers (the optional avatar panel) that this button is no longer speaking.
     // The bus ignores this when another button has spoken since.
     emitSpeechIdle(busOwnerRef.current);
@@ -234,6 +242,9 @@ export function useSpeakAgent(
       setState({ status: 'error', errorReason: 'audio-context-unavailable' });
       return;
     }
+
+    // A replay from the avatar panel would play over the new clip.
+    stopReplay('superseded');
 
     // Retry paths from `suspended` / `error` leave the previous AudioContext
     // and any armed client timeout in place. Dispose them before starting a
@@ -332,6 +343,16 @@ export function useSpeakAgent(
         return;
       }
 
+      // Remember the clip before any playback or suppression decision, so one that never played
+      // (tab in the background, browser blocked audio, sound muted meanwhile) can still be replayed.
+      const audioBytes = base64ToArrayBuffer(payload.audioBase64);
+      const clip = captureLastClip({
+        clipId: payload.clipId,
+        text: payload.text,
+        audio: audioBytes,
+        durationMs: payload.durationMs,
+      });
+
       if (payload.effectiveVerbosity) {
         console.debug('[kookr.speak] effectiveVerbosity', {
           requested: verbosity,
@@ -350,12 +371,31 @@ export function useSpeakAgent(
       };
       setState({ status: 'generating', cached: payload.cached, timings: baseTimings });
 
+      // Sound was switched off, or Do Not Disturb turned on, while the summary was being prepared.
+      const mutedNow = !getSoundPreferenceState().enabled;
+      if (mutedNow || getDndState().enabled) {
+        logDecision(context, mutedNow ? 'suppressed_muted' : 'suppressed_dnd', 'changed while generating');
+        reportClipUnheard(clip.clipId, mutedNow ? 'muted' : 'dnd');
+        cleanup();
+        setState({
+          status: 'suppressed',
+          errorReason: mutedNow ? 'sound-muted' : 'dnd',
+          cached: payload.cached,
+          timings: baseTimings,
+        });
+        return;
+      }
+
       let buffer: AudioBuffer;
       const decodeStartedAt = nowMs();
       try {
-        buffer = await ctx.decodeAudioData(base64ToArrayBuffer(payload.audioBase64));
+        // decodeAudioData takes ownership of the bytes, so give it a copy; the original stays for replay.
+        buffer = await ctx.decodeAudioData(audioBytes.slice(0));
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
+        // Undecodable audio cannot be replayed either.
+        discardLastClip(clip.clipId);
+        reportClipUnheard(clip.clipId, 'error');
         logDecision(context, 'audio_context_error', `decode_failed:${reason.slice(0, 80)}`);
         cleanup();
         setState({ status: 'error', errorReason: 'decode-failed', cached: payload.cached, timings: baseTimings });
@@ -389,6 +429,7 @@ export function useSpeakAgent(
           resumeAttempted,
           resumeFailed,
         });
+        reportClipUnheard(clip.clipId, 'audio_suspended');
         cleanup();
         setState({ status: 'error', errorReason: 'audio-context-resume-failed', cached: payload.cached, timings: decodedTimings });
         return;
@@ -404,6 +445,8 @@ export function useSpeakAgent(
       source.onended = () => {
         if (sourceRef.current === source) {
           sourceRef.current = null;
+          playbackRef.current?.end('finished');
+          playbackRef.current = null;
           const endedTimings: SpeakFindingTimings = {
             ...currentTimings,
             playedMs: nowMs() - playbackStartedAt,
@@ -419,6 +462,7 @@ export function useSpeakAgent(
       } catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         logDecision(context, 'audio_context_error', `start_failed:${reason.slice(0, 80)}`);
+        reportClipUnheard(clip.clipId, 'error');
         cleanup();
         setState({ status: 'error', errorReason: 'start-failed', cached: payload.cached, timings: decodedTimings });
         return;
@@ -444,6 +488,7 @@ export function useSpeakAgent(
           resumeFailed,
         });
         updateAudioAlertDecision(decision.id, { audioContextFinalState: ctx.state });
+        reportClipUnheard(clip.clipId, 'audio_suspended');
         // Nothing is audible, so observers must not stay on "generating". The source and context are
         // deliberately left in place for a retry, which is why this does not go through cleanup().
         emitSpeechIdle(busOwnerRef.current);
@@ -458,6 +503,8 @@ export function useSpeakAgent(
         resumeFailed,
       });
       clearClientTimeout();
+      const totalMs = payload.durationMs > 0 ? payload.durationMs : buffer.duration * 1000;
+      playbackRef.current = beginClipPlayback({ clipId: clip.clipId, totalMs, trigger: 'click' });
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
       // The clip is audibly playing: let observers follow its loudness and show its text.
       emitSpeechPlaying(busOwnerRef.current, ctx, source, payload.text);

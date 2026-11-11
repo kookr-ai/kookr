@@ -1162,6 +1162,41 @@ describe('SettingsDialog tabs', () => {
     }
   });
 
+  test('Lucy interaction log toggle sits under the avatar panel toggle, defaults on, and persists the off switch', async () => {
+    await flush();
+
+    const avatarToggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle avatar panel"]');
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle Lucy interaction log"]');
+    expect(toggle).not.toBeNull();
+    const avatarRow = avatarToggle!.closest('.settings-row');
+    expect(avatarRow!.nextElementSibling).toBe(toggle!.closest('.settings-row'));
+    const row = toggle!.closest('.settings-row')!;
+    expect(row.textContent).toContain("Keep a local log of Lucy's interactions");
+    expect(row.textContent).toContain(
+      'Saved on this machine only (~/.kookr/lucy-interactions.jsonl). Used to improve how she talks.',
+    );
+    // The mock server omits the field; absent means the server default (on).
+    expect(toggle!.getAttribute('aria-pressed')).toBe('true');
+
+    vi.mocked(fetch).mockImplementation(async (_input, init) => {
+      if (init && init.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => JSON.parse(String(init.body)) };
+      }
+      return { ok: true, status: 200, json: async () => DEFAULT_SETTINGS };
+    });
+    await act(async () => {
+      toggle!.click();
+    });
+    await flush();
+    expect(toggle!.getAttribute('aria-pressed')).toBe('false');
+
+    const putCall = vi.mocked(fetch).mock.calls.find(([url, init]) =>
+      url === '/api/settings' && init && init.method === 'PUT'
+    );
+    expect(putCall).toBeDefined();
+    expect(JSON.parse(String(putCall![1]!.body))).toMatchObject({ lucyInteractionLog: false });
+  });
+
   test('search filters General settings to matching rows and hides other sections', async () => {
     await flush();
 

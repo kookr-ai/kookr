@@ -140,6 +140,11 @@ export interface AgentSpeakResultCore {
   fallbackReason: SpeakAgentFallbackReason | null;
   llmMs: number;
   ttsMs: number;
+  /**
+   * Wording before the speakable-text step; set only when that step changed
+   * it. `text` is what was synthesised and shown as caption.
+   */
+  rawText?: string;
 }
 
 /**
@@ -166,6 +171,10 @@ export interface SpeakAgentResponse {
    * lookup and the `/api/diagnostics/speak-cache` listing.
    */
   cacheKey: string;
+  /** Wording before the speakable-text step; present only when that step changed it. */
+  rawText?: string;
+  /** Unique id of this delivery; joins lucy-interactions.jsonl with client `lucy_*` telemetry. */
+  clipId?: string;
 }
 
 export type SpeakAgentErrorReason =

@@ -397,6 +397,11 @@ spoken text as a caption.
   screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
   and the spoken text can be focused and scrolled. With "reduce motion" set in your operating
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
+- **Hear it again.** If you were away, or the tab was in the background, when she spoke, the last
+  message is kept in memory. The **Replay last message** button in the title bar plays it again with
+  the same lip-sync and caption. Until a message has been played through while the tab was visible,
+  a dot on that button (and on the minimised bubble, whose name then ends "unheard message") marks
+  it as unheard. It respects the global sound switch, and a page reload forgets the message.
 - **It cannot break the dashboard.** If the panel fails to load or crashes, it disappears until the
   next reload and everything else keeps working.
 - **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still
@@ -405,6 +410,30 @@ spoken text as a caption.
   mouth follows the loudness of the clip, not the individual sounds, so the lip-sync is approximate.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see
   `src/frontend/avatar/assets/LICENSE.md`. Commercial users should remove it or keep the panel off.
+
+#### Interaction log (on by default, local only)
+
+So that the wording and length of her summaries can be tuned from real use, Kookr keeps a plain-text
+log of what she said and how you reacted: `~/.kookr/lucy-interactions.jsonl` (one JSON object per
+line; it rotates at 10 MB and keeps three older files).
+
+- **What is recorded.** For every spoken summary: the text that was spoken, the wording before it was
+  tidied for speech (when that differs), whether it came from the language model or the plain
+  fallback, whether it was cached, word count, and timings. From the browser: when a clip started
+  (click or replay), how it ended (finished, stopped by you, replaced, error) and how much of it
+  played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
+  actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two
+  sides. No audio is stored. Task names and summary text can contain project details, so treat the
+  file like your other local logs.
+- **It stays on this machine.** Nothing is sent anywhere; Kookr only writes the file.
+- **Turn it off.** Settings → Notifications & Alerts → **Keep a local log of Lucy's interactions**
+  (server setting `lucyInteractionLog`, default on). When off, nothing is written. Existing files are
+  left alone; delete them if you want them gone.
+- **Summarise it.** `GET /api/diagnostics/lucy-interactions/summary?days=7` (1 to 90 days) returns
+  counts and shares: clips said, share from the fallback text, share served from cache, mean and
+  median words per clip (overall and per source), clips started, replay rate, early-stop rate (you
+  stopped it before half had played), unheard rate by reason, panel actions by type, and the ten
+  phrasings stopped early most often. Damaged lines are skipped and counted.
 
 ## What Kookr Does NOT Do (explicit non-goals)
 

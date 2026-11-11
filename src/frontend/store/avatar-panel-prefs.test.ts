@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+
+const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 import {
   AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
@@ -163,5 +166,22 @@ describe('avatar-panel-prefs', () => {
     expect(position.y).toBeGreaterThan(viewport.height / 2);
     expect(position.x + AVATAR_PANEL_WIDTH).toBeLessThanOrEqual(viewport.width);
     expect(position.y + AVATAR_PANEL_HEIGHT).toBeLessThanOrEqual(viewport.height);
+  });
+
+  test('switching the panel on or off is recorded once per actual change, and moving or minimising is not', () => {
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {} });
+    __resetAvatarPanelPrefsForTests();
+    tracked.length = 0;
+
+    updateAvatarPanelPrefs({ enabled: true });
+    updateAvatarPanelPrefs({ enabled: true, minimized: true });
+    updateAvatarPanelPrefs({ position: { x: 1, y: 2 } });
+    updateAvatarPanelPrefs({ enabled: false });
+    updateAvatarPanelPrefs({ enabled: false });
+
+    expect(tracked).toEqual([
+      { type: 'lucy_panel_action', action: 'enable' },
+      { type: 'lucy_panel_action', action: 'disable' },
+    ]);
   });
 });

@@ -12,6 +12,7 @@
  * missing, malformed or out-of-range value falls back to the default.
  */
 import { useSyncExternalStore } from 'react';
+import { track } from '../telemetry.js';
 
 export const AVATAR_PANEL_KEY = 'kookr:avatarPanel';
 
@@ -146,14 +147,18 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-function getAvatarPanelPrefs(): AvatarPanelPrefs {
+export function getAvatarPanelPrefs(): AvatarPanelPrefs {
   return state;
 }
 
 export function updateAvatarPanelPrefs(patch: Partial<AvatarPanelPrefs>): AvatarPanelPrefs {
+  const wasEnabled = state.enabled;
   state = { ...state, ...patch };
   saveAvatarPanelPrefs(state);
   emit();
+  if (state.enabled !== wasEnabled) {
+    track({ type: 'lucy_panel_action', action: state.enabled ? 'enable' : 'disable' });
+  }
   return state;
 }
 

@@ -18,6 +18,12 @@ import {
   getAudioAlertSnapshot,
 } from '../audio/audio-alert-log.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus } from '../audio/speech-bus.js';
+import { __resetLastClipForTests, getLastClip, getLastClipSnapshot } from '../audio/last-clip.js';
+import { __resetClipPlaybackForTests } from '../audio/clip-playback.js';
+import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
+
+const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 
 describe('speak agent timing formatting', () => {
   test('shows generation, synthesis, decode, and audio timing', () => {
@@ -128,6 +134,11 @@ describe('useSpeakAgent request shape', () => {
     setSpeakVerbositySnapshot(null);
     __resetAudioAlertLogForTests();
     __resetSpeechBusForTests();
+    __resetLastClipForTests();
+    __resetClipPlaybackForTests();
+    setSoundEnabled(true);
+    __resetSoundPreferenceForTests();
+    tracked.length = 0;
     FakeAudioContext.instances = [];
     vi.stubGlobal('AudioContext', FakeAudioContext);
   });
@@ -416,6 +427,168 @@ describe('useSpeakAgent request shape', () => {
       first.container.remove();
 
       expect(events).toEqual(['idle', 'generating', 'playing']);
+    });
+  });
+  // The last clip is remembered as soon as it arrives, so one nobody heard can be replayed.
+  describe('last clip memory and interaction telemetry', () => {
+    function clipResponse(extra: Record<string, unknown> = {}): Response {
+      return {
+        ok: true,
+        json: async () => ({
+          text: 'Two tasks need you.',
+          audioBase64: 'AQID', // bytes 1, 2, 3
+          mimeType: 'audio/wav',
+          durationMs: 2400,
+          usedFallback: false,
+          fallbackReason: null,
+          llmMs: 0,
+          ttsMs: 0,
+          cached: false,
+          resolvedMode: 'activity',
+          effectiveVerbosity: 'medium',
+          requestId: 'req-clip',
+          cacheKey: 'k',
+          clipId: 'clip-srv-1',
+          ...extra,
+        }),
+      } as unknown as Response;
+    }
+
+    async function speakAndSettle(): Promise<void> {
+      await act(async () => {
+        probeHandle!.speak();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+    }
+
+    function mount(response: () => Promise<Response>): void {
+      const mounted = mountProbe(vi.fn(response) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+    }
+
+    const ofType = (type: string) => tracked.filter((event) => event.type === type);
+
+    test('a played clip is remembered with its server clip id, starts unheard and is heard when it finishes in a visible tab', async () => {
+      mount(async () => clipResponse());
+      await speakAndSettle();
+
+      const clip = getLastClip()!;
+      expect(clip).toMatchObject({ clipId: 'clip-srv-1', text: 'Two tasks need you.', durationMs: 2400 });
+      expect(new Uint8Array(clip.audio)).toEqual(new Uint8Array([1, 2, 3]));
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Two tasks need you.' });
+      expect(ofType('lucy_clip_started')).toEqual([
+        { type: 'lucy_clip_started', clipId: 'clip-srv-1', trigger: 'click', panelState: 'off', tabVisible: true },
+      ]);
+
+      // decodeAudioData consumes the bytes it is given, so it must not be handed the stored copy.
+      const ctx = FakeAudioContext.instances[0];
+      expect(ctx.decodeAudioData.mock.calls[0][0]).not.toBe(clip.audio);
+
+      const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+      vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 2400);
+      act(() => {
+        source.onended?.();
+      });
+      expect(getLastClipSnapshot().unheard).toBe(false);
+      expect(ofType('lucy_clip_ended')).toEqual([
+        { type: 'lucy_clip_ended', clipId: 'clip-srv-1', endedBy: 'finished', playedMs: 2400, totalMs: 2400 },
+      ]);
+      expect(ofType('lucy_clip_unheard')).toEqual([]);
+    });
+
+    test('a locally generated id stands in when the server sent none', async () => {
+      mount(async () => clipResponse({ clipId: undefined }));
+      await speakAndSettle();
+      expect(getLastClip()!.clipId).toMatch(/^local-/);
+      expect(ofType('lucy_clip_started')[0]).toMatchObject({ clipId: getLastClip()!.clipId });
+    });
+
+    test('a clip the browser would not play is still remembered, and reported as unheard (audio suspended)', async () => {
+      class SuspendedAudioContext extends FakeAudioContext {
+        state: AudioContextState = 'suspended';
+        resume = vi.fn(async () => {});
+      }
+      vi.stubGlobal('AudioContext', SuspendedAudioContext);
+      mount(async () => clipResponse());
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('suppressed');
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Two tasks need you.' });
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'audio_suspended' }]);
+      expect(ofType('lucy_clip_started')).toEqual([]);
+    });
+
+    test('sound switched off while the summary was being prepared: remembered, not played, reported as muted', async () => {
+      let release: (response: Response) => void = () => {};
+      mount(() => new Promise<Response>((resolve) => { release = resolve; }));
+      act(() => {
+        probeHandle!.speak();
+      });
+      setSoundEnabled(false);
+      await act(async () => {
+        release(clipResponse());
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+
+      expect(probeHandle!.state.status).toBe('suppressed');
+      expect(probeHandle!.state.errorReason).toBe('sound-muted');
+      expect(FakeAudioContext.instances[0].createBufferSource).not.toHaveBeenCalled();
+      expect(getLastClipSnapshot().unheard).toBe(true);
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'muted' }]);
+    });
+
+    test('audio that cannot be decoded is reported as an error and is not kept for replay', async () => {
+      class BadAudioContext extends FakeAudioContext {
+        decodeAudioData = vi.fn(async () => { throw new Error('bad wav'); });
+      }
+      vi.stubGlobal('AudioContext', BadAudioContext);
+      mount(async () => clipResponse());
+      await speakAndSettle();
+
+      expect(probeHandle!.state.errorReason).toBe('decode-failed');
+      expect(getLastClipSnapshot().hasClip).toBe(false);
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'error' }]);
+    });
+
+    test('stopping a clip part-way records user_stop and leaves it unheard', async () => {
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      expect(probeHandle!.state.status).toBe('playing');
+
+      act(() => {
+        probeHandle!.stop();
+      });
+      expect(ofType('lucy_clip_ended')).toHaveLength(1);
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'user_stop', totalMs: 2400 });
+      expect(getLastClipSnapshot().unheard).toBe(true);
+    });
+
+    test('a newer clip replaces the older one and starts unheard', async () => {
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      const source = FakeAudioContext.instances[0].createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+      vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000);
+      act(() => {
+        source.onended?.();
+      });
+      expect(getLastClipSnapshot().unheard).toBe(false);
+
+      mount(async () => clipResponse({ clipId: 'clip-srv-2', text: 'Something else.' }));
+      await speakAndSettle();
+      expect(getLastClip()!.clipId).toBe('clip-srv-2');
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Something else.' });
+    });
+
+    test('a failed request leaves the previous clip alone', async () => {
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      act(() => {
+        probeHandle!.stop();
+      });
+      mount(async () => { throw new Error('offline'); });
+      await speakAndSettle();
+      expect(getLastClip()!.clipId).toBe('clip-srv-1');
     });
   });
 });

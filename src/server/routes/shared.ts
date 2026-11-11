@@ -475,6 +475,13 @@ export interface RouteDeps {
   ttsVoice?: string;
   /** Surgical kill-switch for the speak-finding feature. Defaults to true; set false via `KOOKR_SPEAK=false`. */
   speakFindingEnabled?: boolean;
+  /**
+   * Local Lucy interaction log (issue #3605) shared with the websocket handler,
+   * and the file it writes (read by the summary endpoint). Optional so partial
+   * harnesses record nothing.
+   */
+  lucyInteractionLog?: import('../lucy-interaction-log.js').LucyInteractionLog;
+  lucyInteractionLogPath?: string;
   projectConfigStore?: ProjectConfigStore;
   projectSidebarStore?: ProjectSidebarStore;
   ossAttemptStore?: OssAttemptStore;

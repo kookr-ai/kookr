@@ -287,6 +287,32 @@ describe('handleWsConnection read-only gate (integration)', () => {
 
     expect(handleMessageSafe).toHaveBeenCalledTimes(1);
   });
+
+  it('tees lucy_* telemetry events to the Lucy log while the normal telemetry path still runs (#3605)', async () => {
+    const ws = makeFakeWs();
+    const recordUi = vi.fn();
+    const deps = { ...makeDeps(), lucyInteractionLog: { recordSaid: vi.fn(), recordUi, flush: vi.fn() } } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    const base = { timestamp: '2026-11-11T10:00:00.000Z', sessionId: 's1', platform: 'linux' };
+    const ended = { ...base, type: 'lucy_clip_ended', clipId: 'c1', endedBy: 'user_stop', playedMs: 100, totalMs: 1000 };
+
+    await dispatch(ws, { type: 'telemetry', events: [{ ...base, type: 'agent_clicked' }, ended] });
+
+    expect(recordUi).toHaveBeenCalledTimes(1);
+    expect(recordUi).toHaveBeenCalledWith('s1', ended);
+    expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+    expect(achievementWatcher.check).toHaveBeenCalledTimes(2);
+  });
+
+  it('telemetry without a Lucy log wired does not throw', async () => {
+    const ws = makeFakeWs();
+    handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);
+    await expect(dispatch(ws, {
+      type: 'telemetry',
+      events: [{ type: 'lucy_panel_action', action: 'move', timestamp: 't', sessionId: 's', platform: 'linux' }],
+    })).resolves.toBeUndefined();
+    expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('handleWsConnection initial burst (#809 actor-aware)', () => {

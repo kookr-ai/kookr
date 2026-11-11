@@ -332,6 +332,7 @@ export class AgentSpeakCache {
       fallbackReason: summary.usedFallback ? (summary.fallbackReason as SpeakAgentFallbackReason) : null,
       llmMs,
       ttsMs,
+      ...(summary.rawText !== undefined ? { rawText: summary.rawText } : {}),
     };
     const entry = this.insert(cacheKey, keyInput, context, result);
     return { entry };

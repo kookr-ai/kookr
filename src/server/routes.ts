@@ -248,6 +248,8 @@ export function createRoutes(deps: RouteDeps): Hono {
     taskCache: taskSpeakCache,
     ttsUrl: deps.ttsUrl,
     ttsVoice: deps.ttsVoice ?? DEFAULT_TTS_VOICE,
+    lucyLog: deps.lucyInteractionLog,
+    lucyLogPath: deps.lucyInteractionLogPath,
   });
 
   // Dashboard response headers:

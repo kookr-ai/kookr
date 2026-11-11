@@ -37,6 +37,7 @@ import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
+import { isLucyTelemetryType, type LucyInteractionLog } from './lucy-interaction-log.js';
 import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import {
@@ -90,6 +91,8 @@ export interface WsConnectionDeps {
   adapterRegistry?: AdapterRegistry;
   interactionLog: DeferredInteractionLogWriter;
   telemetryLog: DeferredTelemetryLogWriter;
+  /** Receives `lucy_*` telemetry events as `ui` records. Optional: unwired = not recorded. */
+  lucyInteractionLog?: LucyInteractionLog;
   buildInfo: BuildInfo;
   serverStartedAt: string;
   serverCwd: string;
@@ -558,6 +561,16 @@ function wireWsMessageHandlers(
       if (msg.type === 'achievement:setEnabled') {
         achievementWatcher.setEnabled(msg.enabled);
         return;
+      }
+
+      // Lucy interaction analysis (issue #3605): tee the avatar's `lucy_*`
+      // events into her local log. The normal telemetry path is unchanged.
+      if (msg.type === 'telemetry' && deps.lucyInteractionLog) {
+        for (const event of msg.events) {
+          if (isLucyTelemetryType(event.type)) {
+            deps.lucyInteractionLog.recordUi(event.sessionId, event);
+          }
+        }
       }
 
       const isLaunchMsg = msg.type === 'launch' || msg.type === 'launchPlaybook' || msg.type === 'relaunch';
