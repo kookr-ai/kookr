@@ -174,6 +174,18 @@ describe('prepareOpenCodeSeed', () => {
     expect(isOpenCodeSeedReady(seedDir)).toBe(true);
   });
 
+  it.each(['', '/', '/.', '/../seed-build-template'])('also keeps the seed dir when the configured path is spelled with a suffix %j', async (suffix) => {
+    const tools = join(tmp, 'tools');
+    const real = join(tools, 'seed-build-template');
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir: real, runner: vi.fn(populate) })).toBe(real);
+    const old = new Date(Date.now() - 7_200_000);
+    utimesSync(real, old, old);
+    const runner = vi.fn(populate);
+    await prepareOpenCodeSeed({ bin: 'oc', seedDir: `${real}${suffix}`, runner, scratchStaleMs: 60_000 });
+    expect(runner).not.toHaveBeenCalled();
+    expect(isOpenCodeSeedReady(real)).toBe(true);
+  });
+
   it('breaks a stale lock', async () => {
     const seedDir = join(tmp, 'seed');
     mkdirSync(`${seedDir}.lock`, { recursive: true });

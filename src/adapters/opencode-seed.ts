@@ -14,7 +14,7 @@ import { spawn } from 'node:child_process';
 import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, readlink, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { OPENCODE_PINNED_VERSION } from './opencode-preflight.js';
 
 export const OPENCODE_SEED_DIR_ENV = 'KOOKR_OPENCODE_SEED_DIR';
@@ -73,7 +73,8 @@ async function cleanStaleScratchDirs(seedDir: string, staleMs: number, warn: (ms
     if (!name.startsWith(SCRATCH_PREFIX)) continue;
     const dir = join(parent, name);
     // KOOKR_OPENCODE_SEED_DIR is operator-settable: never reclaim the seed (or its lock) itself, whatever it is called.
-    if (dir === seedDir || dir === `${seedDir}.lock`) continue;
+    // Compare normalised absolute paths: the env value may carry a trailing slash, `./` or `..` segments.
+    if (resolve(dir) === resolve(seedDir) || resolve(dir) === resolve(`${seedDir}.lock`)) continue;
     try {
       const st = await lstat(dir);
       if (!st.isDirectory()) continue;
