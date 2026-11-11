@@ -11,7 +11,7 @@
  * Seed failure is never fatal: the composer simply falls back to unseeded.
  */
 import { spawn } from 'node:child_process';
-import { chmod, copyFile, link, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, link, lstat, mkdir, mkdtemp, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -49,7 +49,38 @@ export interface PrepareOpenCodeSeedOptions {
   timeoutMs?: number;
   lockStaleMs?: number;
   lockWaitMs?: number;
+  /** Scratch `seed-build-*` dirs older than this are removed before building (default 1 hour). */
+  scratchStaleMs?: number;
   warn?: (msg: string) => void;
+}
+
+const SCRATCH_PREFIX = 'seed-build-';
+
+/**
+ * Remove scratch dirs a crashed previous build left next to the seed (~64 MB each). Only directories whose name
+ * starts with the exact `seed-build-` prefix and whose mtime is older than `staleMs` are touched, so an in-flight
+ * build (fresh mtime) and unrelated operator directories survive. Best-effort: failures are warning-only.
+ */
+async function cleanStaleScratchDirs(seedDir: string, staleMs: number, warn: (msg: string) => void): Promise<void> {
+  const parent = dirname(seedDir);
+  let names: string[];
+  try {
+    names = await readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (!name.startsWith(SCRATCH_PREFIX)) continue;
+    const dir = join(parent, name);
+    try {
+      const st = await lstat(dir);
+      if (!st.isDirectory()) continue;
+      if (Date.now() - st.mtimeMs <= staleMs) continue;
+      await rm(dir, { recursive: true, force: true });
+    } catch (err) {
+      warn(`[opencode-seed] could not remove stale scratch dir ${dir} (${(err as Error).message})`);
+    }
+  }
 }
 
 const LOCK_OWNER_FILE = '.kookr-seed-lock';
@@ -108,7 +139,8 @@ export async function prepareOpenCodeSeed(opts: PrepareOpenCodeSeedOptions): Pro
     locked = await acquireLock(lockDir, opts.lockStaleMs ?? 180_000, opts.lockWaitMs ?? 120_000, seedDir);
     if (!locked) return isOpenCodeSeedReady(seedDir) ? seedDir : undefined;
     if (isOpenCodeSeedReady(seedDir)) return seedDir;
-    scratch = await mkdtemp(join(dirname(seedDir), 'seed-build-'));
+    await cleanStaleScratchDirs(seedDir, opts.scratchStaleMs ?? 3_600_000, warn);
+    scratch = await mkdtemp(join(dirname(seedDir), SCRATCH_PREFIX));
     const cfg = join(scratch, 'cfg');
     await mkdir(join(cfg, 'plugins'), { recursive: true });
     // A plugins dir is what makes opencode install `@opencode-ai/plugin`; `debug config` exits right after.
@@ -147,7 +179,9 @@ export async function prepareOpenCodeSeed(opts: PrepareOpenCodeSeedOptions): Pro
 }
 
 async function linkTree(src: string, dst: string): Promise<void> {
-  const st = await stat(src);
+  // lstat, not stat: a symlink inside the seed (e.g. node_modules/.bin entries) must not be followed, or a directory
+  // symlink would be materialised or loop.
+  const st = await lstat(src);
   if (st.isDirectory()) {
     await mkdir(dst, { recursive: true });
     for (const name of await readdir(src)) await linkTree(join(src, name), join(dst, name));

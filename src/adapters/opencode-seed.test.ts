@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -114,6 +114,30 @@ describe('prepareOpenCodeSeed', () => {
     expect(runner).toHaveBeenCalledTimes(1);
   });
 
+  it('removes stale seed-build-* scratch dirs before building, but keeps fresh ones and unrelated dirs', async () => {
+    const tools = join(tmp, 'tools');
+    const seedDir = join(tools, 'seed');
+    mkdirSync(tools, { recursive: true });
+    const stale = join(tools, 'seed-build-crashed');
+    mkdirSync(stale, { recursive: true });
+    writeFileSync(join(stale, 'junk'), 'x');
+    const old = new Date(Date.now() - 3_600_000);
+    utimesSync(stale, old, old);
+    const fresh = join(tools, 'seed-build-inflight');
+    mkdirSync(fresh, { recursive: true });
+    const unrelated = join(tools, 'seed-build-not-a-dir');
+    writeFileSync(unrelated, 'keep me');
+    utimesSync(unrelated, old, old);
+    const other = join(tools, 'other-crashed');
+    mkdirSync(other, { recursive: true });
+    utimesSync(other, old, old);
+    expect(await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: vi.fn(populate), scratchStaleMs: 60_000 })).toBe(seedDir);
+    expect(existsSync(stale)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(other)).toBe(true);
+    expect(readFileSync(unrelated, 'utf8')).toBe('keep me');
+  });
+
   it('breaks a stale lock', async () => {
     const seedDir = join(tmp, 'seed');
     mkdirSync(`${seedDir}.lock`, { recursive: true });
@@ -123,6 +147,20 @@ describe('prepareOpenCodeSeed', () => {
 });
 
 describe('seedConfigDir', () => {
+  it('does not follow a directory symlink inside node_modules (no materialised copy, no loop)', async () => {
+    const seedDir = join(tmp, 'seed');
+    await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: populate });
+    const nm = join(seedDir, 'node_modules');
+    // A symlink back to node_modules' parent would loop forever if linkTree followed directory symlinks.
+    symlinkSync('..', join(nm, 'loop'));
+    symlinkSync('@opencode-ai', join(nm, 'alias'));
+    const target = join(tmp, 'sess', 'cfg');
+    await seedConfigDir(seedDir, target);
+    const loopDst = join(target, 'node_modules', 'loop');
+    expect(lstatSync(loopDst).isSymbolicLink()).toBe(true);
+    expect(readdirSync(join(target, 'node_modules')).sort()).toEqual(['@opencode-ai', 'alias', 'loop']);
+  });
+
   it('hardlinks files (no extra disk) and preserves the tree', async () => {
     const seedDir = join(tmp, 'seed');
     await prepareOpenCodeSeed({ bin: 'oc', seedDir, runner: populate });
