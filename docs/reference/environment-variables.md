@@ -324,6 +324,7 @@ features stay disabled and Kookr falls back to truncated prompt names.
 | `BASETEN_API_KEY` | unset | Baseten API key | Fallback Baseten key for simple single-key setups. Used only when `KOOKR_LLM_PROVIDER=baseten` and `KOOKR_BASETEN_API_KEY` is unset. |
 | `KOOKR_BASETEN_MODEL` | `deepseek-ai/DeepSeek-V4.1-Flash-Fast` | Baseten model id | Overrides the Baseten model. Applies only when `KOOKR_LLM_PROVIDER=baseten`. |
 | `KOOKR_BASETEN_BASE_URL` | `https://inference.baseten.co/v1` | OpenAI-compatible base URL | Overrides the Baseten chat-completions base URL. Baseten provider only. |
+| `KOOKR_BASETEN_REASONING_EFFORT` | unset (the model's own default) | `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | Sent as `reasoning_effort` on every Baseten helper call. Baseten accepts named levels only (a number is rejected), and each model honours a subset; see Baseten's reasoning docs. `none` or `low` trims latency and output tokens for the short helper prompts. An unknown value is ignored with a warning. Baseten provider only. |
 
 ## Remote Chat Trigger
 
