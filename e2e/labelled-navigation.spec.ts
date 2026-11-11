@@ -102,4 +102,33 @@ test.describe('labelled navigation (#3561 slice 5a)', () => {
     await expect(idle).toBeVisible();
     await expect(page.getByTestId('project-nav-idle-toggle')).toBeHidden();
   });
+
+  test('a saved wide findings panel cannot squeeze the reading pane under the labelled nav', async ({ page, request }) => {
+    // 720 px is the widest the divider allows; on main it leaves the pane about
+    // 506 px at 1280. The labels must come out of the findings panel, keeping
+    // main's 428 px floor for the pane (MIN_TERMINAL_RESERVE_PX minus the rail).
+    await page.addInitScript(() => window.localStorage.setItem('kookr:dashboardFindingsWidth', '720'));
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto('/');
+    await expect(page.locator('.health-dot-connected')).toBeVisible({ timeout: 10000 });
+
+    const id = await launch(request, 'Nav width task');
+    const tmux = await getTmuxNameForPrompt(request, 'Nav width task');
+    await injectSessionStart(request, tmux);
+    await injectToolUse(request, tmux);
+    await setProjectId(request, id, 'github.com/org/width');
+    expect((await request.post('/api/test/broadcast-project-summaries')).ok()).toBe(true);
+
+    const nav = page.getByTestId('project-sidebar');
+    await expect.poll(async () => Math.round((await nav.boundingBox())?.width ?? 0)).toBe(212);
+    await page.locator('.healthy-row').first().click();
+    const pane = page.locator('.detail-panel');
+    await expect(pane).toBeVisible();
+    await expect.poll(async () => Math.round((await pane.boundingBox())?.width ?? 0)).toBeGreaterThanOrEqual(420);
+    const resizer = page.getByTestId('findings-resizer');
+    await resizer.focus();
+    await page.keyboard.press('End');
+    await expect.poll(async () => Math.round((await pane.boundingBox())?.width ?? 0)).toBeGreaterThanOrEqual(420);
+    expect(Number(await resizer.getAttribute('aria-valuemax'))).toBeLessThanOrEqual(640);
+  });
 });

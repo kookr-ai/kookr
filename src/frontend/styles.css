@@ -10239,6 +10239,19 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   .project-sidebar.labelled .project-sidebar-organizer {
     align-self: flex-start;
   }
+
+  /* A saved or dragged findings width must not eat the 160 px the labels
+     cost out of the terminal: keep main's floor for the reading pane
+     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). */
+  .main:has(> .project-sidebar.labelled) > .findings-panel {
+    max-width: max(280px, calc(100% - 640px));
+  }
+
+  /* "All projects" is always the selected row in this layout; keep the red
+     at-cap ring visible over the selection inset. */
+  .project-sidebar.labelled .project-icon.all.at-cap {
+    box-shadow: inset 0 0 0 1px var(--state-bad);
+  }
 }
 
 .project-sidebar-drop-target {
