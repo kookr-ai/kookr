@@ -30,19 +30,22 @@ vi.mock('./assets/lucy-bust.glb?url', () => ({ default: '/lucy-bust.glb' }));
 
 const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
-const replay = vi.hoisted(() => ({ result: 'started' as string, calls: 0 }));
+const replay = vi.hoisted(() => ({ result: 'started' as string, calls: 0, gate: null as Promise<void> | null }));
 vi.mock('../audio/clip-playback.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../audio/clip-playback.js')>();
   return {
     ...actual,
     replayLastClip: vi.fn(async () => {
       replay.calls += 1;
+      if (replay.gate) await replay.gate;
       return replay.result;
     }),
+    stopReplay: vi.fn(),
   };
 });
 
 import { AvatarDock } from './AvatarDock.js';
+import { stopReplay } from '../audio/clip-playback.js';
 import { __resetLastClipForTests, captureLastClip, markClipHeard } from '../audio/last-clip.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import {
@@ -110,6 +113,8 @@ describe('AvatarDock', () => {
     tracked.length = 0;
     replay.result = 'started';
     replay.calls = 0;
+    replay.gate = null;
+    vi.mocked(stopReplay).mockClear();
     __resetLastClipForTests();
     __resetSoundPreferenceForTests();
     __resetSpeechBusForTests();
@@ -528,6 +533,97 @@ describe('AvatarDock', () => {
       });
       const status = container.querySelector('[role="status"]')!;
       expect(status.textContent).toContain('blocked audio');
+    });
+
+    test('pressing the unavailable button says why in the status region, and the reason is also in its description', async () => {
+      startWith({});
+      render();
+      const status = () => container.querySelector('[role="status"]')!.textContent;
+      const description = () => container.querySelector(`#${replayButton()!.getAttribute('aria-describedby')}`)?.textContent;
+
+      // nothing to replay
+      expect(description()).toBe('No message to replay yet');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('No message to replay yet');
+
+      // sound off
+      playClip();
+      act(() => setSoundEnabled(false));
+      expect(status()).not.toContain('No message');
+      expect(description()).toBe('Unheard message. Sound is off in Settings');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('Sound is off in Settings, so the message was not replayed.');
+      expect(replay.calls).toBe(0);
+
+      // the notice goes away once replay is available again
+      act(() => setSoundEnabled(true));
+      expect(status()).not.toContain('Sound is off');
+      expect(description()).toBe('Unheard message');
+
+      // busy
+      busy();
+      expect(description()).toContain('busy');
+      act(() => replayButton()!.click());
+      expect(status()).toContain('busy');
+    });
+
+    test('while a replay is starting, a second press is ignored and the button counts as busy', async () => {
+      startWith({});
+      render();
+      playClip();
+      let finish!: () => void;
+      replay.gate = new Promise<void>((resolve) => { finish = resolve; });
+      const button = replayButton()!;
+
+      act(() => button.click());
+      expect(replay.calls).toBe(1);
+      expect(button.getAttribute('aria-disabled')).toBe('true');
+      act(() => button.click());
+      expect(replay.calls).toBe(1);
+      expect(panelActions()).toHaveLength(1);
+
+      await act(async () => {
+        finish();
+      });
+      expect(button.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    test.each([
+      ['muted', 'Sound is off in Settings'],
+      ['error', 'could not be played again'],
+    ])('a %s replay result is announced in the status region', async (result, text) => {
+      startWith({});
+      render();
+      playClip();
+      replay.result = result;
+      await act(async () => {
+        replayButton()!.click();
+      });
+      expect(container.querySelector('[role="status"]')!.textContent).toContain(text);
+    });
+
+    test('a notice from a failed replay goes away when a new clip starts', async () => {
+      startWith({});
+      render();
+      playClip();
+      replay.result = 'blocked';
+      await act(async () => {
+        replayButton()!.click();
+      });
+      const status = container.querySelector('[role="status"]')!;
+      expect(status.textContent).toContain('blocked audio');
+
+      act(() => emitSpeechGenerating(SPEAKER));
+      expect(status.textContent).not.toContain('blocked audio');
+    });
+
+    test('closing the panel stops a replay that is playing', () => {
+      startWith({});
+      render();
+      expect(stopReplay).not.toHaveBeenCalled();
+      act(() => root!.unmount());
+      root = null;
+      expect(stopReplay).toHaveBeenCalledWith('user_stop');
     });
 
     test('an unheard clip puts a dot on the replay button, described to screen readers; hearing it removes the dot', () => {

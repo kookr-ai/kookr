@@ -150,14 +150,34 @@ function stripTrailingTerminalPunctuation(text: string): string {
   return text.replace(/[.!?…]+$/u, '').trimEnd();
 }
 
-function validateRecap(raw: string, verbosity: VerbosityScale): { ok: true; recap: string } | { ok: false; reason: SpeakAgentFallbackReason } {
+type RecapCheck = { ok: true; recap: string } | { ok: false; reason: SpeakAgentFallbackReason };
+
+/** Caps and denylist, applied to the recap text as given. */
+function checkRecapLimits(text: string, verbosity: VerbosityScale): RecapCheck {
+  const cfg = RUNG_CONFIG[verbosity];
+  if (text.length > cfg.maxChars) return { ok: false, reason: 'validator-reject' };
+  if (countWords(text) > cfg.maxWords) return { ok: false, reason: 'validator-reject' };
+  if (ADVICE_VERB_DENYLIST.test(text)) return { ok: false, reason: 'denylist' };
+  return { ok: true, recap: text };
+}
+
+/**
+ * Validates the model recap, then validates its spoken form again: the
+ * speakable rewrite can create denylisted words ("approve_request" ->
+ * "approve request") or change the length.
+ */
+function validateRecap(raw: string, verbosity: VerbosityScale): RecapCheck {
   const trimmed = raw.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
   if (trimmed.length === 0) return { ok: false, reason: 'empty' };
   if (/^[.!?…\s]+$/u.test(trimmed)) return { ok: false, reason: 'empty' };
-  const cfg = RUNG_CONFIG[verbosity];
-  if (trimmed.length > cfg.maxChars) return { ok: false, reason: 'validator-reject' };
-  if (countWords(trimmed) > cfg.maxWords) return { ok: false, reason: 'validator-reject' };
-  if (ADVICE_VERB_DENYLIST.test(trimmed)) return { ok: false, reason: 'denylist' };
+  const rawCheck = checkRecapLimits(trimmed, verbosity);
+  if (!rawCheck.ok) return rawCheck;
+  const spoken = makeSpeakable(trimmed);
+  if (spoken) {
+    // The rewrite may append a sentence-final period; do not count it against the caps.
+    const spokenCheck = checkRecapLimits(stripTrailingTerminalPunctuation(spoken), verbosity);
+    if (!spokenCheck.ok) return spokenCheck;
+  }
   return { ok: true, recap: trimmed };
 }
 

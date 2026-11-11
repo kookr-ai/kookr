@@ -10,20 +10,31 @@
  *
  * Definitions (all over records whose `ts` falls in the window):
  *  - said: `kind:"said"` lines. Share = count / total said.
- *  - clipsStarted: distinct `clipId`s with a `lucy_clip_started` event.
- *  - replays: `lucy_clip_started` events with `trigger:"replay"`;
- *    replayRate = replays / clipsStarted.
+ *  - clipsStarted: distinct `clipId`s with a LIVE (`trigger:"click"`)
+ *    `lucy_clip_started` event. Replays reuse the clipId, so they never add to it.
+ *  - replays: `count` = `lucy_clip_started` events with `trigger:"replay"`;
+ *    `clipsReplayed` = distinct clipIds replayed; `rate` = clipsReplayed /
+ *    clipsStarted (so one clip replayed five times counts once; the rate only
+ *    exceeds 1 if a replayed clip's live start predates the window).
  *  - earlyStop: a `lucy_clip_ended` with `endedBy:"user_stop"` and
  *    playedMs/totalMs < 0.5; earlyStopRate = earlyStops / clip-ended events.
- *  - unheard: `lucy_clip_unheard` events; unheardRate =
- *    unheard / (unheard + clipsStarted), i.e. of the clips that reached the
- *    client, the share that never played.
+ *  - unheard: distinct clips that reached the client but never started
+ *    (`lucy_clip_unheard` with a clipId not already seen in a started event;
+ *    a failed replay of a clip that did play is not "unheard"). Events without a
+ *    clipId count individually. unheardRate = unheard / (unheard + clipsStarted).
+ *    `byReason` sums to `unheard.count`; reasons and panel actions outside the
+ *    documented values are bucketed as `other` (the browser is not trusted, so
+ *    client strings never become object keys).
  *  - topEarlyStopped: early stops grouped by the clip's spoken text (joined
  *    from the `said` record on `clipId`, truncated).
  */
 
 import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
+import { LUCY_EVENT_ENUMS, LUCY_OTHER } from './lucy-interaction-log.js';
+
+const UNHEARD_REASONS: readonly string[] = LUCY_EVENT_ENUMS.reason;
+const PANEL_ACTIONS: readonly string[] = LUCY_EVENT_ENUMS.action;
 
 export const LUCY_SUMMARY_SCHEMA_VERSION = 'lucy-interactions-summary.v1';
 const EARLY_STOP_FRACTION = 0.5;
@@ -49,7 +60,12 @@ export interface LucyInteractionSummary {
   said: LucySaidStats & { bySource: Record<string, LucySaidStats> };
   ui: {
     clipsStarted: number;
-    replays: { count: number; rate: number };
+    /**
+     * `count`: replay starts. `clipsReplayed`: distinct clips replayed.
+     * `rate` = clipsReplayed / clipsStarted (not count / clipsStarted, which
+     * grows with every extra replay of the same clip).
+     */
+    replays: { count: number; clipsReplayed: number; rate: number };
     clipsEnded: number;
     earlyStops: { count: number; rate: number };
     unheard: { count: number; rate: number; byReason: Record<string, number> };
@@ -100,6 +116,15 @@ function saidStats(rows: SaidRow[]): LucySaidStats {
   };
 }
 
+/** Documented value, or `other`. Never returns an arbitrary client string. */
+function bucket(value: unknown, allowed: readonly string[]): string {
+  return typeof value === 'string' && allowed.includes(value) ? value : LUCY_OTHER;
+}
+
+function increment(map: Map<string, number>, key: string): void {
+  map.set(key, (map.get(key) ?? 0) + 1);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -124,20 +149,27 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
   // in-window stop can refer to a clip said just before the window opened.
   const textByClip = new Map<string, string>();
 
-  const startedClips = new Set<string>();
+  const liveStartedClips = new Set<string>();
+  const startedAnyClips = new Set<string>();
+  const replayedClips = new Set<string>();
+  const unheardClips = new Set<string>();
   let replays = 0;
   let clipsEnded = 0;
   let unheard = 0;
-  const unheardByReason: Record<string, number> = {};
-  const panelActions: Record<string, number> = {};
+  const unheardByReason = new Map<string, number>();
+  const panelActions = new Map<string, number>();
   const earlyStopClipIds: Array<string | undefined> = [];
 
   function handleUi(event: Record<string, unknown>): void {
     const clipId = typeof event.clipId === 'string' ? event.clipId : undefined;
     switch (event.type) {
       case 'lucy_clip_started':
-        if (clipId) startedClips.add(clipId);
-        if (event.trigger === 'replay') replays++;
+        if (clipId) startedAnyClips.add(clipId);
+        if (event.trigger === 'click' && clipId) liveStartedClips.add(clipId);
+        if (event.trigger === 'replay') {
+          replays++;
+          if (clipId) replayedClips.add(clipId);
+        }
         break;
       case 'lucy_clip_ended': {
         clipsEnded++;
@@ -149,14 +181,17 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
         break;
       }
       case 'lucy_clip_unheard': {
+        if (clipId) {
+          // Already played (a failed replay) or already counted: not a new unheard clip.
+          if (startedAnyClips.has(clipId) || unheardClips.has(clipId)) break;
+          unheardClips.add(clipId);
+        }
         unheard++;
-        const reason = typeof event.reason === 'string' ? event.reason : 'unknown';
-        unheardByReason[reason] = (unheardByReason[reason] ?? 0) + 1;
+        increment(unheardByReason, bucket(event.reason, UNHEARD_REASONS));
         break;
       }
       case 'lucy_panel_action': {
-        const action = typeof event.action === 'string' ? event.action : 'unknown';
-        panelActions[action] = (panelActions[action] ?? 0) + 1;
+        increment(panelActions, bucket(event.action, PANEL_ACTIONS));
         break;
       }
       default:
@@ -199,8 +234,12 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
     },
 
     result() {
-      const bySource: Record<string, SaidRow[]> = {};
-      for (const row of saidRows) (bySource[row.source] ??= []).push(row);
+      const bySource = new Map<string, SaidRow[]>();
+      for (const row of saidRows) {
+        const rows = bySource.get(row.source);
+        if (rows) rows.push(row);
+        else bySource.set(row.source, [row]);
+      }
 
       const earlyStopsByText = new Map<string, number>();
       let earlyStopsWithoutText = 0;
@@ -218,7 +257,7 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
         .sort((a, b) => b.earlyStops - a.earlyStops || a.text.localeCompare(b.text))
         .slice(0, TOP_EARLY_STOPPED_LIMIT);
 
-      const clipsStarted = startedClips.size;
+      const clipsStarted = liveStartedClips.size;
       return {
         schemaVersion: LUCY_SUMMARY_SCHEMA_VERSION,
         generatedAt: now.toISOString(),
@@ -227,15 +266,15 @@ export function createLucySummaryAccumulator(options: LucySummaryOptions): LucyS
         corruptLines,
         said: {
           ...saidStats(saidRows),
-          bySource: Object.fromEntries(Object.entries(bySource).map(([k, rows]) => [k, saidStats(rows)])),
+          bySource: Object.fromEntries([...bySource.entries()].map(([k, rows]) => [k, saidStats(rows)])),
         },
         ui: {
           clipsStarted,
-          replays: { count: replays, rate: ratio(replays, clipsStarted) },
+          replays: { count: replays, clipsReplayed: replayedClips.size, rate: ratio(replayedClips.size, clipsStarted) },
           clipsEnded,
           earlyStops: { count: earlyStopClipIds.length, rate: ratio(earlyStopClipIds.length, clipsEnded) },
-          unheard: { count: unheard, rate: ratio(unheard, unheard + clipsStarted), byReason: unheardByReason },
-          panelActions,
+          unheard: { count: unheard, rate: ratio(unheard, unheard + clipsStarted), byReason: Object.fromEntries(unheardByReason) },
+          panelActions: Object.fromEntries(panelActions),
         },
         earlyStopsWithoutText,
         topEarlyStopped,

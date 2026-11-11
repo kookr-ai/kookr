@@ -2,11 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { Context, Hono } from 'hono';
 import type { RouteDeps } from './shared.js';
 import { AgentSpeakCache } from '../agent-speak-cache.js';
-import { TaskSpeechSummaryCache } from '../task-speech-summary-cache.js';
+import { TaskSpeechSummaryCache, type TaskSpeakResult } from '../task-speech-summary-cache.js';
 import {
   countSpokenWords,
   DISABLED_LUCY_INTERACTION_LOG,
   type LucyInteractionLog,
+  type LucySaidRecordInput,
 } from '../lucy-interaction-log.js';
 import { summarizeLucyInteractionFiles } from '../lucy-interaction-summary.js';
 import { getAgentStateProjected, getTaskAgentsProjected } from '../use-cases/get-snapshot.js';
@@ -158,6 +159,7 @@ function buildResponse(
   resolvedMode: SpeakMode,
   verbosity: VerbosityScale,
   requestId: string,
+  clipId: string,
   result: AgentSpeakResultCore,
 ): SpeakAgentResponse {
   return {
@@ -174,12 +176,13 @@ function buildResponse(
     effectiveVerbosity: verbosity,
     requestId,
     cacheKey,
+    clipId,
     ...(result.rawText !== undefined ? { rawText: result.rawText } : {}),
   };
 }
 
-function countOutputWords(text: string): number {
-  return countSpokenWords(text);
+function buildTaskResponse(clipId: string, result: TaskSpeakResult): SpeakTaskSummaryResponse {
+  return { ...result, clipId };
 }
 
 function parseSummaryDays(raw: string | undefined): number {
@@ -192,6 +195,14 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
   const newRequestId = options.newRequestId ?? (() => randomUUID());
   const isDebugEnabled = options.isDebugEnabled ?? isDebugDefault;
   const lucyLog = options.lucyLog ?? DISABLED_LUCY_INTERACTION_LOG;
+  // Logging is best-effort: a broken log must never turn a delivered clip into an error response.
+  const recordSaid = (input: LucySaidRecordInput): void => {
+    try {
+      lucyLog.recordSaid(input);
+    } catch (err) {
+      console.warn(`[lucy-log] recordSaid threw: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const readDefaultVerbosity = options.defaultVerbosity ?? ((): VerbosityScale => {
     const fromSettings = deps.settings?.get?.()?.speakVerbosity;
     return clampVerbosity(fromSettings, DEFAULT_VERBOSITY);
@@ -264,15 +275,15 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         usedFallback: result.usedFallback,
         fallbackReason: result.fallbackReason,
         outputChars: result.text.length,
-        outputWords: countOutputWords(result.text),
+        outputWords: countSpokenWords(result.text),
         lastEventSeq,
         abortedAtPhase: null,
         outcome: result.usedFallback ? 'fallback' : 'success',
       });
 
-      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, result);
       const clipId = randomUUID();
-      lucyLog.recordSaid({
+      const response = buildResponse(cacheKey, cached, resolvedMode, verbosity, requestId, clipId, result);
+      recordSaid({
         clipId,
         source: 'agent_speak',
         taskId: agent.taskId,
@@ -288,9 +299,9 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         llmMs: result.llmMs,
         ttsMs: result.ttsMs,
         durationMs: result.durationMs,
-        words: countOutputWords(result.text),
+        words: countSpokenWords(result.text),
       });
-      return c.json({ ...response, clipId }, 200);
+      return c.json(response, 200);
     } catch (err) {
       if (requestSignal.aborted) {
         logAgentSpeak({
@@ -416,8 +427,8 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
       const startedAt = Date.now();
       const result = await options.taskCache.get(subject.input, requestSignal);
       const clipId = randomUUID();
-      const response: SpeakTaskSummaryResponse = { ...result, clipId };
-      lucyLog.recordSaid({
+      const response = buildTaskResponse(clipId, result);
+      recordSaid({
         clipId,
         source: 'task_summary',
         taskId,
@@ -432,7 +443,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         llmMs: result.llmMs,
         ttsMs: result.ttsMs,
         durationMs: result.durationMs,
-        words: countOutputWords(result.text),
+        words: countSpokenWords(result.text),
       });
       console.log(
         `[task-speak] task=${taskId} agent=${subject.agentState?.agentId ?? 'none'} status=${subject.input.taskStatus ?? 'unknown'} cached=${result.cached} usedFallback=${result.usedFallback} collectMs=${collectMs} llmMs=${result.llmMs} ttsMs=${result.ttsMs} totalMs=${Date.now() - startedAt + collectMs}`,

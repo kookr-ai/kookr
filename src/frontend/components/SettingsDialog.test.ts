@@ -1166,8 +1166,13 @@ describe('SettingsDialog tabs', () => {
     await flush();
 
     const avatarToggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle avatar panel"]');
-    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle Lucy interaction log"]');
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-labelledby="lucy-log-label"]');
     expect(toggle).not.toBeNull();
+    // The accessible name is the visible label, and the helper text is the description.
+    expect(container.querySelector('#lucy-log-label')?.textContent).toBe("Keep a local log of Lucy's interactions");
+    expect(toggle!.getAttribute('aria-describedby')).toBe('lucy-log-desc');
+    expect(container.querySelector('#lucy-log-desc')?.textContent).toContain('Saved on this machine only');
+    expect(toggle!.hasAttribute('aria-label')).toBe(false);
     const avatarRow = avatarToggle!.closest('.settings-row');
     expect(avatarRow!.nextElementSibling).toBe(toggle!.closest('.settings-row'));
     const row = toggle!.closest('.settings-row')!;

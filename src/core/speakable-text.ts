@@ -87,7 +87,7 @@ const DOMAIN_WITH_PATH = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|ai|app|co|gov|edu)
 const PATH_SEGMENT = /^[\w.@~+-]+$/;
 const FILE_NAME = /^[\w@~+-][\w.@~+-]*\.[A-Za-z][A-Za-z0-9]{0,4}$/;
 const COMMIT_WORDS = new Set(['commit', 'commits', 'sha', 'hash', 'rev', 'revision']);
-const TIMESTAMP_LEAD_WORDS = new Set(['at', 'on', 'since', 'until', 'from', 'by', 'as', 'of', '@']);
+const TIMESTAMP_LEAD_WORDS = new Set(['at', 'on', 'since', 'until', 'from', 'to', 'by', 'as', 'of', '@']);
 
 function isUrl(core: string): boolean {
   return (
@@ -107,6 +107,17 @@ function looksLikeHexId(core: string): boolean {
   return HEX_ID.test(core) && /\d/.test(core) && /[a-fA-F]/.test(core);
 }
 
+/**
+ * Path rule (never drop ordinary prose words):
+ * - UNANCHORED token (no leading `/`, `~/`, `./`, `../` or drive letter): a path
+ *   only when its LAST segment is a file name with an extension (`a/b.ts`,
+ *   `src/core/foo.json`). `lint/typecheck/test`, `input/output/error`, `TCP/IP/UDP`
+ *   and `yes/no/maybe` have no file-like tail, so they are left exactly as written.
+ * - ANCHORED token: shortened to its last segment (file or directory name),
+ *   EXCEPT API routes (`/api/...`) and tokens whose last segment is purely numeric
+ *   (`/api/tasks/42`, `/tasks/42`): those read as routes, not locations, and the
+ *   last segment alone would lose the meaning, so they are left unchanged.
+ */
 function isPathLike(core: string): boolean {
   if (!/[\\/]/.test(core)) return false;
   const rooted = /^[\\/]/.test(core);
@@ -114,15 +125,21 @@ function isPathLike(core: string): boolean {
   const segments = core.split(/[\\/]+/).filter((s) => s !== '' && s !== '.' && s !== '..');
   const withoutDrive = /^[A-Za-z]:$/.test(segments[0] ?? '') ? segments.slice(1) : segments;
   if (withoutDrive.length === 0) return false;
-  if (!withoutDrive.every((s) => PATH_SEGMENT.test(s.replace(/:\d+(?::\d+)?$/, '')))) return false;
+  if (!withoutDrive.every((s) => PATH_SEGMENT.test(stripLineSuffix(s)))) return false;
   if (!withoutDrive.some((s) => /[A-Za-z]/.test(s))) return false;
-  // "/word" alone is more likely a slash command than a path.
-  if (anchored) return withoutDrive.length >= (rooted ? 2 : 1);
-  if (withoutDrive.length >= 3) return true;
-  if (withoutDrive.length === 2) {
-    return FILE_NAME.test(withoutDrive[1].replace(/:\d+(?::\d+)?$/, ''));
+  const last = stripLineSuffix(withoutDrive[withoutDrive.length - 1]);
+  if (anchored) {
+    // "/word" alone is more likely a slash command than a path.
+    if (withoutDrive.length < (rooted ? 2 : 1)) return false;
+    if (/^\/api\//i.test(core)) return false;
+    if (/^\d+$/.test(last)) return false;
+    return true;
   }
-  return false;
+  return withoutDrive.length >= 2 && FILE_NAME.test(last);
+}
+
+function stripLineSuffix(segment: string): string {
+  return segment.replace(/:\d+(?::\d+)?$/, '');
 }
 
 function speakPath(core: string): string {
@@ -136,12 +153,22 @@ function speakPath(core: string): string {
   return last;
 }
 
+const TRAIL_PUNCTUATION = '.,;:!?)"\'>]}';
+
+/** Remove trailing characters found in `chars` (a linear scan, unlike `/[...]+$/`). */
+function stripTrailing(text: string, chars: string): string {
+  let end = text.length;
+  while (end > 0 && chars.includes(text[end - 1])) end -= 1;
+  return text.slice(0, end);
+}
+
 /** Split a whitespace-delimited token into leading punctuation, core, trailing punctuation. */
 function peel(token: string): { lead: string; core: string; trail: string } {
   const lead = /^[("'<[{]*/.exec(token)?.[0] ?? '';
   const rest = token.slice(lead.length);
-  const trail = /[.,;:!?)"'>\]}]*$/.exec(rest)?.[0] ?? '';
-  return { lead, core: rest.slice(0, rest.length - trail.length), trail };
+  let end = rest.length;
+  while (end > 0 && TRAIL_PUNCTUATION.includes(rest[end - 1])) end -= 1;
+  return { lead, core: rest.slice(0, end), trail: rest.slice(end) };
 }
 
 function stripMarkdown(input: string): string {
@@ -155,9 +182,9 @@ function stripMarkdown(input: string): string {
   text = text.replace(/(?<!\w)__(?=\S)([\s\S]*?\S)__(?!\w)/g, '$1');
   text = text.replace(/~~(?=\S)([\s\S]*?\S)~~/g, '$1');
   text = text.replace(/(?<![\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/g, '$1');
-  text = text.replace(/^[ \t]{0,3}#{1,6}[ \t]+/gm, '');
-  text = text.replace(/^[ \t]*[-*+•][ \t]+/gm, '');
-  text = text.replace(/^[ \t]*>[ \t]?/gm, '');
+  // Heading, bullet and quote markers, including stacked ones ("- - x", "> # x"),
+  // are stripped in one go so that a single pass reaches the fixed point.
+  text = text.replace(/^(?:[ \t]{0,3}#{1,6}[ \t]+|[ \t]*[-*+•][ \t]+|[ \t]*>[ \t]?)+/gm, '');
   text = text.replace(/^[ \t]*[-=*_]{3,}[ \t]*$/gm, '');
   text = text.replace(/(?:^|[ \t])\|[ \t]|[ \t]\|(?:[ \t]|$)/g, ', ');
   return text;
@@ -168,17 +195,85 @@ function joinLines(text: string): string {
     .split('\n')
     .map((line) => line.trim())
     .filter(Boolean)
-    .map((line) => (/[.!?]["')\]]?$/.test(line) ? line : `${line.replace(/[:;,]+$/, '')}.`))
+    .map((line) => (/[.!?]["')\]]?$/.test(line) ? line : `${stripTrailing(line, ':;,')}.`))
     .join(' ');
 }
 
+function isDotOrEllipsis(char: string): boolean {
+  return char === '.' || char === '…';
+}
+
+/**
+ * Unwrap standalone `[bracketed]` text but keep index-style `items[0]` and
+ * `grid[1][2]` intact. One left-to-right scan; the next `]` is only searched
+ * for again after the scan passes it, so the cost is linear.
+ */
+function unwrapBrackets(text: string): string {
+  const n = text.length;
+  let out = '';
+  let last = 0;
+  let close = -1;
+  let newline = -1;
+  for (let i = 0; i < n; i += 1) {
+    if (text[i] !== '[') continue;
+    if (i > 0 && /[\w\])]/.test(text[i - 1])) continue;
+    if (close < i) {
+      close = text.indexOf(']', i);
+      if (close === -1) break;
+    }
+    if (newline < i) {
+      const found = text.indexOf('\n', i);
+      newline = found === -1 ? n : found;
+    }
+    if (newline < close) continue;
+    out += text.slice(last, i) + text.slice(i + 1, close);
+    last = close + 1;
+    i = close;
+  }
+  return out + text.slice(last);
+}
+
+/**
+ * A run of 2+ dots (or any "…") glued to the preceding word is a pause: at the
+ * end of the text it becomes ".", before more text it becomes ",". Runs that
+ * start the text or follow whitespace or a slash (`../x`) are left alone.
+ * One scan over maximal runs, so there is no regex backtracking.
+ */
+function rewriteEllipses(text: string): string {
+  const n = text.length;
+  let out = '';
+  let last = 0;
+  let i = 0;
+  while (i < n) {
+    if (!isDotOrEllipsis(text[i])) {
+      i += 1;
+      continue;
+    }
+    let j = i;
+    while (j < n && isDotOrEllipsis(text[j])) j += 1;
+    const attached = i > 0 && !/[\s\\/]/.test(text[i - 1]);
+    if (attached && (j - i >= 2 || text[i] === '…')) {
+      let k = j;
+      while (k < n && /\s/.test(text[k])) k += 1;
+      if (k === n) {
+        return `${out}${text.slice(last, i)}.`;
+      }
+      if (k > j) {
+        out += `${text.slice(last, i)},`;
+        last = j;
+      }
+    }
+    i = j;
+  }
+  return out + text.slice(last);
+}
+
 function rewriteSymbols(text: string): string {
-  return text
-    .replace(/\s*(?:-{1,2}>|={1,2}>|→|⇒)\s*/g, ' to ')
-    .replace(/(^|\s)&{1,2}(?=\s|$)/g, '$1and')
-    .replace(/\[([^\]\n]*)\]/g, '$1')
-    .replace(/(?<=[^\s\\/])(?:\.{2,}|…)+\s*$/g, '.')
-    .replace(/(?<=[^\s\\/])(?:\.{2,}|…)+(?=\s)/g, ',')
+  const withSymbols = text
+    // Whitespace around the arrow is collapsed later by tidy().
+    .replace(/-{1,2}>|={1,2}>|→|⇒/g, ' to ')
+    .replace(/(^|\s)&{1,2}(?=\s|$)/g, '$1and');
+  return rewriteEllipses(unwrapBrackets(withSymbols))
     .replace(/[!?]{2,}/g, (run) => (run.includes('?') ? '?' : '!'))
     .replace(/([,;:])\1+/g, '$1');
 }
@@ -252,12 +347,15 @@ function tidy(text: string): string {
 function ensureSentenceEnd(text: string): string {
   if (!text) return text;
   if (/[.!?]["')\]]?$/.test(text)) return text;
-  return `${text.replace(/[,;:\s]+$/, '')}.`;
+  return `${stripTrailing(text, ',;: \t\n\r\f\v')}.`;
 }
 
 const MAX_PASSES = 6;
+/** Longest input processed; bounds the worst-case cost of the regex passes. */
+const MAX_INPUT_CHARS = 2000;
 
-function speakableOnce(text: string): string {
+function speakableOnce(input: string): string {
+  const text = input.length > MAX_INPUT_CHARS ? input.slice(0, MAX_INPUT_CHARS) : input;
   const stripped = joinLines(stripMarkdown(text));
   const rewritten = rewriteTokens(rewriteSymbols(stripped));
   return ensureSentenceEnd(tidy(rewritten));
@@ -266,7 +364,7 @@ function speakableOnce(text: string): string {
 /**
  * Rewrite `text` so it is short and pronounceable. Returns the empty string
  * for empty or non-string input and the (trimmed) input unchanged on any
- * internal error.
+ * internal error. Input beyond {@link MAX_INPUT_CHARS} characters is dropped.
  */
 export function makeSpeakable(text: string): string {
   if (typeof text !== 'string') return '';

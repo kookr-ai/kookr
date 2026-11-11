@@ -110,13 +110,16 @@ function wordCount(value: string): number {
   return value.split(/\s+/).filter(Boolean).length;
 }
 
+function withinSummaryLimits(summary: string): boolean {
+  return summary.length <= MAX_SUMMARY_CHARS
+    && wordCount(summary) <= MAX_SUMMARY_WORDS
+    && !ADVICE_VERB_DENYLIST.test(summary);
+}
+
 function normalizeSummary(raw: string): string | null {
   const summary = raw.trim().replace(/^["'`]+|["'`]+$/g, '').trim();
   if (!summary) return null;
-  if (summary.length > MAX_SUMMARY_CHARS) return null;
-  if (wordCount(summary) > MAX_SUMMARY_WORDS) return null;
-  if (ADVICE_VERB_DENYLIST.test(summary)) return null;
-  return summary;
+  return withinSummaryLimits(summary) ? summary : null;
 }
 
 function extractSummary(raw: string): string | null {
@@ -305,10 +308,13 @@ export async function summarizeTaskForSpeech(
     });
     if (!raw) return fallbackSummary(input);
     const parsed = extractSummary(raw);
-    // Validate first (caps, denylist), then make it speakable.
+    // Validate the model text (caps, denylist), make it speakable, then validate
+    // the spoken text again (ignoring the sentence-final period the rewrite may
+    // add): the rewrite can create denylisted words
+    // ("run_tests" -> "run tests") or change the length.
     const summary = parsed ? normalizeSummary(parsed) : null;
     const speakable = summary ? toSpeakableSummary(summary, false) : null;
-    return speakable ?? fallbackSummary(input);
+    return speakable && withinSummaryLimits(speakable.text.replace(/[.!?]+$/, '')) ? speakable : fallbackSummary(input);
   } catch {
     return fallbackSummary(input);
   }

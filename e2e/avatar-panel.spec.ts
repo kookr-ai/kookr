@@ -195,13 +195,22 @@ test.describe('avatar panel: hearing a message again', () => {
     await expect(page.locator('.finding-card')).toBeVisible();
   }
 
-  test('a message nobody heard shows a dot, can be replayed from the panel, and the dot goes away', async ({ page, request }) => {
-    test.setTimeout(45_000);
-    await resetServer(request);
+  type TelemetryEvent = Record<string, unknown> & { type: string; clipId?: string };
 
+  /**
+   * Sets up the page the way both tests need it: the panel on, a controllable "is the tab visible" switch,
+   * a speech service advertised so the speaker buttons appear, a canned clip for the speak request, and a
+   * record of the telemetry events the page sends over the websocket.
+   */
+  async function prepareSpeechPage(page: Page): Promise<{
+    telemetry: TelemetryEvent[];
+    speakRequests: () => number;
+    setTabHidden: (hidden: boolean) => Promise<void>;
+  }> {
     await page.addInitScript((key) => {
       window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
-      // Lets the test put the tab "in the background": a clip that plays then is not counted as heard.
+      // Lets a test put the tab "in the background" (simulated: only what the page reads is changed, the real tab
+      // stays in front). A clip that plays then is not counted as heard.
       (window as unknown as { __tabHidden: boolean }).__tabHidden = false;
       Object.defineProperty(document, 'visibilityState', {
         configurable: true,
@@ -214,10 +223,21 @@ test.describe('avatar panel: hearing a message again', () => {
         document.dispatchEvent(new Event('visibilitychange'));
       }, hidden);
 
+    const telemetry: TelemetryEvent[] = [];
     // The test server has no speech service; advertise one so the speaker buttons appear, and answer their request.
     await page.routeWebSocket(/\/ws(\?|$)/, (ws) => {
       const server = ws.connectToServer();
-      ws.onMessage((message) => server.send(message));
+      ws.onMessage((message) => {
+        if (typeof message === 'string') {
+          try {
+            const parsed = JSON.parse(message) as { type?: string; events?: TelemetryEvent[] };
+            if (parsed.type === 'telemetry' && Array.isArray(parsed.events)) telemetry.push(...parsed.events);
+          } catch {
+            // not JSON: pass it through
+          }
+        }
+        server.send(message);
+      });
       server.onMessage((message) => {
         if (typeof message === 'string') {
           try {
@@ -255,42 +275,98 @@ test.describe('avatar panel: hearing a message again', () => {
         },
       });
     });
+    return { telemetry, speakRequests: () => speakRequests, setTabHidden };
+  }
+
+  /** Telemetry is sent in batches every couple of seconds, so wait for the event rather than reading it at once. */
+  const telemetryOf = (telemetry: TelemetryEvent[], type: string) => () =>
+    telemetry.filter((event) => event.type === type);
+
+  test('a message that played while the tab was (simulated as) in the background shows a dot, can be replayed from the panel, and the dot goes away', async ({ page, request }) => {
+    test.setTimeout(45_000);
+    await resetServer(request);
+    const { telemetry, speakRequests, setTabHidden } = await prepareSpeechPage(page);
 
     await page.goto('/');
     await expect(page.getByTestId('avatar-dock')).toBeVisible();
     const replay = page.getByRole('button', { name: 'Replay last message' });
     await expect(replay).toHaveAttribute('aria-disabled', 'true');
 
-    await launchTaskWithCard(page, request);
+    await test.step('launch a task with a finding card', async () => {
+      await launchTaskWithCard(page, request);
+    }, { timeout: 25_000 });
 
-    // She speaks while the tab is in the background.
-    await setTabHidden(true);
-    await page.getByTestId('speak-button').first().click();
-    await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
-    await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
-    expect(speakRequests).toBe(1);
+    await test.step('she speaks while the tab is in the background', async () => {
+      await setTabHidden(true);
+      await page.getByTestId('speak-button').first().click();
+      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
+      expect(speakRequests()).toBe(1);
 
-    // Nobody heard it: the panel's replay button carries a dot, and so does the bubble once minimised.
-    await expect(replay).not.toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
-    await page.getByRole('button', { name: 'Minimise Lucy' }).click();
-    const bubble = page.getByTestId('avatar-bubble');
-    await expect(bubble).toHaveAttribute('aria-label', /unheard message/);
-    await expect(page.getByTestId('avatar-unheard-dot')).toBeVisible();
+      // Nobody heard it: the panel's replay button carries a dot, and so does the bubble once minimised.
+      await expect(replay).not.toHaveAttribute('aria-disabled', 'true');
+      await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
+      await page.getByRole('button', { name: 'Minimise Lucy' }).click();
+      await expect(page.getByTestId('avatar-bubble')).toHaveAttribute('aria-label', /unheard message/);
+      await expect(page.getByTestId('avatar-unheard-dot')).toBeVisible();
+    }, { timeout: 15_000 });
 
-    // Back in front of the screen: reopen and play it again. The caption still has the last text.
-    await setTabHidden(false);
-    await bubble.click();
+    await test.step('back in front of the screen, she plays it again', async () => {
+      const bubble = page.getByTestId('avatar-bubble');
+      await setTabHidden(false);
+      await bubble.click();
+      await expect(page.getByTestId('avatar-dock')).toBeVisible();
+      // The caption still has the last text.
+      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
+      await replay.click();
+      await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(0);
+      await expect(replay).toBeFocused();
+      expect(speakRequests(), 'replay plays the stored audio and asks the server for nothing').toBe(1);
+
+      // Heard now: minimising shows no dot.
+      await page.getByRole('button', { name: 'Minimise Lucy' }).click();
+      await expect(bubble).toHaveAttribute('aria-label', /^Open Lucy(?!.*unheard)/);
+    }, { timeout: 15_000 });
+
+    await test.step('the page told the server what happened, clip by clip', async () => {
+      await expect.poll(() => telemetryOf(telemetry, 'lucy_clip_ended')().length).toBe(2);
+      const started = telemetryOf(telemetry, 'lucy_clip_started')();
+      expect(started.map((event) => [event.clipId, event.trigger, event.tabVisible])).toEqual([
+        ['e2e-clip-1', 'click', false],
+        ['e2e-clip-1', 'replay', true],
+      ]);
+      expect(telemetryOf(telemetry, 'lucy_panel_action')().map((event) => [event.action, event.clipId])).toContainEqual([
+        'replay',
+        'e2e-clip-1',
+      ]);
+    }, { timeout: 15_000 });
+  });
+
+  test('a message played in a visible tab is heard at once: no dot, and the server is told so', async ({ page, request }) => {
+    test.setTimeout(45_000);
+    await resetServer(request);
+    const { telemetry } = await prepareSpeechPage(page);
+
+    await page.goto('/');
     await expect(page.getByTestId('avatar-dock')).toBeVisible();
-    await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
-    await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(1);
-    await replay.click();
-    await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(0);
-    await expect(replay).toBeFocused();
-    expect(speakRequests, 'replay plays the stored audio and asks the server for nothing').toBe(1);
+    await test.step('launch a task with a finding card', async () => {
+      await launchTaskWithCard(page, request);
+    }, { timeout: 25_000 });
 
-    // Heard now: minimising shows no dot.
-    await page.getByRole('button', { name: 'Minimise Lucy' }).click();
-    await expect(bubble).toHaveAttribute('aria-label', /^Open Lucy(?!.*unheard)/);
+    await test.step('she speaks in front of the operator', async () => {
+      await page.getByTestId('speak-button').first().click();
+      await expect(page.getByTestId('avatar-caption')).toHaveText(CLIP_TEXT);
+      await expect(page.getByTestId('avatar-dock')).toHaveAttribute('data-avatar-state', 'idle');
+      await expect(page.getByRole('button', { name: 'Replay last message' })).not.toHaveAttribute('aria-disabled', 'true');
+      await expect(page.getByTestId('avatar-unheard-dot')).toHaveCount(0);
+    }, { timeout: 15_000 });
+
+    await test.step('the page reported it as played to the end, and never as unheard', async () => {
+      await expect.poll(() => telemetryOf(telemetry, 'lucy_clip_ended')().length).toBe(1);
+      expect(telemetryOf(telemetry, 'lucy_clip_started')()[0]).toMatchObject({ clipId: 'e2e-clip-1', trigger: 'click', tabVisible: true });
+      expect(telemetryOf(telemetry, 'lucy_clip_ended')()[0]).toMatchObject({ clipId: 'e2e-clip-1', endedBy: 'finished' });
+      expect(telemetryOf(telemetry, 'lucy_clip_unheard')()).toEqual([]);
+    }, { timeout: 15_000 });
   });
 });

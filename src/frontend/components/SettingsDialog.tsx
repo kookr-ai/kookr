@@ -1217,15 +1217,16 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                     </div>
                     <div className="settings-row">
                       <div className="settings-row-info">
-                        <span className="settings-label">Keep a local log of Lucy&apos;s interactions</span>
-                        <span className="settings-desc">
+                        <span id="lucy-log-label" className="settings-label">Keep a local log of Lucy&apos;s interactions</span>
+                        <span id="lucy-log-desc" className="settings-desc">
                           Saved on this machine only (~/.kookr/lucy-interactions.jsonl). Used to improve how she talks.
                         </span>
                       </div>
                       <button
                         className={`settings-toggle ${lucyLogEnabled ? 'active' : ''}`}
                         onClick={() => handleLucyLogToggle()}
-                        aria-label="Toggle Lucy interaction log"
+                        aria-labelledby="lucy-log-label"
+                        aria-describedby="lucy-log-desc"
                         aria-pressed={lucyLogEnabled}
                       >
                         <span className="settings-toggle-knob" />

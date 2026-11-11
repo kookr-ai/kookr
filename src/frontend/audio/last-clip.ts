@@ -21,8 +21,6 @@ export interface LastClip {
   audio: ArrayBuffer;
   /** Length of the audio as reported by the server; 0 when unknown. */
   durationMs: number;
-  /** `Date.now()` when the clip arrived. */
-  receivedAt: number;
   /** True once the clip was played (nearly) to the end while the tab was visible. */
   heard: boolean;
 }
@@ -32,18 +30,16 @@ export interface LastClipSnapshot {
   hasClip: boolean;
   /** There is a clip and nobody has heard it yet. */
   unheard: boolean;
-  /** The text of the latest clip, or null when there is none. */
-  text: string | null;
 }
 
-const EMPTY_SNAPSHOT: LastClipSnapshot = { hasClip: false, unheard: false, text: null };
+const EMPTY_SNAPSHOT: LastClipSnapshot = { hasClip: false, unheard: false };
 
 let clip: LastClip | null = null;
 let snapshot: LastClipSnapshot = EMPTY_SNAPSHOT;
 const listeners = new Set<() => void>();
 
 function publish(): void {
-  snapshot = clip ? { hasClip: true, unheard: !clip.heard, text: clip.text } : EMPTY_SNAPSHOT;
+  snapshot = clip ? { hasClip: true, unheard: !clip.heard } : EMPTY_SNAPSHOT;
   for (const listener of listeners) listener();
 }
 
@@ -68,7 +64,6 @@ export function captureLastClip(input: CaptureClipInput): LastClip {
     text: input.text,
     audio: input.audio,
     durationMs: input.durationMs && input.durationMs > 0 ? input.durationMs : 0,
-    receivedAt: Date.now(),
     heard: false,
   };
   publish();
@@ -104,7 +99,7 @@ export function getLastClipSnapshot(): LastClipSnapshot {
   return snapshot;
 }
 
-/** React binding: re-renders only when the presence, unheard flag or text changes. */
+/** React binding: re-renders only when the presence or unheard flag changes. */
 export function useLastClip(): LastClipSnapshot {
   return useSyncExternalStore(subscribeLastClip, getLastClipSnapshot, () => EMPTY_SNAPSHOT);
 }

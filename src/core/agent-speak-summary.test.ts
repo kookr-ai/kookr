@@ -192,6 +192,21 @@ describe('summarizeAgent', () => {
     expect(result.text.toLowerCase()).not.toContain('approve');
   });
 
+  test('re-applies the denylist after the speakable rewrite (approve_request -> "approve request")', async () => {
+    const client = mkClient('{"recap":"Waiting on approve_request from the user"}');
+    const result = await summarizeAgent(client, baseContext, 'medium', 'finding');
+    expect(result.usedFallback).toBe(true);
+    expect(result.fallbackReason).toBe('denylist');
+    expect(result.text.toLowerCase()).not.toContain('approve');
+  });
+
+  test('re-applies the denylist for run_tests-style identifiers', async () => {
+    const client = mkClient('{"recap":"Agent chose run_tests next"}');
+    const result = await summarizeAgent(client, baseContext, 'medium', 'activity');
+    expect(result.usedFallback).toBe(true);
+    expect(result.fallbackReason).toBe('denylist');
+  });
+
   test.each<[VerbosityScale]>([['terse'], ['brief'], ['medium'], ['detailed']])(
     'rejects over-cap recap at verbosity=%s with reason=validator-reject',
     async (rung) => {

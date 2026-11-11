@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createLucyInteractionLog } from './lucy-interaction-log.js';
 import {
   summarizeLucyInteractionFiles,
   summarizeLucyInteractionLines,
@@ -65,11 +66,80 @@ describe('summarizeLucyInteractionLines', () => {
       ui({ type: 'lucy_panel_action', action: 'move' }),
     ], { days: 7, now: NOW });
     expect(s.ui.clipsStarted).toBe(3);
-    expect(s.ui.replays).toEqual({ count: 1, rate: 0.3333 });
+    expect(s.ui.replays).toEqual({ count: 1, clipsReplayed: 1, rate: 0.3333 });
     expect(s.ui.clipsEnded).toBe(4);
     expect(s.ui.earlyStops).toEqual({ count: 1, rate: 0.25 });
     expect(s.ui.unheard).toEqual({ count: 1, rate: 0.25, byReason: { muted: 1 } });
     expect(s.ui.panelActions).toEqual({ minimize: 2, move: 1 });
+  });
+
+  it('rates replays by distinct replayed clips, not by replay events, and ignores replays for clipsStarted', () => {
+    const s = summarizeLucyInteractionLines([
+      ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'click' }),
+      ui({ type: 'lucy_clip_started', clipId: 'b', trigger: 'click' }),
+      ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'replay' }),
+      ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'replay' }),
+      ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'replay' }),
+      ui({ type: 'lucy_clip_started', clipId: 'zzz', trigger: 'replay' }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.clipsStarted).toBe(2);
+    expect(s.ui.replays).toEqual({ count: 4, clipsReplayed: 2, rate: 1 });
+  });
+
+  it('does not count a failed replay of an already-heard clip as unheard', () => {
+    const s = summarizeLucyInteractionLines([
+      ui({ type: 'lucy_clip_started', clipId: 'a', trigger: 'click' }),
+      ui({ type: 'lucy_clip_unheard', clipId: 'a', reason: 'audio_suspended' }),
+      ui({ type: 'lucy_clip_unheard', clipId: 'never', reason: 'muted' }),
+      ui({ type: 'lucy_clip_unheard', clipId: 'never', reason: 'muted' }),
+      ui({ type: 'lucy_clip_unheard', reason: 'dnd' }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.unheard.count).toBe(2);
+    expect(s.ui.unheard.byReason).toEqual({ muted: 1, dnd: 1 });
+    expect(s.ui.unheard.rate).toBe(0.6667);
+  });
+
+  it('buckets client-controlled reasons and actions as "other" without prototype pollution', () => {
+    const hostile = ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'weird'];
+    const lines = hostile.flatMap((name, i) => [
+      ui({ type: 'lucy_clip_unheard', clipId: `u${i}`, reason: name }),
+      ui({ type: 'lucy_panel_action', action: name }),
+    ]);
+    lines.push(ui({ type: 'lucy_clip_unheard', clipId: 'ok', reason: 'muted' }), ui({ type: 'lucy_clip_unheard', clipId: 'num', reason: 7 }));
+    const s = summarizeLucyInteractionLines(lines, { days: 7, now: NOW });
+    expect(s.ui.unheard.byReason).toEqual({ other: 6, muted: 1 });
+    expect(Object.values(s.ui.unheard.byReason).reduce((a, b) => a + b, 0)).toBe(s.ui.unheard.count);
+    expect(s.ui.panelActions).toEqual({ other: 5 });
+    expect(Object.getPrototypeOf(s.ui.unheard.byReason)).toBe(Object.prototype);
+    expect(Object.keys(s.ui.unheard.byReason)).not.toContain('__proto__');
+  });
+
+  it('treats exactly 50% played as NOT an early stop, and just under as one', () => {
+    const s = summarizeLucyInteractionLines([
+      ui({ type: 'lucy_clip_ended', clipId: 'a', endedBy: 'user_stop', playedMs: 500, totalMs: 1000 }),
+      ui({ type: 'lucy_clip_ended', clipId: 'b', endedBy: 'user_stop', playedMs: 499, totalMs: 1000 }),
+    ], { days: 7, now: NOW });
+    expect(s.ui.earlyStops).toEqual({ count: 1, rate: 0.5 });
+  });
+
+  it('skips ui lines with a missing or invalid ts without calling them corrupt', () => {
+    const noTs = JSON.stringify({ v: 1, kind: 'ui', sessionId: 's', event: { type: 'lucy_clip_unheard', clipId: 'x', reason: 'muted' } });
+    const badTs = JSON.stringify({ v: 1, ts: 'yesterday-ish', kind: 'ui', sessionId: 's', event: { type: 'lucy_clip_unheard', clipId: 'y', reason: 'muted' } });
+    const s = summarizeLucyInteractionLines([noTs, badTs, ui({ type: 'lucy_clip_unheard', clipId: 'z', reason: 'dnd' })], { days: 7, now: NOW });
+    expect(s.corruptLines).toBe(0);
+    expect(s.ui.unheard).toMatchObject({ count: 1, byReason: { dnd: 1 } });
+  });
+
+  it('includes a record exactly on the window boundary and excludes one millisecond before', () => {
+    const s = summarizeLucyInteractionLines([
+      said('on', {}, '2026-11-04T12:00:00.000Z'),
+      said('before', {}, '2026-11-04T11:59:59.999Z'),
+      ui({ type: 'lucy_clip_unheard', clipId: 'u-on', reason: 'muted' }, '2026-11-04T12:00:00.000Z'),
+      ui({ type: 'lucy_clip_unheard', clipId: 'u-before', reason: 'muted' }, '2026-11-04T11:59:59.999Z'),
+    ], { days: 7, now: NOW });
+    expect(s.since).toBe('2026-11-04T12:00:00.000Z');
+    expect(s.said.count).toBe(1);
+    expect(s.ui.unheard.count).toBe(1);
   });
 
   it('does not count a user_stop with unknown total duration as an early stop', () => {
@@ -134,6 +204,69 @@ describe('summarizeLucyInteractionFiles', () => {
   const dirs: string[] = [];
   afterEach(() => {
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  it('round-trips the real writer: said + ui joined on clipId, with denominators that differ', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-sum-'));
+    dirs.push(dir);
+    const base = join(dir, 'lucy-interactions.jsonl');
+    const log = createLucyInteractionLog({ filePath: base, now: () => new Date('2026-11-11T10:00:00.000Z') });
+    const sayClip = (clipId: string, text: string, words: number) => log.recordSaid({
+      clipId, source: 'task_summary', text, usedFallback: false, cached: false, llmMs: 1, ttsMs: 1, durationMs: 1000, words,
+    });
+    sayClip('a', 'Fix login is done.', 4);
+    sayClip('b', 'Deploy needs a review.', 4);
+    sayClip('c', 'Tests pass.', 2);
+    sayClip('d', 'Never played.', 2);
+    sayClip('e', 'Also never played.', 3);
+    const ev = (e: Record<string, unknown>) => log.recordUi('sess', { timestamp: 't', sessionId: 'sess', platform: 'linux', ...e });
+    ev({ type: 'lucy_clip_started', clipId: 'a', trigger: 'click', panelState: 'open', tabVisible: true });
+    ev({ type: 'lucy_clip_started', clipId: 'b', trigger: 'click', panelState: 'open', tabVisible: true });
+    ev({ type: 'lucy_clip_started', clipId: 'c', trigger: 'click', panelState: 'open', tabVisible: true });
+    ev({ type: 'lucy_clip_ended', clipId: 'a', endedBy: 'user_stop', playedMs: 100, totalMs: 1000 });
+    ev({ type: 'lucy_clip_ended', clipId: 'b', endedBy: 'finished', playedMs: 1000, totalMs: 1000 });
+    ev({ type: 'lucy_clip_unheard', clipId: 'd', reason: 'muted' });
+    await log.flush();
+
+    const s = await summarizeLucyInteractionFiles(base, { days: 7, now: NOW });
+    expect(s.corruptLines).toBe(0);
+    expect(s.said.count).toBe(5);
+    expect(s.ui.clipsStarted).toBe(3);
+    expect(s.ui.clipsEnded).toBe(2);
+    expect(s.ui.earlyStops).toEqual({ count: 1, rate: 0.5 });
+    expect(s.ui.unheard).toEqual({ count: 1, rate: 0.25, byReason: { muted: 1 } });
+    expect(s.topEarlyStopped).toEqual([{ text: 'Fix login is done.', earlyStops: 1 }]);
+    expect(s.earlyStopsWithoutText).toBe(0);
+  });
+
+  it('honours the rotatedGenerations option', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-sum-'));
+    dirs.push(dir);
+    const base = join(dir, 'lucy-interactions.jsonl');
+    writeFileSync(`${base}.2`, `${said('a')}\n`);
+    writeFileSync(`${base}.1`, `${said('b')}\n`);
+    writeFileSync(base, `${said('c')}\n`);
+    const one = await summarizeLucyInteractionFiles(base, { days: 7, now: NOW, rotatedGenerations: 1 });
+    expect(one.said.count).toBe(2);
+    expect(one.filesRead).toBe(2);
+    const two = await summarizeLucyInteractionFiles(base, { days: 7, now: NOW, rotatedGenerations: 2 });
+    expect(two.said.count).toBe(3);
+  });
+
+  it('keeps going and warns when one generation cannot be read (non-ENOENT)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const dir = mkdtempSync(join(tmpdir(), 'lucy-sum-'));
+    dirs.push(dir);
+    const base = join(dir, 'lucy-interactions.jsonl');
+    mkdirSync(`${base}.1`); // reading a directory fails with EISDIR
+    writeFileSync(`${base}.2`, `${said('a')}\n`);
+    writeFileSync(base, `${said('c')}\n`);
+    const s = await summarizeLucyInteractionFiles(base, { days: 7, now: NOW });
+    expect(s.said.count).toBe(2);
+    expect(s.filesRead).toBe(2);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain('could not read');
   });
 
   it('streams rotated generations plus the live file and skips missing ones', async () => {

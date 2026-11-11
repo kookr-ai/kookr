@@ -399,7 +399,7 @@ spoken text as a caption.
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
 - **Hear it again.** If you were away, or the tab was in the background, when she spoke, the last
   message is kept in memory. The **Replay last message** button in the title bar plays it again with
-  the same lip-sync and caption. Until a message has been played through while the tab was visible,
+  the same lip-sync and caption. Until at least 80% of a message has played while the tab was visible,
   a dot on that button (and on the minimised bubble, whose name then ends "unheard message") marks
   it as unheard. It respects the global sound switch, and a page reload forgets the message.
 - **It cannot break the dashboard.** If the panel fails to load or crashes, it disappears until the
@@ -420,7 +420,7 @@ line; it rotates at 10 MB and keeps three older files).
 - **What is recorded.** For every spoken summary: the text that was spoken, the wording before it was
   tidied for speech (when that differs), whether it came from the language model or the plain
   fallback, whether it was cached, word count, and timings. From the browser: when a clip started
-  (click or replay), how it ended (finished, stopped by you, replaced, error) and how much of it
+  (click or replay), how it ended (finished, stopped by you, replaced) and how much of it
   played, clips that were never heard (muted, do-not-disturb, audio blocked), and avatar-panel
   actions (enable, disable, minimise, restore, move, replay). Each clip has an id that links the two
   sides. No audio is stored. Task names and summary text can contain project details, so treat the
@@ -431,7 +431,7 @@ line; it rotates at 10 MB and keeps three older files).
   left alone; delete them if you want them gone.
 - **Summarise it.** `GET /api/diagnostics/lucy-interactions/summary?days=7` (1 to 90 days) returns
   counts and shares: clips said, share from the fallback text, share served from cache, mean and
-  median words per clip (overall and per source), clips started, replay rate, early-stop rate (you
+  median words per clip (overall and per source), clips started, replay rate (distinct clips replayed over clips started), early-stop rate (you
   stopped it before half had played), unheard rate by reason, panel actions by type, and the ten
   phrasings stopped early most often. Damaged lines are skipped and counted.
 

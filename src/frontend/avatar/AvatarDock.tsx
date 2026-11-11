@@ -61,7 +61,7 @@ export interface AvatarDockProps {
   attentionCount: number;
 }
 
-const unheardNoteId = 'avatar-replay-unheard-note';
+const REPLAY_DESCRIPTION_ID = 'avatar-replay-description';
 
 export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const prefs = useAvatarPanelPrefs();
@@ -74,6 +74,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const [still, setStill] = useState<string | null>(null);
   const [replayPending, setReplayPending] = useState(false);
   const [replayNotice, setReplayNotice] = useState<string | null>(null);
+  // Why a press on the unavailable Replay button did nothing; cleared as soon as that reason changes or goes away.
+  const [unavailableNotice, setUnavailableNotice] = useState<string | null>(null);
   const lastClip = useLastClip();
   const sound = useSoundPreference();
 
@@ -248,8 +250,15 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
       : !sound.enabled
         ? 'Sound is off in Settings'
         : null;
+  useEffect(() => {
+    setUnavailableNotice(null);
+  }, [replayUnavailable]);
   const onReplay = (): void => {
-    if (replayUnavailable) return;
+    if (replayUnavailable) {
+      // The button stays focusable and `title` does not reach keyboard or touch users, so say it in the live region.
+      setUnavailableNotice(sound.enabled ? replayUnavailable : (REPLAY_NOTICE.muted ?? replayUnavailable));
+      return;
+    }
     trackPanelAction('replay');
     setReplayNotice(null);
     setReplayPending(true);
@@ -258,6 +267,10 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
       setReplayNotice(REPLAY_NOTICE[result] ?? null);
     });
   };
+
+  // Read by assistive technology when the Replay button gets focus: the unheard marker (a dot) and why it is unavailable.
+  const statusNotice = replayNotice ?? unavailableNotice;
+  const replayDescription = [lastClip.unheard ? 'Unheard message' : null, replayUnavailable].filter(Boolean).join('. ');
 
   if (prefs.minimized) {
     const activity = state === 'idle' ? '' : `, ${STATE_LABEL[state]}`;
@@ -313,17 +326,15 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
           // here after Replay is pressed (she is then busy until the clip ends).
           aria-disabled={replayUnavailable ? 'true' : undefined}
           aria-label={REPLAY_LABEL}
-          aria-describedby={lastClip.unheard ? unheardNoteId : undefined}
+          aria-describedby={replayDescription ? REPLAY_DESCRIPTION_ID : undefined}
           title={replayUnavailable ?? (lastClip.unheard ? `${REPLAY_LABEL} (unheard)` : REPLAY_LABEL)}
           data-testid="avatar-replay"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" /><path d="M7 6v4l3-2z" /></svg>
           {lastClip.unheard && (
-            <>
-              <span className="avatar-unheard-dot avatar-dock-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />
-              <span id={unheardNoteId} className="avatar-dock-sr-only">Unheard message</span>
-            </>
+            <span className="avatar-unheard-dot avatar-dock-unheard" data-testid="avatar-unheard-dot" aria-hidden="true" />
           )}
+          {replayDescription && <span id={REPLAY_DESCRIPTION_ID} className="sr-only">{replayDescription}</span>}
         </button>
         <button type="button" className="avatar-dock-button" onClick={moveToNextCorner} aria-label={`Move ${NAME} to the next corner`} title="Move to the next corner">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M6 4l2-2 2 2M6 12l2 2 2-2M4 6L2 8l2 2M12 6l2 2-2 2" /></svg>
@@ -338,8 +349,8 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <span className="avatar-dock-status" role="status">
           {error
             ? `The 3D view could not start (${error}). Spoken summaries still play.`
-            : replayNotice
-              ? replayNotice
+            : statusNotice
+              ? statusNotice
               : loaded
                 ? ''
                 : 'Loading…'}

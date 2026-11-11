@@ -20,7 +20,7 @@ import { emitSpeechIdle, emitSpeechPlaying } from './speech-bus.js';
 import { getLastClip, markClipHeard } from './last-clip.js';
 
 export type ClipTrigger = 'click' | 'replay';
-export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded' | 'error';
+export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded';
 export type ClipUnheardReason = 'muted' | 'dnd' | 'audio_suspended' | 'error';
 
 /** A clip counts as heard when at least this share of it played while the tab was visible. */
@@ -114,11 +114,12 @@ export type ReplayResult =
   | 'busy'
   /** The browser has no audio, or the audio failed to decode/start. */
   | 'error'
+  /** A live clip (or closing the panel) cancelled the replay while it was still preparing. */
+  | 'cancelled'
   /** The browser refused to start audio (autoplay policy / suspended context). */
   | 'blocked';
 
 interface ActiveReplay {
-  clipId: string;
   ctx: AudioContext;
   source: AudioBufferSourceNode;
   playback: ClipPlayback;
@@ -127,10 +128,23 @@ interface ActiveReplay {
 /** Identifies replay on the speech bus, so only replay can announce its own end (see speech-bus.ts). */
 const replayOwner = { name: 'replay' };
 let active: ActiveReplay | null = null;
+/** Set while a replay is decoding its audio, before it is `active`. */
 let starting = false;
+/** Bumped by `stopReplay` while a replay is starting, so that replay knows it was cancelled. */
+let startGeneration = 0;
 
-export function isReplaying(): boolean {
+function isReplaying(): boolean {
   return active !== null || starting;
+}
+
+/**
+ * A replay that fails or is refused only counts as an unheard clip when the
+ * clip really is still unheard; replaying a clip that was already heard must
+ * not inflate the unheard rate.
+ */
+function reportReplayUnheard(clipId: string, reason: ClipUnheardReason): void {
+  const current = getLastClip();
+  if (current && current.clipId === clipId && !current.heard) reportClipUnheard(clipId, reason);
 }
 
 function release(replay: ActiveReplay): void {
@@ -147,8 +161,13 @@ function finishReplay(replay: ActiveReplay, endedBy: ClipEndedBy): void {
   emitSpeechIdle(replayOwner);
 }
 
-/** Cut a replay short, e.g. because a live clip is about to start or the panel went away. No-op when idle. */
+/**
+ * Cut a replay short, e.g. because a live clip is about to start or the panel went away.
+ * A replay that is still preparing is cancelled too (it resolves as 'cancelled' and never plays).
+ * No-op when idle.
+ */
 export function stopReplay(endedBy: 'user_stop' | 'superseded'): void {
+  if (starting) startGeneration += 1;
   if (active) finishReplay(active, endedBy);
 }
 
@@ -167,11 +186,12 @@ export async function replayLastClip(): Promise<ReplayResult> {
   if (!getSoundPreferenceState().enabled) return 'muted';
   if (isReplaying()) return 'busy';
   if (typeof AudioContext === 'undefined') {
-    reportClipUnheard(clip.clipId, 'error');
+    reportReplayUnheard(clip.clipId, 'error');
     return 'error';
   }
 
   starting = true;
+  const generation = startGeneration;
   let ctx: AudioContext | null = null;
   try {
     ctx = new AudioContext();
@@ -180,13 +200,17 @@ export async function replayLastClip(): Promise<ReplayResult> {
     // decodeAudioData takes ownership of the bytes it is given, so hand it a copy and keep ours for the next replay.
     const buffer = await ctx.decodeAudioData(clip.audio.slice(0));
     await unlock;
+    // A live clip started, or the panel closed, while this was preparing: do not play over it.
+    if (generation !== startGeneration) {
+      if (ctx.state !== 'closed') void ctx.close();
+      return 'cancelled';
+    }
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(ctx.destination);
     const durationMs = clip.durationMs > 0 ? clip.durationMs : buffer.duration * 1000;
     const replay: ActiveReplay = {
-      clipId: clip.clipId,
       ctx,
       source,
       playback: { end() {} },
@@ -196,7 +220,7 @@ export async function replayLastClip(): Promise<ReplayResult> {
 
     if (ctx.state !== 'running') {
       release(replay);
-      reportClipUnheard(clip.clipId, 'audio_suspended');
+      reportReplayUnheard(clip.clipId, 'audio_suspended');
       return 'blocked';
     }
 
@@ -206,7 +230,7 @@ export async function replayLastClip(): Promise<ReplayResult> {
     return 'started';
   } catch {
     if (ctx && ctx.state !== 'closed') void ctx.close();
-    reportClipUnheard(clip.clipId, 'error');
+    if (generation === startGeneration) reportReplayUnheard(clip.clipId, 'error');
     return 'error';
   } finally {
     starting = false;
@@ -216,4 +240,5 @@ export async function replayLastClip(): Promise<ReplayResult> {
 export function __resetClipPlaybackForTests(): void {
   active = null;
   starting = false;
+  startGeneration = 0;
 }

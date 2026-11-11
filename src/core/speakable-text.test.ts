@@ -86,6 +86,32 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['dictionary words made of hex letters left alone', 'It was a deadbeef decade.', 'It was a deadbeef decade.'],
   ['slash command left alone', 'Type /compact now.', 'Type /compact now.'],
   ['owner/repo left alone', 'In kookr-ai/kookr today.', 'In kookr-ai/kookr today.'],
+  ['slash-separated prose words (3 segments) left alone', 'The lint/typecheck/test job failed.', 'The lint/typecheck/test job failed.'],
+  ['input/output/error left alone', 'Only input/output/error handling changed.', 'Only input/output/error handling changed.'],
+  ['TCP/IP/UDP left alone', 'TCP/IP/UDP not supported.', 'TCP/IP/UDP not supported.'],
+  ['read/write/execute left alone', 'Use read/write/execute perms.', 'Use read/write/execute perms.'],
+  ['yes/no/maybe left alone', 'yes/no/maybe', 'yes/no/maybe.'],
+  ['input/output left alone', 'Check input/output first.', 'Check input/output first.'],
+  ['50/50 left alone', 'A 50/50 chance.', 'A 50/50 chance.'],
+  ['version number left alone', 'Upgraded to 1.2.3 today.', 'Upgraded to 1.2.3 today.'],
+  ['unanchored three-segment file path still shortened', 'Edited src/core/deep/foo.json now.', 'Edited foo.json now.'],
+  ['api route with numeric id left alone', 'Not found: /api/tasks/42', 'Not found: /api/tasks/42.'],
+  ['api route with trailing word left alone', 'Open /api/tasks/42/speak', 'Open /api/tasks/42/speak.'],
+  ['non-api route ending in a number left alone', 'Open /tasks/42 now.', 'Open /tasks/42 now.'],
+  ['anchored api file-like route left alone', 'Fetch /api/export/report.json again.', 'Fetch /api/export/report.json again.'],
+
+  // Brackets
+  ['standalone brackets unwrapped', 'Status [ok] and [done] today', 'Status ok and done today.'],
+  ['index brackets left alone', 'items[0] and arr[5]', 'items[0] and arr[5].'],
+  ['chained index brackets left alone', 'grid[1][2] changed', 'grid[1][2] changed.'],
+
+  // Timestamp ranges
+  [
+    'timestamp range leaves no dangling from/to',
+    'Ran from 2026-11-11T10:00:00Z to 2026-11-11T11:00:00Z',
+    'Ran.',
+  ],
+  ['timestamp range inside a sentence', 'The job ran from 2026-11-11T10:00:00Z to 2026-11-11T11:00:00Z fine.', 'The job ran fine.'],
   ['empty', '', ''],
   ['whitespace only', '  \n ', ''],
 ];
@@ -116,34 +142,78 @@ describe('makeSpeakable', () => {
       'a', 'Task', 'needs_input', '#12', '/a/b/c.ts', '../x', '...', '\u2026', '->', '&', '**', '`', '- ', '\n',
       '# ', '3f2a9c1', 'https://github.com/o/r/pull/9.', '(', ')', '[', ']', '!?', '::', ',', '.',
       '2025-01-01T00:00:00Z', 'at', 'commit', 'C:\\x\\y.md', '__init__', 'needsInput', '*', '_', '|', '>',
-      'src/a/index.ts:3', '~/q', 'x/y',
+      'src/a/index.ts:3', '~/q', 'x/y', 'from', 'to', 'items[0]', '/api/tasks/42',
     ];
-    let seed = 7;
+    // mulberry32: a 32-bit PRNG that stays exact (no float overflow).
+    let state = 0x9e3779b9;
     const next = () => {
-      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-      return seed / 0x7fffffff;
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
+    const seen = new Set<string>();
     for (let i = 0; i < 3000; i += 1) {
       let input = '';
       const parts = 1 + Math.floor(next() * 8);
       for (let j = 0; j < parts; j += 1) {
-        input += vocab[Math.floor(next() * vocab.length)] + (next() < 0.7 ? ' ' : '');
+        const piece = vocab[Math.floor(next() * vocab.length)];
+        // Occasionally repeat a piece to produce runs like "...." or "[[[".
+        input += next() < 0.2 ? piece.repeat(2 + Math.floor(next() * 5)) : piece;
+        input += next() < 0.7 ? ' ' : '';
       }
+      seen.add(input);
       const once = makeSpeakable(input);
       expect(makeSpeakable(once), JSON.stringify(input)).toBe(once);
     }
+    expect(seen.size).toBeGreaterThan(2500);
   });
 
-  test('never throws on odd input', () => {
-    for (const input of ['\u0000', '😀', '[', ']()', '((((', '\\\\', '/', '//', '~', '#', 'a'.repeat(5000)]) {
-      expect(() => makeSpeakable(input)).not.toThrow();
-    }
+  test('handles odd input with concrete output', () => {
+    expect(makeSpeakable('[')).toBe('[.');
+    expect(makeSpeakable(']()')).toBe('].');
+    expect(makeSpeakable('((((')).toBe('((((.');
+    expect(makeSpeakable('\u0000')).toBe('\u0000.');
+    expect(makeSpeakable('😀')).toBe('😀.');
+    expect(makeSpeakable('/')).toBe('/.');
+    expect(makeSpeakable('//')).toBe('//.');
+    expect(makeSpeakable('#')).toBe('#.');
+    expect(makeSpeakable('a'.repeat(5000))).toHaveLength(2001);
     expect(makeSpeakable(undefined as unknown as string)).toBe('');
   });
 
-  test('does not make ordinary text longer in words, except where a number prefix is required', () => {
-    const input = 'We fixed the flaky test in the scheduler and the build is green now.';
-    expect(makeSpeakable(input).split(/\s+/).length).toBeLessThanOrEqual(input.split(/\s+/).length);
+  test.each<[label: string, input: string]>([
+    ['dot run before a word', `a${'.'.repeat(200)} b`],
+    ['ellipsis characters', '\u2026'.repeat(200)],
+    ['open brackets', '['.repeat(5000)],
+    ['underscores', '_'.repeat(5000)],
+    ['leading spaces', `${' '.repeat(5000)}x`],
+    ['slashes', '/'.repeat(5000)],
+    ['segmented slashes', 'a/'.repeat(3000)],
+    ['dot run longer than any backtracking budget', `a${'.'.repeat(50)} b`],
+  ])('runs in linear time on %s', (_label, input) => {
+    const start = performance.now();
+    makeSpeakable(input);
+    expect(performance.now() - start).toBeLessThan(200);
+  });
+
+  test('caps the processed input so pathological text stays fast', () => {
+    const inputs = [
+      '['.repeat(50_000),
+      '[a'.repeat(25_000),
+      '`'.repeat(50_000),
+      '*a'.repeat(25_000),
+      '.'.repeat(50_000),
+      '/a'.repeat(25_000),
+      '- '.repeat(25_000),
+      'word '.repeat(10_000),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      const once = makeSpeakable(input);
+      expect(performance.now() - start).toBeLessThan(500);
+      expect(once.length).toBeLessThanOrEqual(2100);
+    }
   });
 
   test('keeps relative parent segments out of ellipsis handling', () => {

@@ -47,7 +47,7 @@ export const TELEMETRY_EVENT_TYPES = [
    * in `lucy-interactions.jsonl`, so what she said and what the operator did
    * can be joined. Shapes:
    * - lucy_clip_started: { clipId, trigger: 'click' | 'replay', panelState: 'open' | 'minimized' | 'off', tabVisible: boolean }
-   * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded' | 'error', playedMs, totalMs }
+   * - lucy_clip_ended: { clipId, endedBy: 'finished' | 'user_stop' | 'superseded', playedMs, totalMs }
    * - lucy_clip_unheard: { clipId, reason: 'muted' | 'dnd' | 'audio_suspended' | 'error' }
    * - lucy_panel_action: { action: 'enable' | 'disable' | 'minimize' | 'restore' | 'move' | 'replay', clipId?: string }
    */

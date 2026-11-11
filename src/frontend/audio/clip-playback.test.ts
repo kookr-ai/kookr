@@ -11,7 +11,7 @@ import {
   replayLastClip,
   stopReplay,
 } from './clip-playback.js';
-import { __resetLastClipForTests, captureLastClip, getLastClip, getLastClipSnapshot } from './last-clip.js';
+import { __resetLastClipForTests, captureLastClip, getLastClip, getLastClipSnapshot, markClipHeard } from './last-clip.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from './speech-bus.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
@@ -113,12 +113,57 @@ describe('beginClipPlayback: heard rules and telemetry', () => {
     expect(getLastClipSnapshot().unheard).toBe(false);
   });
 
-  test('an error or a superseded clip is not heard unless enough of it was visible', () => {
-    const playback = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+  test('a superseded clip is heard only if enough of it was visible', () => {
+    const short = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
     now = 1_000;
-    playback.end('superseded');
+    short.end('superseded');
     expect(getLastClipSnapshot().unheard).toBe(true);
     expect(ofType('lucy_clip_ended')[0]).toMatchObject({ endedBy: 'superseded' });
+
+    now = 2_000;
+    const long = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+    now = 10_500;
+    long.end('superseded');
+    expect(getLastClipSnapshot().unheard).toBe(false);
+  });
+
+  test('a clip that starts in a hidden tab and is visible for 9 of its 10 seconds is heard', () => {
+    visibility = 'hidden';
+    const playback = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+    now = 1_000;
+    setVisibility('visible');
+    now = 10_000;
+    playback.end('finished');
+    expect(getLastClipSnapshot().unheard).toBe(false);
+  });
+
+  test('exactly 80% visible counts as heard when the tab is hidden for the rest, including at end()', () => {
+    const playback = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+    now = 8_000;
+    setVisibility('hidden');
+    now = 10_000;
+    playback.end('finished');
+    expect(getLastClipSnapshot().unheard).toBe(false);
+  });
+
+  test('5 seconds visible and then hidden is not enough', () => {
+    const playback = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+    now = 5_000;
+    setVisibility('hidden');
+    now = 10_000;
+    playback.end('finished');
+    expect(getLastClipSnapshot().unheard).toBe(true);
+  });
+
+  test('the visibility listener is removed when the playback ends', () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    const playback = beginClipPlayback({ clipId: 'c1', totalMs: 10_000, trigger: 'click' });
+    const listener = add.mock.calls.find(([type]) => type === 'visibilitychange')?.[1];
+    expect(listener).toBeDefined();
+    expect(remove).not.toHaveBeenCalledWith('visibilitychange', listener);
+    playback.end('finished');
+    expect(remove).toHaveBeenCalledWith('visibilitychange', listener);
   });
 
   test('end() counts once', () => {
@@ -160,6 +205,7 @@ class FakeAudioContext {
   static initialState: AudioContextState = 'running';
   static resumeLeavesSuspended = false;
   static decodeFails = false;
+  static decodeGate: Promise<void> | null = null;
   state: AudioContextState;
   destination = {};
   analyser = { fftSize: 0, smoothingTimeConstant: 0 };
@@ -170,6 +216,7 @@ class FakeAudioContext {
   }
   createAnalyser = vi.fn(() => this.analyser as unknown as AnalyserNode);
   decodeAudioData = vi.fn(async (_bytes: ArrayBuffer) => {
+    if (FakeAudioContext.decodeGate) await FakeAudioContext.decodeGate;
     if (FakeAudioContext.decodeFails) throw new Error('bad audio');
     return { duration: 2 } as AudioBuffer;
   });
@@ -200,6 +247,7 @@ describe('replayLastClip', () => {
     FakeAudioContext.initialState = 'running';
     FakeAudioContext.resumeLeavesSuspended = false;
     FakeAudioContext.decodeFails = false;
+    FakeAudioContext.decodeGate = null;
     vi.stubGlobal('AudioContext', FakeAudioContext);
     localStorage.clear();
     __resetSoundPreferenceForTests();
@@ -308,6 +356,94 @@ describe('replayLastClip', () => {
     stopReplay('superseded');
     expect(events.map((e) => e.type)).toEqual(['idle', 'playing', 'idle']);
     expect(ofType('lucy_clip_ended')[0]).toMatchObject({ endedBy: 'superseded', playedMs: 500 });
+    expect(getLastClipSnapshot().unheard).toBe(true);
+  });
+
+  test('a live clip arriving while a replay is still decoding cancels it, so it never plays over the live clip', async () => {
+    capture();
+    let release!: () => void;
+    FakeAudioContext.decodeGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = replayLastClip();
+    await Promise.resolve();
+    stopReplay('superseded');
+    release();
+    expect(await pending).toBe('cancelled');
+    const ctx = FakeAudioContext.instances[0];
+    expect(ctx.sources).toHaveLength(0);
+    expect(ctx.close).toHaveBeenCalled();
+    expect(events.map((e) => e.type)).toEqual(['idle']);
+    expect(ofType('lucy_clip_started')).toEqual([]);
+    expect(ofType('lucy_clip_unheard')).toEqual([]);
+    // and a later replay works
+    FakeAudioContext.decodeGate = null;
+    expect(await replayLastClip()).toBe('started');
+  });
+
+  test('a replay failing or blocked on a clip that was already heard does not report it as unheard', async () => {
+    capture();
+    markClipHeard('c1');
+
+    FakeAudioContext.decodeFails = true;
+    expect(await replayLastClip()).toBe('error');
+    FakeAudioContext.decodeFails = false;
+
+    FakeAudioContext.initialState = 'suspended';
+    FakeAudioContext.resumeLeavesSuspended = true;
+    expect(await replayLastClip()).toBe('blocked');
+
+    vi.stubGlobal('AudioContext', undefined);
+    expect(await replayLastClip()).toBe('error');
+
+    expect(ofType('lucy_clip_unheard')).toEqual([]);
+  });
+
+  test('a replay refused because the browser has no audio reports the unheard clip as an error', async () => {
+    capture();
+    vi.stubGlobal('AudioContext', undefined);
+    expect(await replayLastClip()).toBe('error');
+    expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'c1', reason: 'error' }]);
+  });
+
+  test('closing the panel while a replay is decoding also cancels it', async () => {
+    capture();
+    let release!: () => void;
+    FakeAudioContext.decodeGate = new Promise<void>((resolve) => { release = resolve; });
+    const pending = replayLastClip();
+    await Promise.resolve();
+    stopReplay('user_stop');
+    release();
+    expect(await pending).toBe('cancelled');
+    expect(FakeAudioContext.instances[0].sources).toHaveLength(0);
+  });
+
+  test('two presses at once make one replay and one "busy"', async () => {
+    capture();
+    const results = await Promise.all([replayLastClip(), replayLastClip()]);
+    expect(results).toEqual(['started', 'busy']);
+    expect(FakeAudioContext.instances).toHaveLength(1);
+  });
+
+  test('stopping a replay and then having its source report the end counts once', async () => {
+    capture();
+    await replayLastClip();
+    const source = FakeAudioContext.instances[0].sources[0];
+    now = 500;
+    stopReplay('user_stop');
+    source.onended?.();
+    expect(ofType('lucy_clip_ended')).toHaveLength(1);
+    expect(ofType('lucy_clip_ended')[0]).toMatchObject({ endedBy: 'user_stop' });
+    expect(events.map((e) => e.type)).toEqual(['idle', 'playing', 'idle']);
+  });
+
+  test('a newer clip arriving during a replay is not marked heard by the older replay ending', async () => {
+    capture();
+    await replayLastClip();
+    const source = FakeAudioContext.instances[0].sources[0];
+    captureLastClip({ clipId: 'c2', text: 'Newer.', audio: new Uint8Array([4]).buffer, durationMs: 2000 });
+    now = 2_000;
+    source.onended?.();
+    expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'c1', endedBy: 'finished' });
+    expect(getLastClip()).toMatchObject({ clipId: 'c2', heard: false });
     expect(getLastClipSnapshot().unheard).toBe(true);
   });
 });

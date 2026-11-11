@@ -237,6 +237,13 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.usedFallback).toBe(true);
     });
 
+    test('denylist is re-applied after the transform (run_tests -> "run tests")', async () => {
+      const client = mockClient('{"summary":"Next step is run_tests on the branch."}');
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
+      expect(result.text).not.toMatch(/\brun\b/i);
+    });
+
     test('fallback output is made speakable and reports rawText when it changed', async () => {
       const result = await summarizeTaskForSpeech(null, {
         taskName: 'Docs pass',

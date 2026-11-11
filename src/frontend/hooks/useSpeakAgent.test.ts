@@ -18,8 +18,9 @@ import {
   getAudioAlertSnapshot,
 } from '../audio/audio-alert-log.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus } from '../audio/speech-bus.js';
-import { __resetLastClipForTests, getLastClip, getLastClipSnapshot } from '../audio/last-clip.js';
-import { __resetClipPlaybackForTests } from '../audio/clip-playback.js';
+import { __resetLastClipForTests, captureLastClip, getLastClip, getLastClipSnapshot } from '../audio/last-clip.js';
+import { __resetDndForTests, disableDnd, enableDnd } from './useDnd.js';
+import { __resetClipPlaybackForTests, replayLastClip } from '../audio/clip-playback.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 
 const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
@@ -111,6 +112,21 @@ function Probe({ fetcher }: { fetcher: typeof fetch }) {
   );
   probeHandle = hook as ProbeHandle;
   return null;
+}
+
+/** Wait until the hook has left 'generating' (playing, suppressed, error or idle), flushing React between checks. */
+async function settled(): Promise<void> {
+  await vi.waitFor(async () => {
+    await act(async () => {});
+    expect(probeHandle!.state.status).not.toBe('generating');
+  });
+}
+
+async function speakAndSettle(): Promise<void> {
+  await act(async () => {
+    probeHandle!.speak();
+  });
+  await settled();
 }
 
 function mountProbe(fetcher: typeof fetch): { root: Root; container: HTMLDivElement } {
@@ -303,13 +319,6 @@ describe('useSpeakAgent request shape', () => {
       } as unknown as Response;
     }
 
-    async function speakAndSettle(): Promise<void> {
-      await act(async () => {
-        probeHandle!.speak();
-        for (let i = 0; i < 12; i += 1) await Promise.resolve();
-      });
-    }
-
     test('a clip is announced as generating, then playing with its text and a loudness tap, then idle when it ends', async () => {
       const mounted = mountProbe(vi.fn(async () => speakResponse('Two tasks need you.')) as unknown as typeof fetch);
       root = mounted.root;
@@ -454,20 +463,34 @@ describe('useSpeakAgent request shape', () => {
       } as unknown as Response;
     }
 
-    async function speakAndSettle(): Promise<void> {
-      await act(async () => {
-        probeHandle!.speak();
-        for (let i = 0; i < 12; i += 1) await Promise.resolve();
-      });
-    }
-
     function mount(response: () => Promise<Response>): void {
+      // A second mount in one test replaces the first button: take the first one away so it cannot linger.
+      if (root) act(() => root!.unmount());
+      container?.remove();
       const mounted = mountProbe(vi.fn(response) as unknown as typeof fetch);
       root = mounted.root;
       container = mounted.container;
     }
 
     const ofType = (type: string) => tracked.filter((event) => event.type === type);
+
+    // The clock and the tab's visibility are under the test's control from the very start, so the heard rule is
+    // exercised with the same numbers the playback began with.
+    let now = 0;
+    let visibility: DocumentVisibilityState = 'visible';
+    beforeEach(() => {
+      now = 1_000;
+      visibility = 'visible';
+      vi.spyOn(performance, 'now').mockImplementation(() => now);
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
+      __resetDndForTests();
+    });
+    afterEach(() => {
+      delete (document as unknown as Record<string, unknown>).visibilityState;
+      // Do Not Disturb is remembered in localStorage, so switch it off there before re-reading it.
+      disableDnd();
+      __resetDndForTests();
+    });
 
     test('a played clip is remembered with its server clip id, starts unheard and is heard when it finishes in a visible tab', async () => {
       mount(async () => clipResponse());
@@ -476,7 +499,7 @@ describe('useSpeakAgent request shape', () => {
       const clip = getLastClip()!;
       expect(clip).toMatchObject({ clipId: 'clip-srv-1', text: 'Two tasks need you.', durationMs: 2400 });
       expect(new Uint8Array(clip.audio)).toEqual(new Uint8Array([1, 2, 3]));
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Two tasks need you.' });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
       expect(ofType('lucy_clip_started')).toEqual([
         { type: 'lucy_clip_started', clipId: 'clip-srv-1', trigger: 'click', panelState: 'off', tabVisible: true },
       ]);
@@ -486,7 +509,7 @@ describe('useSpeakAgent request shape', () => {
       expect(ctx.decodeAudioData.mock.calls[0][0]).not.toBe(clip.audio);
 
       const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
-      vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 2400);
+      now += 2400;
       act(() => {
         source.onended?.();
       });
@@ -514,7 +537,7 @@ describe('useSpeakAgent request shape', () => {
       await speakAndSettle();
 
       expect(probeHandle!.state.status).toBe('suppressed');
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Two tasks need you.' });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
       expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'audio_suspended' }]);
       expect(ofType('lucy_clip_started')).toEqual([]);
     });
@@ -528,7 +551,10 @@ describe('useSpeakAgent request shape', () => {
       setSoundEnabled(false);
       await act(async () => {
         release(clipResponse());
-        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+      await vi.waitFor(async () => {
+        await act(async () => {});
+        expect(probeHandle!.state.status).toBe('suppressed');
       });
 
       expect(probeHandle!.state.status).toBe('suppressed');
@@ -568,7 +594,7 @@ describe('useSpeakAgent request shape', () => {
       mount(async () => clipResponse());
       await speakAndSettle();
       const source = FakeAudioContext.instances[0].createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
-      vi.spyOn(performance, 'now').mockReturnValue(performance.now() + 5000);
+      now += 5000;
       act(() => {
         source.onended?.();
       });
@@ -576,8 +602,8 @@ describe('useSpeakAgent request shape', () => {
 
       mount(async () => clipResponse({ clipId: 'clip-srv-2', text: 'Something else.' }));
       await speakAndSettle();
-      expect(getLastClip()!.clipId).toBe('clip-srv-2');
-      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Something else.' });
+      expect(getLastClip()).toMatchObject({ clipId: 'clip-srv-2', text: 'Something else.' });
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
     });
 
     test('a failed request leaves the previous clip alone', async () => {
@@ -589,6 +615,114 @@ describe('useSpeakAgent request shape', () => {
       mount(async () => { throw new Error('offline'); });
       await speakAndSettle();
       expect(getLastClip()!.clipId).toBe('clip-srv-1');
+    });
+
+    test('Do Not Disturb switched on while the summary was being prepared: remembered, not played, reported as dnd', async () => {
+      let release: (response: Response) => void = () => {};
+      mount(() => new Promise<Response>((resolve) => { release = resolve; }));
+      act(() => {
+        probeHandle!.speak();
+      });
+      act(() => enableDnd(null));
+      await act(async () => {
+        release(clipResponse());
+      });
+      await vi.waitFor(async () => {
+        await act(async () => {});
+        expect(probeHandle!.state.status).toBe('suppressed');
+      });
+
+      expect(probeHandle!.state.errorReason).toBe('dnd');
+      expect(FakeAudioContext.instances[0].createBufferSource).not.toHaveBeenCalled();
+      expect(getLastClipSnapshot().unheard).toBe(true);
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'dnd' }]);
+    });
+
+    test('a response that arrives after the operator pressed stop is neither remembered nor played', async () => {
+      let release: (response: Response) => void = () => {};
+      mount(() => new Promise<Response>((resolve) => { release = resolve; }));
+      act(() => {
+        probeHandle!.speak();
+      });
+      act(() => {
+        probeHandle!.stop();
+      });
+      await act(async () => {
+        release(clipResponse());
+        // Let everything the late response could trigger run (it is a negative check, so there is nothing to wait for).
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(getLastClip()).toBeNull();
+      expect(FakeAudioContext.instances[0].createBufferSource).not.toHaveBeenCalled();
+      expect(ofType('lucy_clip_started')).toEqual([]);
+      expect(ofType('lucy_clip_unheard')).toEqual([]);
+      expect(probeHandle!.state.status).toBe('idle');
+    });
+
+    test('leaving the page mid-clip records user_stop exactly once', async () => {
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      expect(probeHandle!.state.status).toBe('playing');
+
+      act(() => root!.unmount());
+      root = null;
+      expect(ofType('lucy_clip_ended')).toHaveLength(1);
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'user_stop' });
+    });
+
+    test('audio that refuses to start is reported as an error and the clip stays replayable', async () => {
+      class RefusingAudioContext extends FakeAudioContext {
+        createBufferSource = vi.fn((): AudioBufferSourceNode => ({
+          buffer: null,
+          connect: vi.fn(),
+          disconnect: vi.fn(),
+          start: vi.fn(() => { throw new Error('InvalidStateError'); }),
+          stop: vi.fn(),
+          onended: null,
+        }) as unknown as AudioBufferSourceNode);
+      }
+      vi.stubGlobal('AudioContext', RefusingAudioContext);
+      mount(async () => clipResponse());
+      await speakAndSettle();
+
+      expect(probeHandle!.state.errorReason).toBe('start-failed');
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'clip-srv-1', reason: 'error' }]);
+      expect(ofType('lucy_clip_started')).toEqual([]);
+      expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
+    });
+
+    test('a clip that played while the tab was in the background stays unheard', async () => {
+      visibility = 'hidden';
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      expect(ofType('lucy_clip_started')[0]).toMatchObject({ tabVisible: false });
+
+      const source = FakeAudioContext.instances[0].createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+      now += 2400;
+      act(() => {
+        source.onended?.();
+      });
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ endedBy: 'finished' });
+      expect(getLastClipSnapshot().unheard).toBe(true);
+    });
+
+    test('pressing a speaker button while a replay is playing cuts the replay off as superseded', async () => {
+      captureLastClip({ clipId: 'old-clip', text: 'Earlier.', audio: new Uint8Array([9]).buffer, durationMs: 3000 });
+      await act(async () => {
+        expect(await replayLastClip()).toBe('started');
+      });
+      expect(ofType('lucy_clip_started')).toEqual([
+        { type: 'lucy_clip_started', clipId: 'old-clip', trigger: 'replay', panelState: 'off', tabVisible: true },
+      ]);
+
+      mount(async () => clipResponse());
+      now += 500;
+      await speakAndSettle();
+
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'old-clip', endedBy: 'superseded', playedMs: 500 });
+      expect(ofType('lucy_clip_started')[1]).toMatchObject({ clipId: 'clip-srv-1', trigger: 'click' });
+      expect(FakeAudioContext.instances).toHaveLength(2);
     });
   });
 });

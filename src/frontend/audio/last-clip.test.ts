@@ -20,14 +20,14 @@ describe('last-clip store', () => {
 
   test('starts empty', () => {
     expect(getLastClip()).toBeNull();
-    expect(getLastClipSnapshot()).toEqual({ hasClip: false, unheard: false, text: null });
+    expect(getLastClipSnapshot()).toEqual({ hasClip: false, unheard: false });
   });
 
   test('captures a clip as unheard, keeping its bytes, text and server clip id', () => {
     const clip = captureLastClip({ clipId: 'srv-1', text: 'Two tasks need you.', audio: bytes(1, 2, 3), durationMs: 2400 });
     expect(clip).toMatchObject({ clipId: 'srv-1', text: 'Two tasks need you.', durationMs: 2400, heard: false });
     expect(new Uint8Array(clip.audio)).toEqual(new Uint8Array([1, 2, 3]));
-    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'Two tasks need you.' });
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
   });
 
   test('falls back to a locally generated id when the server sent none', () => {
@@ -41,11 +41,11 @@ describe('last-clip store', () => {
   test('only the latest clip is kept; a new one starts unheard even after the old one was heard', () => {
     captureLastClip({ clipId: 'one', text: 'first', audio: bytes(1) });
     markClipHeard('one');
-    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: false, text: 'first' });
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: false });
 
     captureLastClip({ clipId: 'two', text: 'second', audio: bytes(2) });
     expect(getLastClip()?.clipId).toBe('two');
-    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true, text: 'second' });
+    expect(getLastClipSnapshot()).toEqual({ hasClip: true, unheard: true });
   });
 
   test('marking an older clip heard does not touch the latest one', () => {
@@ -79,5 +79,30 @@ describe('last-clip store', () => {
     unsubscribe();
     captureLastClip({ clipId: 'two', text: 'second', audio: bytes(2) });
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  test('a missing, negative or non-numeric length is stored as 0 (unknown)', () => {
+    for (const durationMs of [undefined, -5, Number.NaN, 0]) {
+      const clip = captureLastClip({ clipId: 'one', text: 'a', audio: bytes(1), durationMs });
+      expect(clip.durationMs).toBe(0);
+    }
+  });
+
+  test('discarding, or marking heard with a stale id, does not notify listeners', () => {
+    captureLastClip({ clipId: 'one', text: 'first', audio: bytes(1) });
+    const listener = vi.fn();
+    subscribeLastClip(listener);
+
+    markClipHeard('stale');
+    discardLastClip('stale');
+    expect(listener).not.toHaveBeenCalled();
+
+    discardLastClip('one');
+    expect(listener).toHaveBeenCalledTimes(1);
+    // The clip is gone: marking it heard afterwards is a no-op.
+    markClipHeard('one');
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(getLastClip()).toBeNull();
+    expect(getLastClipSnapshot().hasClip).toBe(false);
   });
 });

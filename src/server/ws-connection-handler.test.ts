@@ -304,6 +304,65 @@ describe('handleWsConnection read-only gate (integration)', () => {
     expect(achievementWatcher.check).toHaveBeenCalledTimes(2);
   });
 
+  it('records at most 20 lucy_* events per telemetry message', async () => {
+    const ws = makeFakeWs();
+    const recordUi = vi.fn();
+    const deps = { ...makeDeps(), lucyInteractionLog: { recordSaid: vi.fn(), recordUi, flush: vi.fn() } } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    const base = { timestamp: '2026-11-11T10:00:00.000Z', sessionId: 's1', platform: 'linux' };
+    const events = Array.from({ length: 150 }, (_, i) => ({ ...base, type: 'lucy_panel_action', action: 'move', clipId: `c${i}` }));
+
+    await dispatch(ws, { type: 'telemetry', events });
+
+    expect(recordUi).toHaveBeenCalledTimes(20);
+    expect(recordUi.mock.calls[19][1]).toMatchObject({ clipId: 'c19' });
+    expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a viewer sending lucy_* telemetry writes nothing', async () => {
+    const ws = makeFakeWs();
+    const recordUi = vi.fn();
+    const deps = { ...makeDeps(), lucyInteractionLog: { recordSaid: vi.fn(), recordUi, flush: vi.fn() } } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, VIEWER);
+    const base = { timestamp: 't', sessionId: 's1', platform: 'linux' };
+
+    await dispatch(ws, { type: 'telemetry', events: [{ ...base, type: 'lucy_panel_action', action: 'move' }] });
+
+    expect(recordUi).not.toHaveBeenCalled();
+    expect(handleMessageSafe).not.toHaveBeenCalled();
+  });
+
+  it('a recordUi that throws does not break normal telemetry handling', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const ws = makeFakeWs();
+    const recordUi = vi.fn(() => { throw new Error('disk on fire'); });
+    const deps = { ...makeDeps(), lucyInteractionLog: { recordSaid: vi.fn(), recordUi, flush: vi.fn() } } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    const base = { timestamp: 't', sessionId: 's1', platform: 'linux' };
+
+    await expect(dispatch(ws, {
+      type: 'telemetry',
+      events: [{ ...base, type: 'lucy_panel_action', action: 'move' }, { ...base, type: 'lucy_panel_action', action: 'enable' }],
+    })).resolves.toBeUndefined();
+
+    expect(recordUi).toHaveBeenCalledTimes(2);
+    expect(handleMessageSafe).toHaveBeenCalledTimes(1);
+  });
+
+  it('a telemetry message with no lucy_* events never calls recordUi', async () => {
+    const ws = makeFakeWs();
+    const recordUi = vi.fn();
+    const deps = { ...makeDeps(), lucyInteractionLog: { recordSaid: vi.fn(), recordUi, flush: vi.fn() } } as unknown as WsConnectionDeps;
+    handleWsConnection(ws as unknown as WebSocket, registrar, deps, OWNER);
+    const base = { timestamp: 't', sessionId: 's1', platform: 'linux' };
+
+    await dispatch(ws, { type: 'telemetry', events: [{ ...base, type: 'agent_clicked' }] });
+    await dispatch(ws, { type: 'telemetry', events: [] });
+
+    expect(recordUi).not.toHaveBeenCalled();
+    expect(handleMessageSafe).toHaveBeenCalledTimes(2);
+  });
+
   it('telemetry without a Lucy log wired does not throw', async () => {
     const ws = makeFakeWs();
     handleWsConnection(ws as unknown as WebSocket, registrar, makeDeps(), OWNER);

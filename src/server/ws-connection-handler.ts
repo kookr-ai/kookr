@@ -37,7 +37,7 @@ import type { Scope } from './viewer-data-policy.js';
 import type { SnapshotMessage } from '../shared/contracts/messages.js';
 import type { SocketRegistrar } from './viewer-connection-registry.js';
 import type { DashboardSelectionController } from './dashboard-selection-controller.js';
-import { isLucyTelemetryType, type LucyInteractionLog } from './lucy-interaction-log.js';
+import { isLucyTelemetryType, MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE, type LucyInteractionLog } from './lucy-interaction-log.js';
 import type { TerminalInputCoordinatorPort } from './terminal-input-coordinator.js';
 import type { UserInputDeliveryService } from './user-input-delivery-service.js';
 import {
@@ -566,9 +566,16 @@ function wireWsMessageHandlers(
       // Lucy interaction analysis (issue #3605): tee the avatar's `lucy_*`
       // events into her local log. The normal telemetry path is unchanged.
       if (msg.type === 'telemetry' && deps.lucyInteractionLog) {
+        // Client-controlled: process at most a fixed number per message.
+        let lucyEvents = 0;
         for (const event of msg.events) {
-          if (isLucyTelemetryType(event.type)) {
+          if (!isLucyTelemetryType(event.type)) continue;
+          if (++lucyEvents > MAX_LUCY_EVENTS_PER_TELEMETRY_MESSAGE) break;
+          try {
             deps.lucyInteractionLog.recordUi(event.sessionId, event);
+          } catch (err) {
+            // Best-effort log: it must never block the normal telemetry path.
+            console.warn(`[lucy-log] recordUi threw: ${err instanceof Error ? err.message : String(err)}`);
           }
         }
       }
