@@ -59,9 +59,23 @@ function layerViolations(doc: string): string[] {
 
 // What `nb` owns: a hard character cap, a quoted-id vote, and the eviction mechanism. The
 // ~150-character target is deliberately allowed (RFC D2); a "≤N chars" cap is not.
+const CHAR_UNIT = String.raw`\d+[\s-]*char`;
 const RESTATED_NB_RULES: [string, RegExp][] = [
-  ['a hard character cap ("≤120 chars", "max 200 characters")', /[≤<]=?\s*\d+\s*char|\b(?:max(?:imum)?|hard cap|cap of|limit of)\b[^.\n]{0,24}\d+\s*char/i],
-  ['the eviction mechanism ("evicts the lowest-scored")', /\bevict(?:s|ed|ion of)?\s+(?:the\s+)?(?:lowest|oldest|weakest|least)|lowest[- ]scored|weakest\b[^.\n]{0,20}\bevict/i],
+  [
+    'a hard character cap ("≤120 chars", "max 200 characters", "200 chars max", "no more than 200 chars")',
+    new RegExp(
+      [
+        String.raw`[\u2264<]=?\s*${CHAR_UNIT}`,
+        String.raw`\b(?:at most|no more than|under|up to|capped at|max(?:imum)?|hard cap|cap of|limit of)\b[^.\n]{0,16}${CHAR_UNIT}`,
+        String.raw`${CHAR_UNIT}\w*\W{0,3}(?:max(?:imum)?|cap(?:ped)?|limit|or (?:fewer|less))\b`,
+      ].join('|'),
+      'i',
+    ),
+  ],
+  [
+    'the eviction mechanism ("evicts the lowest-scored", "is evicted")',
+    /\bevict(?:s|ed)\b|\bevict(?:ion of)?\s+(?:the\s+)?(?:lowest|oldest|weakest|least)|lowest[- ]scored/i,
+  ],
   ['"when the shelf is full" behavior', /\b(?:shelf|notebook)\s+(?:is|gets|becomes)\s+full\b|\bfull notebook\b/i],
   ['a quoted-id vote (`nb vote X "<id>"`); pass bare ids', /\bnb (?:vote|rm) +\S+ +"/],
 ];
@@ -210,15 +224,28 @@ describe('the guards fail on drift (so a green run means something)', () => {
 
   test.each([
     '`nb add x "<one lesson, ≤120 chars>"`',
+    'keep it ≤120-char',
     'a lesson is capped at a max of 200 characters',
+    'at most 200 characters',
+    '200 characters max',
+    'no more than 200 chars',
+    'keep each under 200 chars',
     'the notebook evicts the lowest-scored entry',
+    'the oldest entry is evicted',
+    'entries are evicted by score',
     'Full notebook → `nb merge` two entries',
     '`nb vote x "<id>" +1`',
   ])('restatedRules flags %j', (text) => {
     expect(restatedRules(text)).not.toHaveLength(0);
   });
 
-  test.each(['about 150 characters', '`nb vote x id1,id2 +1`', 'see docs/reference/agent-notebook.md for the limits'])(
+  test.each([
+    'about 150 characters',
+    'at most one new lesson, about 150 characters',
+    'size limits, eviction and voting rules are in the reference',
+    '`nb vote x id1,id2 +1`',
+    'see docs/reference/agent-notebook.md for the limits',
+  ])(
     'restatedRules allows %j',
     (text) => {
       expect(restatedRules(text)).toEqual([]);
