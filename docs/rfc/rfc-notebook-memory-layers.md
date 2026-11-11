@@ -1,6 +1,6 @@
 # RFC: Notebook memory layers (project > domain > global) for every Kookr agent
 
-**Status:** Draft (v7, after review round 1 and five independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook PRs #364 and #365 for issue #362); K2 (#3591) implemented; K3-K5 pending (K5 = #3598).
+**Status:** Draft (v7, after review round 1 and five independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook PRs #364 and #365 for issue #362); K2 (#3591, PR #3602) and K4 (#3593, PR #3600) merged; the description seed was applied to the live store; K3 (#3592) and K5 (#3598) in progress.
 **Date:** 2026-11-10
 **Author:** Jean Ibarz (with Claude)
 
@@ -254,7 +254,9 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
   target, and a moved lesson is always admitted, so a `-1` lesson moved into a
   full shelf evicts a better one. The script therefore (a) simulates the moves
   **sequentially**, re-predicting evictions after each, (b) when the target is **full**, refuses to move a
-  lesson scoring below the target's current minimum unless `--force-low`, (c)
+  lesson that would evict a lesson scoring the same or higher (as built in #3602: ties are
+  refused too, judged on un-aged scores keyed by lesson id, and a move into a target that
+  is already over the cap is refused) unless `--force-low`, (c)
   checks `len(base@slug) <= 128` and reports a name that would fail with
   `bad_args` before starting, (d) is **resumable** (it re-reads the store before
   every move), (e) predicts and reports `nb move`'s refusal when the target holds a
