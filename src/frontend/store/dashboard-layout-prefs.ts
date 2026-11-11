@@ -63,3 +63,75 @@ export function saveFindingsWidth(width: number, storage: WriteStorage | null = 
     return error instanceof Error ? error : new Error(String(error));
   }
 }
+
+/**
+ * Persisted width (in px) of the left navigation — the column of queues and
+ * named projects shown at 1280 px and wider while "All projects" is selected.
+ * The 52 px icon rail (narrower windows, or a project's detail drawer open) is
+ * never resized: the stored width only applies to the labelled layout.
+ *
+ * Same fail-soft contract as the findings width above: a missing or malformed
+ * value loads as `null` (use the default width from the stylesheet) and an
+ * out-of-range value is pulled back into the bounds, so nothing a browser can
+ * hold under this key yields an unusable navigation.
+ */
+export const NAV_WIDTH_KEY = 'kookr:navWidth';
+
+/** Width the stylesheet gives the navigation when no preference is stored. */
+export const DEFAULT_NAV_WIDTH = 212;
+
+/**
+ * Hard bounds for the navigation width. The minimum keeps queue names, counts
+ * and the spend and quota footer legible. The maximum is chosen so that at the
+ * narrowest window showing this layout (1280 px) the task list keeps its
+ * default width and the reading pane keeps its 428 px floor:
+ * 480 + 358 + 428 = 1266.
+ */
+export const MIN_NAV_WIDTH = 180;
+export const MAX_NAV_WIDTH = 480;
+
+/** Clamp a desired navigation width into the bounds; non-finite input gives the default. */
+export function clampNavWidth(width: number): number {
+  if (!Number.isFinite(width)) return DEFAULT_NAV_WIDTH;
+  return Math.round(Math.min(Math.max(width, MIN_NAV_WIDTH), MAX_NAV_WIDTH));
+}
+
+/** Load the persisted navigation width, or `null` when unset or not a number. */
+export function loadNavWidth(storage: ReadStorage | null = getStorage()): number | null {
+  if (!storage) return null;
+  try {
+    const raw = storage.getItem(NAV_WIDTH_KEY);
+    if (raw === null) return null;
+    const parsed = Number.parseInt(raw, 10);
+    if (!Number.isFinite(parsed)) return null;
+    return clampNavWidth(parsed);
+  } catch {
+    return null;
+  }
+}
+
+/** Persist a navigation width (best effort). Returns an Error if storage refused. */
+export function saveNavWidth(width: number, storage: WriteStorage | null = getStorage()): Error | null {
+  if (!storage) return new Error('localStorage unavailable');
+  try {
+    storage.setItem(NAV_WIDTH_KEY, String(clampNavWidth(width)));
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/**
+ * Forget the persisted navigation width so the default applies again. Removes
+ * the key rather than writing the default, so a later change to the default
+ * reaches everyone who has not chosen a width.
+ */
+export function clearNavWidth(storage: Pick<Storage, 'removeItem'> | null = getStorage()): Error | null {
+  if (!storage) return new Error('localStorage unavailable');
+  try {
+    storage.removeItem(NAV_WIDTH_KEY);
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}

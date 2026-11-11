@@ -637,7 +637,8 @@ kbd {
   width: 2px;
 }
 /* While dragging, suppress text selection and force the resize cursor. */
-.main-resizing {
+.main-resizing,
+.main-resizing-nav {
   cursor: col-resize;
   user-select: none;
 }
@@ -9978,16 +9979,23 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 .project-nav-heading,
 .project-nav-name,
 .project-nav-dot,
-.project-nav-idle-toggle {
+.project-nav-idle-toggle,
+.nav-resizer {
   display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nav-resizer::after { transition: none; }
 }
 
 @media (min-width: 1280px) {
+  /* --nav-width is set on .main once the user has resized the navigation
+     (App.tsx, already clamped to MIN_NAV_WIDTH..MAX_NAV_WIDTH); without it the
+     default applies. critical.css repeats this rule for the first paint. */
   .project-sidebar.labelled {
     align-items: stretch;
     gap: 2px;
-    width: 212px;
-    min-width: 212px;
+    width: var(--nav-width, 212px);
+    min-width: var(--nav-width, 212px);
     padding: 8px;
   }
 
@@ -10140,9 +10148,11 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     margin: 4px 0;
   }
 
+  /* Fills the navigation at any width the divider allows (196 px at the
+     default 212 px). */
   .project-sidebar.labelled .project-sidebar-filter-input,
   .project-sidebar.labelled .project-sidebar-filter-input:focus {
-    width: 196px;
+    width: 100%;
     height: 28px;
     padding: 0 8px;
   }
@@ -10156,11 +10166,48 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     align-self: flex-start;
   }
 
-  /* A saved or dragged findings width must not eat the 160 px the labels
+  /* A saved or dragged findings width must not eat the width the labels
      cost out of the terminal: keep main's floor for the reading pane
-     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). */
+     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). The
+     navigation's own width is resizable, so it is subtracted as a variable. */
   .main:has(> .project-sidebar.labelled) > .findings-panel {
-    max-width: max(280px, calc(100% - 640px));
+    max-width: max(280px, calc(100% - 428px - var(--nav-width, 212px)));
+  }
+
+  /* Divider on the navigation's right edge (NavResizer.tsx). It overlaps the
+     navigation's border with negative margins, so it takes no layout width. */
+  .project-sidebar.labelled + .nav-resizer {
+    display: block;
+    flex: 0 0 6px;
+    align-self: stretch;
+    margin: 0 -3px;
+    z-index: 2;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    touch-action: none;
+  }
+  .nav-resizer::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 1px;
+    transform: translateX(-50%);
+    background: transparent;
+    transition: background 0.12s ease;
+  }
+  .nav-resizer:hover::after,
+  .nav-resizer:focus-visible::after,
+  .nav-resizer.dragging::after {
+    background: var(--teal);
+  }
+  .nav-resizer:focus-visible {
+    outline: none;
+  }
+  .nav-resizer:focus-visible::after {
+    width: 2px;
   }
 
   /* "All projects" is always the selected row in this layout; keep the red

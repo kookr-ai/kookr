@@ -59,6 +59,7 @@ import { DestructiveUndoToasts } from './components/DestructiveUndoToasts.js';
 import { SweepProgress } from './components/SweepProgress.js';
 import { SweepReport } from './components/SweepReport.js';
 import { ProjectSidebar } from './components/ProjectSidebar.js';
+import { NavResizer } from './components/NavResizer.js';
 import { ProjectDetailDrawer } from './components/ProjectDetailDrawer.js';
 import type { SettingsFocusField } from './components/SettingsDialog.js';
 import { OnboardingTour } from './components/OnboardingTour.js';
@@ -70,6 +71,10 @@ import {
   saveFindingsWidth,
   MIN_FINDINGS_WIDTH,
   MAX_FINDINGS_WIDTH,
+  clearNavWidth,
+  loadNavWidth,
+  saveNavWidth,
+  DEFAULT_NAV_WIDTH,
 } from './store/dashboard-layout-prefs.js';
 import {
   detectShortcutPlatform,
@@ -380,6 +385,19 @@ export function App() {
   const commitFindingsWidth = useCallback((width: number) => {
     setFindingsWidth(width);
     saveFindingsWidth(width);
+  }, []);
+  // Persisted width of the left navigation (queues and named projects). `null`
+  // means "use the stylesheet's default width". Same life cycle as the split
+  // above: a drag updates state live, and the value is stored when it ends.
+  const [navWidth, setNavWidth] = useState<number | null>(() => loadNavWidth());
+  const [isResizingNav, setIsResizingNav] = useState(false);
+  const commitNavWidth = useCallback((width: number) => {
+    setNavWidth(width);
+    saveNavWidth(width);
+  }, []);
+  const resetNavWidth = useCallback(() => {
+    setNavWidth(null);
+    clearNavWidth();
   }, []);
   // Which mutually-exclusive modal dialog is open (issue #1825). One value in
   // place of ~12 independent visibility booleans; opening any modal implicitly
@@ -1594,6 +1612,9 @@ export function App() {
         }]
       : []),
     { id: 'diagnostics', label: 'Diagnostics', section: 'view', keywords: ['operations', 'health', 'circuit breaker'], run: toggleOperations },
+    // The way back to the default navigation width that does not depend on
+    // reaching the divider itself (double-clicking the divider does the same).
+    { id: 'reset-nav-width', label: 'Reset navigation width', section: 'view', keywords: ['sidebar', 'left panel', 'projects', 'queues', 'resize', 'default'], run: resetNavWidth },
     // Operators type "scoreboard" or "outcome" expecting a jump. Diagnostics
     // keywords don't include those, so this dedicated global action reuses the
     // Diagnostics open path instead of adding a panel (issue #3281).
@@ -1833,12 +1854,22 @@ export function App() {
           id="main-content"
           tabIndex={-1}
           ref={mainRef}
-          className={`main${isResizingSplit ? ' main-resizing' : ''}`}
-          style={findingsWidth != null
-            ? ({ '--findings-panel-width': `${findingsWidth}px` } as React.CSSProperties)
-            : undefined}
+          className={`main${isResizingSplit ? ' main-resizing' : ''}${isResizingNav ? ' main-resizing-nav' : ''}`}
+          style={{
+            ...(findingsWidth != null ? { '--findings-panel-width': `${findingsWidth}px` } : {}),
+            ...(navWidth != null ? { '--nav-width': `${navWidth}px` } : {}),
+          } as React.CSSProperties}
         >
           {projectSidebar}
+          {!terminalFocusActive && (
+            <NavResizer
+              width={navWidth ?? DEFAULT_NAV_WIDTH}
+              onResizeStateChange={setIsResizingNav}
+              onResize={setNavWidth}
+              onCommit={commitNavWidth}
+              onReset={resetNavWidth}
+            />
+          )}
           {projectDetailDrawer}
           {!terminalFocusActive && <CoordinatorFindingsPane open={showCoordinatorFindings} onClose={() => setShowCoordinatorFindings(false)} />}
           {findingsPanel}
