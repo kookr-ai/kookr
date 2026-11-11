@@ -41,7 +41,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { classifyShelf, loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
-import { checkArgv } from './lib/nb-client.mjs';
+import { blankNbDir, checkArgv } from './lib/nb-client.mjs';
 
 /** `nb describe` rejects text over NB_MAX_CHARS (default 200). */
 const MAX_DESC_CHARS = 200;
@@ -211,7 +211,7 @@ function notebooksDir() {
 }
 
 function main(argv) {
-  const argProblem = checkArgv(argv, { switches: ['--dry-run'], values: ['--manifest', '--map'] });
+  const argProblem = checkArgv(argv, { switches: ['--dry-run'], values: ['--manifest', '--map'] }) ?? blankNbDir();
   if (argProblem) {
     console.error(`apply-shelf-descriptions: ${argProblem}. Nothing was changed.`);
     process.exit(2);

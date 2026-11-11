@@ -368,9 +368,21 @@ describe('apply-shelf-descriptions CLI argument checking', () => {
     [['--map', ''], 'needs a value'],
     [['--map', join(tmpdir(), 'no-such-aliases.json')], 'does not exist'],
     [['--manifest', 'a', '--manifest', 'b'], 'more than once'],
+    [['--manifest', '-x'], 'looks like a flag'],
   ])('%j is refused with exit 2 before anything runs', (args, message) => {
     const r = go(...(args as string[]));
     expect(r.status).toBe(2);
     expect(r.stderr).toContain(message);
+  });
+});
+
+describe('apply-shelf-descriptions blank NB_DIR', () => {
+  test('a set-but-blank NB_DIR is refused (nb would fall back to the live store)', () => {
+    const r = spawnSync(process.execPath, [join(repoRoot, 'scripts', 'apply-shelf-descriptions.mjs'), '--dry-run'], {
+      encoding: 'utf-8',
+      env: { ...process.env, NB_DIR: '' },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('NB_DIR is set but empty');
   });
 });

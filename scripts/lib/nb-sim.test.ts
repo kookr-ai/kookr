@@ -290,6 +290,26 @@ describe('reapZeroByteShelf safety', () => {
   });
 });
 
+describe('reapZeroByteShelf and nb\'s store lock', () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    while (dirs.length) destroy(dirs.pop());
+  });
+  test('deletes under the lock and releases it; refuses (file untouched) while another holder has the lock', () => {
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    writeFileSync(join(dir, 'a.md'), '');
+    expect(reapZeroByteShelf(dir, 'a')).toBe('deleted');
+    expect(existsSync(join(dir, '.nb.lock'))).toBe(false); // released
+
+    writeFileSync(join(dir, 'b.md'), '');
+    mkdirSync(join(dir, '.nb.lock')); // an nb call in flight
+    expect(reapZeroByteShelf(dir, 'b')).toBe('locked');
+    expect(existsSync(join(dir, 'b.md'))).toBe(true);
+    expect(existsSync(join(dir, '.nb.lock'))).toBe(true); // not ours: left alone
+  }, 20_000);
+});
+
 describe('readFileOrderIds', () => {
   const dirs: string[] = [];
   afterEach(() => {

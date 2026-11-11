@@ -78,6 +78,18 @@ export function cloneStore(store) {
   return copy;
 }
 
+/**
+ * For every shelf that is full in `store`, its lowest score. Taken once at the
+ * start of a run and passed to {@link decideStep} as the bar a mover must clear.
+ */
+export function fullShelfFloors(store, cap = maxLines()) {
+  const floors = new Map();
+  for (const [shelf, entries] of store) {
+    if (entries.length >= cap) floors.set(shelf, minScore(entries));
+  }
+  return floors;
+}
+
 /** The lowest score on a shelf, or `undefined` when it is empty. */
 export function minScore(entries) {
   return entries.length === 0 ? undefined : Math.min(...entries.map((e) => e.score));
@@ -185,12 +197,14 @@ export function applyRemove(store, shelf, id) {
  *                    would evict several lessons at once (`nb move --json`
  *                    reports only the first)
  *   'ambiguous'      the id is not unique on the source shelf
+ * `floors` maps shelf -> the lowest score it had at the start of the run, for
+ * shelves that were full then (see {@link fullShelfFloors}).
  * `--force-low` (`forceLow`) overrides 'low-score' and 'over-cap' only.
  * Used by the dry-run (on a cloned snapshot, advanced one move at a time) and by
  * --apply (on a fresh re-read of just the two shelves), so both apply the same
  * rules.
  */
-export function decideStep(store, step, { cap = maxLines(), forceLow = false } = {}) {
+export function decideStep(store, step, { cap = maxLines(), forceLow = false, floors = new Map() } = {}) {
   const p = predictMove(store, step.from, step.to, step.id, cap);
   switch (p.outcome) {
     case 'missing':
@@ -204,7 +218,10 @@ export function decideStep(store, step, { cap = maxLines(), forceLow = false } =
       if (p.evictedAll.length > 1 && !forceLow) {
         return { action: 'skip', reason: 'over-cap', prediction: p };
       }
-      if (p.targetFull && p.entry.score <= p.targetMin && !forceLow) {
+      // The bar is the target's lowest lesson now, or the lowest it had when the run
+      // started if that was higher: the one-point aging that earlier moves cause
+      // must not lower the bar and let equal-scored lessons in afterwards.
+      if (p.targetFull && p.entry.score <= Math.max(p.targetMin, floors.get(step.to) ?? -Infinity) && !forceLow) {
         return { action: 'skip', reason: 'low-score', prediction: p };
       }
       return { action: 'move', reason: null, prediction: p };

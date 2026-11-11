@@ -4,7 +4,7 @@
 // scripts make go through the real `nb` CLI from the pinned agent-notebook package.
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
+import { chmodSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, existsSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -65,6 +65,13 @@ export function makeStore(opts: { git?: boolean } = {}): string {
 export function commitAll(dir: string, msg = 'seed'): void {
   git(dir, 'add', '-A');
   git(dir, 'commit', '-q', '--allow-empty', '-m', msg);
+}
+
+/** Install a pre-commit hook that always fails, so any commit in `dir` (the shim's, a script's) is refused. */
+export function breakCommits(dir: string): void {
+  const hook = join(dir, '.git', 'hooks', 'pre-commit');
+  writeFileSync(hook, '#!/bin/sh\necho "pre-commit hook says no" >&2\nexit 1\n');
+  chmodSync(hook, 0o755);
 }
 
 export function destroy(dir: string | undefined): void {

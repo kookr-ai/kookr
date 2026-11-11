@@ -242,8 +242,9 @@ recently (`nb` calls this aging), so moving a weak lesson into a
 full shelf destroys a better one. The script therefore simulates the moves one at
 a time (highest score first), prints every eviction and point it would cost, and
 refuses a move whose lesson does not score strictly **above** a **full** target's
-lowest lesson unless `--force-low` is given (an equal swap would only trade one
-lesson for another that is no better, and equal-scored lessons would push each
+lowest lesson (or to the lowest it had when the run started, so the aging that
+earlier moves cause cannot lower the bar) unless `--force-low` is given (an equal
+swap would only trade one lesson for another that is no better, and equal-scored lessons would push each
 other out one by one). A target already holding more than the cap would lose
 several lessons at once, so that is refused too. It also predicts the cases `nb` refuses: a lesson the
 target already holds is left on its legacy shelf and listed for a manual decision
@@ -253,7 +254,7 @@ anything runs. The script never removes a lesson.
 
 On `nb` 0.7.0 moving a shelf's last lesson leaves a 0-byte file that `nb list`
 hides but disk keeps; the script deletes exactly those files (size 0, legacy
-shelves only) and commits each deletion, re-runs the description seed for the
+shelves only, re-checked while holding `nb`'s own store lock) and commits each deletion, re-runs the description seed for the
 migrated repo's shelves, and confirms every legacy shelf is gone from disk and
 from `nb list --json`, listing any that remain. Re-running resumes: every move
 re-reads the store, and a run after completion changes nothing.
@@ -268,7 +269,11 @@ directory. If agent commits are mixed in, revert only the script's own commits
 the agents' lessons survive. Never use `git reset --hard`. A revert can conflict on
 a shelf an agent touched afterwards; resolve those by hand, keeping both sides'
 lessons. `--apply` refuses to run with `NB_GIT_AUTOCOMMIT=0`, because then the
-moves would not be commits at all.
+moves would not be commits at all, and it stops at once if a move did not become a
+commit (a failing git hook, a stale `index.lock`, no git identity) or if the
+store's pending changes cannot be committed before the rollback tag is placed.
+A set-but-blank `NB_DIR` (an unset shell variable) is refused, because `nb` would
+silently fall back to the live notebooks directory.
 
 ### Lesson promotion
 

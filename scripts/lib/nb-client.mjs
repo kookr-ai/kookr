@@ -9,7 +9,7 @@
 // is what makes a migration revertable. `--nb <path>` swaps it (tests use the
 // raw package CLI).
 import { spawnSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmdirSync, statSync, unlinkSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { entryId } from './nb-sim.mjs';
@@ -45,9 +45,27 @@ export function git(dir, args) {
   return { ok: r.status === 0, stdout: (r.stdout ?? '').trim(), stderr: (r.stderr ?? '').trim() };
 }
 
-/** True when `dir` is itself a git work tree root (the shim's own test: `<dir>/.git` exists). */
+/**
+ * True when `dir` is itself the root of a git work tree. `<dir>/.git` must exist
+ * (the shim's own test) AND git must report `dir` as its own top level, so a
+ * stray `.git` that is not a repository, or a store that merely sits inside some
+ * other repository, never gets that other repository tagged and committed to.
+ */
 export function isStoreGitRepo(dir) {
-  return existsSync(join(dir, '.git')) && git(dir, ['rev-parse', '--git-dir']).ok;
+  if (!existsSync(join(dir, '.git'))) return false;
+  const top = git(dir, ['rev-parse', '--show-toplevel']);
+  if (!top.ok || top.stdout === '') return false;
+  try {
+    return realpathSync(top.stdout) === realpathSync(dir);
+  } catch {
+    return false;
+  }
+}
+
+/** The store repository's current HEAD commit, or null (no commits yet, or not a repo). */
+export function headSha(dir) {
+  const r = git(dir, ['rev-parse', '-q', '--verify', 'HEAD']);
+  return r.ok ? r.stdout : null;
 }
 
 function commitArgs(dir) {
@@ -58,36 +76,46 @@ function commitArgs(dir) {
   return [...(hasName ? [] : ['-c', 'user.name=kookr-nb-tooling']), ...(hasEmail ? [] : ['-c', 'user.email=kookr-nb-tooling@localhost'])];
 }
 
-/** Stage everything and commit if anything is staged. Returns true when a commit was made. */
+/**
+ * Stage everything and commit if anything is staged. Returns `'committed'`,
+ * `'nothing'` (nothing was staged) or `'failed'` (git refused: a hook, a lock
+ * file, no identity).
+ */
 export function commitAll(dir, message) {
-  if (!git(dir, ['add', '-A']).ok) return false;
-  if (git(dir, ['diff', '--cached', '--quiet']).ok) return false; // nothing staged
-  return git(dir, [...commitArgs(dir), 'commit', '--quiet', '-m', message]).ok;
+  if (!git(dir, ['add', '-A']).ok) return 'failed';
+  if (git(dir, ['diff', '--cached', '--quiet']).ok) return 'nothing';
+  return git(dir, [...commitArgs(dir), 'commit', '--quiet', '-m', message]).ok ? 'committed' : 'failed';
 }
 
 /**
  * Commit only the named paths (relative to `dir`), leaving any other pending
- * change (an agent's write in flight) for its own commit. Returns true when a
- * commit was made.
+ * change (an agent's write in flight) for its own commit. Returns
+ * `'committed' | 'nothing' | 'failed'` as {@link commitAll} does.
  */
 export function commitPaths(dir, paths, message) {
-  if (!git(dir, ['add', '-A', '--', ...paths]).ok) return false;
-  if (git(dir, ['diff', '--cached', '--quiet', '--', ...paths]).ok) return false; // nothing staged for these paths
-  return git(dir, [...commitArgs(dir), 'commit', '--quiet', '-m', message, '--', ...paths]).ok;
+  if (!git(dir, ['add', '-A', '--', ...paths]).ok) return 'failed';
+  if (git(dir, ['diff', '--cached', '--quiet', '--', ...paths]).ok) return 'nothing'; // nothing staged for these paths
+  return git(dir, [...commitArgs(dir), 'commit', '--quiet', '-m', message, '--', ...paths]).ok ? 'committed' : 'failed';
 }
 
 /**
  * Tag the store's git repo so the run has a rollback anchor. Uncommitted store
  * changes are committed first (what the daily backup does anyway) so the tag
- * names a state that includes them. An existing tag is kept (a resumed run must
- * not move the anchor). Returns `{ ok, created, snapshotCommitted, error }`.
+ * names a state that includes them; if that commit FAILS the run is refused,
+ * because a tag on the older HEAD would leave those changes outside the rollback.
+ * An existing tag is kept (a resumed run must not move the anchor). Returns
+ * `{ ok, created, snapshotCommitted, error }`.
  */
 export function tagStore(dir, tag) {
   if (!isStoreGitRepo(dir)) return { ok: false, created: false, snapshotCommitted: false, error: `${dir} is not a git repository` };
   if (git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).ok) {
     return { ok: true, created: false, snapshotCommitted: false };
   }
-  const snapshotCommitted = commitAll(dir, `snapshot before ${tag}`);
+  const snapshot = commitAll(dir, `snapshot before ${tag}`);
+  if (snapshot === 'failed') {
+    return { ok: false, created: false, snapshotCommitted: false, error: 'git could not commit the store\'s pending changes (a failing hook, a stale index.lock, or no git identity?); fix that and re-run' };
+  }
+  const snapshotCommitted = snapshot === 'committed';
   const r = git(dir, ['tag', '--', tag]);
   if (r.ok && !git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).ok) {
     return { ok: false, created: false, snapshotCommitted, error: `git did not create tag ${JSON.stringify(tag)}` };
@@ -96,12 +124,41 @@ export function tagStore(dir, tag) {
 }
 
 /**
+ * Take nb's own store lock (`<dir>/.nb.lock`, an atomic mkdir; the protocol is
+ * agent-notebook's `withLock`) for a short synchronous critical section. Returns
+ * a release function, or null if the lock stayed busy for about three seconds
+ * (an `nb` call in flight, or a crashed holder: nb itself steals stale locks, we
+ * simply decline).
+ */
+function takeStoreLock(dir) {
+  const lock = join(dir, '.nb.lock');
+  const pause = new Int32Array(new SharedArrayBuffer(4));
+  for (let attempt = 0; attempt < 120; attempt++) {
+    try {
+      mkdirSync(lock);
+      return () => {
+        try {
+          rmdirSync(lock);
+        } catch {
+          /* already gone */
+        }
+      };
+    } catch {
+      Atomics.wait(pause, 0, 0, 25);
+    }
+  }
+  return null;
+}
+
+/**
  * Delete a leftover 0-byte shelf file (nb 0.7.0's `move` leaves one when it
  * moves a shelf's last lesson; only `rm` deletes it, and the `move` fix is not
- * released). Guarded three ways, because this is the one place a script deletes
- * a file: it must resolve INSIDE `dir`, be named exactly `<shelf>.md`, and be a
- * regular file of size 0. A file with any content (a description, a lesson) is
- * never touched. Returns `'deleted' | 'absent' | 'not-empty' | 'refused'`.
+ * released). Guarded, because this is the one place a script deletes a file: it
+ * must resolve INSIDE `dir`, be named exactly `<shelf>.md`, and be a regular
+ * file of size 0, re-checked while holding nb's store lock so an `nb add` that
+ * lands in between cannot be deleted with it. A file with any content (a
+ * description, a lesson) is never touched.
+ * Returns `'deleted' | 'absent' | 'not-empty' | 'refused' | 'locked'`.
  */
 export function reapZeroByteShelf(dir, shelf) {
   const root = resolve(dir) + sep;
@@ -110,11 +167,29 @@ export function reapZeroByteShelf(dir, shelf) {
     return 'refused';
   }
   if (!existsSync(file)) return 'absent';
-  const st = lstatSync(file);
-  if (!st.isFile()) return 'refused';
-  if (st.size !== 0) return 'not-empty';
-  unlinkSync(file);
-  return 'deleted';
+  const release = takeStoreLock(dir);
+  if (!release) return 'locked';
+  try {
+    if (!existsSync(file)) return 'absent';
+    const st = lstatSync(file);
+    if (!st.isFile()) return 'refused';
+    if (st.size !== 0) return 'not-empty';
+    unlinkSync(file);
+    return 'deleted';
+  } finally {
+    release();
+  }
+}
+
+/**
+ * A set-but-blank NB_DIR (`NB_DIR="$COPY"` with COPY unset) is treated by `nb`
+ * as unset and falls back to the live store. Returns an error message for that
+ * case, else null.
+ */
+export function blankNbDir(env = process.env) {
+  return env.NB_DIR !== undefined && env.NB_DIR.trim() === ''
+    ? 'NB_DIR is set but empty (is a shell variable unset?); nb would fall back to the live notebooks directory. Unset it or point it at a store.'
+    : null;
 }
 
 /**
@@ -186,8 +261,9 @@ export function createNbClient({ dir, nb = DEFAULT_NB, env = process.env } = {})
    * so --apply refuses when they are switched off. (A custom --nb is the caller's
    * responsibility.)
    */
-  const autocommitOff = nb === DEFAULT_NB && runEnv.NB_GIT_AUTOCOMMIT === '0';
-  return { run, runJson, dir: runEnv.NB_DIR, autocommitOff };
+  const usesShim = resolve(nb) === DEFAULT_NB;
+  const autocommitOff = usesShim && runEnv.NB_GIT_AUTOCOMMIT === '0';
+  return { run, runJson, dir: runEnv.NB_DIR, autocommitOff, expectsCommits: usesShim && !autocommitOff };
 }
 
 // ---------------------------------------------------------------------------

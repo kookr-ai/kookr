@@ -79,7 +79,9 @@ import { GLOBAL_SHELF, classifyShelf, loadSlugAliases } from '../plugin/hooks/li
 import {
   createNbClient,
   isStoreGitRepo,
+  blankNbDir,
   checkArgv,
+  headSha,
   moveCommand,
   nbMove,
   nbRemoveDuplicate,
@@ -90,7 +92,7 @@ import {
   snapshotStore,
   tagStore,
 } from './lib/nb-client.mjs';
-import { applyMove, applyRemove, cloneStore, decideStep, entryId, exactKey, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
+import { applyMove, applyRemove, cloneStore, decideStep, entryId, exactKey, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
 
 export const DEFAULT_TAG = 'pre-lesson-promotion';
 export const DEFAULT_THRESHOLD = 0.6;
@@ -246,6 +248,7 @@ export function destinationFor(group, toGlobal) {
  */
 export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false }) {
   const steps = [];
+  const floors = fullShelfFloors(store, cap);
   // Highest-scored groups first, so a strong lesson is admitted before weaker ones can crowd a full shelf.
   const ordered = [...groups].sort((a, b) => b.best.score - a.best.score || (a.id < b.id ? -1 : 1));
   for (const group of ordered) {
@@ -264,7 +267,7 @@ export function planPromotion({ groups, selected, toGlobal, store, cap = maxLine
     if (dest.problem) {
       step.decision = { action: 'skip', reason: 'bad-destination', detail: dest.problem, prediction: {} };
     } else {
-      step.decision = decideStep(store, step, { cap, forceLow });
+      step.decision = decideStep(store, step, { cap, forceLow, floors });
       if (chosen && step.decision.action === 'move') {
         applyMove(store, step.from, step.to, step.id, cap);
         // An exact group's other copies go only after the move; model it so
@@ -382,6 +385,14 @@ export function runPromotion({
     log(note);
     return { ok: true, nothing: true, note, steps: [], performed: [], skipped: [], removed: [], warnings: [], error: null };
   }
+  // An unknown --to-global id that is not part of --only cannot be a resumed run:
+  // it is a typo, and would silently send the lesson to the domain shelf instead.
+  const strayUnknown = [...toGlobal].filter((id) => !known.has(id) && !(only && only.has(id)));
+  if (strayUnknown.length > 0) {
+    const error = `--to-global names ${strayUnknown.join(', ')}, which ${strayUnknown.length > 1 ? 'are' : 'is'} not a group id (and not in --only). Groups found now: ${[...known.keys()].join(', ') || 'none'}.`;
+    log(error);
+    return { ok: false, error, usage: true, steps: [], performed: [], skipped: [], removed: [], warnings: [] };
+  }
   const selected = new Set(only ? [...only].filter((id) => known.has(id)) : found.groups.filter((g) => g.tier === 'exact').map((g) => g.id));
   const stray = [...toGlobal].filter((id) => known.has(id) && !selected.has(id));
   if (stray.length > 0) {
@@ -430,6 +441,7 @@ export function runPromotion({
   // was promoted earlier in this run; a copy may only be removed while the
   // destination demonstrably still holds the lesson.
   const working = cloneStore(snapshot.store);
+  const floors = fullShelfFloors(snapshot.store, cap);
   const pendingRemovals = [];
   for (const step of steps) {
     if (!step.selected) continue;
@@ -441,7 +453,7 @@ export function runPromotion({
       continue;
     }
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow });
+    const d = decideStep(working, step, { cap, forceLow, floors });
     if (d.action === 'skip' && d.reason !== 'already-moved') {
       result.skipped.push({ id: g.id, reason: d.reason });
       log(`  SKIP ${d.reason.padEnd(10)} ${label}`);
@@ -453,6 +465,7 @@ export function runPromotion({
       // someone else), so phase 2 re-checks the destination before removing.
       log(`  already moved   ${label}`);
     } else {
+      const headBefore = client.expectsCommits ? headSha(dir) : null;
       const r = nbMove(client, step.from, step.to, step.id, { note: `promotion ${g.id}` });
       if (r.reason === 'error') {
         result.ok = false;
@@ -466,6 +479,12 @@ export function runPromotion({
         continue;
       }
       result.performed.push({ id: g.id, from: step.from, to: step.to, lesson: step.id });
+      if (client.expectsCommits && headSha(dir) === headBefore) {
+        result.ok = false;
+        result.error = `nb moved ${label}, but the store got no commit (a failing git hook, a stale index.lock, or no git identity?). The change is in the working tree only, so the rollback tag would not cover it. Fix the cause and re-run; nothing further was moved or removed.`;
+        log(`  FAILED          ${result.error}`);
+        return result;
+      }
       const predicted = d.prediction.evicted?.id ?? null;
       const actual = r.evicted ? entryId(r.evicted.text) : null;
       if (predicted !== actual) {
@@ -497,7 +516,14 @@ export function runPromotion({
         log(`  already gone    ${m.shelf} ${m.id}`);
         continue;
       }
+      const rmHead = client.expectsCommits ? headSha(dir) : null;
       const rm = nbRemoveDuplicate(client, m.shelf, m.id);
+      if (rm.ok && client.expectsCommits && headSha(dir) === rmHead) {
+        result.ok = false;
+        result.error = `nb removed ${m.shelf} ${m.id}, but the store got no commit (git hook, lock or identity problem); fix that and re-run`;
+        log(`  FAILED          ${result.error}`);
+        return result;
+      }
       if (rm.ok) {
         result.removed.push({ shelf: m.shelf, id: m.id });
         log(`  removed         ${m.shelf} ${m.id}   (duplicate of the promoted copy)`);
@@ -513,8 +539,15 @@ export function runPromotion({
   // hidden from `nb list` but stays on disk; delete exactly such files (size 0,
   // only shelves this run moved a lesson out of) and commit each deletion.
   for (const shelf of [...new Set(result.performed.map((p) => p.from))].sort()) {
-    if (reapZeroByteShelf(dir, shelf) === 'deleted') {
-      commitPaths(dir, [`${shelf}.md`], `lesson promotion: delete empty shelf ${shelf}`);
+    const outcome = reapZeroByteShelf(dir, shelf);
+    if (outcome === 'locked') log(`  NOT reaped      ${shelf}: nb's store lock stayed busy (is a task running?); delete the empty file by hand later`);
+    if (outcome === 'deleted') {
+      if (commitPaths(dir, [`${shelf}.md`], `lesson promotion: delete empty shelf ${shelf}`) === 'failed') {
+        result.ok = false;
+        result.error = `deleted the empty file ${shelf}.md but git could not commit the deletion; commit it by hand and re-run`;
+        log(`  FAILED          ${result.error}`);
+        return result;
+      }
       log(`  reaped          ${shelf} (0-byte file deleted and committed)`);
     }
   }
@@ -540,10 +573,11 @@ export function main(argv = process.argv.slice(2)) {
     );
     return 0;
   }
-  const flagProblem = checkArgv(argv, {
-    switches: ['--apply', '--force-low', '--help', '-h'],
-    values: ['--only', '--to-global', '--threshold', '--map', '--nb', '--tag'],
-  });
+  const flagProblem =
+    checkArgv(argv, {
+      switches: ['--apply', '--force-low', '--help', '-h'],
+      values: ['--only', '--to-global', '--threshold', '--map', '--nb', '--tag'],
+    }) ?? blankNbDir();
   if (flagProblem) {
     console.error(`promote-notebook-lessons: ${flagProblem}. Nothing was changed.`);
     return 2;

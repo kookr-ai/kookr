@@ -5,9 +5,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
 import { runMigration, planMigration, DEFAULT_TAG } from './migrate-notebook-slugs.mjs';
-import { createNbClient, snapshotStore } from './lib/nb-client.mjs';
+import { DEFAULT_NB, createNbClient, isStoreGitRepo, snapshotStore } from './lib/nb-client.mjs';
+import { relative } from 'node:path';
 import {
   RAW_NB,
+  breakCommits,
   cleanEnv,
   commitAll,
   destroy,
@@ -489,6 +491,50 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     expect(git(dir, 'tag')).toBe('');
   });
 
+  test('uncommitted changes that cannot be committed (failing hook) refuse the run before any move: the rollback tag would not cover them', () => {
+    const dir = store();
+    writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
+    commitAll(dir);
+    writeShelf(dir, 'planner', L([1, 'pending, uncommitted'])); // dirty tree
+    breakCommits(dir);
+    const { result } = run(dir, { apply: true, shim: true });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/could not tag the store .*could not commit/);
+    expect(result.performed).toEqual([]);
+    expect(readLessons(dir, 'tester@agent-notebook')).toEqual([[2, 'tester one']]);
+    expect(git(dir, 'tag')).toBe('');
+  });
+
+  test('a move that did not become a commit stops the run at once (no rollback story, so nothing further is moved)', () => {
+    const dir = store();
+    writeShelf(dir, 'tester@agent-notebook', L([5, 'tester one'], [2, 'tester two']));
+    commitAll(dir);
+    breakCommits(dir); // the tag step has nothing to commit, then every nb commit fails
+    const { result } = run(dir, { apply: true, shim: true });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/store got no commit/);
+    expect(result.performed).toHaveLength(1);
+    expect(readLessons(dir, 'tester@agent-notebook')).toEqual([[2, 'tester two']]); // the second lesson was not touched
+  });
+
+  test('aging by earlier moves does not lower the bar: a +1 may not follow a +5 into a full shelf of +1s', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([1, 'o1'], [1, 'o2'], [1, 'o3']));
+    writeShelf(dir, 'code-review@agent-notebook', L([5, 'strong'], [1, 'weak a'], [1, 'weak b']));
+    commitAll(dir);
+    run(dir, { apply: true, cap: 3 });
+    // 'strong' evicts o1 and ages o2 (1 -> 0). Without the run-start floor the +1 movers would now beat the aged o2 and o3.
+    expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort()).toEqual(['o2', 'o3', 'strong']);
+    expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
+  });
+
+  test('a set-but-blank NB_DIR (an unset shell variable) is refused instead of falling back to the live store', () => {
+    const script = join(repoRoot, 'scripts', 'migrate-notebook-slugs.mjs');
+    const r = spawnSync(process.execPath, [script, '--nb', RAW_NB], { encoding: 'utf-8', env: cleanEnv({ NB_DIR: '' }) });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('NB_DIR is set but empty');
+  });
+
   test('a tag that already exists is kept (the anchor of the first run)', () => {
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
@@ -509,5 +555,21 @@ describe('planMigration', () => {
     const before = JSON.stringify([...snap.store]);
     planMigration({ snapshot: snap, aliases, cap: 2 });
     expect(JSON.stringify([...snap.store])).toBe(before);
+  });
+});
+
+describe('store/client guards', () => {
+  test('a relative path to the shim is still recognised as the shim (the NB_GIT_AUTOCOMMIT guard applies)', () => {
+    const rel = relative(process.cwd(), DEFAULT_NB);
+    const client = createNbClient({ dir: '/nonexistent-never-used', nb: rel, env: cleanEnv({ NB_GIT_AUTOCOMMIT: '0' }) });
+    expect(client.autocommitOff).toBe(true);
+  });
+
+  test('a stray .git that is not a repository, inside a real repository, does not count as the store\'s own repo', () => {
+    const parent = store();
+    const dir = join(parent, 'notebooks');
+    mkdirSync(join(dir, '.git'), { recursive: true }); // an empty directory named .git
+    expect(isStoreGitRepo(dir)).toBe(false);
+    expect(isStoreGitRepo(parent)).toBe(true);
   });
 });

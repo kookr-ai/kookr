@@ -72,8 +72,10 @@ import { fileURLToPath } from 'node:url';
 import { classifyShelf, loadSlugAliases, normalizeSlug, projectShelfName } from '../plugin/hooks/lib/notebook-layers.mjs';
 import { applyDescriptions, buildSeed, deriveProjectDescriptions } from './apply-shelf-descriptions.mjs';
 import {
+  blankNbDir,
   commitPaths,
   createNbClient,
+  headSha,
   isStoreGitRepo,
   checkArgv,
   moveCommand,
@@ -83,7 +85,7 @@ import {
   snapshotStore,
   tagStore,
 } from './lib/nb-client.mjs';
-import { cloneStore, applyMove, decideStep, entryId, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
+import { cloneStore, applyMove, decideStep, entryId, fullShelfFloors, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const DEFAULT_TAG = 'pre-slug-migration';
@@ -119,6 +121,7 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
   const invalid = [];
   const steps = [];
   const sim = cloneStore(snapshot.store);
+  const floors = fullShelfFloors(snapshot.store, cap);
 
   for (const name of names) {
     const cls = classifyShelf(name, aliases);
@@ -137,7 +140,7 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
     const ordered = entries.map((e, i) => ({ e, i })).sort((a, b) => b.e.score - a.e.score || a.i - b.i);
     for (const { e } of ordered) {
       const step = { from: name, to: target, id: e.id, score: e.score, text: e.text };
-      const decision = decideStep(sim, step, { cap, forceLow });
+      const decision = decideStep(sim, step, { cap, forceLow, floors });
       step.decision = decision;
       if (decision.action === 'move') applyMove(sim, step.from, step.to, step.id, cap);
       steps.push(step);
@@ -310,11 +313,12 @@ export function runMigration({
 
   // The moves: each one re-reads the two shelves it touches.
   const working = cloneStore(snapshot.store);
+  const floors = fullShelfFloors(snapshot.store, cap);
   let moved = 0;
   for (const step of plan.steps) {
     if (moved >= stopAfter) break;
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow });
+    const d = decideStep(working, step, { cap, forceLow, floors });
     const label = `${step.from} ${step.id} -> ${step.to}`;
     if (d.action === 'skip') {
       if (d.reason === 'already-moved') {
@@ -325,6 +329,7 @@ export function runMigration({
       log(`  SKIP ${d.reason.padEnd(10)} ${label}`);
       continue;
     }
+    const headBefore = client.expectsCommits ? headSha(dir) : null;
     const r = nbMove(client, step.from, step.to, step.id, { note: 'slug migration' });
     if (r.reason === 'error') {
       result.ok = false;
@@ -341,6 +346,12 @@ export function runMigration({
     }
     moved++;
     result.performed.push({ ...step, evicted: r.evicted });
+    if (client.expectsCommits && headSha(dir) === headBefore) {
+      result.ok = false;
+      result.error = `nb moved ${label}, but the store got no commit (a failing git hook, a stale index.lock, or no git identity?). The change is in the working tree only, so the rollback tag would not cover it. Fix the cause and re-run; nothing further was moved.`;
+      log(`  FAILED          ${result.error}`);
+      return result;
+    }
     const predictedEvicted = d.prediction.evicted?.id ?? null;
     const actualEvicted = r.evicted ? entryId(r.evicted.text) : null;
     if (predictedEvicted !== actualEvicted) {
@@ -361,9 +372,16 @@ export function runMigration({
   const candidates = new Set([...legacyNames, ...afterMoves.zeroByte.filter((n) => isLegacyShelf(n, aliases))]);
   for (const shelf of [...candidates].sort()) {
     const outcome = reapZeroByteShelf(dir, shelf);
+    if (outcome === 'locked') log(`  NOT reaped      ${shelf}: nb's store lock stayed busy (is a task running?); re-run later`);
     if (outcome === 'deleted') {
-      commitPaths(dir, [`${shelf}.md`], `slug migration: delete empty legacy shelf ${shelf}`);
+      const committed = commitPaths(dir, [`${shelf}.md`], `slug migration: delete empty legacy shelf ${shelf}`);
       result.reaped.push(shelf);
+      if (committed === 'failed') {
+        result.ok = false;
+        result.error = `deleted the empty file ${shelf}.md but git could not commit the deletion; commit it by hand (git -C "${dir}" add -A && git commit) and re-run`;
+        log(`  FAILED          ${result.error}`);
+        return result;
+      }
       log(`  reaped          ${shelf} (0-byte file deleted and committed)`);
     }
   }
@@ -385,8 +403,10 @@ export function runMigration({
       shelves: seed,
       aliases,
       describe: (shelf, text) => {
+        const before = client.expectsCommits ? headSha(dir) : null;
         const out = client.run(['describe', shelf, text]);
         if (out.status !== 0) throw new Error(out.stderr || `nb describe exited ${out.status}`);
+        if (client.expectsCommits && headSha(dir) === before) throw new Error('the description was written but not committed (git hook, lock or identity problem)');
       },
       log: (line) => {
         if (/^\s+(described|FAILED)/.test(line)) log(line);
@@ -451,10 +471,11 @@ export function main(argv = process.argv.slice(2)) {
     );
     return 0;
   }
-  const flagProblem = checkArgv(argv, {
-    switches: ['--apply', '--force-low', '--help', '-h'],
-    values: ['--map', '--manifest', '--nb', '--tag'],
-  });
+  const flagProblem =
+    checkArgv(argv, {
+      switches: ['--apply', '--force-low', '--help', '-h'],
+      values: ['--map', '--manifest', '--nb', '--tag'],
+    }) ?? blankNbDir();
   if (flagProblem) {
     console.error(`migrate-notebook-slugs: ${flagProblem}. Nothing was changed.`);
     return 2;

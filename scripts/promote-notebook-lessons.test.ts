@@ -13,7 +13,7 @@ import {
   runPromotion,
   tokenSet,
 } from './promote-notebook-lessons.mjs';
-import { RAW_NB, cleanEnv, commitAll, destroy, dirContents, fileExists, git, makeStore, readLessons, writeShelf, type Lesson } from './lib/nb-test-helpers';
+import { RAW_NB, breakCommits, cleanEnv, commitAll, destroy, dirContents, fileExists, git, makeStore, readLessons, writeShelf, type Lesson } from './lib/nb-test-helpers';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const aliases = loadSlugAliases();
@@ -541,6 +541,40 @@ describe('promote: --apply guards', { timeout: 120_000 }, () => {
     const ids = groupsOf(dir, 0.5).groups.map((g: { id: string }) => g.id);
     expect(ids.length).toBeGreaterThanOrEqual(1);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test('a --to-global id that is not a group (and not in --only) is refused: it would silently send the lesson to the domain shelf', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    commitAll(dir);
+    const id = /\[(e-[0-9a-f]{6})\]/.exec(run(dir).text)![1];
+    const before = dirContents(dir);
+    const { result } = run(dir, { apply: true, only: [id], toGlobal: [`${id}x`] });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/not a group id/);
+    expect(dirContents(dir)).toEqual(before);
+    expect(git(dir, 'tag')).toBe('');
+  });
+
+  test('a move that did not become a commit stops the run: nothing further is moved or removed', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    commitAll(dir);
+    breakCommits(dir);
+    const { result } = run(dir, { apply: true, shim: true });
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/store got no commit/);
+    expect(result.removed).toEqual([]);
+    expect(readLessons(dir, 'code-review@repo-one')).toHaveLength(1); // the other copy is still there
+  });
+
+  test('a set-but-blank NB_DIR is refused instead of falling back to the live store', () => {
+    const script = join(repoRoot, 'scripts', 'promote-notebook-lessons.mjs');
+    const r = spawnSync(process.execPath, [script, '--nb', RAW_NB], { encoding: 'utf-8', env: cleanEnv({ NB_DIR: '' }) });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain('NB_DIR is set but empty');
   });
 
   test('the CLI: bad --threshold exits 2, a dry-run exits 0, --apply on a non-git store exits 2', () => {
