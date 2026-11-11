@@ -1083,7 +1083,11 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         const terminalVisible = computeTerminalVisible({ rightPane, layout, activeTab: narrowTab });
         // In split view the tabs choose what the left pane shows; in the tabbed
         // layout they choose the one pane on screen.
-        const selectedTab: NarrowTab = layout === 'split' ? leftPane : narrowTab;
+        const requestedTab: NarrowTab = layout === 'split' ? leftPane : narrowTab;
+        // A remembered GitHub tab outlives the task's GitHub references: when
+        // they go away the tab disappears and the pane already falls back to the
+        // conversation, so highlight Conversation too instead of no tab (#3618).
+        const selectedTab: NarrowTab = requestedTab === 'github' && ghCount === 0 ? 'activity' : requestedTab;
         const leftPaneHidden = tabbedLayout && narrowTab === 'terminal';
         const rightPaneHidden = tabbedLayout && narrowTab !== 'terminal';
         const showRightPaneHeader = !tabbedLayout || activeDiff !== null;
@@ -1158,7 +1162,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
             <div className={`detail-split${rightOnlyMode ? ' detail-split-terminal-focus' : ''}${tabbedLayout ? ' detail-split-tabbed' : ''}`}>
               {/* Left pane: Conversation or GitHub */}
               {!rightOnlyMode && <div className={`detail-split-left${leftPaneHidden ? ' pane-hidden-tab' : ''}`}>
-                {selectedTab === 'github' && ghCount > 0 ? (
+                {selectedTab === 'github' ? (
                   <Suspense fallback={null}>
                     <GitHubPanel prs={gh?.prs ?? []} issues={gh?.issues ?? []} />
                   </Suspense>
