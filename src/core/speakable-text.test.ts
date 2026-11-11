@@ -4,6 +4,7 @@ import {
   FINDING_PHRASES,
   identifierToWords,
   makeSpeakable,
+  settleSpeakable,
   spokenFindingPhrase,
   stripGeneratedPhrases,
 } from './speakable-text.js';
@@ -18,7 +19,7 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['keeps link text only', 'See [the docs](https://example.com/docs/page) now.', 'See the docs now.'],
   ['keeps image alt text', '![diagram](https://x.io/a.png) shows flow.', 'diagram shows flow.'],
   ['strips code fence markers', '```ts\nconst a = 1;\n```', 'const a = 1.'],
-  ['strips blockquote marker', '> quoted line', 'quoted line.'],
+  ['keeps a blockquote marker (a quote is also a comparison)', '> quoted line', '> quoted line.'],
 
   // Dotted product and library names are prose, not files
   ['keeps Next.js in a slash pair', 'Migrated from React/Next.js to Remix.', 'Migrated from React/Next.js to Remix.'],
@@ -55,10 +56,10 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['windows directory', 'Open C:\\Users\\jean\\proj.', 'Open proj.'],
 
   // Hashes
-  ['commit sha after the word commit', 'Pushed commit 3f2a9c1 to main.', 'Pushed commit to main.'],
+  ['commit sha after the word commit keeps the word and says ID', 'Pushed commit 3f2a9c1 to main.', 'Pushed commit ID to main.'],
   ['bare sha', 'Reverted 3f2a9c1d8e to main.', 'Reverted a commit to main.'],
   ['long sha', 'At a1b2c3d4e5f60718293a4b5c6d7e8f9012345678 it broke.', 'At a commit it broke.'],
-  ['uuid dropped', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task failed.'],
+  ['uuid after a label keeps the label and says ID', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task ID failed.'],
 
   // Timestamps
   ['iso timestamp is a set time and its lead word stays', 'Updated at 2025-03-04T10:20:30Z.', 'Updated at a set time.'],
@@ -157,7 +158,7 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['whitespace only', '  \n ', ''],
 
   // Commit hashes: 7-40 hex digits with a digit AND a letter a-f, delimited by non-alphanumerics,
-  // and trusted only after commit/sha/hash/rev/revision (dropped), after a git verb, or at 12+ characters.
+  // and trusted only after commit/sha/hash/rev/revision ("ID"), after a git verb ("a commit"), or at 12+ characters.
   ['hash after a git verb', 'Rebased onto 3f2a9c1 first.', 'Rebased onto a commit first.'],
   ['hash after revert', 'We revert 3f2a9c1 today.', 'We revert a commit today.'],
   ['a long hex token with no git word is only an ID', 'See 3f2a9c1d8e0b now.', 'See an ID now.'],
@@ -165,12 +166,12 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a long hex token in parentheses is an ID', 'Fixed (3f2a9c1d8e0b) today.', 'Fixed (an ID) today.'],
   ['a 24 character ObjectId is an ID, not a commit', 'Deleted 507f1f77bcf86cd799439011 today.', 'Deleted an ID today.'],
   ['a long hex token after a git word is still a commit', 'Reverted 3f2a9c1d8e0b today.', 'Reverted a commit today.'],
-  ['a long hex token after an id label is dropped', 'Request id 3f2a9c1d8e0b failed.', 'Request id failed.'],
+  ['a long hex token after an id label keeps the label and says ID', 'Request id 3f2a9c1d8e0b failed.', 'Request id ID failed.'],
   ['a uuid after a preposition is an ID, not a dangling word', 'Retry for 123e4567-e89b-12d3-a456-426614174000 failed.', 'Retry for an ID failed.'],
   ['a uuid at the start of the text is an ID', '123e4567-e89b-12d3-a456-426614174000 failed.', 'an ID failed.'],
-  ['a uuid after a label colon is an ID', 'Task: 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task: an ID failed.'],
-  ['a uuid after a plain noun is dropped', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task failed.'],
-  ['a uuid after "the" is dropped', 'The 123e4567-e89b-12d3-a456-426614174000 task failed.', 'The task failed.'],
+  ['a uuid after a label colon says ID', 'Task: 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task: ID failed.'],
+  ['a uuid after a label noun says ID', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task ID failed.'],
+  ['a uuid after "the" says ID, not "an ID"', 'The 123e4567-e89b-12d3-a456-426614174000 task failed.', 'The ID task failed.'],
   ['a uuid before "and" is an ID', 'Fixed 123e4567-e89b-12d3-a456-426614174000 and 123e4567-e89b-12d3-a456-426614174000.', 'Fixed an ID and an ID.'],
   ['a uuid bullet list keeps one ID per item', 'Failed tasks:\n- 123e4567-e89b-12d3-a456-426614174000\n- 123e4567-e89b-12d3-a456-426614174000', 'Failed tasks: an ID. an ID.'],
   ['a sha256 digest is an ID', 'Digest sha256:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678a1b2c3d4e5f60718293a4b5c matched.', 'Digest an ID matched.'],
@@ -299,10 +300,10 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['an unpaired backtick stays when the lines are joined', 'a `b\nc d', 'a `b c d.'],
 
   // Line-start markers.
-  ['strips a numbered marker', '1. First step\n2. Second step', 'First step. Second step.'],
+  ['keeps numbered markers (a number is also a count)', '1. First step\n2. Second step', '1. First step 2. Second step.'],
   ['strips star, plus and dot bullets', '* one\n+ two\n• three', 'one. two. three.'],
   ['strips an h1 before an upper-case word', '# Summary\nDone', 'Summary. Done.'],
-  ['strips a stacked quote and bullet', '> - quoted point', 'quoted point.'],
+  ['keeps a quote marker in front of a bullet', '> - quoted point', '> - quoted point.'],
   ['keeps a hash glued to a word', '#hashtag and #12 failed', '#hashtag and number 12 failed.'],
   ['keeps a checkbox bullet', '- [x] done', '- [x] done.'],
   ['keeps a flag at the line start', '-rf and --force', '-rf and --force.'],
@@ -315,7 +316,9 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a line ending in a period ends the sentence', 'Line one.\nLine two', 'Line one. Line two.'],
   ['a line ending in a colon keeps it', 'Changes:\nfixed it', 'Changes: fixed it.'],
   ['a blank line ends a sentence', 'First paragraph\n\nSecond paragraph', 'First paragraph. Second paragraph.'],
-  ['a list ends the sentence before it', 'Intro\n- a\n- b', 'Intro. a. b.'],
+  ['a list after a line that ends a sentence ends the sentence before it', 'Intro.\n- a\n- b', 'Intro. a. b.'],
+  ['a list after a lead-in colon keeps the colon', 'Intro:\n- a\n- b', 'Intro: a. b.'],
+  ['a list after a line that stops mid-sentence is that sentence wrapping, so nothing is stripped', 'Intro\n- a\n- b', 'Intro - a - b.'],
   ['a trailing semicolon becomes the final period', 'const a = 1;', 'const a = 1.'],
   ['keeps a double colon at the end', 'std::', 'std::.'],
   ['trailing ellipsis becomes a period', 'Still thinking…', 'Still thinking.'],
@@ -326,10 +329,10 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a lone ellipsis is left alone', '...', '...'],
   ['an ellipsis after a slash is left alone', 'Open src/..', 'Open src/..'],
 
-  // Dropped tokens (a UUID, a hash after "commit") leave no gap and no empty pair behind.
-  ['drops a parenthesised uuid', 'Task (123e4567-e89b-12d3-a456-426614174000) failed.', 'Task failed.'],
-  ['drops a bracketed uuid', 'Task [123e4567-e89b-12d3-a456-426614174000] failed.', 'Task failed.'],
-  ['drops a hash after the word commit before a period', 'Pushed commit 3f2a9c1.', 'Pushed commit.'],
+  // An identifier is never dropped: it keeps its brackets and its label, and is "ID" or "an ID".
+  ['a parenthesised uuid keeps its brackets and says ID', 'Task (123e4567-e89b-12d3-a456-426614174000) failed.', 'Task (ID) failed.'],
+  ['a bracketed uuid keeps its brackets and says ID', 'Task [123e4567-e89b-12d3-a456-426614174000] failed.', 'Task [ID] failed.'],
+  ['a hash after the word commit before a period says ID', 'Pushed commit 3f2a9c1.', 'Pushed commit ID.'],
 
   // A timestamp is NEVER dropped. It becomes "a set time" ("A set time" where it opens a sentence) in every
   // position, and every word, label, colon, bracket and mark around it stays exactly as written. Dropping a
@@ -546,7 +549,7 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
     'Summary. Fixed the login bug in session.ts. Added 3 tests. Check, Result. lint, ✅.',
   ],
   ['table with alignment markers and several rows', '| Name | Count |\n|:---|---:|\n| a | 3 |\n| b | 4 |', 'Name, Count. a, 3. b, 4.'],
-  ['table empty cells are skipped', '| a |  | c |\n|---|---|---|\n| 1 |  | 3 |', 'a, c. 1, 3.'],
+  ['an empty table cell is blank, not dropped', '| a |  | c |\n|---|---|---|\n| 1 |  | 3 |', 'a, blank, c. 1, blank, 3.'],
   ['table after an intro line', 'Results:\n| Check | Result |\n| --- | --- |\n| lint | ok |', 'Results: Check, Result. lint, ok.'],
   ['an escaped pipe stays inside its cell', '| a | b |\n|---|---|\n| 1 \\| 2 | 3 |', 'a, b. 1 | 2, 3.'],
   ['table cells lose their emphasis and code marks', '| **Check** | `Result` |\n|---|---|\n| _lint_ | ok |', 'Check, Result. lint, ok.'],
@@ -558,6 +561,88 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a pipe line without a separator row stays', '| a | b |', '| a | b |.'],
   ['two pipe lines without a separator row stay', '| a | b |\n| c | d |', '| a | b | | c | d |.'],
   ['a pipe-or in prose stays', 'Use x || y, not a | b.', 'Use x || y, not a | b.'],
+
+  // An identifier is NEVER dropped (review round 6): dropping it changes a negated, "only" or "except" sentence.
+  ['a negated agent id keeps the word agent', 'No agent 123e4567-e89b-12d3-a456-426614174000 is running.', 'No agent ID is running.'],
+  ['a missing commit keeps the word commit', 'There is no commit 3f2a9c1d on the release branch.', 'There is no commit ID on the release branch.'],
+  ['an exception keeps its id', 'Every task except 123e4567-e89b-12d3-a456-426614174000 passed.', 'Every task except an ID passed.'],
+  ['a missing request id keeps both words', 'No request id 3f2a9c1d4e5b6a7 in the logs.', 'No request id ID in the logs.'],
+  [
+    'two ids in one sentence both stay',
+    'Kill 123e4567-e89b-12d3-a456-426614174000 but keep 123e4567-e89b-12d3-a456-426614174000.',
+    'Kill an ID but keep an ID.',
+  ],
+  ['a commit that main lacks keeps the word commit', 'Main does not contain commit 3f2a9c1.', 'Main does not contain commit ID.'],
+  ['a labelled hash after a colon keeps the label', 'Commit: 3f2a9c1 is not on main.', 'Commit: ID is not on main.'],
+  ['a long hex id after "only" is an ID', 'Delete only 3f2a9c1d8e0b.', 'Delete only an ID.'],
+  ['a uuid at the start of a negated sentence is an ID', '123e4567-e89b-12d3-a456-426614174000 is not running.', 'an ID is not running.'],
+  ['a hash after a git verb is still a commit', 'Never revert 3f2a9c1 on main.', 'Never revert a commit on main.'],
+  ['a short hex word after a plain label is left as written', 'No task deadbeef12 ran.', 'No task deadbeef12 ran.'],
+
+  // Numbered and quote markers are never stripped; bullets and headings only after a sentence end, a blank line or another marker.
+  ['a wrapped limit keeps its number', 'I will keep at most\n2. Older backups get deleted.', 'I will keep at most 2. Older backups get deleted.'],
+  [
+    'a wrapped comparison keeps its angle bracket',
+    'Fail the job if the error count\n> limit. Otherwise continue.',
+    'Fail the job if the error count > limit. Otherwise continue.',
+  ],
+  ['a wrapped number before a heading mark keeps both', '3\n## Results', '3 ## Results.'],
+  ['a wrapped number before a bullet keeps both', '42\n- tests failed', '42 - tests failed.'],
+  ['a task named with a number keeps it', '12. working.', '12. working.'],
+  ['a quote mark before a timestamp is not lost', '> 2025-11-10T10:00:00Z started', '> a set time started.'],
+  ['a quote mark before an id is not lost', '> 123e4567-e89b-12d3-a456-426614174000 failed', '> an ID failed.'],
+  ['a bullet after a sentence end is stripped', 'Done.\n- tests failed', 'Done. tests failed.'],
+  ['a heading after a blank line is stripped', 'Done\n\n## Results\nall green', 'Done. Results. all green.'],
+  ['a heading after a heading is stripped', '## A\n## B', 'A. B.'],
+  ['a bullet after a lead-in semicolon is stripped', 'Steps;\n- first', 'Steps. first.'],
+  ['a first line that is only a marker joins the next one and is stripped in the same pass', '-\nfixed it', 'fixed it.'],
+  ['stacked bare markers on the first line', '- -\nx', 'x.'],
+  ['a bare heading mark on the first line', '#\nResults', 'Results.'],
+  ['a code span that holds a bullet at a line start is a bullet', '`- x` foo', 'x foo.'],
+  ['a bullet before a hex id with no letter first stays a dash', 'Failed:\n- 3f2a9c1d8e0b passed.', 'Failed: - an ID passed.'],
+  ['a bullet before a uuid is stripped', 'Failed:\n- 123e4567-e89b-12d3-a456-426614174000 passed.', 'Failed: an ID passed.'],
+
+  // Tables: an empty cell is spoken, not dropped.
+  ['an empty table cell is blank', '| suite | passed | failed |\n|---|---|---|\n| e2e | | 3 |', 'suite, passed, failed. e2e, blank, 3.'],
+  ['an all-empty table row is blank cells', '| a | b |\n|---|---|\n| | |', 'a, b. blank, blank.'],
+
+  // Links and images: the text stays; with no text they are named, never vanish.
+  ['an image with no alt text is an image', 'Do not use ![](https://x.io/y.png) here.', 'Do not use an image here.'],
+  ['a link with no text is a link', 'See [](https://x.io) now.', 'See a link now.'],
+  ['a link whose text is blank is a link', 'See [ ](https://x.io) now.', 'See a link now.'],
+  ['a call after an index is code, not a link, and keeps its argument', 'Do not call handlers[0](event).', 'Do not call handlers[0](event).'],
+  ['an exclamation glued to a bracket is prose, not an image', 'Stop![x](u)', 'Stop![x](u).'],
+  ['a link right after a link is still a link', 'See ([a](u) [b](v)).', 'See (a b).'],
+  ['a link with a title is left as written, because the title is words', 'Open [docs](https://x.io/a "Docs home") now', 'Open [docs](https://x.io/a "Docs home") now.'],
+  ['a link inside link text resolves in one pass', 'See [[a](u)](v) now', 'See a now.'],
+  ['an image inside an image alt resolves in one pass', 'See ![![a](u)](v) now', 'See a now.'],
+  ['a code fence info string needs a letter, so a number line is text', '```42', '```42.'],
+  ['a code fence with a language tag is dropped', 'x\n```ts\ncode\n```', 'x. code.'],
+
+  // The file name left by a path is finished in the same pass.
+  ['a path that ends in a snake_case name is spoken as words', 'Open /a/b/needs_input now.', 'Open needs input now.'],
+  ['a path that ends in a hex id is an ID', 'Open /a/b/3f2a9c1d8e0b now.', 'Open an ID now.'],
+  ['a path with no letter or digit in its last segment is left alone', 'Open /a/- now.', 'Open /a/- now.'],
+
+  // Nested markup settles in one pass.
+  ['nested emphasis', 'A **bold *and italic* text** and *(*x*)*', 'A bold and italic text and (x).'],
+  ['nested code spans of different widths', 'a ``b `c` d`` e', 'a b c d e.'],
+  ['mixed star and underscore markers around one word', 'say *_x_* now', 'say x now.'],
+  ['nested placeholder brackets', 'Key [[[redacted]]] leaked', 'Key redacted leaked.'],
+  ['an unbalanced placeholder bracket keeps its extra bracket', 'Key [[redacted] leaked', 'Key [redacted leaked.'],
+
+  // Code is literal, and a span the token rewrite will turn into words is not a "symbol only" span.
+  ['a star inside a kept code span closes no emphasis', '*a ` ->* `', '*a ` ->* `.'],
+  ['a code span around a spaced arrow is spoken as the word', 'Go from a ` -> ` b now', 'Go from a to b now.'],
+  ['a code span around an arrow that wraps over lines settles in the same way', 'x `\n->\n` y', 'x to y.'],
+  ['a code span around a glued arrow keeps its backticks', 'Use `->` and `&` here', 'Use `->` and `&` here.'],
+  ['a link destination with a space in it is left as written', '[a](see (this) note) and [b](u_(x))', '[a](see (this) note) and b.'],
+  ['a marker that only becomes strippable once the token is rewritten is stripped in the same pass', '- @scope/pkg/x.ts and more', 'x.ts and more.'],
+  ['a dash before a hex id that becomes "an ID" is stripped in the same pass', '- 3f2a9c1d8e0b failed', 'an ID failed.'],
+  ['a marker followed by a no-break space is a marker', '-\u00a0fixed it', 'fixed it.'],
+  ['a marker followed by a no-break space is a marker on a later line too', 'Done.\n-\u00a0fixed it', 'Done. fixed it.'],
+  ['a bullet whose text wraps ends the run, so the next bullet stays', '- a long\n  item\n- b', 'a long. item - b.'],
+  ['a list of short hashes after a colon keeps its dashes', 'Commits:\n- 3f2a9c1\n- abc1234', 'Commits: - 3f2a9c1 - abc1234.'],
 ];
 
 // --- oracle begin ---
@@ -800,10 +885,16 @@ const TEMPLATES: ReadonlyArray<(p: Picker) => Part[]> = [
   (p) => ['Fixed ', p.plain('word'), gap(','), ' then ', p.plain('word'), ' ok', gap('.')],
   (p) => ['Is ', p.plain('word'), ' done', gap('?')],
   (p) => ['Retry ', p.plain('word'), wrap, 'on ', p.plain('ref'), wrap, 'and ', p.plain('number'), ' more.'],
-  (p) => ['Changes made', item('- '), 'fixed ', p.plain('file'), item('- '), 'added ', p.plain('word'), '.'],
+  // A list is stripped after a lead-in that ends in a colon; after a line that stops mid-sentence it is that
+  // sentence wrapping onto a dash, and every dash stays.
+  (p) => ['Changes made:', { raw: '\n- ', spoken: ' ' }, 'fixed ', p.plain('file'), item('- '), 'added ', p.plain('word'), '.'],
+  (p) => ['Changes made', { raw: '\n- ', spoken: ' - ' }, 'fixed ', p.plain('file'), { raw: '\n- ', spoken: ' - ' }, 'added ', p.plain('word'), '.'],
   (p) => [marker('## '), 'Summary', item(''), 'All good with ', p.plain('file'), '.'],
-  (p) => [marker('1. '), 'Run ', p.plain('flag'), item('2. '), 'Check ', p.plain('ref')],
-  (p) => [marker('> '), 'Quoted ', p.plain('word'), ' here.'],
+  // Numbers and quote marks are never markers: a wrapped number or comparison is part of the sentence.
+  (p) => ['1. Run ', p.plain('flag'), wrap, '2. Check ', p.plain('ref')],
+  (p) => ['> Quoted ', p.plain('word'), ' here.'],
+  (p) => ['At most', wrap, '2. Older ', p.plain('word'), ' get deleted.'],
+  (p) => ['Fail if the count', wrap, '> ', p.plain('number'), '. Otherwise go on.'],
   (p) => ['First ', p.plain('word'), ' done', { raw: '\n\n', spoken: '. ' }, 'Second ', p.plain('word'), ' next.'],
   (p) => ['Changes:', wrap, 'fixed ', p.plain('file'), '.'],
   (p) => ['Task is running ', p.plain('word')],
@@ -876,6 +967,197 @@ function findWordLoss(speak: (text: string) => string, sentence: Pick<Sentence, 
 }
 // --- oracle end ---
 
+// --- identifier oracle begin ---
+// A second forward-built oracle, for the rule "an identifier is never dropped". Every identifier
+// (UUID, long hex id, short hash, #123, path, URL, timestamp) is placed in EVERY position: first in
+// the text, first after a sentence end, in the middle, last, inside brackets or quotes, after a
+// bullet, and after a line break; and next to every kind of word that can come before it: a label
+// (agent, task, commit, ...), a git verb (at, on, revert), a determiner, a negation (not, never,
+// except, only, no, without, ...) or any other word. The oracle states the ALLOWED spoken form for
+// each pair of (identifier kind, word before it), and findWordLoss compares word for word, so a
+// dropped identifier is a missing word. A separate check requires that the count of content words
+// (tokens with a letter or a digit) never goes down.
+const ID_BEFORE = {
+  filler: ['deploy', 'backup', 'files', 'tests', 'server', 'lock', 'queue', 'ran', 'failed', 'passed', 'was', 'is', 'had', 'yet', 'it', 'we', 'Ana', 'CI', 'delete', 'merge', 'green', 'stuck', 'fine', 'then', 'again', 'kept'],
+  negation: ['not', 'never', 'without', 'except', 'only', 'no', 'nothing', 'neither', 'nor', 'unless', 'but', 'instead', 'cannot', 'than', 'and', 'or', 'for', 'by', 'from', 'to', 'with', 'vs'],
+  labelId: ['agent', 'task', 'session', 'request', 'job', 'run', 'build', 'container', 'trace', 'id', 'uuid'],
+  labelGit: ['commit', 'sha', 'hash', 'rev', 'revision'],
+  verbGit: ['at', 'on', 'onto', 'revert'],
+  determiner: ['the', 'this', 'that', 'its', 'their'],
+};
+type IdBefore = keyof typeof ID_BEFORE;
+/** What stands before an identifier: a word of one of the kinds above, nothing (a text or sentence start), or a dash that stayed. */
+type IdContext = IdBefore | 'start' | 'dash';
+const ID_BEFORE_KINDS = Object.keys(ID_BEFORE) as IdBefore[];
+/** After these the id is just "ID": the word stays, and "an ID" would stutter. */
+const isLabelled = (context: IdContext): boolean => context === 'labelId' || context === 'labelGit' || context === 'determiner';
+
+interface IdKind {
+  name: string;
+  samples: readonly string[];
+  say(sample: string, context: IdContext, capital: boolean): string;
+}
+const spokenByRaw = (pairs: readonly Pair[]): Map<string, string> => new Map(pairs.map(([raw, spoken]) => [raw, spoken]));
+const PATH_SPOKEN = spokenByRaw(REWRITES.path);
+const URL_SPOKEN = spokenByRaw(REWRITES.url);
+const ID_KINDS: readonly IdKind[] = [
+  {
+    name: 'uuid',
+    samples: ['123e4567-e89b-12d3-a456-426614174000', 'F47AC10B-58CC-4372-A567-0E02B2C3D479', 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'],
+    say: (_sample, context) => (isLabelled(context) ? 'ID' : 'an ID'),
+  },
+  {
+    name: 'long hex id',
+    samples: ['3f2a9c1d8e0b', 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', '507f1f77bcf86cd799439011', '3f2a9c1d4e5b6a7', 'deadbeef1234567890ab'],
+    say: (_sample, context) => {
+      if (context === 'verbGit') return 'a commit';
+      return isLabelled(context) ? 'ID' : 'an ID';
+    },
+  },
+  {
+    // 7 to 11 hex characters are trusted only after a git word: anywhere else the word is left as written.
+    name: 'short hash',
+    samples: ['3f2a9c1', 'abc1234', '3f2a9c1d', 'f00dcafe1', '1a2b3c4d5e'],
+    say: (sample, context) => {
+      if (context === 'labelGit') return 'ID';
+      return context === 'verbGit' ? 'a commit' : sample;
+    },
+  },
+  { name: 'pull request number', samples: ['#123', '#7', '#3605'], say: (sample) => `number ${sample.slice(1)}` },
+  { name: 'path', samples: [...PATH_SPOKEN.keys()], say: (sample) => PATH_SPOKEN.get(sample) as string },
+  { name: 'url', samples: [...URL_SPOKEN.keys()], say: (sample) => URL_SPOKEN.get(sample) as string },
+  {
+    name: 'timestamp',
+    samples: ['2025-11-10T10:00:00Z', '2025-11-11T11:30:00.000+01:00', '2026-01-02T03:04:05.678-0530', '2025-03-04T10:20:30'],
+    say: (_sample, _context, capital) => (capital ? 'A set time' : 'a set time'),
+  },
+];
+/** A sample that a bullet is stripped in front of: it starts with a letter, a UUID, #N, a path start or a timestamp. */
+const bulletStrippable = (sample: string): boolean => /^(?:[A-Za-z]|[0-9a-fA-F]{8}-|#\d|[/~.]|\d{4}-\d{2}-\d{2}T)/.test(sample);
+
+interface IdSentence {
+  raw: string;
+  spoken: string;
+  /** The positions this sentence put an identifier in, for the coverage floor. */
+  positions: Set<string>;
+  kinds: Set<string>;
+}
+
+const capitalised = (word: string): string => word[0].toUpperCase() + word.slice(1);
+const ID_BRACKETS: ReadonlyArray<readonly [string, string]> = [['', ''], ['', ''], ['', ''], ['', ''], ['(', ')'], ['[', ']'], ['"', '"'], ['<', '>']];
+const ID_PLAIN_MARKS = ['', '', '', '', ',', ':', ';', '.', '!', '?'];
+const ID_LAST_MARKS = ['', '', '.', '!', '?'];
+const ID_TAILS = ['passed.', 'was not running.', 'never ran.', 'is gone.', 'failed.', 'is only a draft.'];
+const SENTENCE_END_MARK = /[.!?]$/;
+
+function generateIdSentence(random: () => number): IdSentence {
+  const choose = <T,>(items: readonly T[]): T => items[Math.floor(random() * items.length)];
+  const positions = new Set<string>();
+  const kinds = new Set<string>();
+
+  const pickIdentifier = (context: IdContext, capital: boolean, bullet: boolean): { sample: string; spoken: string } => {
+    const kind = choose(ID_KINDS);
+    kinds.add(kind.name);
+    const sample = choose(bullet ? kind.samples.filter(bulletStrippable) : kind.samples);
+    return { sample, spoken: kind.say(sample, context, capital) };
+  };
+
+  if (random() < 0.3) {
+    // A list: a lead-in line, then one to three bullets, each starting with an identifier.
+    const leadCategory = choose<IdBefore>(['filler', 'filler', 'labelId', 'labelGit']);
+    const leadMark = choose([':', ':', ':', '.', '']);
+    let raw = `${capitalised(choose(ID_BEFORE.filler))} ${choose(ID_BEFORE[leadCategory])}${leadMark}`;
+    let spoken = raw;
+    const items = 1 + Math.floor(random() * 3);
+    for (let item = 0; item < items; item += 1) {
+      // The first bullet sees the lead-in's last word (after a colon), a sentence start (after a period), or the dash
+      // that stays (no mark: its line follows a line that stops mid-sentence). Every later bullet follows a line that
+      // ends in a period, so it is stripped and sees a sentence start.
+      let context: IdContext = 'start';
+      let dashStays = false;
+      if (item === 0) {
+        if (leadMark === ':') context = leadCategory;
+        else if (leadMark === '') { context = 'dash'; dashStays = true; }
+      }
+      const id = pickIdentifier(context, context === 'start', true);
+      const tail = choose(ID_TAILS);
+      raw += `\n- ${id.sample} ${tail}`;
+      spoken += `${dashStays ? ' - ' : ' '}${id.spoken} ${tail}`;
+      positions.add(dashStays ? 'bullet kept' : 'bullet stripped');
+      if (context === 'start') positions.add('after sentence end');
+    }
+    return { raw, spoken, positions, kinds };
+  }
+
+  let raw = '';
+  let spoken = '';
+  // True at the start of the text and right after a unit that ends a sentence.
+  let atBoundary = true;
+  let atTextStart = true;
+  const append = (rawPiece: string, spokenPiece: string, separator: string): void => {
+    raw += (raw === '' ? '' : separator) + rawPiece;
+    spoken += (spoken === '' ? '' : ' ') + spokenPiece;
+  };
+  const unitCount = 3 + Math.floor(random() * 7);
+  for (let unit = 0; unit < unitCount; unit += 1) {
+    const last = unit === unitCount - 1;
+    const separator = random() < 0.15 ? '\n' : ' ';
+    if (random() < 0.45) {
+      const mark = choose(last ? ID_LAST_MARKS : ID_PLAIN_MARKS);
+      const [open, close] = choose(ID_BRACKETS);
+      // Without a word right before it an identifier is only possible where there is no "word before": a text or sentence start.
+      const withWord = !atBoundary || random() < 0.4;
+      if (withWord) {
+        const category = choose(ID_BEFORE_KINDS);
+        const word = random() < 0.15 ? capitalised(choose(ID_BEFORE[category])) : choose(ID_BEFORE[category]);
+        const id = pickIdentifier(category, false, false);
+        const bracketOnWord = open !== '' && random() < 0.5;
+        const wrapped = random() < 0.25;
+        append(`${bracketOnWord ? open : ''}${word}`, `${bracketOnWord ? open : ''}${word}`, separator);
+        const inner = bracketOnWord ? '' : open;
+        append(`${inner}${id.sample}${close}${mark}`, `${inner}${id.spoken}${close}${mark}`, wrapped ? '\n' : ' ');
+        positions.add(last ? 'end' : 'middle');
+        if (wrapped) positions.add('wrapped');
+        if (category === 'negation') positions.add('negated');
+      } else {
+        const id = pickIdentifier('start', true, false);
+        append(`${open}${id.sample}${close}${mark}`, `${open}${id.spoken}${close}${mark}`, separator);
+        positions.add(atTextStart ? 'text start' : 'after sentence end');
+        if (separator === '\n' && !atTextStart) positions.add('wrapped');
+      }
+      if (open !== '') positions.add('bracketed');
+      atBoundary = SENTENCE_END_MARK.test(mark);
+    } else {
+      const base = choose([...ID_BEFORE.filler, ...ID_BEFORE.negation]);
+      const word = atBoundary && random() < 0.5 ? capitalised(base) : base;
+      const mark = choose(last ? ID_LAST_MARKS : ID_PLAIN_MARKS);
+      append(`${word}${mark}`, `${word}${mark}`, separator);
+      atBoundary = SENTENCE_END_MARK.test(mark);
+    }
+    atTextStart = false;
+  }
+  return { raw, spoken, positions, kinds };
+}
+
+/** Whitespace-separated tokens that hold a letter or a digit: the words a listener would hear as content. */
+function contentWordCount(text: string): number {
+  return wordsOf(text).filter((word) => /[\p{L}\p{N}]/u.test(word)).length;
+}
+
+/**
+ * The input with the parts that are markup BY DESIGN taken out (see the list at the top of speakable-text.ts):
+ * code-fence lines (the language tag goes with the fence) and link destinations. What is left must all be
+ * spoken, so its content word count is a floor for the output's.
+ */
+function withoutMarkup(input: string): string {
+  return input
+    .split('\n')
+    .filter((line) => !/^[ \t]*(?:`{3,}|~{3,})(?:[A-Za-z][\w+#-]*)?[ \t]*$/.test(line))
+    .join('\n')
+    .replace(/\]\((?:[^()\s]|\([^()\s]*\))*\)/g, ']');
+}
+// --- identifier oracle end ---
+
 describe('makeSpeakable', () => {
   test.each(CASES)('%s', (_label, input, expected) => {
     expect(makeSpeakable(input)).toBe(expected);
@@ -897,7 +1179,7 @@ describe('makeSpeakable', () => {
     }
   });
 
-  test('stays idempotent, never throws and never glues a word on 20,000 pseudo-random mixes', () => {
+  test('stays idempotent, settles in three passes, never throws, never glues a word and loses no content word on 20,000 pseudo-random mixes', () => {
     const vocab = [
       'a', 'Task', 'needs_input', '#12', '/a/b/c.ts', '../x', '...', '\u2026', '->', '&', '&&', '**', '`', '- ', '\n',
       '# ', '## ', '1. ', '3f2a9c1', '3f2a9c1d8e0b', 'commit', 'revert', 'onto', '10dec2025', 'https://github.com/o/r/pull/9.',
@@ -911,6 +1193,9 @@ describe('makeSpeakable', () => {
       'as', 'of', 'since', 'until', 'between', 'and', '-', '–', '| a | b |', '|---|---|', '|', 'd3.js/three.js', 'src/index.js',
       'a/b.json:12', 'src/a.ts#L4', 'react/next.js', 'sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90', '3f2a9c1d8e0b', '- /x/y.ts',
       '- #12', 'for', 'expires', ':', ';',
+      // Wrapped lines, markers on their own, nesting and identifiers next to negations.
+      '\n- ', '\n## ', '\n> ', '\n2. ', '3\n', '42\n', '-\n', '#\n', '[a](u)', '![](u)', '[redacted]', '[[redacted]]', '](', '![',
+      'No ', 'not ', 'except ', 'agent ', 'commit ', '``', '```ts\n', '*_', '_*', '\n\n', '| |', '\n|---|---|\n',
     ];
     // Tokens that start with punctuation and must never end up glued to the word before them.
     const glueSensitive = ['.env', '.gitignore', '.DS_Store', '.314', '.5', ':)', ':tada:', ',x', ';)', '--force', '-v', '$5', '@user'];
@@ -929,6 +1214,11 @@ describe('makeSpeakable', () => {
       seen.add(input);
       const once = makeSpeakable(input);
       if (makeSpeakable(once) !== once) problems.push(`not idempotent: ${JSON.stringify(input)} => ${JSON.stringify(once)}`);
+      const settled = settleSpeakable(input);
+      if (!settled.settled || settled.passes > 3) problems.push(`passes ${settled.passes}: ${JSON.stringify(input)}`);
+      if (contentWordCount(once) < contentWordCount(withoutMarkup(input))) {
+        problems.push(`lost a content word: ${JSON.stringify(input)} => ${JSON.stringify(once)}`);
+      }
       for (const token of glueSensitive) {
         // A token may only end up attached to a word if it was already attached to something in the input.
         const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -1238,6 +1528,275 @@ describe('makeSpeakable never loses or glues words', () => {
         const input = `We saw ${raw} here today.`;
         expect(makeSpeakable(input), `${kind}: ${raw}`).toBe(`We saw ${spoken} here today.`);
       }
+    }
+  });
+});
+
+describe('makeSpeakable never drops an identifier', () => {
+  const IDENTIFIER_SEEDS = [0x1d5eed, 0x2b0b1e, 0x3c0ffee];
+
+  test.each(IDENTIFIER_SEEDS)(
+    'keeps every word of 7,000 sentences with identifiers in every position and next to every kind of word (seed %#)',
+    (seed) => {
+      const random = mulberry32(seed);
+      const problems: string[] = [];
+      const seenRaw = new Set<string>();
+      const coverage = new Map<string, number>();
+      const kinds = new Map<string, number>();
+      for (let i = 0; i < 7000; i += 1) {
+        const sentence = generateIdSentence(random);
+        seenRaw.add(sentence.raw);
+        for (const position of sentence.positions) coverage.set(position, (coverage.get(position) ?? 0) + 1);
+        for (const kind of sentence.kinds) kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
+        const loss = findWordLoss(makeSpeakable, sentence);
+        if (loss) problems.push(loss);
+        const output = makeSpeakable(sentence.raw);
+        if (contentWordCount(output) < contentWordCount(sentence.raw)) {
+          problems.push(`fewer content words: ${JSON.stringify(sentence.raw)} => ${JSON.stringify(output)}`);
+        }
+        if (makeSpeakable(output) !== output) problems.push(`not idempotent: ${JSON.stringify(sentence.raw)} => ${JSON.stringify(output)}`);
+        if (settleSpeakable(sentence.raw).passes > 3) problems.push(`more than three passes: ${JSON.stringify(sentence.raw)}`);
+        if (problems.length >= 5) break;
+      }
+      expect(problems.slice(0, 5)).toEqual([]);
+      expect(seenRaw.size).toBeGreaterThan(6500);
+      for (const position of ['text start', 'after sentence end', 'middle', 'end', 'bracketed', 'wrapped', 'bullet stripped', 'bullet kept', 'negated']) {
+        expect(coverage.get(position) ?? 0, position).toBeGreaterThan(300);
+      }
+      for (const kind of ID_KINDS) expect(kinds.get(kind.name) ?? 0, kind.name).toBeGreaterThan(1000);
+    },
+    60_000,
+  );
+
+  test('the identifier oracle flags every dropped id the reviewers found, and accepts what the module says', () => {
+    const U = '123e4567-e89b-12d3-a456-426614174000';
+    const findings: Array<[raw: string, spoken: string, wrong: string]> = [
+      [`No agent ${U} is running.`, 'No agent ID is running.', 'No agent is running.'],
+      ['There is no commit 3f2a9c1d on the release branch.', 'There is no commit ID on the release branch.', 'There is no commit on the release branch.'],
+      [`Every task except ${U} passed.`, 'Every task except an ID passed.', 'Every task except passed.'],
+      ['No request id 3f2a9c1d4e5b6a7 in the logs.', 'No request id ID in the logs.', 'No request id in the logs.'],
+      [`Kill ${U} but keep ${U}.`, 'Kill an ID but keep an ID.', 'Kill but keep.'],
+      ['Main does not contain commit 3f2a9c1.', 'Main does not contain commit ID.', 'Main does not contain commit.'],
+    ];
+    for (const [raw, spoken, wrong] of findings) {
+      expect(findWordLoss(() => wrong, { raw, spoken }), raw).not.toBeNull();
+      expect(contentWordCount(wrong), raw).toBeLessThan(contentWordCount(raw));
+      expect(findWordLoss(makeSpeakable, { raw, spoken }), raw).toBeNull();
+      expect(contentWordCount(makeSpeakable(raw)), raw).toBeGreaterThanOrEqual(contentWordCount(raw));
+    }
+  });
+});
+
+describe('makeSpeakable settles every rewrite in one pass', () => {
+  const sentenceOf = (...parts: string[]): string => `${parts.join('')}.`;
+
+  /** Run `input`, require the exact output and a quick, settled run of at most three passes. */
+  function settlesTo(input: string, expected: string): void {
+    const start = performance.now();
+    const result = settleSpeakable(input);
+    const elapsed = performance.now() - start;
+    expect(result.text.length).toBeLessThan(2100);
+    expect(result.text).toBe(expected);
+    expect(result.settled).toBe(true);
+    expect(result.passes).toBeLessThanOrEqual(3);
+    expect(elapsed).toBeLessThan(100);
+    expect(makeSpeakable(result.text)).toBe(result.text);
+  }
+
+  test('990 nested placeholder brackets', () => {
+    settlesTo(`${'['.repeat(990)}redacted${']'.repeat(990)}`, 'redacted.');
+    settlesTo(`Key ${'['.repeat(990)}redacted${']'.repeat(990)} leaked`, 'Key redacted leaked.');
+  });
+
+  test('1,000 nested emphasis markers', () => {
+    settlesTo(`${'*_'.repeat(400)}x${'_*'.repeat(400)}`, 'x.');
+    settlesTo(`${'*a '.repeat(300)}x${' b*'.repeat(300)}`, sentenceOf('a '.repeat(300), 'x', ' b'.repeat(300)));
+    settlesTo(`${'_a '.repeat(300)}x${' b_'.repeat(300)}`, sentenceOf('a '.repeat(300), 'x', ' b'.repeat(300)));
+    settlesTo(`${'**a '.repeat(200)}x${' b**'.repeat(200)}`, sentenceOf('a '.repeat(200), 'x', ' b'.repeat(200)));
+    settlesTo(`${'__a '.repeat(200)}x${' b__'.repeat(200)}`, sentenceOf('a '.repeat(200), 'x', ' b'.repeat(200)));
+  });
+
+  test('1,000 nested links and images', () => {
+    settlesTo(`${'['.repeat(300)}x${'](u)'.repeat(300)}`, 'x.');
+    settlesTo(`${'!['.repeat(300)}x${'](u)'.repeat(300)}`, 'x.');
+    settlesTo(`${'[a '.repeat(250)}x${'](u)'.repeat(250)}`, sentenceOf('a '.repeat(250), 'x'));
+    // A `[` right after a letter is code or prose, not a link: dropping the "(event)" would delete a word.
+    settlesTo('Do not call handlers[0](event) or items[i](args).', 'Do not call handlers[0](event) or items[i](args).');
+    // Open brackets with no link around them are plain text, however many there are.
+    const unclosed = '[]('.repeat(600);
+    settlesTo(unclosed, `${unclosed}.`);
+  });
+
+  test('1,000 nested parentheses and nested code spans', () => {
+    const parens = `${'('.repeat(1000)}${')'.repeat(1000)}`;
+    settlesTo(parens, `${parens}.`);
+    const deepParens = `${'('.repeat(900)}x${')'.repeat(900)}`;
+    settlesTo(deepParens, `${deepParens}.`);
+    let spans = 'x';
+    for (let width = 1; width <= 40; width += 1) spans = `${'`'.repeat(width)}a ${spans} b${'`'.repeat(width)}`;
+    const result = settleSpeakable(spans);
+    expect(result.text).toBe(sentenceOf('a '.repeat(40), 'x', ' b'.repeat(40)));
+    expect(result.passes).toBeLessThanOrEqual(3);
+  });
+
+  test('a stack of every nesting at once settles in at most three passes', () => {
+    const mixed = `**_[\`a ${'['.repeat(50)}redacted${']'.repeat(50)} b\`](u)_** and ${'*x '.repeat(40)}y${' z*'.repeat(40)}`;
+    const result = settleSpeakable(mixed);
+    expect(result.settled).toBe(true);
+    expect(result.passes).toBeLessThanOrEqual(3);
+    expect(result.text).toBe(sentenceOf('a redacted b and ', 'x '.repeat(40), 'y', ' z'.repeat(40)));
+  });
+
+  test('a line break inside a pair is joined first, so it needs one more pass and no more', () => {
+    for (const [input, expected] of [
+      ['a `b\nc` d', 'a b c d.'],
+      ['**bold\ntext** and *x\ny*', 'bold text and x y.'],
+      ['[a\nb](u) and `c\nd`', 'a b and c d.'],
+      ['`**x\ny**`', 'x y.'],
+    ]) {
+      const result = settleSpeakable(input);
+      expect(result.text, input).toBe(expected);
+      expect(result.passes, input).toBeLessThanOrEqual(3);
+    }
+  });
+
+  test('a pass that never settles falls back to the whitespace-collapsed input, and that answer is a fixed point', () => {
+    // Never settles on its own: every pass appends to the text.
+    const grows = (text: string): string => `${text}x`;
+    const first = settleSpeakable('a   b\n\nc  ', grows, 4);
+    expect(first).toEqual({ text: 'a b c', passes: 4, settled: false });
+    // Calling again on the answer gives the same answer.
+    expect(settleSpeakable(first.text, grows, 4).text).toBe(first.text);
+
+    // Settles only once its whitespace is collapsed (a line break keeps it busy): the settled form of the
+    // collapsed text is the answer, and it is a fixed point too.
+    const busyWhileMultiLine = (text: string): string => (text.includes('\n') ? `${text}\n` : text);
+    const second = settleSpeakable('a\nb', busyWhileMultiLine, 3);
+    // The cap was hit, and the result says so even though the collapsed text settled.
+    expect(second.settled).toBe(false);
+    expect(second.text).toBe('a b');
+    expect(settleSpeakable(second.text, busyWhileMultiLine, 3).text).toBe(second.text);
+
+    // The cap really is small, and real text never comes near it.
+    const real = settleSpeakable('See [the docs](https://example.com/a) and **bold** `code` for 123e4567-e89b-12d3-a456-426614174000.');
+    expect(real.settled).toBe(true);
+    expect(real.passes).toBeLessThanOrEqual(3);
+  });
+
+  test('a cut-off input settles too: expansion never loops', () => {
+    for (const input of ['#1 '.repeat(900), 'a/b.ts '.repeat(400), `${'x '.repeat(999)}[[[redacted]]]`, `${'`'.repeat(1999)}a`]) {
+      const result = settleSpeakable(input);
+      expect(result.settled).toBe(true);
+      expect(result.passes).toBeLessThanOrEqual(3);
+      expect(makeSpeakable(result.text)).toBe(result.text);
+    }
+  });
+});
+
+describe('makeSpeakable fuzz: idempotent, settled in three passes, no content word lost', () => {
+  /** Atoms for multi-line, wrapped-line and marker-heavy text. */
+  const ATOMS = [
+    '*', '**', '_', '__', '`', '``', '```', '[', ']', '(', ')', '](', '![', 'x', 'ab', 'Word', '\n', '\n- ', '\n# ', '\n## ', '\n> ',
+    '\n1. ', '- ', '# ', '## ', '> ', '1. ', '2) ', '|', '| a |', '|---|', '| |', 'redacted', '[redacted]', '.', ',', ':', ';', '!', '?', '/',
+    'u', '3', '#3', '"', '-', '+', '•', '~', '[a](u)', '![a](u)', '[](u)', '![](u)', '*em*', '_em_', '**bold**', '`code`', '\n\n', '-\n',
+    '123e4567-e89b-12d3-a456-426614174000', '3f2a9c1', '3f2a9c1d8e0b', 'commit', 'agent', 'not', 'except', 'src/a.ts', '2025-11-10T10:00:00Z',
+  ];
+
+  test.each([1, 2, 3, 4])('5,000 multi-line, wrapped-line and marker-heavy inputs (seed %#, 20,000 in all)', (index) => {
+    const random = mulberry32(0xf00d * (index + 1));
+    const problems: string[] = [];
+    let slowest = 0;
+    for (let i = 0; i < 5000; i += 1) {
+      let input = '';
+      const parts = 1 + Math.floor(random() * 30);
+      const spacing = random();
+      for (let j = 0; j < parts; j += 1) {
+        input += ATOMS[Math.floor(random() * ATOMS.length)];
+        if (random() < spacing) input += ' ';
+      }
+      const result = settleSpeakable(input);
+      slowest = Math.max(slowest, result.passes);
+      if (!result.settled || result.passes > 3) problems.push(`passes ${result.passes}: ${JSON.stringify(input)}`);
+      if (makeSpeakable(result.text) !== result.text) problems.push(`not idempotent: ${JSON.stringify(input)} => ${JSON.stringify(result.text)}`);
+      if (contentWordCount(result.text) < contentWordCount(withoutMarkup(input))) {
+        problems.push(`lost a content word: ${JSON.stringify(input)} => ${JSON.stringify(result.text)}`);
+      }
+      if (problems.length >= 5) break;
+    }
+    expect(problems).toEqual([]);
+    expect(slowest).toBeLessThanOrEqual(3);
+  }, 60_000);
+});
+
+describe('makeSpeakable settles a single line in two passes', () => {
+  // One rewrite, and one more run that finds nothing left to do. A third pass is only for a pair that spans a line
+  // break (its two halves meet when the lines are joined), so a text with no line break must never need one. The
+  // atoms leave out two shapes that can need a third pass on a single line, both made of two rewrites that meet:
+  // a path whose file name starts with `_` or `*` (it becomes an emphasis opener only once the path is gone) and a
+  // URL or path glued to a backtick (the token swallows the backtick, which changes how the others pair up).
+  const MARKUP = [
+    '*', '**', '_', '__', '`', '``', '```', '[', ']', '(', ')', '](', '![', '[a](u)', '![a](u)', '[](u)', '![](u)', '*em*', '_em_',
+    '**bold**', '`code`', '`,`', '- ', '# ', '## ', '> ', '1. ', '|', '| a |', '|---|', '| |', '[redacted]', '[[redacted]]',
+    '(redacted)', '-', '+', '•', '~', '"', "'", '.', ',', ':', ';', '!', '?', '/', '...', '…', ' , ', ' . ', ' ; ', ' : ', ' ! ', ' ? ',
+  ];
+  const WORDS = [
+    'x', 'ab', 'Word', 'the', 'not', 'except', 'only', 'no', 'commit', 'agent', 'task', 'id', 'on', 'at', 'revert', 'a', 'to', 'for',
+    'snake_case', 'needs_input', 'needsInput', '__init__', '_private', 'C++', 'std::vector', '3', '42', '#3', '#12', '1.5', '10:30', '$5',
+    '50%', '1..10', 'main..HEAD', '->', '=>', '&', '&&', '-->', '→',
+  ];
+  /** Identifiers and paths: each is kept apart from its neighbours by a space. */
+  const TOKENS = [
+    '123e4567-e89b-12d3-a456-426614174000', '3f2a9c1', 'abc1234', '3f2a9c1d8e0b', 'sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90',
+    '507f1f77bcf86cd799439011', 'deadbeef12', '10dec2025', '2025-11-10T10:00:00Z', '2025-11-10T10:00:00.123+01:00', 'src/a.ts', '/a/b/c.ts',
+    '/a/b/needs_input', '/a/b/3f2a9c1d8e0b', '~/x/y.md', './lib/util.js', 'C:\\x\\y.md', '@scope/pkg/x.ts', 'src/core/index.ts:42:7',
+    'a/b.json#L4', 'https://example.com/a/b', 'https://github.com/o/r/pull/9', 'www.example.com', '/[redacted].ts', '[redacted]/foo.ts',
+    '/api/tasks/42', 'd3.js/three.js', '.env',
+  ];
+
+  test.each([1, 2, 3, 4, 5, 6])('30,000 single-line inputs, none needs a third pass (seed %#)', (index) => {
+    const random = mulberry32(0xa11ce * (index + 1));
+    const problems: string[] = [];
+    for (let i = 0; i < 5000; i += 1) {
+      let input = '';
+      const parts = 1 + Math.floor(random() * 14);
+      const spacing = 0.3 + random() * 0.7;
+      for (let j = 0; j < parts; j += 1) {
+        const roll = random();
+        if (roll < 0.2) input += ` ${TOKENS[Math.floor(random() * TOKENS.length)]} `;
+        else input += (roll < 0.6 ? MARKUP : WORDS)[Math.floor(random() * (roll < 0.6 ? MARKUP : WORDS).length)];
+        if (random() < spacing) input += ' ';
+      }
+      const result = settleSpeakable(input);
+      if (!result.settled || result.passes > 2) problems.push(`passes ${result.passes}: ${JSON.stringify(input)} => ${JSON.stringify(result.text)}`);
+      if (makeSpeakable(result.text) !== result.text) problems.push(`not idempotent: ${JSON.stringify(input)} => ${JSON.stringify(result.text)}`);
+      if (contentWordCount(result.text) < contentWordCount(withoutMarkup(input))) problems.push(`lost a content word: ${JSON.stringify(input)}`);
+      if (problems.length >= 5) break;
+    }
+    expect(problems).toEqual([]);
+  }, 60_000);
+
+  test('the shapes that used to need a third pass now settle in two', () => {
+    for (const input of [
+      'commit , 3f2a9c1',
+      'task agent no snake_case… ',
+      'Open /a/b/__init__ now',
+      'See __init__507f1f77bcf86cd799439011 now',
+      '33f2a9c1d8e0b…',
+      '• /',
+      'Go from a ` -> ` b now',
+      '*a ` ->* `',
+      '-\u00a0fixed it',
+      '- @scope/pkg/x.ts and more',
+      '- 3f2a9c1d8e0b failed',
+    ]) {
+      expect(settleSpeakable(input).passes, input).toBe(2);
+    }
+  });
+
+  test('every single-line case of the table settles in two passes, and every other one in three', () => {
+    for (const [, input] of CASES) {
+      if (input.length > 2000) continue;
+      expect(settleSpeakable(input).passes, JSON.stringify(input)).toBeLessThanOrEqual(input.includes('\n') ? 3 : 2);
     }
   });
 });

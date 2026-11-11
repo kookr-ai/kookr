@@ -99,6 +99,20 @@ describe('buildFallbackText (rung-aware)', () => {
     expect(text).toBe('Refactor auth. working.');
   });
 
+  test.each([
+    ['terse', '12. working.'],
+    ['brief', '12. working.'],
+  ] as const)('a task named with a number keeps its number at verbosity %s', (verbosity, expected) => {
+    // "12. working." used to lose the "12" as if it were a numbered-list marker.
+    expect(buildFallbackText({ ...baseContext, taskName: '12' }, verbosity)).toBe(expected);
+    expect(buildFallbackText({ ...baseContext, taskName: '3' }, verbosity)).toBe('3. working.');
+  });
+
+  test('a task named with an id keeps it as an ID, never nothing', () => {
+    const text = buildFallbackText({ ...baseContext, taskName: '123e4567-e89b-12d3-a456-426614174000' }, 'terse');
+    expect(text).toBe('an ID. working.');
+  });
+
   test('medium uses recent activity in the recap', () => {
     const text = buildFallbackText(baseContext, 'medium');
     expect(text).toContain('read 2 files');

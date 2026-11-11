@@ -855,6 +855,49 @@ describe('summarizeTaskForSpeech', () => {
     }, 120_000);
   });
 
+  describe('deeply nested text costs no more than flat text', () => {
+    // 990 nested brackets used to take 459 ms in the speakable step (a pass per bracket); 8 such messages took 2.4 s.
+    const nested = [
+      `${'['.repeat(990)}redacted${']'.repeat(990)}`,
+      `Key ${'['.repeat(990)}redacted${']'.repeat(990)} leaked`,
+      `${'*_'.repeat(400)}x${'_*'.repeat(400)}`,
+      `${'*a '.repeat(250)}x${' b*'.repeat(250)}`,
+      `${'['.repeat(300)}x${'](u)'.repeat(300)}`,
+      `${'('.repeat(1000)}${')'.repeat(1000)}`,
+      `${'`'.repeat(1)}a ${'``b ```c '.repeat(100)}`,
+      `${'['.repeat(990)}redacted${']'.repeat(990)} and ${'*_'.repeat(300)}y${'_*'.repeat(300)}`,
+    ];
+
+    test('8 nested messages build their activity lines in well under 100 ms in total, each line cut to the cap', () => {
+      const events: AgentEvent[] = nested.map((lastMessage, index) => ({ type: 'stop', sessionId: `s${index}`, lastMessage }));
+      const start = performance.now();
+      const lines = buildTaskSpeechActivityLines(events);
+      const elapsed = performance.now() - start;
+      expect(elapsed).toBeLessThan(100);
+      expect(lines.length).toBeGreaterThanOrEqual(1);
+      for (const line of lines) expect(line.length).toBeLessThanOrEqual(220);
+      // Every message on its own, too: the first is the whole point of the check.
+      expect(buildTaskSpeechActivityLines([events[0]])).toEqual(['Agent: redacted.']);
+      expect(buildTaskSpeechActivityLines([events[1]])).toEqual(['Agent: Key redacted leaked.']);
+      expect(buildTaskSpeechActivityLines([events[2]])).toEqual(['Agent: x.']);
+    });
+
+    test('the same messages through the fallback summary and the prompt stay fast', async () => {
+      const input: TaskSpeechSummaryInput = {
+        taskName: nested[0],
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'needs_input', severity: 'info', explanation: nested[1] },
+        recentActivity: buildTaskSpeechActivityLines(nested.map((lastMessage, index) => ({ type: 'stop', sessionId: `s${index}`, lastMessage }))),
+      };
+      const start = performance.now();
+      const result = await summarizeTaskForSpeech(null, input);
+      const hash = normalizedTaskSpeechSummaryHashInput(input);
+      expect(performance.now() - start).toBeLessThan(100);
+      expect(result.text.length).toBeGreaterThan(0);
+      expect(hash).toBeTruthy();
+    });
+  });
+
   describe('markdown in agent messages reaches the speech fallback as sentences', () => {
     const MESSAGE = '## Summary\n- Fixed the login bug in session.ts\n- Added 3 tests\n| Check | Result |\n|---|---|\n| lint | ✅ |';
     const SPOKEN = 'Summary. Fixed the login bug in session.ts. Added 3 tests. Check, Result. lint, ✅.';
@@ -886,7 +929,16 @@ describe('summarizeTaskForSpeech', () => {
     });
 
     test.each([
-      ['a numbered plan', '1. Read the file\n2. Edit the file\n3. Run tests', 'Read the file. Edit the file. Run tests.'],
+      // A number is never a list marker: a wrapped "2. Older backups" or "42" is part of the sentence before it.
+      ['a numbered plan keeps its numbers', '1. Read the file\n2. Edit the file\n3. Run tests', '1. Read the file 2. Edit the file 3. Run tests.'],
+      ['a wrapped limit keeps its number', 'I will keep at most\n2. Older backups get deleted.', 'I will keep at most 2. Older backups get deleted.'],
+      ['a wrapped comparison keeps its angle bracket', 'Fail the job if the error count\n> limit. Otherwise continue.', 'Fail the job if the error count > limit. Otherwise continue.'],
+      ['a number above a heading mark keeps both', '3\n## Results', '3 ## Results.'],
+      ['a number above a bullet keeps both', '42\n- tests failed', '42 - tests failed.'],
+      ['an agent that is not running keeps the word agent', 'No agent 123e4567-e89b-12d3-a456-426614174000 is running.', 'No agent ID is running.'],
+      ['a commit that is not on a branch keeps the word commit', 'There is no commit 3f2a9c1d on the release branch.', 'There is no commit ID on the release branch.'],
+      ['an exception keeps its id', 'Every task except 123e4567-e89b-12d3-a456-426614174000 passed.', 'Every task except an ID passed.'],
+      ['an empty table cell is blank', '| suite | passed | failed |\n|---|---|---|\n| e2e | | 3 |', 'suite, passed, failed. e2e, blank, 3.'],
       ['bold labels and bullets', '**Done.** I fixed the bug.\n\n- Changed `src/a.ts`\n- Updated `docs/b.md`', 'Done. I fixed the bug. Changed a.ts. Updated b.md.'],
       ['a bullet list of absolute paths', 'Updated:\n- /home/jean/git/kookr/src/core/a.ts\n- /home/jean/git/kookr/src/core/b.ts', 'Updated: a.ts. b.ts.'],
       ['a timestamped status', 'Status as of 2025-11-10T10:00:00Z is green.\n\n- Do not merge until 2025-11-10T11:00:00Z', 'Status as of a set time is green. Do not merge until a set time.'],
