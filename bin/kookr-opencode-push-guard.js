@@ -25,6 +25,7 @@ const MAX_DEPTH = 5;
 
 const GIT_BLOCKED = new Set(['push', 'send-pack']);
 const GIT_OPTS_WITH_ARG = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--super-prefix', '--config-env']);
+const GIT_SUBTREE_ACTIONS = new Set(['add', 'merge', 'pull', 'push', 'split']);
 const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reopen', 'revert', 'review', 'comment', 'edit', 'lock', 'unlock', 'update-branch']);
 const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'delete-asset', 'edit', 'upload']);
 // Every subcommand of `gh pr` / `gh release`: the action is the FIRST of these words, so a flag value that happens to
@@ -84,6 +85,45 @@ function splitHeredocs(command) {
 }
 
 /**
+ * Index just past the `)` that closes the `$(` whose body starts at `from`, or -1 when it never closes. Parentheses
+ * inside quotes, after a backslash, in a comment, or in a heredoc body do not count (`1) Run ...` in a commit message).
+ */
+function substitutionEnd(text, from) {
+  let depth = 1;
+  let inSingle = false;
+  let inDouble = false;
+  for (let j = from; j < text.length; j++) {
+    const c = text[j];
+    if (inSingle) { if (c === "'") inSingle = false; continue; }
+    if (c === '\\') { j++; continue; }
+    if (c === "'" && !inDouble) { inSingle = true; continue; }
+    if (c === '"') { inDouble = !inDouble; continue; }
+    if (!inDouble && c === '#' && (j === from || /\s/.test(text[j - 1]))) { while (j < text.length && text[j] !== '\n') j++; continue; }
+    if (!inDouble && c === '<' && text[j + 1] === '<' && text[j + 2] !== '<') {
+      const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;&|<>()'"\\]+))/.exec(text.slice(j));
+      if (m) {
+        const delim = m[1] ?? m[2] ?? m[3];
+        const bodyStart = text.indexOf('\n', j);
+        if (bodyStart >= 0) {
+          let pos = bodyStart + 1;
+          for (;;) {
+            const eol = text.indexOf('\n', pos);
+            const line = text.slice(pos, eol < 0 ? text.length : eol);
+            if (line.trim() === delim) { j = (eol < 0 ? text.length : eol) - 1; break; }
+            if (eol < 0) return -1;
+            pos = eol + 1;
+          }
+          continue;
+        }
+      }
+    }
+    if (c === '(') depth++;
+    else if (c === ')') { depth--; if (depth === 0) return j + 1; }
+  }
+  return -1;
+}
+
+/**
  * Inner text of every command substitution the shell would EXECUTE: `$( ... )` (balanced) and backtick pairs.
  * Text inside single quotes is literal, and so is anything after a backslash, so `git commit -m 'explain `git push`'`
  * is not a push. Double quotes still expand.
@@ -104,17 +144,11 @@ function substitutions(text, literalQuotes = false) {
       if (c === '#' && !inDouble && (i === 0 || /\s/.test(text[i - 1]))) { while (i < text.length && text[i] !== '\n') i++; continue; }
     }
     if (c === '$' && text[i + 1] === '(') {
-      let depth = 1;
-      let j = i + 2;
-      while (j < text.length && depth > 0) {
-        if (text[j] === '(') depth++;
-        else if (text[j] === ')') depth--;
-        j++;
-      }
-      out.push(text.slice(i + 2, depth === 0 ? j - 1 : j));
+      const end = substitutionEnd(text, i + 2);
+      out.push(text.slice(i + 2, end < 0 ? text.length : end - 1));
       // The inside is classified on its own (with its own quoting rules). Do not also scan it here under the OUTER
       // quote state: `git commit -m "$(cat <<'EOF' ... `git push` ... EOF)"` only quotes the backticks.
-      i = depth === 0 ? j - 1 : text.length;
+      i = end < 0 ? text.length : end - 1;
     } else if (c === '`') {
       let end = i + 1;
       while (end < text.length && text[end] !== '`') end += text[end] === '\\' ? 2 : 1;
@@ -173,7 +207,11 @@ function gitVerdict(t) {
     i += GIT_OPTS_WITH_ARG.has(t[i]) ? 2 : 1;
   }
   const sub = t[i];
-  if (sub === 'subtree' && t[i + 1] === 'push') return 'git subtree push';
+  if (sub === 'subtree') {
+    // `git subtree -P docs push origin gh-pages`: flags (some with arguments) precede the action.
+    const action = t.slice(i + 1).find((tok) => GIT_SUBTREE_ACTIONS.has(tok));
+    return action === 'push' ? 'git subtree push' : null;
+  }
   return sub && GIT_BLOCKED.has(sub) ? `git ${sub}` : null;
 }
 
