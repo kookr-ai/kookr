@@ -72,6 +72,8 @@ async function cleanStaleScratchDirs(seedDir: string, staleMs: number, warn: (ms
   for (const name of names) {
     if (!name.startsWith(SCRATCH_PREFIX)) continue;
     const dir = join(parent, name);
+    // KOOKR_OPENCODE_SEED_DIR is operator-settable: never reclaim the seed (or its lock) itself, whatever it is called.
+    if (dir === seedDir || dir === `${seedDir}.lock`) continue;
     try {
       const st = await lstat(dir);
       if (!st.isDirectory()) continue;
