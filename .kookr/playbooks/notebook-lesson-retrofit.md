@@ -1,6 +1,6 @@
 ---
 name: Notebook Lesson Retrofit Review
-description: Read what the agent-notebook lessons say, find the ones a hook, command, skill or agent-definition rule could make unnecessary, verify each proposal against what already exists, and report which entries can be retired — both for new proposals and for earlier ones that have since shipped. Read-only on the notebook store.
+description: Read what the agent-notebook lessons say, find the ones a hook, command, skill or agent-definition rule could make unnecessary, verify each proposal against what already exists, and report which entries can be retired — both for new proposals and for earlier ones that have since shipped. Never removes or edits a notebook entry.
 tags: [workflow, analysis, memory]
 cwd: $HOME/git/kookr
 parameters:
@@ -33,7 +33,7 @@ parameters:
     type: text
 checklist:
   - Took a snapshot of every shelf and diffed it against the previous run's snapshot and entry map
-  - For every earlier leaf that is now closed, verified the fix on the fetched default branch and listed the entries that are ready to retire
+  - For every earlier leaf that is now closed, verified the fix on the fetched default branch, checked it is live on this host, and listed the entries that are ready to retire
   - Every new proposal was checked against existing hooks, skills, agent definitions, playbooks and scripts on a fetched remote ref, with a positive control for each "nothing covers this"
   - Every cited entry id was validated by script against the snapshot
   - Wrote the report, the entry map and the snapshot to the reports directory
@@ -112,7 +112,8 @@ This task may run unattended. Do not ask questions; decide and report.
   `decide` (the operator chooses), `junk` (not a lesson), `investigate` (the
   finding itself is unverified; keep the entry).
 - Shell variables do not survive from one command call to the next. Phase 1
-  prints the three file paths; use those literal paths in later commands.
+  prints the three file paths; use those literal paths in later commands. The
+  snippets are bash.
 
 ## Phases
 
@@ -122,7 +123,7 @@ This task may run unattended. Do not ask questions; decide and report.
 REPORTS="{{reportsDir}}"; REPORTS="${REPORTS:-$HOME/.kookr/reports}"; REPORTS="${REPORTS/#\~/$HOME}"
 mkdir -p "$REPORTS"
 STAMP=$(date +%F); n=1
-while [ -e "$REPORTS/notebook-retrofit-$STAMP.shelves.txt" ] || [ -e "$REPORTS/notebook-retrofit-$STAMP.map.tsv" ]; do
+while ls "$REPORTS/notebook-retrofit-$STAMP".* >/dev/null 2>&1; do
   n=$((n+1)); STAMP="$(date +%F)-run$n"
 done
 SNAP="$REPORTS/notebook-retrofit-$STAMP.shelves.txt"
@@ -139,8 +140,12 @@ counts). If they differ, fix the snapshot before going on.
 
 ### Phase 2 — Load the previous run
 
-Find the newest `notebook-retrofit-*.map.tsv` and `.shelves.txt` in the reports
-directory whose stamp is not this run's stamp, and the umbrella issue.
+The previous run is the stamp, other than this run's, that has **both** a
+`.map.tsv` and a `.shelves.txt` in the reports directory and whose map was
+modified most recently (`ls -t "$REPORTS"/notebook-retrofit-*.map.tsv`). Use
+that map and that snapshot as a pair. Ignore a snapshot that has no map: it is
+left over from a run that did not finish, and diffing against it hides entries
+for good. Also find the umbrella issue.
 
 - **No earlier run:** read the whole snapshot in Phase 4.
 - **Earlier run exists:** compute three sets by `(shelf, id)`: entries that are
@@ -230,7 +235,8 @@ only". Never mark an entry `full` on lesson text alone.
 
 ### Phase 6 — Build and validate the map
 
-Write `notebook-retrofit-<date>.map.tsv`, carrying forward every earlier row
+Write the map to the MAP path Phase 1 printed (never to another run's file),
+carrying forward every earlier row
 that is still valid and adding the new ones. Then validate every `(shelf, id)`
 pair against the snapshot:
 
@@ -253,10 +259,12 @@ missing row is your error; fix it. Re-run the command until it exits 0.
 
 ### Phase 7 — Write the report
 
-Write `notebook-retrofit-<date>.md` in the reports directory, in this order:
+Write the report to the REPORT path Phase 1 printed (never to another run's
+file), in this order:
 
 1. Counts: entries read, entries mapped, new since the last run.
-2. **Ready to retire** (from Phase 3), with the commands.
+2. **Ready to retire** (from Phase 3), with the commands; then **Merged, not
+   yet live**, without commands; then **Operator clean-up**.
 3. New findings, ranked by the votes on the entries each one retires. For each:
    where, evidence, change, how it was checked, and the entry table.
 4. Corrections to earlier findings (anything Phase 5 showed was wrong or stale).
@@ -276,10 +284,12 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
   tick leaves verified in Phase 3, and correct stale findings. Keep the marker
   comment as the first line, keep the body under 60,000 characters (move the
   detail of finished findings into a comment on the issue), and after the edit
-  run the marker search again: it must return exactly one issue. If the search
-  finds only a closed umbrella, do not create another; report that and file
-  nothing. If it finds none at all, create one with the marker comment and the
-  `automation-blocked` label, so no issue batch tries to implement it.
+  read the body back (`gh issue view <n> --repo {{umbrellaRepo}} --json body -q .body`)
+  and confirm the marker is still its first line. Do not re-run the search to
+  check an edit: the search index lags. If the marker search found only a
+  closed umbrella, do not create another and do not edit it; report that and
+  file nothing. If it found none at all, create one with the marker comment and
+  the `automation-blocked` label, so no issue batch tries to implement it.
 - **`leaves` only:** for each **New** or **Exists as prose** finding that is one
   pull request and was checked on the default branch or reproduced, search the
   target repository for a duplicate, then file a leaf: a first line
@@ -289,9 +299,10 @@ when that value is exactly `umbrella` or `leaves`. Any other value, including
   session-start hook) gets the `automation-blocked` label and a line saying the
   operator must remove it to release the work. If the target repository has no
   such label, do not file the leaf; keep it on the umbrella, marked held.
-- Check each label with `gh label list --repo <owner/repo> --search <name>`
-  before using it (a bare `gh label list` shows only the first 30). Apply
-  rules 4 and 5.
+- Check each label by exact name before using it:
+  `gh label list --repo <owner/repo> --search <name> --json name -q '.[].name' | grep -Fx <name>`
+  (the search is fuzzy, and a bare `gh label list` shows only the first 30).
+  Apply rules 4 and 5.
 
 ### Phase 9 — Retrospective and summary
 
@@ -303,7 +314,7 @@ findings, the corrections, and the report path.
 
 ## Idempotency rules
 
-1. One umbrella. Find it by its marker, open or closed; update it; never create a second.
+1. One umbrella. Find it by its marker, open or closed. Update it if it is open; if it is closed, file nothing. Never create a second.
 2. Never file a leaf for a finding that already has one, open or closed. The
    umbrella's task list and a per-finding issue search are both checked.
 3. The map is carried forward, not rebuilt. A finding keeps its key across runs.

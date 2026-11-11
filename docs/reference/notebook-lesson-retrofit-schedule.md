@@ -143,7 +143,7 @@ on this.
 - **Never** removes, moves, merges or edits an existing notebook entry, and never changes
   host configuration, hooks, settings or schedules. Retiring entries is the
   operator's step; the report prints the exact commands.
-- **Issues** are touched only when `fileIssues` is not `no`. Public issues carry
+- **Issues** are touched only when `fileIssues` is exactly `umbrella` or `leaves`; any other value means report only. Public issues carry
   shelf names, entry ids, scores and actions only: no lesson text, and nothing
   from or about a private repository. A leaf that changes what every agent
   session does is filed with the `automation-blocked` label, so the issue batch
