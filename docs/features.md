@@ -383,25 +383,34 @@ notice gaps while speaking without treating every natural pause as a fault.
 
 A small floating window showing a 3D character who lip-syncs Kookr's spoken task summaries — the
 clips played by the speaker (🔊) buttons on tasks. It gives those summaries a face: it shows
-"preparing" while a summary is being generated, moves its mouth while the clip plays, and shows the
-spoken text as a caption.
+"preparing" while a summary is being generated, moves its mouth while the clip plays, and lists the last few
+things she said.
 
 - **Off unless you turn it on.** Settings → Notifications & Alerts → **Avatar panel**. The choice is
   stored per browser. While it is off, the browser downloads nothing for it: no 3D renderer, no
   avatar file.
 - **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
   and stays inside the viewport when the window is resized. Minimising collapses it to a round
-  bubble that shows a badge with the number of items needing your attention. A minimised panel shuts its 3D
-  view down and uses no graphics memory.
+  bubble that shows an amber badge with the number of findings needing your attention, and an amber dot
+  when a message is unheard. Hover the bubble, or focus it with the keyboard, and a small card says
+  it in words: "2 findings need you", "1 unheard message" (each row only when it applies) and "Click
+  to open Lucy". Escape closes the card; screen readers get the same sentence from the bubble's label
+  instead. A minimised panel shuts its 3D view down and uses no graphics memory.
 - **Usable from the keyboard.** A button in the title bar moves the window to the next corner of the
   screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
-  and the spoken text can be focused and scrolled. With "reduce motion" set in your operating
+  and every message's Replay button can be reached with Tab. With "reduce motion" set in your operating
   system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
-- **Hear it again.** If you were away, or the tab was in the background, when she spoke, the last
-  message is kept in memory. The **Replay last message** button in the title bar plays it again with
-  the same lip-sync and caption. Until at least 80% of a message has played while the tab was visible,
-  a dot on that button (and on the minimised bubble, whose name then ends "unheard message") marks
-  it as unheard. It respects the global sound switch, and a page reload forgets the message.
+- **Recent messages.** Under the 3D view, the last three things she said are listed, newest first.
+  Each shows the text (cut to a few lines; hover for all of it), the task it was about and how long
+  ago ("just now", "5 min ago", "3 h ago", "2 d ago"), plus a Replay button of its own. Before she has
+  said anything the list shows a hint instead. The list is kept in memory only: a page reload forgets
+  it, and a fourth message pushes the oldest one (and its audio) out.
+- **Hear it again.** If you were away, or the tab was in the background, when she spoke, the message
+  is kept. A message's own Replay button plays that message again with the same lip-sync; the
+  **Replay last message** button in the title bar plays the newest one. Until at least 80% of a message
+  has played while the tab was visible, it is marked "unheard" in the list (a dot and the word), and
+  the title-bar button and the minimised bubble carry a dot while any message is unheard. Replaying a
+  message marks only that message heard. Replay respects the global sound switch.
 - **It cannot break the dashboard.** If the panel fails to load or crashes, it disappears until the
   next reload and everything else keeps working.
 - **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still

@@ -77,6 +77,12 @@ export interface SpeakAudioResponse {
    */
   clipId?: string;
   /**
+   * Display title of the task the message was about: redacted exactly like the spoken
+   * wording, one line, at most 80 characters; absent when the task has no title. Not
+   * cached, built per response like clipId.
+   */
+  subject?: string;
+  /**
    * The wording before the speakable-text step, present only when that step
    * changed it. `text` is what was actually synthesised and shown as caption.
    */
@@ -175,6 +181,12 @@ export interface SpeakAgentResponse {
   rawText?: string;
   /** Unique id of this delivery; joins lucy-interactions.jsonl with client `lucy_*` telemetry. */
   clipId?: string;
+  /**
+   * Display title of the task the message was about: redacted exactly like the spoken
+   * wording, one line, at most 80 characters; absent when the task has no title. Not
+   * cached, built per response like clipId.
+   */
+  subject?: string;
 }
 
 export type SpeakAgentErrorReason =

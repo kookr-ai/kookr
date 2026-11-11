@@ -10,6 +10,7 @@ import {
   type ToolGroup,
 } from './activity-summary.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
+import { spokenTaskName } from './spoken-task-name.js';
 
 const TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 180;
@@ -194,8 +195,21 @@ export function redactedTaskName(name: string | null | undefined): string | unde
   return sanitizeText(name, 80) || undefined;
 }
 
+/**
+ * The full redacted title, as CONTEXT for the model prompt and the cache key. It is never
+ * spliced into the fallback wording: see {@link spokenName}.
+ */
 function taskName(input: TaskSpeechSummaryInput): string {
   return redactedTaskName(input.taskName) ?? 'Untitled task';
+}
+
+/**
+ * The title as it may be spoken in the fallback wording: the redacted title when it is
+ * short and complete, otherwise "This task" (see {@link spokenTaskName}). Redaction comes
+ * first, so a secret never reaches the length check or the sentence.
+ */
+function spokenName(input: TaskSpeechSummaryInput): string {
+  return spokenTaskName(redactedTaskName(input.taskName));
 }
 
 function statusLabel(status: TaskStatus | null | undefined): string {
@@ -295,7 +309,7 @@ function findingSentence(name: string, finding: TaskSpeechFindingInput): string 
 
 /** Fallback wording before the speakable-text step (still truncated to the summary cap). */
 function rawFallbackTaskSpeechSummary(input: TaskSpeechSummaryInput): string {
-  const name = taskName(input);
+  const name = spokenName(input);
   const finding = input.activeFinding;
   if (finding) {
     return truncate(findingSentence(name, finding), MAX_SUMMARY_CHARS);

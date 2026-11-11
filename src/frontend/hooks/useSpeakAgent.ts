@@ -360,6 +360,7 @@ export function useSpeakAgent(
       const clip = captureLastClip({
         clipId: payload.clipId,
         text: payload.text,
+        subject: payload.subject,
         audio: audioBytes,
         durationMs: payload.durationMs,
       });

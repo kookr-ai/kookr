@@ -4,8 +4,8 @@
  *
  * - live: the speaker button on a task fetches a summary and plays it
  *   (`hooks/useSpeakAgent.ts`);
- * - replay: the avatar panel's "Replay last message" button plays the clip
- *   remembered in `last-clip.ts` again (`replayLastClip` below).
+ * - replay: the avatar panel's Replay buttons play a clip remembered in
+ *   `last-clip.ts` again (`replayClip` / `replayLastClip` below).
  *
  * Both announce themselves on the speech bus, so the avatar lip-syncs, shows
  * the caption and the "speaking" state identically. Both also go through
@@ -17,7 +17,7 @@ import { track } from '../telemetry.js';
 import { getAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import { getSoundPreferenceState } from './sound-preference.js';
 import { emitSpeechIdle, emitSpeechPlaying } from './speech-bus.js';
-import { getLastClip, markClipHeard } from './last-clip.js';
+import { getClip, getLastClip, markClipHeard } from './last-clip.js';
 
 export type ClipTrigger = 'click' | 'replay';
 export type ClipEndedBy = 'finished' | 'user_stop' | 'superseded';
@@ -143,8 +143,8 @@ function isReplaying(): boolean {
  * not inflate the unheard rate.
  */
 function reportReplayUnheard(clipId: string, reason: ClipUnheardReason): void {
-  const current = getLastClip();
-  if (current && current.clipId === clipId && !current.heard) reportClipUnheard(clipId, reason);
+  const current = getClip(clipId);
+  if (current && !current.heard) reportClipUnheard(clipId, reason);
 }
 
 function release(replay: ActiveReplay): void {
@@ -171,8 +171,16 @@ export function stopReplay(endedBy: 'user_stop' | 'superseded'): void {
   if (active) finishReplay(active, endedBy);
 }
 
+/** Play the newest remembered clip again; see {@link replayClip}. */
+export async function replayLastClip(): Promise<ReplayResult> {
+  const clip = getLastClip();
+  if (!clip) return 'no-clip';
+  return replayClip(clip.clipId);
+}
+
 /**
- * Play the remembered clip again. Must be called from a user gesture (a click):
+ * Play a remembered clip again (any of the clips still in the history).
+ * Must be called from a user gesture (a click):
  * the audio context is created and resumed right away so the browser lets it
  * play even if the original clip was blocked for lack of one.
  *
@@ -180,8 +188,8 @@ export function stopReplay(endedBy: 'user_stop' | 'superseded'): void {
  * deliberately does not look at Do Not Disturb: that silences unprompted alerts,
  * and this is the operator asking to hear something right now.
  */
-export async function replayLastClip(): Promise<ReplayResult> {
-  const clip = getLastClip();
+export async function replayClip(clipId: string): Promise<ReplayResult> {
+  const clip = getClip(clipId);
   if (!clip) return 'no-clip';
   if (!getSoundPreferenceState().enabled) return 'muted';
   if (isReplaying()) return 'busy';

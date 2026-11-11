@@ -83,14 +83,85 @@ describe('summarizeTaskForSpeech', () => {
     expect(call.userMessage.length).toBeLessThan(700);
   });
 
-  test('fallback redacts token-shaped text', () => {
+  test('fallback redacts token-shaped text, and a title that held one is not spoken at all', () => {
     const text = fallbackTaskSpeechSummary({
       taskName: 'Secret sk-1234567890abcdefghijklmnop',
       taskStatus: 'pending',
     });
-    expect(text).toContain('redacted');
-    expect(text).not.toContain('[redacted]');
+    // The title became "Secret [redacted]", which is not speakable as a name: "This task" instead.
+    expect(text).toBe('This task is queued.');
     expect(text).not.toContain('sk-1234567890');
+  });
+
+  test('the model prompt still carries the redacted title as context, never the token', async () => {
+    const client = mockClient('{"summary":"Task is running."}');
+    await summarizeTaskForSpeech(client, {
+      taskName: 'Secret sk-1234567890abcdefghijklmnop',
+      taskStatus: 'pending',
+    });
+    const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.userMessage).toContain('Task label: Secret [redacted]');
+    expect(call.userMessage).not.toContain('sk-1234567890');
+  });
+
+  describe('a long, cut or missing title is never read aloud (#3605)', () => {
+    const observed = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check whic... is terminated unexpectedly.';
+    const longTitle = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check which ones are broken';
+
+    test('the observed prod title is spoken as "This task"', () => {
+      const text = fallbackTaskSpeechSummary({ taskName: longTitle, taskStatus: 'terminated' });
+      expect(text).toBe('This task is terminated unexpectedly.');
+      expect(text).not.toContain('lost');
+      expect(observed).toContain('whic...'); // documents the old, spliced wording
+    });
+
+    test('finding, digest, launch warning and plain-status sentences all use "This task"', () => {
+      const finding = { type: 'needs_input', severity: 'info', explanation: '' };
+      expect(fallbackTaskSpeechSummary({ taskName: longTitle, taskStatus: 'inProgress', activeFinding: finding })).toBe(
+        'This task needs your input.',
+      );
+      expect(fallbackTaskSpeechSummary({
+        taskName: longTitle,
+        taskStatus: 'completed',
+        completionDigest: { bullets: ['Changed the auth middleware'], filesChanged: [] },
+      })).toBe('This task is completed: Changed the auth middleware.');
+      expect(fallbackTaskSpeechSummary({
+        taskName: longTitle,
+        taskStatus: 'pending',
+        launchWarnings: ['Branch missing'],
+      })).toBe('This task is queued. Launch warning: Branch missing.');
+      expect(fallbackTaskSpeechSummary({ taskName: null, taskStatus: 'inProgress', turnState: 'working' })).toBe(
+        'This task is running, working.',
+      );
+    });
+
+    test('an unknown finding type is reported on "This task"', () => {
+      expect(fallbackTaskSpeechSummary({
+        taskName: longTitle,
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'weird_state', severity: 'info', explanation: '' },
+      })).toBe('This task reported weird state.');
+    });
+
+    test('a short complete title is unchanged', () => {
+      expect(fallbackTaskSpeechSummary({ taskName: 'Fix auth', taskStatus: 'inProgress', turnState: 'working' })).toBe(
+        'Fix auth is running, working.',
+      );
+    });
+
+    test('the cache key still tells two long titles apart, and covers the title and the spoken wording', () => {
+      const a = normalizedTaskSpeechSummaryHashInput({ taskName: `A ${longTitle}`, taskStatus: 'pending' });
+      const b = normalizedTaskSpeechSummaryHashInput({ taskName: `B ${longTitle}`, taskStatus: 'pending' });
+      expect(JSON.stringify(a)).not.toBe(JSON.stringify(b));
+      expect(a).toMatchObject({ fallback: 'This task is queued.' });
+    });
+
+    test('the prompt keeps the full redacted title as context', async () => {
+      const client = mockClient('{"summary":"Task is running."}');
+      await summarizeTaskForSpeech(client, { taskName: longTitle, taskStatus: 'pending' });
+      const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(call.userMessage).toContain('Task label: i lost approximetaly');
+    });
   });
 
   test('builds speech context from the same activity items as the panel', () => {

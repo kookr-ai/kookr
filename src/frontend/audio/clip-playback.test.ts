@@ -8,10 +8,11 @@ vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => {
 import {
   __resetClipPlaybackForTests,
   beginClipPlayback,
+  replayClip,
   replayLastClip,
   stopReplay,
 } from './clip-playback.js';
-import { __resetLastClipForTests, captureLastClip, getLastClip, getLastClipSnapshot, markClipHeard } from './last-clip.js';
+import { __resetLastClipForTests, captureLastClip, getClip, getLastClip, getLastClipSnapshot, markClipHeard } from './last-clip.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from './speech-bus.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from './sound-preference.js';
 import { AVATAR_PANEL_KEY, __resetAvatarPanelPrefsForTests } from '../store/avatar-panel-prefs.js';
@@ -459,5 +460,98 @@ describe('replayLastClip', () => {
     expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'c1', endedBy: 'finished' });
     expect(getLastClip()).toMatchObject({ clipId: 'c2', heard: false });
     expect(getLastClipSnapshot().unheard).toBe(true);
+    expect(getClip('c1')?.heard).toBe(true);
+  });
+
+  describe('replaying a specific clip from the history', () => {
+    function captureThree(): void {
+      for (const id of ['old', 'mid', 'new']) {
+        captureLastClip({ clipId: id, text: `text ${id}`, audio: new Uint8Array([id.length]).buffer, durationMs: 2000 });
+      }
+    }
+
+    test('an unknown or dropped clip id is "no-clip"', async () => {
+      captureThree();
+      captureLastClip({ clipId: 'newest', text: 'x', audio: new Uint8Array([9]).buffer, durationMs: 2000 }); // drops "old"
+      expect(await replayClip('old')).toBe('no-clip');
+      expect(await replayClip('nope')).toBe('no-clip');
+      expect(FakeAudioContext.instances).toHaveLength(0);
+    });
+
+    test('plays that clip\'s text and audio, reports its id, and marks only that clip heard', async () => {
+      captureThree();
+      expect(await replayClip('mid')).toBe('started');
+      const ctx = FakeAudioContext.instances[0];
+      expect(ctx.decodeAudioData).toHaveBeenCalledTimes(1);
+      expect(new Uint8Array(ctx.decodeAudioData.mock.calls[0][0])).toEqual(new Uint8Array([3])); // "mid".length
+      expect(events[events.length - 1]).toMatchObject({ type: 'playing', text: 'text mid' });
+      expect(ofType('lucy_clip_started')[0]).toMatchObject({ clipId: 'mid', trigger: 'replay' });
+
+      now = 2_000;
+      ctx.sources[0].onended?.();
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'mid', endedBy: 'finished' });
+      expect(getClip('mid')?.heard).toBe(true);
+      expect(getClip('old')?.heard).toBe(false);
+      expect(getClip('new')?.heard).toBe(false);
+      expect(getLastClipSnapshot()).toMatchObject({ unheardCount: 2 });
+    });
+
+    test('replayLastClip replays the newest clip', async () => {
+      captureThree();
+      expect(await replayLastClip()).toBe('started');
+      expect(ofType('lucy_clip_started')[0]).toMatchObject({ clipId: 'new' });
+    });
+
+    test('a replay of an older clip that is stopped early leaves every clip unheard', async () => {
+      captureThree();
+      await replayClip('old');
+      now = 500;
+      stopReplay('user_stop');
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'old', endedBy: 'user_stop' });
+      expect(getLastClipSnapshot()).toMatchObject({ unheardCount: 3 });
+    });
+
+    test('a second replay (of another clip) while one plays is "busy"', async () => {
+      captureThree();
+      await replayClip('old');
+      expect(await replayClip('new')).toBe('busy');
+      expect(FakeAudioContext.instances).toHaveLength(1);
+    });
+
+    test('a live clip cancels a replay of an older clip that is still decoding, and nothing is marked heard', async () => {
+      captureThree();
+      let release!: () => void;
+      FakeAudioContext.decodeGate = new Promise<void>((resolve) => { release = resolve; });
+      const pending = replayClip('old');
+      stopReplay('superseded'); // what a live clip does first
+      captureLastClip({ clipId: 'live', text: 'live', audio: new Uint8Array([7]).buffer, durationMs: 2000 });
+      release();
+      expect(await pending).toBe('cancelled');
+      expect(FakeAudioContext.instances[0].sources).toHaveLength(0);
+      expect(events.some((e) => e.type === 'playing')).toBe(false);
+      expect(getLastClipSnapshot().unheardCount).toBe(3); // old was dropped by the live clip: mid, new, live
+    });
+
+    test('a live clip superseding a playing replay of an older clip ends it as superseded and marks nothing heard', async () => {
+      captureThree();
+      await replayClip('old');
+      now = 100;
+      stopReplay('superseded');
+      captureLastClip({ clipId: 'live', text: 'live', audio: new Uint8Array([7]).buffer, durationMs: 2000 });
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'old', endedBy: 'superseded' });
+      expect(getClip('live')?.heard).toBe(false);
+      expect(getClip('new')?.heard).toBe(false);
+    });
+
+    test('failures on an older clip report only that clip as unheard, and only while it is unheard', async () => {
+      captureThree();
+      FakeAudioContext.decodeFails = true;
+      expect(await replayClip('mid')).toBe('error');
+      expect(ofType('lucy_clip_unheard')).toEqual([{ type: 'lucy_clip_unheard', clipId: 'mid', reason: 'error' }]);
+
+      markClipHeard('old');
+      expect(await replayClip('old')).toBe('error');
+      expect(ofType('lucy_clip_unheard')).toHaveLength(1);
+    });
   });
 });

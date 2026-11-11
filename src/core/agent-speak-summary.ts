@@ -7,6 +7,7 @@ import type {
   VerbosityScale,
 } from '../shared/contracts/speech.js';
 import { identifierToWords, makeSpeakable, spokenFindingPhrase, stripGeneratedPhrases } from './speakable-text.js';
+import { isGenericTaskName, spokenTaskName } from './spoken-task-name.js';
 
 /**
  * Verbs that imply an action recommendation. Carried forward from the v1 spec
@@ -210,21 +211,36 @@ function validateRecap(raw: string, verbosity: VerbosityScale): RecapCheck {
 }
 
 /**
+ * The task title as spoken in a sentence: the title when it is short and complete,
+ * otherwise "This task" (see {@link spokenTaskName}). The helper sees the title with its
+ * trailing marks intact, so a title cut off with "..." is recognised before the marks
+ * are stripped.
+ */
+function spokenName(taskName: string): string {
+  return stripTrailingTerminalPunctuation(spokenTaskName(taskName)) || spokenTaskName(null);
+}
+
+/**
  * Fallback wording before the speakable-text step. terse/brief return a
  * degraded one-liner ("{TaskName}. working." or "{TaskName} needs your input.")
  * so the smallest rungs cannot accidentally produce the longest output (RFC
  * R14 / D15). medium/detailed render the delimiter-stripped context as a
- * multi-sentence summary.
+ * multi-sentence summary. A task without a short, complete title is called "This
+ * task" ("This task is working.", "This task needs your input."); in medium/detailed
+ * the lead "{TaskName}." sentence is left out instead.
  */
 function composeFallbackText(context: AgentSpeakContext, verbosity: VerbosityScale): string {
-  const name = stripTrailingTerminalPunctuation(context.taskName) || 'Untitled task';
+  const name = spokenName(context.taskName);
+  const generic = isGenericTaskName(name);
   if (verbosity === 'terse' || verbosity === 'brief') {
-    if (!context.anomaly) return `${name}. working.`;
+    if (!context.anomaly) return generic ? `${name} is working.` : `${name}. working.`;
     const phrase = spokenFindingPhrase(context.anomaly.type, context.anomaly.severity);
     if (phrase) return `${name} ${phrase}.`;
-    return `${name}. ${identifierToWords(context.anomaly.type) || 'working'}.`;
+    const reported = identifierToWords(context.anomaly.type);
+    if (generic) return reported ? `${name} reported ${reported}.` : `${name} is working.`;
+    return `${name}. ${reported || 'working'}.`;
   }
-  const parts: string[] = [`${name}.`];
+  const parts: string[] = generic ? [] : [`${name}.`];
   if (context.recentActivity && context.recentActivity !== '(no recent activity)') {
     parts.push(endClause(context.recentActivity));
   }
@@ -236,7 +252,7 @@ function composeFallbackText(context: AgentSpeakContext, verbosity: VerbositySca
   } else if (context.recentMessages && context.recentMessages !== '(no recent messages)') {
     parts.push(endClause(context.recentMessages));
   }
-  return parts.join(' ');
+  return parts.length > 0 ? parts.join(' ') : `${name} is working.`;
 }
 
 /** Rung-aware fallback, already made speakable. See {@link composeFallbackText}. */
@@ -265,8 +281,9 @@ function fallbackResult(
 }
 
 function renderSuccessText(taskName: string, recap: string): string {
-  const name = stripTrailingTerminalPunctuation(taskName) || 'Untitled task';
+  const name = spokenName(taskName);
   const body = stripTrailingTerminalPunctuation(recap);
+  if (isGenericTaskName(name)) return body ? `${body}.` : `${name} is working.`;
   return body ? `${name}. ${body}.` : `${name}.`;
 }
 

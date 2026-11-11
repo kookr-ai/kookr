@@ -108,9 +108,70 @@ describe('buildFallbackText (rung-aware)', () => {
     expect(buildFallbackText({ ...baseContext, taskName: '3' }, verbosity)).toBe('3. working.');
   });
 
-  test('a task named with an id keeps it as an ID, never nothing', () => {
+  test('a task named with only an id is called "This task", never nothing and never "an ID"', () => {
     const text = buildFallbackText({ ...baseContext, taskName: '123e4567-e89b-12d3-a456-426614174000' }, 'terse');
-    expect(text).toBe('an ID. working.');
+    expect(text).toBe('This task is working.');
+  });
+
+  describe('a long, cut or missing task title is never read aloud (#3605)', () => {
+    const longTitle = 'i lost approximetaly 6-7 kookr tasks that had hitten limits, can you check whic...';
+    const anomaly = { type: 'needs_input', severity: 'warning', explanation: 'Agent asked which branch to use.' };
+
+    test.each(['terse', 'brief'] as const)('%s: no anomaly speaks "This task is working."', (verbosity) => {
+      expect(buildFallbackText({ ...baseContext, taskName: longTitle }, verbosity)).toBe('This task is working.');
+      expect(buildFallbackText({ ...baseContext, taskName: 'Untitled task' }, verbosity)).toBe('This task is working.');
+      expect(buildFallbackText({ ...baseContext, taskName: '' }, verbosity)).toBe('This task is working.');
+    });
+
+    test.each(['terse', 'brief'] as const)('%s: an anomaly speaks "This task needs your input."', (verbosity) => {
+      expect(buildFallbackText({ ...baseContext, taskName: longTitle, anomaly }, verbosity)).toBe(
+        'This task needs your input.',
+      );
+    });
+
+    test('a short complete title keeps the exact wording', () => {
+      const named = { ...baseContext, taskName: 'Repository Idea Scout' };
+      expect(buildFallbackText(named, 'terse')).toBe('Repository Idea Scout. working.');
+      expect(buildFallbackText({ ...named, anomaly }, 'brief')).toBe('Repository Idea Scout needs your input.');
+    });
+
+    test('an unknown anomaly type is reported on "This task" with the type in words', () => {
+      const text = buildFallbackText(
+        { ...baseContext, taskName: longTitle, anomaly: { ...anomaly, type: 'weird_state' } },
+        'terse',
+      );
+      expect(text).toBe('This task reported weird state.');
+    });
+
+    test('a title cut with an ellipsis is generic even when it is short', () => {
+      expect(buildFallbackText({ ...baseContext, taskName: 'Fix the login…' }, 'terse')).toBe('This task is working.');
+    });
+
+    test.each(['medium', 'detailed'] as const)('%s: the name sentence is left out, not spoken as "This task."', (verbosity) => {
+      const text = buildFallbackText({ ...baseContext, taskName: longTitle }, verbosity);
+      expect(text).not.toContain('This task.');
+      expect(text).not.toContain('lost approximetaly');
+      expect(text).toContain('read 2 files');
+    });
+
+    test.each(['medium', 'detailed'] as const)('%s: with nothing else to say, speaks "This task is working."', (verbosity) => {
+      const quiet = { ...baseContext, taskName: longTitle, recentActivity: '(no recent activity)', recentMessages: '(no recent messages)' };
+      expect(buildFallbackText(quiet, verbosity)).toBe('This task is working.');
+    });
+
+    test.each(['medium', 'detailed'] as const)('%s: a short title still leads the text', (verbosity) => {
+      expect(buildFallbackText(baseContext, verbosity)).toMatch(/^Refactor auth\. /);
+    });
+
+    test('the fallback stays idempotent through the speakable step', async () => {
+      const { makeSpeakable } = await import('./speakable-text.js');
+      for (const verbosity of ['terse', 'brief', 'medium', 'detailed'] as const) {
+        for (const taskName of [longTitle, 'Untitled task', 'Refactor auth']) {
+          const text = buildFallbackText({ ...baseContext, taskName, anomaly }, verbosity);
+          expect(makeSpeakable(text)).toBe(text);
+        }
+      }
+    });
   });
 
   test('medium uses recent activity in the recap', () => {

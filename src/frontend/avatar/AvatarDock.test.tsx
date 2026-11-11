@@ -30,13 +30,20 @@ vi.mock('./assets/lucy-bust.glb?url', () => ({ default: '/lucy-bust.glb' }));
 
 const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
-const replay = vi.hoisted(() => ({ result: 'started' as string, calls: 0, gate: null as Promise<void> | null }));
+const replay = vi.hoisted(() => ({ result: 'started' as string, calls: 0, ids: [] as Array<string | undefined>, gate: null as Promise<void> | null }));
 vi.mock('../audio/clip-playback.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../audio/clip-playback.js')>();
   return {
     ...actual,
     replayLastClip: vi.fn(async () => {
       replay.calls += 1;
+      replay.ids.push(undefined);
+      if (replay.gate) await replay.gate;
+      return replay.result;
+    }),
+    replayClip: vi.fn(async (clipId: string) => {
+      replay.calls += 1;
+      replay.ids.push(clipId);
       if (replay.gate) await replay.gate;
       return replay.result;
     }),
@@ -87,7 +94,9 @@ describe('AvatarDock', () => {
 
   const dock = () => container.querySelector<HTMLElement>('[data-testid="avatar-dock"]');
   const bubble = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-bubble"]');
-  const caption = () => container.querySelector<HTMLElement>('[data-testid="avatar-caption"]');
+  const hint = () => container.querySelector<HTMLElement>('[data-testid="avatar-hint"]');
+  const messages = () => Array.from(container.querySelectorAll<HTMLElement>('[data-testid="avatar-message"]'));
+  const card = () => container.querySelector<HTMLElement>('[data-testid="avatar-bubble-card"]');
   const button = (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
 
   function render(attentionCount = 0): void {
@@ -113,6 +122,7 @@ describe('AvatarDock', () => {
     tracked.length = 0;
     replay.result = 'started';
     replay.calls = 0;
+    replay.ids = [];
     replay.gate = null;
     vi.mocked(stopReplay).mockClear();
     __resetLastClipForTests();
@@ -151,7 +161,8 @@ describe('AvatarDock', () => {
     expect(dock()!.style.left).toBe(`${corner.x}px`);
     expect(dock()!.style.top).toBe(`${corner.y}px`);
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
-    expect(caption()!.textContent).toContain('speaker button');
+    expect(hint()!.textContent).toContain('speaker button');
+    expect(container.querySelector('[aria-label="Recent messages"]')).toBeNull();
     expect(stages).toHaveLength(1);
     expect(stages[0].setState).toHaveBeenLastCalledWith('idle');
   });
@@ -176,7 +187,6 @@ describe('AvatarDock', () => {
       );
     });
     expect(dock()!.getAttribute('data-avatar-state')).toBe('speaking');
-    expect(caption()!.textContent).toBe('Two tasks need you.');
     expect(stage.setState).toHaveBeenLastCalledWith('speaking');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(analyser);
 
@@ -184,12 +194,6 @@ describe('AvatarDock', () => {
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
     expect(stage.setState).toHaveBeenLastCalledWith('idle');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(null);
-    // The last thing she said stays readable after the clip ends...
-    expect(caption()!.textContent).toBe('Two tasks need you.');
-
-    // ...and is cleared as soon as the next clip is being prepared, so old text is never shown as the new one.
-    act(() => emitSpeechGenerating(SPEAKER));
-    expect(caption()!.textContent).toContain('speaker button');
   });
 
   test('minimising shuts the 3D view down, shows a still on the bubble and keeps keyboard focus', () => {
@@ -239,14 +243,15 @@ describe('AvatarDock', () => {
 
   test.each([
     [0, 'Open Lucy', null],
-    [1, 'Open Lucy. 1 item needs your attention.', '1'],
-    [7, 'Open Lucy. 7 items need your attention.', '7'],
-    [120, 'Open Lucy. 120 items need your attention.', '99+'],
-  ])('the bubble for %i waiting items is labelled "%s"', (count, label, badge) => {
+    [1, 'Open Lucy. 1 finding needs your attention.', '1'],
+    [7, 'Open Lucy. 7 findings need your attention.', '7'],
+    [120, 'Open Lucy. 120 findings need your attention.', '99+'],
+  ])('the bubble for %i findings is labelled "%s", and its tooltip says the same', (count, label, badge) => {
     startWith({ minimized: true });
     render(count);
 
     expect(bubble()!.getAttribute('aria-label')).toBe(label);
+    expect(bubble()!.title).toBe(label);
     expect(container.querySelector('.avatar-bubble-badge')?.textContent ?? null).toBe(badge);
   });
 
@@ -429,13 +434,6 @@ describe('AvatarDock', () => {
     expect(status().textContent).toContain('Spoken summaries still play');
   });
 
-  test('the spoken text can be reached and scrolled from the keyboard', () => {
-    startWith({});
-    render();
-
-    expect(caption()!.tabIndex).toBe(0);
-    expect(caption()!.getAttribute('aria-label')).toBe('Spoken text');
-  });
   describe('replay and the unheard marker', () => {
     const replayButton = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-replay"]');
     const dot = () => container.querySelector('[data-testid="avatar-unheard-dot"]');
@@ -678,21 +676,21 @@ describe('AvatarDock', () => {
     test('the minimised bubble shows the dot and says "unheard message" in its name', () => {
       startWith({ minimized: true });
       render(2);
-      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 items need your attention.');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 findings need your attention.');
       expect(dot()).toBeNull();
 
       playClip();
       expect(dot()).not.toBeNull();
       expect(dot()!.getAttribute('aria-hidden')).toBe('true');
-      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, unheard message. 2 items need your attention.');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 findings need your attention. 1 unheard message.');
 
       act(() => emitSpeechGenerating(SPEAKER));
-      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, preparing, unheard message. 2 items need your attention.');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, preparing. 2 findings need your attention. 1 unheard message.');
       act(() => emitSpeechIdle(SPEAKER));
 
       act(() => markClipHeard('c1'));
       expect(dot()).toBeNull();
-      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 items need your attention.');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 findings need your attention.');
     });
 
     test('minimising and restoring does not count as hearing the clip', () => {
@@ -730,6 +728,355 @@ describe('AvatarDock', () => {
         { type: 'lucy_panel_action', action: 'restore', clipId: 'c1' },
         { type: 'lucy_panel_action', action: 'move', clipId: 'c1' },
       ]);
+    });
+  });
+
+  describe('the minimised bubble: hover / focus card', () => {
+    const hover = (): void => {
+      act(() => {
+        bubble()!.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, relatedTarget: document.body }));
+      });
+    };
+    const unhover = (): void => {
+      act(() => {
+        bubble()!.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+      });
+    };
+    const addUnheard = (n: number): void => {
+      act(() => {
+        for (let i = 0; i < n; i += 1) captureLastClip({ clipId: `u${i}`, text: `m${i}`, audio: new ArrayBuffer(4) });
+      });
+    };
+
+    test('hovering spells out the findings and the unheard messages, and a hint; leaving hides it', () => {
+      startWith({ minimized: true });
+      render(2);
+      addUnheard(1);
+      expect(card()).toBeNull();
+
+      hover();
+      const rows = Array.from(card()!.querySelectorAll('.avatar-bubble-card-row')).map((row) => row.textContent);
+      expect(rows).toEqual(['2 findings need you', '1 unheard message']);
+      expect(card()!.querySelector('.avatar-bubble-card-hint')!.textContent).toBe('Click to open Lucy');
+      // A shape beside each row, so the meaning is not carried by colour alone.
+      expect(card()!.querySelector('.avatar-mark-diamond')).not.toBeNull();
+      expect(card()!.querySelector('.avatar-mark-dot')).not.toBeNull();
+      // A visual duplicate of the bubble's label: hidden from assistive technology.
+      expect(card()!.getAttribute('aria-hidden')).toBe('true');
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 findings need your attention. 1 unheard message.');
+      // The native tooltip would double the card.
+      expect(bubble()!.hasAttribute('title')).toBe(false);
+
+      unhover();
+      expect(card()).toBeNull();
+      expect(bubble()!.title).toBe('Open Lucy. 2 findings need your attention. 1 unheard message.');
+    });
+
+    test('uses the singular for one finding and the plural for several unheard messages, and omits a row that is zero', () => {
+      startWith({ minimized: true });
+      render(1);
+      hover();
+      expect(Array.from(card()!.querySelectorAll('.avatar-bubble-card-row')).map((row) => row.textContent)).toEqual(['1 finding needs you']);
+
+      addUnheard(3);
+      expect(Array.from(card()!.querySelectorAll('.avatar-bubble-card-row')).map((row) => row.textContent)).toEqual([
+        '1 finding needs you',
+        '3 unheard messages',
+      ]);
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 1 finding needs your attention. 3 unheard messages.');
+    });
+
+    test('with only unheard messages there is no findings row', () => {
+      startWith({ minimized: true });
+      render(0);
+      addUnheard(2);
+      hover();
+      expect(Array.from(card()!.querySelectorAll('.avatar-bubble-card-row')).map((row) => row.textContent)).toEqual(['2 unheard messages']);
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy. 2 unheard messages.');
+    });
+
+    test('there is no card when there is nothing to explain', () => {
+      startWith({ minimized: true });
+      render(0);
+      hover();
+      expect(card()).toBeNull();
+      expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy');
+    });
+
+    test('keyboard focus shows the card, blur hides it, and Escape closes it until focus or the pointer comes back', () => {
+      startWith({ minimized: true });
+      render(2);
+      // jsdom has no keyboard-modality tracking: say that the browser would draw a focus ring.
+      vi.spyOn(bubble()!, 'matches').mockImplementation((selector: string) => selector === ':focus-visible');
+
+      act(() => bubble()!.focus());
+      expect(card()).not.toBeNull();
+
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      expect(card()).toBeNull();
+      // Still focused, still dismissed.
+      expect(document.activeElement).toBe(bubble());
+
+      act(() => bubble()!.blur());
+      act(() => bubble()!.focus());
+      expect(card()).not.toBeNull();
+
+      act(() => bubble()!.blur());
+      expect(card()).toBeNull();
+    });
+
+    test('focus that does not come from the keyboard (no focus ring) does not open the card', () => {
+      startWith({ minimized: true });
+      render(2);
+      vi.spyOn(bubble()!, 'matches').mockImplementation(() => false);
+      act(() => bubble()!.focus());
+      expect(card()).toBeNull();
+    });
+
+    test('Escape also closes a card that is open only because of the pointer, and the next hover shows it again', () => {
+      startWith({ minimized: true });
+      render(2);
+      hover();
+      act(() => {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      });
+      expect(card()).toBeNull();
+      unhover();
+      hover();
+      expect(card()).not.toBeNull();
+    });
+
+    test('the card sits above the bubble with its right edge on the bubble\'s right edge', () => {
+      startWith({ minimized: true });
+      render(2);
+      hover();
+      const bubbleLeft = parseFloat(bubble()!.style.left);
+      const bubbleTop = parseFloat(bubble()!.style.top);
+      expect(card()!.style.bottom).toBe(`${VIEWPORT.height - bubbleTop + 10}px`);
+      expect(card()!.style.right).toBe(`${VIEWPORT.width - (bubbleLeft + 58)}px`);
+      expect(card()!.style.top).toBe('');
+      expect(card()!.style.left).toBe('');
+    });
+
+    test('in a tiny window it drops below the bubble and lines up with its left edge instead of leaving the screen', () => {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 200 });
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: 150 });
+      startWith({ minimized: true });
+      render(2);
+      hover();
+      const bubbleLeft = parseFloat(bubble()!.style.left);
+      const bubbleTop = parseFloat(bubble()!.style.top);
+      expect(card()!.style.top).toBe(`${bubbleTop + 58 + 10}px`);
+      expect(card()!.style.left).toBe(`${bubbleLeft}px`);
+      expect(card()!.style.bottom).toBe('');
+      expect(card()!.style.right).toBe('');
+    });
+
+    test('opening the panel while hovering does not leave the card stuck on for the next minimise', () => {
+      startWith({ minimized: true });
+      render(2);
+      hover();
+      act(() => bubble()!.click());
+      expect(card()).toBeNull();
+      act(() => button('Minimise Lucy')!.click());
+      // The pointer is not over the new bubble; only keyboard focus (handed over on minimise) may show the card.
+      act(() => bubble()!.blur());
+      expect(card()).toBeNull();
+    });
+
+    test('the card is not rendered in the open panel', () => {
+      startWith({});
+      render(2);
+      expect(card()).toBeNull();
+    });
+  });
+
+  describe('the message list', () => {
+    const replayButtons = () => Array.from(container.querySelectorAll<HTMLButtonElement>('[data-testid="avatar-msg-replay"]'));
+    const headerReplay = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-replay"]')!;
+    const panelActions = () => tracked.filter((e) => e.type === 'lucy_panel_action');
+    const clip = (id: string, text: string, subject?: string): void => {
+      act(() => {
+        captureLastClip({ clipId: id, text, subject, audio: new ArrayBuffer(4), durationMs: 1000 });
+      });
+    };
+    const textsOf = () => messages().map((li) => li.querySelector('.avatar-msg-text')!.textContent);
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+      vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    test('shows the last three messages, newest first, as a labelled list; older ones are dropped', () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      clip('c', 'third');
+      const list = container.querySelector('ol[aria-label="Recent messages"]')!;
+      expect(list).not.toBeNull();
+      expect(textsOf()).toEqual(['third', 'second', 'first']);
+      expect(hint()).toBeNull();
+
+      clip('d', 'fourth');
+      expect(textsOf()).toEqual(['fourth', 'third', 'second']);
+      expect(messages()[0].classList.contains('avatar-msg-newest')).toBe(true);
+      expect(messages()[1].classList.contains('avatar-msg-newest')).toBe(false);
+    });
+
+    test('each message has its subject and age, the full text in a tooltip, and "unheard" in words until it is heard', () => {
+      startWith({});
+      render();
+      clip('a', 'Build finished; review is ready. Please look at the second approach in detail.', 'UI refactor');
+      const item = messages()[0];
+      expect(item.querySelector('.avatar-msg-subject')!.textContent).toBe('UI refactor');
+      expect(item.querySelector('.avatar-msg-time')!.textContent).toBe('just now');
+      expect(item.querySelector('.avatar-msg-text')!.getAttribute('title')).toBe(
+        'Build finished; review is ready. Please look at the second approach in detail.',
+      );
+      expect(item.querySelector('[data-testid="avatar-msg-unheard"]')!.textContent).toBe('unheard');
+
+      act(() => markClipHeard('a'));
+      expect(item.querySelector('[data-testid="avatar-msg-unheard"]')).toBeNull();
+    });
+
+    test('a message without a subject shows only the time', () => {
+      startWith({});
+      render();
+      clip('a', 'No title here');
+      const item = messages()[0];
+      expect(item.querySelector('.avatar-msg-subject')).toBeNull();
+      expect(item.querySelector('.avatar-msg-sep')).toBeNull();
+      expect(item.querySelector('.avatar-msg-meta')!.textContent).toContain('just now');
+      expect(item.querySelector('button')!.getAttribute('aria-label')).toBe('Replay message, just now');
+    });
+
+    test('a subject is shown as plain text, never as markup', () => {
+      startWith({});
+      render();
+      clip('a', 'hi', '<img src=x onerror="window.__pwned=1"><b>bold</b>');
+      const subject = messages()[0].querySelector('.avatar-msg-subject')!;
+      expect(subject.textContent).toBe('<img src=x onerror="window.__pwned=1"><b>bold</b>');
+      expect(subject.children).toHaveLength(0);
+    });
+
+    test('each Replay button is named after its message and age', () => {
+      startWith({});
+      render();
+      clip('a', 'first', 'Fix flaky test');
+      act(() => vi.advanceTimersByTime(5 * 60_000));
+      clip('b', 'second', 'UI refactor');
+      expect(replayButtons().map((b) => b.getAttribute('aria-label'))).toEqual([
+        'Replay message about UI refactor, just now',
+        'Replay message about Fix flaky test, 5 min ago',
+      ]);
+    });
+
+    test('ages refresh every 30 seconds with a single timer that is cleared on minimise and on unmount', () => {
+      startWith({});
+      render();
+      expect(vi.getTimerCount()).toBe(0); // nothing to age yet
+      clip('a', 'first');
+      expect(vi.getTimerCount()).toBe(1);
+      const age = () => messages()[0].querySelector('.avatar-msg-time')!.textContent;
+      expect(age()).toBe('just now');
+
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(age()).toBe('just now');
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(age()).toBe('1 min ago');
+      clip('b', 'second');
+      expect(vi.getTimerCount()).toBe(1);
+
+      act(() => button('Minimise Lucy')!.click());
+      expect(vi.getTimerCount()).toBe(0);
+      act(() => bubble()!.click());
+      expect(vi.getTimerCount()).toBe(1);
+      expect(messages()[1].querySelector('.avatar-msg-time')!.textContent).toBe('1 min ago');
+
+      act(() => root!.unmount());
+      root = null;
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    test('a message\'s Replay button replays that message, records its clip id and keeps focus', async () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      clip('c', 'third');
+      const older = replayButtons()[2];
+      older.focus();
+      await act(async () => {
+        older.click();
+      });
+      expect(replay.ids).toEqual(['a']);
+      expect(panelActions()).toEqual([{ type: 'lucy_panel_action', action: 'replay', clipId: 'a' }]);
+      expect(document.activeElement).toBe(older);
+    });
+
+    test('the header Replay button acts on the newest message', async () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      await act(async () => {
+        headerReplay().click();
+      });
+      expect(replay.ids).toEqual([undefined]); // replayLastClip: the newest
+      expect(panelActions()).toEqual([{ type: 'lucy_panel_action', action: 'replay', clipId: 'b' }]);
+    });
+
+    test('the header dot shows while ANY message is unheard, even when the newest was heard', () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      act(() => markClipHeard('b'));
+      expect(container.querySelector('[data-testid="avatar-unheard-dot"]')).not.toBeNull();
+      expect(headerReplay().title).toBe('Replay last message (unheard)');
+      act(() => markClipHeard('a'));
+      expect(container.querySelector('[data-testid="avatar-unheard-dot"]')).toBeNull();
+    });
+
+    test('the Replay buttons stay focusable but unavailable while she is busy or sound is off, with the reason described', () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      clip('b', 'second');
+      const [first] = replayButtons();
+      first.focus();
+      expect(first.getAttribute('aria-disabled')).toBeNull();
+      expect(first.hasAttribute('aria-describedby')).toBe(false);
+
+      act(() => emitSpeechGenerating(SPEAKER));
+      for (const b of replayButtons()) {
+        expect(b.getAttribute('aria-disabled')).toBe('true');
+        expect(b.disabled).toBe(false);
+      }
+      expect(document.activeElement).toBe(first);
+      expect(container.querySelector(`#${first.getAttribute('aria-describedby')}`)!.textContent).toContain('busy');
+      act(() => first.click());
+      expect(replay.calls).toBe(0);
+      expect(container.querySelector('[role="status"]')!.textContent).toContain('busy');
+
+      act(() => emitSpeechIdle(SPEAKER));
+      act(() => setSoundEnabled(false));
+      expect(replayButtons()[1].getAttribute('aria-disabled')).toBe('true');
+      expect(container.querySelector(`#${replayButtons()[1].getAttribute('aria-describedby')}`)!.textContent).toBe('Sound is off in Settings');
+    });
+
+    test('the transcript region does not duplicate the status live region', () => {
+      startWith({});
+      render();
+      clip('a', 'first');
+      expect(container.querySelectorAll('[role="status"]')).toHaveLength(1);
+      expect(container.querySelector('[role="status"]')!.closest('.avatar-dock-transcript')).toBeNull();
     });
   });
 });
