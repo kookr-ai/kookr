@@ -95,6 +95,7 @@ describe('DetailPanel reading pane header and facts (#3561 slice 4b)', () => {
     const tab = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('.detail-tab')]
       .find((button) => button.textContent?.startsWith(label));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(q('detail-split-toggle')?.getAttribute('aria-pressed')).toBe(String(detailPaneMode === 'split'));
     expect(tab('GitHub')?.getAttribute('aria-pressed')).toBe('true');
     expect(q('github-panel')).not.toBeNull();
 
