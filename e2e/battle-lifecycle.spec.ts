@@ -44,8 +44,11 @@ test.describe('Stop agent', () => {
       dialog.dismiss(); // Dismiss the cancel confirm
     });
 
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
-    expect(dialogSeen).toBe(true);
+    // The menu closes before confirm() opens, so the dialog arrives a tick later.
+    await expect.poll(() => dialogSeen).toBe(true);
 
     // Agent should still be present (we dismissed the confirm)
     await expect(page.locator('.finding-card')).toBeVisible();
@@ -59,6 +62,8 @@ test.describe('Stop agent', () => {
 
     await page.locator('.finding-card').click();
     page.on('dialog', (dialog) => dialog.accept());
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     await expect(page.locator('.finding-card')).not.toBeVisible({ timeout: 5000 });
@@ -87,6 +92,8 @@ test.describe('Stop agent', () => {
     // Select second finding and cancel it
     await page.locator('.finding-card').nth(1).click();
     page.on('dialog', (dialog) => dialog.accept());
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Selecting the cancelled task also filters to its project. Show the

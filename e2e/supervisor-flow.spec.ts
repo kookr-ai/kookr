@@ -192,7 +192,7 @@ test.describe('Supervisor flow — auto-advance', () => {
     expect(firstSelected).toMatch(/^Skip Agent [AB]$/);
 
     // Skip it via detail panel
-    await page.locator('.response-row .btn-secondary:has-text("Skip")').click();
+    await page.getByTestId('finding-skip').click(); // #3561 4b: in the decision card
 
     // Selection should advance to the other finding.
     const nextTask = firstSelected === promptA ? promptB : promptA;
@@ -225,7 +225,7 @@ test.describe('Supervisor flow — auto-advance', () => {
     expect(firstSelected).toMatch(/^Snooze Agent [AB]$/);
 
     // Snooze it — click "Snooze" then select "5m" from dialog
-    await page.locator('.response-row .btn-secondary:has-text("Snooze")').click();
+    await page.getByTestId('finding-snooze').click(); // #3561 4b: in the decision card
     await page.locator('.snooze-dialog-btn:has-text("5m")').click();
 
     // Selection should advance to the remaining finding
@@ -564,6 +564,8 @@ test.describe('Supervisor flow — task lifecycle', () => {
 
     // Accept the confirm dialog
     page.on('dialog', (dialog) => dialog.accept());
+    // #3561 4b: Cancel lives in the header's More actions menu.
+    await page.getByTestId('detail-more-actions').click();
     await page.locator('[data-testid="action-cancel"]').click();
 
     // Wait for the agent to disappear

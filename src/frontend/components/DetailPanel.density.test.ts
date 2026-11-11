@@ -134,7 +134,7 @@ describe('DetailPanel dense metadata', () => {
     vi.unstubAllGlobals();
   });
 
-  test('keeps critical task state in the header and moves repeated metadata into details', () => {
+  test('#3561 4b: the header carries one meta line and the facts column carries the metadata', () => {
     root = renderDetailPanel(container, makeAgent());
 
     const header = container.querySelector('.detail-header')!;
@@ -142,16 +142,25 @@ describe('DetailPanel dense metadata', () => {
     expect(header.querySelector('.detail-header-warning')?.textContent).toBe('worktree missing');
     expect(header.querySelector('.detail-badge.input')?.textContent).toBe('NEEDS INPUT');
 
-    expect(header.querySelector('.detail-header-right > .project-badge')).toBeNull();
-    expect(header.querySelector('.detail-header-right > .detail-agent-type-group')).toBeNull();
-    expect(header.querySelector('.detail-header-right > .detail-branch')).toBeNull();
+    // One meta line: project, branch and cost (the spike's frame), no popover.
+    const meta = header.querySelector('[data-testid="detail-meta"]')!;
+    expect(meta.textContent).toContain('kookr');
+    expect(meta.textContent).toContain('main');
+    expect(meta.textContent).toContain('$0.42');
+    expect(header.querySelector('.detail-meta-menu, details')).toBeNull();
+    expect(header.querySelector('.detail-agent-type-group')).toBeNull();
 
-    const metaMenu = header.querySelector('.detail-meta-menu')!;
-    expect(metaMenu.querySelector('.detail-agent-provider--codex-cli')?.textContent).toContain('Codex CLI');
-    expect(metaMenu.querySelector('.project-badge')?.textContent).toBe('kookr');
-    expect(metaMenu.querySelector('.detail-branch')?.textContent).toContain('main');
-    expect(metaMenu.textContent).toContain('$0.42');
-    expect(metaMenu.textContent).toContain('1.5k tok');
+    const facts = container.querySelector('[data-testid="detail-facts"]')!;
+    expect(facts.closest('.detail-header')).toBeNull();
+    expect(facts.querySelector('.detail-agent-provider--codex-cli')?.textContent).toContain('Codex CLI');
+    expect(facts.querySelector('.project-badge')?.textContent).toBe('kookr');
+    expect(facts.querySelector('.detail-branch')?.textContent).toContain('main');
+    expect(facts.textContent).toContain('$0.42');
+    expect(facts.textContent).toContain('1.5k tok');
+    // The Relationships row and the timestamp card moved here too.
+    expect(facts.querySelector('[data-testid="task-dependencies"]')).not.toBeNull();
+    expect(facts.querySelector('[data-testid="task-timeline"]')).not.toBeNull();
+    expect(container.querySelectorAll('[data-testid="task-dependencies"]')).toHaveLength(1);
   });
 
   test('FR-TERM-005: unrelated agent updates do not render the terminal', async () => {
@@ -272,12 +281,13 @@ describe('DetailPanel dense metadata', () => {
     expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
   });
 
-  test('keeps task timeline in Activity and hides it on the GitHub pane', async () => {
+  test('#3561 4b: the task timeline lives in the facts column and stays there on the GitHub pane', async () => {
     root = renderDetailPanel(container, makeAgent());
 
     const timeline = container.querySelector('[data-testid="task-timeline"]');
     expect(timeline).not.toBeNull();
-    expect(timeline?.parentElement?.classList.contains('detail-split-left')).toBe(true);
+    expect(timeline?.closest('[data-testid="detail-facts"]')).not.toBeNull();
+    expect(container.querySelector('.detail-split-left [data-testid="task-timeline"]')).toBeNull();
 
     act(() => useKookrStore.getState().handleGitHubUpdate('task-1', [], [
       {
@@ -296,7 +306,7 @@ describe('DetailPanel dense metadata', () => {
     await flush();
 
     expect(container.querySelector('[data-testid="github-panel"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="task-timeline"]')).toBeNull();
+    expect(container.querySelector('[data-testid="detail-facts"] [data-testid="task-timeline"]')).not.toBeNull();
   });
 
   function seedGitHubIssue() {

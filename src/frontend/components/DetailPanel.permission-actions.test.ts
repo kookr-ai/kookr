@@ -150,7 +150,7 @@ describe('DetailPanel permission quick actions', () => {
     expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });
   });
 
-  test('reflect button requests a snapshot reflection without completing', () => {
+  test('reflect, chosen from More actions, requests a snapshot reflection without completing', async () => {
     const sent: ClientMessage[] = [];
     const onRequestComplete = vi.fn();
     root = renderDetailPanel(container, (msg) => {
@@ -158,9 +158,15 @@ describe('DetailPanel permission quick actions', () => {
       return true;
     }, onRequestComplete);
 
+    // #3561 4b: Reflect lives in the header's More actions menu.
+    expect(container.querySelector('[data-testid="action-reflect"]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[data-testid="detail-more-actions"]')!.click());
     const button = container.querySelector<HTMLButtonElement>('[data-testid="action-reflect"]');
     expect(button).toBeInstanceOf(HTMLButtonElement);
     act(() => button!.click());
+    // The menu closes before prompt() runs.
+    expect(container.querySelector('[data-testid="action-reflect"]')).toBeNull();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
 
     expect(sent).toContainEqual({ type: 'requestTaskSnapshotReflect', taskId: 'task-1' });
     expect(sent).not.toContainEqual({ type: 'completeTask', taskId: 'task-1' });

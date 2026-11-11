@@ -7,20 +7,15 @@ import { isTerminalStatus } from '../../shared/contracts/task-status.js';
 import type { TaskStatus } from '../../shared/contracts/task-status.js';
 import { track, trackClick } from '../telemetry.js';
 import type { DiffClickTarget } from './ActivityPanel.js';
-import { formatCost, formatCostRate, formatTokens, formatCacheHit, projectLabel, projectColor, formatBranch, agentProviderPresentation, worktreeHealthLabel, worktreeHealthTitle, deriveTaskNextStepRecommendations, findingKindClass } from '../presentation.js';
+import { projectLabel, deriveTaskNextStepRecommendations, findingKindClass } from '../presentation.js';
 import type { NextStepRecommendation } from '../presentation.js';
 import { SnoozeDialog } from './SnoozeDialog.js';
 import { shouldAutoFocusReply, anomalyTransitionKey } from './detail-panel-focus.js';
 import { computeTerminalVisible, resolveDetailPaneLayout } from './detail-panel-visibility.js';
-import { TaskIdCopyButton } from './TaskIdCopyButton.js';
-import { DashboardLinkCopyButton } from './DashboardLinkCopyButton.js';
-import { PathCopyButton } from './PathCopyButton.js';
 import { TaskShareModal } from './TaskShareModal.js';
 import type { TaskShareSummary } from '../../shared/contracts/remote-share.js';
 import { getSettingsSnapshot, getTaskShares } from '../api/index.js';
 import { deriveTaskShareHeaderStatus } from './task-share-header-status.js';
-import { TaskDependencyEditor } from './TaskDependencyEditor.js';
-import { TaskDependencyRail } from './TaskDependencyRail.js';
 import type { ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { CoordinatorChainStripView } from './CoordinatorSurfaces.js';
 import { clearDetailReplyDraft, loadDetailReplyDraft, saveDetailReplyDraft } from '../store/detail-reply-draft.js';
@@ -32,11 +27,14 @@ import {
 import { OverviewEmptyState } from './OverviewEmptyState.js';
 import type { DetailPaneMode, NarrowTab } from '../store/store-types.js';
 import { relaunchFromAgent } from '../relaunch-from-agent.js';
-import { MigrateTaskControl } from './DetailPanel/MigrateTaskControl.js';
+import { DetailHeaderActions } from './DetailPanel/DetailHeaderActions.js';
+import { DetailMetaLine } from './DetailPanel/DetailMetaLine.js';
+import { DecisionCard } from './DetailPanel/DecisionCard.js';
+import { TaskFactsColumn } from './DetailPanel/TaskFactsColumn.js';
+import { usePaneAtLeast, FACTS_DOCK_MIN_PANE_PX } from './DetailPanel/use-pane-at-least.js';
 import { appendDictation } from '../append-dictation.js';
 import { TaskCompletionDigest } from './TaskCompletionDigest.js';
 import { TranscriptView, TranscriptToggle } from './TranscriptView.js';
-import { TaskTimeline } from './TaskTimeline.js';
 
 type LazyModule = Record<string, unknown> & { default?: Record<string, unknown> };
 
@@ -188,29 +186,6 @@ function EditableHeading({ agent, send }: { agent: AgentState; send: (msg: Clien
   );
 }
 
-function AgentProviderBadge({
-  agentType,
-  provider,
-}: {
-  agentType: NonNullable<AgentState['agentType']>;
-  provider: ReturnType<typeof agentProviderPresentation>;
-}) {
-  const title = `${provider.label} by ${provider.provider}`;
-
-  return (
-    <span
-      className={`detail-agent-provider detail-agent-provider--${agentType}`}
-      title={title}
-    >
-      <svg className="detail-agent-provider-icon" viewBox="0 0 24 24" aria-hidden="true">
-        <path d={provider.iconPath} />
-      </svg>
-      <span className="detail-agent-provider-label">{provider.label}</span>
-      <span className="sr-only"> by {provider.provider}</span>
-    </span>
-  );
-}
-
 function TaskNextActionsPanel({
   agentId,
   recommendations,
@@ -290,121 +265,6 @@ function TaskNextActionsPanel({
   );
 }
 
-function DetailMetadataMenu({
-  agent,
-  provider,
-  hookSettingsTriggerRef,
-  onShowHookSettings,
-}: {
-  agent: AgentState;
-  provider: ReturnType<typeof agentProviderPresentation> | null;
-  hookSettingsTriggerRef: React.RefObject<HTMLButtonElement | null>;
-  onShowHookSettings: () => void;
-}) {
-  const hasUsageCost = agent.tokenUsage && agent.tokenUsage.costUsd > 0;
-  const costRate = formatCostRate(agent.tokenUsage?.costUsd, agent.startedAt);
-  const hasTokenCount = agent.tokenUsage && (agent.tokenUsage.inputTokens + agent.tokenUsage.outputTokens) > 0;
-  const hasCacheReads = agent.tokenUsage && agent.tokenUsage.cacheReadTokens > 0;
-  const hasProject = Boolean(agentProjectLabel(agent));
-  const hasBranch = Boolean(agent.gitBranch || agent.gitCommit);
-  const hasAgentType = Boolean(agent.agentType && provider);
-  const hasAnyDetail = hasUsageCost || hasTokenCount || hasCacheReads || hasProject || hasBranch || hasAgentType || Boolean(agent.cwd);
-
-  if (!hasAnyDetail) return null;
-
-  return (
-    <details className="detail-meta-menu">
-      <summary>Details</summary>
-      <div className="detail-meta-popover">
-        {hasAgentType && agent.agentType && provider && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Agent</span>
-            <span className="detail-agent-type-group">
-              <AgentProviderBadge agentType={agent.agentType} provider={provider} />
-              <button
-                ref={hookSettingsTriggerRef}
-                type="button"
-                className="detail-hook-settings-btn"
-                aria-label={`Hooks: view effective hook settings for ${provider.label} session`}
-                title={`Hooks: view effective hook settings for ${provider.label} session`}
-                onClick={onShowHookSettings}
-              >
-                hooks
-              </button>
-            </span>
-          </div>
-        )}
-        {hasProject && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Project</span>
-            <span className={`project-badge color-${projectColor(agent.projectId ?? agent.cwd)}`} title={agent.cwd}>
-              {agentProjectLabel(agent)}
-            </span>
-          </div>
-        )}
-        {agent.cwd && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Directory</span>
-            <PathCopyButton cwd={agent.cwd} />
-          </div>
-        )}
-        {agent.gitBranch && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Branch</span>
-            <span className="detail-branch" title={agent.gitIsWorktree ? `Worktree: ${agent.cwd}` : 'Git branch'}>
-              {'\u2387'} {formatBranch(agent.gitBranch)}
-              {agent.gitIsWorktree && <span className="worktree-badge">worktree</span>}
-            </span>
-          </div>
-        )}
-        {!agent.gitBranch && agent.gitCommit && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Revision</span>
-            <span className="detail-branch detached" title="Detached HEAD">
-              {'\u2387'} ({agent.gitCommit})
-            </span>
-          </div>
-        )}
-        {hasUsageCost && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Cost</span>
-            <span className="detail-cost" title={`In: ${formatTokens(agent.tokenUsage!.inputTokens)} / Out: ${formatTokens(agent.tokenUsage!.outputTokens)}`}>
-              {formatCost(agent.tokenUsage!.costUsd)}{costRate ? ` · ${costRate}` : ''}
-            </span>
-            {agent.tokenUsage!.pricingQuality === 'fallback' && (
-              <span
-                className="pricing-fallback-badge"
-                title="Estimated: priced with fallback (Sonnet) rates because exact pricing for this model was unavailable."
-              >
-                ~ estimated
-              </span>
-            )}
-          </div>
-        )}
-        {hasTokenCount && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Tokens</span>
-            <span className="detail-tokens">
-              {formatTokens(agent.tokenUsage!.inputTokens + agent.tokenUsage!.outputTokens)} tok
-            </span>
-          </div>
-        )}
-        {hasCacheReads && (
-          <div className="detail-meta-row">
-            <span className="detail-meta-label">Cache</span>
-            <span
-              className="detail-tokens"
-              title="Cache-hit % = cacheReadTokens / (inputTokens + cacheReadTokens): share of input served from the prompt cache"
-            >
-              {formatTokens(agent.tokenUsage!.cacheReadTokens)} rd · {formatCacheHit(agent.tokenUsage)} hit
-            </span>
-          </div>
-        )}
-      </div>
-    </details>
-  );
-}
-
 export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPlaybooks, onOpenSchedules, onCheckSetup, onOpenCostComparison, onExpandCompleted, onExpandHealthy, onRequestComplete, detailPaneMode, wideDetailActive = true, terminalFocusMode = false, shortcutBindings = defaultShortcutBindings(), shareRequestNonce = 0, overview }: Props) {
   const [input, setInput] = useState('');
   const [showSnooze, setShowSnooze] = useState(false);
@@ -414,6 +274,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const [replySnippets, setReplySnippets] = useState<ReplySnippet[]>([]);
   const hookSettingsTriggerRef = useRef<HTMLButtonElement>(null);
   const conversationTabRef = useRef<HTMLButtonElement>(null);
+  // #3561 4b: the facts column docks beside the conversation on a wide pane
+  // and opens over the pane from the header's Details button otherwise.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const paneWide = usePaneAtLeast(panelRef, FACTS_DOCK_MIN_PANE_PX, agent === null);
+  const [factsOpen, setFactsOpen] = useState(false);
+  const factsToggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => { setFactsOpen(false); }, [agent?.agentId]);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore(useShallow((state) => ({
@@ -453,6 +320,9 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   });
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  // Once docked, a later undock starts closed instead of reopening the overlay.
+  const factsDockedNow = paneWide && layout === 'tabs';
+  useEffect(() => { if (factsDockedNow) setFactsOpen(false); }, [factsDockedNow]);
   const serverStartedAt = useKookrStore((s) => s.serverStartedAt);
   const replyDraftScope = { taskId: agent?.taskId, agentId: agent?.agentId };
 
@@ -699,7 +569,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     if (!el) return;
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, REPLY_MAX_HEIGHT_PX)}px`;
-  }, [input]);
+    // #3561 4b: docking or folding the facts column changes the reply width.
+  }, [input, paneWide]);
 
   // Reset permission button disabled state when agent or suggestions change
   const suggestion = agent ? suggestions[agent.agentId] ?? null : null;
@@ -989,13 +860,65 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   const badgeLabel = agent.anomaly
     ? isCompletedTurn ? 'SIGNALED COMPLETE' : agent.anomaly.type.replace('_', ' ').toUpperCase()
     : 'RUNNING';
-  const agentProvider = agent.agentType ? agentProviderPresentation(agent.agentType) : null;
   const taskGitHubState = agent.taskId ? githubState[agent.taskId] : undefined;
   const nextStepRecommendations = deriveTaskNextStepRecommendations(agent, taskGitHubState?.prs ?? []);
   const shareHeaderStatus = deriveTaskShareHeaderStatus(agent.taskId, shareHeaderShares);
   const rightOnlyMode = layout === 'focus';
   const tabbedLayout = layout === 'tabs';
+  // Split view and terminal focus keep the width for the panes: there the
+  // column opens over the pane from the Details button, like a narrow pane.
+  const factsDocked = paneWide && tabbedLayout;
+  const showFactsToggle = !factsDocked;
+  const factsVisible = factsDocked || factsOpen;
+  function closeFacts() {
+    setFactsOpen(false);
+    factsToggleRef.current?.focus();
+  }
+  // #3561 4b: a finding docks its decision card at the foot of the
+  // conversation pane, right above the reply box. In split view that keeps the
+  // terminal's full height. With the terminal filling the pane (Terminal tab,
+  // terminal focus) or a completion digest, only the answer buttons stay, in
+  // the reply area, as before.
+  const completionDigestShown = isTerminalTaskStatus(agent.taskStatus) && !!agent.completionDigest;
+  const decisionCardVisible = !!agent.anomaly && !completionDigestShown && !rightOnlyMode
+    && !(tabbedLayout && narrowTab === 'terminal');
   const showEvolutionPanel = Boolean(agent.taskId && agent.playbookId === 'autonomous-evolution.md');
+  // Skip and Snooze decide what happens to the finding, so they sit in the
+  // decision card when it shows; the reply row keeps input, voice and Send.
+  const findingTriageButtons = (
+    <>
+      <button type="button" className="btn-secondary" data-testid="finding-skip" onClick={() => handleSkip()}>Skip</button>
+      <button type="button" className="btn-secondary" data-testid="finding-snooze" onClick={() => setShowSnooze(true)}>Snooze</button>
+    </>
+  );
+  const quickActionButtons = quickActions.length > 0 ? (
+    <div className="quick-actions">
+      {isPermissionActions
+        ? quickActions.map((action) => (
+          <button
+            key={action.value}
+            className="btn-quick-action permission-action"
+            onClick={() => handlePermissionChoice(action)}
+            disabled={permissionButtonsDisabled}
+            title={action.value}
+          >
+            <span>{action.label}</span>
+          </button>
+        ))
+        : quickActions.map((action, i) => (
+          <button
+            key={action.value}
+            className={`btn-quick-action${action.isAi ? ' ai-suggestion' : ''}`}
+            onClick={() => handleQuickAction(action.value, action.isAi)}
+            title={action.value.length > 100 ? action.value : undefined}
+          >
+            <kbd>{action.shortcut ?? String(i + 1)}</kbd>
+            <span>{action.label}</span>
+          </button>
+        ))
+      }
+    </div>
+  ) : null;
 
   function focusNextFrame(ref: React.RefObject<HTMLElement | null>) {
     window.requestAnimationFrame(() => ref.current?.focus());
@@ -1026,115 +949,71 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   }
 
   return (
-    <div className={`detail-panel kookr-tour-target-layout${rightOnlyMode ? ' terminal-focus' : ''}${tabbedLayout ? ' detail-tabbed' : ''}`} data-testid="detail-panel">
+    <div ref={panelRef} className={`detail-panel kookr-tour-target-layout${rightOnlyMode ? ' terminal-focus' : ''}${tabbedLayout ? ' detail-tabbed' : ''}`} data-testid="detail-panel">
       <div className="detail-header">
+        {/* #3561 4b: title over one meta line; one main action plus a menu */}
         <div className="detail-header-left">
           <EditableHeading agent={agent} send={send} />
-          {agent.playbookId && <span className="detail-badge playbook">Playbook</span>}
-          {agent.taskStatus === 'pending' && <span className="detail-badge pending">Pending</span>}
-          {agent.launchPermissionPosture?.bypassAllPermissions && (
-            <span
-              className="detail-badge permission-bypassed"
-              title="This task was launched while KOOKR_BYPASS_ALL_PERMISSIONS was active"
-              data-testid="task-permission-bypass-badge"
-            >
-              Permissions bypassed
-            </span>
-          )}
-          {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
-          {operatorNeeded && (
-            <span
-              className="detail-badge permission"
-              title={operatorNeeded.message}
-              data-testid="task-operator-needed-badge"
-            >
-              Operator needed
-            </span>
-          )}
+          <DetailMetaLine
+            agent={agent}
+            projectLabel={agentProjectLabel(agent)}
+            shareBadge={shareHeaderStatus.badgeLabel}
+            badges={<>
+              {agent.anomaly && <span className={`detail-badge ${badgeClass}`}>{badgeLabel}</span>}
+              {agent.playbookId && <span className="detail-badge playbook">Playbook</span>}
+              {agent.launchPermissionPosture?.bypassAllPermissions && (
+                <span
+                  className="detail-badge permission-bypassed"
+                  title="This task was launched while KOOKR_BYPASS_ALL_PERMISSIONS was active"
+                  data-testid="task-permission-bypass-badge"
+                >
+                  Permissions bypassed
+                </span>
+              )}
+              {operatorNeeded && (
+                <span
+                  className="detail-badge permission"
+                  title={operatorNeeded.message}
+                  data-testid="task-operator-needed-badge"
+                >
+                  Operator needed
+                </span>
+              )}
+            </>}
+          />
         </div>
         <div className="detail-header-right">
-          <TaskIdCopyButton taskId={agent.taskId} />
-          <DashboardLinkCopyButton taskId={agent.taskId} />
-          {agent.taskId && (
+          {showFactsToggle && (
             <button
+              ref={factsToggleRef}
               type="button"
-              data-testid="task-share-button"
-              className={`action-btn action-btn--neutral task-share-header-button task-share-header-button--${shareHeaderStatus.kind}`}
-              title={shareHeaderStatus.title}
-              aria-label={shareHeaderStatus.title}
-              onClick={() => setShowShareModal(true)}
+              className={`action-btn action-btn--neutral detail-facts-toggle${factsOpen ? ' active' : ''}`}
+              data-testid="detail-facts-toggle"
+              aria-expanded={factsOpen}
+              aria-controls="detail-facts"
+              onClick={() => setFactsOpen((open) => !open)}
             >
-              <span>{shareHeaderStatus.buttonLabel}</span>
-              {shareHeaderStatus.badgeLabel && (
-                <span className="task-share-header-badge">{shareHeaderStatus.badgeLabel}</span>
-              )}
+              Details
             </button>
           )}
-          {agent.worktreeHealth && agent.worktreeHealth !== 'ok' && (
-            <span className={`detail-header-warning worktree-health worktree-health--${agent.worktreeHealth}`} title={worktreeHealthTitle(agent.worktreeHealth, agent.worktreeRegistryStale)}>
-              {worktreeHealthLabel(agent.worktreeHealth, agent.worktreeRegistryStale)}
-            </span>
-          )}
-          <DetailMetadataMenu
-            agent={agent}
-            provider={agentProvider}
-            hookSettingsTriggerRef={hookSettingsTriggerRef}
-            onShowHookSettings={() => setShowHookSettings(true)}
+          <DetailHeaderActions
+            taskId={agent.taskId}
+            taskStatus={agent.taskStatus}
+            agentType={agent.agentType}
+            signalCompleteReady={signalCompleteReady}
+            handlers={{
+              complete: handleComplete,
+              markDone: () => send({ type: 'ackTerminatedTask', taskId: agent.taskId! }),
+              relaunch: () => { void handleRelaunch(); },
+              reopen: () => send({ type: 'reopenTask', taskId: agent.taskId! }),
+              reflect: handleReflect,
+              cancel: handleCancel,
+            }}
           />
-          {agent.taskId && agent.taskStatus !== 'pending' && !isTerminalTaskStatus(agent.taskStatus) && (
-            <>
-              <button data-testid="action-complete" className={`action-btn action-btn--success${signalCompleteReady ? ' action-btn--signal-ready' : ''}`} onClick={handleComplete}>Complete</button>
-              <button
-                data-testid="action-reflect"
-                className="action-btn action-btn--reflect"
-                title="Analyze this task without changing its status"
-                onClick={handleReflect}
-              >
-                Reflect
-              </button>
-              <button data-testid="action-cancel" className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
-            </>
-          )}
-          {agent.taskId && agent.taskStatus === 'pending' && (
-            <button className="action-btn action-btn--danger" onClick={handleCancel}>Cancel</button>
-          )}
-          {/* Terminated means the session died before the user marked it done. Keep that flow separate from ordinary Complete. */}
-          {agent.taskId && agent.taskStatus === 'terminated' && (
-            <button
-              className="action-btn action-btn--success"
-              title="Mark this unexpectedly terminated task as done"
-              onClick={() => send({ type: 'ackTerminatedTask', taskId: agent.taskId! })}
-            >
-              Mark as done
-            </button>
-          )}
-          {agent.taskId && isTerminalTaskStatus(agent.taskStatus) && (
-            <>
-              <button
-                data-testid="action-reflect"
-                className="action-btn action-btn--reflect"
-                title="Analyze this task without changing its status"
-                onClick={handleReflect}
-              >
-                Reflect
-              </button>
-              <button className="action-btn action-btn--neutral" title="Resume this task where it left off (continues the prior conversation when recoverable)" onClick={() => send({ type: 'reopenTask', taskId: agent.taskId! })}>Reopen</button>
-              <button className="action-btn action-btn--neutral" onClick={handleRelaunch}>Relaunch</button>
-            </>
-          )}
-          {/* Cross-agent migration (RFC: rfc-cross-agent-task-migration): offered
-              only for terminated / cancelled tasks (a dead process). An actively
-              inProgress task almost always has a live session, which the server
-              refuses to migrate — so we don't offer the control there and avoid a
-              confusing "live session" rejection; stop the task first, then migrate.
-              inProgress-with-a-dead-session is reconciled to terminated quickly,
-              at which point the control appears, and the batch dialog covers it. */}
-          {agent.taskId
-            && (agent.taskStatus === 'terminated' || agent.taskStatus === 'cancelled') && (
-            <MigrateTaskControl taskId={agent.taskId} currentAgentType={agent.agentType} />
-          )}
         </div>
       </div>
+      <div className="detail-body">
+      <div className="detail-body-main">
       {showSignalBanner && agent.taskId && (
         <div
           className={`detail-signal-banner${signalCompleteReady ? ' detail-signal-banner--ready' : ''}`}
@@ -1173,15 +1052,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
           </span>
         </div>
       )}
-      {agent.anomaly?.transcriptContext?.lastAssistantMessage && (
-        <div className="detail-transcript-context" data-testid="detail-transcript-context">
-          <div className="detail-transcript-context-label">Last agent message</div>
-          <div className="detail-transcript-context-text">
-            {agent.anomaly.transcriptContext.lastAssistantMessage.excerpt}
-            {agent.anomaly.transcriptContext.lastAssistantMessage.truncated ? '...' : ''}
-          </div>
-        </div>
-      )}
       {agent.taskId && (
         <TaskShareModal
           taskId={agent.taskId}
@@ -1192,8 +1062,6 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
         />
       )}
       {!rightOnlyMode && agent.taskId && <CoordinatorChainStripView agent={agent} />}
-      {!rightOnlyMode && agent.taskId && <TaskDependencyEditor agent={agent} />}
-      {!rightOnlyMode && agent.taskId && <TaskDependencyRail agent={agent} />}
       <TaskNextActionsPanel
         agentId={agent.agentId}
         recommendations={nextStepRecommendations}
@@ -1290,14 +1158,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   </Suspense>
                 ) : (
                   <>
-                    {agent.taskId && <TaskTimeline agent={agent} />}
                     <Suspense fallback={null}>
                       <ActivityPanel
                         agentId={agent.agentId}
                         events={agent.events}
                         description={agent.description}
                         cwd={agent.cwd}
-                        anomalyExplanation={agent.anomaly?.explanation}
                         onOpenDiff={handleOpenDiff}
                         activityMeta={agent.activityMeta}
                         taskId={agent.taskId}
@@ -1306,6 +1172,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                       />
                     </Suspense>
                   </>
+                )}
+                {decisionCardVisible && (
+                  <DecisionCard
+                    agent={agent}
+                    actions={quickActionButtons}
+                    triage={findingTriageButtons}
+                  />
                 )}
               </div>}
 
@@ -1407,34 +1280,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
             <button className="btn-xs" onClick={() => setRespondAllAgentIds(null)}>Cancel</button>
           </div>
         )}
-        {quickActions.length > 0 && (
-          <div className="quick-actions">
-            {isPermissionActions
-              ? quickActions.map((action) => (
-                <button
-                  key={action.value}
-                  className="btn-quick-action permission-action"
-                  onClick={() => handlePermissionChoice(action)}
-                  disabled={permissionButtonsDisabled}
-                  title={action.value}
-                >
-                  <span>{action.label}</span>
-                </button>
-              ))
-              : quickActions.map((action, i) => (
-                <button
-                  key={action.value}
-                  className={`btn-quick-action${action.isAi ? ' ai-suggestion' : ''}`}
-                  onClick={() => handleQuickAction(action.value, action.isAi)}
-                  title={action.value.length > 100 ? action.value : undefined}
-                >
-                  <kbd>{action.shortcut ?? String(i + 1)}</kbd>
-                  <span>{action.label}</span>
-                </button>
-              ))
-            }
-          </div>
-        )}
+        {/* #3561 4b: while the decision card shows, the answer buttons live in it */}
+        {!decisionCardVisible && quickActionButtons}
         {replySnippets.length > 0 && (
           <div className="reply-snippet-picker">
             <span className="reply-snippet-picker-label" id="reply-snippet-chips-label">
@@ -1531,8 +1378,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
               Send & Next
             </button>
           )}
-          {!isDirectReply && <button className="btn-secondary" onClick={() => handleSkip()}>Skip</button>}
-          {!isDirectReply && <button className="btn-secondary" onClick={() => setShowSnooze(true)}>Snooze</button>}
+          {!isDirectReply && !decisionCardVisible && findingTriageButtons}
         </div>
         {showSnooze && agent && (
           <SnoozeDialog
@@ -1553,6 +1399,21 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
             />
           </Suspense>
         )}
+      </div>
+      </div>
+      {factsVisible && (
+        <TaskFactsColumn
+          agent={agent}
+          projectLabel={agentProjectLabel(agent)}
+          prs={taskGitHubState?.prs ?? []}
+          shareStatus={shareHeaderStatus}
+          onShare={() => setShowShareModal(true)}
+          hookSettingsTriggerRef={hookSettingsTriggerRef}
+          onShowHookSettings={() => setShowHookSettings(true)}
+          overlay={!factsDocked}
+          onClose={closeFacts}
+        />
+      )}
       </div>
     </div>
   );
