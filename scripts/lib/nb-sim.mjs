@@ -81,13 +81,17 @@ export function cloneStore(store) {
 /**
  * Each lesson's score at the START of a run, keyed by lesson id (not by shelf, so a
  * lesson that an earlier, interrupted run already moved to another shelf is still
- * recognised): Map<id, highest score seen on any shelf>. It is the un-aged
- * yardstick for the minimum-score rule (see {@link decideStep}).
+ * recognised): Map<id, highest score seen on any shelf of any of the given
+ * stores>. Pass the rollback tag's store AND the store as the resume found it, so a
+ * lesson voted up or added between the two runs is protected at its higher score.
+ * It is the un-aged yardstick for the minimum-score rule (see {@link decideStep}).
  */
-export function baselineScores(store) {
+export function baselineScores(...stores) {
   const out = new Map();
-  for (const entries of store.values()) {
-    for (const e of entries) out.set(e.id, Math.max(out.get(e.id) ?? -Infinity, e.score));
+  for (const store of stores) {
+    for (const entries of store.values()) {
+      for (const e of entries) out.set(e.id, Math.max(out.get(e.id) ?? -Infinity, e.score));
+    }
   }
   return out;
 }

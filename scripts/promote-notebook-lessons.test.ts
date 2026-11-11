@@ -655,6 +655,25 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     expect(readLessons(dir, 'code-review@repo-two').map(([, t]) => t).sort()).toEqual([T2, U].sort());
   });
 
+  test('RESUME with --tag after a lesson was voted up between the runs: it is protected at the higher score', () => {
+    const dir = store();
+    const V = 'victim lesson in the domain shelf, voted up between the first run and its resume';
+    writeShelf(dir, 'code-review', L([1, 'L low'], [2, V]));
+    writeShelf(dir, 'code-review@repo-one', L([9, SAME], [3, T2]));
+    writeShelf(dir, 'code-review@repo-two', L([9, SAME], [3, T2]));
+    commitAll(dir);
+    // First run: only tags the store (selecting nothing is a no-op before the tag, so tag by a run that applies a different group set).
+    git(dir, 'tag', 'resume-anchor');
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv({ NB_MAX_LINES: '2' }) });
+    expect(client.run(['vote', 'code-review', entryId(V), '+1']).status).toBe(0); // V: +2 -> +3
+    const { result, text } = run(dir, { apply: true, cap: 2, tag: 'resume-anchor' });
+    expect(result.ok, text).toBe(true);
+    // SAME (+9) evicts 'L low' and ages V to +2; T2 (+3) must not then evict V (+3 when the resume began).
+    expect(readLessons(dir, 'code-review').map(([, t]) => t).sort()).toEqual([SAME, V].sort());
+    expect(readLessons(dir, 'code-review@repo-one').map(([, t]) => t)).toEqual([T2]); // T2's copies are untouched
+    expect(readLessons(dir, 'code-review@repo-two').map(([, t]) => t)).toEqual([T2]);
+  });
+
   test('groups are applied highest-scored first', () => {
     const dir = store();
     writeShelf(dir, 'code-review@repo-one', L([1, SAME], [7, T]));

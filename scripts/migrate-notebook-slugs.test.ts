@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadSlugAliases } from '../plugin/hooks/lib/notebook-layers.mjs';
 import { runMigration, planMigration, DEFAULT_TAG } from './migrate-notebook-slugs.mjs';
 import { DEFAULT_NB, createNbClient, isStoreGitRepo, snapshotStore } from './lib/nb-client.mjs';
+import { entryId } from './lib/nb-sim.mjs';
 import { relative } from 'node:path';
 import {
   RAW_NB,
@@ -590,6 +591,21 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     expect(readLessons(resumed, 'x@agent-notebook').concat(readLessons(resumed, 'x@Agent-Notebook')).map(([, t]) => t).sort()).toEqual(
       readLessons(whole, 'x@agent-notebook').concat(readLessons(whole, 'x@Agent-Notebook')).map(([, t]) => t).sort(),
     );
+  });
+
+  test('RESUME after a lesson was voted up between the runs: it is protected at the higher score, like on a fresh run', () => {
+    const dir = store();
+    const V = 'victim lesson, voted up between the interrupted run and its resume';
+    writeShelf(dir, `code-review@${CANON}`, L([1, 'L low'], [2, V]));
+    writeShelf(dir, 'code-review@agent-notebook', L([9, 'M1'], [3, 'M2']));
+    commitAll(dir);
+    expect(run(dir, { apply: true, cap: 2, stopAfter: 0 }).result.performed).toEqual([]); // tags the store, moves nothing
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv({ NB_MAX_LINES: '2' }) });
+    expect(client.run(['vote', `code-review@${CANON}`, entryId(V), '+1']).status).toBe(0); // V: +2 -> +3
+    run(dir, { apply: true, cap: 2 });
+    // M1 evicts 'L low' and ages V to +2; M2 (+3) must NOT then evict V, which was +3 when the resume began.
+    expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort()).toEqual([V, 'M1'].sort());
+    expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[3, 'M2']]);
   });
 
   test('a victim that merely TIES the mover once its aging is undone is refused (single uninterrupted run)', () => {

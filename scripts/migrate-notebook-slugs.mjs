@@ -274,7 +274,7 @@ export function runMigration({
   // began: the rollback tag's tree on a resumed run, else the store now. Otherwise
   // the aging that run 1's moves caused would lower the bar for run 2.
   const baseline = (isStoreGitRepo(dir) ? storeAtTag(dir, tag) : null) ?? snapshot.store;
-  const baselines = baselineScores(baseline);
+  const baselines = baselineScores(baseline, snapshot.store);
   const plan = planMigration({ snapshot, aliases, cap, forceLow, baselines });
   const applyBars = cloneBaselines(baselines);
   printPlan({ plan, snapshot, cap, forceLow, log });
@@ -304,13 +304,13 @@ export function runMigration({
     return result;
   }
 
+  if (client.autocommitOff) {
+    result.ok = false;
+    result.error = '--apply refused: NB_GIT_AUTOCOMMIT=0 is set, so `nb move` and `nb describe` would not commit and the migration could not be rolled back step by step. Unset it and re-run.';
+    log(`\n${result.error}`);
+    return result;
+  }
   if (hasMigrationWork) {
-    if (client.autocommitOff) {
-      result.ok = false;
-      result.error = '--apply refused: NB_GIT_AUTOCOMMIT=0 is set, so `nb move` would not commit and the migration could not be rolled back move by move. Unset it and re-run.';
-      log(`\n${result.error}`);
-      return result;
-    }
     if (!isStoreGitRepo(dir)) {
       result.ok = false;
       result.error = `--apply refused: ${dir} is not a git repository, so there is no rollback anchor and the moves would not be committed. Run \`git init\` there (and commit) first.`;

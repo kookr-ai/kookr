@@ -71,8 +71,8 @@
 // refuses to run with NB_GIT_AUTOCOMMIT=0). Run it while no tasks are running:
 // agents' own `nb add`/`nb vote` commits share the history. If `git log <tag>..HEAD`
 // shows only this script's commits, `git revert --no-edit <tag>..HEAD` undoes the
-// run; otherwise revert only the commits whose subject starts `nb move` or `nb rm`,
-// newest first. Never `git reset --hard`; a revert can conflict on a shelf an agent
+// run; otherwise revert only the commits whose subject starts `nb move`, `nb rm` or
+// `lesson promotion:`, newest first. Never `git reset --hard`; a revert can conflict on a shelf an agent
 // touched afterwards, which you resolve by hand keeping both sides' lessons.
 //
 // Usage: node scripts/promote-notebook-lessons.mjs [--apply] [--only <ids>]
@@ -414,7 +414,7 @@ export function runPromotion({
   // run): the tag's tree is then the baseline, so the aging its moves caused cannot
   // lower the bar. Without an existing tag, the store as it is now.
   const baseline = (tag && isStoreGitRepo(snapshot.dir) ? storeAtTag(snapshot.dir, tag) : null) ?? snapshot.store;
-  const baselines = baselineScores(baseline);
+  const baselines = baselineScores(baseline, snapshot.store);
   const applyBars = cloneBaselines(baselines);
   const sim = cloneStore(snapshot.store);
   const steps = planPromotion({ groups: found.groups, selected, toGlobal, store: sim, cap, forceLow, baselines });
