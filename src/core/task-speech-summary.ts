@@ -80,30 +80,62 @@ function opensWithSubject(sentence: string): boolean {
  * so a broad list costs nothing that was spoken before. "your" is not on it: "needs
  * your permission to push" describes.
  */
-const LISTENER_CUE = /\b(?:you|we|i|please|kindly|let['’]s|let us|let (?:it|them|him|her)|feel free|free to|don['’]t|do not|never|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|good to|by all means|(?:it['’]s|it is) time to|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|yes|operator|user)\b/i;
+const LISTENER_CUE = /\b(?:you|we|i|please|kindly|let['’]s|let us|let (?:it|them|him|her)|feel free|free to|don['’]t|do not|never|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|good to|time to|turn to|all set|necessary|important|remains|reminder|nothing left|is left|by all means|recommend\w*|suggest\w*|advis\w*|next step|safe|safely|harmless|risk|wise|fine(?!-)|okay|ok|alright|all right|yes|operator|user|developer|someone|anyone|somebody)\b/i;
+
+/** "The right move is to merge it", "the agent says to merge it": a command reported as a fact. */
+const REPORTED_COMMAND = new RegExp(`\\b(?:is|are|was|were|says?|said|tells?|told)\\s+to\\s+(?:force-|re-)?${ACTION}\\b`, 'i');
 
 /**
- * A command inside a sentence:
- * - after a comma, unless the verb is one item of a list ("will rebase, push, and open");
- * - after an opening quote;
- * - after "so/then/now/just";
- * - after "says/tells";
- * - as what something "is": "the right move is to merge it", "the thing to do is merge it";
- * - straight after punctuation with no space ("done.merge it").
+ * What stands directly before an action verb when it is part of a description and not a
+ * command. A command has none of these in front of it: it follows a full stop, a comma,
+ * a quote, "and", "so", "then", or nothing at all.
  */
-const INNER_COMMAND = new RegExp(
-  `,\\s*(?:(?:then|and|now|just|so|go|please|kindly)\\s+)*${ACTION}\\b(?!\\s*,|\\s+(?:and|or)\\b)`
-  + `|["'\\u201c\\u2018(]\\s*${ACTION}\\b`
-  + `|[.!?;:\\u2026]${ACTION}\\b`
-  + `|\\b(?:so|then|now|just)\\s+${ACTION}\\b`
-  + `|\\b(?:says?|said|tells?|told)\\s+(?:to\\s+)?${ACTION}\\b`
-  + `|\\b(?:is|are|was|were)\\s+(?:to\\s+)?${ACTION}\\b`,
+const ADVERB = '(?:not|then|now|also|just|still|only|soon|again|later|automatically|finally|already)';
+// "wants to run", "will then push", "cannot delete", "did not commit".
+const AFTER_GOVERNOR = new RegExp(
+  `\\b(?:to|will|would|can|could|may|might|shall|did|does|cannot|can['\\u2019]t|won['\\u2019]t|didn['\\u2019]t|doesn['\\u2019]t|couldn['\\u2019]t|wouldn['\\u2019]t)(?:\\s+${ADVERB}){0,2}\\s+$`,
   'i',
 );
+// The verb as a noun: "one run in five", "the merge", "a local profiled export run".
+const AFTER_DETERMINER = /\b(?:the|a|an|one|two|three|four|five|six|seven|eight|nine|ten|each|every|per|this|that|its|their|his|her|another)(?:\s+(?:first|second|third|last|next|final|previous|initial|single|full|dry|local|nightly|test|export|ci|\w+ed|\w+ly)){0,3}\s+$/i;
+// "run" is its own participle: "has been run", "is run nightly".
+const AFTER_BE = new RegExp(`\\b(?:been|was|is|are|were|be|being|gets?|got)(?:\\s+${ADVERB})?\\s+$`, 'i');
+// A governor close before the verb in the same clause: no capital letter (a new sentence, even an
+// unpunctuated one) and no end mark in between. Case-sensitive on purpose.
+const GOVERNOR_IN_CLAUSE = /\b(?:to|will|would|can|could|may|might|shall|did|does|cannot|can['\u2019]t|won['\u2019]t)\b[^A-Z.!?;:]{0,80}$/;
 
-/** A sentence with an action verb is a plain description when it opens with its subject, is not aimed at the listener and hides no command. */
+/**
+ * True when every action verb in the sentence is governed: by "to" or a modal, by a
+ * determiner (the verb is a noun), by a form of "be" (only "run"), or because it
+ * continues a governed verb ("planned to commit and run", "will rebase, push, and open").
+ */
+function actionsAreGoverned(sentence: string): boolean {
+  const verbs = new RegExp(`\\b${ACTION}\\b`, 'gi');
+  for (let match = verbs.exec(sentence); match; match = verbs.exec(sentence)) {
+    let before = sentence.slice(0, match.index);
+    // "force-push" and "re-run" are the verb itself: look in front of the prefix.
+    before = before.replace(/(?:force-|re-)$/i, '');
+    if (AFTER_GOVERNOR.test(before) || AFTER_DETERMINER.test(before)) continue;
+    if (match[0].toLowerCase() === 'run' && AFTER_BE.test(before)) continue;
+    const after = sentence.slice(match.index + match[0].length);
+    const continuesList = /,\s*$/.test(before) && /^\s*,/.test(after);
+    const coordinated = /\b(?:and|or)\s+$/i.test(before);
+    if ((continuesList || coordinated) && GOVERNOR_IN_CLAUSE.test(before)) continue;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * A sentence with an action verb is a plain description when it opens with its subject,
+ * is not aimed at the listener, reports no command, and every action verb in it is
+ * governed.
+ */
 function describesAction(sentence: string): boolean {
-  return opensWithSubject(sentence) && !LISTENER_CUE.test(sentence) && !INNER_COMMAND.test(sentence);
+  return opensWithSubject(sentence)
+    && !LISTENER_CUE.test(sentence)
+    && !REPORTED_COMMAND.test(sentence)
+    && actionsAreGoverned(sentence);
 }
 
 /** Sentence ends: punctuation followed by a space or a capital. "Node.js" and "2.5" are not ends. */
@@ -269,28 +301,32 @@ function withinSummaryLimits(summary: string): boolean {
     && !givesInstruction(summary);
 }
 
-/**
- * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
- * so only a generous ceiling applies, and the instruction check ignores phrases the
- * rewrite generates itself ("a commit" for a hash) but still catches an instruction
- * that only appears once an identifier is spoken as words ("run_tests" -> "run tests",
- * "approve_request" -> "approve request").
- */
+function countActions(text: string): number {
+  return (text.match(new RegExp(`\\b${ACTION}\\b`, 'gi')) ?? []).length;
+}
+
 /**
  * The instruction check for the spoken form. The generated phrases are removed first, so
  * that "a commit" (spoken for a hash) is not taken for an action. Removing "pull request
  * 42" can also remove a sentence's subject, so the sentence shape is judged both with
  * and without the phrases and the text is rejected only when both read as an
- * instruction. A decision or action word that exists only once the phrases are removed
- * ("issue 4approve it") is rejected outright, as it always was.
+ * instruction. A decision word, or an action verb, that exists only once the phrases
+ * are removed ("issue 4approve it", "pull request 12merge it") is rejected outright:
+ * the stripped text then has a decision word, or more action verbs than the spoken text.
  */
 function spokenGivesInstruction(spoken: string): boolean {
   const stripped = stripGeneratedPhrases(spoken);
   if (DECISION_WORD_DENYLIST.test(stripped)) return true;
-  if (MENTIONS_ACTION.test(stripped) && !MENTIONS_ACTION.test(spoken)) return true;
+  if (countActions(stripped) > countActions(spoken)) return true;
   return givesInstruction(stripped) && givesInstruction(spoken);
 }
 
+/**
+ * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
+ * so only a generous ceiling applies. The instruction check runs again here because an
+ * instruction can appear only once an identifier is spoken as words ("run_tests" ->
+ * "run tests", "approve_request" -> "approve request").
+ */
 function spokenWithinLimits(spoken: string): boolean {
   return spoken.length <= MAX_SUMMARY_CHARS * SPOKEN_CEILING
     && wordCount(spoken) <= MAX_SUMMARY_WORDS * SPOKEN_CEILING

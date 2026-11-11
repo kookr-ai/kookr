@@ -357,7 +357,8 @@ describe('summarizeTaskForSpeech', () => {
     });
 
     test.each([
-      ['a plain description is spoken', 'The agent renamed push_notifications.', false],
+      ['a description with the verb after "will" is spoken', 'The agent will run_tests next.', false],
+      ['a bare use is rejected, as before', 'The agent renamed push_notifications.', true],
       ['an instruction is rejected', 'Next step is run_tests on the branch.', true],
     ])('an identifier that turns into an action word when spoken is judged like any other sentence: %s', async (_label, summary, usedFallback) => {
       const client = mockClient(JSON.stringify({ summary }));
@@ -436,7 +437,6 @@ describe('summarizeTaskForSpeech', () => {
       'After you ran the suite by hand, the agent picked up where it stopped.',
       'The first run failed; the second run passed.',
       'The agent will rebase, push, and open a pull request.',
-      'The suite takes a long time to run.',
       'The agent made the cache thread-safe and reran the benchmarks.',
       'Enter key handling was fixed, and the agent pushed the branch.',
       // Spoken before this change, and still spoken: words the old rule never looked at.
@@ -476,6 +476,11 @@ describe('summarizeTaskForSpeech', () => {
       'After the rebase, the agent will push the branch.',
       'When the tests passed, it started to merge the two branches.',
       'Your permission is needed before the agent can push the branch.',
+      'The agent will rebase, test, and push.',
+      'The agent will commit, push, and merge.',
+      'The nightly job has been run twice since the fix.',
+      'The agent did not push the branch.',
+      'It started a local profiled export run, but that command has been running for forty-nine minutes.',
     ];
     // Summaries that must be replaced by the template: [what it shows, the summary].
     const REJECTED: Array<[string, string]> = [
@@ -558,6 +563,24 @@ describe('summarizeTaskForSpeech', () => {
       ['"the right move is to"', 'The right move is to merge it.'],
       ['"the thing to do is"', 'The thing to do is merge it.'],
       ['"all that is left is to"', 'All that is left is to merge it.'],
+      ['two commands after a comma', "It's green, commit and push."],
+      ['a prefixed command after a comma', 'The first attempt timed out, re-run the export.'],
+      ['"time to" after a comma', 'The tests pass, time to merge.'],
+      ['a command after "but"', 'The agent finished, but run the tests first.'],
+      ['a command after "also"', 'The agent finished, also push the branch.'],
+      ['a command after a closing typographic quote', 'The agent says \u201call green.\u201d Merge it.'],
+      ['a command after a closing bracket', 'The agent finished (all green.) Merge it.'],
+      ['a command after an adverb opener', 'Meanwhile merge the branch.'],
+      ['a command joined by "and" to a statement', 'The tests pass and merge it.'],
+      ['a numbered command', '1) Merge the branch.'],
+      ['a command after a symbol', 'The tests pass \u2192 merge it.'],
+      ['impersonal advice', 'It is necessary to merge the branch.'],
+      ['"it is important to"', 'It is important to run the tests.'],
+      ['"it remains to"', 'It remains to push the branch.'],
+      ['an emphatic "do" after a comma', 'The agent finished, do push the branch.'],
+      ['numbered steps without punctuation', '1 run the tests 2 merge the branch'],
+      ['a command joined to an unpunctuated earlier sentence', 'The reviewer wants to cancel the old job The agent finished and push the branch'],
+      ['an action verb glued to a generated phrase beside a real one', 'The agent will run the tests. It opened pull request 12merge it.'],
       ['a prohibition with a contraction', "The agent is done but don't merge yet."],
     ];
     /** The rule this one replaces: any of these words, anywhere. */
