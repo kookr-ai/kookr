@@ -465,6 +465,13 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     if (narrowTab !== 'terminal') tabBeforeRightPaneRef.current = null;
   }, [narrowTab]);
 
+  // The diff and the memory of the tab it came from both live in this
+  // component, but the tab lives in the store. If the pane unmounts while a
+  // diff holds the Terminal tab (on mobile, picking another task goes through
+  // the Findings view, which unmounts it), hand the tab back now, or the next
+  // task would open on Terminal by accident (#3618).
+  useEffect(() => () => restoreTabAfterRightPane(), [restoreTabAfterRightPane]);
+
   // Clear diff/file state when the selected agent changes. Avoids showing stale
   // content bound to a different agent's toolUseId or worktree. If only the
   // diff put the pane on the Terminal tab, the next task opens on Conversation,
