@@ -22,19 +22,29 @@ import {
  *
  *  1. URLs -> "a link" (GitHub pull/issue URLs -> "pull request N" / "issue N").
  *  2. File paths -> the file name (see {@link isPathLike}).
- *  3. Commit hashes -> "a commit" (see {@link hashReplacement}).
+ *  3. Commit hashes -> "a commit" after a git word, otherwise "an ID" (see
+ *     {@link hashReplacement}); `sha256:<hex>` digests -> "an ID"; a UUID is
+ *     dropped, or "an ID" where dropping would leave a dangling word ("for <uuid>").
  *  4. snake_case identifiers -> words; kebab/camel only for known finding types.
  *  5. `#123` -> "number 123".
  *  6. Markdown: `[text](url)` -> text; backticks around a span that contains a
  *     letter or digit; `**bold**`, `__bold__`, `*em*`, `_em_` that open at a word
  *     start and close at a word end (a pair that wraps over a line break is
  *     recognised once the lines are joined); heading, bullet, numbered and quote
- *     markers at a line start (followed by a letter); code-fence lines.
- *  7. ISO timestamps and UUIDs are dropped (a timestamp together with its lead
- *     word) together with any `(...)`/`[...]` that held only that token; a
- *     standalone infix `->`/`=>`/`→` -> "to" and `&`/`&&` -> "and"; the speech
- *     pipeline's own `[redacted]` placeholder -> "redacted". An empty `()` or
- *     `[]` that was already in the text ("returns []") is content and stays.
+ *     markers at a line start (followed by a letter); code-fence lines; a table
+ *     (a run of `| a | b |` lines that holds a `|---|---|` separator row): the
+ *     separator row goes and each row becomes its cells joined with ", ". A `|`
+ *     anywhere else ("a | b", "x || y", "|x| + |y|") is never touched.
+ *  7. ISO timestamps: with a NEUTRAL lead (at, on, as of, dated, timestamped, @)
+ *     the lead and the timestamp are dropped; after a TIME-LIMITING word (until,
+ *     since, before, after, by, from, to, through, within, between ... and, ...)
+ *     the word stays and the timestamp becomes "a set time", so "Do not merge
+ *     until <ts>" never turns into "Do not merge"; any other timestamp is dropped.
+ *     Both go together with any `(...)`/`[...]` that held only that token. UUIDs
+ *     are dropped. A standalone infix `->`/`=>`/`→` -> "to" and `&`/`&&` ->
+ *     "and"; the speech pipeline's own `[redacted]` placeholder -> "redacted". An
+ *     empty `()` or `[]` that was already in the text ("returns []") is content
+ *     and stays.
  *  8. Whitespace: runs collapse; wrapped lines join with a space; a blank line,
  *     or a heading/bullet line, ends a sentence; the text ends with . ! or ?
  *     (a trailing "..." or "…" becomes "."); a space before , . ; : ! ? goes
@@ -112,6 +122,8 @@ const KEBAB_OR_CAMEL = /^[a-z][a-z0-9]*(?:-[a-z0-9]+|[A-Z][a-z0-9]+)+$/;
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
 const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 const HEX_ID = /^[0-9a-fA-F]{7,40}$/;
+/** A content digest such as `sha256:<hex>` (an image or file digest): spoken as an ID, never read out. */
+const DIGEST = /^(?:sha(?:1|224|256|384|512)|md5):[0-9a-fA-F]{16,128}$/i;
 const PR_REF = /^#(\d+)$/;
 const GITHUB_REF = /github\.com\/[^/\s]+\/[^/\s]+\/(pull|issues)\/(\d+)/i;
 const DOMAIN_WITH_PATH = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|ai|app|co|gov|edu)(?:[/:?#]|$)/i;
@@ -132,7 +144,34 @@ const HASH_CONTEXT_WORDS = new Set([
 const DATE_LIKE = /^(?:\d{0,2}(?:dec|feb)\d{2,4}|\d{4}(?:dec|feb)\d{0,2})$/i;
 /** A hash this long, hex digits only, is never an ordinary word or a date. */
 const MIN_BARE_HASH_LENGTH = 12;
-const TIMESTAMP_LEAD_WORDS = new Set(['at', 'on', 'since', 'until', 'from', 'to', 'by', 'as', 'of', '@']);
+/** What a timestamp becomes where it carries meaning ("until <ts>"): it is never silently removed. */
+const SET_TIME = 'a set time';
+/** A lead that is only a label for the timestamp: both are dropped ("updated at <ts>", "as of <ts>"). */
+const NEUTRAL_TIME_LEADS = new Set(['at', 'on', '@', 'dated', 'timestamped']);
+/** "as of", "as at" and "as on" are one two-word lead. */
+const AS_OF_SECOND_WORDS = new Set(['of', 'at', 'on']);
+/** A word that limits or places a time: it stays and the timestamp after it becomes {@link SET_TIME}. */
+const LIMITING_TIME_LEADS = new Set([
+  'until', 'till', 'til', 'since', 'before', 'after', 'by', 'from', 'to', 'through', 'thru', 'within', 'between',
+  'during', 'for', 'of', 'in', 'around', 'about', 'near', 'past', 'over', 'under', 'than', 'beyond',
+]);
+/** A word whose point is the time itself: "expires <ts>" and "expires at <ts>" keep a time. */
+const TIME_BEARING_WORDS = new Set([
+  'expires', 'expired', 'expiring', 'expiry', 'due', 'deadline', 'scheduled', 'ends', 'ending', 'starts',
+  'starting', 'begins', 'beginning', 'resets', 'renews', 'retry', 'retries', 'retrying', 'valid', 'effective',
+]);
+const RANGE_DASHES = new Set(['-', '–', '—']);
+/** Between two timestamps these make a range ("T to T", "T - T", "T and T"); a list "T, T and T" is one too: every end is kept. */
+const RANGE_CONNECTORS = new Set(['to', 'until', 'till', 'through', 'thru', 'and', ...RANGE_DASHES]);
+/** Words after which a dropped id would leave a dangling word: "for <uuid>", "and <uuid>". */
+const ID_FUNCTION_WORDS = new Set([
+  'for', 'of', 'to', 'from', 'with', 'in', 'on', 'at', 'by', 'via', 'than', 'into', 'onto', 'per', 'about',
+  'after', 'before', 'as', 'under', 'over', 'and', 'or', 'nor', 'vs', 'versus', 'then', 'is', 'was', 'are', 'were',
+  'not', 'no', 'between', 'against', 'like', 'unlike', '-', '–', '—', '•', '*', '+',
+]);
+const ID_CONNECTORS = new Set(['and', 'or', 'nor', 'vs', 'versus']);
+/** After one of these the id is simply dropped: "request id <hex>" -> "request id". */
+const ID_LABEL_WORDS = new Set(['id', 'ids', 'identifier', 'uuid', 'guid', 'objectid']);
 /** Whole-token infix rewrites; the token must have a word on both sides. */
 const INFIX_WORDS: ReadonlyMap<string, string> = new Map([
   ['->', 'to'], ['-->', 'to'], ['=>', 'to'], ['==>', 'to'], ['→', 'to'], ['⇒', 'to'],
@@ -164,23 +203,41 @@ function speakUrl(core: string): string {
  * A candidate is then trusted when ANY of these holds, because a bare 7-11 digit
  * hex-looking token ("deadbeef12", "face2face") is too often a word:
  * - the previous word is commit/sha/hash/rev/revision: the hash is dropped;
- * - the previous word is at, on, onto, revert, cherry-pick or checkout;
- * - it is {@link MIN_BARE_HASH_LENGTH} or more characters long.
+ * - the previous word is at, on, onto, revert, cherry-pick or checkout: "a commit";
+ * - it is {@link MIN_BARE_HASH_LENGTH} or more characters long: with no git word
+ *   beside it, it may as well be a trace id or an ObjectId, so it is only "an ID"
+ *   (dropped after an id label: "request id <hex>").
  * Anything else is left exactly as written. Returns null for "not a hash".
  */
 function hashReplacement(core: string, prevWord: string): string | null {
   if (!HEX_ID.test(core) || !/\d/.test(core) || !/[a-fA-F]/.test(core) || DATE_LIKE.test(core)) return null;
   if (COMMIT_WORDS.has(prevWord)) return '';
-  if (core.length >= MIN_BARE_HASH_LENGTH || HASH_CONTEXT_WORDS.has(prevWord)) return 'a commit';
+  if (HASH_CONTEXT_WORDS.has(prevWord)) return 'a commit';
+  if (core.length >= MIN_BARE_HASH_LENGTH) return ID_LABEL_WORDS.has(prevWord) ? '' : 'an ID';
   return null;
+}
+
+/**
+ * A UUID is dropped, unless dropping would leave a dangling word: after a preposition
+ * or a list dash ("for <uuid>", "- <uuid>"), before "and"/"or" ("Fixed <uuid> and
+ * <uuid>"), or at the start of the text or of a sentence.
+ */
+function uuidReplacement(prevWord: string, startsClause: boolean, nextWord: string): string {
+  if (ID_LABEL_WORDS.has(prevWord)) return '';
+  return startsClause || ID_FUNCTION_WORDS.has(prevWord) || ID_CONNECTORS.has(nextWord) ? 'an ID' : '';
 }
 
 /**
  * Path rule (never drop ordinary prose words):
  * - UNANCHORED token (no leading `/`, `~/`, `./`, `../` or drive letter): a path
- *   only when its LAST segment is a file name with an extension (`a/b.ts`,
- *   `src/core/foo.json`). `lint/typecheck/test`, `input/output/error`, `TCP/IP/UDP`
- *   and `yes/no/maybe` have no file-like tail, so they are left exactly as written.
+ *   only when its LAST segment is a file name with a known extension (`a/b.ts`,
+ *   `src/core/foo.json`, `src/components/Avatar.tsx`) AND it is clearly a location
+ *   ({@link looksLikeLocation}). With a single slash and no line number the file
+ *   name must also look like a file, not a product (`frontend/Next.js` stays).
+ *   `lint/typecheck/test`, `input/output/error`, `TCP/IP/UDP` and `yes/no/maybe`
+ *   have no file-like tail, and library or word pairs such as `d3.js/three.js`,
+ *   `react/next.js`, `npm/node.js` and `before/after.png` fail the location test,
+ *   so all of them are left exactly as written.
  * - ANCHORED token: shortened to its last segment (file or directory name),
  *   EXCEPT API routes (`/api/...`) and tokens whose last segment is purely numeric
  *   (`/api/tasks/42`, `/tasks/42`): those read as routes, not locations, and the
@@ -195,7 +252,8 @@ function isPathLike(core: string): boolean {
   if (withoutDrive.length === 0) return false;
   if (!withoutDrive.every((s) => PATH_SEGMENT.test(stripLineSuffix(s)))) return false;
   if (!withoutDrive.some((s) => /[A-Za-z]/.test(s))) return false;
-  const last = stripLineSuffix(withoutDrive[withoutDrive.length - 1]);
+  const rawLast = withoutDrive[withoutDrive.length - 1];
+  const last = stripLineSuffix(rawLast);
   if (anchored) {
     // "/word" alone is more likely a slash command than a path.
     if (withoutDrive.length < (rooted ? 2 : 1)) return false;
@@ -203,32 +261,60 @@ function isPathLike(core: string): boolean {
     if (/^\d+$/.test(last)) return false;
     return true;
   }
-  return withoutDrive.length >= 2 && isUnanchoredFileName(last);
+  if (withoutDrive.length < 2 || !FILE_NAME.test(last) || !hasKnownExtension(last)) return false;
+  const dirs = withoutDrive.slice(0, -1);
+  const hasLineSuffix = rawLast !== last;
+  if (!looksLikeLocation(dirs, hasLineSuffix)) return false;
+  // One slash and no line number is thin evidence: a CamelCase name (`frontend/Next.js`) stays a product name.
+  return dirs.length >= 2 || hasLineSuffix || looksLikeFileBase(last);
+}
+
+/** Directory names that make a short unanchored `dir/file.ext` token a path, not a word pair. */
+const COMMON_DIRS = new Set([
+  'src', 'lib', 'dist', 'build', 'docs', 'doc', 'test', 'tests', 'spec', 'e2e', 'app', 'apps', 'pkg', 'packages',
+  'scripts', 'bin', 'public', 'static', 'assets', 'components', 'hooks', 'utils', 'core', 'server', 'client',
+  'frontend', 'backend', 'config', 'configs', 'plugin', 'plugins', 'types', 'node_modules',
+]);
+
+/**
+ * Evidence that an unanchored `dir/.../file.ext` token is a location, not a pair of
+ * words or libraries: three or more segments (two slashes), a `:line` suffix, a
+ * first directory that is a common directory name, a dot-directory, an npm scope
+ * (`@scope`), or a `-` or `_` in the first directory. And none of the directories
+ * may itself end in a file extension, which is how `d3.js/three.js` and
+ * `express.js/koa.js` look. Everything else is prose and stays as written.
+ */
+function looksLikeLocation(dirs: readonly string[], hasLineSuffix: boolean): boolean {
+  if (dirs.some((dir) => hasKnownExtension(stripLineSuffix(dir)))) return false;
+  if (dirs.length >= 2 || hasLineSuffix) return true;
+  const first = dirs[0];
+  return COMMON_DIRS.has(first.toLowerCase()) || first.startsWith('.') || first.startsWith('@') || /[-_]/.test(first);
 }
 
 /**
- * A file name an unanchored `a/b` token may end in. The extension must be a known
- * one and the base name must look like a file (starts lower-case, a digit, `_` or
- * `.`, or is ALL-CAPS like README), so product and library names such as
- * `Next.js`, `Node.js` and `owner/repo.git` stay ordinary prose.
+ * The base name looks like a file, not a product: it starts lower-case, with a digit,
+ * `_` or `.`, or is ALL-CAPS like README (so `Next.js`, `Node.js` and `Express.js` are not).
  */
-function isUnanchoredFileName(name: string): boolean {
-  if (!FILE_NAME.test(name)) return false;
-  const dot = name.lastIndexOf('.');
-  const base = name.slice(0, dot);
-  if (!KNOWN_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase())) return false;
+function looksLikeFileBase(name: string): boolean {
+  const base = name.slice(0, name.lastIndexOf('.'));
   return /^[a-z0-9_.]/.test(base) || (/[A-Z]/.test(base) && !/[a-z]/.test(base));
 }
 
+function hasKnownExtension(name: string): boolean {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 && KNOWN_FILE_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+/** A trailing line reference: `:42`, `:42:7`, `:42-50` or a GitHub `#L42` / `#L42-L50`. */
 function stripLineSuffix(segment: string): string {
-  return segment.replace(/:\d+(?::\d+)?$/, '');
+  return segment.replace(/(?::\d+(?:[:\-–]\d+)?|#L\d+(?:-L?\d+)?)$/, '');
 }
 
 function speakPath(core: string): string {
   const segments = core
     .split(/[\\/]+/)
     .filter((s) => s !== '' && s !== '.' && s !== '..')
-    .map((s) => s.replace(/:\d+(?::\d+)?$/, ''));
+    .map(stripLineSuffix);
   const last = segments[segments.length - 1] ?? '';
   const parent = segments[segments.length - 2];
   if (parent && !/^[A-Za-z]:$/.test(parent) && /^index\.[A-Za-z0-9]+$/.test(last)) return `${parent} ${last}`;
@@ -384,20 +470,88 @@ interface Line {
 }
 
 /**
+ * What may follow a BULLET, number or heading marker (not a `>`): a letter, or something
+ * that is never a number or a symbol the line is about: the start of a file path
+ * (`/src`, `~/x`, `./x`, `../x`, `.env`), a `#12` reference, a UUID, a date-time, or
+ * the pipeline's own `[redacted]` placeholder. "- /home/me/app/main.ts" and
+ * "- #12 fixed" are bullets, never a minus. A `>` before a path is a shell
+ * redirect ("> /tmp/out.log") and is left alone.
+ */
+const MARKER_CONTENT_START = String.raw`\p{L}|\/[\p{L}._~@-]|~\/|\.{1,2}\/|\.\p{L}|\[redacted\]|#\d|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-|\d{4}-\d{2}-\d{2}[T ]\d{2}:`;
+
+/**
  * Heading, bullet, numbered and quote markers (including stacked ones such as
  * "- - x" or "> - x") are stripped only at a line start, only when followed by a
- * space and then a LETTER. A marker before a digit, `=`, `<`, `>` or other
- * punctuation is content: "- 3 degrees", "> 5 tests", ">= 5", "# 3 tests". A lone
- * `#` is a heading only before an UPPER-case letter ("# Summary"), so a
- * lower-case "# of tests" keeps its `#`; `##` and deeper are always headings.
+ * space and then a LETTER (a bullet, number or heading also before one of the other
+ * starts in {@link MARKER_CONTENT_START}).
+ * A marker before a digit, `=`, `<`, `>` or other punctuation is content:
+ * "- 3 degrees", "> 5 tests", ">= 5", "# 3 tests", "- [x] done". A lone `#` is a
+ * heading only before an UPPER-case letter ("# Summary"), so a lower-case "# of
+ * tests" keeps its `#`; `##` and deeper are always headings.
  */
 const MARKER_CHAIN = /^[ \t]*(?:(?:[-*+•>]|\d{1,2}\.|#{2,6})[ \t]+)+(?=\p{L})/u;
+/** A chain of bullet, number and heading markers (never `>`: "> /tmp/out.log" is a shell redirect) before a path, id or date. */
+const BULLET_CHAIN = new RegExp(`^[ \\t]*(?:(?:[-*+•]|\\d{1,2}\\.|#{2,6})[ \\t]+)+(?=${MARKER_CONTENT_START})`, 'u');
 const H1_CHAIN = /^[ \t]*(?:(?:[-*+•>]|\d{1,2}\.|#{2,6})[ \t]+)*#[ \t]+(?=\p{Lu})/u;
 
 function stripLineMarkers(line: string): Line {
-  const match = H1_CHAIN.exec(line) ?? MARKER_CHAIN.exec(line);
+  const match = H1_CHAIN.exec(line) ?? MARKER_CHAIN.exec(line) ?? BULLET_CHAIN.exec(line);
   if (!match) return { text: line, block: false };
   return { text: line.slice(match[0].length), block: /[^\s>]/.test(match[0]) };
+}
+
+/**
+ * Markdown tables. Only a run of consecutive lines that each start and end with
+ * `|` (and hold no `||`) AND contain a separator row (`|---|:---:|`) is a table: the
+ * separator row is dropped and every other row becomes its non-empty cells joined
+ * with ", ", as a sentence of its own. A lone pipe line, `|x| + |y|` in prose,
+ * `a | b`, `x || y` and `cat a | wc` have no separator row, so they stay as written.
+ */
+const TABLE_SEPARATOR_CELL = /^:?-+:?$/;
+
+function isTableLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.length >= 3 && trimmed.startsWith('|') && trimmed.endsWith('|') && !trimmed.includes('||')
+    && !trimmed.endsWith('\\|');
+}
+
+/** The cells of a row; an escaped pipe (`\\|`) is text inside a cell, not a cell border. */
+function tableCells(line: string): string[] {
+  return line.trim().slice(1, -1).split(/(?<!\\)\|/).map((cell) => cell.replace(/\\\|/g, '|').trim());
+}
+
+function isSeparatorRow(line: string): boolean {
+  const cells = tableCells(line);
+  return cells.length > 0 && cells.every((cell) => TABLE_SEPARATOR_CELL.test(cell));
+}
+
+function convertTables(lines: readonly string[]): Line[] {
+  const result: Line[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    if (!isTableLine(lines[i])) {
+      result.push(stripLineMarkers(lines[i]));
+      i += 1;
+      continue;
+    }
+    let end = i;
+    while (end < lines.length && isTableLine(lines[end])) end += 1;
+    const block = lines.slice(i, end);
+    if (block.some(isSeparatorRow)) {
+      for (const row of block) {
+        if (isSeparatorRow(row)) {
+          result.push({ text: '', block: false });
+          continue;
+        }
+        const text = tableCells(row).filter((cell) => cell !== '').join(', ');
+        result.push({ text, block: text !== '' });
+      }
+    } else {
+      for (const row of block) result.push(stripLineMarkers(row));
+    }
+    i = end;
+  }
+  return result;
 }
 
 function prepareLines(input: string): Line[] {
@@ -406,7 +560,7 @@ function prepareLines(input: string): Line[] {
     .split('\n')
     .map((line) => (FENCE_LINE.test(line) ? '' : line))
     .join('\n');
-  return stripInlineMarkdown(unfenced).split('\n').map(stripLineMarkers);
+  return convertTables(stripInlineMarkdown(unfenced).split('\n'));
 }
 
 // ---------------------------------------------------------------------------
@@ -525,10 +679,11 @@ function popWhitespace(out: string[]): void {
 }
 
 /** The spoken form of one peeled token core, or null when the token is ordinary prose. */
-function speakCore(core: string, prevWord: string): string | null {
+function speakCore(core: string, prevWord: string, startsClause: boolean, nextWord: string): string | null {
   if (core.length === 0) return null;
   if (isUrl(core)) return speakUrl(core);
-  if (TIMESTAMP.test(core) || UUID.test(core)) return '';
+  if (UUID.test(core)) return uuidReplacement(prevWord, startsClause, nextWord);
+  if (DIGEST.test(core)) return 'an ID';
   if (PR_REF.test(core)) return `number ${core.slice(1)}`;
   if (isPathLike(core)) return speakPath(core);
   const hash = hashReplacement(core, prevWord);
@@ -544,24 +699,71 @@ function speakCore(core: string, prevWord: string): string | null {
   return null;
 }
 
+interface TimestampPlan {
+  /** True: say "a set time" and keep the words before it. False: drop the timestamp. */
+  say: boolean;
+  /** How many lead words go with a dropped timestamp. */
+  pop: number;
+}
+
+/**
+ * Decide what a timestamp becomes from the (up to three) words before it, newest
+ * last. A time-limiting or time-bearing word keeps its meaning, so the timestamp
+ * after it is spoken as "a set time" (`until`, `since`, `from ... to ...`,
+ * `between ... and ...`, `expires`); a neutral label goes away together with the
+ * timestamp (`at`, `on`, `as of`); any other timestamp is simply dropped.
+ */
+function planTimestamp(before: readonly string[], rangeNeighbour: boolean, afterSentenceEnd: boolean): TimestampPlan {
+  const w1 = before[before.length - 1] ?? '';
+  const w2 = before[before.length - 2] ?? '';
+  const say: TimestampPlan = { say: true, pop: 0 };
+  // A word that ended its sentence ("stuck on.") is not a lead for what follows.
+  if (afterSentenceEnd) return rangeNeighbour ? say : { say: false, pop: 0 };
+  if (rangeNeighbour || w1 === SET_TIME) return say;
+  if (w2 === 'as' && AS_OF_SECOND_WORDS.has(w1)) return { say: false, pop: 2 };
+  if (NEUTRAL_TIME_LEADS.has(w1)) return TIME_BEARING_WORDS.has(w2) ? say : { say: false, pop: 1 };
+  if (LIMITING_TIME_LEADS.has(w1) || TIME_BEARING_WORDS.has(w1)) return say;
+  if ((w1 === 'and' || RANGE_DASHES.has(w1)) && w2 === SET_TIME) return say;
+  return { say: false, pop: 0 };
+}
+
+/** True when `text` ends a sentence (or is empty), so a "," or "." that followed a dropped phrase has nothing to attach to. */
+function endsSentenceOrIsEmpty(text: string): boolean {
+  return text === '' || /[.!?]["')\]”’]?$/u.test(text);
+}
+
 function rewriteTokens(text: string): string {
   const parts = text.split(/(\s+)/);
-  const wordCount = parts.filter((part) => part !== '' && !/^\s+$/.test(part)).length;
+  const wordParts = parts.filter((part) => part !== '' && !/^\s+$/.test(part));
+  const wordCount = wordParts.length;
   const out: string[] = [];
-  let prevWord = '';
+  // The last three words written to `out`, lower-cased, newest last ('' after a dropped token).
+  const recent: string[] = [];
+  const note = (word: string): void => {
+    recent.push(word);
+    if (recent.length > 3) recent.shift();
+  };
   let seen = 0;
+  let prevPart = '';
   for (const part of parts) {
     if (part === '' || /^\s+$/.test(part)) {
       out.push(part);
       continue;
     }
-    const infix = seen > 0 && seen < wordCount - 1;
+    const position = seen;
+    // The first word of the text or of a sentence ("Failed tasks: <uuid>").
+    const startsClause = position === 0 || /[.!?:]["')\]”’]?$/u.test(prevPart);
+    const afterSentenceEnd = /[.!?]["')\]”’]?$/u.test(prevPart);
+    prevPart = part;
+    const infix = position > 0 && position < wordCount - 1;
     seen += 1;
+    const prevWord = afterSentenceEnd ? '' : (recent[recent.length - 1] ?? '');
+    const nextWord: string | undefined = wordParts[position + 1];
 
     const infixWord = infix ? INFIX_WORDS.get(part) : undefined;
     if (infixWord !== undefined) {
       out.push(infixWord);
-      prevWord = infixWord;
+      note(infixWord);
       continue;
     }
 
@@ -569,40 +771,70 @@ function rewriteTokens(text: string): string {
     if (core.toLowerCase() === 'redacted' && lead.endsWith('[') && trail.startsWith(']')) {
       // The speech pipeline's own placeholder: "[redacted]" is spoken as "redacted".
       out.push(`${lead.slice(0, -1)}${core}${trail.slice(1)}`);
-      prevWord = 'redacted';
+      note('redacted');
       continue;
     }
-    const replacement = speakCore(core, prevWord);
+
+    let replacement: string | null;
+    let pop = 0;
+    if (TIMESTAMP.test(core)) {
+      const afterNext = wordParts[position + 2];
+      const nextCore = peel(nextWord ?? '').core;
+      const rangeNeighbour = TIMESTAMP.test(nextCore)
+        || (afterNext !== undefined && RANGE_CONNECTORS.has(nextCore.toLowerCase()) && TIMESTAMP.test(peel(afterNext).core));
+      const plan = planTimestamp(recent, rangeNeighbour, afterSentenceEnd);
+      replacement = plan.say ? SET_TIME : '';
+      pop = plan.pop;
+    } else {
+      replacement = speakCore(core, prevWord, startsClause, peel(nextWord ?? '').core.toLowerCase());
+    }
     if (replacement === null) {
       out.push(part);
-      prevWord = core.toLowerCase();
+      note(core.toLowerCase());
       continue;
     }
 
     if (replacement === '') {
       // A dropped token (timestamp, UUID, hash after "commit") leaves no gap behind
-      // it, takes its lead word ("updated at <timestamp>") with it, and takes any
+      // it, takes its lead words ("updated at <timestamp>") with it, and takes any
       // `(...)` / `[...]` that held nothing else. An empty pair that was already in
       // the text is content ("returns []") and is never touched.
       let leading = lead;
       let trailing = trail;
-      if (TIMESTAMP.test(core) && TIMESTAMP_LEAD_WORDS.has(prevWord)) {
+      for (let k = 0; k < pop; k += 1) {
         popWhitespace(out);
         const leadWord = out.pop();
-        leading = (leadWord === undefined ? '' : peel(leadWord).lead) + lead;
+        if (k === pop - 1) leading = (leadWord === undefined ? '' : peel(leadWord).lead) + lead;
       }
       while (leading !== '' && trailing !== '' && EMPTIED_PAIRS[leading[leading.length - 1]] === trailing[0]) {
         leading = leading.slice(0, -1);
         trailing = trailing.slice(1);
       }
-      if (leading === '' && /^[)\].,;:!?]/.test(trailing)) popWhitespace(out);
+      // "Green - as of <ts> - really": a dash pair that held only the dropped phrase becomes one dash.
+      if (leading === '' && trailing === '' && nextWord !== undefined && RANGE_DASHES.has(nextWord)) {
+        popWhitespace(out);
+        const before = out[out.length - 1];
+        if (before !== undefined && RANGE_DASHES.has(before)) out.pop();
+        out.push(' ');
+      }
+      if (leading === '' && /^[)\].,;:!?]/.test(trailing)) {
+        popWhitespace(out);
+        // "Last seen: <ts>.": the label's colon has nothing left to introduce.
+        const prior = out[out.length - 1];
+        if (prior !== undefined && /^[,.;!?]/.test(trailing) && /[\p{L}\p{N}]:$/u.test(prior)) {
+          out[out.length - 1] = prior.slice(0, -1);
+        }
+        // "Done. At <ts>, it failed" and "As of <ts>: 3 failing": the comma or colon has nothing left to attach to.
+        if (/^[,.;:]/.test(trailing) && endsSentenceOrIsEmpty(out.join('').trimEnd())) trailing = trailing.slice(1);
+      }
       out.push(`${leading}${trailing}`);
-      prevWord = '';
+      recent.length = 0;
+      note('');
       continue;
     }
 
     out.push(`${lead}${replacement}${trail}`);
-    prevWord = replacement.toLowerCase();
+    note(replacement.toLowerCase());
   }
   return out.join('');
 }

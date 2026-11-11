@@ -144,11 +144,15 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
 
   // Timestamp ranges
   [
-    'timestamp range leaves no dangling from/to',
+    'timestamp range keeps from/to and says a set time for each end',
     'Ran from 2026-11-11T10:00:00Z to 2026-11-11T11:00:00Z',
-    'Ran.',
+    'Ran from a set time to a set time.',
   ],
-  ['timestamp range inside a sentence', 'The job ran from 2026-11-11T10:00:00Z to 2026-11-11T11:00:00Z fine.', 'The job ran fine.'],
+  [
+    'timestamp range inside a sentence',
+    'The job ran from 2026-11-11T10:00:00Z to 2026-11-11T11:00:00Z fine.',
+    'The job ran from a set time to a set time fine.',
+  ],
   ['empty', '', ''],
   ['whitespace only', '  \n ', ''],
 
@@ -156,9 +160,21 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   // and trusted only after commit/sha/hash/rev/revision (dropped), after a git verb, or at 12+ characters.
   ['hash after a git verb', 'Rebased onto 3f2a9c1 first.', 'Rebased onto a commit first.'],
   ['hash after revert', 'We revert 3f2a9c1 today.', 'We revert a commit today.'],
-  ['hash of 12 characters needs no context', 'See 3f2a9c1d8e0b now.', 'See a commit now.'],
-  ['hash with trailing punctuation', 'Fixed in 3f2a9c1d8e0b.', 'Fixed in a commit.'],
-  ['hash in parentheses', 'Fixed (3f2a9c1d8e0b) today.', 'Fixed (a commit) today.'],
+  ['a long hex token with no git word is only an ID', 'See 3f2a9c1d8e0b now.', 'See an ID now.'],
+  ['a long hex token with trailing punctuation is an ID', 'Fixed in 3f2a9c1d8e0b.', 'Fixed in an ID.'],
+  ['a long hex token in parentheses is an ID', 'Fixed (3f2a9c1d8e0b) today.', 'Fixed (an ID) today.'],
+  ['a 24 character ObjectId is an ID, not a commit', 'Deleted 507f1f77bcf86cd799439011 today.', 'Deleted an ID today.'],
+  ['a long hex token after a git word is still a commit', 'Reverted 3f2a9c1d8e0b today.', 'Reverted a commit today.'],
+  ['a long hex token after an id label is dropped', 'Request id 3f2a9c1d8e0b failed.', 'Request id failed.'],
+  ['a uuid after a preposition is an ID, not a dangling word', 'Retry for 123e4567-e89b-12d3-a456-426614174000 failed.', 'Retry for an ID failed.'],
+  ['a uuid at the start of the text is an ID', '123e4567-e89b-12d3-a456-426614174000 failed.', 'an ID failed.'],
+  ['a uuid after a label colon is an ID', 'Task: 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task: an ID failed.'],
+  ['a uuid after a plain noun is dropped', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task failed.'],
+  ['a uuid after "the" is dropped', 'The 123e4567-e89b-12d3-a456-426614174000 task failed.', 'The task failed.'],
+  ['a uuid before "and" is an ID', 'Fixed 123e4567-e89b-12d3-a456-426614174000 and 123e4567-e89b-12d3-a456-426614174000.', 'Fixed an ID and an ID.'],
+  ['a uuid bullet list keeps one ID per item', 'Failed tasks:\n- 123e4567-e89b-12d3-a456-426614174000\n- 123e4567-e89b-12d3-a456-426614174000', 'Failed tasks: an ID. an ID.'],
+  ['a sha256 digest is an ID', 'Digest sha256:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678a1b2c3d4e5f60718293a4b5c matched.', 'Digest an ID matched.'],
+  ['an md5 digest is an ID', 'Digest md5:a1b2c3d4e5f60718293a4b5c6d7e8f90 matched.', 'Digest an ID matched.'],
   ['short hash without context is left alone', 'Saw 3f2a9c1d8e today.', 'Saw 3f2a9c1d8e today.'],
   ['the redaction placeholder loses its brackets', 'Secret [redacted] was logged, [REDACTED].', 'Secret redacted was logged, REDACTED.'],
   ['other bracketed words keep their brackets', 'Secret [hidden] and [redacted-ish] stay.', 'Secret [hidden] and [redacted-ish] stay.'],
@@ -317,6 +333,119 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['drops a bracketed uuid', 'Task [123e4567-e89b-12d3-a456-426614174000] failed.', 'Task failed.'],
   ['drops the timestamp but keeps the rest of a parenthesis', '(updated at 2025-03-04T10:20:30Z)', '(updated).'],
   ['drops a hash after the word commit before a period', 'Pushed commit 3f2a9c1.', 'Pushed commit.'],
+
+  // Timestamps: a neutral lead goes with the timestamp, a time-limiting word stays and the timestamp becomes "a set time".
+  ['"as of" at the start is one two-word lead', 'As of 2025-11-10T10:00:00Z the build is green.', 'the build is green.'],
+  ['"as of" mid-sentence', 'Status as of 2025-11-10T10:00:00Z is green.', 'Status is green.'],
+  ['"as of" at the end', 'Green as of 2025-11-10T10:00:00Z.', 'Green.'],
+  ['"as of" before a comma', 'As of 2025-11-10T10:00:00Z, the build is green.', 'the build is green.'],
+  ['"as at" is a two-word lead too', 'Stock as at 2025-11-10T10:00:00Z is low.', 'Stock is low.'],
+  ['a parenthesised "as of" goes with its brackets', 'Green (as of 2025-11-10T10:00:00Z) now.', 'Green now.'],
+  ['until keeps its lead', 'Do not merge until 2025-11-10T10:00:00Z.', 'Do not merge until a set time.'],
+  ['since keeps its lead', 'No failures since 2025-11-10T10:00:00Z.', 'No failures since a set time.'],
+  ['till keeps its lead', 'Frozen till 2025-11-10T10:00:00Z please.', 'Frozen till a set time please.'],
+  ['before keeps its lead', 'Nothing runs before 2025-11-10T10:00:00Z today.', 'Nothing runs before a set time today.'],
+  ['after keeps its lead', 'Retried after 2025-11-10T10:00:00Z, then stopped.', 'Retried after a set time, then stopped.'],
+  ['by keeps its lead', 'Finish by 2025-11-10T10:00:00Z or stop.', 'Finish by a set time or stop.'],
+  ['through and within keep their lead', 'Valid through 2025-11-10T10:00:00Z and within 2025-11-10T10:00:00Z only.', 'Valid through a set time and within a set time only.'],
+  ['from and to keep both leads', 'Ran from 2025-11-10T10:00:00Z to 2025-11-10T10:00:00Z.', 'Ran from a set time to a set time.'],
+  ['between and keeps both leads', 'Ran between 2025-11-10T10:00:00Z and 2025-11-10T10:00:00Z fine.', 'Ran between a set time and a set time fine.'],
+  ['a dash range keeps both ends', 'Ran 2025-11-10T10:00:00Z - 2025-11-10T10:00:00Z fine.', 'Ran a set time - a set time fine.'],
+  ['a parenthesised limiting lead keeps its brackets', 'Green (since 2025-11-10T10:00:00Z) now.', 'Green (since a set time) now.'],
+  ['a time-bearing word keeps a time', 'Token expires 2025-11-10T10:00:00Z.', 'Token expires a set time.'],
+  ['a time-bearing word before "at" keeps a time', 'Token expires at 2025-11-10T10:00:00Z.', 'Token expires at a set time.'],
+  ['of before a timestamp keeps the word', 'The build of 2025-11-10T10:00:00Z failed.', 'The build of a set time failed.'],
+  ['at is a neutral lead', 'Updated at 2025-11-10T10:00:00Z.', 'Updated.'],
+  ['on is a neutral lead', 'Created on 2025-11-10T10:00:00Z by hand.', 'Created by hand.'],
+  ['dated is a neutral lead', 'The report dated 2025-11-10T10:00:00Z is old.', 'The report is old.'],
+  ['timestamped is a neutral lead', 'The log timestamped 2025-11-10T10:00:00Z is old.', 'The log is old.'],
+  ['@ is a neutral lead', 'Deployed @ 2025-11-10T10:00:00Z fine.', 'Deployed fine.'],
+  ['a neutral lead and its comma go together after a sentence', 'Done. At 2025-11-10T10:00:00Z, it failed.', 'Done. it failed.'],
+  ['a neutral lead and the final period after a sentence', 'Done. At 2025-11-10T10:00:00Z.', 'Done.'],
+  ['a neutral lead at the start with a comma', 'At 2025-11-10T10:00:00Z, it failed.', 'it failed.'],
+  ['a parenthesised timestamp with a word before it', '(updated 2025-11-10T10:00:00Z)', '(updated).'],
+  ['a bare timestamp is dropped', 'Seen 2025-11-10T10:00:00Z here.', 'Seen here.'],
+  ['a bracketed timestamp is dropped with its brackets', 'Seen [2025-11-10T10:00:00Z] here.', 'Seen here.'],
+  ['a colon after "as of" goes with it', 'As of 2025-11-10T10:00:00Z: 3 failing tests.', '3 failing tests.'],
+  ['a semicolon after "as of" goes with it', 'As of 2025-11-10T10:00:00Z; 3 failing tests.', '3 failing tests.'],
+  ['a label colon goes with a dropped timestamp', 'Last seen: 2025-11-10T10:00:00Z.', 'Last seen.'],
+  ['a bare range keeps both ends', 'Window: 2025-11-10T10:00:00Z to 2025-11-10T11:30:00.000+01:00', 'Window: a set time to a set time.'],
+  ['a bare "and" pair keeps both ends', 'Seen 2025-11-10T10:00:00Z and 2025-11-10T11:30:00.000+01:00 in the log.', 'Seen a set time and a set time in the log.'],
+  [
+    'a list of timestamps keeps every end',
+    'The dates are 2025-11-10T10:00:00Z, 2025-11-10T11:30:00.000+01:00 and 2025-11-10T10:00:00Z.',
+    'The dates are a set time, a set time and a set time.',
+  ],
+  ['a neutral lead before a range is kept', 'As of 2025-11-10T10:00:00Z - 2025-11-10T11:30:00.000+01:00 the queue was empty.', 'As of a set time - a set time the queue was empty.'],
+  ['a bracketed log timestamp is dropped', '[2025-11-10T10:00:00Z] ERROR build failed in 3s', 'ERROR build failed in 3s.'],
+  ['separate sentences each drop their own timestamp', 'Created 2025-11-10T10:00:00Z. Updated 2025-11-10T11:30:00.000+01:00.', 'Created. Updated.'],
+  ['a timestamp bullet list loses the bullets and the timestamps', 'Deploy log:\n- 2025-11-10T10:00:00Z started\n- 2025-11-10T11:30:00.000+01:00 finished', 'Deploy log: started. finished.'],
+  [
+    'a word that ends its sentence is not a lead',
+    'This is what the build is stuck on. 2025-11-10T10:00:00Z ERROR build failed.',
+    'This is what the build is stuck on. ERROR build failed.',
+  ],
+  [
+    'a sentence that ends in a limiting word does not lend it to the next timestamp',
+    'Nothing left to wait for. 2025-11-10T10:00:00Z ERROR build failed.',
+    'Nothing left to wait for. ERROR build failed.',
+  ],
+  ['a hash after a sentence end has no git word before it', 'Reverted. 3f2a9c1d8e0b failed.', 'Reverted. an ID failed.'],
+  ['a dash pair that held only a dropped phrase becomes one dash', 'All green - as of 2025-11-10T10:00:00Z - really.', 'All green - really.'],
+  ['an em dash pair that held only a dropped phrase becomes one dash', 'Summary — as of 2025-11-10T10:00:00Z — all green.', 'Summary — all green.'],
+  ['a time-bearing verb keeps a time before a dash range', 'Expires 2025-11-10T10:00:00Z - renew by 2025-11-10T11:30:00.000+01:00.', 'Expires a set time - renew by a set time.'],
+
+  // Paths: an unanchored token is shortened only when it is clearly a location.
+  ['keeps d3.js/three.js', 'Compare d3.js/three.js now.', 'Compare d3.js/three.js now.'],
+  ['keeps express.js/koa.js', 'Compare express.js/koa.js now.', 'Compare express.js/koa.js now.'],
+  ['keeps react/next.js', 'Migrated react/next.js today.', 'Migrated react/next.js today.'],
+  ['keeps npm/node.js', 'Updated npm/node.js today.', 'Updated npm/node.js today.'],
+  ['keeps before/after.png', 'Attached before/after.png today.', 'Attached before/after.png today.'],
+  ['keeps old/new.json', 'Diffed old/new.json today.', 'Diffed old/new.json today.'],
+  ['keeps a three-segment path with a library directory', 'See three.js/lib/x.ts now.', 'See three.js/lib/x.ts now.'],
+  ['shortens src/index.js', 'Edited src/index.js today.', 'Edited src index.js today.'],
+  ['shortens docs/README.md', 'Read docs/README.md first.', 'Read README.md first.'],
+  ['shortens a/b/c.json', 'Read a/b/c.json now.', 'Read c.json now.'],
+  ['shortens packages/core/src/x.ts', 'Edited packages/core/src/x.ts now.', 'Edited x.ts now.'],
+  ['shortens a dot-directory path', 'Edited .github/workflows/ci.yml now.', 'Edited ci.yml now.'],
+  ['shortens an npm scope path', 'Read @scope/pkg/index.ts now.', 'Read pkg index.ts now.'],
+  ['shortens a hyphenated first directory', 'Open my-pkg/x.ts now.', 'Open x.ts now.'],
+  ['shortens a first directory with an underscore', 'Open my_pkg/x.py now.', 'Open x.py now.'],
+  ['shortens a CamelCase component under a common directory', 'Edited src/components/Avatar.tsx now.', 'Edited Avatar.tsx now.'],
+  ['shortens a CamelCase file in a deep path', 'Edited three/examples/jsm/loaders/GLTFLoader.js now.', 'Edited GLTFLoader.js now.'],
+  ['keeps a CamelCase product name in a pair', 'Moved Node.js/Express.js to a monorepo.', 'Moved Node.js/Express.js to a monorepo.'],
+  ['keeps word pairs whose first word is a plain directory-like noun', 'See model/view.png and data/model.json and out/in.txt.', 'See model/view.png and data/model.json and out/in.txt.'],
+  ['keeps home/work.md and release/debug.json', 'Moved home/work.md and release/debug.json today.', 'Moved home/work.md and release/debug.json today.'],
+  ['keeps a CamelCase product name after a common directory', 'Moved frontend/Next.js, server/Node.js and backend/Express.js.', 'Moved frontend/Next.js, server/Node.js and backend/Express.js.'],
+  ['shortens a CamelCase file with a line number', 'See src/Avatar.tsx:12 now.', 'See Avatar.tsx now.'],
+  ['shortens a path with a line range', 'Looked at src/core/foo.ts:42-50 now.', 'Looked at foo.ts now.'],
+  ['shortens a path with a GitHub line anchor', 'Looked at src/core/foo.ts#L42 and src/core/bar.ts#L10-L20.', 'Looked at foo.ts and bar.ts.'],
+  ['a bullet before an absolute path is still a bullet', 'Updated:\n- /home/jean/git/kookr/src/a.ts\n- ./b.ts\n- ~/c.md', 'Updated: a.ts. b.ts. c.md.'],
+  ['a bullet before a dotfile is still a bullet', '- .env handling\n- .gitignore entries', '.env handling. .gitignore entries.'],
+  ['a bullet before a pull request number is still a bullet', 'Merged:\n- #12 fixed the cache\n- #13 renamed things', 'Merged: number 12 fixed the cache. number 13 renamed things.'],
+  ['a bullet before the redaction placeholder is still a bullet', 'Seen:\n- [redacted]\n- [redacted]', 'Seen: redacted. redacted.'],
+  ['a shell redirect before a path keeps its angle bracket', 'pnpm test \\\n  > /tmp/out.log', 'pnpm test \\ > out.log.'],
+  ['keeps a minus before a slash-led number', 'Result: /5 of 10 passed', 'Result: /5 of 10 passed.'],
+
+  // Markdown tables: only a pipe-line run with a separator row is a table.
+  [
+    'table rows become comma-separated sentences',
+    '## Summary\n- Fixed the login bug in session.ts\n- Added 3 tests\n| Check | Result |\n|---|---|\n| lint | ✅ |',
+    'Summary. Fixed the login bug in session.ts. Added 3 tests. Check, Result. lint, ✅.',
+  ],
+  ['table with alignment markers and several rows', '| Name | Count |\n|:---|---:|\n| a | 3 |\n| b | 4 |', 'Name, Count. a, 3. b, 4.'],
+  ['table empty cells are skipped', '| a |  | c |\n|---|---|---|\n| 1 |  | 3 |', 'a, c. 1, 3.'],
+  ['table after an intro line', 'Results:\n| Check | Result |\n| --- | --- |\n| lint | ok |', 'Results: Check, Result. lint, ok.'],
+  ['an escaped pipe stays inside its cell', '| a | b |\n|---|---|\n| 1 \\| 2 | 3 |', 'a, b. 1 | 2, 3.'],
+  ['table cells lose their emphasis and code marks', '| **Check** | `Result` |\n|---|---|\n| _lint_ | ok |', 'Check, Result. lint, ok.'],
+  ['a table inside a code fence is still a table', 'Ran:\n```\n| a | b |\n|---|---|\n| 1 | 2 |\n```\ndone', 'Ran: a, b. 1, 2. done.'],
+  ['a table with no edge pipes is left as written', 'Tests | Result\n--- | ---\nlint | ok', 'Tests | Result --- | --- lint | ok.'],
+  ['pipes around prose are not a table', '|x| + |y|', '|x| + |y|.'],
+  ['a lone double pipe line stays', '||', '||.'],
+  ['a lone empty-cell line stays', '| |', '| |.'],
+  ['a pipe line without a separator row stays', '| a | b |', '| a | b |.'],
+  ['two pipe lines without a separator row stay', '| a | b |\n| c | d |', '| a | b | | c | d |.'],
+  ['a pipe-or in prose stays', 'Use x || y, not a | b.', 'Use x || y, not a | b.'],
 ];
 
 // --- oracle begin ---
@@ -374,6 +503,13 @@ const PLAIN = {
   under: ['_', '__', '_x', 'x_'],
   hash: ['# of', '#hashtag', '#'],
   odd: ['3 . 5', 'v1 .2', 'C++ .', 'file .txt', 'node . is', 'x ? y : z', 'if ! grep -q x', '3 : 1', '10:30 :00', '3 :1'],
+  // Word and library pairs that look like paths but are prose.
+  pair: [
+    'd3.js/three.js', 'express.js/koa.js', 'react/next.js', 'npm/node.js', 'before/after.png', 'old/new.json',
+    'input/output.csv', 'read/write.sh', 'three.js/lib/x.ts', 'owner/repo.git', 'model/view.png', 'data/model.json',
+    'home/work.md', 'out/in.txt', 'release/debug.json', 'frontend/Next.js', 'server/Node.js', 'backend/Express.js',
+  ],
+  pipe: ['|x|', 'a | b', 'x || y', '|x| + |y|', '||', '| |', '| a | b |'],
   word: ['the build', 'tests', 'the parser', 'CI', 'the deploy', 'auth', 'the cache', 'the migration', 'the agent', 'a worker'],
 };
 type PlainKind = keyof typeof PLAIN;
@@ -384,21 +520,40 @@ const REWRITES = {
     ['src/core/foo.ts', 'foo.ts'], ['lib/util.js', 'util.js'], ['~/notes/todo.md', 'todo.md'], ['./x/y.sh', 'y.sh'],
     ['/home/jean/git/kookr/', 'kookr'], ['C:\\Users\\jean\\main.rs', 'main.rs'], ['src/.eslintrc.json', '.eslintrc.json'],
     ['a/b.json:12', 'b.json'], ['~/.bashrc', '.bashrc'], ['docs/README.md', 'README.md'], ['src/core/index.ts', 'core index.ts'],
-    ['src/pkg/__init__.py', '__init__.py'],
+    ['src/pkg/__init__.py', '__init__.py'], ['src/components/Avatar.tsx', 'Avatar.tsx'], ['tests/unit/cache.json', 'cache.json'],
+    ['src/core/foo.ts:42-50', 'foo.ts'], ['src/core/foo.ts#L42', 'foo.ts'], ['@scope/pkg/lib/x.ts', 'x.ts'],
+    ['my-pkg/x.ts', 'x.ts'],
   ],
   url: [
     ['https://example.com/a/b', 'a link'], ['https://github.com/o/r/pull/12', 'pull request 12'],
     ['https://github.com/o/r/issues/7', 'issue 7'], ['www.example.com', 'a link'],
     ['https://example.com/search?q=a&b=c#frag', 'a link'],
   ],
-  hash: [['3f2a9c1d8e0b', 'a commit'], ['a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', 'a commit']],
+  // A long hex token with no git word beside it is only an ID; the same token after a git word is a commit.
+  hash: [['3f2a9c1d8e0b', 'an ID'], ['a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', 'an ID'], ['507f1f77bcf86cd799439011', 'an ID']],
+  uuid: [['for 123e4567-e89b-12d3-a456-426614174000', 'for an ID'], ['by 123e4567-e89b-12d3-a456-426614174000', 'by an ID']],
+  // Time-limiting words keep their place and the timestamp becomes "a set time".
+  time: [
+    ['until 2025-11-10T10:00:00Z', 'until a set time'], ['since 2025-11-10T10:00:00Z', 'since a set time'],
+    ['before 2025-11-10T10:00:00Z', 'before a set time'], ['expires at 2025-11-10T10:00:00Z', 'expires at a set time'],
+    ['from 2025-11-10T10:00:00Z to 2025-11-10T11:00:00Z', 'from a set time to a set time'],
+    ['between 2025-11-10T10:00:00Z and 2025-11-10T11:00:00Z', 'between a set time and a set time'],
+    ['(since 2025-11-10T10:00:00Z)', '(since a set time)'],
+  ],
+  digest: [
+    ['sha256:a1b2c3d4e5f60718293a4b5c6d7e8f9012345678a1b2c3d4e5f60718293a4b5c', 'an ID'],
+    ['md5:a1b2c3d4e5f60718293a4b5c6d7e8f90', 'an ID'],
+  ],
   snake: [
     ['max_retry_count', 'max retry count'], ['needs_input', 'needs input'], ['MAX_RETRIES', 'max retries'],
     ['tmux_unresponsive', 'backend unreachable'], ['hook_parse_degraded', 'hook parse degraded'],
   ],
   pr: [['#12', 'number 12'], ['#3608', 'number 3608']],
   placeholder: [['[redacted]', 'redacted'], ['[REDACTED]', 'REDACTED']],
-  gitword: [['on 3f2a9c1', 'on a commit'], ['onto abc1234', 'onto a commit'], ['at 3f2a9c1d8e', 'at a commit'], ['reverted abc1234', 'reverted a commit']],
+  gitword: [
+    ['on 3f2a9c1', 'on a commit'], ['onto abc1234', 'onto a commit'], ['at 3f2a9c1d8e', 'at a commit'],
+    ['reverted abc1234', 'reverted a commit'], ['reverted 3f2a9c1d8e0b', 'reverted a commit'],
+  ],
   arrow: [['->', 'to'], ['=>', 'to'], ['→', 'to'], ['-->', 'to']],
   amp: [['&', 'and'], ['&&', 'and']],
   md: [
@@ -488,7 +643,14 @@ const TEMPLATES: ReadonlyArray<(p: Picker) => Part[]> = [
   (p) => ['Edited ', p.rw('path'), ' and ', p.rw('path'), ' today.'],
   (p) => ['Open ', p.rw('url'), ' for details.'],
   (p) => ['Merged ', p.rw('url'), ', then ', p.rw('url'), '.'],
-  (p) => ['Reverted ', p.rw('hash'), ' on ', p.plain('ref'), '.'],
+  (p) => ['Got ', p.rw('hash'), ' on ', p.plain('ref'), '.'],
+  (p) => ['Retry ', p.rw('uuid'), ' failed ', p.rw('time'), '.'],
+  (p) => ['Results', { raw: '\n| Check | Result |\n|---|---|\n| lint | ok |', spoken: '. Check, Result. lint, ok' }, { raw: '\nAll done', spoken: '. All done' }, '.'],
+  (p) => ['Compared ', p.plain('pair'), ' and ', p.plain('pair'), ' today.'],
+  (p) => ['Seen ', p.plain('pipe'), ' in prose.'],
+  (p) => ['Pinned ', p.rw('digest'), ' for ', p.plain('word'), '.'],
+  (p) => ['Waiting ', p.rw('time'), ' on ', p.plain('word'), ' now.'],
+  (p) => ['Edited ', p.rw('path'), ' while ', p.plain('pair'), ' stayed put.'],
   (p) => ['The agent is in ', p.rw('snake'), ' state, not ', p.rw('snake'), '.'],
   (p) => ['Opened ', p.rw('pr'), ', ', p.rw('pr'), ' and ', p.rw('pr'), ' today.'],
   (p) => ['Lint ', p.rw('amp'), ' test ', p.rw('amp'), ' build pass.'],
@@ -594,6 +756,9 @@ describe('makeSpeakable', () => {
       '-v', '--force', '@user', '$5', '50%', '10:30', '1..10', 'main..HEAD', 'Building...done', '2**16', 'a*b*c',
       '*args', '*em*', '_em_', '**bold**', '`,`', '`;`', '`x`', '`a b`', 'std::vector', ':)', ':tada:', ',x', ';)',
       '> 5', '- 3', '+ 2', '* 4', '-3', '> ', '+ ', '* ', '"', "'", 'word', 'done', 'Fixed', '123e4567-e89b-12d3-a456-426614174000',
+      'as', 'of', 'since', 'until', 'between', 'and', '-', '–', '| a | b |', '|---|---|', '|', 'd3.js/three.js', 'src/index.js',
+      'a/b.json:12', 'src/a.ts#L4', 'react/next.js', 'sha256:a1b2c3d4e5f60718293a4b5c6d7e8f90', '3f2a9c1d8e0b', '- /x/y.ts',
+      '- #12', 'for', 'expires', ':', ';',
     ];
     // Tokens that start with punctuation and must never end up glued to the word before them.
     const glueSensitive = ['.env', '.gitignore', '.DS_Store', '.314', '.5', ':)', ':tada:', ',x', ';)', '--force', '-v', '$5', '@user'];
@@ -674,6 +839,13 @@ describe('makeSpeakable', () => {
     ['slashes', '/'.repeat(5000)],
     ['segmented slashes', 'a/'.repeat(3000)],
     ['dot run longer than any backtracking budget', `a${'.'.repeat(50)} b`],
+    ['table rows', `| a | b |\n|---|---|\n${'| 1 | 2 |\n'.repeat(150)}`],
+    ['table rows with no separator', '| a | b |\n'.repeat(180)],
+    ['many pipes', `${'| a '.repeat(500)}|`],
+    ['dropped timestamps with commas', 'At 2025-11-10T10:00:00Z, '.repeat(60)],
+    ['timestamp lists', '2025-11-10T10:00:00Z, '.repeat(90)],
+    ['uuids', '123e4567-e89b-12d3-a456-426614174000 and '.repeat(45)],
+    ['bullets before paths', '- /a/b/c.ts\n'.repeat(200)],
   ])('runs in linear time on %s', (_label, input) => {
     const start = performance.now();
     makeSpeakable(input);
@@ -765,6 +937,22 @@ describe('makeSpeakable never loses or glues words', () => {
     ];
     for (const [input, wrong] of reviewerFindings) {
       expect(findWordLoss(() => wrong, { raw: input, spoken: input }), input).not.toBeNull();
+    }
+    // Wrong rewrites of the next round: a lost lead word or a silently removed time.
+    const T = '2025-11-10T10:00:00Z';
+    const timeFindings: Array<[raw: string, spoken: string, wrong: string]> = [
+      [`As of ${T} the build is green.`, 'the build is green.', 'As the build is green.'],
+      [`Status as of ${T} is green.`, 'Status is green.', 'Status as is green.'],
+      [`Green as of ${T}.`, 'Green.', 'Green as.'],
+      [`Do not merge until ${T}.`, 'Do not merge until a set time.', 'Do not merge.'],
+      [`No failures since ${T}.`, 'No failures since a set time.', 'No failures.'],
+      ['Compare d3.js/three.js now.', 'Compare d3.js/three.js now.', 'Compare three.js now.'],
+      ['Moved react/next.js today.', 'Moved react/next.js today.', 'Moved next.js today.'],
+      ['Pass before/after.png along.', 'Pass before/after.png along.', 'Pass after.png along.'],
+    ];
+    for (const [raw, spoken, wrong] of timeFindings) {
+      expect(findWordLoss(() => wrong, { raw, spoken }), raw).not.toBeNull();
+      expect(findWordLoss(makeSpeakable, { raw, spoken }), raw).toBeNull();
     }
     // And it accepts the right answers, so it is not simply failing everything.
     expect(findWordLoss(makeSpeakable, { raw: 'a :) face', spoken: 'a :) face' })).toBeNull();

@@ -21,6 +21,43 @@ const MAX_SPOKEN_EXPLANATION_CHARS = 100;
 
 const ADVICE_VERB_DENYLIST = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
 const SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+/** The shortest run {@link SECRET_PATTERN} treats as a secret; no single path segment may reach it. */
+const MIN_SECRET_RUN = 32;
+/**
+ * A path segment, and a segment that reads as a directory name: lower-case letters,
+ * digits, `-` and `_` with at least one letter and 2+ characters ("frontend"), or one
+ * Capitalised word ("Users", "Documents").
+ */
+const PATH_SEGMENT = /^[A-Za-z0-9._@-]+$/;
+const DIRECTORY_NAME = /^(?:(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{2,}|[A-Z][a-z]{1,19})$/;
+
+/** A segment that is token-sized and token-shaped: 20+ characters mixing letters with digits, or mixed-case letters with many capitals. */
+function isTokenLikeSegment(segment: string): boolean {
+  if (segment.length < 20) return false;
+  if (/[A-Za-z]/.test(segment) && /\d/.test(segment)) return true;
+  const capitals = segment.replace(/[^A-Z]/g, '').length;
+  return /[a-z]/.test(segment) && capitals * 4 >= segment.length;
+}
+
+/**
+ * True when a long base64-alphabet run is really a long absolute or relative path
+ * ("/home/me/git/app/src/frontend/hooks/useThing"), not a secret. It must contain a
+ * slash and be rooted (the character before the run is a slash, which `\b` leaves
+ * outside the match) or hold two or more slashes; contain no `+` and no `=`; have
+ * only non-empty segments, every one shorter than a secret (a single 32+ character
+ * segment such as a hash or token is secret-sized) and none of them token-shaped
+ * ({@link isTokenLikeSegment}); and have at least two directory-looking segments. A
+ * slash-free run, or a run with a long or token-shaped segment, is always redacted.
+ */
+function isPathShapedRun(run: string, charBefore: string): boolean {
+  if (!run.includes('/') || run.includes('+') || run.includes('=')) return false;
+  const segments = run.split('/');
+  const rooted = charBefore === '/';
+  if (!rooted && segments.length < 3) return false;
+  if (!segments.every((segment) => PATH_SEGMENT.test(segment) && segment.length < MIN_SECRET_RUN)) return false;
+  if (segments.some(isTokenLikeSegment)) return false;
+  return segments.filter((segment) => DIRECTORY_NAME.test(segment)).length >= 2;
+}
 
 const SYSTEM_PROMPT = `You write short spoken-audio summaries for a developer supervising coding-agent tasks.
 
@@ -75,24 +112,53 @@ export interface TaskSpeechSummary {
   rawText?: string;
 }
 
+/**
+ * Cut `text` to `max` characters with a trailing "...". A cut that would land inside a
+ * word backs up to the end of the previous word (when that keeps most of the text),
+ * so a number or name is never spoken half-way ("6525 passed" -> "(652...").
+ */
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   if (max <= 3) return text.slice(0, max);
-  return text.slice(0, max - 3).trimEnd() + '...';
+  const keep = max - 3;
+  let end = keep;
+  if (!/\s/.test(text[keep] ?? ' ') && !/\s/.test(text[keep - 1] ?? ' ')) {
+    const boundary = text.slice(0, keep).search(/\s\S*$/);
+    if (boundary >= keep * 0.6) end = boundary;
+  }
+  return text.slice(0, end).trimEnd() + '...';
+}
+
+/** Hide secrets and the prompt delimiters. Keeps line breaks, so a caller can still read the line structure. */
+function redactSecrets(value: string | null | undefined): string {
+  return (value ?? '')
+    .replace(SECRET_PATTERN, (match: string, offset: number, whole: string) => (
+      isPathShapedRun(match, offset > 0 ? whole[offset - 1] : '') ? match : '[redacted]'
+    ))
+    .replace(/<<<\s*(?:TASK_CONTEXT|END)\s*>>>/gi, '[delimiter]');
 }
 
 function sanitizeText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
-  const compact = (value ?? '')
-    .replace(SECRET_PATTERN, '[redacted]')
-    .replace(/<<<\s*(?:TASK_CONTEXT|END)\s*>>>/gi, '[delimiter]')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const compact = redactSecrets(value).replace(/\s+/g, ' ').trim();
   return truncate(compact, max);
 }
 
+/**
+ * Like {@link sanitizeText}, but makes the text speakable BEFORE it is flattened to
+ * one line: the markdown rules (headings, bullets, tables) need the line breaks.
+ * The order is fixed: secrets and delimiters are hidden first (a rewrite such as
+ * `ghp_abc` -> "ghp abc" would otherwise defeat the secret pattern), then the
+ * speakable rewrite, then flatten and cut.
+ */
+function speakableText(value: string | null | undefined, max = MAX_FIELD_CHARS): string {
+  return sanitizeText(makeSpeakable(redactSecrets(value)), max);
+}
+
+/** End with a period; a question or exclamation keeps its own mark ("Which branch?" must not become a statement). */
 function sentence(value: string): string {
-  const trimmed = value.trim().replace(/[.?!]+$/g, '');
-  return trimmed ? `${trimmed}.` : '';
+  const bare = value.trim().replace(/\.+$/g, '');
+  if (bare.replace(/[?!]+$/g, '') === '') return '';
+  return /[?!]$/.test(bare) ? bare : `${bare}.`;
 }
 
 function fallbackSentence(value: string): string {
@@ -195,14 +261,20 @@ function toolGroupDetails(group: ToolGroup): string {
     .join('; ');
 }
 
+/** `Label: text`, or nothing when the message has no words left once it is made speakable. */
+function messageLine(label: string, text: string): string {
+  const spoken = speakableText(text, MAX_ACTIVITY_LINE_CHARS);
+  return spoken ? `${label}: ${spoken}` : '';
+}
+
 function activityLine(item: ActivityItem): string {
   switch (item.type) {
     case 'user_message':
-      return `User: ${sanitizeText(item.text, MAX_ACTIVITY_LINE_CHARS)}`;
+      return messageLine('User', item.text);
     case 'user_input_delivery':
-      return `User: ${sanitizeText(item.delivery.text, MAX_ACTIVITY_LINE_CHARS)}`;
+      return messageLine('User', item.delivery.text);
     case 'agent_message':
-      return `Agent: ${sanitizeText(item.text, MAX_ACTIVITY_LINE_CHARS)}`;
+      return messageLine('Agent', item.text);
     case 'user_paste_burst': {
       const firstLine = item.lines.map((line) => sanitizeText(line, 80)).find(Boolean);
       return firstLine
@@ -235,7 +307,7 @@ function findingSentence(name: string, finding: TaskSpeechFindingInput): string 
   const headline = phrase
     ? `${name} ${phrase}`
     : `${name} reported ${identifierToWords(sanitizeText(finding.type, 40)) || 'a problem'}`;
-  const explanation = makeSpeakable(sanitizeText(finding.explanation, 300));
+  const explanation = speakableText(finding.explanation, 300);
   const head = sentence(headline);
   // Keep the explanation only when it is short enough to listen to.
   return explanation && explanation.length <= MAX_SPOKEN_EXPLANATION_CHARS

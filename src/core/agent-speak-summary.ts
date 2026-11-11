@@ -150,6 +150,17 @@ function stripTrailingTerminalPunctuation(text: string): string {
   return text.replace(/[.!?…]+$/u, '').trimEnd();
 }
 
+/**
+ * End a fallback clause with a period, except where it is a question or exclamation:
+ * "Which branch should I use?" must not become a statement. Dots and ellipses are
+ * replaced by the one period; returns '' when nothing but punctuation is left.
+ */
+function endClause(text: string): string {
+  const bare = text.trimEnd().replace(/[.…]+$/u, '');
+  if (stripTrailingTerminalPunctuation(bare) === '') return '';
+  return /[?!]$/.test(bare) ? bare : `${bare}.`;
+}
+
 type RecapCheck = { ok: true; recap: string } | { ok: false; reason: SpeakAgentFallbackReason };
 
 /** Caps and denylist, applied to the recap text as given. */
@@ -215,13 +226,15 @@ function composeFallbackText(context: AgentSpeakContext, verbosity: VerbositySca
   }
   const parts: string[] = [`${name}.`];
   if (context.recentActivity && context.recentActivity !== '(no recent activity)') {
-    parts.push(`${stripTrailingTerminalPunctuation(context.recentActivity)}.`);
+    parts.push(endClause(context.recentActivity));
   }
   if (context.anomaly) {
-    const explanation = stripTrailingTerminalPunctuation(context.anomaly.explanation);
-    if (explanation) parts.push(`${explanation}.`);
+    // Made speakable on its own: joined after the task name its first line would no
+    // longer start a line, and a heading or bullet marker only counts there.
+    const explanation = endClause(makeSpeakable(context.anomaly.explanation));
+    if (explanation) parts.push(explanation);
   } else if (context.recentMessages && context.recentMessages !== '(no recent messages)') {
-    parts.push(`${stripTrailingTerminalPunctuation(context.recentMessages)}.`);
+    parts.push(endClause(context.recentMessages));
   }
   return parts.join(' ');
 }

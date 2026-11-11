@@ -292,3 +292,37 @@ describe('summarizeAgent', () => {
     expect(result.text).toBe('Refactor auth. All tests passed.');
   });
 });
+
+describe('multi-line markdown reaches the fallback as sentences', () => {
+  test('a markdown anomaly explanation is made speakable before it is joined', () => {
+    const text = buildFallbackText(
+      {
+        ...baseContext,
+        anomaly: {
+          type: 'needs_input',
+          severity: 'info',
+          explanation: '## Question\n- Which branch should I use?\n- Is /home/jean/git/kookr/src/a.ts the right file?',
+        },
+      },
+      'medium',
+    );
+    expect(text).toBe(
+      'Refactor auth. read 2 files, edited 1 file. Question. Which branch should I use? Is a.ts the right file?',
+    );
+    expect(text).not.toMatch(/##|\s-\s/);
+  });
+
+  test('an anomaly explanation with a table has no pipes left', async () => {
+    const result = await summarizeAgent(
+      null,
+      {
+        ...baseContext,
+        anomaly: { type: 'api_error', severity: 'info', explanation: '| code | meaning |\n|---|---|\n| 429 | rate limited |' },
+      },
+      'detailed',
+      'finding',
+    );
+    expect(result.text).toBe('Refactor auth. read 2 files, edited 1 file. code, meaning. 429, rate limited.');
+  });
+});
+
