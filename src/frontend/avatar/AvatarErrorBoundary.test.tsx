@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { Suspense, act, lazy } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { AvatarErrorBoundary } from './AvatarErrorBoundary.js';
@@ -43,6 +43,30 @@ describe('AvatarErrorBoundary', () => {
 
     expect(container.textContent).toBe('dashboard');
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('avatar panel failed'), expect.any(Error));
+  });
+
+  test('panel code that cannot be downloaded (a missing chunk) is contained the same way', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const Missing = lazy(() => Promise.reject(new Error('Failed to fetch dynamically imported module')));
+
+    await act(async () => {
+      root.render(
+        <main>
+          <p>dashboard</p>
+          <AvatarErrorBoundary>
+            <Suspense fallback={null}>
+              <Missing />
+            </Suspense>
+          </AvatarErrorBoundary>
+        </main>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toBe('dashboard');
   });
 
   test('a healthy panel is rendered unchanged', () => {

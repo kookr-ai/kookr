@@ -16439,8 +16439,9 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
   text-align: center;
   font-size: 12px;
   color: var(--text-muted);
+  /* It lies over the 3D view and is empty once the view is ready; it must never take clicks from it. */
+  pointer-events: none;
 }
-.avatar-dock-status[hidden] { display: none; }
 .avatar-dock-caption {
   flex: none;
   max-height: 84px;

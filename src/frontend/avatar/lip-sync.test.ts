@@ -80,6 +80,8 @@ describe('stepLipSync', () => {
       expect(hold).toBeGreaterThanOrEqual(0.08);
       expect(hold).toBeLessThanOrEqual(0.2);
     }
+    // The length varies from one shape to the next, which is what makes it read as speech rather than a metronome.
+    expect(Math.max(...holds) - Math.min(...holds)).toBeGreaterThan(0.03);
     // Two seconds of speech therefore holds 10 to 25 shapes; a hold ends on the next 60 Hz frame,
     // which can stretch each one by up to 17 ms, so 9 is the true lower bound.
     expect(holds.length).toBeGreaterThanOrEqual(9);

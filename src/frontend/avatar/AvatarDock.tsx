@@ -251,15 +251,16 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <span className="avatar-dock-state">{STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
         <button type="button" className="avatar-dock-button" onClick={moveToNextCorner} aria-label={`Move ${NAME} to the next corner`} title="Move to the next corner">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6V3h3M13 10v3h-3M3 3l4 4M13 13l-4-4" /></svg>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v12M2 8h12M6 4l2-2 2 2M6 12l2 2 2-2M4 6L2 8l2 2M12 6l2 2-2 2" /></svg>
         </button>
         <button type="button" ref={minimiseButtonRef} className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
         </button>
       </div>
       <div className="avatar-dock-view" ref={viewRef}>
-        {/* The status element is always present so that a message added later is announced. */}
-        <span className="avatar-dock-status" role="status" hidden={loaded && !error}>
+        {/* Always present and never hidden, only emptied: screen readers announce text added to a live
+            region reliably only if the region was already there. */}
+        <span className="avatar-dock-status" role="status">
           {error
             ? `The 3D view could not start (${error}). Spoken summaries still play.`
             : loaded

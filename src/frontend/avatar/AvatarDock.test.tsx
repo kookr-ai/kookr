@@ -64,6 +64,7 @@ function pointer(type: string, init: { clientX: number; clientY: number; button?
 describe('AvatarDock', () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
+  const realSetPointerCapture = HTMLElement.prototype.setPointerCapture;
 
   const dock = () => container.querySelector<HTMLElement>('[data-testid="avatar-dock"]');
   const bubble = () => container.querySelector<HTMLButtonElement>('[data-testid="avatar-bubble"]');
@@ -106,6 +107,7 @@ describe('AvatarDock', () => {
     localStorage.clear();
     __resetSpeechBusForTests();
     __resetAvatarPanelPrefsForTests();
+    HTMLElement.prototype.setPointerCapture = realSetPointerCapture;
     document.body.innerHTML = '';
   });
 
@@ -153,8 +155,12 @@ describe('AvatarDock', () => {
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
     expect(stage.setState).toHaveBeenLastCalledWith('idle');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(null);
-    // The last thing she said stays readable after the clip ends.
+    // The last thing she said stays readable after the clip ends...
     expect(caption()!.textContent).toBe('Two tasks need you.');
+
+    // ...and is cleared as soon as the next clip is being prepared, so old text is never shown as the new one.
+    act(() => emitSpeechGenerating(SPEAKER));
+    expect(caption()!.textContent).toContain('speaker button');
   });
 
   test('minimising shuts the 3D view down, shows a still on the bubble and keeps keyboard focus', () => {
@@ -284,6 +290,21 @@ describe('AvatarDock', () => {
     expect(savedPrefs().position).toEqual({ x: FAR_X, y: AVATAR_PANEL_MARGIN });
   });
 
+  test('the right mouse button does not start a drag', () => {
+    startWith({ position: { x: 100, y: 100 } });
+    render();
+    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
+
+    act(() => {
+      header.dispatchEvent(pointer('pointerdown', { clientX: 150, clientY: 110, button: 2 }));
+    });
+    act(() => {
+      header.dispatchEvent(pointer('pointermove', { clientX: 400, clientY: 400 }));
+    });
+
+    expect(dock()!.style.left).toBe('100px');
+  });
+
   test('pressing a title-bar button does not start a drag', () => {
     startWith({ position: { x: 100, y: 100 } });
     render();
@@ -336,7 +357,13 @@ describe('AvatarDock', () => {
     render();
 
     act(() => {
-      window.dispatchEvent(new StorageEvent('storage', { key: 'some-other-key', newValue: 'x' }));
+      // The same payload under a different key belongs to some other feature and must be ignored.
+      window.dispatchEvent(
+        new StorageEvent('storage', {
+          key: 'some-other-key',
+          newValue: JSON.stringify({ enabled: true, minimized: true, position: null }),
+        }),
+      );
     });
     expect(dock()).not.toBeNull();
 
@@ -361,14 +388,14 @@ describe('AvatarDock', () => {
     const status = () => container.querySelector<HTMLElement>('[role="status"]')!;
 
     expect(status().textContent).toBe('Loading…');
-    expect(status().hidden).toBe(false);
 
     act(() => stages[0].options.onReady?.());
     expect(dock()!.getAttribute('data-avatar-loaded')).toBe('true');
-    expect(status().hidden).toBe(true);
+    // Emptied, not hidden: a hidden live region would not announce the failure below.
+    expect(status().textContent).toBe('');
+    expect(status().hidden).toBe(false);
 
     act(() => stages[0].options.onError?.('WebGL is not available'));
-    expect(status().hidden).toBe(false);
     expect(status().textContent).toContain('WebGL is not available');
     expect(status().textContent).toContain('Spoken summaries still play');
   });
