@@ -343,12 +343,14 @@ describe('nb-inject layered index — the 60-row / 8 KB cap', () => {
     for (const row of r.out.split('\n').filter((l) => l.startsWith('  '))) expect(row.endsWith(wide)).toBe(true); // whole rows
   });
 
-  test('a project group larger than 8 KB is still shown whole (only the other layers are byte-capped)', () => {
-    const wide = 'é'.repeat(80);
-    const r = inject([...project(70, wide), ...domain(5), { shelf: 'fleet-global' }], { KOOKR_REPO_SLUG: 'mine' });
+  test('a project group larger than 8 KB (but under 60 rows) is still shown whole; only the other layers are byte-capped', () => {
+    const wide = 'é'.repeat(80); // ~190 bytes a row
+    const r = inject([...project(50, wide), ...domain(5), { shelf: 'fleet-global' }], { KOOKR_REPO_SLUG: 'mine' });
     expect(Buffer.byteLength(index(r.out))).toBeGreaterThan(8 * 1024);
-    expect(group(r.out, PROJECT)).toHaveLength(70);
+    expect(group(r.out, PROJECT)).toHaveLength(50); // under the 60-row cap, over the byte cap
     expect(group(r.out, DOMAIN)).toHaveLength(0);
+    expect(group(r.out, GLOBAL)).toHaveLength(0);
+    expect(r.out).toContain('6 more shelves not shown');
   });
 
   test('a store under both caps shows no "more" tail', () => {
