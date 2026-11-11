@@ -114,6 +114,25 @@ export function reapZeroByteShelf(dir, shelf) {
   return 'deleted';
 }
 
+/**
+ * Reject a value flag that has no usable value. `--only` followed by nothing (or
+ * by another flag, or by an empty string from an unset shell variable) must NOT
+ * fall back to "no restriction": for a script that can move and remove lessons,
+ * a restricted run silently widening is the worst way to fail.
+ * Returns an error message, or null when every present flag has a value.
+ */
+export function missingFlagValue(argv, flags) {
+  for (const flag of flags) {
+    const i = argv.indexOf(flag);
+    if (i === -1) continue;
+    const value = argv[i + 1];
+    if (value === undefined || value.trim() === '' || value.startsWith('--')) {
+      return `${flag} needs a value${value === '' ? ' (it was empty: is a shell variable unset?)' : ''}`;
+    }
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // running nb
 // ---------------------------------------------------------------------------

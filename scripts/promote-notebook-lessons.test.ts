@@ -465,6 +465,25 @@ describe('promote: --apply guards', { timeout: 120_000 }, () => {
     expect(dirContents(dir)).toEqual(before);
   });
 
+  test('an empty or missing --only value is refused, never widened to "apply every exact group"', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    commitAll(dir);
+    const before = dirContents(dir);
+    const script = join(repoRoot, 'scripts', 'promote-notebook-lessons.mjs');
+    const env = cleanEnv({ NB_DIR: dir });
+    const go = (...args: string[]) => spawnSync(process.execPath, [script, ...args, '--nb', RAW_NB], { encoding: 'utf-8', env });
+    for (const args of [['--apply', '--only', ''], ['--apply', '--only', ' '], ['--apply', '--only', '--force-low'], ['--only'], ['--apply', '--to-global', '']]) {
+      const r = go(...args);
+      expect(r.status, args.join(' ')).toBe(2);
+      expect(r.stderr, args.join(' ')).toContain('needs a value');
+    }
+    // (an --only that is last on the command line, after the --nb the helper appends, is covered by the ['--only'] case)
+    expect(dirContents(dir)).toEqual(before);
+    expect(git(dir, 'tag')).toBe('');
+  });
+
   test('the CLI: bad --threshold exits 2, a dry-run exits 0, --apply on a non-git store exits 2', () => {
     const dir = store({ git: false });
     writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
@@ -558,6 +577,23 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
     expect(git(dir, 'status', '--porcelain')).toBe('');
     const tag = git(dir, 'tag', '-l', 'pre-lesson-promotion-*');
     expect(git(dir, 'log', '--format=%s', `${tag}..HEAD`)).toContain('lesson promotion: delete empty shelf code-review@repo-two');
+  });
+});
+
+describe('promote: leftovers of an interrupted promotion', { timeout: 120_000 }, () => {
+  test('a project copy of a lesson the domain shelf already holds is listed with its nb rm, and --apply removes nothing', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review', L([5, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([2, SAME.toUpperCase()], [1, 'unrelated']));
+    commitAll(dir);
+    const dry = run(dir);
+    expect(dry.text).toContain('PROJECT COPIES of a lesson that the domain shelf already holds');
+    expect(dry.text).toContain(`nb rm code-review@repo-two ${entryId(SAME)} --reason obsolete --note duplicate`);
+    expect(dry.text).not.toContain('unrelated');
+    const before = dirContents(dir);
+    const applied = run(dir, { apply: true });
+    expect(applied.result.removed).toEqual([]);
+    expect(dirContents(dir)).toEqual(before);
   });
 });
 

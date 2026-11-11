@@ -54,7 +54,10 @@
 //     cannot cost the only copy.
 //   * Groups are applied highest-scored first.
 //   * Each `--apply` step re-reads the shelves it touches, so an interrupted run
-//     is resumable and a second run is a no-op.
+//     is resumable and a second run is a no-op. If a run stops between an exact
+//     group's move and its removals, the leftover project copies are listed as
+//     "PROJECT COPIES of a lesson the domain shelf already holds" with the `nb rm`
+//     to run by hand; they are never removed on the strength of a different run.
 //
 // ROLLBACK. `--apply` tags the store with a fresh `pre-lesson-promotion-<UTC time>`
 // anchor each run (an explicit --tag that already exists is kept). Every move and
@@ -76,6 +79,7 @@ import { GLOBAL_SHELF, classifyShelf, loadSlugAliases } from '../plugin/hooks/li
 import {
   createNbClient,
   isStoreGitRepo,
+  missingFlagValue,
   moveCommand,
   nbMove,
   nbRemoveDuplicate,
@@ -86,7 +90,7 @@ import {
   snapshotStore,
   tagStore,
 } from './lib/nb-client.mjs';
-import { applyMove, applyRemove, cloneStore, decideStep, exactKey, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
+import { applyMove, applyRemove, cloneStore, decideStep, entryId, exactKey, maxLines, shelfNameProblem } from './lib/nb-sim.mjs';
 
 export const DEFAULT_TAG = 'pre-lesson-promotion';
 export const DEFAULT_THRESHOLD = 0.6;
@@ -199,7 +203,24 @@ export function findGroups({ store, aliases, threshold = DEFAULT_THRESHOLD }) {
       else groups.push(group);
     }
   }
-  return { groups, covered, stats: { projectLessons, projectShelves, skippedShelves } };
+
+  // Project copies of a lesson the domain shelf (or fleet-global) already holds
+  // verbatim. After a promotion that was interrupted between its move and its
+  // removals these are the leftover copies. Never removed automatically: a person
+  // decides (the commands are printed).
+  const leftovers = [];
+  for (const [base, items] of byBase) {
+    const holders = new Map();
+    for (const shelf of [base, GLOBAL_SHELF]) {
+      for (const e of store.get(shelf) ?? []) holders.set(exactKey(e.text), shelf);
+    }
+    for (const it of items) {
+      const heldIn = holders.get(exactKey(it.text));
+      if (heldIn) leftovers.push({ ...it, heldIn });
+    }
+  }
+  leftovers.sort((a, b) => (a.shelf < b.shelf ? -1 : a.shelf > b.shelf ? 1 : a.id < b.id ? -1 : 1));
+  return { groups, covered, leftovers, stats: { projectLessons, projectShelves, skippedShelves } };
 }
 
 /**
@@ -313,6 +334,10 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
   if (cand.length) {
     log('\nCANDIDATE groups (report only; read both texts, a lesson and its negation can look alike):');
     steps.filter((s) => s.group.tier === 'candidate').forEach(show);
+  }
+  if (found.leftovers.length > 0) {
+    log(`\nPROJECT COPIES of a lesson that ${found.leftovers[0].heldIn === GLOBAL_SHELF ? 'fleet-global' : 'the domain shelf'} already holds word for word (${found.leftovers.length}); not removed automatically (e.g. a promotion that stopped before its removals). Remove by hand if you agree:`);
+    for (const l of found.leftovers) log(`    ${removeCommand(l.shelf, l.id)}   (held in ${l.heldIn}) ${clip(l.text, 70)}`);
   }
   log(`\n${only ? `* = chosen with --only (${[...only].join(', ')})` : '* = what a plain --apply would act on (exact groups only)'}`);
 }
@@ -438,6 +463,13 @@ export function runPromotion({
         continue;
       }
       result.performed.push({ id: g.id, from: step.from, to: step.to, lesson: step.id });
+      const predicted = d.prediction.evicted?.id ?? null;
+      const actual = r.evicted ? entryId(r.evicted.text) : null;
+      if (predicted !== actual) {
+        const msg = `${label}: nb evicted ${actual ?? 'nothing'} where ${predicted ?? 'nothing'} was predicted (the shelf changed under us?)`;
+        result.warnings.push(msg);
+        log(`  WARNING         ${msg}`);
+      }
       log(`  moved           ${label}${r.evicted ? '   (evicted a lesson from the target)' : ''}`);
     }
     if (g.tier === 'exact') pendingRemovals.push(step);
@@ -504,6 +536,11 @@ export function main(argv = process.argv.slice(2)) {
         '--to-global <ids> sends the named groups to fleet-global instead of the domain shelf.',
     );
     return 0;
+  }
+  const flagProblem = missingFlagValue(argv, ['--only', '--to-global', '--threshold', '--map', '--nb', '--tag']);
+  if (flagProblem) {
+    console.error(`promote-notebook-lessons: ${flagProblem}.`);
+    return 2;
   }
   const thrRaw = arg(argv, '--threshold');
   const threshold = thrRaw === undefined ? DEFAULT_THRESHOLD : Number(thrRaw);

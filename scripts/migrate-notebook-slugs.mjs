@@ -75,6 +75,7 @@ import {
   commitPaths,
   createNbClient,
   isStoreGitRepo,
+  missingFlagValue,
   moveCommand,
   nbMove,
   reapZeroByteShelf,
@@ -449,6 +450,11 @@ export function main(argv = process.argv.slice(2)) {
         'never `git reset --hard`. Run it while no tasks are running.',
     );
     return 0;
+  }
+  const flagProblem = missingFlagValue(argv, ['--map', '--manifest', '--nb', '--tag']);
+  if (flagProblem) {
+    console.error(`migrate-notebook-slugs: ${flagProblem}.`);
+    return 2;
   }
   const aliases = loadSlugAliases(arg(argv, '--map'));
   const manifestPath = arg(argv, '--manifest') ?? join(REPO_ROOT, 'plugin', 'notebooks', 'shelves.json');
