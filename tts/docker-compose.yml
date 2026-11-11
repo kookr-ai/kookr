@@ -1,8 +1,11 @@
 # TTS service for Kookr — started automatically when KOOKR_TTS=true.
 #
-# Single service: Pocket TTS (Kyutai Labs) with FastAPI.
+# Single service with two engines behind one FastAPI app:
+# - Pocket TTS (Kyutai Labs): built-in voices and voice cloning from a clip.
+# - Kokoro: the preset voices af_heart, af_sky and af_sarah.
+# The engine for TTS_VOICE loads at startup; the other loads on first use.
 # GPU is enabled by the TTS manager when KOOKR_TTS_DEVICE resolves to gpu.
-# CPU fallback works but is slower.
+# CPU fallback works but is slower, and much slower for the Kokoro voices.
 #
 # Voice cloning requires HF_TOKEN (accept terms at https://huggingface.co/kyutai/pocket-tts).
 # Built-in voices (no token needed): alba, marius, javert, jean, fantine, cosette, eponine, azelma.
@@ -23,6 +26,8 @@ services:
       TTS_MODEL_EOS_THRESHOLD: ${TTS_MODEL_EOS_THRESHOLD:--4.0}
       TTS_MODEL_NOISE_CLAMP: ${TTS_MODEL_NOISE_CLAMP:-}
       TTS_MAX_TEXT_LENGTH: ${TTS_MAX_TEXT_LENGTH:-5000}
+      TTS_VOICE: ${TTS_VOICE:-/app/voices/matilda.mp3}
+      TTS_KOKORO_SPEED: ${TTS_KOKORO_SPEED:-0.88}
       HF_TOKEN: ${HF_TOKEN:-}
     deploy:
       resources:

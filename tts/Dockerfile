@@ -23,6 +23,16 @@ RUN uv pip install \
     pydantic \
     soundfile
 
+# Kokoro, for the preset voices Heart, Sky and Sarah. transformers is pinned below the
+# release that requires torch >= 2.6: this image ships torch 2.5.1+cu121, and a newer
+# transformers switches its PyTorch backend off at import, which breaks Kokoro's loader.
+RUN uv pip install "kokoro==0.9.4" "transformers<4.50"
+
+# Bake the Kokoro weights, the three voices and the English text front end (a spaCy
+# model that Kokoro otherwise installs on first use) into the image, so the first
+# sentence after a restart does not wait on a download.
+RUN python -c "from kokoro import KPipeline; p = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M', device='cpu'); [p.load_voice(v) for v in ('af_heart', 'af_sky', 'af_sarah')]"
+
 COPY src/server.py /app/server.py
 COPY voices/ /app/voices/
 
