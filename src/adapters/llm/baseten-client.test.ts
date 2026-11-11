@@ -44,7 +44,7 @@ describe('BasetenLlmClient', () => {
   test('exposes provider name and default model', () => {
     const client = new BasetenLlmClient({ apiKey: API_KEY });
     expect(client.provider).toBe('baseten');
-    expect(client.model).toBe('nvidia/Nemotron-120B-A12B');
+    expect(client.model).toBe('deepseek-ai/DeepSeek-V4.1-Flash-Fast');
   });
 
   test('honors a custom model id', () => {
@@ -62,7 +62,7 @@ describe('BasetenLlmClient', () => {
     expect(requestHeaders(fetchMock).Authorization).toBe(`Bearer ${API_KEY}`);
     expect(requestHeaders(fetchMock)['X-Title']).toBeUndefined();
     expect(requestHeaders(fetchMock)['HTTP-Referer']).toBeUndefined();
-    expect(requestBody(fetchMock).model).toBe('nvidia/Nemotron-120B-A12B');
+    expect(requestBody(fetchMock).model).toBe('deepseek-ai/DeepSeek-V4.1-Flash-Fast');
   });
 
   test('surfaces provider failures with the Baseten label', async () => {
