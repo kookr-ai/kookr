@@ -1543,6 +1543,18 @@ describe('Kookr Zustand Store', () => {
       expect(store.getState().leftPane).toBe('github');
     });
 
+    test('a server echo that adds a task id to a session-only selection keeps the GitHub tab', () => {
+      store.getState().handleSnapshot([{ agentId: 'a', events: [], anomaly: null }]);
+      store.getState().selectAgent('a');
+      expect(store.getState().selectedTaskId).toBeNull();
+      store.getState().setLeftPane('github');
+      store.getState().setNarrowTab('github');
+
+      store.getState().handleDashboardSelection({ selectedTaskId: 'task-a', selectedSessionId: 'a', selectionVersion: 1 });
+
+      expect(store.getState().narrowTab).toBe('github');
+    });
+
     test('a server selection of the same session under another task follows the rule', () => {
       store.getState().handleSnapshot([finding('a')]);
       store.getState().selectAgent('a', 'task-a');

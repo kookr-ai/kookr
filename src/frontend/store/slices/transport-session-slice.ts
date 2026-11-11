@@ -417,10 +417,13 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
         const prev = get();
         // An echo of the task already on screen leaves the tab alone; moving to
         // another task follows the same tab rule as every other selection path.
+        // A missing task id on either side matches any task of that session,
+        // as in `findAgent`.
+        const nextTaskId = selection.selectedTaskId ?? null;
         const movesToAnotherTask = selection.selectedSessionId !== undefined
           && selection.selectedSessionId !== null
           && (selection.selectedSessionId !== prev.selectedAgentId
-            || (selection.selectedTaskId ?? null) !== prev.selectedTaskId);
+            || (nextTaskId !== null && prev.selectedTaskId !== null && nextTaskId !== prev.selectedTaskId));
         set({
           dashboardSelection: selection,
           ...(selection.selectedSessionId !== undefined
