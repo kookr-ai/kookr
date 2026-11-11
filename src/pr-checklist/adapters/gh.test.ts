@@ -27,7 +27,7 @@ describe('extractFromGhCommand', () => {
 
   it('extracts an inline --body and default (null) base', () => {
     const r = extractFromGhCommand(`gh pr create --title T --body "hello world"`);
-    expect(r).toEqual({ base: null, bodySource: { kind: 'inline', text: 'hello world' } });
+    expect(r).toEqual({ base: null, repo: null, bodySource: { kind: 'inline', text: 'hello world' } });
   });
 
   it('extracts -b short form and -B base', () => {
@@ -63,7 +63,7 @@ describe('extractFromGhCommand', () => {
     expect(r?.bodySource.kind).toBe('unverifiable');
   });
 
-  it('marks a --body with command substitution as unverifiable', () => {
+  it('marks a --body with a non-heredoc command substitution as unverifiable', () => {
     const r = extractFromGhCommand('gh pr create --body "$(cat notes.md)"');
     expect(r?.bodySource.kind).toBe('unverifiable');
   });
@@ -87,5 +87,182 @@ describe('extractFromGhCommand', () => {
     const r = extractFromGhCommand(`cd /repo && gh pr create --base main --body hi`);
     expect(r?.base).toBe('main');
     expect(r?.bodySource).toEqual({ kind: 'inline', text: 'hi' });
+  });
+
+  describe('heredoc command-substitution body', () => {
+    const inlineText = (cmd: string) => {
+      const r = extractFromGhCommand(cmd);
+      return r?.bodySource.kind === 'inline' ? r.bodySource.text : r?.bodySource;
+    };
+
+    it("resolves --body \"$(cat <<'EOF' … EOF)\" to the literal text", () => {
+      const cmd = `gh pr create --title T --body "$(cat <<'EOF'\n## Summary\n- [ ] <!-- kookr:check:tests --> t\nEOF\n)"`;
+      expect(inlineText(cmd)).toBe('## Summary\n- [ ] <!-- kookr:check:tests --> t');
+    });
+
+    it('resolves an unquoted delimiter (<<EOF)', () => {
+      expect(inlineText(`gh pr create --body "$(cat <<EOF\nhello\nEOF\n)"`)).toBe('hello');
+    });
+
+    it('resolves a double-quoted delimiter (<<"EOF")', () => {
+      expect(inlineText(`gh pr create --body "$(cat <<"EOF"\nhello\nEOF\n)"`)).toBe('hello');
+    });
+
+    it('resolves <<-EOF with a tab-indented terminator', () => {
+      expect(inlineText(`gh pr create --body "$(cat <<-EOF\n\thello\n\tEOF\n)"`)).toBe('\thello');
+    });
+
+    it('requires the terminator at column 0 for plain <<EOF (shell semantics)', () => {
+      const r = extractFromGhCommand(`gh pr create --body "$(cat <<EOF\nhello\n  EOF\n)"`);
+      expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+
+    it('resolves the unquoted-substitution form (no surrounding double quotes)', () => {
+      expect(inlineText(`gh pr create --body $(cat <<'EOF'\nhello\nEOF\n)`)).toBe('hello');
+    });
+
+    it('resolves the -b short form and the --body= form', () => {
+      expect(inlineText(`gh pr create -b "$(cat <<'EOF'\nshort\nEOF\n)"`)).toBe('short');
+      expect(inlineText(`gh pr create --body="$(cat <<'EOF'\neq\nEOF\n)"`)).toBe('eq');
+    });
+
+    it('keeps double quotes and an unbalanced ) inside the body intact', () => {
+      const body = 'say "hi" :)\nan unbalanced ) here\n`code` and $(not run) and ${x}';
+      expect(inlineText(`gh pr create --body "$(cat <<'EOF'\n${body}\nEOF\n)"`)).toBe(body);
+    });
+
+    it('still reads flags that follow the heredoc (--base, other flags)', () => {
+      const r = extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nb\nEOF\n)" --base develop --title "T"`);
+      expect(r?.base).toBe('develop');
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: 'b' });
+    });
+
+    it('reads flags that precede the heredoc', () => {
+      const r = extractFromGhCommand(`cd /repo && gh pr create --base develop --title "T" --body "$(cat <<'EOF'\nb\nEOF\n)"`);
+      expect(r?.base).toBe('develop');
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: 'b' });
+    });
+
+    it('resolves an empty heredoc body to empty text', () => {
+      expect(inlineText(`gh pr create --body "$(cat <<'EOF'\nEOF\n)"`)).toBe('');
+    });
+
+    it('leaves a non-cat command substitution unverifiable', () => {
+      const r = extractFromGhCommand(`gh pr create --body "$(printf '%s' <<'EOF'\nx\nEOF\n)"`);
+      expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+
+    it('leaves a cat heredoc piped through another command unverifiable', () => {
+      const r = extractFromGhCommand(`gh pr create --body "$(cat <<'EOF' | sed s/a/b/\nx\nEOF\n)"`);
+      expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+
+    it('leaves an unterminated heredoc unverifiable', () => {
+      const r = extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nx\n)"`);
+      expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+
+    it('a literal placeholder-looking --body cannot alias a heredoc from a later command', () => {
+      const cmd = `gh pr create --body __KOOKR_HEREDOC_BODY_0__ && gh pr edit 1 --body "$(cat <<'EOF'\nx\nEOF\n)"`;
+      const r = extractFromGhCommand(cmd);
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: '__KOOKR_HEREDOC_BODY_0__' });
+    });
+
+    it('stays fast on many unterminated openers (linear scan)', () => {
+      const cmd = `gh pr create ` + `--body "$(cat <<'EOF'\n`.repeat(5000);
+      const t0 = Date.now();
+      extractFromGhCommand(cmd);
+      expect(Date.now() - t0).toBeLessThan(2000);
+    });
+
+    it('does not resolve a heredoc belonging to an earlier, non-gh command', () => {
+      const cmd = `cat > /tmp/x <<'EOF'\n-b "$(cat <<'EOF2'\nfake\nEOF2\n)"\nEOF\ngh pr create --title T`;
+      const r = extractFromGhCommand(cmd);
+      expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+  });
+
+  describe('--repo / -R target', () => {
+    it.each([
+      ['gh pr create -R acme/w --fill', 'acme/w'],
+      ['gh pr create --repo acme/w --fill', 'acme/w'],
+      ['gh pr create --repo=acme/w --fill', 'acme/w'],
+      ['gh pr create -R=acme/w --fill', 'acme/w'],
+      ['gh pr create -R "acme/w" --fill', 'acme/w'],
+      ['gh pr create --fill', null],
+    ])('%s -> %s', (cmd, repo) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBe(repo);
+    });
+
+    it.each([
+      ['gh pr create -R github.com/acme/w --fill', 'acme/w'],
+      ['gh pr create -R https://github.com/acme/w --fill', 'acme/w'],
+      ['gh pr create -R https://github.com/acme/w.git/ --fill', 'acme/w'],
+      ['gh pr create -Racme/w --fill', 'acme/w'],
+    ])('accepts gh [HOST/]OWNER/REPO and URL spellings: %s -> %s', (cmd, repo) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBe(repo);
+    });
+
+    it.each([
+      'gh pr create -R "$REPO" --fill',
+      'gh pr create -R ${REPO} --fill',
+      'gh pr create -R $(gh repo view --json nameWithOwner -q .nameWithOwner) --fill',
+      'gh pr create -R "${UPSTREAM}" --fill',
+      'gh pr create -R justonepart --fill',
+      'gh pr create -R a/b -R c/d --fill',
+    ])('is unknown (null, never "foreign") for %s', (cmd) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBeNull();
+    });
+
+    it('an escaped quote inside a double-quoted body does not leak body text into the args', () => {
+      const r = extractFromGhCommand('gh pr create --title t --body "a \\"quoted\\" and gh pr create -R foo/bar here"');
+      expect(r?.repo).toBeNull();
+      expect(r?.bodySource).toEqual({ kind: 'inline', text: 'a "quoted" and gh pr create -R foo/bar here' });
+    });
+
+    it('ignores -R/--repo text inside a heredoc body and inside a multi-line quoted body', () => {
+      expect(extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nuse gh -R src/lib or --repo a/b\nEOF\n)"`)?.repo).toBeNull();
+      expect(extractFromGhCommand('gh pr create --title t --body "\nsee gh pr create\n -R x/y\n"')?.repo).toBeNull();
+      expect(extractFromGhCommand(`gh pr create --body 'a\n--repo x/y\n'`)?.repo).toBeNull();
+    });
+
+    it('still finds a real -R after a quoted/heredoc body', () => {
+      expect(extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nx\nEOF\n)" -R o/r`)?.repo).toBe('o/r');
+    });
+  });
+
+  describe('templateRequired (bodies gh builds itself)', () => {
+    it('--fill is unverifiable AND requires the template', () => {
+      expect(extractFromGhCommand('gh pr create --fill')?.bodySource).toMatchObject({
+        kind: 'unverifiable',
+        templateRequired: true,
+      });
+      expect(extractFromGhCommand('gh pr create --fill-first')?.bodySource).toMatchObject({ templateRequired: true });
+    });
+
+    it('a command with no body flag requires the template', () => {
+      expect(extractFromGhCommand('gh pr create --title T')?.bodySource).toMatchObject({
+        kind: 'unverifiable',
+        templateRequired: true,
+      });
+    });
+
+    it('--body-file - (stdin), other expansions, and --web stay degraded (not required)', () => {
+      for (const cmd of [
+        'gh pr create --body-file -',
+        'gh pr create --body "$(cat notes.md)"',
+        'gh pr create --body-file "$(mktemp)"',
+        'gh pr create --web',
+      ]) {
+        const src = extractFromGhCommand(cmd)?.bodySource;
+        expect(src?.kind).toBe('unverifiable');
+        expect(src).not.toHaveProperty('templateRequired', true);
+      }
+    });
+
+    it('an explicit body beats --fill (gh uses the supplied body)', () => {
+      expect(extractFromGhCommand('gh pr create --fill --body-file b.md')?.bodySource).toEqual({ kind: 'file', path: 'b.md' });
+      expect(extractFromGhCommand('gh pr create --fill --body "x"')?.bodySource).toEqual({ kind: 'inline', text: 'x' });
+    });
   });
 });

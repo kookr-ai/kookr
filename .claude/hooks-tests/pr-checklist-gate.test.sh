@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Regression tests for the PR checklist gate in hooks/pr-workflow-gate.sh (P3).
 #
-# The checklist gate is opt-in (KOOKR_PR_CHECKLIST=1 and/or
-# ~/.kookr/pr-checklist-repos.json) and calls `kookr pr-checklist verify`. Here
+# The checklist gate is template-driven (the repo's PR template declares
+# kookr:check markers, or a tracked .kookr/pr-checklist.json; legacy opt-ins:
+# KOOKR_PR_CHECKLIST=1 and ~/.kookr/pr-checklist-repos.json) and calls `kookr pr-checklist verify`. Here
 # `kookr` is a shim whose exit code + stdout we control, so we exercise the
 # gate's exit-code branching (allow / deny / fail-open) without the real engine.
 #
@@ -12,6 +13,10 @@
 # Run: bash .claude/hooks-tests/pr-checklist-gate.test.sh
 
 set -euo pipefail
+
+# Under a git hook (pre-push) git exports repo-redirecting vars; clear them so the
+# fixture repos below (`git -C <tmp> …`) never touch the real checkout.
+unset GIT_DIR GIT_INDEX_FILE GIT_WORK_TREE GIT_COMMON_DIR GIT_PREFIX GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
@@ -51,7 +56,7 @@ write_valid_state() {
 # --- Build a bin dir with the tools the hook needs, minus kookr. -------------
 TOOLS_BIN=$(mktemp -d)
 # openssl is required by review-marker-auth.sh HMAC verification (issue #1968).
-for t in bash sh jq git date tr sed grep head cut dirname basename cat mkdir rm env printf openssl awk readlink; do
+for t in bash sh jq git date tr sed grep head cut dirname basename cat mkdir rm env printf openssl awk readlink touch; do
   p=$(command -v "$t" 2>/dev/null || true)
   [ -n "$p" ] && ln -sf "$p" "$TOOLS_BIN/$t"
 done
@@ -181,6 +186,105 @@ OUT=$(run_hook "$(mk_payload "$CMD" "$H")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_CA
 grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0
 [ "$d" = "0" ] && [ ! -f "$CALLED" ] && r=1 || r=0
 check "scope file present but repo not listed: OFF, kookr never spawned" "$r"
+rm -rf "$H"; rm -f "$STATE_FILE"
+
+# ---------------------------------------------------------------------------
+# 8-13. Template-driven opt-in: no env, no scope file; the session cwd is a repo
+#       dir. Markers in the PR template (any accepted location / legacy pr:), or
+#       a .kookr/pr-checklist.json, enable the gate; a marker-less template or
+#       no template leaves it OFF (kookr never spawned).
+# ---------------------------------------------------------------------------
+# mk_repo <dir> [remote-slug]: a real git repo (the hook resolves toplevel + remotes).
+mk_repo() {
+  mkdir -p "$1"
+  git -C "$1" init -q
+  git -C "$1" remote add origin "https://github.com/${2:-$REPO}.git"
+  # A commit so `rev-parse --abbrev-ref HEAD` works for commands without --head.
+  git -C "$1" -c user.name=t -c user.email=t@t.invalid commit -q --allow-empty -m init
+}
+tpl_case() { # <name> <relative template/config path> <content> <expect: deny|off> [session subdir] [command]
+  local name="$1" rel="$2" content="$3" expect="$4" sub="${5:-}" cmd="${6:-$CMD}"
+  local H; H=$(mktemp -d); mkdir -p "$H/.kookr"
+  mk_repo "$H/repo"; mkdir -p "$H/repo/$(dirname "$rel")" "$H/repo/$sub"
+  write_valid_state "$H"
+  printf '%s\n' "$content" > "$H/repo/$rel"
+  local called="$H/called" out
+  out=$(run_hook "$(mk_payload "$cmd" "$H/repo/$sub")" "$H" "$TOOLS_BIN:$KOOKR_BIN" \
+        KOOKR_CALLED="$called" FAKE_KOOKR_RC=2 FAKE_KOOKR_OUT="TPL-DRIFT-MARKER")
+  local r=0
+  if [ "$expect" = "deny" ]; then
+    grep -q '"permissionDecision": "deny"' <<<"$out" && grep -q 'TPL-DRIFT-MARKER' <<<"$out" && [ -f "$called" ] && r=1
+  else
+    ! grep -q 'PR checklist verification failed' <<<"$out" && [ ! -f "$called" ] && r=1
+  fi
+  check "$name" "$r"
+  rm -rf "$H"; rm -f "$STATE_FILE"
+}
+MARK='- [ ] <!-- kookr:check:tests --> tests'
+tpl_case "template markers (.github/pull_request_template.md, no env/scope): gate ON, deny on exit 2" \
+  .github/pull_request_template.md "$MARK" deny
+tpl_case "template markers (root PULL_REQUEST_TEMPLATE.md): gate ON" PULL_REQUEST_TEMPLATE.md "$MARK" deny
+tpl_case "template markers (docs/ location): gate ON" docs/pull_request_template.md "$MARK" deny
+tpl_case "legacy <!-- pr:id --> marker in template: gate ON" .github/PULL_REQUEST_TEMPLATE.md \
+  '- [ ] <!-- pr:mbse --> mbse' deny
+tpl_case "tracked .kookr/pr-checklist.json alone: gate ON" .kookr/pr-checklist.json '{"disable":[]}' deny
+tpl_case "template WITHOUT markers: gate OFF, kookr never spawned" .github/pull_request_template.md \
+  '## Summary' off
+
+tpl_case "session cwd in a repo SUBDIRECTORY still finds the toplevel template: gate ON" \
+  .github/pull_request_template.md "$MARK" deny src/deep
+# A PR for another repo (-R other/repo) is sorted out by the engine (it tokenizes the
+# command), not by bash: the hook still hands marker repos to `kookr pr-checklist`,
+# whatever prose or -R forms the command contains.
+tpl_case "-R other/repo from a marker repo: hook delegates to the engine (gate ON)" \
+  .github/pull_request_template.md "$MARK" deny "" \
+  "gh pr create -R upstream/oss-$SUFFIX --head me:fix --title x --body \"plain\""
+HD_BODY=$'gh pr create --title t --body "$(cat <<\'EOF\'\nMention: use gh -R src/lib to list.\nEOF\n)"'
+tpl_case "-R prose inside a heredoc body: gate ON (no repo-flag guessing in bash)" \
+  .github/pull_request_template.md "$MARK" deny "" "$HD_BODY"
+
+# An unreadable tracked template must not make the gate vanish (engine fails closed).
+if [ "$(id -u)" != "0" ]; then
+  H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+  printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"; chmod 000 "$H/repo/.github/pull_request_template.md"
+  CALLED="$H/called"
+  OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_CALLED="$CALLED" FAKE_KOOKR_RC=2 FAKE_KOOKR_OUT=UNREADABLE-TPL)
+  grep -q 'UNREADABLE-TPL' <<<"$OUT" && [ -f "$CALLED" ] && r=1 || r=0
+  check "unreadable (chmod 000) marker template: gate stays ON (engine decides)" "$r"
+  chmod 644 "$H/repo/.github/pull_request_template.md"; rm -rf "$H"; rm -f "$STATE_FILE"
+fi
+
+# 13b. Marker template in the session repo but --head worktree unmappable → fail OPEN, logged.
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
+GHOST="gh pr create -R $REPO --head ghost-branch --body-file b.md"
+OUT=$(run_hook "$(mk_payload "$GHOST" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN")
+# (the separate pre-PR-review state gate may still deny a branch with no marker; only the checklist deny matters here)
+grep -q 'PR checklist verification failed' <<<"$OUT" && d=1 || d=0
+grep -q 'effective checklist cwd unavailable' "$H/.kookr/pr-checklist-degrade.log" 2>/dev/null && l=1 || l=0
+[ "$d" = "0" ] && [ "$l" = "1" ] && r=1 || r=0
+check "marker template + unmappable --head worktree: fail OPEN with a degrade-log record" "$r"
+rm -rf "$H"; rm -f "$STATE_FILE"
+
+# 14. Kill-switch still wins over a marker template.
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
+CALLED="$H/called"
+OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN:$KOOKR_BIN" KOOKR_PR_CHECKLIST=0 KOOKR_CALLED="$CALLED" FAKE_KOOKR_RC=2)
+grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0
+[ "$d" = "0" ] && [ ! -f "$CALLED" ] && r=1 || r=0
+check "kill-switch =0 overrides a marker template: OFF" "$r"
+rm -rf "$H"; rm -f "$STATE_FILE"
+
+# 15. Marker template + kookr missing → still fail OPEN with degrade log + note.
+H=$(mktemp -d); mkdir -p "$H/.kookr"; mk_repo "$H/repo"; mkdir -p "$H/repo/.github"; write_valid_state "$H"
+printf '%s\n' "$MARK" > "$H/repo/.github/pull_request_template.md"
+OUT=$(run_hook "$(mk_payload "$CMD" "$H/repo")" "$H" "$TOOLS_BIN")
+grep -q '"permissionDecision": "deny"' <<<"$OUT" && d=1 || d=0
+grep -q 'checklist gate degraded' <<<"$OUT" && s=1 || s=0
+[ -f "$H/.kookr/pr-checklist-degrade.log" ] && grep -q '"event":"fail-open"' "$H/.kookr/pr-checklist-degrade.log" && l=1 || l=0
+[ "$d" = "0" ] && [ "$s" = "1" ] && [ "$l" = "1" ] && r=1 || r=0
+check "marker template + no kookr binary: fail OPEN + note + degrade log" "$r"
 rm -rf "$H"; rm -f "$STATE_FILE"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

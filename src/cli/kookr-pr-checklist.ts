@@ -14,7 +14,7 @@ import { BOX_EVIDENCE } from '../pr-checklist/checklist.js';
 import { degradeLogPath, parseDegradeLog, summarizeDegrades } from '../pr-checklist/degrade-log.js';
 import { collectAndVerify, MAX_BODY_BYTES } from '../pr-checklist/engine.js';
 import { ChecklistInputError } from '../pr-checklist/errors.js';
-import type { GitRunner } from '../pr-checklist/git.js';
+import { execGit, resolveRepoRoot, type GitRunner } from '../pr-checklist/git.js';
 import type { VerifyReport } from '../pr-checklist/types.js';
 
 export const EXIT_PASS = 0;
@@ -35,8 +35,12 @@ Options:
                          Omit to run structural checks only (CI supplies the body).
   --from-command <raw>   Derive the body + base from a raw \`gh pr create …\` command
                          (used by the local hook). Mutually exclusive with --pr-body.
-                         A --fill/\$(…)/stdin body is unverifiable → attestation is
-                         skipped locally and CI stays authoritative (never a silent pass).
+                         Verified body shapes: --body/-b "<text>", --body-file/-F <file in
+                         the repo>, and a quoted heredoc --body "\$(cat <<'EOF' … EOF)".
+                         --fill or no body flag FAILS when the repo PR template declares
+                         checklist markers; stdin (--body-file -) and any other \$(…) body
+                         are unverifiable → attestation skipped locally with a printed note
+                         (the CI workflow is disabled, so nothing else checks it).
   --run-commands <mode>  none (default) runs no repo commands; ci is reserved (P4).
   --base <ref>           Diff base branch (default: main; --from-command's base wins).
   --json                 Emit one machine-readable JSON report to stdout.
@@ -65,7 +69,9 @@ interface RunDeps {
   out?: Pick<typeof console, 'log' | 'error'>;
   gitRunner?: GitRunner;
   readStdin?: () => Promise<string>;
-  readBodyFile?: (cwd: string, path: string) => Promise<string>;
+  readBodyFile?: (cwd: string, path: string, root?: string) => Promise<string>;
+  /** Test seam: how the engine reads repo-tracked files (template, .env.example, …). */
+  readFileText?: (absPath: string, cap: number) => Promise<string>;
   now?: () => Date;
   readDegradeLog?: (path: string) => Promise<string | null>;
 }
@@ -96,9 +102,14 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     return EXIT_PASS;
   }
 
+  // Body-file paths are relative to where the author ran the command (`cwd`, maybe
+  // a subdirectory); repo files (template, config, .env.example) and the
+  // confinement boundary are the repo toplevel (`root`).
   const cwd = deps.cwd ?? process.cwd();
+  const root = deps.gitRunner ? cwd : await resolveRepoRoot(cwd);
 
   let body: string | null = null;
+  let templateRequiredReason: string | undefined;
   let base = args.base;
 
   if (args.fromCommand !== undefined) {
@@ -108,16 +119,30 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
       // command to attest against; degrade to structural-only, printed.
       out.log('  • --from-command is not a `gh pr create`; running structural checks only');
     } else {
+      if (extracted.repo && (await isForeignRepo(deps.gitRunner ?? execGit(root), extracted.repo))) {
+        // `gh pr create -R other/repo` from this checkout: this repo's template and
+        // diff say nothing about that PR, so the gate has no opinion.
+        out.log(
+          `  • no opinion: the PR targets ${extracted.repo}, which is not a remote of this repo — ` +
+            `the checklist gate only judges this repo's own PRs`,
+        );
+        out.log('✓ No opinion — foreign-repo PR.');
+        return EXIT_PASS;
+      }
       if (extracted.base) base = extracted.base;
       const src = extracted.bodySource;
       if (src.kind === 'unverifiable') {
-        // Degraded but printed — CI stays authoritative (never a silent pass).
-        out.log(`  • attest-unverified (${src.reason}) — CI is authoritative`);
+        // Degraded but printed (never a silent pass). The body could not be read
+        // from the command, so it was NOT checked against the template here.
+        out.log(`  • attest-unverified (${src.reason}) — the body was not checked against the PR template`);
+        // --fill / no body flag: gh builds a template-less body, so the engine
+        // fails it if the repo template declares markers.
+        if (src.templateRequired) templateRequiredReason = src.reason;
       } else if (src.kind === 'inline') {
         body = src.text;
       } else {
         try {
-          body = await (deps.readBodyFile ?? readBodyFileConfined)(cwd, src.path);
+          body = await (deps.readBodyFile ?? readBodyFileConfined)(cwd, src.path, root);
         } catch (error) {
           // Body path is repo/author-controlled input → fail closed (S2).
           out.error(`Could not read the body file named on --from-command: ${errMessage(error)}`);
@@ -129,7 +154,7 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     try {
       body = args.prBody === '-'
         ? await (deps.readStdin ?? readStdin)()
-        : await (deps.readBodyFile ?? readBodyFileConfined)(cwd, args.prBody);
+        : await (deps.readBodyFile ?? readBodyFileConfined)(cwd, args.prBody, root);
     } catch (error) {
       // Body is repo/author-controlled input → fail closed (S2).
       out.error(`Could not read --pr-body: ${errMessage(error)}`);
@@ -139,7 +164,14 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
 
   let report: VerifyReport;
   try {
-    report = await collectAndVerify({ cwd, base, body, gitRunner: deps.gitRunner });
+    report = await collectAndVerify({
+      cwd: root,
+      base,
+      body,
+      templateRequiredReason,
+      gitRunner: deps.gitRunner,
+      readFileText: deps.readFileText,
+    });
   } catch (error) {
     if (error instanceof ChecklistInputError) {
       // Derived from repo input → fail closed, do not fail open (S2/C3).
@@ -157,6 +189,22 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     printHuman(report, out);
   }
   return report.ok ? EXIT_PASS : EXIT_VERIFICATION_FAILURE;
+}
+
+/**
+ * True only when `git remote -v` succeeded and none of its URLs names `slug`
+ * (`owner/repo`, case-insensitive). When the remotes cannot be read the answer
+ * is "not foreign" — the gate then judges the PR rather than skipping it.
+ */
+async function isForeignRepo(runner: GitRunner, slug: string): Promise<boolean> {
+  const r = await runner(['remote', '-v']);
+  if (r.exitCode !== 0 || !r.stdout.trim()) return false;
+  const want = slug.toLowerCase();
+  for (const line of r.stdout.split('\n')) {
+    const url = (line.split(/\s+/)[1] ?? '').toLowerCase().replace(/\/+$/, '').replace(/\.git$/, '');
+    if (url.endsWith(`/${want}`) || url.endsWith(`:${want}`)) return false;
+  }
+  return true;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -214,7 +262,9 @@ function printHuman(report: VerifyReport, out: Pick<typeof console, 'log' | 'err
     const glyph = r.status === 'pass' ? '✓' : r.status === 'fail' ? '✗' : r.status === 'waived' ? '~' : '–';
     out.log(`  ${glyph} [${r.status}] ${r.id}: ${r.summary}${r.reason ? ` — ${r.reason}` : ''}`);
   }
-  if (report.ok) {
+  if (report.noOpinion) {
+    out.log('✓ No opinion — this repo has not opted in to the PR checklist (no kookr:check markers in its PR template).');
+  } else if (report.ok) {
     out.log(report.bodyChecked
       ? '✓ PR checklist passed (attestation + structural checks).'
       : '✓ Structural checks passed (run with --pr-body in CI for attestation).');
@@ -234,9 +284,9 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-/** S4: a --pr-body file must resolve inside the repo root, be regular, and be capped. */
-async function readBodyFileConfined(cwd: string, path: string): Promise<string> {
-  const realRoot = await realpath(cwd);
+/** S4: a body file (--pr-body or the command's --body-file) must resolve inside the repo root, be regular, and be capped. */
+async function readBodyFileConfined(cwd: string, path: string, root: string = cwd): Promise<string> {
+  const realRoot = await realpath(root);
   let real: string;
   try {
     real = await realpath(resolve(cwd, path));
@@ -245,10 +295,14 @@ async function readBodyFileConfined(cwd: string, path: string): Promise<string> 
   }
   const rel = relative(realRoot, real);
   if (rel.startsWith('..') || isAbsolute(rel)) {
-    throw new ChecklistInputError('--pr-body path escapes repository root');
+    throw new ChecklistInputError(
+      `body file "${path}" is outside the repository root, and the gate only reads body files inside the ` +
+        `repo/worktree. Put the body in a quoted heredoc instead (--body "$(cat <<'EOF' … EOF)"), or write ` +
+        `it to a file inside the repo/worktree (e.g. a git-ignored temp file) and pass that to --body-file.`,
+    );
   }
   const text = await readFile(real, { encoding: 'utf-8' });
-  if (text.length > MAX_BODY_BYTES) throw new ChecklistInputError('--pr-body exceeds size cap');
+  if (text.length > MAX_BODY_BYTES) throw new ChecklistInputError(`body file "${path}" exceeds the ${MAX_BODY_BYTES}-byte size cap`);
   return text;
 }
 

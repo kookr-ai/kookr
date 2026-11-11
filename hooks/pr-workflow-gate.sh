@@ -8,9 +8,11 @@
 #
 # It ALSO runs an independent, opt-in "PR checklist gate" (P3,
 # rfc-pr-checklist-contract): when enabled (KOOKR_PR_CHECKLIST=1 and/or a
-# ~/.kookr/pr-checklist-repos.json scope list), it machine-verifies the PR
-# body's anti-drift checklist against the diff via `kookr pr-checklist verify`.
-# That gate is default-OFF and fails CLOSED on a real verification failure but
+# ~/.kookr/pr-checklist-repos.json scope list), or — the normal route — when the
+# repo itself opts in by shipping a PR template with `kookr:check` markers (or a
+# tracked .kookr/pr-checklist.json), it machine-verifies the PR body's
+# anti-drift checklist against the diff via `kookr pr-checklist verify`.
+# Repos with neither get no opinion and pay no Node startup. That gate fails CLOSED on a real verification failure but
 # OPEN (logged) on kookr-internal faults — see the block below.
 #
 # Design: the pre-PR-review gate fails open on any error (a crash degrades to no
@@ -149,7 +151,7 @@ elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ]; then
     git -C "$CWD" config --get-regexp '^remote\..*\.gh-resolved$' 2>/dev/null \
       | head -1 \
       | sed -E 's/^remote\.([^.]+)\.gh-resolved .*$/\1/'
-  )
+  ) || RESOLVED_REMOTE=""  # no gh-resolved config (git exits 1) is normal, not a crash into the ERR trap
   URL=""
   if [ -n "$RESOLVED_REMOTE" ]; then
     URL=$(git -C "$CWD" remote get-url "$RESOLVED_REMOTE" 2>/dev/null || true)
@@ -177,7 +179,10 @@ fi
 # the safe default.
 
 # ===========================================================================
-# PR checklist gate (P3 — rfc-pr-checklist-contract). Opt-in, default OFF.
+# PR checklist gate (P3 — rfc-pr-checklist-contract). Template-driven opt-in:
+# a repo takes part by putting `kookr:check` markers in its PR template (or a
+# tracked .kookr/pr-checklist.json). Independent of ~/.kookr/pr-gated-repos.json,
+# which only scopes the heavier pre-PR review (state-file) gate.
 # Machine-verifies the anti-drift checklist markers in the PR body against the
 # diff via the shared `kookr pr-checklist` engine. INDEPENDENT of the pre-PR
 # review state gate below (its own scope list: pr-checklist-repos.json).
@@ -195,7 +200,7 @@ fi
 checklist_fail_open() {
   local reason="$1"
   # In-band, visible — never a silent degrade (failure-critic M4).
-  echo "kookr pr-checklist: checklist gate degraded (${reason}) — CI is authoritative" >&2
+  echo "kookr pr-checklist: checklist gate degraded (${reason}) — the PR body was NOT checked locally" >&2
   # Append a JSONL degrade record for `kookr pr-checklist doctor`.
   local ts
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || ts="unknown"
@@ -224,16 +229,54 @@ ${findings}"
   exit 0
 }
 
+# Cheap bash-side opt-in probe (no Node): does the repo at $1 ship a PR template
+# declaring at least one kookr:check (or legacy pr:) marker, or a
+# .kookr/pr-checklist.json? Mirrors the engine's template locations.
+checklist_repo_opted_in() {
+  local dir="$1" f top
+  # The session may sit in a subdirectory; templates live at the repo toplevel.
+  if top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) && [ -n "$top" ]; then
+    dir="$top"
+  fi
+  if [ -f "$dir/.kookr/pr-checklist.json" ]; then
+    return 0
+  fi
+  for f in .github/PULL_REQUEST_TEMPLATE.md .github/pull_request_template.md \
+           PULL_REQUEST_TEMPLATE.md pull_request_template.md \
+           docs/PULL_REQUEST_TEMPLATE.md docs/pull_request_template.md; do
+    if [ -f "$dir/$f" ] && [ ! -r "$dir/$f" ]; then
+      return 0  # unreadable template: opt in so the engine fails CLOSED instead of the gate vanishing
+    fi
+    if [ -f "$dir/$f" ] && grep -qE '<!--[[:space:]]*(kookr:check:|pr:)[a-z0-9-]+' "$dir/$f" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 pr_checklist_gate() {
   # --- Bash-side fast-exit BEFORE spawning Node (S3). ---
   # Kill-switch first: KOOKR_PR_CHECKLIST=0 force-disables regardless of scope.
   if [ "${KOOKR_PR_CHECKLIST:-}" = "0" ]; then
     return 0
   fi
-  # Enabled iff env opt-in OR the repo is listed in the checklist scope file.
+  # Enabled iff the repo's own PR template opts in (primary), or — legacy,
+  # deprecated — the env opt-in / the checklist scope file lists the repo.
   local enabled=0
+  if [ -n "$CHECKLIST_CWD" ] && [ -d "$CHECKLIST_CWD" ]; then
+    # (A PR for a different repo named via `-R` is sorted out by the engine, which
+    # tokenizes the command properly: it reports "no opinion" for such a PR.)
+    if checklist_repo_opted_in "$CHECKLIST_CWD"; then
+      enabled=1
+    fi
+  elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ] && checklist_repo_opted_in "$CWD"; then
+    # The session repo opted in but the --head worktree could not be mapped, so
+    # the diff cannot be resolved: fail OPEN, but never silently.
+    checklist_fail_open "effective checklist cwd unavailable — cannot resolve the diff"
+    return 0
+  fi
   if [ "${KOOKR_PR_CHECKLIST:-}" = "1" ]; then
-    enabled=1
+    enabled=1  # legacy opt-in (also forces the gate for a repo with no markers: engine says "no opinion")
   fi
   local cl_scope_file="$HOME/.kookr/pr-checklist-repos.json"
   if [ "$enabled" -eq 0 ] && [ -n "$OWNER_REPO" ] && [ -f "$cl_scope_file" ]; then

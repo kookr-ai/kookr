@@ -4,7 +4,7 @@
 // RFC's P4: a repo may **disable** named built-in rules for its OWN gate, and
 // nothing else. No `command` rules, no rule redirection, no YAML — so the config
 // can only ever *weaken* the repo's own gate, never execute code, read outside
-// the file, or affect another repo. CI stays authoritative. That property is
+// the file, or affect another repo. That property is
 // why this slice needs none of the command/CI-generator security review the
 // full P4 requires (see docs/rfc/rfc-pr-checklist-contract.md, "P4a").
 //

@@ -1,3 +1,7 @@
+import { spawnSync } from 'node:child_process';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   EXIT_INTERNAL,
@@ -7,6 +11,11 @@ import {
   runPrChecklistCli,
 } from './kookr-pr-checklist.js';
 import type { GitRunner } from '../pr-checklist/git.js';
+
+const GIT_REDIRECT_VARS = [
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_DIR', 'GIT_INDEX_FILE',
+  'GIT_OBJECT_DIRECTORY', 'GIT_PREFIX', 'GIT_WORK_TREE',
+];
 
 function out() {
   return { log: vi.fn(), error: vi.fn() };
@@ -122,7 +131,7 @@ describe('runPrChecklistCli', () => {
     expect(code).toBe(EXIT_VERIFICATION_FAILURE);
   });
 
-  it('--from-command --fill is attest-unverified — structural only, prints a CI-authoritative note', async () => {
+  it('--from-command --fill (no template markers) is attest-unverified — structural only, prints a note', async () => {
     const o = out();
     const git = fakeGit({
       'merge-base origin/main HEAD': { stdout: 'B' },
@@ -135,7 +144,7 @@ describe('runPrChecklistCli', () => {
       gitRunner: git,
     });
     expect(code).toBe(EXIT_PASS);
-    expect((o.log.mock.calls.flat() as string[]).join('\n')).toMatch(/attest-unverified.*CI is authoritative/);
+    expect((o.log.mock.calls.flat() as string[]).join('\n')).toMatch(/attest-unverified.*not checked against the PR template/);
   });
 
   it('--from-command uses the base named on the command', async () => {
@@ -269,5 +278,234 @@ describe('runPrChecklistCli doctor', () => {
       },
     });
     expect(code).toBe(EXIT_INTERNAL);
+  });
+
+  describe('--from-command body shapes against a repo PR template', () => {
+    const TEMPLATE = [
+      '## Summary',
+      '- [ ] <!-- kookr:check:tests --> tests',
+      '- [ ] <!-- kookr:check:prose --> prose',
+    ].join('\n');
+    const FULL_BODY = [
+      '## Summary',
+      'why',
+      '- [x] <!-- kookr:check:tests --> tests',
+      '- [ ] ~~<!-- kookr:check:prose -->~~ N/A, no prose in this change',
+    ].join('\n');
+
+    function gitWithTemplate() {
+      return fakeGit({
+        'merge-base origin/main HEAD': { stdout: 'B' },
+        'diff --name-status B...HEAD': { stdout: 'M\tsrc/core/x.test.ts' },
+        'diff --unified=0 B...HEAD': { stdout: '+++ b/src/core/x.test.ts\n+t' },
+        'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+      });
+    }
+    const readTemplate = (text: string) => async () => text;
+    const run = (command: string, o = out(), template = TEMPLATE) =>
+      runPrChecklistCli(['verify', '--from-command', command], {
+        out: o,
+        cwd: '/repo',
+        gitRunner: gitWithTemplate(),
+        readFileText: readTemplate(template),
+      });
+    const heredoc = (body: string, opener = `<<'EOF'`, terminator = 'EOF') =>
+      `gh pr create --title T --body "$(cat ${opener}\n${body}\n${terminator}\n)"`;
+    const printed = (o: ReturnType<typeof out>) =>
+      [...o.log.mock.calls.flat(), ...o.error.mock.calls.flat()].join('\n');
+
+    it('a quoted heredoc body with every template marker passes', async () => {
+      expect(await run(heredoc(FULL_BODY))).toBe(EXIT_PASS);
+    });
+
+    it('unquoted <<EOF and <<-EOF heredoc bodies with all markers pass', async () => {
+      expect(await run(heredoc(FULL_BODY, '<<EOF'))).toBe(EXIT_PASS);
+      expect(await run(heredoc(FULL_BODY, '<<-EOF', '\tEOF'))).toBe(EXIT_PASS);
+    });
+
+    it('a heredoc body missing the template markers fails (2) with the pr-template finding', async () => {
+      const o = out();
+      expect(await run(heredoc('## Summary\nx'), o)).toBe(EXIT_VERIFICATION_FAILURE);
+      expect(printed(o)).toMatch(/pr-template.*omits 2 of 2/);
+    });
+
+    it('a heredoc body containing double quotes and an unbalanced ) is still read in full', async () => {
+      const body = `${FULL_BODY}\nShe said "hi" :) and )\n`;
+      expect(await run(heredoc(body))).toBe(EXIT_PASS);
+    });
+
+    it('a heredoc with a checked box lacking evidence fails attestation (2)', async () => {
+      const body = '- [x] <!-- kookr:check:mbse --> refreshed\n' + FULL_BODY;
+      const o = out();
+      expect(await run(heredoc(body), o)).toBe(EXIT_VERIFICATION_FAILURE);
+      expect(printed(o)).toMatch(/mbse/);
+    });
+
+    it('--fill fails (2) when the template declares markers, with a how-to-fix message', async () => {
+      const o = out();
+      expect(await run('gh pr create --fill', o)).toBe(EXIT_VERIFICATION_FAILURE);
+      expect(printed(o)).toMatch(/--body-file/);
+      expect(printed(o)).toMatch(/heredoc/);
+    });
+
+    it('no body flag fails (2) when the template declares markers', async () => {
+      expect(await run('gh pr create --title T')).toBe(EXIT_VERIFICATION_FAILURE);
+    });
+
+    it('--fill / no body flag with a marker-less template stays a degraded pass (0), printed', async () => {
+      for (const cmd of ['gh pr create --fill', 'gh pr create --title T']) {
+        const o = out();
+        expect(await run(cmd, o, '## Summary\n\nNo markers here.\n')).toBe(EXIT_PASS);
+        expect(printed(o)).toMatch(/attest-unverified/);
+      }
+    });
+
+    it('--fill / no body flag with no template at all stays a degraded pass (0)', async () => {
+      const git = fakeGit({
+        'merge-base origin/main HEAD': { stdout: 'B' },
+        'diff --name-status B...HEAD': { stdout: 'M\tREADME.md' },
+        'diff --unified=0 B...HEAD': { stdout: '+++ b/README.md\n+x' },
+      });
+      const code = await runPrChecklistCli(['verify', '--from-command', 'gh pr create --fill'], {
+        out: out(),
+        cwd: '/repo',
+        gitRunner: git,
+      });
+      expect(code).toBe(EXIT_PASS);
+    });
+
+    it('--body-file - (stdin) and other command substitutions stay degraded passes even with a marker template', async () => {
+      for (const cmd of ['gh pr create --body-file -', 'gh pr create --body "$(cat notes.md)"']) {
+        const o = out();
+        expect(await run(cmd, o)).toBe(EXIT_PASS);
+        expect(printed(o)).toMatch(/attest-unverified/);
+      }
+    });
+
+    it('a repo with no marker template and no config gets no opinion (0, noted) for any body shape', async () => {
+      const git = fakeGit({
+        'merge-base origin/main HEAD': { stdout: 'B' },
+        'diff --name-status B...HEAD': { stdout: 'M\tsrc/x.ts' },
+        // split so this test file itself does not trip the env rule
+        'diff --unified=0 B...HEAD': { stdout: `+++ b/src/x.ts\n+const k = ${'process' + '.env.NEW_ONE'}` },
+      });
+      for (const cmd of ['gh pr create --fill', 'gh pr create --body "plain"', heredoc('plain')]) {
+        const o = out();
+        const code = await runPrChecklistCli(['verify', '--from-command', cmd], { out: o, cwd: '/repo', gitRunner: git });
+        expect(code).toBe(EXIT_PASS);
+        expect(printed(o)).toMatch(/No opinion/);
+      }
+    });
+
+    describe('-R / --repo naming a different repo', () => {
+      const remotes = (url: string) =>
+        fakeGit({
+          'remote -v': { stdout: `origin\t${url} (fetch)\norigin\t${url} (push)` },
+          'merge-base origin/main HEAD': { stdout: 'B' },
+          'diff --name-status B...HEAD': { stdout: 'M\tsrc/core/x.test.ts' },
+          'diff --unified=0 B...HEAD': { stdout: '+++ b/src/core/x.test.ts\n+t' },
+          'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+        });
+      const go = (cmd: string, git: GitRunner, o = out()) =>
+        runPrChecklistCli(['verify', '--from-command', cmd], { out: o, cwd: '/repo', gitRunner: git, readFileText: readTemplate(TEMPLATE) });
+
+      it('a foreign repo gets no opinion (0) in every -R spelling, incl. quoted and = forms', async () => {
+        for (const flag of ['-R other/x', '--repo other/x', '--repo=other/x', '-R=other/x', '-R "other/x"']) {
+          const o = out();
+          expect(await go(`gh pr create ${flag} --title t --fill`, remotes('git@github.com:acme/own.git'), o)).toBe(EXIT_PASS);
+          expect(printed(o)).toMatch(/no opinion/i);
+        }
+      });
+
+      it("the session repo's own -R (ssh or https remote, any case) is still judged", async () => {
+        expect(await go('gh pr create -R ACME/Own --fill', remotes('git@github.com:acme/own.git'))).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go('gh pr create -R acme/own --fill', remotes('https://github.com/acme/own'))).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
+      it('an unresolvable or non-literal -R target is judged, never skipped as foreign', async () => {
+        const git = remotes('git@github.com:acme/own.git');
+        for (const flag of ['-R "$REPO"', '-R ${UPSTREAM}', '-R github.com/acme/own', '-R https://github.com/acme/own/']) {
+          expect(await go(`gh pr create ${flag} --fill`, git)).toBe(EXIT_VERIFICATION_FAILURE);
+        }
+      });
+
+      it('a trailing-slash or ssh:// remote URL still matches its own repo', async () => {
+        expect(await go('gh pr create -R acme/own --fill', remotes('https://github.com/acme/own/'))).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go('gh pr create -R acme/own --fill', remotes('ssh://git@github.com/acme/own.git'))).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
+      it('unreadable remotes mean "cannot tell": the PR is judged, not skipped', async () => {
+        const git = fakeGit({
+          'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+        });
+        expect(await go('gh pr create -R other/x --fill', git)).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
+      it('-R prose inside a multi-line quoted body or heredoc body does not make the PR foreign', async () => {
+        const git = remotes('git@github.com:acme/own.git');
+        expect(await go('gh pr create --title t --body "\nsee gh pr create\n -R x/y\n"', git)).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go(heredoc('use gh -R src/lib or --repo a/b'), git)).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+    });
+
+    it('never echoes the heredoc body text', async () => {
+      const o = out();
+      await run(heredoc('SECRET-BODY-TEXT'), o);
+      expect(printed(o)).not.toContain('SECRET-BODY-TEXT');
+    });
+  });
+
+  it('run from a repo SUBDIRECTORY it still finds the toplevel template (real git repo)', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'kookr-prc-sub-'));
+    // Under a git hook (pre-push runs `pnpm test`) git exports repo-redirecting vars;
+    // strip them (also for the code under test) so `git -C <tmp>` hits the fixture.
+    const saved: Record<string, string | undefined> = {};
+    for (const name of GIT_REDIRECT_VARS) {
+      saved[name] = process.env[name];
+      delete process.env[name];
+    }
+    try {
+      const git = (...a: string[]) => spawnSync('git', ['-C', repo, ...a], { encoding: 'utf-8' });
+      git('init', '-q');
+      await mkdir(join(repo, '.github'), { recursive: true });
+      await mkdir(join(repo, 'src', 'deep'), { recursive: true });
+      await writeFile(join(repo, '.github', 'pull_request_template.md'), '- [ ] <!-- kookr:check:tests --> t\n');
+      git('add', '.github/pull_request_template.md');
+      const o = out();
+      const code = await runPrChecklistCli(['verify', '--from-command', 'gh pr create --fill'], {
+        out: o,
+        cwd: join(repo, 'src', 'deep'),
+      });
+      expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+      expect(o.log.mock.calls.flat().join('\n')).toMatch(/pr-template/);
+    } finally {
+      for (const name of GIT_REDIRECT_VARS) {
+        if (saved[name] === undefined) delete process.env[name];
+        else process.env[name] = saved[name];
+      }
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('a --body-file outside the repo root fails closed (2) with an actionable message', async () => {
+    const repo = await mkdtemp(join(tmpdir(), 'kookr-prc-repo-'));
+    const elsewhere = await mkdtemp(join(tmpdir(), 'kookr-prc-else-'));
+    try {
+      const file = join(elsewhere, 'body.md');
+      await writeFile(file, '- [x] <!-- kookr:check:tests --> t');
+      const o = out();
+      const code = await runPrChecklistCli(['verify', '--from-command', `gh pr create --body-file ${file}`], {
+        out: o,
+        cwd: repo,
+      });
+      expect(code).toBe(EXIT_VERIFICATION_FAILURE);
+      const msg = o.error.mock.calls.flat().join('\n');
+      expect(msg).toMatch(/outside the repository root/);
+      expect(msg).toMatch(/quoted heredoc/);
+      expect(msg).toMatch(/inside the repo\/worktree/);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(elsewhere, { recursive: true, force: true });
+    }
   });
 });

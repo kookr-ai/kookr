@@ -19,6 +19,8 @@ export interface VerifyReport {
   /** True when the PR body was available and attestation rules ran. */
   bodyChecked: boolean;
   results: CheckResult[];
+  /** True when the repo has no marker template and no .kookr/pr-checklist.json, so no rule ran. */
+  noOpinion?: boolean;
   /** Non-fatal notes (unknown ids, degraded diff base, etc.). */
   notes: string[];
 }
