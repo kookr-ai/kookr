@@ -277,7 +277,9 @@ independent specialists — trading tokens for maximum redundant cross-checking.
 `conventions-specialist.md` + `deadcode-specialist.md` (and, when
 `DOCS_DRIFT=active`, `docs-drift-specialist.md`), prefixed with an instruction to
 return a **separate, labelled verdict per concern** (`conventions:`, `deadcode:`,
-`docs-drift:`) rather than one merged opinion. `correctness` and `test` stay
+`docs-drift:`) rather than one merged opinion. Each body ends with the same Notebook
+Protocol block, so tell the agent to follow one copy of it (at most one new lesson in
+all). `correctness` and `test` stay
 standalone specialists spawned from their own files.
 
 **Per-lane model — cheap for nits, strong for defects (cost + speed).** Spawn the

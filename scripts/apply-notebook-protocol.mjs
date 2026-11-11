@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // apply-notebook-protocol — keep the "Notebook Protocol" section of every
-// plugin/agents/*.md identical to one shared template.
+// plugin/agents/*.md and plugin/reviewer-specialists/*.md identical to one shared template.
 //
 // Why this exists: a subagent gets no SessionStart index, so the only place it
 // learns which Agent Notebook shelves to open, and where a new lesson belongs,

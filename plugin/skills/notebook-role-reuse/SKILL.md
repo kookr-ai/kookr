@@ -132,9 +132,10 @@ works in the session's own repo, its project layer <SHELF>@$KOOKR_REPO_SLUG.
 
 For a **named** agent (e.g. `patch-author`) the shelf and the full ritual are fixed
 by its definition: every `plugin/agents/*.md` that has a notebook section carries the
-same **Notebook Protocol** block, so you need not paste the block above. That block
-has one source, `references/notebook-protocol.md` in this skill, stamped into the
-agent docs by `node scripts/apply-notebook-protocol.mjs` (a test fails when a doc
+same **Notebook Protocol** block, so you need not paste the block above. The reviewer
+specialists in `plugin/reviewer-specialists/` carry it too, for the one `code-review`
+shelf. That block has one source, `references/notebook-protocol.md` in this skill,
+stamped into the agent docs and specialist bodies by `node scripts/apply-notebook-protocol.mjs` (a test fails when a doc
 drifts). Edit the source, run the script, never edit the block in one agent doc.
 For a **general-purpose** agent doing domain work, name the shelf explicitly. For
 throwaway work (a one-shot search), attach no shelf at all — not everything

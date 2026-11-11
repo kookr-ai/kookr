@@ -110,17 +110,17 @@ export interface ReviewerNotebookLayers {
  * Split a fan-out shelf name into its domain and project layers. A layer is
  * derived from the name alone: everything before the LAST `@` is the domain
  * shelf, and a name with an `@` is the project shelf. A name with no `@`, or with
- * an empty part on either side of it (`x@`, `@x`), has no project layer: the
+ * an empty or blank part on either side of it (`x@`, `@x`, `x@ `), has no project layer: the
  * whole name is the domain shelf, so no caller ever builds a name ending in `@`.
  *
  * This is the same last-`@` rule as `classifyShelf` in
  * `plugin/hooks/lib/notebook-layers.mjs` (RFC docs/rfc/rfc-notebook-memory-layers.md,
- * D3); a parity test in `reviewer-fanout.test.ts` keeps the two in step, because
+ * D3), minus slug aliases and the `fleet-global` name, which a fan-out shelf never uses; a parity test in `reviewer-fanout.test.ts` keeps the two in step, because
  * this pure module cannot import the hook's ES module.
  */
 export function reviewerNotebookLayers(notebookRole: string): ReviewerNotebookLayers {
   const at = notebookRole.lastIndexOf('@');
-  if (at <= 0 || at === notebookRole.length - 1) return { domain: notebookRole };
+  if (at <= 0 || notebookRole.slice(at + 1).trim() === '') return { domain: notebookRole };
   return { domain: notebookRole.slice(0, at), project: notebookRole };
 }
 

@@ -154,8 +154,9 @@ that runs its `.mjs`) run for every session:
 from the repo's remote (`src/adapters/agent-launch-context.ts`) — e.g.
 `github.com/kookr-ai/kookr` → `kookr-ai-kookr`. It is used only so repo-scoped
 shelves, such as the reviewer fan-out's project shelf `code-review@<owner>-<repo>`
-(read together with the domain shelf `code-review`), can be addressed. Derivation is fail-open: when no safe slug forms, the variable is
-unset and callers fall back to the unscoped shelf name.
+(read together with the domain shelf `code-review`), can be addressed.
+Derivation is fail-open: when no safe slug forms, the variable is unset and
+callers fall back to the unscoped shelf name.
 
 **Placement advisories.** After a successful `nb add`, `bin/nb.js` prints a one-line
 stderr advisory (never a refusal; the lesson is still written) when the shelf is
@@ -187,10 +188,11 @@ exits 0 and creates nothing, though `nb stats` may list it as shown but never vo
 
 The block has one source, `plugin/skills/notebook-role-reuse/references/notebook-protocol.md`.
 `node scripts/apply-notebook-protocol.mjs` copies it into each agent doc (with the
-agent's own shelf name), and `src/plugin/notebook-protocol.test.ts` fails when a
+agent's own shelf name) and into each reviewer specialist body in
+`plugin/reviewer-specialists/` (shelf fixed to `code-review`), and `src/plugin/notebook-protocol.test.ts` fails when a
 doc differs from the source, hardcodes a bare shelf with no project line, or
 restates `nb`'s own limits. Edit the source and rerun the script; do not edit the
-block inside an agent doc.
+block inside an agent doc or a specialist body.
 
 ## Memory layers and the store tooling
 

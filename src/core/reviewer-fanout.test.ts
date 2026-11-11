@@ -2,7 +2,8 @@ import { describe, expect, test } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // The hook-side classifier this module cannot import (it is an ES module under plugin/); used for a parity check only.
 import { classifyShelf } from '../../plugin/hooks/lib/notebook-layers.mjs';
 import {
@@ -232,13 +233,14 @@ describe('reviewerNotebookLayers', () => {
     expect(reviewerNotebookLayers('code-review')).toEqual({ domain: 'code-review' });
     expect(reviewerNotebookLayers('code-review@')).toEqual({ domain: 'code-review@' });
     expect(reviewerNotebookLayers('@owner-repo')).toEqual({ domain: '@owner-repo' });
+    expect(reviewerNotebookLayers('code-review@ ')).toEqual({ domain: 'code-review@ ' }); // blank slug, as in classifyShelf
   });
 
   test('splits on the LAST @, as the hook classifier does', () => {
     expect(reviewerNotebookLayers('a@b@slug')).toEqual({ domain: 'a@b', project: 'a@b@slug' });
   });
 
-  test.each(['code-review', 'code-review@owner-repo', 'a@b@slug', 'x@', '@x', 'plain', 'Code-Review@Kookr-AI-Kookr'])(
+  test.each(['code-review', 'code-review@owner-repo', 'a@b@slug', 'x@', '@x', 'x@ ', 'plain', 'Code-Review@Kookr-AI-Kookr'])(
     'agrees with plugin/hooks/lib/notebook-layers.mjs classifyShelf on %j',
     (name) => {
       const hook = classifyShelf(name);
@@ -319,9 +321,9 @@ describe('specialist launch: both notebook layers', () => {
     test('both reads the header names succeed (exit 0), the missing one is told so, and nothing is created', () => {
       const dir = mkdtempSync(join(tmpdir(), 'fanout-nb-'));
       try {
-        const env = { ...process.env, NB_DIR: dir, NB_GIT_AUTOCOMMIT: '0' };
+        const env = { PATH: process.env.PATH, HOME: process.env.HOME, NB_DIR: dir, NB_GIT_AUTOCOMMIT: '0' };
         const nb = (args: string[]) =>
-          spawnSync('node', [join(process.cwd(), 'bin', 'nb.js'), ...args], { env, encoding: 'utf-8' });
+          spawnSync('node', [join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bin', 'nb.js'), ...args], { env, encoding: 'utf-8' });
         expect(nb(['add', 'code-review', 'throwaway domain lesson for the test']).status).toBe(0);
         const before = readdirSync(dir).sort();
 

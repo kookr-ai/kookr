@@ -124,8 +124,10 @@ function notebookHeaderLine(notebookRole: string, lens: ReviewerSpecialistRole):
     ? `${project} (project layer) and ${domain} (domain layer)`
     : `${domain} (domain layer only: no repo slug)`;
   const shows = (project ? [domain, project] : [domain]).map((s) => `\`nb show ${s}\``).join(' then ');
+  // The project read is conditional on the review targeting the session's own repo; the protocol states that caveat.
+  const caveat = project ? ' (the second only if your task works in the session\'s own repo)' : '';
   return (
-    `Notebook shelf: ${layers} — run ${shows} first, and follow the Notebook Protocol ` +
+    `Notebook shelf: ${layers} — run ${shows}${caveat} first, and follow the Notebook Protocol ` +
     `section at the end of your instructions. Tag a new defect class with your lens (${lens}).`
   );
 }

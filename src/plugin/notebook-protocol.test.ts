@@ -187,7 +187,15 @@ describe('plugin/agents/*.md carry the shared Notebook Protocol', () => {
 describe('plugin/reviewer-specialists/*.md carry the shared Notebook Protocol for the code-review shelf', () => {
   test('the specialists share one fixed shelf, code-review', () => {
     expect(specialistShelf).toBe('code-review');
-    expect(specialistFiles.length).toBeGreaterThan(0);
+    // Pinned so deleting a lens file fails here instead of silently shrinking coverage.
+    expect(specialistFiles).toEqual([
+      'a11y-specialist.md',
+      'conventions-specialist.md',
+      'correctness-specialist.md',
+      'deadcode-specialist.md',
+      'docs-drift-specialist.md',
+      'test-specialist.md',
+    ]);
   });
 
   test('every specialist body is matched to the single source (the script finds nothing to change)', () => {
@@ -281,25 +289,28 @@ describe('the guards fail on drift (so a green run means something)', () => {
     }
   });
 
-  test('check mode also covers the specialists: one hand edit fails, and --agents-dir alone leaves them alone', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'nb-protocol-spec-'));
+  test('check mode also covers the specialists: a hand edit fails, the repair restores the block', () => {
+    const specDir = mkdtempSync(join(tmpdir(), 'nb-protocol-spec-'));
+    const agentsCopy = mkdtempSync(join(tmpdir(), 'nb-protocol-agents-'));
     try {
-      cpSync(specialistsDir, dir, { recursive: true });
-      const target = join(dir, 'test-specialist.md');
+      cpSync(specialistsDir, specDir, { recursive: true });
+      cpSync(agentsDir, agentsCopy, { recursive: true });
+      const target = join(specDir, 'test-specialist.md');
       writeFileSync(target, readFileSync(target, 'utf-8').replace('about 150 characters', 'at most 120 chars'));
-      const r = spawnSync('node', [scriptPath, '--check', '--agents-dir', agentsDir, '--specialists-dir', dir], {
-        encoding: 'utf-8',
-      });
+      const args = ['--agents-dir', agentsCopy, '--specialists-dir', specDir];
+      const r = spawnSync('node', [scriptPath, '--check', ...args], { encoding: 'utf-8' });
       expect(r.status).toBe(1);
       expect(r.stderr).toContain('test-specialist.md');
       expect(r.stderr).not.toContain('correctness-specialist.md');
-      // A bare --agents-dir (fixture) never reads or rewrites the real specialists.
-      expect(spawnSync('node', [scriptPath, '--check', '--agents-dir', agentsDir], { encoding: 'utf-8' }).status).toBe(0);
-      // The repair rewrites the specialist with the fixed shelf (no frontmatter `name` needed).
-      execFileSync('node', [scriptPath, '--agents-dir', agentsDir, '--specialists-dir', dir]);
-      expect(readFileSync(target, 'utf-8')).toContain('nb show code-review@$KOOKR_REPO_SLUG');
+      // The repair stamps the fixed shelf (specialists have no frontmatter `name`) and the next check is clean.
+      execFileSync('node', [scriptPath, ...args]);
+      const repaired = readFileSync(target, 'utf-8');
+      expect(repaired).toContain('about 150 characters');
+      expect(repaired).not.toContain('at most 120 chars');
+      expect(spawnSync('node', [scriptPath, '--check', ...args]).status).toBe(0);
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmSync(specDir, { recursive: true, force: true });
+      rmSync(agentsCopy, { recursive: true, force: true });
     }
   });
 
