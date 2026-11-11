@@ -308,8 +308,8 @@ code, kbd { font-family: var(--font-mono); }
 
 /* Labelled navigation (#3561 slice 5a): hidden in the icon rail; the full
    layout lives in styles.css. The width rule keeps the first paint stable. */
-.project-nav-queues, .project-nav-heading, .project-nav-name, .project-nav-dot, .project-nav-idle-toggle { display: none; }
-@media (min-width: 1280px) { .project-sidebar.labelled { width: 212px; min-width: 212px; } }
+.project-nav-queues, .project-nav-heading, .project-nav-name, .project-nav-dot, .project-nav-idle-toggle, .nav-resizer { display: none; }
+@media (min-width: 1280px) { .project-sidebar.labelled { width: var(--nav-width, 212px); min-width: var(--nav-width, 212px); } }
 /* Spend and quota (#3561 slice 5b): unstyled until styles.css loads, so the
    footer never flashes as loose text. */
 .usage-summary { display: none; }

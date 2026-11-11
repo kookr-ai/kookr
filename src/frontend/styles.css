@@ -637,7 +637,8 @@ kbd {
   width: 2px;
 }
 /* While dragging, suppress text selection and force the resize cursor. */
-.main-resizing {
+.main-resizing,
+.main-resizing-nav {
   cursor: col-resize;
   user-select: none;
 }
@@ -9978,16 +9979,35 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 .project-nav-heading,
 .project-nav-name,
 .project-nav-dot,
-.project-nav-idle-toggle {
+.project-nav-idle-toggle,
+.nav-resizer {
   display: none;
 }
 
 @media (min-width: 1280px) {
+  /* --nav-width is set on .main once the user has resized the navigation
+     (App.tsx, already clamped to MIN_NAV_WIDTH..MAX_NAV_WIDTH); without it the
+     default applies. --nav-width-used is the width actually drawn, which is
+     the same value except in the one case below. critical.css sets the
+     navigation's width from --nav-width for the first paint. */
+  .main {
+    --nav-width-used: var(--nav-width, 212px);
+  }
+  /* The coordinator findings pane is a fourth column that none of the width
+     limits budget for. While it is open the navigation is drawn no wider
+     than the default, so opening it never leaves less room for the task list
+     and the reading pane than it did before the navigation was resizable. A
+     chosen width narrower than the default is kept. The divider is hidden
+     meanwhile (further down), so a drag never stores a width the layout is
+     not showing. */
+  .main:has(> .coordinator-findings-pane) {
+    --nav-width-used: min(var(--nav-width, 212px), 212px);
+  }
   .project-sidebar.labelled {
     align-items: stretch;
     gap: 2px;
-    width: 212px;
-    min-width: 212px;
+    width: var(--nav-width-used, 212px);
+    min-width: var(--nav-width-used, 212px);
     padding: 8px;
   }
 
@@ -10140,9 +10160,11 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     margin: 4px 0;
   }
 
+  /* Fills the navigation at any width the divider allows (196 px at the
+     default 212 px). */
   .project-sidebar.labelled .project-sidebar-filter-input,
   .project-sidebar.labelled .project-sidebar-filter-input:focus {
-    width: 196px;
+    width: 100%;
     height: 28px;
     padding: 0 8px;
   }
@@ -10156,11 +10178,70 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     align-self: flex-start;
   }
 
-  /* A saved or dragged findings width must not eat the 160 px the labels
+  /* A saved or dragged findings width must not eat the width the labels
      cost out of the terminal: keep main's floor for the reading pane
-     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). */
+     (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). The
+     navigation's own width is resizable, so it is subtracted as a variable. */
   .main:has(> .project-sidebar.labelled) > .findings-panel {
-    max-width: max(280px, calc(100% - 640px));
+    max-width: max(280px, calc(100% - 428px - var(--nav-width-used, 212px)));
+  }
+
+  /* Divider on the navigation's right edge (NavResizer.tsx). Negative margins
+     make it take no layout width. Its 6 px are placed off-centre on purpose:
+     2 px over the navigation (its 1 px border plus 1 px), 4 px over the task
+     list's left padding. More over the navigation would eat into its
+     scrollbar, which sits against that border and must stay easy to grab
+     when the project list is long. More over the task list would swallow
+     clicks aimed at the task list's edge. */
+  .project-sidebar.labelled + .nav-resizer {
+    display: block;
+    flex: 0 0 6px;
+    align-self: stretch;
+    margin: 0 -4px 0 -2px;
+    z-index: 2;
+    cursor: col-resize;
+    background: transparent;
+    position: relative;
+    touch-action: none;
+  }
+  /* Placed after the rule above, which has the same specificity. */
+  .main:has(> .coordinator-findings-pane) > .nav-resizer {
+    display: none;
+  }
+  /* The hover and focus line is drawn over the navigation's border. */
+  .nav-resizer::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 1px;
+    width: 1px;
+    background: transparent;
+    transition: background 0.12s ease;
+  }
+  .nav-resizer:hover::after,
+  .nav-resizer:focus-visible::after,
+  .nav-resizer.dragging::after {
+    background: var(--teal);
+  }
+  .nav-resizer:focus-visible {
+    outline: none;
+  }
+  .nav-resizer:focus-visible::after {
+    width: 2px;
+  }
+  /* After the transition above, so it wins for users who ask for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .nav-resizer::after { transition: none; }
+  }
+  /* High-contrast modes replace author backgrounds, which would hide the line
+     that is this divider's only hover and focus cue. */
+  @media (forced-colors: active) {
+    .nav-resizer:hover::after,
+    .nav-resizer:focus-visible::after,
+    .nav-resizer.dragging::after {
+      background: Highlight;
+    }
   }
 
   /* "All projects" is always the selected row in this layout; keep the red
