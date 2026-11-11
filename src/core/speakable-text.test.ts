@@ -61,8 +61,8 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['uuid dropped', 'Task 123e4567-e89b-12d3-a456-426614174000 failed.', 'Task failed.'],
 
   // Timestamps
-  ['iso timestamp dropped with lead word', 'Updated at 2025-03-04T10:20:30Z.', 'Updated.'],
-  ['iso timestamp with millis dropped', 'Seen 2025-03-04T10:20:30.123+01:00 here.', 'Seen here.'],
+  ['iso timestamp is a set time and its lead word stays', 'Updated at 2025-03-04T10:20:30Z.', 'Updated at a set time.'],
+  ['iso timestamp with millis and offset is a set time', 'Seen 2025-03-04T10:20:30.123+01:00 here.', 'Seen a set time here.'],
 
   // Identifiers
   ['known finding type snake_case', 'The agent is in needs_input state.', 'The agent is in needs input state.'],
@@ -326,21 +326,43 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a lone ellipsis is left alone', '...', '...'],
   ['an ellipsis after a slash is left alone', 'Open src/..', 'Open src/..'],
 
-  // Dropped tokens leave no gap and no empty pair behind.
-  ['drops a timestamp before a comma', 'Seen at 2025-03-04T10:20:30Z, then again', 'Seen, then again.'],
-  ['drops a parenthesised timestamp with its lead word', 'Updated (at 2025-03-04T10:20:30Z) fine', 'Updated fine.'],
+  // Dropped tokens (a UUID, a hash after "commit") leave no gap and no empty pair behind.
   ['drops a parenthesised uuid', 'Task (123e4567-e89b-12d3-a456-426614174000) failed.', 'Task failed.'],
   ['drops a bracketed uuid', 'Task [123e4567-e89b-12d3-a456-426614174000] failed.', 'Task failed.'],
-  ['drops the timestamp but keeps the rest of a parenthesis', '(updated at 2025-03-04T10:20:30Z)', '(updated).'],
   ['drops a hash after the word commit before a period', 'Pushed commit 3f2a9c1.', 'Pushed commit.'],
 
-  // Timestamps: a neutral lead goes with the timestamp, a time-limiting word stays and the timestamp becomes "a set time".
-  ['"as of" at the start is one two-word lead and hands its capital on', 'As of 2025-11-10T10:00:00Z the build is green.', 'The build is green.'],
-  ['"as of" mid-sentence', 'Status as of 2025-11-10T10:00:00Z is green.', 'Status is green.'],
-  ['"as of" at the end', 'Green as of 2025-11-10T10:00:00Z.', 'Green.'],
-  ['"as of" before a comma', 'As of 2025-11-10T10:00:00Z, the build is green.', 'The build is green.'],
-  ['"as at" is a two-word lead too', 'Stock as at 2025-11-10T10:00:00Z is low.', 'Stock is low.'],
-  ['a parenthesised "as of" goes with its brackets', 'Green (as of 2025-11-10T10:00:00Z) now.', 'Green now.'],
+  // A timestamp is NEVER dropped. It becomes "a set time" ("A set time" where it opens a sentence) in every
+  // position, and every word, label, colon, bracket and mark around it stays exactly as written. Dropping a
+  // timestamp and its lead changes what a sentence says (review rounds 1 to 5).
+  ['a negated update keeps its time', 'No files were updated at 2025-11-10T10:00:00Z.', 'No files were updated at a set time.'],
+  ['a negated log keeps its time', 'Nothing was logged at 2025-11-10T10:00:00Z.', 'Nothing was logged at a set time.'],
+  [
+    'a not-yet-completed job keeps its time',
+    'The nightly backup had not yet completed at 2025-11-10T10:00:00Z.',
+    'The nightly backup had not yet completed at a set time.',
+  ],
+  ['a prohibition after "@" keeps its time', 'Do not deploy @ 2025-11-10T10:00:00Z', 'Do not deploy @ a set time.'],
+  [
+    'a prohibition on a dated snapshot keeps its time',
+    'Do not restore the snapshot dated 2025-11-10T10:00:00Z.',
+    'Do not restore the snapshot dated a set time.',
+  ],
+  [
+    'an "only" restriction keeps its time',
+    'Delete only files modified on 2025-11-10T10:00:00Z.',
+    'Delete only files modified on a set time.',
+  ],
+  [
+    'a "not the latest" contrast keeps its time',
+    'Use the backup dated 2025-11-10T10:00:00Z, not the latest one.',
+    'Use the backup dated a set time, not the latest one.',
+  ],
+  ['"as of" at the start keeps its lead', 'As of 2025-11-10T10:00:00Z the build is green.', 'As of a set time the build is green.'],
+  ['"as of" mid-sentence keeps its lead', 'Status as of 2025-11-10T10:00:00Z is green.', 'Status as of a set time is green.'],
+  ['"as of" at the end keeps its lead', 'Green as of 2025-11-10T10:00:00Z.', 'Green as of a set time.'],
+  ['"as of" before a comma keeps both', 'As of 2025-11-10T10:00:00Z, the build is green.', 'As of a set time, the build is green.'],
+  ['"as at" keeps its lead', 'Stock as at 2025-11-10T10:00:00Z is low.', 'Stock as at a set time is low.'],
+  ['a parenthesised "as of" keeps its brackets', 'Green (as of 2025-11-10T10:00:00Z) now.', 'Green (as of a set time) now.'],
   ['until keeps its lead', 'Do not merge until 2025-11-10T10:00:00Z.', 'Do not merge until a set time.'],
   ['since keeps its lead', 'No failures since 2025-11-10T10:00:00Z.', 'No failures since a set time.'],
   ['till keeps its lead', 'Frozen till 2025-11-10T10:00:00Z please.', 'Frozen till a set time please.'],
@@ -355,24 +377,24 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a time-bearing word keeps a time', 'Token expires 2025-11-10T10:00:00Z.', 'Token expires a set time.'],
   ['a time-bearing word before "at" keeps a time', 'Token expires at 2025-11-10T10:00:00Z.', 'Token expires at a set time.'],
   ['of before a timestamp keeps the word', 'The build of 2025-11-10T10:00:00Z failed.', 'The build of a set time failed.'],
-  ['at after a label goes with the timestamp', 'Updated at 2025-11-10T10:00:00Z.', 'Updated.'],
-  ['on after a label goes with the timestamp', 'Created on 2025-11-10T10:00:00Z by hand.', 'Created by hand.'],
-  ['dated is a neutral lead', 'The report dated 2025-11-10T10:00:00Z is old.', 'The report is old.'],
-  ['timestamped is a neutral lead', 'The log timestamped 2025-11-10T10:00:00Z is old.', 'The log is old.'],
-  ['@ is a neutral lead', 'Deployed @ 2025-11-10T10:00:00Z fine.', 'Deployed fine.'],
+  ['at after a label stays', 'Updated at 2025-11-10T10:00:00Z.', 'Updated at a set time.'],
+  ['on after a label stays', 'Created on 2025-11-10T10:00:00Z by hand.', 'Created on a set time by hand.'],
+  ['dated stays', 'The report dated 2025-11-10T10:00:00Z is old.', 'The report dated a set time is old.'],
+  ['timestamped stays', 'The log timestamped 2025-11-10T10:00:00Z is old.', 'The log timestamped a set time is old.'],
+  ['@ stays', 'Deployed @ 2025-11-10T10:00:00Z fine.', 'Deployed @ a set time fine.'],
   ['a bare "at" keeps its time after a sentence', 'Done. At 2025-11-10T10:00:00Z, it failed.', 'Done. At a set time, it failed.'],
   ['a bare "at" keeps its time before the final period', 'Done. At 2025-11-10T10:00:00Z.', 'Done. At a set time.'],
   ['a bare "at" keeps its time at the start', 'At 2025-11-10T10:00:00Z, it failed.', 'At a set time, it failed.'],
-  ['"as of" and its comma go together after a sentence and hand the capital on', 'Done. As of 2025-11-10T10:00:00Z, it failed.', 'Done. It failed.'],
-  ['"as of" in the middle of a sentence hands no capital on', 'Wait. Status as of 2025-11-10T10:00:00Z is green.', 'Wait. Status is green.'],
-  ['a capital is handed only to a plain lower-case word', 'As of 2025-11-10T10:00:00Z iOS 17 is out.', 'iOS 17 is out.'],
-  ['a lower-case lead hands no capital on', 'Fine, as of 2025-11-10T10:00:00Z it works.', 'Fine, it works.'],
-  ['a parenthesised timestamp with a word before it', '(updated 2025-11-10T10:00:00Z)', '(updated).'],
-  ['a label before a timestamp is kept and the timestamp is dropped', 'Seen 2025-11-10T10:00:00Z here.', 'Seen here.'],
-  ['a bracketed timestamp is dropped with its brackets', 'Seen [2025-11-10T10:00:00Z] here.', 'Seen here.'],
-  ['a colon after "as of" goes with it', 'As of 2025-11-10T10:00:00Z: 3 failing tests.', '3 failing tests.'],
-  ['a semicolon after "as of" goes with it', 'As of 2025-11-10T10:00:00Z; 3 failing tests.', '3 failing tests.'],
-  ['a label colon goes with a dropped timestamp', 'Last seen: 2025-11-10T10:00:00Z.', 'Last seen.'],
+  ['"as of" and its comma stay after a sentence', 'Done. As of 2025-11-10T10:00:00Z, it failed.', 'Done. As of a set time, it failed.'],
+  ['"as of" in the middle of a sentence stays', 'Wait. Status as of 2025-11-10T10:00:00Z is green.', 'Wait. Status as of a set time is green.'],
+  ['a lead before a capitalised word stays', 'As of 2025-11-10T10:00:00Z iOS 17 is out.', 'As of a set time iOS 17 is out.'],
+  ['a lower-case lead stays', 'Fine, as of 2025-11-10T10:00:00Z it works.', 'Fine, as of a set time it works.'],
+  ['a parenthesised timestamp with a word before it', '(updated 2025-11-10T10:00:00Z)', '(updated a set time).'],
+  ['a label before a timestamp stays', 'Seen 2025-11-10T10:00:00Z here.', 'Seen a set time here.'],
+  ['a bracketed timestamp keeps its brackets', 'Seen [2025-11-10T10:00:00Z] here.', 'Seen [a set time] here.'],
+  ['a colon after "as of" stays', 'As of 2025-11-10T10:00:00Z: 3 failing tests.', 'As of a set time: 3 failing tests.'],
+  ['a semicolon after "as of" stays', 'As of 2025-11-10T10:00:00Z; 3 failing tests.', 'As of a set time; 3 failing tests.'],
+  ['a label colon stays', 'Last seen: 2025-11-10T10:00:00Z.', 'Last seen: a set time.'],
   ['a bare range keeps both ends', 'Window: 2025-11-10T10:00:00Z to 2025-11-10T11:30:00.000+01:00', 'Window: a set time to a set time.'],
   ['a bare "and" pair keeps both ends', 'Seen 2025-11-10T10:00:00Z and 2025-11-10T11:30:00.000+01:00 in the log.', 'Seen a set time and a set time in the log.'],
   [
@@ -380,27 +402,23 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
     'The dates are 2025-11-10T10:00:00Z, 2025-11-10T11:30:00.000+01:00 and 2025-11-10T10:00:00Z.',
     'The dates are a set time, a set time and a set time.',
   ],
-  ['a neutral lead before a range is kept', 'As of 2025-11-10T10:00:00Z - 2025-11-10T11:30:00.000+01:00 the queue was empty.', 'As of a set time - a set time the queue was empty.'],
-  ['a bracketed log timestamp is dropped', '[2025-11-10T10:00:00Z] ERROR build failed in 3s', 'ERROR build failed in 3s.'],
-  ['separate sentences each drop their own timestamp', 'Created 2025-11-10T10:00:00Z. Updated 2025-11-10T11:30:00.000+01:00.', 'Created. Updated.'],
-  ['a timestamp bullet list loses the bullets and the timestamps', 'Deploy log:\n- 2025-11-10T10:00:00Z started\n- 2025-11-10T11:30:00.000+01:00 finished', 'Deploy log: started. finished.'],
+  ['a lead before a range stays', 'As of 2025-11-10T10:00:00Z - 2025-11-10T11:30:00.000+01:00 the queue was empty.', 'As of a set time - a set time the queue was empty.'],
+  ['a bracketed log timestamp is a set time', '[2025-11-10T10:00:00Z] ERROR build failed in 3s', '[A set time] ERROR build failed in 3s.'],
+  ['separate sentences each keep their timestamp', 'Created 2025-11-10T10:00:00Z. Updated 2025-11-10T11:30:00.000+01:00.', 'Created a set time. Updated a set time.'],
   [
-    'a word that ends its sentence is not a lead',
-    'This is what the build is stuck on. 2025-11-10T10:00:00Z ERROR build failed.',
-    'This is what the build is stuck on. ERROR build failed.',
+    'a timestamp bullet list loses only the bullets',
+    'Deploy log:\n- 2025-11-10T10:00:00Z started\n- 2025-11-10T11:30:00.000+01:00 finished',
+    'Deploy log: a set time started. A set time finished.',
   ],
   [
-    'a sentence that ends in a limiting word does not lend it to the next timestamp',
-    'Nothing left to wait for. 2025-11-10T10:00:00Z ERROR build failed.',
-    'Nothing left to wait for. ERROR build failed.',
+    'a log line after a sentence keeps its timestamp',
+    'This is what the build is stuck on. 2025-11-10T10:00:00Z ERROR build failed.',
+    'This is what the build is stuck on. A set time ERROR build failed.',
   ],
   ['a hash after a sentence end has no git word before it', 'Reverted. 3f2a9c1d8e0b failed.', 'Reverted. an ID failed.'],
-  ['a dash pair that held only a dropped phrase becomes one dash', 'All green - as of 2025-11-10T10:00:00Z - really.', 'All green - really.'],
-  ['an em dash pair that held only a dropped phrase becomes one dash', 'Summary — as of 2025-11-10T10:00:00Z — all green.', 'Summary — all green.'],
+  ['a dash pair around a timestamp phrase stays', 'All green - as of 2025-11-10T10:00:00Z - really.', 'All green - as of a set time - really.'],
+  ['an em dash pair around a timestamp phrase stays', 'Summary — as of 2025-11-10T10:00:00Z — all green.', 'Summary — as of a set time — all green.'],
   ['a time-bearing verb keeps a time before a dash range', 'Expires 2025-11-10T10:00:00Z - renew by 2025-11-10T11:30:00.000+01:00.', 'Expires a set time - renew by a set time.'],
-
-  // Timestamps keep their time scope: only a label, "as of", "dated", "@", a lone bracketed timestamp
-  // or a log-line prefix is dropped. Everywhere else the lead stays and the time is "a set time".
   ['"on" keeps its time', 'Do not deploy on 2025-11-10T10:00:00Z.', 'Do not deploy on a set time.'],
   [
     'two "at" times are both kept',
@@ -426,15 +444,15 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['a label is kept with a contrast: both times stay', 'Started at 2025-11-10T10:00:00Z, not at 2025-11-11T11:30:00Z.', 'Started at a set time, not at a set time.'],
   ['two labels in one sentence keep both times', 'Seen at 2025-11-10T10:00:00Z and updated on 2025-11-11T11:30:00Z.', 'Seen at a set time and updated on a set time.'],
   ['a negated label keeps its time', 'Not updated at 2025-11-10T10:00:00Z.', 'Not updated at a set time.'],
-  ['a negated contraction keeps its time', "It wasn't updated at 2025-11-10T10:00:00Z."  , "It wasn't updated at a set time."],
+  ['a negated contraction keeps its time', "It wasn't updated at 2025-11-10T10:00:00Z.", "It wasn't updated at a set time."],
   ['two "dated" timestamps are both kept', 'A dated 2025-11-10T10:00:00Z vs b dated 2025-11-11T11:30:00Z.', 'A dated a set time vs b dated a set time.'],
   ['two "as of" timestamps are both kept', 'As of 2025-11-10T10:00:00Z it failed, as of 2025-11-11T11:30:00Z it passed.', 'As of a set time it failed, as of a set time it passed.'],
-  ['"last run at" is a label', 'Last run at 2025-11-10T10:00:00Z by CI.', 'Last run by CI.'],
-  ['a log line prefix is dropped', '2025-11-10T10:00:00Z ERROR build failed', 'ERROR build failed.'],
-  ['a log line prefix after a sentence is dropped', 'Done. 2025-11-10T10:00:00Z ERROR build failed.', 'Done. ERROR build failed.'],
-  ['a bracketed log level after a sentence makes a prefix too', 'Done. 2025-11-10T10:00:00Z [WARN] retrying', 'Done. [WARN] retrying.'],
+  ['"last run at" keeps its words', 'Last run at 2025-11-10T10:00:00Z by CI.', 'Last run at a set time by CI.'],
+  ['a log line prefix is a set time', '2025-11-10T10:00:00Z ERROR build failed', 'A set time ERROR build failed.'],
+  ['a log line prefix after a sentence is a set time', 'Done. 2025-11-10T10:00:00Z ERROR build failed.', 'Done. A set time ERROR build failed.'],
+  ['a bracketed log level after a sentence keeps everything', 'Done. 2025-11-10T10:00:00Z [WARN] retrying', 'Done. A set time [WARN] retrying.'],
   [
-    'a bare timestamp after a sentence end is a set time, not a prefix',
+    'a bare timestamp after a sentence end is a set time with a capital',
     'Wait. 2025-11-10T10:00:00Z the lock is released.',
     'Wait. A set time the lock is released.',
   ],
@@ -445,34 +463,34 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ],
   ['a bare timestamp before a contraction is a set time', "2025-11-10T10:00:00Z wasn't the last good build.", "A set time wasn't the last good build."],
   ['a bare timestamp before an article at the start is a set time', '2025-11-10T10:00:00Z the lock is released.', 'A set time the lock is released.'],
-  ['a log line prefix on a line of its own after a sentence is dropped', 'Wait.\n2025-11-10T10:00:00Z started deploy', 'Wait. started deploy.'],
-  ['the colon of a dropped label value goes too', 'Last seen: 2025-11-10T10:00:00Z by Bob.', 'Last seen by Bob.'],
-  ['the colon of a dropped label value goes at the end of the text', 'Updated: 2025-11-10T10:00:00Z', 'Updated.'],
+  ['a timestamp on a line of its own after a sentence is a set time', 'Wait.\n2025-11-10T10:00:00Z started deploy', 'Wait. A set time started deploy.'],
+  ['a label value with a colon and a trailing word', 'Last seen: 2025-11-10T10:00:00Z by Bob.', 'Last seen: a set time by Bob.'],
+  ['a label value with a colon at the end of the text', 'Updated: 2025-11-10T10:00:00Z', 'Updated: a set time.'],
   ['a prefix that is part of the sentence is a set time with a capital', '2025-11-10T10:00:00Z was the last good build.', 'A set time was the last good build.'],
   ['a prefix with a comma is a set time', '2025-11-10T10:00:00Z, it failed', 'A set time, it failed.'],
   ['a prefix before a preposition is a set time', '2025-11-10T10:00:00Z at the gate', 'A set time at the gate.'],
-  ['a text that is only a timestamp is dropped', '2025-11-10T10:00:00Z', ''],
-  ['a timestamp on its own in parentheses is dropped', 'Build (2025-11-10T10:00:00Z) failed.', 'Build failed.'],
-  ['"at" inside parentheses is not on its own', 'Build (at 2025-11-10T10:00:00Z) failed.', 'Build (at a set time) failed.'],
+  ['a text that is only a timestamp is a set time', '2025-11-10T10:00:00Z', 'A set time.'],
+  ['a timestamp on its own in parentheses keeps its brackets', 'Build (2025-11-10T10:00:00Z) failed.', 'Build (a set time) failed.'],
+  ['"at" inside parentheses stays', 'Build (at 2025-11-10T10:00:00Z) failed.', 'Build (at a set time) failed.'],
   [
-    'a semicolon splits clauses: a label timestamp is alone in its own',
+    'a semicolon keeps both clauses whole',
     'Edited a.ts as of 2025-11-10T10:00:00Z; do not merge until 2025-11-11T11:30:00Z.',
-    'Edited a.ts; do not merge until a set time.',
+    'Edited a.ts as of a set time; do not merge until a set time.',
   ],
   [
-    'a comma does not split clauses: a contrast keeps its times',
+    'a comma keeps a contrast whole',
     'Green as of 2025-11-10T10:00:00Z, red as of 2025-11-11T11:30:00Z.',
     'Green as of a set time, red as of a set time.',
   ],
   ['a parenthesised timestamp after "on" keeps its lead', 'Do not deploy on (2025-11-10T10:00:00Z) again.', 'Do not deploy on (a set time) again.'],
-  ['a parenthesised timestamp after a label is dropped', 'Updated (2025-11-10T10:00:00Z) fine.', 'Updated fine.'],
+  ['a parenthesised timestamp after a label keeps its brackets', 'Updated (2025-11-10T10:00:00Z) fine.', 'Updated (a set time) fine.'],
   [
-    'a wrapped line does not make the next line a log line',
+    'a wrapped line does not change the timestamp',
     'Do not merge until\n2025-11-10T10:00:00Z because CI is red.',
     'Do not merge until a set time because CI is red.',
   ],
-  ['a log line after a blank line is a log line', 'Deploys:\n\n2025-11-10T10:00:00Z started', 'Deploys: started.'],
-  ['a capital moves on after a dropped "as of" mid-text', 'Wait. As of 2025-11-10T10:00:00Z the lock is released.', 'Wait. The lock is released.'],
+  ['a timestamp after a blank line is a set time', 'Deploys:\n\n2025-11-10T10:00:00Z started', 'Deploys: a set time started.'],
+  ['"A set time" at the start is left alone', 'A set time was fine. Then a set time failed.', 'A set time was fine. Then a set time failed.'],
 
   // What is left of a redacted long path: "a redacted path", nothing else. A bare placeholder is "redacted".
   ['a redacted path with a test extension', 'Tests keep failing in /[redacted].test.ts', 'Tests keep failing in a redacted path.'],
@@ -626,7 +644,7 @@ const REWRITES = {
   // A long hex token with no git word beside it is only an ID; the same token after a git word is a commit.
   hash: [['3f2a9c1d8e0b', 'an ID'], ['a1b2c3d4e5f60718293a4b5c6d7e8f9012345678', 'an ID'], ['507f1f77bcf86cd799439011', 'an ID']],
   uuid: [['for 123e4567-e89b-12d3-a456-426614174000', 'for an ID'], ['by 123e4567-e89b-12d3-a456-426614174000', 'by an ID']],
-  // After a bare at/on, a time-limiting word or no lead word, the timestamp becomes "a set time" and the word stays.
+  // A timestamp is "a set time" after any lead word (or none); the lead word stays.
   time: [
     ['at 2025-11-10T10:00:00Z', 'at a set time'], ['on 2025-11-10T10:00:00Z', 'on a set time'],
     ['until 2025-11-10T10:00:00Z', 'until a set time'], ['since 2025-11-10T10:00:00Z', 'since a set time'],
@@ -638,22 +656,25 @@ const REWRITES = {
     ['between 2025-11-10T10:00:00Z and 2025-11-10T11:00:00Z', 'between a set time and a set time'],
     ['(since 2025-11-10T10:00:00Z)', '(since a set time)'],
   ],
-  // The only leads that go with the timestamp (alone in its sentence): as of, dated, @, a label (with its at/on), brackets.
-  timeDrop: [
-    ['status as of 2025-11-10T10:00:00Z', 'status'], ['report dated 2025-11-10T10:00:00Z', 'report'],
-    ['log timestamped 2025-11-10T10:00:00Z', 'log'], ['deploy @ 2025-11-10T10:00:00Z', 'deploy'],
-    ['updated at 2025-11-10T10:00:00Z', 'updated'], ['created on 2025-11-10T10:00:00Z', 'created'],
-    ['updated: 2025-11-10T10:00:00Z', 'updated'],
-    ['modified on 2025-11-10T10:00:00Z', 'modified'], ['seen 2025-11-10T10:00:00Z', 'seen'],
-    ['last run at 2025-11-10T10:00:00Z', 'last run'], ['build (2025-11-10T10:00:00Z)', 'build'],
-    ['check [2025-11-10T10:00:00Z]', 'check'],
+  // The leads and labels that used to be dropped with the timestamp: now every one of them stays.
+  timeLabel: [
+    ['status as of 2025-11-10T10:00:00Z', 'status as of a set time'], ['report dated 2025-11-10T10:00:00Z', 'report dated a set time'],
+    ['log timestamped 2025-11-10T10:00:00Z', 'log timestamped a set time'], ['deploy @ 2025-11-10T10:00:00Z', 'deploy @ a set time'],
+    ['updated at 2025-11-10T10:00:00Z', 'updated at a set time'], ['created on 2025-11-10T10:00:00Z', 'created on a set time'],
+    ['updated: 2025-11-10T10:00:00Z', 'updated: a set time'],
+    ['modified on 2025-11-10T10:00:00Z', 'modified on a set time'], ['seen 2025-11-10T10:00:00Z', 'seen a set time'],
+    ['last run at 2025-11-10T10:00:00Z', 'last run at a set time'], ['build (2025-11-10T10:00:00Z)', 'build (a set time)'],
+    ['check [2025-11-10T10:00:00Z]', 'check [a set time]'], ['last seen: 2025-11-10T10:00:00Z', 'last seen: a set time'],
   ],
-  // The same leads, but two timestamps in one sentence: the times tell the events apart, so none is dropped.
+  // Two timestamps in one sentence: each becomes "a set time" and the contrast around them stays.
   timeContrast: [
     ['seen at 2025-11-10T10:00:00Z and updated on 2025-11-11T11:30:00Z', 'seen at a set time and updated on a set time'],
     ['created on 2025-11-10T10:00:00Z, not updated on 2025-11-11T11:30:00Z', 'created on a set time, not updated on a set time'],
     ['as of 2025-11-10T10:00:00Z and dated 2025-11-11T11:30:00Z', 'as of a set time and dated a set time'],
     ['not updated at 2025-11-10T10:00:00Z', 'not updated at a set time'],
+    ['never logged at 2025-11-10T10:00:00Z', 'never logged at a set time'],
+    ['only files modified on 2025-11-10T10:00:00Z', 'only files modified on a set time'],
+    ['nothing changed at 2025-11-10T10:00:00Z, without 2025-11-11T11:30:00Z', 'nothing changed at a set time, without a set time'],
   ],
   // What is left of a redacted long path.
   redactedPath: [
@@ -801,9 +822,9 @@ const TEMPLATES: ReadonlyArray<(p: Picker) => Part[]> = [
   (p) => ['Errors ', p.rw('time'), ': 3, ', p.rw('time'), ': 0.'],
   (p) => ['Do not deploy ', p.rw('time'), ' only.'],
   (p) => [p.rw('time'), ' the lock was held.'],
-  (p) => ['The ', p.rw('timeDrop'), ' is old.'],
+  (p) => ['The ', p.rw('timeLabel'), ' is old.'],
   (p) => ['Logs ', p.rw('timeContrast'), ' differ.'],
-  (p) => ['Note: ok.', { raw: ' As of 2025-11-10T10:00:00Z the build is green', spoken: ' The build is green' }, '.'],
+  (p) => ['Note: ok.', { raw: ' As of 2025-11-10T10:00:00Z the build is green', spoken: ' As of a set time the build is green' }, '.'],
   (p) => ['Opened ', p.rw('redactedPath'), ' and ', p.rw('redactedPath'), ' today.'],
   (p) => ['Edited ', p.rw('redactedPath'), ', then ', p.plain('file'), '.'],
 ];
@@ -973,11 +994,11 @@ describe('makeSpeakable', () => {
     ['table rows', `| a | b |\n|---|---|\n${'| 1 | 2 |\n'.repeat(150)}`],
     ['table rows with no separator', '| a | b |\n'.repeat(180)],
     ['many pipes', `${'| a '.repeat(500)}|`],
-    ['dropped timestamps with commas', 'At 2025-11-10T10:00:00Z, '.repeat(60)],
+    ['timestamps with commas', 'At 2025-11-10T10:00:00Z, '.repeat(60)],
     ['timestamp lists', '2025-11-10T10:00:00Z, '.repeat(90)],
-    ['dropped "as of" phrases that hand the capital on', 'Done. As of 2025-11-10T10:00:00Z, it failed. '.repeat(60)],
-    ['dropped label values with a colon', 'Last seen: 2025-11-10T10:00:00Z by Bob. '.repeat(60)],
-    ['log line prefixes after sentence ends', 'Done. 2025-11-10T10:00:00Z ERROR build failed. '.repeat(60)],
+    ['"as of" timestamps after sentence ends', 'Done. As of 2025-11-10T10:00:00Z, it failed. '.repeat(60)],
+    ['label values with a colon', 'Last seen: 2025-11-10T10:00:00Z by Bob. '.repeat(60)],
+    ['log line timestamps after sentence ends', 'Done. 2025-11-10T10:00:00Z ERROR build failed. '.repeat(60)],
     ['uuids', '123e4567-e89b-12d3-a456-426614174000 and '.repeat(45)],
     ['bullets before paths', '- /a/b/c.ts\n'.repeat(200)],
   ])('runs in linear time on %s', (_label, input) => {
@@ -1040,6 +1061,106 @@ describe('makeSpeakable never loses or glues words', () => {
     expect(losses.slice(0, 5)).toEqual([]);
   });
 
+  test('a timestamp only ever becomes "a set time": 20,000 sentences with timestamps in every position', () => {
+    const random = mulberry32(0x7131e5);
+    const choose = <T,>(items: readonly T[]): T => items[Math.floor(random() * items.length)];
+    const stamps = [
+      '2025-11-10T10:00:00Z', '2025-11-11T11:30:00.000+01:00', '2026-01-02T03:04:05.678-0530', '2025-03-04T10:20Z',
+      '2025-03-04T10:20:30', '2024-12-31T23:59:59.9+05:30',
+    ];
+    const plain = [
+      'deploy', 'build', 'backup', 'snapshot', 'files', 'tests', 'task', 'agent', 'server', 'lock', 'queue', 'job',
+      'ran', 'failed', 'passed', 'was', 'were', 'is', 'had', 'yet', 'the', 'latest', 'one', 'it', 'we', 'Ana', 'Bob', 'CI',
+      'restore', 'delete', 'merge', 'release', 'notes', 'green', 'red', 'stuck', 'stopped', 'fine', 'then', 'again',
+    ];
+    const negations = [
+      'not', 'never', 'without', 'except', 'only', 'no', 'nothing', 'neither', 'nor', 'unless', "don't", "wasn't",
+      'but', 'instead', 'cannot', 'none', 'nobody',
+    ];
+    const leads = [
+      'at', 'on', 'until', 'till', 'since', 'before', 'after', 'by', 'from', 'to', 'between', 'through', 'within', 'of',
+      'as of', 'as at', 'dated', 'timestamped', '@', 'updated', 'created', 'modified', 'started', 'finished', 'completed',
+      'ended', 'generated', 'last seen:', 'last run', 'seen', 'logged', 'reported', 'recorded', 'last seen', 'updated:',
+    ];
+    const dashes = ['-', '–', '—'];
+    const wrappers: ReadonlyArray<readonly [string, string]> = [['', ''], ['', ''], ['', ''], ['(', ')'], ['[', ']'], ['"', '"'], ['<', '>']];
+    const marks = ['', '', '', ',', '.', ';', ':', '!', '?'];
+    const endMarks = ['', '', '.', '!', '?'];
+    const coverage = { atStart: 0, afterSentenceEnd: 0, wrapped: 0, several: 0, negated: 0, lineStart: 0 };
+    const problems: string[] = [];
+    const seen = new Set<string>();
+    for (let i = 0; i < 20_000; i += 1) {
+      const pieces = 3 + Math.floor(random() * 10);
+      let raw = '';
+      let spoken = '';
+      let previousRaw = '';
+      let stamped = 0;
+      let negated = false;
+      for (let j = 0; j < pieces; j += 1) {
+        const last = j === pieces - 1;
+        const kind = random();
+        let wordRaw: string;
+        let wordSpoken: string;
+        let isStamp = false;
+        if (kind < 0.32) {
+          const [open, close] = choose(wrappers);
+          const stamp = choose(stamps);
+          const mark = last ? choose(endMarks) : choose(marks);
+          wordRaw = `${open}${stamp}${close}${mark}`;
+          const capital = j === 0 || /[.!?]["')\]”’]?$/u.test(previousRaw);
+          wordSpoken = `${open}${capital ? 'A set time' : 'a set time'}${close}${mark}`;
+          isStamp = true;
+          stamped += 1;
+          if (j === 0) coverage.atStart += 1;
+          else if (capital) coverage.afterSentenceEnd += 1;
+          if (open !== '') coverage.wrapped += 1;
+        } else {
+          // A dash opens no sentence: "- x" at the start of the text is a bullet, which has nothing to do with timestamps.
+          const base = kind < 0.58 || (kind >= 0.93 && j === 0)
+            ? choose(plain)
+            : kind < 0.72 ? choose(negations) : kind < 0.93 ? choose(leads) : choose(dashes);
+          if (negations.includes(base)) negated = true;
+          const cased = random() < 0.15 && /^[a-z]/.test(base) ? base[0].toUpperCase() + base.slice(1) : base;
+          // A dash or a label that ends in a colon never takes more punctuation; a last word only gets a sentence end.
+          const mark = dashes.includes(base) || base.endsWith(':') ? '' : last ? choose(endMarks) : random() < 0.12 ? choose(marks) : '';
+          wordRaw = `${cased}${mark}`;
+          wordSpoken = wordRaw;
+        }
+        // The text must not end in "," ";" or ":" (the module turns those into a period), nor in a bare dash.
+        if (last && (dashes.includes(wordRaw) || /[,;:]$/.test(wordRaw))) {
+          wordRaw = `${wordRaw}done`;
+          wordSpoken = wordRaw;
+          if (isStamp) stamped -= 1;
+        }
+        let separator = '';
+        if (j > 0) {
+          const dashWord = dashes.includes(wordRaw);
+          separator = !dashWord && random() < 0.08 ? '\n' : ' ';
+          if (separator === '\n' && isStamp) coverage.lineStart += 1;
+        }
+        raw += separator + wordRaw;
+        spoken += (separator === '' ? '' : ' ') + wordSpoken;
+        previousRaw = wordRaw;
+      }
+      if (stamped > 1) coverage.several += 1;
+      if (negated && stamped > 0) coverage.negated += 1;
+      seen.add(raw);
+      const loss = findWordLoss(makeSpeakable, { raw, spoken });
+      if (loss) problems.push(loss);
+      const once = makeSpeakable(raw);
+      if (makeSpeakable(once) !== once) problems.push(`not idempotent: ${JSON.stringify(raw)} => ${JSON.stringify(once)}`);
+      if (problems.length >= 5) break;
+    }
+    expect(problems).toEqual([]);
+    expect(seen.size).toBeGreaterThan(19_000);
+    expect(coverage.atStart).toBeGreaterThan(2000);
+    expect(coverage.afterSentenceEnd).toBeGreaterThan(500);
+    expect(coverage.wrapped).toBeGreaterThan(3000);
+    expect(coverage.several).toBeGreaterThan(5000);
+    expect(coverage.negated).toBeGreaterThan(5000);
+    expect(coverage.lineStart).toBeGreaterThan(300);
+  }, 60_000);
+
   test('plain sentences come back byte for byte except for the closing period', () => {
     const plainKinds = Object.keys(PLAIN) as PlainKind[];
     for (const kind of plainKinds) {
@@ -1072,15 +1193,14 @@ describe('makeSpeakable never loses or glues words', () => {
     for (const [input, wrong] of reviewerFindings) {
       expect(findWordLoss(() => wrong, { raw: input, spoken: input }), input).not.toBeNull();
     }
-    // Wrong rewrites of the next round: a lost lead word or a silently removed time.
+    // Wrong rewrites of the later rounds: a timestamp and its lead word silently removed, which changes what the sentence says.
     const T = '2025-11-10T10:00:00Z';
     const timeFindings: Array<[raw: string, spoken: string, wrong: string]> = [
-      [`As of ${T} the build is green.`, 'The build is green.', 'As the build is green.'],
-      [`Status as of ${T} is green.`, 'Status is green.', 'Status as is green.'],
-      [`Green as of ${T}.`, 'Green.', 'Green as.'],
+      [`As of ${T} the build is green.`, 'As of a set time the build is green.', 'The build is green.'],
+      [`Status as of ${T} is green.`, 'Status as of a set time is green.', 'Status is green.'],
+      [`Green as of ${T}.`, 'Green as of a set time.', 'Green.'],
       [`Do not merge until ${T}.`, 'Do not merge until a set time.', 'Do not merge.'],
       [`No failures since ${T}.`, 'No failures since a set time.', 'No failures.'],
-      // Review round 3: a timestamp after a bare at/on lost the time scope.
       [`Do not deploy on ${T}.`, 'Do not deploy on a set time.', 'Do not deploy.'],
       [`Tests failed at ${T} but passed at ${T}.`, 'Tests failed at a set time but passed at a set time.', 'Tests failed but passed.'],
       [`It broke at ${T}, not at ${T}.`, 'It broke at a set time, not at a set time.', 'It broke, not.'],
@@ -1089,7 +1209,15 @@ describe('makeSpeakable never loses or glues words', () => {
       [`Errors at ${T}: 3, at ${T}: 0.`, 'Errors at a set time: 3, at a set time: 0.', 'Errors: 3,: 0.'],
       [`Wait. At ${T} the lock is released.`, 'Wait. At a set time the lock is released.', 'Wait. the lock is released.'],
       [`Wait. ${T} the lock is released.`, 'Wait. A set time the lock is released.', 'Wait. the lock is released.'],
-      [`Last seen: ${T} by Bob.`, 'Last seen by Bob.', 'Last seen: by Bob.'],
+      [`Last seen: ${T} by Bob.`, 'Last seen: a set time by Bob.', 'Last seen by Bob.'],
+      // Review round 5: each of these used to lose the time and so changed the meaning.
+      [`No files were updated at ${T}.`, 'No files were updated at a set time.', 'No files were updated.'],
+      [`Nothing was logged at ${T}.`, 'Nothing was logged at a set time.', 'Nothing was logged.'],
+      [`The nightly backup had not yet completed at ${T}.`, 'The nightly backup had not yet completed at a set time.', 'The nightly backup had not yet completed.'],
+      [`Do not deploy @ ${T}`, 'Do not deploy @ a set time', 'Do not deploy.'],
+      [`Do not restore the snapshot dated ${T}.`, 'Do not restore the snapshot dated a set time.', 'Do not restore the snapshot.'],
+      [`Delete only files modified on ${T}.`, 'Delete only files modified on a set time.', 'Delete only files modified.'],
+      [`Use the backup dated ${T}, not the latest one.`, 'Use the backup dated a set time, not the latest one.', 'Use the backup, not the latest one.'],
       ['Compare d3.js/three.js now.', 'Compare d3.js/three.js now.', 'Compare three.js now.'],
       ['Moved react/next.js today.', 'Moved react/next.js today.', 'Moved next.js today.'],
       ['Pass before/after.png along.', 'Pass before/after.png along.', 'Pass after.png along.'],

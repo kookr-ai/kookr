@@ -627,6 +627,32 @@ describe('Lucy interaction log wiring', () => {
     expect(JSON.stringify(said[0])).not.toContain('AUDIO');
   });
 
+  test('task summary: the said record redacts a secret in the task name, like the speech does', async () => {
+    const { log, said } = captureLog();
+    const taskCache = fakeTaskCache({
+      text: 'Rotate the key is done.',
+      audioBase64: 'AUDIO',
+      mimeType: 'audio/wav',
+      durationMs: 1500,
+      usedFallback: true,
+      llmMs: 0,
+      ttsMs: 200,
+      cached: false,
+    });
+    const token = 'ghp_abcdefghijklmnop1234567890';
+    const app = mkApp({
+      agents: [fakeAgent({ taskId: 'task-1', taskName: `Rotate ${token}\nthen  retry`, anomaly: null })],
+      taskCache,
+      ttsUrl: 'http://tts',
+      lucyLog: log,
+    });
+    const res = await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    expect(res.status).toBe(200);
+    expect(said).toHaveLength(1);
+    expect(said[0].taskName).toBe('Rotate [redacted] then retry');
+    expect(JSON.stringify(said[0])).not.toContain('ghp_');
+  });
+
   test('error responses write no said record', async () => {
     const { log, said } = captureLog();
     const app = mkApp({ agents: [], taskCache: fakeTaskCache({} as never), ttsUrl: 'http://tts', lucyLog: log });

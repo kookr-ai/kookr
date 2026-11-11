@@ -14,6 +14,7 @@ import { getAgentStateProjected, getTaskAgentsProjected } from '../use-cases/get
 import { buildTaskSpeechSubject } from '../use-cases/task-speech-summary-input.js';
 import { TTSClientError } from '../../adapters/tts-client.js';
 import { buildAgentSpeakContext } from '../../core/agent-speak-context.js';
+import { redactedTaskName } from '../../core/task-speech-summary.js';
 import {
   buildSystemPrompt,
   buildFallbackText,
@@ -433,7 +434,7 @@ export function registerSpeechRoutes(app: Hono, deps: RouteDeps, options: Speech
         source: 'task_summary',
         taskId,
         agentId: subject.agentState?.agentId,
-        taskName: subject.input.taskName ?? undefined,
+        taskName: redactedTaskName(subject.input.taskName),
         text: result.text,
         rawText: result.rawText,
         usedFallback: result.usedFallback,

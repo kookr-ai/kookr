@@ -35,19 +35,12 @@ import {
  *     (a run of `| a | b |` lines that holds a `|---|---|` separator row): the
  *     separator row goes and each row becomes its cells joined with ", ". A `|`
  *     anywhere else ("a | b", "x || y", "|x| + |y|") is never touched.
- *  7. ISO timestamps. A timestamp is dropped (with its lead word) ONLY where the
- *     time adds nothing: after `as of`/`as at`/`as on`, `dated`, `timestamped` or
- *     `@`, or after a pure label (updated, created, modified, started, finished,
- *     completed, ended, generated, last seen, last run, seen, logged, reported,
- *     recorded, each optionally followed by `at`/`on`/`:`) that is not negated, in
- *     both cases only when it is the only timestamp of its sentence or `;` clause;
- *     when it is wrapped in `(...)`/`[...]` on its own; or when it is the first
- *     token of a line or sentence in front of the rest of a log line ("<ts> ERROR
- *     ..."). In EVERY other position, including after a bare `at` or `on`, it
- *     becomes "a set time" and the lead word stays, so "Do not deploy on <ts>" never
- *     turns into "Do not deploy". A dropped phrase that opened a sentence hands its
- *     capital to the next plain lower-case word. Both go together with any
- *     `(...)`/`[...]` that held only that token. UUIDs are dropped. A standalone
+ *  7. ISO timestamps -> "a set time" ("A set time" where one opens a sentence), in
+ *     EVERY position. Nothing around it is touched: lead words (at, on, as of, dated,
+ *     @), labels, colons, brackets and punctuation all stay as written ("Do not deploy
+ *     @ a set time", "Last seen: a set time.", "(a set time)"). A timestamp is never
+ *     dropped, because dropping it can change what a sentence says ("No files were
+ *     updated at <ts>" must not become "No files were updated"). Also: a standalone
  *     infix `->`/`=>`/`→` -> "to" and `&`/`&&` -> "and"; the speech pipeline's own
  *     `[redacted]` placeholder -> "redacted"; what is left of a redacted long path
  *     ("/[redacted].test.ts", "[redacted]/foo.ts") -> "a redacted path". An empty
@@ -151,47 +144,10 @@ const HASH_CONTEXT_WORDS = new Set([
 const DATE_LIKE = /^(?:\d{0,2}(?:dec|feb)\d{2,4}|\d{4}(?:dec|feb)\d{0,2})$/i;
 /** A hash this long, hex digits only, is never an ordinary word or a date. */
 const MIN_BARE_HASH_LENGTH = 12;
-/** What a timestamp becomes wherever dropping it could lose a time scope ("on <ts>", "until <ts>"): it is never silently removed. */
+/** What a timestamp becomes, wherever it is: it is never dropped, and nothing around it changes. */
 const SET_TIME = 'a set time';
-/** A lead that is only a label for the timestamp: both go ("dated <ts>", "@ <ts>"). */
-const DROPPED_TIME_LEADS = new Set(['dated', 'timestamped', '@']);
-/** "as of", "as at" and "as on" are one two-word lead. */
-const AS_OF_SECOND_WORDS = new Set(['of', 'at', 'on']);
-/** A pure label for a timestamp: the label stays, an `at`/`on` after it goes with the timestamp ("updated at <ts>"). */
-const TIME_LABEL_WORDS = new Set([
-  'updated', 'created', 'modified', 'started', 'finished', 'completed', 'ended', 'generated', 'seen', 'logged',
-  'reported', 'recorded',
-]);
-/** A word before a label that turns it into a contrast ("not updated at <ts>"): the time is then the point. */
-const NEGATING_WORDS = new Set(['not', 'never', 'no', 'nor', 'neither', 'without', 'except', 'unless', 'instead', 'but']);
-/**
- * A word after a timestamp at the very start of a line that makes the timestamp part
- * of the sentence ("<ts> was the last good build", "<ts> the lock is released",
- * "<ts> to <ts>"), so it is not a log-line prefix.
- */
-const TIME_SUBJECT_FOLLOWERS = new Set([
-  'is', 'was', 'are', 'were', 'will', 'would', 'has', 'have', 'had', 'be', 'been', 'to', 'until', 'till', 'through',
-  'thru', 'and', 'or', 'but', 'nor', 'than', 'then', 'vs', 'versus', 'as', 'at', 'on', 'by', 'from', 'before', 'after',
-  'since', 'for', 'of', 'in', 'with', 'during', 'within', 'between', 'around', 'about', '-', '–', '—',
-  'the', 'a', 'an', 'this', 'that', 'these', 'those', 'it', 'its', 'we', 'they', 'he', 'she', 'there', 'all', 'no',
-  'not', 'nothing', 'everything', 'some', 'any', 'my', 'our', 'your', 'their', 'if', 'when', 'while', 'because', 'so',
-  'can', 'could', 'should', 'may', 'might', 'must', 'do', 'does', 'did', 'cannot',
-]);
-/** True when the word after a leading timestamp makes the timestamp part of the sentence ("<ts> wasn't ready"). */
-function followsTimestampInSentence(word: string): boolean {
-  const lower = word.toLowerCase();
-  return TIME_SUBJECT_FOLLOWERS.has(lower) || /n['’]t$/.test(lower);
-}
-/** The level word of a log line ("<ts> ERROR build failed", "<ts> [WARN] retrying"): after a sentence end, only this makes a timestamp a prefix. */
-const LOG_LEVEL = /^(?:TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERR|ERROR|SEVERE|CRITICAL|FATAL)$/;
-/** A word that leaves a time to follow it: dropping the timestamp after one of these would leave the word dangling ("on", "until"). */
-const TIME_PREPOSITIONS = new Set([
-  'at', 'on', 'until', 'till', 'since', 'before', 'after', 'by', 'from', 'to', 'through', 'thru', 'within', 'between',
-  'during', 'for', 'of', 'in', 'around', 'about', 'over', 'under', 'than', 'past', 'near', 'beyond', 'least',
-]);
-const RANGE_DASHES = new Set(['-', '–', '—']);
-/** Between two timestamps these make a range ("T to T", "T - T", "T and T"); a list "T, T and T" is one too: every end is kept. */
-const RANGE_CONNECTORS = new Set(['to', 'until', 'till', 'through', 'thru', 'and', ...RANGE_DASHES]);
+/** The same, for a timestamp that opens a sentence. */
+const SET_TIME_AT_START = 'A set time';
 /** Words after which a dropped id would leave a dangling word: "for <uuid>", "and <uuid>". */
 const ID_FUNCTION_WORDS = new Set([
   'for', 'of', 'to', 'from', 'with', 'in', 'on', 'at', 'by', 'via', 'than', 'into', 'onto', 'per', 'about',
@@ -583,36 +539,13 @@ function convertTables(lines: readonly string[]): Line[] {
   return result;
 }
 
-/**
- * A timestamp that is the first token of a line, with the rest of a log line after
- * it ("2025-11-10T10:00:00Z ERROR build failed"), is a line prefix: it is dropped.
- * It stays when it is alone on its line, or when what follows makes it part of the
- * sentence ("<ts> was the last good build", "<ts> to <ts>", "<ts>, it failed"), or when
- * the line before ends in a word that wants a time after it ("... until" / "<ts> because
- * CI is red"). The line structure is gone once the lines are joined, so this is decided
- * per line.
- */
-function dropLineLeadTimestamp(text: string, previousLine: string): string {
-  const match = /^(\s*)(\S+)(\s+)(\S+)/.exec(text);
-  if (!match || !TIMESTAMP.test(match[2])) return text;
-  // A line that wraps a sentence ("... until" / "<ts> because CI is red") is not a new log line.
-  if (TIME_PREPOSITIONS.has(peel(lastToken(previousLine)).core.toLowerCase())) return text;
-  const next = peel(match[4]).core;
-  if (followsTimestampInSentence(next) || TIMESTAMP.test(next)) return text;
-  return match[1] + text.slice(match[1].length + match[2].length + match[3].length);
-}
-
 function prepareLines(input: string): Line[] {
   const normalized = input.replace(/\r\n?/g, '\n');
   const unfenced = normalized
     .split('\n')
     .map((line) => (FENCE_LINE.test(line) ? '' : line))
     .join('\n');
-  const lines = convertTables(stripInlineMarkdown(unfenced).split('\n'));
-  return lines.map((line, index) => ({
-    ...line,
-    text: dropLineLeadTimestamp(line.text, index > 0 ? lines[index - 1].text.trimEnd() : ''),
-  }));
+  return convertTables(stripInlineMarkdown(unfenced).split('\n'));
 }
 
 // ---------------------------------------------------------------------------
@@ -751,120 +684,6 @@ function speakCore(core: string, prevWord: string, startsClause: boolean, nextWo
   return null;
 }
 
-interface TimestampPlan {
-  /** True: say "a set time" and keep the words before it. False: drop the timestamp. */
-  say: boolean;
-  /** How many lead words go with a dropped timestamp. */
-  pop: number;
-  /** The timestamp is dropped as the value of a label ("last seen: <ts>"): the label's colon goes with it. */
-  label?: boolean;
-}
-
-interface TimestampContext {
-  /** Up to three words before the timestamp, lower-cased, newest last. */
-  before: readonly string[];
-  /** The next word is a timestamp, or "and"/"to"/a dash and then one: every end of a range or list is kept. */
-  rangeNeighbour: boolean;
-  /** The timestamp is wrapped in `(...)` or `[...]` with nothing else inside. */
-  wrapped: boolean;
-  /** The first token of the text or of a sentence: a word that ended its sentence ("stuck on.") is not a lead. */
-  startsSentence: boolean;
-  /** The timestamp is the only word of the text. */
-  onlyWord: boolean;
-  /** The timestamp follows a sentence end inside a line (a timestamp at a line start was decided per line already). */
-  afterSentenceEnd: boolean;
-  /** No other timestamp in the same sentence or `;` clause: with several, the times tell the events apart. */
-  soleInClause: boolean;
-  /** The next word without punctuation ('' at the end), as written. */
-  next: string;
-  /** No punctuation right after the timestamp. */
-  bare: boolean;
-}
-
-/**
- * How many words go with a label timestamp ("updated at <ts>" -> 1 for the `at`; "seen <ts>"
- * -> 0), or null when the words before it are not a plain label. The label itself always
- * stays. A label with a negation or contrast word before it ("not updated at <ts>") is
- * null: there the time is the point.
- */
-function timeLabelPop(before: readonly string[]): number | null {
-  const at = (index: number): string => before[index] ?? '';
-  let last = before.length - 1;
-  let pop = 0;
-  if (at(last) === 'at' || at(last) === 'on') {
-    pop = 1;
-    last -= 1;
-  }
-  if (TIME_LABEL_WORDS.has(at(last))) last -= 1;
-  else if (at(last) === 'run' && at(last - 1) === 'last') last -= 2;
-  else return null;
-  const prior = at(last);
-  return NEGATING_WORDS.has(prior) || /n['’]t$/.test(prior) ? null : pop;
-}
-
-/**
- * Decide what a timestamp becomes. It is dropped (with its lead) ONLY after `as of`,
- * `dated`, `timestamped`, `@` or a pure label ({@link timeLabelPop}) while it is the
- * only timestamp of its sentence or `;` clause; when it is wrapped in brackets on its
- * own; or when it is a line or sentence prefix in front of the rest of a log line.
- * Anywhere else (after `at`, `on`, `until`, `since`, `by`, ... or no lead at all) it is
- * spoken as "a set time" and the lead word stays, so a time scope is never lost.
- */
-function planTimestamp(ctx: TimestampContext): TimestampPlan {
-  const say: TimestampPlan = { say: true, pop: 0 };
-  const drop = (pop = 0): TimestampPlan => ({ say: false, pop });
-  if (ctx.rangeNeighbour) return say;
-  const w1 = ctx.before[ctx.before.length - 1] ?? '';
-  const w2 = ctx.before[ctx.before.length - 2] ?? '';
-  if (!ctx.startsSentence && (w1 === SET_TIME || ((w1 === 'and' || RANGE_DASHES.has(w1)) && w2 === SET_TIME))) return say;
-  // "(<ts>)" and "[<ts>]" on their own are an aside and go; but "on (<ts>)" would leave "on" with nothing after it.
-  if (ctx.wrapped) return !ctx.startsSentence && TIME_PREPOSITIONS.has(w1) ? say : drop();
-  if (ctx.startsSentence) {
-    if (ctx.onlyWord) return drop();
-    // A line start was decided per line ({@link dropLineLeadTimestamp}). After a sentence end inside a line
-    // ("Wait. <ts> the lock is released.") only a log level word makes the timestamp a prefix.
-    return ctx.afterSentenceEnd && ctx.bare && LOG_LEVEL.test(ctx.next) ? drop() : say;
-  }
-  if (ctx.soleInClause) {
-    if (w2 === 'as' && AS_OF_SECOND_WORDS.has(w1)) return drop(2);
-    if (DROPPED_TIME_LEADS.has(w1)) return drop(1);
-    const label = timeLabelPop(ctx.before);
-    if (label !== null) return { say: false, pop: label, label: true };
-  }
-  return say;
-}
-
-/** True when `text` ends a sentence (or is empty), so a "," or "." that followed a dropped phrase has nothing to attach to. */
-function endsSentenceOrIsEmpty(text: string): boolean {
-  return text === '' || /[.!?]["')\]”’]?$/u.test(text);
-}
-
-/** `word` with its first letter upper-cased, when it is a plain lower-case word (optionally in punctuation); otherwise unchanged. */
-function capitalizeWord(word: string): string {
-  const match = /^([("'<{]*)([a-z])([a-z]*[.,;:!?)"'>}]*)$/.exec(word);
-  return match ? `${match[1]}${match[2].toUpperCase()}${match[3]}` : word;
-}
-
-/**
- * The number of timestamps in the sentence or `;` clause of each word, so a timestamp can
- * tell whether it is the only one. A comma does not split: "started at <ts>, not at <ts>"
- * is one contrast.
- */
-function timestampsPerClause(words: readonly string[]): number[] {
-  const counts = new Array<number>(words.length).fill(0);
-  let start = 0;
-  let found = 0;
-  for (let i = 0; i < words.length; i += 1) {
-    if (TIMESTAMP.test(peel(words[i]).core)) found += 1;
-    if (i === words.length - 1 || /[.!?;]["')\]”’]?$/u.test(words[i])) {
-      counts.fill(found, start, i + 1);
-      start = i + 1;
-      found = 0;
-    }
-  }
-  return counts;
-}
-
 /**
  * What is left of a long path that the speech pipeline redacted ("/[redacted].test.ts",
  * "/[redacted]-routes.ts", "[redacted]/foo.ts", "/[redacted]use_speak_agent.ts"): the
@@ -891,27 +710,15 @@ function rewriteTokens(text: string): string {
   const parts = text.split(/(\s+)/);
   const wordParts = parts.filter((part) => part !== '' && !/^\s+$/.test(part));
   const wordCount = wordParts.length;
-  const timestampCounts = timestampsPerClause(wordParts);
   const out: string[] = [];
-  // The last three words written to `out`, lower-cased, newest last ('' after a dropped token).
-  const recent: string[] = [];
-  const note = (word: string): void => {
-    recent.push(word);
-    if (recent.length > 3) recent.shift();
-  };
+  // The last word written to `out`, lower-cased ('' after a dropped token).
+  let lastWord = '';
   let seen = 0;
   let prevPart = '';
-  // True after a dropped phrase that opened a sentence with a capital: the next plain word takes it over.
-  let capitalizeNext = false;
-  for (const rawPart of parts) {
-    if (rawPart === '' || /^\s+$/.test(rawPart)) {
-      out.push(rawPart);
+  for (const part of parts) {
+    if (part === '' || /^\s+$/.test(part)) {
+      out.push(part);
       continue;
-    }
-    let part = rawPart;
-    if (capitalizeNext) {
-      capitalizeNext = false;
-      part = capitalizeWord(part);
     }
     const position = seen;
     // The first word of the text or of a sentence ("Failed tasks: <uuid>").
@@ -920,20 +727,20 @@ function rewriteTokens(text: string): string {
     prevPart = part;
     const infix = position > 0 && position < wordCount - 1;
     seen += 1;
-    const prevWord = afterSentenceEnd ? '' : (recent[recent.length - 1] ?? '');
+    const prevWord = afterSentenceEnd ? '' : lastWord;
     const nextWord: string | undefined = wordParts[position + 1];
 
     const infixWord = infix ? INFIX_WORDS.get(part) : undefined;
     if (infixWord !== undefined) {
       out.push(infixWord);
-      note(infixWord);
+      lastWord = infixWord;
       continue;
     }
 
     const remnant = redactedPathRemnant(part);
     if (remnant !== null) {
       out.push(`${remnant.lead}${REDACTED_PATH}${remnant.trail}`);
-      note(REDACTED_PATH);
+      lastWord = REDACTED_PATH;
       continue;
     }
 
@@ -948,91 +755,38 @@ function rewriteTokens(text: string): string {
     if (core.toLowerCase() === 'redacted' && lead.endsWith('[') && trail.startsWith(']')) {
       // The speech pipeline's own placeholder: "[redacted]" is spoken as "redacted".
       out.push(`${lead.slice(0, -1)}${core}${trail.slice(1)}`);
-      note('redacted');
+      lastWord = 'redacted';
       continue;
     }
 
-    let replacement: string | null;
-    let pop = 0;
-    let labelDrop = false;
-    if (TIMESTAMP.test(core)) {
-      const afterNext = wordParts[position + 2];
-      const nextCore = peel(nextWord ?? '').core;
-      const rangeNeighbour = TIMESTAMP.test(nextCore)
-        || (afterNext !== undefined && RANGE_CONNECTORS.has(nextCore.toLowerCase()) && TIMESTAMP.test(peel(afterNext).core));
-      const startsSentence = position === 0 || afterSentenceEnd;
-      const plan = planTimestamp({
-        before: recent,
-        rangeNeighbour,
-        wrapped: (lead.endsWith('(') && trail.startsWith(')')) || (lead.endsWith('[') && trail.startsWith(']')),
-        startsSentence,
-        onlyWord: wordCount === 1,
-        afterSentenceEnd,
-        soleInClause: timestampCounts[position] === 1,
-        next: nextCore,
-        bare: trail === '',
-      });
-      labelDrop = plan.label === true;
-      // A bare timestamp that opens a sentence ("<ts> was the last good build") keeps the capital the sentence needs.
-      replacement = plan.say ? (startsSentence ? 'A set time' : SET_TIME) : '';
-      pop = plan.pop;
-    } else {
-      replacement = speakCore(core, prevWord, startsClause, peel(nextWord ?? '').core.toLowerCase());
-    }
+    // A timestamp is never dropped: it is "a set time" wherever it stands, and the text around it is left as written.
+    const replacement = TIMESTAMP.test(core)
+      ? (position === 0 || afterSentenceEnd ? SET_TIME_AT_START : SET_TIME)
+      : speakCore(core, prevWord, startsClause, peel(nextWord ?? '').core.toLowerCase());
     if (replacement === null) {
       out.push(part);
-      note(core.toLowerCase());
+      lastWord = core.toLowerCase();
       continue;
     }
 
     if (replacement === '') {
-      // A dropped token (timestamp, UUID, hash after "commit") leaves no gap behind
-      // it, takes its lead words ("as of <timestamp>") with it, and takes any
-      // `(...)` / `[...]` that held nothing else. An empty pair that was already in
-      // the text is content ("returns []") and is never touched.
+      // A dropped token (UUID, hash after "commit") leaves no gap behind it and takes any
+      // `(...)` / `[...]` that held nothing else. An empty pair that was already in the
+      // text is content ("returns []") and is never touched.
       let leading = lead;
       let trailing = trail;
-      let poppedCapital = false;
-      for (let k = 0; k < pop; k += 1) {
-        popWhitespace(out);
-        const leadWord = out.pop();
-        if (k === pop - 1) {
-          leading = (leadWord === undefined ? '' : peel(leadWord).lead) + lead;
-          poppedCapital = leadWord !== undefined && /^\p{Lu}/u.test(peel(leadWord).core);
-        }
-      }
       while (leading !== '' && trailing !== '' && EMPTIED_PAIRS[leading[leading.length - 1]] === trailing[0]) {
         leading = leading.slice(0, -1);
         trailing = trailing.slice(1);
       }
-      // "Green - as of <ts> - really": a dash pair that held only the dropped phrase becomes one dash.
-      if (leading === '' && trailing === '' && nextWord !== undefined && RANGE_DASHES.has(nextWord)) {
-        popWhitespace(out);
-        const before = out[out.length - 1];
-        if (before !== undefined && RANGE_DASHES.has(before)) out.pop();
-        out.push(' ');
-      }
-      // "Last seen: <ts> by Bob" and "Last seen: <ts>.": the label's colon has nothing left to introduce.
-      if (labelDrop && leading === '') {
-        popWhitespace(out);
-        const prior = out[out.length - 1];
-        if (prior !== undefined && /[\p{L}\p{N}]:$/u.test(prior)) out[out.length - 1] = prior.slice(0, -1);
-      }
-      if (leading === '' && /^[)\].,;:!?]/.test(trailing)) {
-        popWhitespace(out);
-        // "Done. As of <ts>, it failed" and "As of <ts>: 3 failing": the comma or colon has nothing left to attach to.
-        if (/^[,.;:]/.test(trailing) && endsSentenceOrIsEmpty(out.join('').trimEnd())) trailing = trailing.slice(1);
-      }
-      // "Done. As of <ts> the build is green": the dropped phrase opened the sentence, so the capital moves on.
-      if (poppedCapital && endsSentenceOrIsEmpty(`${out.join('').trimEnd()}${leading}`)) capitalizeNext = true;
+      if (leading === '' && /^[)\].,;:!?]/.test(trailing)) popWhitespace(out);
       out.push(`${leading}${trailing}`);
-      recent.length = 0;
-      note('');
+      lastWord = '';
       continue;
     }
 
     out.push(`${lead}${replacement}${trail}`);
-    note(replacement.toLowerCase());
+    lastWord = replacement.toLowerCase();
   }
   return out.join('');
 }

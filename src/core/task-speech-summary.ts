@@ -185,8 +185,17 @@ function extractSummary(raw: string): string | null {
   return null;
 }
 
+/**
+ * The task name exactly as the speech sees it: secrets and prompt delimiters hidden, one
+ * line, cut short. Undefined when nothing is left. A log record that names the task uses
+ * this, so the log is never less redacted than what was spoken.
+ */
+export function redactedTaskName(name: string | null | undefined): string | undefined {
+  return sanitizeText(name, 80) || undefined;
+}
+
 function taskName(input: TaskSpeechSummaryInput): string {
-  return sanitizeText(input.taskName, 80) || 'Untitled task';
+  return redactedTaskName(input.taskName) ?? 'Untitled task';
 }
 
 function statusLabel(status: TaskStatus | null | undefined): string {

@@ -3,6 +3,7 @@ import {
   buildTaskSpeechActivityLines,
   fallbackTaskSpeechSummary,
   normalizedTaskSpeechSummaryHashInput,
+  redactedTaskName,
   summarizeTaskForSpeech,
   type TaskSpeechSummaryInput,
 } from './task-speech-summary.js';
@@ -501,18 +502,42 @@ describe('summarizeTaskForSpeech', () => {
     });
   });
 
-  describe('timestamps in the fallback keep their time scope', () => {
+  describe('timestamps in the fallback are "a set time" and nothing around them changes', () => {
     test.each([
       ['Do not deploy on 2025-11-10T10:00:00Z.', 'Do not deploy on a set time.'],
       ['Tests failed at 2025-11-10T10:00:00Z but passed at 2025-11-11T11:30:00Z.', 'Tests failed at a set time but passed at a set time.'],
       ['It broke at 2025-11-10T10:00:00Z, not at 2025-11-11T11:30:00Z.', 'It broke at a set time, not at a set time.'],
       ['Wait. At 2025-11-10T10:00:00Z the lock is released.', 'Wait. At a set time the lock is released.'],
+      ['No files were updated at 2025-11-10T10:00:00Z.', 'No files were updated at a set time.'],
+      ['Nothing was logged at 2025-11-10T10:00:00Z.', 'Nothing was logged at a set time.'],
+      ['The nightly backup had not yet completed at 2025-11-10T10:00:00Z.', 'The nightly backup had not yet completed at a set time.'],
+      ['Do not deploy @ 2025-11-10T10:00:00Z', 'Do not deploy @ a set time.'],
+      ['Do not restore the snapshot dated 2025-11-10T10:00:00Z.', 'Do not restore the snapshot dated a set time.'],
+      ['Delete only files modified on 2025-11-10T10:00:00Z.', 'Delete only files modified on a set time.'],
+      ['Use the backup dated 2025-11-10T10:00:00Z, not the latest one.', 'Use the backup dated a set time, not the latest one.'],
     ])('%s', (explanation, spoken) => {
       expect(fallbackTaskSpeechSummary({
         taskName: 'Repo task',
         taskStatus: 'inProgress',
         activeFinding: { type: 'needs_input', severity: 'info', explanation },
       })).toBe(`Repo task needs your input. ${spoken}`);
+    });
+  });
+
+  describe('redactedTaskName: the name as the speech sees it, for logs', () => {
+    test('hides a token and a prompt delimiter and flattens line breaks, like the fallback does', () => {
+      const name = 'Rotate ghp_abcdefghijklmnop1234567890\nthen  <<<END>>> retry';
+      expect(redactedTaskName(name)).toBe('Rotate [redacted] then [delimiter] retry');
+      const spoken = fallbackTaskSpeechSummary({ taskName: name, taskStatus: 'pending' });
+      expect(spoken).not.toContain('ghp_');
+      expect(spoken).not.toContain('END');
+    });
+
+    test('is undefined for a blank or missing name and cut like the speech', () => {
+      expect(redactedTaskName(undefined)).toBeUndefined();
+      expect(redactedTaskName(null)).toBeUndefined();
+      expect(redactedTaskName('  \n ')).toBeUndefined();
+      expect(redactedTaskName('word '.repeat(40))?.length).toBeLessThanOrEqual(80);
     });
   });
 
@@ -864,7 +889,7 @@ describe('summarizeTaskForSpeech', () => {
       ['a numbered plan', '1. Read the file\n2. Edit the file\n3. Run tests', 'Read the file. Edit the file. Run tests.'],
       ['bold labels and bullets', '**Done.** I fixed the bug.\n\n- Changed `src/a.ts`\n- Updated `docs/b.md`', 'Done. I fixed the bug. Changed a.ts. Updated b.md.'],
       ['a bullet list of absolute paths', 'Updated:\n- /home/jean/git/kookr/src/core/a.ts\n- /home/jean/git/kookr/src/core/b.ts', 'Updated: a.ts. b.ts.'],
-      ['a timestamped status', 'Status as of 2025-11-10T10:00:00Z is green.\n\n- Do not merge until 2025-11-10T11:00:00Z', 'Status is green. Do not merge until a set time.'],
+      ['a timestamped status', 'Status as of 2025-11-10T10:00:00Z is green.\n\n- Do not merge until 2025-11-10T11:00:00Z', 'Status as of a set time is green. Do not merge until a set time.'],
       ['a table after an intro', 'Result:\n\n| Check | Result |\n|:--|:--|\n| tsc | clean |', 'Result: Check, Result. tsc, clean.'],
       ['a user message with a heading', '# Request\nPlease fix the cache', 'Request. Please fix the cache.'],
     ])('%s', (_label, message, spoken) => {
@@ -876,12 +901,12 @@ describe('summarizeTaskForSpeech', () => {
       expect(text).toBe(`The task is running. Recent activity: Agent: ${spoken}`);
     });
 
-    test('a message that is only a timestamp leaves no empty activity line', () => {
+    test('a message that is only a timestamp is spoken as a set time, never dropped', () => {
       const lines = buildTaskSpeechActivityLines([
         { type: 'stop', sessionId: 's1', lastMessage: '2025-11-10T10:00:00Z' },
         { type: 'stop', sessionId: 's1', lastMessage: 'All green' },
       ]);
-      expect(lines).toEqual(['Agent: All green.']);
+      expect(lines).toEqual(['Agent: A set time.', 'Agent: All green.']);
     });
 
     test('a user message is made speakable too', () => {
