@@ -66,6 +66,8 @@ export interface DefaultKookrClaudeHooksOptions {
 
 /** Gate (and its retries) may run a PR-body lint, so it gets a generous hook timeout. */
 const GATE_TIMEOUT_SEC = 120;
+/** The push guard only parses a command string. */
+const PUSH_GUARD_TIMEOUT_SEC = 5;
 
 export function gateKindArg(d: OpenCodeDeliverableSpec): string | undefined {
   if (d.kind === 'none') return undefined;
@@ -92,6 +94,22 @@ export function defaultKookrClaudeHooks(opts: DefaultKookrClaudeHooksOptions = {
       console.warn(`[opencode-adapter] deliverable gate skipped: ${gate ?? 'no bin dir'} missing`);
     }
   }
+
+  // Profiled workers deliver a LOCAL commit/file for the operator to review: block `git push` and
+  // PR merge/create from the Bash tool. Needs a deliverable (an unprofiled worker keeps Kookr's
+  // generic worktree/PR guidance, which may legitimately publish).
+  const preToolUse: Array<{ matcher: string; hooks: ReturnType<typeof cmd>[] }> = [];
+  if (gateKind) {
+    const guard = opts.binDir ? join(opts.binDir, 'kookr-opencode-push-guard.js') : undefined;
+    if (guard && existsSync(guard)) {
+      const node = cp ? cp.node : opts.nodePath ?? process.execPath;
+      const guardPath = cp ? join(cp.binDir, 'kookr-opencode-push-guard.js') : guard;
+      preToolUse.push({ matcher: 'Bash', hooks: [cmd(`${shq(node)} ${shq(guardPath)}`, PUSH_GUARD_TIMEOUT_SEC)] });
+    } else {
+      console.warn(`[opencode-adapter] push guard skipped: ${guard ?? 'no bin dir'} missing`);
+    }
+  }
+  if (preToolUse.length) hooks.PreToolUse = preToolUse;
 
   // Order: deliverable gate, then the notebook retrospective, then the completion nudge. A
   // `completion_ready` signal is dropped when the turn resumes, so the signal must be the LAST

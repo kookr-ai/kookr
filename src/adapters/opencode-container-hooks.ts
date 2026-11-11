@@ -21,7 +21,7 @@ export const CONTAINER_PATHS = {
   binDir: `${CONTAINER_HOOKS_ROOT}/bin`,
 } as const;
 
-const BIN_FILES = ['kookr-hook-writer.js', 'kookr-opencode-gate.js', 'kookr-stop-nudge.js'];
+const BIN_FILES = ['kookr-hook-writer.js', 'kookr-opencode-gate.js', 'kookr-opencode-push-guard.js', 'kookr-stop-nudge.js'];
 const PLUGIN_HOOK_FILES = ['nb-inject.sh', 'nb-inject.mjs', 'nb-retro.sh', 'nb-retro.mjs'];
 
 export interface StageHooksOptions {
