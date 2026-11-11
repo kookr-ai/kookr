@@ -34,6 +34,7 @@ checklist:
   - Read the latest toolRepo docs at origin/main and noted installed-vs-released version
   - Grounded findings in the KB (kb search / kb-scout) with source citations and an honesty caveat on stale notes
   - Classified every problem into one bucket — upstream-by-design / already-fixed / harness-misconfig / genuine-upstream-gap — with disk/doc evidence
+  - Ran the promotion report (dry-run only, KOOKR_NB_CURATOR=1) and put its exact and candidate groups in the HTML report, without applying anything
   - Produced a self-contained pedagogical HTML report and reported its path (served over localhost, opened only if interactive)
   - Filed de-duplicated issues in the correct repo (or drafted them when fileIssues=no), reporting URLs
   - Ran the nb retrospective (vote by id, add at most one ≤200-char lesson) and emitted the completion lesson decision
@@ -82,6 +83,17 @@ Put each observed problem into exactly **one** bucket, each backed by on-disk / 
 
 Write a self-contained HTML report to the scratchpad (`$SCRATCHPAD/agent-notebook-reflection-report.html`). Make it **pedagogical**: for each finding give *metric → observation → what it means → recommendation → grounding citation*, and include an explicit honesty caveat for any stale KB source. Credit what already works (the surfacing metrics) before criticising. Serve it over loopback and, **only in an interactive session**, open it: `python3 -m http.server <port> --bind 127.0.0.1` then open `http://127.0.0.1:<port>/<file>` (the Claude-in-Chrome extension cannot open `file://` URLs). For a scheduled/non-interactive run, just save the file and report its absolute path.
 
+### Phase 5b — Promotion report (report only, never `--apply`)
+
+Memory is layered project > domain > global (`docs/reference/agent-notebook.md`, "Memory layers"). A lesson that several repos' project shelves share is evidence it belongs one layer up. This phase only **reports** what could move; moving anything is an operator action, and `fleet-global` is written only through this path.
+
+1. Export `KOOKR_NB_CURATOR=1` for this playbook's own `nb` calls. It only silences the shim's advisory for an `nb add` to `fleet-global`; it has no effect on `nb move`/`nb rm` or on the dry-run below, which write nothing. The step still sets it so a curator run is never mistaken for an agent writing the global shelf.
+2. Run the report: `node scripts/promote-notebook-lessons.mjs` (dry-run is the default; add `--threshold <0..1>` to widen or narrow what counts as a paraphrase). Never pass `--apply` from this playbook.
+3. Put the result in the HTML report: how many **exact groups** (equal text in two or more repos; `--apply` would move the best copy to the domain shelf and remove the other copies) and how many **candidate groups** (paraphrases; report only, `--apply --only <id>` would move the best copy and remove nothing). State plainly when there are 0 exact groups (the first seed pass found none, so `fleet-global` fills only by a person choosing candidates). Show candidates side by side with their scores and ids so the operator can read both texts; a lesson and its negation can look alike.
+4. Cross-check against the janitor's "duplicate lessons" and "near-duplicate shelf names" sections from Phase 1: a duplicate the janitor sees inside one repo is not a promotion.
+5. Run `node scripts/migrate-notebook-slugs.mjs` (also a dry-run). If it lists legacy-slug shelves, say the migration is pending; do not run it with `--apply`.
+6. Give the operator the exact commands to apply what they choose (`node scripts/promote-notebook-lessons.mjs --apply --only <group-ids>`, plus `--to-global <group-ids>` for any lesson that belongs on `fleet-global`).
+
 ### Phase 6 — File the issues (only if `{{fileIssues}}` = yes)
 
 For each bucket-C and bucket-D finding:
@@ -111,4 +123,6 @@ Run the nb retrospective on the shelves you opened: **vote by the `<id>`** `nb s
 - **Filing a harness problem upstream (or vice-versa).** Vote-by-id and ≤200-char are already in agent-notebook's contract and its CLI already emits corrective messages — if agents still trip on them, the fix is the *harness's* injected guidance (bucket C), not an agent-notebook issue.
 - **Voting by fuzzy text.** Use the `<id>`; a non-unique snippet errors and, retried, trips the `[loop]` anomaly.
 - **Opening `file://` in Claude-in-Chrome.** It is rejected — serve the report over `127.0.0.1` and open the `http://` URL.
+- **Applying a promotion or the slug migration from this playbook.** The playbook reports; `--apply` on either script is an operator decision (they move and, for exact groups, remove lessons). The dry-runs are safe to run every time.
+- **Calling a candidate group a duplicate.** Candidates are paraphrases found by word overlap; only an exact group is a duplicate, and even then the script removes the extra copies only after the move worked.
 - **Manufacturing issues to look productive.** If the latest agent-notebook already solves everything you found, the honest outcome is "no upstream issues needed" — say so.

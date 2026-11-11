@@ -192,6 +192,124 @@ doc differs from the source, hardcodes a bare shelf with no project line, or
 restates `nb`'s own limits. Edit the source and rerun the script; do not edit the
 block inside an agent doc.
 
+## Memory layers and the store tooling
+
+Lessons live at three layers, and the layer is read from the shelf **name**
+alone (nothing is stored inside the shelf file). A *project* shelf is
+`<situation>@<slug>`: true only in one repo, where the slug is `KOOKR_REPO_SLUG`
+(`owner-repo`). A *domain* shelf is a bare `<situation>`: true in any repo. The
+*global* layer is the single shelf `fleet-global`: facts about this host that hold
+for every agent, written by convention only by promotion (an agent that `nb add`s
+there directly gets a warning, not a refusal). The narrowest true layer wins on
+conflict (project over domain over global). The design and its evidence are in
+[rfc-notebook-memory-layers.md](../rfc/rfc-notebook-memory-layers.md).
+
+Three pieces of tooling keep the store in line with that decision. In what follows, a shelf's *base* is the part of its name before the slug (`code-review` in `code-review@kookr-ai-kookr`), and the *shim* is `bin/nb.js`, the wrapper around `nb` that pins the notebooks directory and commits every change. Run them from
+the Kookr checkout; they read the store through `nb` (honoring `NB_DIR`) and write
+only through `nb`, never by editing a shelf file.
+
+- **`plugin/hooks/lib/notebook-layers.mjs`** is the one place that classifies a
+  shelf name: it splits on the **last** `@`, compares the slug case-insensitively
+  after trimming, and resolves legacy slugs through
+  `plugin/notebooks/slug-aliases.json` (`{"agent-notebook": "jeanibarz-agent-notebook"}`,
+  a legacy slug on the left, the slug `KOOKR_REPO_SLUG` produces on the right).
+  `a@b@c` is the project shelf `a@b` of repo `c`; `a@@c` is `a@` of repo `c`.
+- **`scripts/apply-shelf-descriptions.mjs`** seeds the one-line "open me when..."
+  descriptions that the `nb list` index shows (`--dry-run` previews). An entry
+  with no `@slug` in `plugin/notebooks/shelves.json` (a *trigger*: the situation in
+  which to open the shelf) also describes every existing project shelf of that
+  base as `<trigger> (only in <slug>)`, so a new base needs one trigger, not one
+  per repo. It never creates a shelf, never overwrites a human description,
+  and skips legacy-slug shelves (the migration empties them, and `nb` keeps an
+  emptied *described* shelf as a 0-lesson row forever) and 0-byte files.
+- **`scripts/migrate-notebook-slugs.mjs`** folds legacy-slug shelves into the
+  canonical ones; **`scripts/promote-notebook-lessons.mjs`** finds lessons that
+  several repos' project shelves share. Both are **dry-run by default**; `--apply`
+  first tags the store's git repo (`pre-slug-migration`, and a fresh `pre-lesson-promotion-<time>` per promotion run)
+  and refuses if the store is not a git repository. Only a person runs `--apply`; agents (the reflection playbook) run the dry-run only.
+
+### Slug migration
+
+```
+node scripts/migrate-notebook-slugs.mjs            # print the plan (dry-run)
+node scripts/migrate-notebook-slugs.mjs --apply    # tag, move, clean up, describe
+```
+
+`nb move` keeps a lesson's score and always admits it. When the target shelf is
+full (`NB_MAX_LINES`, default 50) `nb` evicts the target's **lowest-scored**
+lesson and lowers by one point the score of the remaining lesson touched least
+recently (`nb` calls this aging), so moving a weak lesson into a
+full shelf destroys a better one. The script therefore simulates the moves one at
+a time (highest score first), prints every eviction and point it would cost, and
+refuses a move whose lesson scores below a **full** target's minimum unless
+`--force-low` is given. It also predicts the cases `nb` refuses: a lesson the
+target already holds is left on its legacy shelf and listed for a manual decision
+(`nb move` prints "skipped" and exits 0, so the script reads the `--json` result,
+never the exit code), and a target name over 128 characters is reported before
+anything runs. The script never removes a lesson.
+
+On `nb` 0.7.0 moving a shelf's last lesson leaves a 0-byte file that `nb list`
+hides but disk keeps; the script deletes exactly those files (size 0, legacy
+shelves only) and commits each deletion, re-runs the description seed for the
+migrated repo's shelves, and confirms every legacy shelf is gone from disk and
+from `nb list --json`, listing any that remain. Re-running resumes: every move
+re-reads the store, and a run after completion changes nothing.
+
+Rollback: each `nb move` is its own commit in the store (the shim commits every
+change), and so is each 0-byte deletion. Run the migration while no tasks are
+running, because agents' own `nb add` and `nb vote` commits land in the same
+history. If `git log pre-slug-migration..HEAD` shows only the script's commits,
+undo with `git revert --no-edit pre-slug-migration..HEAD` in the notebooks
+directory. If agent commits are mixed in, revert only the script's own commits
+(subjects starting `nb move`, `nb describe`, `slug migration:`), newest first, so
+the agents' lessons survive. Never use `git reset --hard`. A revert can conflict on
+a shelf an agent touched afterwards; resolve those by hand, keeping both sides'
+lessons. `--apply` refuses to run with `NB_GIT_AUTOCOMMIT=0`, because then the
+moves would not be commits at all.
+
+### Lesson promotion
+
+```
+node scripts/promote-notebook-lessons.mjs                          # report only
+node scripts/promote-notebook-lessons.mjs --apply                  # exact groups
+node scripts/promote-notebook-lessons.mjs --apply --only c-1a2b3c  # chosen groups
+```
+
+A lesson found in the project shelves of two or more different repos (legacy
+slugs resolve first, so `@agent-notebook` and `@jeanibarz-agent-notebook` count as
+one repo) is a candidate for the domain shelf. Two tiers, with different powers:
+
+- An **exact group** has equal text after trimming, collapsing whitespace and
+  case-folding. `--apply` moves the highest-scored copy to the domain shelf, and
+  only after that move succeeded runs `nb rm ... --reason obsolete --note duplicate`
+  on the other copies (and only if the domain shelf is re-read and really holds the
+  lesson).
+- A **candidate group** is a paraphrase: word-set overlap at or above
+  `--threshold` (default 0.6, printed). It is **report only**. `--apply --only <id>`
+  moves the highest-scored copy up and removes nothing; the paraphrases stay in
+  their project shelves. Fuzzy matching never deletes, because a lesson and its
+  negation can look alike, and paraphrases can differ in a detail only one copy keeps.
+
+Two safeguards apply to both scripts. A move that would push out a lesson the same
+run moved in earlier (equal scores let a batch of weak lessons evict each other) is
+skipped unless `--force-low`. And promotion runs all its moves first and its
+removals after, removing a copy only while the destination demonstrably still holds
+the lesson. Its rollback is the same as the migration's, from the run's own tag,
+reverting the commits whose subject starts `nb move` or `nb rm`.
+
+A group goes to `fleet-global` only when the reviewer names it in
+`--to-global <id>`; the default is always the bare domain shelf. Measured on the
+live store on 2026-11-11 (368 project lessons in 24 project shelves) there were **0 exact groups**,
+so the first pass yields candidates a person chooses from: the script cannot fill
+`fleet-global` unattended. The reflection playbook
+(`.kookr/playbooks/agent-notebook-reflection.md`) runs the report; the operator
+(or a curator task started with `--apply`) applies it.
+
+`KOOKR_NB_CURATOR` only silences the shim's warning for an `nb add` to
+`fleet-global` (the one printed when an agent writes the global shelf outside a
+curator run). The scripts above use `nb move` and `nb rm`, which never print
+that advisory, so they work with or without it.
+
 ## The task-specialist agents
 
 The four **task specialists** each own a shelf, read at both layers:
@@ -223,7 +341,7 @@ All optional; defaults match the RFC.
 |---|---|---|
 | `NB_DIR` | `~/.kookr/notebooks` | notebooks directory |
 | `NB_GIT_AUTOCOMMIT` | `1` (when `NB_DIR` is a git repo) | `0` disables the per-change commit in `bin/nb.js` |
-| `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. Never set it for ordinary tasks. |
+| `KOOKR_NB_CURATOR` | unset | read by `bin/nb.js` only: set (non-empty) by the curator/promotion run so an `nb add` to `fleet-global` prints no stderr advisory. It has no effect on `nb move`/`nb rm`, which the promotion scripts use. Never set it for ordinary tasks. |
 | `NB_RETRO_DISABLED` | unset | set (non-`0`) to silence the Stop/SubagentStop retrospective nudge |
 | `NB_RETRO_TTL_DAYS` | `7` | age in days after which `nb-retro.mjs` prunes a `.retro-*` sentinel; keep it above your longest session |
 | `NB_MAX_LINES` | `50` | max entries per notebook (ceiling 5000); a full notebook evicts to admit a newcomer |

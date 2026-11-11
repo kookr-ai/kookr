@@ -1,5 +1,5 @@
 {
-  "_comment": "Versioned seed of situational `# desc:` triggers for the well-known Agent Notebook shelves (RFC docs/rfc/rfc-notebook-shelf-reorg.md, Slice C). A shelf's description is the 'open me when…' trigger an agent reads from the `nb list` index to choose a shelf; without it the index row falls back to the shelf's top lesson (`(auto)`) and is hard to choose deliberately. scripts/apply-shelf-descriptions.mjs applies these idempotently: it describes only a shelf that ALREADY EXISTS and has no description yet (a typo cannot create a described orphan, and a human-written description is never overwritten). Keep each trigger a situation, not a summary of the shelf's lessons, and <=200 chars.",
+  "_comment": "Versioned seed of situational `# desc:` triggers for the well-known Agent Notebook shelves (RFC docs/rfc/rfc-notebook-shelf-reorg.md, Slice C; project shelves: RFC docs/rfc/rfc-notebook-memory-layers.md, D4). A shelf's description is the 'open me when…' trigger an agent reads from the `nb list` index to choose a shelf; without it the index row falls back to the shelf's top lesson (`(auto)`) and is hard to choose deliberately. scripts/apply-shelf-descriptions.mjs applies these idempotently: it describes only a shelf that ALREADY EXISTS and has no description yet (a typo cannot create a described orphan, and a human-written description is never overwritten). A bare name here also seeds every existing project shelf `<name>@<slug>`, described as `<trigger> (only in <slug>)` (so a new base needs one entry, not one per repo); legacy-slug shelves (plugin/notebooks/slug-aliases.json) and 0-byte files are skipped. `fleet-global` is the single host-wide shelf, written only by promotion. Keep each trigger a situation, not a summary of the shelf's lessons, and <=200 chars.",
   "shelves": {
     "code-review": "reviewing a diff for correctness, edge cases, conventions, and test coverage",
     "change-verifier": "verifying a change is actually done before claiming complete: tests pass, scope contained, nothing unrelated slipped in",
@@ -27,6 +27,12 @@
     "macos-compat-reviewer": "reviewing a diff for macOS / cross-platform breakage: GNU-only flags, bash-4 syntax, /proc assumptions",
     "kookr-task-supervisor": "supervising a running Kookr worker task end-to-end, driving it to completion",
     "product-owner": "assessing whether a repo is shippable to a first-time user and drafting onboarding issues",
-    "user-test-simulator": "simulating a first-time user's install → configure → first-run journey from the product's docs"
+    "user-test-simulator": "simulating a first-time user's install → configure → first-run journey from the product's docs",
+    "orchestrator": "coordinating a multi-step task from the main session: delegating, triaging, deploying, recovering",
+    "diagnostician": "diagnosing a failure from a truncated log or code excerpt, deciding how far to trust the excerpt",
+    "planner": "planning a change from a partial code excerpt, deciding which claims to check against the real code first",
+    "refactorer": "proposing a refactor from a partial view, deciding which change points and test gaps to verify before claiming them",
+    "tester": "reviewing or writing tests and about to cite lines, strings or mutants that must be checked against the real code",
+    "fleet-global": "starting any task on this host in any repo, unsure whether a host-wide shell, gh, git or Kookr quirk applies"
   }
 }
