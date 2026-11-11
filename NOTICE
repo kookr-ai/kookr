@@ -14,3 +14,12 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
+
+---------------------------------------------------------------------------
+Third-party asset with a different licence
+
+src/frontend/avatar/assets/lucy-bust.glb (the optional avatar panel's 3D model)
+is NOT licensed under the Apache License. It is licensed under Creative Commons
+Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) and derives from the
+Ready Player Me sample avatar "brunette.glb". See
+src/frontend/avatar/assets/LICENSE.md. Remove the file for commercial use.
