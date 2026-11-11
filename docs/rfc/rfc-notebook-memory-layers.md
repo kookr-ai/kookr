@@ -1,6 +1,6 @@
 # RFC: Notebook memory layers (project > domain > global) for every Kookr agent
 
-**Status:** Draft (v6, after review round 1 and four independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook PRs #364 and #365 for issue #362); K2-K5 pending (K5 = #3598).
+**Status:** Draft (v7, after review round 1 and five independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook PRs #364 and #365 for issue #362); K2-K5 pending (K5 = #3598).
 **Date:** 2026-11-10
 **Author:** Jean Ibarz (with Claude)
 
@@ -241,22 +241,31 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
   that after applying the seed to a copy of the live store **no canonical-slug
   project shelf** is left undescribed. Legacy-slug shelves (an alias source in
   `slug-aliases.json`) are deliberately **not** described: the migration empties
-  them, and `nb` 0.7.0 reaps an emptied *undescribed* shelf but keeps an emptied
-  *described* one as a 0-lesson row (probe), so describing them would leave 7
-  empty project rows behind for good.
+  them, and a *described* emptied shelf stays in `nb list` as a 0-lesson row, so
+  describing them would leave 7 empty project rows behind for good. Separately, on
+  0.7.0 `nb move` of a shelf's last lesson leaves a **0-byte file** (hidden from
+  `nb list`, present on disk); only `nb rm` deletes the file in 0.7.0, and the
+  `move` fix is upstream #355/#356, which is unreleased. The seed therefore also
+  skips any 0-byte file and any legacy-slug shelf, regardless of whether the alias
+  file still exists.
 - `scripts/migrate-notebook-slugs.mjs` (new, **dry-run by default**): lists the
   legacy-slug shelves and the exact `nb move` calls that would fold them into
   canonical-slug shelves. `nb` evicts the **lowest-scored** line of a full
   target, and a moved lesson is always admitted, so a `-1` lesson moved into a
   full shelf evicts a better one. The script therefore (a) simulates the moves
-  **sequentially**, re-predicting evictions after each, (b) refuses to move a
+  **sequentially**, re-predicting evictions after each, (b) when the target is **full**, refuses to move a
   lesson scoring below the target's current minimum unless `--force-low`, (c)
   checks `len(base@slug) <= 128` and reports a name that would fail with
   `bad_args` before starting, (d) is **resumable** (it re-reads the store before
   every move), (e) predicts and reports `nb move`'s refusal when the target holds a
-  near-duplicate (and moves, then removes, never the reverse), (f) after the last
-  lesson leaves a legacy shelf, confirms it was reaped (it is undescribed, see D4)
-  and reports any that remain, and re-runs the description seed so the canonical
+  near-duplicate (`nb move` prints "skipped" and **exits 0**, so the script reads
+  the `--json` result, never the exit code; a skipped lesson keeps its legacy
+  shelf non-empty and is reported for a manual decision; a move always happens
+  before any `nb rm`, never the reverse), (f) after the last lesson leaves a legacy
+  shelf, **deletes the leftover 0-byte file itself** (only a 0-byte file, never one
+  with content; the store is git-backed so the deletion is recoverable) because
+  0.7.0's `nb move` does not, reports any legacy shelf that still holds lessons
+  ("reaped" means absent on disk and from `nb list --json`), and re-runs the description seed so the canonical
   shelves the moves created (6 today, all new and undescribed) get their
   descriptions, and (g) `--apply` tags the store's git repo first
   (`pre-slug-migration`). Every move is its own commit (K1 makes `move`
@@ -537,6 +546,16 @@ the seed for the new canonical shelves. Non-blocking notes taken: the classifier
 moves into K2 so its scripts share it, promotion resolves aliases before grouping,
 moves to `fleet-global` need an explicit reviewer flag, both dry-runs predict the
 near-duplicate refusal, and the status line was corrected.
+
+Fifth independent merge review (blind Opus-class, exact head `d27ea2dd`): **BLOCK**,
+one confirmed defect, fixed in v7: the v6 claim that `nb` 0.7.0 reaps an emptied
+undescribed shelf is true for `nb rm` but not for `nb move`, the only verb the
+migration uses (the move fix, #355/#356, is unreleased), so the legacy files would
+stay as 0-byte files and the alias gate would never be met. The migration script now
+deletes the leftover 0-byte file itself, the seed skips 0-byte and legacy-slug files
+regardless of the alias file, and "reaped" is defined as absent on disk and from
+`nb list --json`. Non-blocking notes taken: the near-duplicate refusal exits 0 so
+the scripts read `--json`, and the minimum-score rule applies only to a full target.
 
 Intent preservation check: the operator asked for (1) check what changed in the
 release and adapt the harness, (2) make agents aware of project > domain > global
