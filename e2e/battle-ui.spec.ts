@@ -161,6 +161,21 @@ test.describe('UI layout', () => {
     await expect(page.locator('.finding-card.selected')).toBeVisible();
   });
 
+  test('top bar fits the narrowest desktop width without covering the logo', async ({ page }) => {
+    // #3561 slice 2 review: the System indicator widened the right-hand group,
+    // which slid left over the logo at 769-945 px. The search trigger drops its
+    // label below 1180 px so the group fits.
+    await page.setViewportSize({ width: 769, height: 1000 });
+    await expect(page.locator('.health-dot-connected')).toBeVisible();
+    const layout = await page.evaluate(() => ({
+      scrollWidth: document.documentElement.scrollWidth,
+      logoRight: document.querySelector('.logo')!.getBoundingClientRect().right,
+      rightStart: document.querySelector('.topbar-right .metric-group:last-child')!.getBoundingClientRect().left,
+    }));
+    expect(layout.scrollWidth).toBeLessThanOrEqual(769);
+    expect(layout.rightStart).toBeGreaterThanOrEqual(layout.logoRight);
+  });
+
   test('mobile viewport uses findings/task tabs and touch actions', async ({ page, request }) => {
     await page.setViewportSize({ width: 390, height: 844 });
 

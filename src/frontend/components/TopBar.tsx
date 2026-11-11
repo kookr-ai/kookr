@@ -370,6 +370,19 @@ export function TopBar({
           <img src="/kookr-mark-32.png" alt="" aria-hidden="true" width={18} height={18} className="logo-mark" />
           KOOKR
         </span>
+        {/* Next to the logo, where the old bypass banner and build badge sat:
+            the left group stays visible when the right-hand controls run
+            short of room. */}
+        {bypassAllPermissions && (
+          <span
+            className="mode-chip"
+            role="status"
+            data-testid="permission-mode-chip"
+            title="Bypass mode: new agent launches run without permission prompts"
+          >
+            Bypass mode
+          </span>
+        )}
         <button
           type="button"
           className={`queue-info${hasQueueInfo ? '' : ' queue-info-reserved'}`}
@@ -426,16 +439,6 @@ export function TopBar({
           )}
         </div>
         <div className="metric-group">
-          {bypassAllPermissions && (
-            <span
-              className="mode-chip"
-              role="status"
-              data-testid="permission-mode-chip"
-              title="Bypass mode: new agent launches run without permission prompts"
-            >
-              Bypass mode
-            </span>
-          )}
           <div className="system-indicator-wrap" ref={systemWrapRef}>
             <button
               ref={systemButtonRef}

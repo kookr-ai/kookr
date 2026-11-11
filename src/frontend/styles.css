@@ -15940,6 +15940,16 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .command-trigger-mag { font-size: 12px; line-height: 1; }
 .command-trigger-label { white-space: nowrap; }
+/* Narrow desktop widths (769-1179 px, e.g. iPad portrait): drop the search
+   label (the icon and Ctrl+K hint stay) so the right-hand controls fit
+   without sliding over the logo and the Bypass mode chip (#3561 slice 2). */
+@media (max-width: 1179px) {
+  .command-trigger { min-width: 0; }
+  .command-trigger-label { display: none; }
+}
+@media (max-width: 900px) {
+  .command-trigger-kbd { display: none; }
+}
 .command-trigger-kbd {
   margin-left: auto;
   font-family: var(--font-mono);
