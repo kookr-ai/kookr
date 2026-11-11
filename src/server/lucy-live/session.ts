@@ -9,8 +9,21 @@
  *   speech_start -> listening (ears session opens, audio is forwarded, drafts every ~1 s)
  *   speech_end   -> transcribing (final transcript) -> thinking (model streams the answer)
  *                -> speaking (each sentence is spoken and sent in order) -> turn_done
- * A new `speech_start` or a `barge_in` while the turn is past `listening` cancels the
- * model stream and pending speech at once and ends the turn as `interrupted`.
+ * A `barge_in` while the turn is past `listening` cancels the model stream and pending
+ * speech at once and ends the turn as `interrupted`.
+ *
+ * Interruptions are confirmed. When a `speech_start` arrives while Lucy is thinking or
+ * speaking, the audio is only a *candidate*: it is buffered and fed to Silero (a speech
+ * detector, the `openVad` port) while the answer carries on. Real speech (a few frames
+ * above {@link SPEECH_PROBABILITY}) sends `speech_confirmed`, interrupts the answer
+ * and promotes the candidate to a listening turn with its buffered audio; anything else
+ * (the candidate ends, or {@link CANDIDATE_MAX_FRAMES} frames pass without speech) sends
+ * `speech_rejected` and the candidate is dropped. With no Silero, a new `speech_start`
+ * interrupts at once, as before.
+ *
+ * Silero also guards ordinary turns: if a whole turn never contains a speech frame it
+ * ends as `empty` without calling the recogniser or the model, so the recogniser cannot
+ * invent words ("Thank you.") out of silence or noise.
  *
  * Conversation memory is plain text, the last {@link MAX_HISTORY_EXCHANGES} exchanges.
  * For Lucy's side it keeps only what the operator heard: the sentences the browser
@@ -38,6 +51,24 @@ export const MAX_HISTORY_EXCHANGES = 8;
 export const DRAFT_INTERVAL_BYTES = LUCY_LIVE_SAMPLE_RATE * 2;
 const MAX_TURN_BYTES = LUCY_LIVE_MAX_TURN_SECONDS * LUCY_LIVE_SAMPLE_RATE * 2;
 const INTERRUPTED_MARKER = '(interrupted)';
+
+/** A 32 ms frame counts as speech when Silero's probability reaches this (its usual default). */
+export const SPEECH_PROBABILITY = 0.5;
+/**
+ * Speech frames needed inside a candidate interruption to confirm it: 3 frames, about 96 ms.
+ * A cough or click yields none or one stray frame; a syllable of a real word yields several.
+ */
+export const CONFIRM_SPEECH_FRAMES = 3;
+/**
+ * A candidate with no confirmation after this many frames (22, about 700 ms of audio, which
+ * includes the browser's short pre-roll) is rejected, so a long drone cannot keep Lucy ducked.
+ */
+export const CANDIDATE_MAX_FRAMES = 22;
+
+/** Silero's view of a stretch of audio: one speech probability per 32 ms frame, in order. Rejects if the model fails. */
+export interface VadTurnPort {
+  push(pcm: Buffer): Promise<number[]>;
+}
 
 export interface EarsTurnPort {
   append(pcm: Buffer): void;
@@ -75,6 +106,11 @@ export interface LucyLivePorts {
   send(message: LucyLiveServerMessage): void;
   /** Open a fresh recogniser session for one turn. Never throws; failures surface from `finish`. */
   openEars(language: LucyLiveLanguage): EarsTurnPort;
+  /**
+   * Start a Silero detector for one stretch of audio, or return null / leave the port out
+   * when Silero is unavailable (interruptions are then not confirmed and silence is not pre-filtered).
+   */
+  openVad?(): VadTurnPort | null;
   /** Transcribe the audio so far in its own session (an improving draft). */
   transcribeDraft(pcm: Buffer, language: LucyLiveLanguage, signal: AbortSignal): Promise<string>;
   /** Stream the answer text. Must stop and throw when `signal` aborts. */
@@ -114,6 +150,26 @@ interface Turn {
   firstSentenceMs?: number;
   firstAudioMs?: number;
   memory?: ExchangeMemory;
+  /** Silero detector fed with this turn's audio; null when unavailable. */
+  vad: VadTurnPort | null;
+  /** Highest speech probability Silero reported so far. */
+  maxSpeechProb: number;
+  /** Silero failed mid-turn: stop trusting it for this turn. */
+  vadBroken: boolean;
+  /** Settles when every audio chunk pushed so far has been scored. */
+  vadTail: Promise<void>;
+}
+
+/** Audio of a possible interruption, held aside while Lucy's answer carries on. */
+interface Candidate {
+  id: string;
+  vad: VadTurnPort;
+  chunks: Buffer[];
+  bytes: number;
+  /** Frames scored so far, and how many of them were speech. */
+  frames: number;
+  speechFrames: number;
+  maxSpeechProb: number;
 }
 
 class TurnAbandoned extends Error {}
@@ -133,12 +189,13 @@ export class LucyLiveSession {
   private turn: Turn | null = null;
   private readonly memory: ExchangeMemory[] = [];
   private closedForGood = false;
+  private candidate: Candidate | null = null;
 
   constructor(private readonly ports: LucyLivePorts) {}
 
-  /** True between `speech_start` and `speech_end`: the only time audio frames are accepted. */
+  /** True between `speech_start` and `speech_end` (for a turn or a candidate interruption): the only time audio frames are accepted. */
   get acceptingAudio(): boolean {
-    return this.turn?.phase === 'listening';
+    return this.candidate !== null || this.turn?.phase === 'listening';
   }
 
   handleMessage(msg: LucyLiveClientMessage): void {
@@ -149,7 +206,7 @@ export class LucyLiveSession {
         this.ports.send({ type: 'ready' });
         return;
       case 'speech_start':
-        this.onSpeechStart(msg.turnId);
+        this.onSpeechStart(msg.turnId, msg.lucyAudible === true);
         return;
       case 'speech_end':
         this.onSpeechEnd(msg.turnId);
@@ -168,14 +225,21 @@ export class LucyLiveSession {
 
   /** A binary frame of PCM16 audio from the browser. Ignored outside a listening turn. */
   handleAudio(pcm: Buffer): void {
+    if (this.closedForGood) return;
+    const candidate = this.candidate;
+    if (candidate) {
+      this.feedCandidate(candidate, pcm);
+      return;
+    }
     const turn = this.turn;
-    if (this.closedForGood || !turn || turn.phase !== 'listening') return;
+    if (!turn || turn.phase !== 'listening') return;
     const room = MAX_TURN_BYTES - turn.bytes;
     if (room <= 0) return; // audio beyond the cap is cut off
     const chunk = pcm.length > room ? pcm.subarray(0, room) : pcm;
     turn.chunks.push(chunk);
     turn.bytes += chunk.length;
     turn.ears.append(chunk);
+    this.scoreTurnAudio(turn, chunk);
     this.maybeStartDraft(turn);
   }
 
@@ -183,20 +247,44 @@ export class LucyLiveSession {
   close(): void {
     if (this.closedForGood) return;
     this.closedForGood = true;
+    this.candidate = null;
     const turn = this.turn;
     if (turn) this.discard(turn);
   }
 
   // -- message handlers ------------------------------------------------------
 
-  private onSpeechStart(turnId: string): void {
+  private onSpeechStart(turnId: string, lucyAudible: boolean): void {
+    this.candidate = null; // a new start replaces an undecided candidate
     const previous = this.turn;
+    const vad = this.openVad();
+    // Lucy is mid-answer (or the browser says she is still audible after the answer was sent):
+    // hold the audio aside and let Silero decide whether it is really the operator.
+    const answering = previous?.phase === 'thinking' || previous?.phase === 'speaking';
+    if (vad && (answering || lucyAudible)) {
+      this.candidate = { id: turnId, vad, chunks: [], bytes: 0, frames: 0, speechFrames: 0, maxSpeechProb: 0 };
+      return;
+    }
     if (previous) {
       if (previous.phase === 'listening') this.discard(previous);
       else this.endTurn(previous, 'interrupted', undefined, false);
     }
-    const turn: Turn = {
-      id: turnId,
+    this.turn = this.newTurn(turnId, vad);
+    this.setState('listening');
+  }
+
+  private openVad(): VadTurnPort | null {
+    try {
+      return this.ports.openVad?.() ?? null;
+    } catch (err) {
+      this.ports.warn(`lucy-live: could not start the voice check: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  private newTurn(id: string, vad: VadTurnPort | null): Turn {
+    return {
+      id,
       language: this.language,
       phase: 'listening',
       closed: false,
@@ -207,12 +295,85 @@ export class LucyLiveSession {
       bytesAtLastDraft: 0,
       draftAbort: null,
       sentences: [],
+      vad,
+      maxSpeechProb: 0,
+      vadBroken: false,
+      vadTail: Promise.resolve(),
     };
+  }
+
+  // -- candidate interruptions -------------------------------------------------
+
+  private feedCandidate(candidate: Candidate, pcm: Buffer): void {
+    const room = MAX_TURN_BYTES - candidate.bytes;
+    if (room <= 0) return;
+    const chunk = pcm.length > room ? pcm.subarray(0, room) : pcm;
+    candidate.chunks.push(chunk);
+    candidate.bytes += chunk.length;
+    candidate.vad.push(chunk).then(
+      (probs) => this.onCandidateScores(candidate, probs),
+      // Silero broke: fail toward the operator's intent and treat it as speech.
+      () => this.confirmCandidate(candidate),
+    );
+  }
+
+  private onCandidateScores(candidate: Candidate, probs: number[]): void {
+    if (this.candidate !== candidate || this.closedForGood) return;
+    for (const p of probs) {
+      candidate.frames += 1;
+      if (p >= SPEECH_PROBABILITY) candidate.speechFrames += 1;
+      if (p > candidate.maxSpeechProb) candidate.maxSpeechProb = p;
+    }
+    if (candidate.speechFrames >= CONFIRM_SPEECH_FRAMES) this.confirmCandidate(candidate);
+    else if (candidate.frames >= CANDIDATE_MAX_FRAMES) this.rejectCandidate(candidate);
+  }
+
+  private confirmCandidate(candidate: Candidate): void {
+    if (this.candidate !== candidate || this.closedForGood) return;
+    this.candidate = null;
+    this.ports.send({ type: 'speech_confirmed', turnId: candidate.id });
+    const previous = this.turn;
+    if (previous) {
+      if (previous.phase === 'listening') this.discard(previous);
+      else this.endTurn(previous, 'interrupted', undefined, false);
+    }
+    // The candidate becomes a normal listening turn that already holds its audio.
+    const turn = this.newTurn(candidate.id, candidate.vad);
+    turn.maxSpeechProb = candidate.maxSpeechProb;
+    turn.chunks = candidate.chunks;
+    turn.bytes = candidate.bytes;
+    for (const chunk of candidate.chunks) turn.ears.append(chunk);
     this.turn = turn;
     this.setState('listening');
+    this.maybeStartDraft(turn);
+  }
+
+  private rejectCandidate(candidate: Candidate): void {
+    if (this.candidate !== candidate) return;
+    this.candidate = null;
+    this.ports.send({ type: 'speech_rejected', turnId: candidate.id });
+  }
+
+  /** Score a listening turn's audio so the turn can be called empty when Silero never hears speech. */
+  private scoreTurnAudio(turn: Turn, chunk: Buffer): void {
+    if (!turn.vad) return;
+    const scored = turn.vad.push(chunk).then(
+      (probs) => { for (const p of probs) if (p > turn.maxSpeechProb) turn.maxSpeechProb = p; },
+      () => { turn.vadBroken = true; },
+    );
+    turn.vadTail = turn.vadTail.then(() => scored);
+  }
+
+  /** True when Silero is working on this turn and has not yet heard any speech in it. */
+  private heardNoSpeech(turn: Turn): boolean {
+    return turn.vad !== null && !turn.vadBroken && turn.maxSpeechProb < SPEECH_PROBABILITY;
   }
 
   private onSpeechCancel(turnId: string): void {
+    if (this.candidate?.id === turnId) {
+      this.rejectCandidate(this.candidate);
+      return;
+    }
     const turn = this.turn;
     if (!turn || turn.id !== turnId || turn.phase !== 'listening') return;
     this.discard(turn);
@@ -220,6 +381,7 @@ export class LucyLiveSession {
   }
 
   private onBargeIn(): void {
+    this.candidate = null; // an explicit stop settles any undecided candidate
     const turn = this.turn;
     if (!turn || turn.phase === 'listening') return; // a speech_start follows and handles it
     this.endTurn(turn, 'interrupted');
@@ -231,6 +393,10 @@ export class LucyLiveSession {
   }
 
   private onSpeechEnd(turnId: string): void {
+    if (this.candidate?.id === turnId) {
+      this.rejectCandidate(this.candidate); // it ended before Silero heard speech
+      return;
+    }
     const turn = this.turn;
     if (!turn || turn.id !== turnId || turn.phase !== 'listening') return;
     turn.speechEndAt = this.ports.now();
@@ -246,6 +412,7 @@ export class LucyLiveSession {
 
   private maybeStartDraft(turn: Turn): void {
     if (turn.draftAbort || turn.bytes - turn.bytesAtLastDraft < DRAFT_INTERVAL_BYTES) return;
+    if (this.heardNoSpeech(turn)) return; // no preview of what is probably silence
     turn.bytesAtLastDraft = turn.bytes;
     const abort = new AbortController();
     turn.draftAbort = abort;
@@ -268,6 +435,14 @@ export class LucyLiveSession {
 
   private async runTurn(turn: Turn): Promise<void> {
     try {
+      if (turn.vad) {
+        await turn.vadTail;
+        if (turn.closed) return;
+        if (this.heardNoSpeech(turn)) {
+          this.endTurn(turn, 'empty'); // never ask the recogniser about audio with no speech in it
+          return;
+        }
+      }
       const transcript = await this.transcribe(turn);
       if (turn.closed) return;
       if (isEmptyTranscript(transcript)) {

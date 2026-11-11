@@ -3,6 +3,7 @@ import {
   ABSOLUTE_MIN_SPEECH_DB,
   DETECTOR_SAMPLE_RATE,
   END_SILENCE_MS,
+  CONFIRMED_GUARDED_START_MS,
   GUARDED_START_MS,
   INITIAL_NOISE_FLOOR_DB,
   MAX_TURN_MS,
@@ -84,6 +85,14 @@ describe('createVoiceDetector', () => {
     expect(types(events)).not.toContain('start');
     const more = feed(d, SPEECH_DB, 3 * FRAME_MS, 'guarded');
     expect(types(more)).toContain('start');
+  });
+
+  test('with a server check behind it, guarded mode starts after the shorter confirmed delay', () => {
+    const d = createVoiceDetector({ guardedStartMs: CONFIRMED_GUARDED_START_MS });
+    feed(d, QUIET_DB, 1000);
+    expect(CONFIRMED_GUARDED_START_MS).toBeLessThan(GUARDED_START_MS);
+    expect(types(feed(d, SPEECH_DB, CONFIRMED_GUARDED_START_MS - 2 * FRAME_MS, 'guarded'))).not.toContain('start');
+    expect(types(feed(d, SPEECH_DB, 3 * FRAME_MS, 'guarded'))).toContain('start');
   });
 
   test('guarded mode ignores a moderately loud sound that normal mode accepts', () => {

@@ -12,8 +12,12 @@
  * 3. Plays the answer sentence by sentence as the server delivers it, scheduling each one
  *    to begin exactly when the previous one ends, and announces it on the speech bus so
  *    the avatar's mouth moves.
- * 4. If the operator starts speaking while Lucy is thinking or talking, stops her audio in
- *    the same moment, before any network round trip, then tells the server.
+ * 4. If the operator starts speaking while Lucy is thinking or talking, a loud sound might
+ *    be a cough rather than speech, so her audio is only *ducked* (turned down) in that same
+ *    moment while the server checks the sound with Silero. `speech_confirmed` stops her for
+ *    good, `speech_rejected` turns her back up. If the server never answers she is stopped
+ *    anyway. A server without Silero cannot check, so there her audio is stopped at once and
+ *    the server told (`barge_in`), as before.
  */
 import {
   LUCY_LIVE_SAMPLE_RATE,
@@ -27,7 +31,7 @@ import {
 import { createScriptProcessorFallback, tryCreateWorkletNode } from '../audio/pcm-capture.js';
 import { emitSpeechGenerating, emitSpeechIdle, emitSpeechPlaying } from '../audio/speech-bus.js';
 import { track } from '../telemetry.js';
-import { createVoiceDetector, type VoiceDetector } from './voice-detector.js';
+import { CONFIRMED_GUARDED_START_MS, createVoiceDetector, type VoiceDetector } from './voice-detector.js';
 
 export type LucyLiveStatusKind = 'off' | 'connecting' | 'unavailable' | 'ready' | 'error';
 
@@ -69,6 +73,8 @@ export const INITIAL_VIEW: LucyLiveView = {
 
 export interface LucyLiveSessionOptions {
   language: LucyLiveLanguage;
+  /** The server confirms interruptions with Silero (`bargeInConfirmation: 'silero'` in its status). False: stop at once, as before. */
+  bargeInConfirmation?: boolean;
   onView: (patch: Partial<LucyLiveView>) => void;
   /** The session cannot continue; the caller should drop it. */
   onFatal: (status: 'unavailable' | 'error', message: string) => void;
@@ -80,6 +86,16 @@ const CAPTURE_CHUNK_SAMPLES = 1024;
 const FRAME_SAMPLES = 512;
 /** Head start given to a sentence's first sound so scheduling cannot land in the past, in seconds. */
 const START_LEAD_S = 0.02;
+/** Volume Lucy is turned down to while a possible interruption is being checked (1 is full). */
+export const DUCK_GAIN = 0.25;
+/** Time the volume takes to move between full and ducked, in seconds. Short enough to react, long enough not to click. */
+export const DUCK_RAMP_S = 0.03;
+/**
+ * How long to wait for the server's verdict on a possible interruption before stopping Lucy
+ * anyway, in milliseconds. A normal verdict takes a few tens of milliseconds, so this only
+ * fires when something is wrong; it fails toward what the operator most likely wants.
+ */
+export const CONFIRMATION_TIMEOUT_MS = 1500;
 /** Wait before the one automatic reconnect, in milliseconds. */
 const RECONNECT_DELAY_MS = 500;
 /** A connection that stayed up this long earns a fresh reconnect attempt when it later drops. */
@@ -138,7 +154,7 @@ interface ScheduledSentence {
 }
 
 export class LucyLiveSession {
-  private readonly detector: VoiceDetector = createVoiceDetector();
+  private readonly detector: VoiceDetector;
   /** Identity under which this session speaks on the speech bus. */
   private readonly busOwner = { name: 'lucy live' };
 
@@ -154,7 +170,13 @@ export class LucyLiveSession {
   private readyAt = 0;
 
   private lucyState: LucyLiveState = 'idle';
+  /** Turn whose sentences are played, and whose transcript is shown. */
   private currentTurnId: string | null = null;
+  /** Id of the microphone turn being sent (differs from `currentTurnId` while a possible interruption is being checked). */
+  private micTurnId: string | null = null;
+  /** A possible interruption awaiting the server's verdict; Lucy is ducked meanwhile. */
+  private duck: { turnId: string; detectedAt: number; timer: ReturnType<typeof setTimeout>; endedAt: number | null } | null = null;
+  private gainNode: GainNode | null = null;
   /** True between `speech_start` and `speech_end`/`speech_cancel`: microphone audio is being sent. */
   private sending = false;
   private endedAt: number | null = null;
@@ -175,7 +197,10 @@ export class LucyLiveSession {
 
   private timings: LucyLiveTimings = { ...INITIAL_VIEW.timings };
 
-  constructor(private readonly options: LucyLiveSessionOptions) {}
+  constructor(private readonly options: LucyLiveSessionOptions) {
+    // With Silero behind the interruption, a candidate can start as soon as a normal turn does.
+    this.detector = createVoiceDetector(options.bargeInConfirmation ? { guardedStartMs: CONFIRMED_GUARDED_START_MS } : {});
+  }
 
   /** Open the microphone and the socket. Failures are reported through `onFatal`. */
   async start(): Promise<void> {
@@ -215,6 +240,7 @@ export class LucyLiveSession {
     this.ready = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
+    this.clearDuck();
     this.cutPlayback();
     emitSpeechIdle(this.busOwner);
     this.captureNode?.disconnect();
@@ -223,6 +249,7 @@ export class LucyLiveSession {
     this.captureContext = null;
     if (this.playContext) void this.playContext.close().catch(() => undefined);
     this.playContext = null;
+    this.gainNode = null;
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
     this.detachSocket();
@@ -287,6 +314,7 @@ export class LucyLiveSession {
     this.sending = false;
     this.detector.reset();
     this.leftover = new Float32Array(0);
+    this.clearDuck();
     this.cutPlayback();
     this.settleBus();
     this.ws = null;
@@ -335,6 +363,12 @@ export class LucyLiveSession {
         }
         this.options.onView({ lastTurnEnd: message.end });
         this.settleBus();
+        break;
+      case 'speech_confirmed':
+        this.onConfirmed(message.turnId);
+        break;
+      case 'speech_rejected':
+        this.onRejected(message.turnId);
         break;
       case 'error':
         if (PER_TURN_ERRORS.has(message.code)) {
@@ -403,8 +437,19 @@ export class LucyLiveSession {
 
   private onSpeechStart(preRoll: Float32Array[]): void {
     const detectedAt = performance.now();
+    const turnId = newTurnId();
+    this.micTurnId = turnId;
+    this.sending = true;
+    if (this.lucyBusy() && this.options.bargeInConfirmation) {
+      // A possible interruption. Turn Lucy down now and let the server check the sound; her
+      // queue, her pending sentences and the answer's turn are all left as they are.
+      this.startDuck(turnId, detectedAt);
+      this.send({ type: 'speech_start', turnId, lucyAudible: true });
+      for (const frame of preRoll) this.sendPcm(frame);
+      return;
+    }
     if (this.lucyBusy()) {
-      // Everything audible stops in this same call stack; nothing below waits for the server.
+      // No server check available: everything audible stops in this same call stack.
       const cut = this.cutPlayback();
       emitSpeechIdle(this.busOwner);
       const stopMs = performance.now() - detectedAt;
@@ -417,32 +462,107 @@ export class LucyLiveSession {
       this.options.onView({ lucyText: '', timings: this.timings, lastTurnEnd: 'interrupted' });
       track({ type: 'lucy_live_timing', kind: 'barge_in_stop', ms: Math.round(stopMs * 10) / 10 });
     }
-    const turnId = newTurnId();
+    this.beginOperatorTurn(turnId);
+    this.send({ type: 'speech_start', turnId });
+    for (const frame of preRoll) this.sendPcm(frame);
+  }
+
+  /** The operator's turn `turnId` is now the current one: a fresh answer will follow it. */
+  private beginOperatorTurn(turnId: string): void {
     this.currentTurnId = turnId;
-    this.sending = true;
     this.endedAt = null;
     this.firstAudioSeen = false;
     // A new turn starts a fresh answer; sentences still decoding for the last one are dropped.
     this.playGeneration += 1;
     this.pending.clear();
     this.nextSeq = 0;
-    this.send({ type: 'speech_start', turnId });
-    for (const frame of preRoll) this.sendPcm(frame);
   }
 
   private onSpeechEnd(): void {
-    if (!this.sending || !this.currentTurnId) return;
+    if (!this.sending || !this.micTurnId) return;
     this.sending = false;
+    this.send({ type: 'speech_end', turnId: this.micTurnId });
+    if (this.duck) {
+      // Undecided: Lucy keeps her words on screen. If the server confirms, the turn counts as ended now.
+      this.duck.endedAt = performance.now();
+      return;
+    }
     this.endedAt = performance.now();
     this.lucyText = '';
-    this.send({ type: 'speech_end', turnId: this.currentTurnId });
     this.options.onView({ lucyText: '', operatorText: '', operatorFinal: false });
   }
 
   private onMisfire(): void {
-    if (!this.sending || !this.currentTurnId) return;
+    if (!this.sending || !this.micTurnId) return;
     this.sending = false;
-    this.send({ type: 'speech_cancel', turnId: this.currentTurnId });
+    this.send({ type: 'speech_cancel', turnId: this.micTurnId });
+  }
+
+  // -------------------------------------------------------------------------
+  // Possible interruptions: duck, then stop or resume
+  // -------------------------------------------------------------------------
+
+  private startDuck(turnId: string, detectedAt: number): void {
+    this.rampGain(DUCK_GAIN);
+    const duckMs = performance.now() - detectedAt;
+    track({ type: 'lucy_live_timing', kind: 'barge_in_duck', ms: Math.round(duckMs * 10) / 10 });
+    const timer = setTimeout(() => this.onConfirmationTimeout(turnId), CONFIRMATION_TIMEOUT_MS);
+    this.duck = { turnId, detectedAt, timer, endedAt: null };
+  }
+
+  private clearDuck(): void {
+    if (this.duck) clearTimeout(this.duck.timer);
+    this.duck = null;
+  }
+
+  /** The server heard real speech: stop Lucy for good and treat that audio as the new turn. */
+  private onConfirmed(turnId: string): void {
+    const duck = this.duck;
+    if (!duck || duck.turnId !== turnId) return;
+    this.clearDuck();
+    this.stopForInterruption(duck);
+  }
+
+  /** The server found no speech: turn Lucy back up and carry on; whatever was queued keeps playing in order. */
+  private onRejected(turnId: string): void {
+    const duck = this.duck;
+    if (!duck || duck.turnId !== turnId) return;
+    this.clearDuck();
+    this.rampGain(1);
+    // A rejection by timeout can arrive while the detector still thinks the sound is going on; let it re-evaluate.
+    if (this.sending) {
+      this.sending = false;
+      this.detector.reset();
+    }
+    const ms = performance.now() - duck.detectedAt;
+    track({ type: 'lucy_live_timing', kind: 'barge_in_rejected', ms: Math.round(ms * 10) / 10 });
+  }
+
+  /** No verdict in time: stop her anyway, and tell the server to abandon the answer itself. */
+  private onConfirmationTimeout(turnId: string): void {
+    const duck = this.duck;
+    if (!duck || duck.turnId !== turnId || this.stopped) return;
+    this.clearDuck();
+    this.send({ type: 'barge_in' });
+    this.stopForInterruption(duck);
+  }
+
+  /** Stop every sound and make the interrupting audio the current turn. */
+  private stopForInterruption(duck: { turnId: string; detectedAt: number; endedAt: number | null }): void {
+    const cut = this.cutPlayback();
+    this.setGain(1); // the next answer plays at full volume
+    emitSpeechIdle(this.busOwner);
+    const stopMs = performance.now() - duck.detectedAt;
+    for (const sentence of cut) {
+      this.send({ type: 'played', turnId: sentence.turnId, seq: sentence.seq, complete: false });
+    }
+    this.lucyText = '';
+    this.timings = { ...this.timings, bargeInStopMs: stopMs };
+    this.options.onView({ lucyText: '', timings: this.timings, lastTurnEnd: 'interrupted' });
+    track({ type: 'lucy_live_timing', kind: 'barge_in_stop', ms: Math.round(stopMs * 10) / 10 });
+    this.beginOperatorTurn(duck.turnId);
+    this.endedAt = duck.endedAt;
+    if (duck.endedAt !== null) this.options.onView({ operatorText: '', operatorFinal: false });
   }
 
   // -------------------------------------------------------------------------
@@ -454,9 +574,37 @@ export class LucyLiveSession {
     return this.playContext;
   }
 
+  /** The one volume control every sentence passes through, so Lucy can be turned down as a whole. */
+  private playbackGain(): GainNode {
+    if (!this.gainNode) {
+      const context = this.audioContext();
+      this.gainNode = context.createGain();
+      this.gainNode.connect(context.destination);
+    }
+    return this.gainNode;
+  }
+
+  /** Move the volume to `target` over {@link DUCK_RAMP_S}. */
+  private rampGain(target: number): void {
+    const gain = this.playbackGain().gain;
+    const now = this.audioContext().currentTime;
+    gain.cancelScheduledValues(now);
+    gain.setValueAtTime(gain.value, now);
+    gain.linearRampToValueAtTime(target, now + DUCK_RAMP_S);
+  }
+
+  /** Jump the volume to `value` at once. */
+  private setGain(value: number): void {
+    if (!this.gainNode) return;
+    const gain = this.gainNode.gain;
+    gain.cancelScheduledValues(this.audioContext().currentTime);
+    gain.value = value;
+  }
+
   private onSentence(message: Extract<LucyLiveServerMessage, { type: 'sentence' }>): void {
     // Sentences of an earlier turn (still in flight when the operator interrupted) are not played.
-    if (message.turnId !== this.currentTurnId || this.sending) return;
+    // While a possible interruption is being checked the answer keeps arriving and is queued (ducked).
+    if (message.turnId !== this.currentTurnId || (this.sending && !this.duck)) return;
     this.lucyText = this.lucyText ? `${this.lucyText} ${message.text}` : message.text;
     this.options.onView({ lucyText: this.lucyText });
     const generation = this.playGeneration;
@@ -497,7 +645,7 @@ export class LucyLiveSession {
     const context = this.audioContext();
     const source = context.createBufferSource();
     source.buffer = buffer;
-    source.connect(context.destination);
+    source.connect(this.playbackGain());
     const now = context.currentTime;
     // Back to back with the previous sentence when it is still playing, so there is no audible gap.
     const startAt = Math.max(now + START_LEAD_S, this.playHead);

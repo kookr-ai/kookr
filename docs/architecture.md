@@ -524,6 +524,7 @@ kookr/
 │   │   ├── hash-prompt.ts                 # Prompt hashing helper
 │   │   ├── prompt-file-paths.ts           # Per-agent prompt file resolution
 │   │   ├── stt-manager.ts                 # Docker lifecycle for bundled STT (Qwen GPU / Whisper CPU)
+│   │   ├── lucy-live/                     # Hands-free conversation with Lucy: per-socket session state machine (turns, Silero-confirmed interruptions, sentence streaming), `/ws/lucy-live` handler, config and real-adapter wiring
 │   │   └── tts-manager.ts                 # Docker lifecycle for bundled TTS
 │   │
 │   ├── core/                              # Domain logic, contracts, and lightweight local persistence/helpers
@@ -532,6 +533,7 @@ kookr/
 │   │   ├── agent-types.ts                 # AgentType + AVAILABLE_AGENT_TYPES
 │   │   ├── activity-summary.ts            # Activity summarizer + tool categorization (frontend-facing)
 │   │   ├── completion-digest.ts           # Task completion summary
+│   │   ├── lucy-live/                     # Pure Lucy live logic: task-status briefing, persona prompt, incremental sentence splitter, silence-hallucination filter
 │   │   ├── build-info.ts                  # Build metadata (commit, branch, timestamp)
 │   │   ├── ports/                         # Ports-and-adapters interfaces owned by core:
 │   │   │                                  #   agent-interaction, terminal-input-writer, terminal-session-stream
@@ -654,6 +656,7 @@ kookr/
 │   │   ├── file-based-agents.ts           # File-backed agent inventory helpers
 │   │   ├── probe-agent-binary.ts          # Agent binary probe helpers
 │   │   ├── quota-adapter.ts               # Usage-quota surface for LLM providers
+│   │   ├── lucy-live/                     # Lucy live adapters: llama.cpp `/v1/realtime` speech-recogniser client (`ears-client.ts`), Silero voice activity model in Node (`silero-vad.ts`)
 │   │   ├── llm/                           # LLM provider implementations + selection:
 │   │   │   ├── factory.ts                 #   env-driven provider construction/selection
 │   │   │   ├── anthropic-client.ts        #   Anthropic SDK implementation
@@ -724,6 +727,7 @@ kookr/
 │       ├── api/                           # Typed data-access client (issue #1826) — the single fetch() seam for components and the app root
 │       ├── audio/                         # Browser sound preferences + alert log + speech-bus (playback events the avatar panel observes) + last-clip / clip-playback (replay of the last 3 spoken clips, heard/unheard bookkeeping, `lucy_*` telemetry)
 │       ├── avatar/                        # Optional, lazy-loaded 3D avatar panel (three.js stage, lip-sync, dock); assets/ holds the CC BY-NC model
+│       ├── lucy-live/                     # Browser half of the hands-free conversation: energy voice detector, mic capture, sentence playback with duck/stop, `useLucyLive` hook
 │       ├── group-findings.ts              # Finding grouping for FindingsPanel
 │       ├── markdown.ts                    # Markdown rendering helpers
 │       ├── oss-trends.ts                  # OSS contribution trend aggregation for the dashboard

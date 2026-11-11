@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { LucyLiveServerMessage } from '../../shared/contracts/lucy-live.js';
 import {
+  CANDIDATE_MAX_FRAMES,
   DRAFT_INTERVAL_BYTES,
   LucyLiveSession,
   type ChatTurn,
   type EarsTurnPort,
   type LiveTurnRecord,
   type LucyLivePorts,
+  type VadTurnPort,
 } from './session.js';
 
 const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -26,6 +28,17 @@ class FakeEars implements EarsTurnPort {
   append(pcm: Buffer): void { this.appended.push(pcm); }
   finish(): Promise<string> { return this.result.promise; }
   abort(): void { this.aborted = true; this.result.reject(new Error('aborted')); }
+}
+
+/** Silero stand-in: each pushed chunk is scored with the next scripted batch of probabilities (none left: no frames). */
+class FakeVad implements VadTurnPort {
+  pushed: Buffer[] = [];
+  script: Array<number[] | Error> = [];
+  push(pcm: Buffer): Promise<number[]> {
+    this.pushed.push(pcm);
+    const next = this.script.shift() ?? [];
+    return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
+  }
 }
 
 /** An answer the test feeds piece by piece; ends when `end()` is called or the signal aborts. */
@@ -68,16 +81,19 @@ interface Harness {
   drafts: Array<{ pcm: Buffer; signal: AbortSignal; d: ReturnType<typeof deferred<string>> }>;
   clock: { t: number };
   autoSynth: boolean;
+  vads: FakeVad[];
 }
 
-function harness(opts: { autoSynth?: boolean } = {}): Harness {
+function harness(opts: { autoSynth?: boolean; vad?: boolean } = {}): Harness {
   const h = {
+    vads: [] as FakeVad[],
     sent: [] as LucyLiveServerMessage[], ears: [] as FakeEars[], brain: new FakeBrain(), records: [] as LiveTurnRecord[],
     synth: [] as Harness['synth'], drafts: [] as Harness['drafts'], clock: { t: 1000 }, autoSynth: opts.autoSynth ?? true,
   } as Harness;
   const ports: LucyLivePorts = {
     send: (m) => h.sent.push(m),
     openEars: () => { const e = new FakeEars(); h.ears.push(e); return e; },
+    openVad: opts.vad ? () => { const v = new FakeVad(); h.vads.push(v); return v; } : undefined,
     transcribeDraft: (pcm, _lang, signal) => { const d = deferred<string>(); h.drafts.push({ pcm, signal, d }); return d.promise; },
     streamAnswer: (req) => h.brain.stream(req),
     synthesize: (text, signal) => {
@@ -332,5 +348,225 @@ describe('LucyLiveSession', () => {
     h.brain.feed('Late words.');
     await tick();
     expect(h.sent.length).toBe(before);
+  });
+
+  describe('Silero confirmation', () => {
+    const SPEECH = [0.9, 0.9, 0.9];
+    const NOISE = [0.05, 0.1, 0.04];
+
+    /** Lucy is mid-answer: the first sentence is sent and the model stream is still open. */
+    async function answeringHarness(): Promise<Harness> {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q1' });
+      h.vads[0].script.push([0.95]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q1' });
+      h.ears[0].result.resolve('Which tasks need me?');
+      await tick();
+      h.brain.feed('First part. ');
+      await tick(); await tick();
+      expect(h.sent.filter((m) => m.type === 'sentence')).toHaveLength(1);
+      return h;
+    }
+
+    it('a candidate with speech is confirmed: speech_confirmed, then the answer is interrupted and the buffered audio goes to a new turn', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      const audio = Buffer.alloc(3200, 1);
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2' });
+      expect(h.sent).toEqual([]); // nothing yet: the answer is untouched
+      expect(h.ears).toHaveLength(1);
+      expect(h.session.acceptingAudio).toBe(true);
+      h.vads[1].script.push(SPEECH);
+      h.session.handleAudio(audio);
+      await tick();
+      expect(types(h)).toEqual(['speech_confirmed', 'done:interrupted', 'state:listening']);
+      expect(h.sent[0]).toEqual({ type: 'speech_confirmed', turnId: 'q2' });
+      expect(h.ears[0].aborted).toBe(true);
+      expect(h.ears).toHaveLength(2);
+      expect(h.ears[1].appended).toEqual([audio]);
+      // The promoted turn goes on like any other turn.
+      h.session.handleAudio(Buffer.alloc(320));
+      expect(h.ears[1].appended).toHaveLength(2);
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q2' });
+      h.ears[1].result.resolve('Stop that.');
+      await tick();
+      expect(h.brain.calls).toHaveLength(2);
+      expect(h.brain.calls[1].history.at(-1)?.content).toContain('(interrupted)');
+      expect(h.sent.some((m) => m.type === 'transcript' && m.turnId === 'q2' && m.final)).toBe(true);
+    });
+
+    it('a rejected candidate leaves the answer and its history alone', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'noise' });
+      h.vads[1].script.push(NOISE);
+      h.session.handleAudio(Buffer.alloc(3200));
+      await tick();
+      expect(h.sent).toEqual([]); // still undecided
+      h.session.handleMessage({ type: 'speech_end', turnId: 'noise' });
+      expect(h.sent).toEqual([{ type: 'speech_rejected', turnId: 'noise' }]);
+      expect(h.session.acceptingAudio).toBe(false);
+      // The answer carries on: more sentences flow and the turn completes as answered.
+      h.brain.feed('Second part.');
+      h.brain.end();
+      await tick(); await tick();
+      expect(types(h)).toEqual(['speech_rejected', 'sentence', 'done:answered', 'state:idle']);
+      expect(h.ears).toHaveLength(1);
+      h.session.handleMessage({ type: 'played', turnId: 'q1', seq: 0, complete: true });
+      h.session.handleMessage({ type: 'played', turnId: 'q1', seq: 1, complete: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q3' });
+      h.vads[h.vads.length - 1].script.push([0.9]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q3' });
+      h.ears[h.ears.length - 1].result.resolve('And now?');
+      await tick();
+      expect(h.brain.calls[1].history).toEqual([
+        { role: 'user', content: 'Which tasks need me?' },
+        { role: 'assistant', content: 'First part. Second part.' },
+      ]);
+    });
+
+    it('speech_cancel also rejects a candidate', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'click' });
+      h.session.handleMessage({ type: 'speech_cancel', turnId: 'click' });
+      expect(h.sent).toEqual([{ type: 'speech_rejected', turnId: 'click' }]);
+    });
+
+    it('rejects by itself after CANDIDATE_MAX_FRAMES frames without confirmation', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'drone' });
+      h.vads[1].script.push(new Array(CANDIDATE_MAX_FRAMES - 1).fill(0.2), [0.2]);
+      h.session.handleAudio(Buffer.alloc(100));
+      await tick();
+      expect(h.sent).toEqual([]);
+      h.session.handleAudio(Buffer.alloc(100));
+      await tick();
+      expect(h.sent).toEqual([{ type: 'speech_rejected', turnId: 'drone' }]);
+      // Later audio of the same sound is ignored.
+      h.session.handleAudio(Buffer.alloc(100));
+      expect(h.vads[1].pushed).toHaveLength(2);
+    });
+
+    it('does not confirm on scattered frames below the speech count', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'x' });
+      h.vads[1].script.push([0.9, 0.1, 0.9, 0.1]);
+      h.session.handleAudio(Buffer.alloc(100));
+      await tick();
+      expect(h.sent).toEqual([]);
+    });
+
+    it('still sends a sentence that arrives while a candidate is pending', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'maybe' });
+      h.brain.feed('Next bit. ');
+      await tick(); await tick();
+      expect(h.sent.filter((m) => m.type === 'sentence')).toHaveLength(1);
+    });
+
+    it('treats a candidate as confirmed when Silero fails', async () => {
+      const h = await answeringHarness();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2' });
+      h.vads[1].script.push(new Error('wasm died'));
+      h.session.handleAudio(Buffer.alloc(100));
+      await tick();
+      expect(types(h)).toEqual(['speech_confirmed', 'done:interrupted', 'state:listening']);
+    });
+
+    it('a candidate while the browser still plays a finished answer is confirmed with no turn to interrupt', async () => {
+      const h = await answeringHarness();
+      h.brain.end();
+      await tick(); await tick();
+      expect(types(h).at(-2)).toBe('done:answered');
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2', lucyAudible: true });
+      h.vads[1].script.push(SPEECH);
+      h.session.handleAudio(Buffer.alloc(3200));
+      await tick();
+      expect(types(h)).toEqual(['speech_confirmed', 'state:listening']);
+      expect(h.ears).toHaveLength(2);
+    });
+
+    it('an explicit barge_in abandons a pending candidate and the answer', async () => {
+      const h = await answeringHarness();
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2' });
+      h.session.handleMessage({ type: 'barge_in' });
+      expect(h.session.acceptingAudio).toBe(false);
+      expect(types(h)).toContain('done:interrupted');
+    });
+
+    it('a turn with no speech frame ends empty without calling the recogniser or the model', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      const finish = vi.spyOn(h.ears[0], 'finish');
+      h.vads[0].script.push([0.02, 0.1, 0.3]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      await tick(); await tick();
+      expect(finish).not.toHaveBeenCalled();
+      expect(h.brain.calls).toHaveLength(0);
+      expect(h.ears[0].aborted).toBe(true);
+      expect(types(h)).toEqual(['state:listening', 'state:transcribing', 'done:empty', 'state:idle']);
+      expect(h.records[0]).toMatchObject({ end: 'empty' });
+    });
+
+    it('a normal turn with speech opens the ears at once and answers as before', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      expect(h.ears).toHaveLength(1);
+      h.vads[0].script.push([0.1, 0.8]);
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      h.ears[0].result.resolve('Hello there');
+      await tick();
+      h.brain.feed('Hi.');
+      h.brain.end();
+      await tick(); await tick();
+      expect(types(h)).toContain('done:answered');
+    });
+
+    it('does not preview a draft while Silero has heard no speech', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      h.vads[0].script.push([0.01]);
+      h.session.handleAudio(Buffer.alloc(DRAFT_INTERVAL_BYTES));
+      await tick();
+      h.vads[0].script.push([0.01]);
+      h.session.handleAudio(Buffer.alloc(DRAFT_INTERVAL_BYTES));
+      expect(h.drafts).toHaveLength(0);
+    });
+
+    it('trusts the turn when Silero fails mid-turn', async () => {
+      const h = harness({ vad: true });
+      h.session.handleMessage({ type: 'speech_start', turnId: 't1' });
+      h.vads[0].script.push(new Error('boom'));
+      h.session.handleAudio(Buffer.alloc(3200));
+      h.session.handleMessage({ type: 'speech_end', turnId: 't1' });
+      h.ears[0].result.resolve('Hello');
+      await tick();
+      expect(h.sent.some((m) => m.type === 'transcript' && m.final)).toBe(true);
+    });
+
+    it('without Silero a speech_start while Lucy answers interrupts at once, and there is no pre-filter', async () => {
+      const h = harness();
+      await speak(h, 'q1');
+      h.brain.feed('First part. ');
+      await tick(); await tick();
+      h.sent.length = 0;
+      h.session.handleMessage({ type: 'speech_start', turnId: 'q2', lucyAudible: true });
+      expect(types(h)).toEqual(['done:interrupted', 'state:listening']);
+      expect(h.sent.some((m) => m.type === 'speech_confirmed' || m.type === 'speech_rejected')).toBe(false);
+      h.session.handleMessage({ type: 'speech_end', turnId: 'q2' });
+      h.ears[1].result.resolve('Yes');
+      await tick();
+      expect(h.sent.some((m) => m.type === 'transcript' && m.final)).toBe(true);
+    });
   });
 });

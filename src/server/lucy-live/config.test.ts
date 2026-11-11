@@ -23,3 +23,13 @@ describe('resolveLucyLiveConfig', () => {
     expect(reason).not.toContain('recogniser');
   });
 });
+
+describe('lucyLiveStatusOf barge-in confirmation', () => {
+  it('reports how interruptions are decided, and stays available either way', () => {
+    const ok = { ok: true, config: {} } as Parameters<typeof lucyLiveStatusOf>[0];
+    expect(lucyLiveStatusOf(ok, 'silero')).toEqual({ available: true, bargeInConfirmation: 'silero' });
+    expect(lucyLiveStatusOf(ok, 'off')).toEqual({ available: true, bargeInConfirmation: 'off' });
+    expect(lucyLiveStatusOf(ok)).toEqual({ available: true });
+    expect(lucyLiveStatusOf({ ok: false, reason: 'no' }, 'silero')).toEqual({ available: false, reason: 'no' });
+  });
+});

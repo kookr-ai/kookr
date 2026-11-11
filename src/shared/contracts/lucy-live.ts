@@ -11,9 +11,17 @@
  * Kookr's speech service (Kokoro, the operator's chosen voice). The first sentence
  * plays while the rest is still being written.
  *
- * Interrupting. If the operator starts speaking while Lucy is thinking or speaking,
- * the browser stops her audio at once and sends `barge_in`; the server abandons the
- * answer in progress.
+ * Interrupting. A loud sound is not always speech (a cough, a door), so Lucy is not cut
+ * off on loudness alone. When the operator starts speaking while Lucy is thinking or
+ * speaking, the browser lowers her volume ("ducks" it) and sends `speech_start` with the
+ * audio as usual; the server treats it as a candidate interruption and runs the audio
+ * through Silero, a small speech detector, without touching the answer in progress.
+ * If Silero hears real speech the server replies `speech_confirmed`, abandons the answer
+ * and starts listening to that audio as a new turn; the browser then stops her audio. If
+ * it was not speech the server replies `speech_rejected`, discards the audio, and the
+ * browser restores her volume. When the server has no Silero (`bargeInConfirmation: 'off'`
+ * in the status), the older behaviour applies: the browser stops her audio at once and
+ * sends `barge_in`, then `speech_start`.
  *
  * Wire format. Text frames are JSON matching the unions below. Binary frames, sent
  * only by the browser between `speech_start` and `speech_end`, are raw PCM: signed
@@ -38,6 +46,12 @@ export type LucyLiveLanguage = 'en' | 'fr';
 export interface LucyLiveStatus {
   /** True when every part is configured: speech recogniser, helper model and speech service. */
   available: boolean;
+  /**
+   * How an interruption is decided. `silero`: the server confirms that the operator really
+   * spoke before Lucy stops. `off`: it cannot, so the browser stops her at once. Absent on
+   * older servers, which the browser treats as `off`.
+   */
+  bargeInConfirmation?: 'silero' | 'off';
   /** Why it is unavailable, in words the operator can act on. Absent when available. */
   reason?: string;
 }
@@ -52,10 +66,13 @@ export type LucyLiveClientMessage =
   /**
    * The operator started speaking. Binary audio frames follow, starting with a short
    * stretch from just before speech was detected so the first syllable is not lost.
-   * If Lucy is thinking or speaking, this also interrupts her (the browser has already
-   * stopped her audio).
+   *
+   * If Lucy is thinking or speaking (or `lucyAudible` is true) and the server has Silero,
+   * this is only a candidate interruption: the server answers with `speech_confirmed` or
+   * `speech_rejected`, and the answer in progress is left alone until then. Without
+   * Silero it interrupts her at once, as the browser has already stopped her audio.
    */
-  | { type: 'speech_start'; turnId: string }
+  | { type: 'speech_start'; turnId: string; lucyAudible?: boolean }
   /** The operator stopped speaking: transcribe and answer. */
   | { type: 'speech_end'; turnId: string }
   /**
@@ -101,6 +118,18 @@ export type LucyLiveServerMessage =
    */
   | { type: 'sentence'; turnId: string; seq: number; text: string; wavBase64: string; durationMs: number }
   | { type: 'turn_done'; turnId: string; end: LucyLiveTurnEnd; reason?: string }
+  /**
+   * Silero heard real speech in the candidate interruption `turnId`: stop Lucy now. The
+   * server has already abandoned her answer (`turn_done` with `interrupted` follows) and
+   * is listening to that audio as the turn `turnId`.
+   */
+  | { type: 'speech_confirmed'; turnId: string }
+  /**
+   * The candidate interruption `turnId` was not speech (too short, or Silero heard only
+   * noise): restore Lucy's volume and carry on. The server dropped that audio and her
+   * answer continues untouched.
+   */
+  | { type: 'speech_rejected'; turnId: string }
   /** A problem with the session as a whole; the browser shows `message` and may reconnect. */
   | { type: 'error'; code: LucyLiveErrorCode; message: string };
 
@@ -119,6 +148,8 @@ export function isLucyLiveClientMessage(value: unknown): value is LucyLiveClient
     case 'hello':
       return v.language === 'en' || v.language === 'fr';
     case 'speech_start':
+      return typeof v.turnId === 'string' && v.turnId.length > 0 && v.turnId.length <= 64
+        && (v.lucyAudible === undefined || typeof v.lucyAudible === 'boolean');
     case 'speech_end':
     case 'speech_cancel':
       return typeof v.turnId === 'string' && v.turnId.length > 0 && v.turnId.length <= 64;

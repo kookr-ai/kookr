@@ -33,6 +33,8 @@ export function resolveLucyLiveConfig(
   return { ok: true, config: { earsUrl, brain, ttsUrl } };
 }
 
-export function lucyLiveStatusOf(result: LucyLiveConfigResult): LucyLiveStatus {
-  return result.ok ? { available: true } : { available: false, reason: result.reason };
+/** `bargeInConfirmation` says whether the server can confirm interruptions with Silero (see the contract). */
+export function lucyLiveStatusOf(result: LucyLiveConfigResult, bargeInConfirmation?: 'silero' | 'off'): LucyLiveStatus {
+  if (!result.ok) return { available: false, reason: result.reason };
+  return bargeInConfirmation ? { available: true, bargeInConfirmation } : { available: true };
 }

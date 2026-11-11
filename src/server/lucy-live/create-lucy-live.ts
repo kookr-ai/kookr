@@ -7,6 +7,7 @@
 
 import type { IncomingMessage } from 'node:http';
 import type { WebSocket } from 'ws';
+import type { SileroVad } from '../../adapters/lucy-live/silero-vad.js';
 import { openEarsTurn, transcribeOnce } from '../../adapters/lucy-live/ears-client.js';
 import { streamBasetenChat } from '../../adapters/llm/baseten-stream.js';
 import { synthesize } from '../../adapters/tts-client.js';
@@ -19,6 +20,8 @@ import { bindLucyLiveSocket } from './ws-handler.js';
 
 export interface LucyLiveDeps {
   config: LucyLiveConfig;
+  /** Silero speech detector; null or absent when it could not be loaded (interruptions are then not confirmed). */
+  vad?: SileroVad | null;
   /** Live task list; read fresh for every turn. */
   getTasks: () => readonly BriefingTask[];
   /** Voice resolved at call time, like the speech routes (settings first, then the install default). */
@@ -52,6 +55,7 @@ export function createLucyLive(deps: LucyLiveDeps): LucyLiveService {
             temperature: 0.3,
             reasoningEffort: 'none',
           }),
+          openVad: deps.vad ? () => deps.vad!.openTurn() : undefined,
           synthesize: async (text, signal) => {
             const result = await synthesize({ ttsUrl, text, voice: deps.getVoice(), signal });
             return { wavBase64: result.audioBase64, durationMs: result.durationMs };

@@ -41,7 +41,11 @@ async function fetchStatus(): Promise<LucyLiveStatus | null> {
     if (!response.ok) return null;
     const body = (await response.json()) as Partial<LucyLiveStatus> | null;
     if (!body || typeof body.available !== 'boolean') return null;
-    return { available: body.available, ...(typeof body.reason === 'string' ? { reason: body.reason } : {}) };
+    return {
+      available: body.available,
+      ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+      ...(body.bargeInConfirmation === 'silero' || body.bargeInConfirmation === 'off' ? { bargeInConfirmation: body.bargeInConfirmation } : {}),
+    };
   } catch {
     return null;
   }
@@ -107,6 +111,7 @@ export function useLucyLive(): UseLucyLiveResult {
       }
       session = new LucyLiveSession({
         language: conversationLanguage(),
+        bargeInConfirmation: status.bargeInConfirmation === 'silero',
         onView: (patch) => {
           if (!cancelled) setView((previous) => ({ ...previous, ...patch }));
         },

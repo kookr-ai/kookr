@@ -283,6 +283,7 @@ import { filterLaunchableAgentTypes } from '../adapters/grok-auth-availability.j
 import { resolveUmbrellaDecomposeLaunch } from './umbrella-decompose-launch.js';
 import { startHttpAndWebSockets } from './bootstrap/start-http-and-websockets.js';
 import { createLucyLive } from './lucy-live/create-lucy-live.js';
+import { loadSileroVad } from '../adapters/lucy-live/silero-vad.js';
 import { lucyLiveStatusOf, resolveLucyLiveConfig } from './lucy-live/config.js';
 import { DEFAULT_TTS_VOICE } from './tts-manager.js';
 import type { SystemdNotifier } from './systemd-notify.js';
@@ -2876,10 +2877,13 @@ export async function createKookrServerInternal(config: KookrConfig): Promise<Ko
   // Lucy live (issue #3659): a spoken conversation. Needs the speech recogniser, a
   // Baseten key and the speech service; otherwise the status route says which is missing.
   const lucyLiveConfig = resolveLucyLiveConfig(process.env, ttsUrl);
-  const lucyLiveStatus = lucyLiveStatusOf(lucyLiveConfig);
+  // Silero confirms interruptions; without it Lucy live works as before (one warning is logged).
+  const lucyLiveVad = lucyLiveConfig.ok ? await loadSileroVad() : null;
+  const lucyLiveStatus = lucyLiveStatusOf(lucyLiveConfig, lucyLiveVad ? 'silero' : 'off');
   const lucyLive = lucyLiveConfig.ok
     ? createLucyLive({
         config: lucyLiveConfig.config,
+        vad: lucyLiveVad,
         getTasks: () => taskStore.viewTasks(),
         getVoice: () => currentSettings.speakVoice ?? config.ttsVoice ?? DEFAULT_TTS_VOICE,
         log: lucyInteractionLog,

@@ -425,16 +425,19 @@ things she said.
 #### Talk to Lucy hands-free (optional, off by default)
 
 The **Talk** button in the panel's title bar starts a spoken conversation: you speak, she answers out
-loud about a second after you stop, and you can talk over her to stop her at once. She answers from
+loud about a second after you stop, and you can talk over her to stop her. She answers from
 the current task status (what is running, stopped or recently finished) and says so when she does not
 know something. She cannot act on tasks yet.
 
 - **The microphone is on only while Talk is on**, and Talk is off again after every page reload.
   Audio goes to your own Kookr server and to a speech recogniser running on your machine; only the
   text of what you said goes to the helper model, with the task status, to write her answer.
-- **Interrupting.** Start speaking while she is thinking or speaking and her audio stops immediately.
-  While she talks, the voice detector waits for clearer, longer speech before it cuts her off, so a
-  cough or a click does not stop her. Headphones work best; on speakers her own voice may be picked up.
+- **Interrupting.** Start speaking while she is thinking or speaking and her volume drops at once.
+  The Kookr server then checks the sound with Silero, a small speech detector, which takes a fraction
+  of a second. If it hears a voice, she stops and listens to you; if it was a cough, a click or a
+  door, her volume comes back and she carries on. If the check is not available (the model failed to
+  load), she stops as soon as the browser hears a loud enough sound, as before. Headphones work best;
+  on speakers her own voice may be picked up.
 - **What you see.** Her state (listening, thinking, speaking), what you said as a draft that improves
   while you talk, then the final text, and her answer as she speaks it.
 - **Language.** You can speak English or French (it follows the dictation language). She always answers

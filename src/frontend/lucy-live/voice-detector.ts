@@ -42,8 +42,15 @@ export const STAY_MARGIN_DB = 8;
 
 /** Loud for this long in a row starts a normal turn. */
 export const START_MS = 150;
-/** Guarded mode: loud for this long in a row before Lucy is interrupted. */
+/** Guarded mode: loud for this long in a row before Lucy is interrupted. The long wait is the only protection when nothing else checks the sound. */
 export const GUARDED_START_MS = 300;
+/**
+ * Guarded mode when the server confirms interruptions with Silero (a speech detector): loud
+ * for this long in a row starts a *candidate* interruption. A cough or click that gets this
+ * far only ducks Lucy for a moment and is then rejected by Silero, so the wait can be as short
+ * as a normal start; the shorter wait makes real interruptions feel quicker.
+ */
+export const CONFIRMED_GUARDED_START_MS = 150;
 /** Below the stay bar for this long ends the turn. */
 export const END_SILENCE_MS = 600;
 /** Audio kept from before the detector fired, so the first syllable is not lost. */
@@ -96,7 +103,13 @@ export function frameLevelDb(frame: Float32Array): number {
   return rms <= 1e-5 ? SILENCE_DB : 20 * Math.log10(rms);
 }
 
-export function createVoiceDetector(): VoiceDetector {
+export interface VoiceDetectorOptions {
+  /** How long a loud sound must last to start in guarded mode. Default {@link GUARDED_START_MS}. */
+  guardedStartMs?: number;
+}
+
+export function createVoiceDetector(options: VoiceDetectorOptions = {}): VoiceDetector {
+  const guardedStartMs = options.guardedStartMs ?? GUARDED_START_MS;
   let floorDb = INITIAL_NOISE_FLOOR_DB;
   let lastLevelDb = SILENCE_DB;
   let speaking = false;
@@ -142,7 +155,7 @@ export function createVoiceDetector(): VoiceDetector {
       while (ring.length > 1 && ringMs - ring[0].length / DETECTOR_SAMPLE_RATE * 1000 >= loudRunMs + PRE_ROLL_MS) {
         ringMs -= (ring.shift() as Float32Array).length / DETECTOR_SAMPLE_RATE * 1000;
       }
-      const needMs = mode === 'guarded' ? GUARDED_START_MS : START_MS;
+      const needMs = mode === 'guarded' ? guardedStartMs : START_MS;
       if (loudRunMs >= needMs) {
         speaking = true;
         speechMs = loudRunMs;

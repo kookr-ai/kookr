@@ -8,6 +8,7 @@ const tracked = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../telemetry.js', () => ({ track: (event: Record<string, unknown>) => { tracked.push(event); } }));
 
 import { useLucyLive, type UseLucyLiveResult } from './useLucyLive.js';
+import { CONFIRMATION_TIMEOUT_MS } from './lucy-live-session.js';
 import { __resetSoundPreferenceForTests, setSoundEnabled } from '../audio/sound-preference.js';
 import { __resetSpeechBusForTests, subscribeSpeechBus, type SpeechBusEvent } from '../audio/speech-bus.js';
 import { STT_LANGUAGE_KEY } from '../store/stt-language.js';
@@ -47,6 +48,12 @@ interface FakeSource {
   stop: ReturnType<typeof vi.fn>;
   onended: (() => void) | null;
 }
+interface FakeGainNode {
+  gain: { value: number; cancelScheduledValues: ReturnType<typeof vi.fn>; setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn> };
+  connect: ReturnType<typeof vi.fn>;
+  disconnect: ReturnType<typeof vi.fn>;
+}
+const gains: FakeGainNode[] = [];
 const contexts: FakeAudioContext[] = [];
 const processors: Array<{ onaudioprocess: ((e: unknown) => void) | null }> = [];
 const sources: FakeSource[] = [];
@@ -73,6 +80,15 @@ class FakeAudioContext {
     return source;
   }
   createAnalyser() { return { fftSize: 0, smoothingTimeConstant: 0 }; }
+  createGain(): FakeGainNode {
+    const node: FakeGainNode = {
+      gain: { value: 1, cancelScheduledValues: vi.fn(), setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+      connect: vi.fn(),
+      disconnect: vi.fn(),
+    };
+    gains.push(node);
+    return node;
+  }
   async decodeAudioData(bytes: ArrayBuffer): Promise<{ duration: number; tag: string }> {
     const tag = String.fromCharCode(...new Uint8Array(bytes));
     if (holdDecoding.has(tag)) await new Promise<void>((resolve) => decodeGates.set(tag, resolve));
@@ -147,6 +163,7 @@ describe('useLucyLive', () => {
     contexts.length = 0;
     processors.length = 0;
     sources.length = 0;
+    gains.length = 0;
     decodeGates.clear();
     holdDecoding = new Set();
     tracked.length = 0;
@@ -355,6 +372,184 @@ describe('useLucyLive', () => {
       mic(-48, 1000); // clears the normal start bar but not the higher guarded one
       expect(sources[0].stop).not.toHaveBeenCalled();
       expect(wire).not.toContain('barge_in');
+    });
+  });
+
+  describe('barge-in with server confirmation', () => {
+    const CANDIDATE_FRAMES = 5; // 150 ms of loud sound starts a candidate when Silero confirms
+
+    async function lucyIsSpeaking() {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'silero' } };
+      const events: SpeechBusEvent[] = [];
+      subscribeSpeechBus((e) => events.push(e));
+      const ws = await turnOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => {
+        ws.receive({ type: 'state', state: 'thinking' });
+        ws.receive(sentence(id, 0));
+        ws.receive(sentence(id, 1));
+        ws.receive({ type: 'state', state: 'speaking' });
+      });
+      await settle();
+      expect(sources).toHaveLength(2);
+      wire.length = 0;
+      sent.length = 0;
+      tracked.length = 0;
+      return { ws, id, events };
+    }
+    /** Talk over her until the detector fires. */
+    function talkOver(): void {
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+    }
+    const timing = (kind: string) => tracked.filter((e) => e.type === 'lucy_live_timing' && e.kind === kind);
+
+    test('ducks her within the same tick, starts a candidate after about 150 ms, and does not stop or send barge_in', async () => {
+      const { events, id } = await lucyIsSpeaking();
+      const processor = processors[processors.length - 1];
+      let frames = 0;
+      for (let i = 1; i <= 40 && !sent.some((m) => m.type === 'speech_start'); i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+        frames = i;
+      }
+      expect(frames).toBeGreaterThanOrEqual(CANDIDATE_FRAMES - 1);
+      expect(frames).toBeLessThanOrEqual(CANDIDATE_FRAMES + 1);
+      const gain = gains[0].gain;
+      expect(gain.linearRampToValueAtTime).toHaveBeenCalledTimes(1);
+      const [target, at] = gain.linearRampToValueAtTime.mock.calls[0] as [number, number];
+      expect(target).toBe(0.25);
+      expect(at - (gain.setValueAtTime.mock.calls[0][1] as number)).toBeCloseTo(0.03, 6);
+      expect(sources[0].stop).not.toHaveBeenCalled();
+      expect(sources[1].stop).not.toHaveBeenCalled();
+      expect(wire).not.toContain('barge_in');
+      expect(wire).not.toContain('played');
+      expect(sent.find((m) => m.type === 'speech_start')).toMatchObject({ lucyAudible: true });
+      expect(lastTurnId()).not.toBe(id);
+      expect(events.at(-1)?.type).not.toBe('idle'); // ducking is not silence
+      expect(timing('barge_in_duck')).toHaveLength(1);
+      expect(timing('barge_in_stop')).toHaveLength(0);
+      // Every sentence goes through the one gain node.
+      expect(sources[0].connect.mock.calls[0][0]).toBe(gains[0]);
+    });
+
+    test('speech_confirmed stops every sound, reports played, goes idle on the bus and measures the stop from detection', async () => {
+      const { ws, id, events } = await lucyIsSpeaking();
+      talkOver();
+      const candidate = lastTurnId();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: candidate }); });
+      expect(sources[0].stop).toHaveBeenCalledTimes(1);
+      expect(sources[1].stop).toHaveBeenCalledTimes(1);
+      expect(events.at(-1)).toEqual({ type: 'idle' });
+      expect(sent.filter((m) => m.type === 'played')).toEqual([{ type: 'played', turnId: id, seq: 0, complete: false }]);
+      expect(timing('barge_in_stop')).toHaveLength(1);
+      expect(latest.timings.bargeInStopMs).not.toBeNull();
+      expect(latest.lastTurnEnd).toBe('interrupted');
+      expect(gains[0].gain.value).toBe(1);
+      // Words of the interrupted answer that arrive later are dropped; the new turn is the current one.
+      const sourcesBefore = sources.length;
+      await act(async () => { ws.receive(sentence(id, 2)); });
+      await settle();
+      expect(sources).toHaveLength(sourcesBefore);
+      await act(async () => { ws.receive({ type: 'transcript', turnId: candidate, text: 'stop', final: false }); });
+      expect(latest.operatorText).toBe('stop');
+    });
+
+    test('speech_rejected turns her back up and the queued sentences keep playing in order', async () => {
+      const { ws, id, events } = await lucyIsSpeaking();
+      talkOver();
+      await act(async () => { ws.receive({ type: 'speech_rejected', turnId: lastTurnId() }); });
+      const gain = gains[0].gain;
+      expect(gain.linearRampToValueAtTime).toHaveBeenCalledTimes(2);
+      expect(gain.linearRampToValueAtTime.mock.calls[1][0]).toBe(1);
+      expect(sources[0].stop).not.toHaveBeenCalled();
+      expect(events.at(-1)?.type).not.toBe('idle');
+      expect(timing('barge_in_rejected')).toHaveLength(1);
+      // The answer goes on: a later sentence is queued behind the earlier ones.
+      holdDecoding = new Set();
+      await act(async () => { ws.receive(sentence(id, 2)); });
+      await settle();
+      expect(sources).toHaveLength(3);
+      const second = sources[1].start.mock.calls[0][0] as number;
+      expect(sources[2].start.mock.calls[0][0]).toBeCloseTo(second + 1, 6);
+    });
+
+    test('a sentence that arrives while the candidate is pending is still queued', async () => {
+      const { ws, id } = await lucyIsSpeaking();
+      talkOver();
+      await act(async () => { ws.receive(sentence(id, 2)); });
+      await settle();
+      expect(sources).toHaveLength(3);
+    });
+
+    test('a short noise: speech_cancel goes to the server and rejection resumes her', async () => {
+      const { ws } = await lucyIsSpeaking();
+      mic(-15, 192);
+      mic(QUIET, 800);
+      expect(wire).toContain('speech_cancel');
+      expect(wire).not.toContain('barge_in');
+      await act(async () => { ws.receive({ type: 'speech_rejected', turnId: lastTurnId() }); });
+      expect(gains[0].gain.linearRampToValueAtTime.mock.calls.at(-1)?.[0]).toBe(1);
+      expect(sources[0].stop).not.toHaveBeenCalled();
+    });
+
+    test('verdicts for another turn are ignored', async () => {
+      const { ws } = await lucyIsSpeaking();
+      talkOver();
+      await act(async () => { ws.receive({ type: 'speech_confirmed', turnId: 'someone-else' }); ws.receive({ type: 'speech_rejected', turnId: 'someone-else' }); });
+      expect(sources[0].stop).not.toHaveBeenCalled();
+      expect(gains[0].gain.linearRampToValueAtTime).toHaveBeenCalledTimes(1);
+    });
+
+    describe('with no verdict', () => {
+      afterEach(() => { vi.useRealTimers(); });
+
+      test('stops her after the confirmation timeout and tells the server', async () => {
+        const { id } = await lucyIsSpeaking();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); // after setup, which needs real timers
+        talkOver();
+        act(() => { vi.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS - 10); });
+        expect(sources[0].stop).not.toHaveBeenCalled();
+        act(() => { vi.advanceTimersByTime(20); });
+        expect(sources[0].stop).toHaveBeenCalledTimes(1);
+        expect(sources[1].stop).toHaveBeenCalledTimes(1);
+        expect(wire).toContain('barge_in');
+        expect(sent.find((m) => m.type === 'played')).toEqual({ type: 'played', turnId: id, seq: 0, complete: false });
+        expect(timing('barge_in_stop')).toHaveLength(1);
+      });
+
+      test('a verdict that arrives in time cancels the timeout', async () => {
+        const { ws } = await lucyIsSpeaking();
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        talkOver();
+        act(() => { ws.receive({ type: 'speech_rejected', turnId: lastTurnId() }); });
+        act(() => { vi.advanceTimersByTime(CONFIRMATION_TIMEOUT_MS * 2); });
+        expect(sources[0].stop).not.toHaveBeenCalled();
+        expect(wire).not.toContain('barge_in');
+      });
+    });
+  });
+
+  describe('barge-in when the server cannot confirm', () => {
+    test('stops her at once and sends barge_in then speech_start, with no ducking', async () => {
+      statusResponse = { ok: true, body: { available: true, bargeInConfirmation: 'off' } };
+      const ws = await turnOn();
+      speakTurn();
+      const id = lastTurnId();
+      await act(async () => { ws.receive(sentence(id, 0)); ws.receive({ type: 'state', state: 'speaking' }); });
+      await settle();
+      wire.length = 0;
+      const processor = processors[processors.length - 1];
+      for (let i = 0; i < 40 && sources[0].stop.mock.calls.length === 0; i++) {
+        act(() => { processor.onaudioprocess?.({ inputBuffer: { getChannelData: () => frame(-15) } }); });
+      }
+      expect(sources[0].stop).toHaveBeenCalledTimes(1);
+      expect(wire.filter((w) => w !== 'pcm').slice(0, 3)).toEqual(['played', 'barge_in', 'speech_start']);
+      expect(sent.find((m) => m.type === 'speech_start')).not.toHaveProperty('lucyAudible');
+      expect(gains[0].gain.linearRampToValueAtTime).not.toHaveBeenCalled();
+      expect(tracked.some((e) => e.kind === 'barge_in_duck')).toBe(false);
     });
   });
 
