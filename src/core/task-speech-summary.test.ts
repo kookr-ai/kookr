@@ -337,20 +337,20 @@ describe('summarizeTaskForSpeech', () => {
       expect('rawText' in result).toBe(false);
     });
 
-    test('validation runs on the model text before the transform (denylist still wins)', async () => {
+    test('validation runs on the model text before the transform (an instruction is still rejected)', async () => {
       const client = mockClient('{"summary":"Merge `src/a/b.ts` into main."}');
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(true);
     });
 
-    test('denylist is re-applied after the transform (run_tests -> "run tests")', async () => {
+    test('the instruction check is re-applied after the transform (run_tests -> "run tests")', async () => {
       const client = mockClient('{"summary":"Next step is run_tests on the branch."}');
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(true);
       expect(result.text).not.toMatch(/\brun\b/i);
     });
 
-    test.each(['approve_request', 'push_notifications'])('denylist still fires for identifier %s', async (id) => {
+    test.each(['approve_request', 'push_notifications'])('an identifier that turns into a decision or action word when spoken is still rejected: %s', async (id) => {
       const client = mockClient(JSON.stringify({ summary: `Waiting on ${id} from the user.` }));
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(true);
@@ -405,6 +405,113 @@ describe('summarizeTaskForSpeech', () => {
       const result = await summarizeTaskForSpeech(client, baseInput);
       expect(result.usedFallback).toBe(usedFallback);
       if (!usedFallback) expect(result.text.split(' ')).toHaveLength(plain + refs * 2);
+    });
+
+    // Real model replies that the former "any occurrence" rule threw away.
+    test.each([
+      'The export branch was rebased onto main and two conflicts were resolved. The agent now needs your permission to force-push the branch so the pull request updates.',
+      'The flaky login test fails about one run in five. The agent traced it to a race, added a wait, and planned to commit and run the suite ten times, but the session ended unexpectedly.',
+      'The agent finished the cleanup and will delete the old worktree after the merge lands.',
+      'The agent reworded the commit message and tested a push notification.',
+      'After you ran the suite by hand, the agent picked up where it stopped.',
+      'The first run failed; the second run passed.',
+      'The agent will rebase, push, and open a pull request.',
+      'The suite takes a long time to run.',
+      'The agent made the cache thread-safe and reran the benchmarks.',
+      'Enter key handling was fixed, and the agent pushed the branch.',
+      // Spoken before this change, and still spoken: words the old rule never looked at.
+      'The task finished. Type-checking and the unit tests pass.',
+      'The agent stopped. Type mismatches remain in two files.',
+      'Type inference now works in the parser.',
+      'Paste handling was fixed in the terminal.',
+      'The agent asked a question. Reply pending.',
+      'Hit an error while running the tests.',
+      "The agent applied the reviewer's suggestions and pushed the branch.",
+      'The agent deleted the old files as you requested.',
+      'The agent pushed the branch and is waiting for you to review the pull request.',
+      'The agent is running the tests you asked for.',
+      'The agent is running the tests and should be done in a few minutes.',
+      'The agent merged the fix, which should resolve the failing test.',
+      'The agent accepted your suggestion and renamed the function.',
+      'The branch should be merged.',
+      'The agent added a safe default for the timeout.',
+      'The agent safely migrated the data to the new table.',
+      'Confirm dialog styling was fixed.',
+    ])('a summary that describes an action is spoken: %s', async (summary) => {
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result).toEqual({ text: summary, usedFallback: false });
+    });
+
+    test.each([
+      ['an imperative opening the summary', 'Run the migration before the deploy.'],
+      ['an imperative opening a later sentence', 'The tests pass. Merge the branch into main.'],
+      ['an imperative behind "please"', 'The build is green. Please push the branch.'],
+      ['a hyphenated imperative', 'Force-push the branch to update the pull request.'],
+      ['advice addressed to the listener', 'The migration is ready and you should run it now.'],
+      ['advice with an adverb in between', 'The branch is green, so you can safely merge it.'],
+      ['a request relayed to the listener', 'The agent asks you to push the branch by hand.'],
+      ['a recommendation', 'The agent recommends merging the pull request today.'],
+      ['a safety claim', 'The agent says it is safe to delete the old data.'],
+      ['a decision word used descriptively', 'The agent is waiting for you to allow the command.'],
+      ['an imperative after a semicolon', 'The build is green; run the deploy.'],
+      ['an imperative after a colon and "now"', 'Next step: now push the branch.'],
+      ['an imperative with a "re" prefix', 'The first attempt timed out. Re-run the export.'],
+      ['advice with "you will need to"', 'The agent stopped, so you will need to commit the files.'],
+      ['advice with "you have to"', 'The agent says you have to cancel the old job.'],
+      ['advice with "go ahead and"', 'The agent says to go ahead and merge the pull request.'],
+      ['advice with "make sure to"', 'The agent says to make sure to run the migration.'],
+      ['a suggestion in the -ing form', 'The agent suggests deleting the old branch.'],
+      ['an instruction that only appears once an identifier is spoken', 'Next step is run_tests on the branch.'],
+      ['the decision word "deny"', 'The agent expects the operator to deny the request.'],
+      ['the decision word "reject"', 'The reviewer may reject the change.'],
+      ['the decision word "dismiss" in capitals', 'DISMISS the finding.'],
+      ['a safety claim without "to"', 'Pushing is safe.'],
+      ['a safety claim about something else', 'The agent is waiting for your permission to wipe the database; it is safe.'],
+      ['"fine to"', 'The agent says it is fine to force-push the branch.'],
+      ['"feel free"', 'Feel free to merge.'],
+      ['"let us"', "Let's merge it."],
+      ['"don\'t forget"', "Don't forget to push the branch."],
+      ['"be sure"', 'Be sure to push the branch.'],
+      ['"consider"', 'Consider merging it.'],
+      ['"time to"', 'Time to merge.'],
+      ['an adverb between "you" and the verb', 'You really should merge this.'],
+      ['"let it"', 'Let it push to main.'],
+      ['an imperative after "go ahead" and a comma', 'The agent finished the refactor. Go ahead, merge it.'],
+      ['an imperative after a comma', 'The agent finished, merge it now.'],
+      ['an imperative after a dash', 'The agent finished\u2014merge it.'],
+      ['an imperative in quotes', '"Merge it" the agent says.'],
+      ['an imperative with no space after the full stop', 'The agent finished.Merge it.'],
+      ['"grant"', 'Grant permission to push the branch.'],
+      ['"confirm"', 'Confirm the prompt so the agent can delete the cache.'],
+      ['"accept"', 'Accept the request to force-push.'],
+      ['an answer to a prompt', 'Say yes so it can push.'],
+      ['a typed answer to a prompt', 'Type yes to delete everything.'],
+      ['"kindly"', 'Kindly merge the pull request.'],
+      ['"go" before the verb', 'Go merge it.'],
+      ['an emphatic "do"', 'Do merge it now.'],
+      ['an imperative after a comma with a noun object', "It's green, push the branch."],
+      ['an imperative after an ellipsis character', 'The agent finished\u2026 merge it now.'],
+      ['reassurance with "fine"', 'Force-pushing is fine here.'],
+      ['reassurance with "no risk"', 'Pushing carries no risk.'],
+      ['reassurance with "wise"', 'Merging it now would be wise.'],
+      ['a one-letter answer to a prompt', 'Type y to push.'],
+      ['a key press as the answer', 'Hit enter to push the branch.'],
+      ['a request for a secret', 'Paste your token so it can push.'],
+      ['a command after "so"', 'Tests pass so merge the branch.'],
+      ['a command after a comma, ending in "now"', 'Tests pass, merge now.'],
+      ['an instruction about the operator', 'The operator needs to merge the branch now.'],
+      ['"go on and"', 'Go on and merge it.'],
+      ['"best to"', 'Best to merge the branch now.'],
+      ['a relayed command', 'The agent says merge it now.'],
+      // A sentence that opens with an action word is not a plain description, even as a noun.
+      ['an action word opening a sentence as a noun', 'Pull request 12 was closed. Merge conflicts blocked it.'],
+      ['an action word opening a clause after a colon', 'It reran the tests: push failed with a timeout.'],
+      ['an action word in a sentence that does not open with its subject', 'Waiting to run the migration.'],
+    ])('a summary that instructs the listener is rejected: %s', async (_label, summary) => {
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(true);
     });
 
     test('fallback output is made speakable and reports rawText when it changed', async () => {

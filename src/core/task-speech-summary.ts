@@ -17,11 +17,11 @@ const MAX_FIELD_CHARS = 180;
 const MAX_SUMMARY_CHARS = 280;
 const MAX_SUMMARY_WORDS = 45;
 /**
- * Token budget for one summary call. The summary itself needs about 60 tokens, but a
- * reasoning model spends hidden reasoning tokens before any JSON is emitted. With the
- * former budget of 120 a share of calls finished with `length` before the JSON closed,
- * and each of those was spoken as the template fallback. This is the same failure, and
- * the same budget, as task naming (issue #1555).
+ * Token budget for one summary call. The summary itself needs about 60 tokens,
+ * but reasoning models spend hidden reasoning tokens before any JSON is emitted.
+ * With the former budget of 120 a share of calls finished with `length` before
+ * the JSON closed, and each of those was spoken as the template fallback. This is
+ * the same failure, and the same budget, as task naming (issue #1555).
  */
 const MAX_OUTPUT_TOKENS = 512;
 /**
@@ -35,7 +35,94 @@ const MAX_SPOKEN_EXPLANATION_CHARS = 100;
 /** How much of a finding explanation the fallback looks at (it is spoken only when this is short enough). */
 const FINDING_EXPLANATION_CHARS = 300;
 
-const ADVICE_VERB_DENYLIST = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
+/**
+ * Words for the operator's own decision on a prompt. A summary containing one is never
+ * spoken, in any form: the text is built from untrusted agent output, and "approve" or
+ * "allow" in the operator's ear is exactly what an injected instruction would aim for.
+ * The prompt asks for "is waiting for your permission" instead.
+ */
+const DECISION_WORD_DENYLIST = /\b(approve|deny|reject|allow|dismiss)\b/i;
+
+/**
+ * A claim that something is safe to do. The summary is built from untrusted agent
+ * output, and reassurance is how an injected instruction would lower the operator's
+ * guard, so it is never spoken. An adjective or adverb that describes the work ("a safe
+ * default", "safely migrated", "thread-safe") is not such a claim.
+ */
+const SAFETY_CLAIM = /\b(?:is|are|be|was|it's|that's|looks|seems)\s+(?:(?:now|also|still|quite|very|perfectly|totally|completely|entirely)\s+)?safe\b(?!-)|\bsafe to\b|\bharmless\b|\brisk-free\b|\bno risk\b|\b(?:fine|okay|ok|alright|all right) to\b/i;
+
+/** Telling the listener how to answer a prompt ("say yes", "type y", "hit enter") or to hand over a secret. */
+const ANSWER_PROMPT = /\b(?:say|type|answer|reply|enter|press|hit|tap|choose|select)(?: with)? ["'“]?(?:yes|y|ok|okay|enter|return)\b|\bpaste (?:your|the|a|an) (?:\w+ )?(?:tokens?|keys?|passwords?|secrets?|credentials?)\b/i;
+
+/**
+ * Everyday verbs for the work itself. Before, any summary containing one was replaced by
+ * the template, which threw away about half of the model's summaries, and those were
+ * the ones about permission prompts and failed commands ("needs your permission to
+ * force-push the branch", "fails one run in five").
+ *
+ * The list is the same as before on purpose. A sentence containing one of these verbs
+ * is still rejected by default; it is spoken only when it has the shape of a plain
+ * description (see {@link describesAction}). Being strict here costs nothing that was
+ * spoken before, because every such sentence used to be rejected.
+ */
+const ACTION = '(?:force-|re-?)?(?:execute|run|delete|cancel|merge|push|commit|click)';
+const ACTION_ING = '(?:force-|re-?)?(?:executing|running|deleting|cancell?ing|merging|pushing|committing|clicking)';
+const MENTIONS_ACTION = new RegExp(`\\b${ACTION}\\b`, 'i');
+
+/** How a descriptive sentence starts: with its subject, or with a clause that leads to it. Anything else may be a command. */
+const DESCRIPTIVE_OPENER = /^(?:the|it|its|it's|this|that|these|those|a|an|both|all|each|every|no|none|nothing|everything|some|several|most|many|another|one|two|three|four|five|six|seven|eight|nine|ten|\d+|there|after|once|when|while|before|since|because|although|though|during|until|with|without|in|on|at|for|from|by|meanwhile|earlier|currently|agents?|tests?|pull request|issue|task|work|his|her|their|our|your|my|we|they|he|she|i)\b/i;
+
+/**
+ * Words that aim a sentence at the listener: "you should run", "please merge", "the
+ * operator needs to push". "your" is not one: "needs your permission to push" describes.
+ */
+const LISTENER_CUE = /\b(?:you|please|kindly|let's|let us|let (?:it|them|him|her)|feel free|free to|don't forget|do not forget|be sure|make sure|remember to|consider|go ahead|go on|should|must|ought|needs? to|has to|have to|best to|better to|recommend\w*|suggest\w*|advis\w*|next step|wise|okay|ok|fine(?!-)|risk|operator|user|(?:it's|it is) time to)\b/i;
+
+/** A command inside a sentence: after a comma or an opening quote, after "so/then/now/just", or after "says/tells". */
+const INNER_COMMAND = new RegExp(
+  `,\\s*(?:(?:then|and|now|just|so|go)\\s+)*${ACTION}\\s+(?:it|this|that|them|these|those|the|a|an|your|all|everything|now)\\b`
+  + `|["'\\u201c\\u2018(]\\s*${ACTION}\\b`
+  + `|\\b(?:so|then|now|just)\\s+${ACTION}\\b`
+  + `|\\b(?:says?|said|tells?|told)\\s+(?:to\\s+)?${ACTION}\\b`,
+  'i',
+);
+
+/**
+ * Advice about an action in its -ing form: "consider merging it", "recommends pushing",
+ * "merging now would be wise". The -ing forms were never checked before, so only these
+ * narrow shapes are rejected; "the agent is running the tests you asked for" is spoken.
+ */
+const ADVICE_ON_ACTION = new RegExp(
+  `\\b(?:consider|recommend\\w*|suggest\\w*|advis\\w*)\\s+(?:\\w+\\s+){0,2}?${ACTION_ING}\\b`
+  + `|\\b${ACTION_ING}\\b[^.!?;]*\\b(?:is|would be|will be|seems|looks)\\s+(?:\\w+\\s+){0,2}?(?:fine|wise|okay|ok|advisable|recommended|best|a good idea)\\b`,
+  'i',
+);
+
+/** A sentence with an action verb is a plain description when it opens with its subject, is not aimed at the listener and hides no command. */
+function describesAction(sentence: string): boolean {
+  return DESCRIPTIVE_OPENER.test(sentence) && !LISTENER_CUE.test(sentence) && !INNER_COMMAND.test(sentence);
+}
+
+/**
+ * True when the text tells the listener what to do, how to answer, or that something is
+ * safe, rather than describing what happened.
+ *
+ * This is a heuristic, not a security boundary. An instruction can still get through
+ * when it uses a verb outside the list ("ship it"), as it could before these rules
+ * existed, or when it is dressed as a description ("the agent will merge it once the
+ * tests pass" reads the same whether it is a report or a plan the operator is being
+ * walked into). The boundary is elsewhere: the summary is only spoken and shown, and
+ * the operator decides in the dashboard with the real prompt in front of them.
+ */
+function givesInstruction(text: string): boolean {
+  if (DECISION_WORD_DENYLIST.test(text) || SAFETY_CLAIM.test(text) || ANSWER_PROMPT.test(text)) return true;
+  if (ADVICE_ON_ACTION.test(text)) return true;
+  return text
+    .split(/(?<=[.!?;:…])\s*|[—–\n]|\s-\s/)
+    .map((sentence) => sentence.trim())
+    .some((sentence) => MENTIONS_ACTION.test(sentence) && !describesAction(sentence));
+}
+
 /**
  * What counts as a secret. Unchanged from origin/main on purpose: any run of 32 or more
  * base64-alphabet characters is hidden, whatever it looks like (a long file path
@@ -53,7 +140,7 @@ Rules:
 - Output is <= 45 words and <= 280 characters.
 - Prioritize the recent activity: what the task is about, what happened, and what the agent said or did recently.
 - Do NOT narrate metadata such as task title, agent type, provider, model, branch, worktree, or cost unless activity is unavailable.
-- Do NOT recommend actions (no "approve", "deny", "run", "merge", etc.).
+- Describe, do not instruct. Say what the agent did or is waiting for ("is waiting for your permission to push the branch"). Never tell the listener what to do, never use the words "approve", "deny", "reject", "allow" or "dismiss", and never say that an action is safe.
 - Write for the ear, in plain spoken English. Say what the task is about in everyday words, not in code terms.
 - Never include file paths, URLs, commit hashes, identifiers such as snake_case or camelCase names, or markdown. Name a file by its plain name at most, and prefer describing what it does.
 - Say "pull request 123" or "issue 123", never "#123" or a link. Speak numbers plainly ("three files", not "3 files, 2 failed").
@@ -173,19 +260,20 @@ const SPOKEN_CEILING = 1.5;
 function withinSummaryLimits(summary: string): boolean {
   return summary.length <= MAX_SUMMARY_CHARS * MODEL_OVERSHOOT
     && wordCount(summary) <= MAX_SUMMARY_WORDS * MODEL_OVERSHOOT
-    && !ADVICE_VERB_DENYLIST.test(summary);
+    && !givesInstruction(summary);
 }
 
 /**
  * Checks for the spoken form. The rewrite can lengthen text ("#42" -> "number 42"),
- * so only a generous ceiling applies, and the denylist ignores phrases the
- * rewrite generates itself ("a commit" for a hash) but still catches words that
- * come from identifiers ("run_tests" -> "run tests").
+ * so only a generous ceiling applies, and the instruction check ignores phrases the
+ * rewrite generates itself ("a commit" for a hash) but still catches an instruction
+ * that only appears once an identifier is spoken as words ("run_tests" -> "run tests",
+ * "approve_request" -> "approve request").
  */
 function spokenWithinLimits(spoken: string): boolean {
   return spoken.length <= MAX_SUMMARY_CHARS * SPOKEN_CEILING
     && wordCount(spoken) <= MAX_SUMMARY_WORDS * SPOKEN_CEILING
-    && !ADVICE_VERB_DENYLIST.test(stripGeneratedPhrases(spoken));
+    && !givesInstruction(stripGeneratedPhrases(spoken));
 }
 
 function normalizeSummary(raw: string): string | null {
