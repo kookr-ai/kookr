@@ -165,19 +165,49 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     expect(fileExists(dir, 'code-review@agent-notebook')).toBe(true); // never reaped while it has a lesson
   });
 
-  test('equal-scored lessons do not push each other out of a full shelf: only the first moves, the rest stay on the legacy shelf', () => {
+  test('lessons that merely tie the full target\'s lowest do not push anything out: they stay put, and a re-run decides the same way', () => {
     const dir = store();
     writeShelf(dir, `code-review@${CANON}`, L([9, 'n1'], [9, 'n2'], [1, 'n3 weakest']));
-    writeShelf(dir, 'code-review@agent-notebook', L([1, 'weak a'], [1, 'weak b'], [1, 'weak c']));
+    writeShelf(dir, 'code-review@agent-notebook', L([1, 'weak a'], [1, 'weak b']));
     commitAll(dir);
     const dry = run(dir, { cap: 3 });
-    expect(dry.text).toContain('SKIP would evict a moved lesson');
-    const { result } = run(dir, { apply: true, cap: 3 });
-    const target = readLessons(dir, `code-review@${CANON}`);
-    expect(target.map(([, t]) => t)).toEqual(['n1', 'n2', 'weak a']);
-    expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t)).toEqual(['weak b', 'weak c']);
-    expect(result.ok).toBe(false); // two lessons await a manual decision
-    expect(fileExists(dir, 'code-review@agent-notebook')).toBe(true);
+    expect(dry.text).toContain('SKIP low score');
+    expect(dry.text).toContain('does not score above');
+    for (let i = 0; i < 2; i++) {
+      const { result } = run(dir, { apply: true, cap: 3 });
+      expect(result.ok).toBe(false); // two lessons await a manual decision
+      expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t)).toEqual(['n1', 'n2', 'n3 weakest']);
+      expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t)).toEqual(['weak a', 'weak b']);
+    }
+  });
+
+  test('a strong lesson moves first, replacing the weakest; the weak ones behind it are then refused, not shuffled in', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([9, 'n1'], [9, 'n2'], [1, 'n3 weakest']));
+    writeShelf(dir, 'code-review@agent-notebook', L([1, 'weak a'], [3, 'strong'], [1, 'weak b']));
+    commitAll(dir);
+    run(dir, { apply: true, cap: 3 });
+    // 'strong' (+3) evicts n3 and ages n1 (9 -> 8); the +1 lessons are below the new minimum (+3).
+    expect(readLessons(dir, `code-review@${CANON}`)).toEqual([
+      [8, 'n1'],
+      [9, 'n2'],
+      [3, 'strong'],
+    ]);
+    expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
+  });
+
+  test('a target already over the cap is refused (a move would evict several lessons at once) unless --force-low', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([1, 'a'], [2, 'b'], [3, 'c'], [4, 'd'], [5, 'e']));
+    writeShelf(dir, 'code-review@agent-notebook', L([9, 'incoming']));
+    commitAll(dir);
+    const dry = run(dir, { cap: 3 });
+    expect(dry.text).toContain('SKIP over-cap');
+    run(dir, { apply: true, cap: 3 });
+    expect(readLessons(dir, `code-review@${CANON}`)).toHaveLength(5); // untouched
+    expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[9, 'incoming']]);
+    const forced = run(dir, { cap: 3, forceLow: true });
+    expect(forced.text).toContain('existing lessons evicted from full targets (lost): 3');
   });
 
   test('--force-low moves the weak lesson anyway, evicting the target\'s lowest', () => {

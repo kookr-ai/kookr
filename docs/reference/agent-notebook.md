@@ -241,8 +241,11 @@ lesson and lowers by one point the score of the remaining lesson touched least
 recently (`nb` calls this aging), so moving a weak lesson into a
 full shelf destroys a better one. The script therefore simulates the moves one at
 a time (highest score first), prints every eviction and point it would cost, and
-refuses a move whose lesson scores below a **full** target's minimum unless
-`--force-low` is given. It also predicts the cases `nb` refuses: a lesson the
+refuses a move whose lesson does not score strictly **above** a **full** target's
+lowest lesson unless `--force-low` is given (an equal swap would only trade one
+lesson for another that is no better, and equal-scored lessons would push each
+other out one by one). A target already holding more than the cap would lose
+several lessons at once, so that is refused too. It also predicts the cases `nb` refuses: a lesson the
 target already holds is left on its legacy shelf and listed for a manual decision
 (`nb move` prints "skipped" and exits 0, so the script reads the `--json` result,
 never the exit code), and a target name over 128 characters is reported before
@@ -290,12 +293,13 @@ one repo) is a candidate for the domain shelf. Two tiers, with different powers:
   their project shelves. Fuzzy matching never deletes, because a lesson and its
   negation can look alike, and paraphrases can differ in a detail only one copy keeps.
 
-Two safeguards apply to both scripts. A move that would push out a lesson the same
-run moved in earlier (equal scores let a batch of weak lessons evict each other) is
-skipped unless `--force-low`. And promotion runs all its moves first and its
-removals after, removing a copy only while the destination demonstrably still holds
-the lesson. Its rollback is the same as the migration's, from the run's own tag,
-reverting the commits whose subject starts `nb move` or `nb rm`.
+Two more safeguards apply to promotion. Groups are applied highest-scored first,
+and promotion runs all its moves first and its removals after, removing a copy only
+while the destination demonstrably still holds the lesson (a later move into the
+same full shelf could otherwise push the lesson out). Its rollback is the same as
+the migration's, from the run's own tag, reverting the commits whose subject starts
+`nb move`, `nb rm` or `lesson promotion:`. Like the migration, it deletes the
+0-byte leftover of a shelf it moved the last lesson out of.
 
 A group goes to `fleet-global` only when the reviewer names it in
 `--to-global <id>`; the default is always the bare domain shelf. Measured on the

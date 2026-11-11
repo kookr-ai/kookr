@@ -90,7 +90,7 @@ export function minScore(entries) {
  */
 function admit(entries, newcomer, cap) {
   const all = [...entries.map((e) => ({ ...e })), newcomer];
-  if (all.length <= cap) return { kept: all, evicted: null, docked: null };
+  if (all.length <= cap) return { kept: all, evicted: null, evictedAll: [], docked: null };
   const protectedStart = all.length - 1; // the newcomer is never evicted
   const order = all
     .map((_, i) => i)
@@ -112,7 +112,9 @@ function admit(entries, newcomer, cap) {
     docked = { id: kept[pos].id, text: kept[pos].text, from: kept[pos].score, to: kept[pos].score - 1 };
     kept[pos].score -= 1;
   }
-  return { kept, evicted: evicted[0] ?? null, docked };
+  // `evicted` is the first line dropped (all `nb move --json` reports); a target that
+  // is already OVER the cap loses several at once, listed in `evictedAll`.
+  return { kept, evicted: evicted[0] ?? null, evictedAll: evicted, docked };
 }
 
 /**
@@ -140,8 +142,8 @@ export function predictMove(store, from, to, id, cap = maxLines()) {
   const targetFull = target.length >= cap;
   const targetMin = minScore(target);
   if (collider) return { outcome: 'duplicate', entry, collidedId: collider.id, targetFull, targetMin };
-  const { evicted, docked } = admit(target, { ...entry }, cap);
-  return { outcome: 'moved', entry, evicted, docked, targetFull, targetMin };
+  const { evicted, evictedAll, docked } = admit(target, { ...entry }, cap);
+  return { outcome: 'moved', entry, evicted, evictedAll, docked, targetFull, targetMin };
 }
 
 /** Apply a move to `store` in place (the same rules as {@link predictMove}). Returns the prediction. */
@@ -171,20 +173,24 @@ export function applyRemove(store, shelf, id) {
 /**
  * Decide one move against `store` WITHOUT changing it. `action` is 'move' or
  * 'skip'; a skip carries a `reason`:
- *   'already-moved'    the lesson is no longer on the source shelf
- *   'duplicate'        the target already holds it (nb would refuse)
- *   'low-score'        the target is FULL and the lesson scores below its minimum
- *   'would-evict-moved' the move would evict a lesson this same run moved in
- *                      earlier (`movedKeys`, entries like "<shelf>|<id>"): equal
- *                      scores otherwise let a batch of weak lessons push each
- *                      other out one by one and lose all but the last
- *   'ambiguous'        the id is not unique on the source shelf
- * `--force-low` (`forceLow`) overrides 'low-score' and 'would-evict-moved' only.
+ *   'already-moved'  the lesson is no longer on the source shelf
+ *   'duplicate'      the target already holds it (nb would refuse)
+ *   'low-score'      the target is FULL and the lesson does not score STRICTLY
+ *                    above the target's lowest lesson. Moving it would evict a
+ *                    lesson that is no worse (a pure loss), and a batch of equal
+ *                    scores would push each other out one by one, so equal is
+ *                    refused too. The rule depends only on the store, so a
+ *                    re-run decides the same way.
+ *   'over-cap'       the target already holds more than the cap, so the move
+ *                    would evict several lessons at once (`nb move --json`
+ *                    reports only the first)
+ *   'ambiguous'      the id is not unique on the source shelf
+ * `--force-low` (`forceLow`) overrides 'low-score' and 'over-cap' only.
  * Used by the dry-run (on a cloned snapshot, advanced one move at a time) and by
  * --apply (on a fresh re-read of just the two shelves), so both apply the same
  * rules.
  */
-export function decideStep(store, step, { cap = maxLines(), forceLow = false, movedKeys = new Set() } = {}) {
+export function decideStep(store, step, { cap = maxLines(), forceLow = false } = {}) {
   const p = predictMove(store, step.from, step.to, step.id, cap);
   switch (p.outcome) {
     case 'missing':
@@ -195,11 +201,11 @@ export function decideStep(store, step, { cap = maxLines(), forceLow = false, mo
     case 'duplicate':
       return { action: 'skip', reason: 'duplicate', prediction: p };
     default:
-      if (p.targetFull && p.entry.score < p.targetMin && !forceLow) {
-        return { action: 'skip', reason: 'low-score', prediction: p };
+      if (p.evictedAll.length > 1 && !forceLow) {
+        return { action: 'skip', reason: 'over-cap', prediction: p };
       }
-      if (p.evicted && movedKeys.has(`${step.to}|${p.evicted.id}`) && !forceLow) {
-        return { action: 'skip', reason: 'would-evict-moved', prediction: p };
+      if (p.targetFull && p.entry.score <= p.targetMin && !forceLow) {
+        return { action: 'skip', reason: 'low-score', prediction: p };
       }
       return { action: 'move', reason: null, prediction: p };
   }

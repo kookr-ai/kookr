@@ -20,17 +20,18 @@
 // so moving a weak lesson into a full shelf destroys a better one. The plan is
 // therefore simulated one move at a time (scripts/lib/nb-sim.mjs; a parity test
 // replays it against the real `nb`), and:
-//   * if the target is FULL and the mover scores below the target's current
-//     minimum, the move is refused unless --force-low (a non-full target never
-//     refuses: nothing is evicted);
+//   * if the target is FULL and the mover does not score STRICTLY above the
+//     target's lowest lesson, the move is refused unless --force-low: it would
+//     evict a lesson that is no worse, and equal-scored lessons would push each
+//     other out one by one (a non-full target never refuses: nothing is evicted);
+//   * if the target already holds MORE than the cap, a move would evict several
+//     lessons at once (`nb move --json` reports only the first), so it is refused
+//     unless --force-low;
 //   * if the target already holds the same lesson (`nb`'s dedup key), `nb move`
 //     refuses ("skipped", exit 0), so the plan predicts it, the lesson stays on
 //     its legacy shelf, and it is listed for a manual decision. This script never
 //     removes a lesson: a move always happens before any `nb rm`, and migration
 //     has no `rm` at all;
-//   * if a move would push out a lesson this same run already moved in (equal
-//     scores let a batch of weak lessons evict each other), it is skipped and
-//     the lesson stays on its legacy shelf for a manual decision;
 //   * a target name over 128 characters (or otherwise invalid) is reported before
 //     anything runs, because `nb` would fail it with `bad_args` mid-run.
 //
@@ -114,7 +115,6 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
   const invalid = [];
   const steps = [];
   const sim = cloneStore(snapshot.store);
-  const movedKeys = new Set();
 
   for (const name of names) {
     const cls = classifyShelf(name, aliases);
@@ -133,12 +133,9 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
     const ordered = entries.map((e, i) => ({ e, i })).sort((a, b) => b.e.score - a.e.score || a.i - b.i);
     for (const { e } of ordered) {
       const step = { from: name, to: target, id: e.id, score: e.score, text: e.text };
-      const decision = decideStep(sim, step, { cap, forceLow, movedKeys });
+      const decision = decideStep(sim, step, { cap, forceLow });
       step.decision = decision;
-      if (decision.action === 'move') {
-        applyMove(sim, step.from, step.to, step.id, cap);
-        movedKeys.add(`${step.to}|${step.id}`);
-      }
+      if (decision.action === 'move') applyMove(sim, step.from, step.to, step.id, cap);
       steps.push(step);
     }
   }
@@ -175,16 +172,16 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
       const d = s.decision;
       if (d.action === 'move') {
         log(`${n}. ${moveCommand(s.from, s.to, s.id)}   (${fmtScore(s.score)}) ${clip(s.text)}`);
-        if (d.prediction.evicted) {
-          log(`       target full: evicts ${d.prediction.evicted.id} (${fmtScore(d.prediction.evicted.score)}) ${clip(d.prediction.evicted.text, 50)}`);
+        for (const ev of d.prediction.evictedAll) {
+          log(`       target full: evicts ${ev.id} (${fmtScore(ev.score)}) ${clip(ev.text, 50)}`);
         }
         if (d.prediction.docked) {
           log(`       and docks ${d.prediction.docked.id} ${fmtScore(d.prediction.docked.from)} -> ${fmtScore(d.prediction.docked.to)}`);
         }
       } else if (d.reason === 'low-score') {
-        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) is below the full target's minimum (${fmtScore(d.prediction.targetMin)}); would evict a better lesson. Re-run with --force-low to move anyway.`);
-      } else if (d.reason === 'would-evict-moved') {
-        log(`${n}. SKIP would evict a moved lesson: moving ${s.from} ${s.id} (${fmtScore(s.score)}) into the full ${s.to} would push out ${d.prediction.evicted.id}, a lesson this run already moved there. It stays on its legacy shelf for a manual decision (or --force-low).`);
+        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) does not score above the full target's lowest lesson (${fmtScore(d.prediction.targetMin)}); moving it would evict a lesson that is no worse. Re-run with --force-low to move anyway.`);
+      } else if (d.reason === 'over-cap') {
+        log(`${n}. SKIP over-cap: ${s.to} already holds more than ${cap} lessons, so moving ${s.from} ${s.id} would evict ${d.prediction.evictedAll.length} of them at once. Trim the target by hand or re-run with --force-low.`);
       } else if (d.reason === 'duplicate') {
         log(`${n}. SKIP duplicate: ${s.to} already holds this lesson (${d.prediction.collidedId}); nb would refuse ("skipped", exit 0). ${s.from} ${s.id} stays; decide by hand, e.g. \`nb rm ${s.from} ${s.id} --reason obsolete --note duplicate\` once you are sure.`);
       } else {
@@ -207,13 +204,13 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
   const touched = new Map();
   for (const s of steps) {
     if (s.decision.action !== 'move') continue;
-    const { evicted, docked } = s.decision.prediction;
+    const { evictedAll, docked } = s.decision.prediction;
     if (docked && !moverIds.has(docked.id)) {
       const t = touched.get(`${s.to}|${docked.id}`) ?? { shelf: s.to, id: docked.id, text: docked.text, start: docked.from };
       t.end = docked.to;
       touched.set(`${s.to}|${docked.id}`, t);
     }
-    if (evicted) {
+    for (const evicted of evictedAll) {
       const t = touched.get(`${s.to}|${evicted.id}`) ?? { shelf: s.to, id: evicted.id, text: evicted.text, start: evicted.score };
       t.evicted = true;
       if (moverIds.has(evicted.id)) t.wasMoved = true;
@@ -309,12 +306,11 @@ export function runMigration({
 
   // The moves: each one re-reads the two shelves it touches.
   const working = cloneStore(snapshot.store);
-  const movedKeys = new Set();
   let moved = 0;
   for (const step of plan.steps) {
     if (moved >= stopAfter) break;
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow, movedKeys });
+    const d = decideStep(working, step, { cap, forceLow });
     const label = `${step.from} ${step.id} -> ${step.to}`;
     if (d.action === 'skip') {
       if (d.reason === 'already-moved') {
@@ -340,7 +336,6 @@ export function runMigration({
       continue;
     }
     moved++;
-    movedKeys.add(`${step.to}|${step.id}`);
     result.performed.push({ ...step, evicted: r.evicted });
     const predictedEvicted = d.prediction.evicted?.id ?? null;
     const actualEvicted = r.evicted ? entryId(r.evicted.text) : null;

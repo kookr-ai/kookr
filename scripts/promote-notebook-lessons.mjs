@@ -41,8 +41,9 @@
 //     drops the target's lowest-scored lesson to admit the moved one, and lowers
 //     the score of the lesson touched least recently by one point ("aging"); the
 //     plan shows both.
-//   * Moving a lesson that scores below a FULL target's minimum is refused
-//     unless --force-low.
+//   * Moving a lesson that does not score strictly above a FULL target's lowest
+//     lesson is refused unless --force-low (an equal swap is a pure loss); so is
+//     a move into a target already over the cap, which would evict several.
 //   * A move `nb` would refuse because the target already holds the lesson is
 //     predicted and skipped, and that group's other copies are NOT removed.
 //   * Results are read from `nb move --json` (`reason` must be "moved"), never
@@ -51,8 +52,7 @@
 //     destination really holds the lesson. All moves run first and the removals
 //     after them, so a later move that pushes an earlier one out of a full shelf
 //     cannot cost the only copy.
-//   * A move that would push out a lesson promoted earlier in the same run is
-//     skipped unless --force-low.
+//   * Groups are applied highest-scored first.
 //   * Each `--apply` step re-reads the shelves it touches, so an interrupted run
 //     is resumable and a second run is a no-op.
 //
@@ -79,6 +79,8 @@ import {
   moveCommand,
   nbMove,
   nbRemoveDuplicate,
+  reapZeroByteShelf,
+  commitPaths,
   refreshShelves,
   removeCommand,
   snapshotStore,
@@ -220,8 +222,9 @@ export function destinationFor(group, toGlobal) {
  */
 export function planPromotion({ groups, selected, toGlobal, store, cap = maxLines(), forceLow = false }) {
   const steps = [];
-  const movedKeys = new Set();
-  for (const group of groups) {
+  // Highest-scored groups first, so a strong lesson is admitted before weaker ones can crowd a full shelf.
+  const ordered = [...groups].sort((a, b) => b.best.score - a.best.score || (a.id < b.id ? -1 : 1));
+  for (const group of ordered) {
     const dest = destinationFor(group, toGlobal);
     const chosen = selected.has(group.id);
     const step = {
@@ -237,10 +240,9 @@ export function planPromotion({ groups, selected, toGlobal, store, cap = maxLine
     if (dest.problem) {
       step.decision = { action: 'skip', reason: 'bad-destination', detail: dest.problem, prediction: {} };
     } else {
-      step.decision = decideStep(store, step, { cap, forceLow, movedKeys });
+      step.decision = decideStep(store, step, { cap, forceLow });
       if (chosen && step.decision.action === 'move') {
         applyMove(store, step.from, step.to, step.id, cap);
-        movedKeys.add(`${step.to}|${step.id}`);
         // An exact group's other copies go only after the move; model it so
         // later steps see the shelves as they will be.
         for (const m of step.removes) applyRemove(store, m.shelf, m.id);
@@ -284,7 +286,7 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
     const d = step.decision;
     if (d.action === 'move') {
       log(`    plan: ${moveCommand(step.from, step.to, step.id)}`);
-      if (d.prediction.evicted) log(`          target full: evicts ${d.prediction.evicted.id} (${fmtScore(d.prediction.evicted.score)}) ${clip(d.prediction.evicted.text, 60)}`);
+      for (const ev of d.prediction.evictedAll) log(`          target full: evicts ${ev.id} (${fmtScore(ev.score)}) ${clip(ev.text, 60)}`);
       if (d.prediction.docked) log(`          and docks ${d.prediction.docked.id} ${fmtScore(d.prediction.docked.from)} -> ${fmtScore(d.prediction.docked.to)}`);
       if (g.tier === 'exact') {
         for (const m of step.removes) log(`          then: ${removeCommand(m.shelf, m.id)}`);
@@ -294,9 +296,9 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
     } else if (d.reason === 'duplicate') {
       log(`    SKIP: ${step.to} already holds this lesson (${d.prediction.collidedId}); nb would refuse ("skipped", exit 0). Nothing is removed; decide by hand.`);
     } else if (d.reason === 'low-score') {
-      log(`    SKIP: ${fmtScore(step.score)} is below the full target's minimum (${fmtScore(d.prediction.targetMin)}); it would evict a better lesson. --force-low overrides.`);
-    } else if (d.reason === 'would-evict-moved') {
-      log(`    SKIP: it would push out ${d.prediction.evicted.id}, a lesson promoted earlier in this run, from the full ${step.to}. --force-low overrides.`);
+      log(`    SKIP: ${fmtScore(step.score)} does not score above the full target's lowest lesson (${fmtScore(d.prediction.targetMin)}); it would evict a lesson that is no worse. --force-low overrides.`);
+    } else if (d.reason === 'over-cap') {
+      log(`    SKIP: ${step.to} already holds more than ${cap} lessons, so this move would evict ${d.prediction.evictedAll.length} of them at once. --force-low overrides.`);
     } else if (d.reason === 'bad-destination') {
       log(`    SKIP: ${d.detail}`);
     } else {
@@ -393,7 +395,6 @@ export function runPromotion({
   // was promoted earlier in this run; a copy may only be removed while the
   // destination demonstrably still holds the lesson.
   const working = cloneStore(snapshot.store);
-  const movedKeys = new Set();
   const pendingRemovals = [];
   for (const step of steps) {
     if (!step.selected) continue;
@@ -405,7 +406,7 @@ export function runPromotion({
       continue;
     }
     refreshShelves(client, dir, working, [step.from, step.to]);
-    const d = decideStep(working, step, { cap, forceLow, movedKeys });
+    const d = decideStep(working, step, { cap, forceLow });
     if (d.action === 'skip' && d.reason !== 'already-moved') {
       result.skipped.push({ id: g.id, reason: d.reason });
       log(`  SKIP ${d.reason.padEnd(10)} ${label}`);
@@ -429,7 +430,6 @@ export function runPromotion({
         log(`  SKIP ${String(r.reason).padEnd(10)} ${label}   (copies left in place)`);
         continue;
       }
-      movedKeys.add(`${step.to}|${step.id}`);
       result.performed.push({ id: g.id, from: step.from, to: step.to, lesson: step.id });
       log(`  moved           ${label}${r.evicted ? '   (evicted a lesson from the target)' : ''}`);
     }
@@ -467,6 +467,16 @@ export function runPromotion({
       }
     }
   }
+  // nb 0.7.0 leaves a 0-byte file when a move takes a shelf's last lesson. It is
+  // hidden from `nb list` but stays on disk; delete exactly such files (size 0,
+  // only shelves this run moved a lesson out of) and commit each deletion.
+  for (const shelf of [...new Set(result.performed.map((p) => p.from))].sort()) {
+    if (reapZeroByteShelf(dir, shelf) === 'deleted') {
+      commitPaths(dir, [`${shelf}.md`], `lesson promotion: delete empty shelf ${shelf}`);
+      log(`  reaped          ${shelf} (0-byte file deleted and committed)`);
+    }
+  }
+
   log(`\nDone: ${result.performed.length} moved, ${result.removed.length} duplicate copies removed, ${result.skipped.length} skipped.`);
   return result;
 }

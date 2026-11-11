@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const mk = (id: string, score: number, text = id) => ({ id, score, text });
+const L7: Lesson[] = [[3, 'l0'], [1, 'l1'], [4, 'l2'], [1, 'l3'], [5, 'l4'], [2, 'l5'], [6, 'l6']];
 
 describe('shelfNameProblem', () => {
   test('accepts ordinary and odd-but-valid names', () => {
@@ -111,19 +112,29 @@ describe('decideStep', () => {
     ]);
   const step = (id: string) => ({ from: 'a', to: 't', id });
 
-  test('below a FULL target\'s minimum is refused unless forced', () => {
+  test('below a FULL target\'s lowest lesson is refused unless forced', () => {
     expect(decideStep(full(), step('low'), { cap: 3 })).toMatchObject({ action: 'skip', reason: 'low-score' });
     expect(decideStep(full(), step('low'), { cap: 3, forceLow: true }).action).toBe('move');
   });
-  test('equal to the minimum or above is allowed', () => {
-    expect(decideStep(full(), step('eq'), { cap: 3 }).action).toBe('move');
+  test('EQUAL to the lowest lesson is refused too (an equal swap is a pure loss); strictly above is allowed', () => {
+    expect(decideStep(full(), step('eq'), { cap: 3 })).toMatchObject({ action: 'skip', reason: 'low-score' });
     expect(decideStep(full(), step('hi'), { cap: 3 }).action).toBe('move');
   });
-  test('the minimum-score rule does not apply when the target is not full', () => {
+  test('the rule does not apply when the target is not full', () => {
     expect(decideStep(full(), step('low'), { cap: 4 }).action).toBe('move');
   });
   test('a lesson that already left the source is "already-moved"', () => {
     expect(decideStep(full(), step('gone'), { cap: 3 })).toMatchObject({ action: 'skip', reason: 'already-moved' });
+  });
+  test('a target already OVER the cap would lose several lessons at once: refused unless forced', () => {
+    const over = new Map([
+      ['a', [mk('hi', 9)]],
+      ['t', [mk('t1', 1), mk('t2', 2), mk('t3', 3), mk('t4', 4), mk('t5', 5)]],
+    ]);
+    const d = decideStep(over, { from: 'a', to: 't', id: 'hi' }, { cap: 3 });
+    expect(d).toMatchObject({ action: 'skip', reason: 'over-cap' });
+    expect(d.prediction.evictedAll.map((e: { id: string }) => e.id)).toEqual(['t1', 't2', 't3']);
+    expect(decideStep(over, { from: 'a', to: 't', id: 'hi' }, { cap: 3, forceLow: true }).action).toBe('move');
   });
 });
 
@@ -183,6 +194,25 @@ describe('parity with the real nb binary', () => {
     expect(evictions).toBeGreaterThan(5);
     expect(dockings).toBeGreaterThan(5);
   }, 120_000);
+
+  test('a target already over the cap: the model evicts the same several lessons as nb', () => {
+    const CAP = 4;
+    const dir = makeStore({ git: false });
+    dirs.push(dir);
+    const client = createNbClient({ dir, nb: RAW_NB, env: cleanEnv({ NB_MAX_LINES: String(CAP) }) });
+    writeShelf(dir, 'tgt@canon', L7); // 7 lessons in a shelf capped at 4
+    writeShelf(dir, 'src@legacy', [[9, 'incoming lesson']]);
+    const model = new Map([
+      ['src@legacy', readShelf(client, dir, 'src@legacy').entries],
+      ['tgt@canon', readShelf(client, dir, 'tgt@canon').entries],
+    ]);
+    const id = model.get('src@legacy')![0].id;
+    const predicted = predictMove(model, 'src@legacy', 'tgt@canon', id, CAP);
+    expect(predicted.evictedAll.length).toBe(7 + 1 - CAP);
+    expect(nbMove(client, 'src@legacy', 'tgt@canon', id).moved).toBe(true);
+    applyMove(model, 'src@legacy', 'tgt@canon', id, CAP);
+    expect(readShelf(client, dir, 'tgt@canon').entries.map((x) => [x.id, x.score])).toEqual(model.get('tgt@canon')!.map((x) => [x.id, x.score]));
+  });
 
   test('nb counts a duplicate as "duplicate" in --json while exiting 0', () => {
     const dir = makeStore({ git: false });

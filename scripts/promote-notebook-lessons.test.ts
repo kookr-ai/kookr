@@ -475,18 +475,18 @@ describe('promote: --apply guards', { timeout: 120_000 }, () => {
 describe('promote: a full domain shelf cannot cost the only copy of a lesson', { timeout: 120_000 }, () => {
   const T = 'Pin the node version in CI: an unpinned runner upgrades under you and breaks the lockfile install.';
   const seedFull = (dir: string) => {
-    // The domain shelf is full (cap 3) with a +1 at the bottom; two exact groups both score +1.
+    // The domain shelf is full (cap 3) with a +1 at the bottom; two exact groups both score +2.
     writeShelf(dir, 'code-review', L([9, 'd1'], [9, 'd2'], [1, 'd3 weakest']));
-    writeShelf(dir, 'code-review@repo-one', L([1, SAME], [1, T]));
-    writeShelf(dir, 'code-review@repo-two', L([1, SAME], [1, T]));
+    writeShelf(dir, 'code-review@repo-one', L([2, SAME], [2, T]));
+    writeShelf(dir, 'code-review@repo-two', L([2, SAME], [2, T]));
     commitAll(dir);
   };
 
-  test('the second promotion would push the first one out of the full shelf: it is skipped and nothing is lost', () => {
+  test('the second promotion only ties the first (now the shelf\'s lowest): it is refused, and nothing is lost', () => {
     const dir = store();
     seedFull(dir);
     const { result, text } = run(dir, { apply: true, cap: 3 });
-    expect(text).toContain('SKIP would-evict-moved');
+    expect(text).toContain('SKIP low-score');
     // Exactly one of the two lessons was promoted (replacing the weak +1) and its other copy removed...
     const promoted = readLessons(dir, 'code-review').filter(([, t]) => t === SAME || t === T);
     expect(promoted).toHaveLength(1);
@@ -510,6 +510,42 @@ describe('promote: a full domain shelf cannot cost the only copy of a lesson', {
       expect(holders, lesson).not.toEqual([]);
     }
     expect(result.ok).toBe(true);
+  });
+
+  test('groups are applied highest-scored first', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([1, SAME], [7, T]));
+    writeShelf(dir, 'code-review@repo-two', L([1, SAME], [7, T]));
+    const { result } = run(dir);
+    const order = result.steps.map((s: { score: number }) => s.score);
+    expect(order).toEqual([...order].sort((a, b) => b - a));
+  });
+
+  test('a target already over the cap is refused: a move would evict several lessons at once', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review', L([1, 'a'], [2, 'b'], [3, 'c'], [4, 'd'], [5, 'e']));
+    writeShelf(dir, 'code-review@repo-one', L([9, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([9, SAME]));
+    commitAll(dir);
+    const { result, text } = run(dir, { apply: true, cap: 3 });
+    expect(text).toContain('SKIP over-cap');
+    expect(result.performed).toEqual([]);
+    expect(readLessons(dir, 'code-review')).toHaveLength(5);
+    expect(readLessons(dir, 'code-review@repo-one')).toHaveLength(1);
+  });
+
+  test('moving a shelf\'s last lesson leaves a 0-byte file on nb 0.7.0: the promotion deletes it and commits that', () => {
+    const dir = store();
+    writeShelf(dir, 'code-review@repo-one', L([3, SAME]));
+    writeShelf(dir, 'code-review@repo-two', L([5, SAME]));
+    commitAll(dir);
+    const { result } = run(dir, { apply: true, shim: true });
+    expect(result.ok).toBe(true);
+    expect(fileExists(dir, 'code-review@repo-two')).toBe(false); // best copy moved out, file reaped
+    expect(fileExists(dir, 'code-review@repo-one')).toBe(false); // other copy rm'd (nb reaps that itself)
+    expect(git(dir, 'status', '--porcelain')).toBe('');
+    const tag = git(dir, 'tag', '-l', 'pre-lesson-promotion-*');
+    expect(git(dir, 'log', '--format=%s', `${tag}..HEAD`)).toContain('lesson promotion: delete empty shelf code-review@repo-two');
   });
 });
 
