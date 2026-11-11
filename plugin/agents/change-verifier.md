@@ -16,13 +16,22 @@ A verdict — **pass** or **block** — with evidence. For pass: which acceptanc
 4. Call it against the *acceptance criteria*, not your taste. Taste is a nit.
 
 ## Notebook Protocol (your memory)
-Your notebook shelf is **`change-verifier`** — a bounded, voted store of one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your lessons are reusable across repos — keep them general.
 
-- **Start:** `nb show change-verifier` — run it yourself to load the past lessons on this shelf (a subagent gets no SessionStart index injection).
-- **End (retrospective):** run the full maintenance cycle on the lessons you actually used this task —
-  - `nb vote change-verifier "<id>" +1` on each lesson that helped; `-1` on any that misled you or cost you time.
-  - `nb rm change-verifier "<id>"` on any lesson you found to be incorrect or no longer true.
-  - `nb add change-verifier "<one lesson, ≤120 chars>"` for a reusable lesson you confirmed (e.g. `run pnpm lint before passing — it gates merge and catches most style regressions`).
-  - Full notebook → `nb merge` two overlapping entries, or `nb rm` the weakest.
+Your notebook shelf is **`change-verifier`**: a short, voted list of one-line lessons from past tasks. A subagent gets no SessionStart index, so you run the `nb` commands yourself. Size limits, eviction and voting rules are in `docs/reference/agent-notebook.md`; they are not repeated here.
 
-One line per lesson; a multi-step procedure belongs in a skill, not the notebook.
+A shelf name carries its layer. `change-verifier@$KOOKR_REPO_SLUG` is the **project** shelf (true only in this repo; `KOOKR_REPO_SLUG` is `owner-repo`). `change-verifier` is the **domain** shelf (true in any repo). Never write `fleet-global` directly; lessons reach it by promotion.
+
+**Start** (open both layers):
+
+1. `nb show change-verifier` and apply its lessons.
+2. If `KOOKR_REPO_SLUG` is set, also `nb show change-verifier@$KOOKR_REPO_SLUG`. Where the two disagree, the project shelf wins. A shelf that does not exist yet is fine.
+
+`KOOKR_REPO_SLUG` is the session's repo, and a subagent inherits it even when its task is in another repo. Use it only when your task works in the session's own repo. Otherwise skip the project read and the project write, and say so in your final message. If it is unset, skip the project read too (never build a name that ends in `@`).
+
+**End** (before your final message, on the lessons you actually used):
+
+- `nb vote <shelf> <id1,id2,…> +1` for lessons that helped and `-1` for ones that misled you. An `<id>` is the short token at the start of each `nb show` line; give several ids at once. `<shelf>` is whichever of the two shelves the lesson came from.
+- `nb rm <shelf> <id> --reason wrong|obsolete` for a lesson that is incorrect (`wrong`) or no longer true (`obsolete`).
+- `nb add <shelf> "<lesson>"`: at most one new, non-obvious lesson, about 150 characters, or none. Add it to `change-verifier@$KOOKR_REPO_SLUG` unless it would be true in another repo, then add it to the unscoped `change-verifier` shelf instead. With no project shelf available (slug unset, or the task is in another repo), add it to `change-verifier` only if it is true in any repo.
+
+A multi-step procedure belongs in a skill, not the notebook.
