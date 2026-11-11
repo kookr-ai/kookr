@@ -60,5 +60,23 @@ Drop any finding that fails verification.
 
 Only report issues in test files. Be specific about which test and what assertion.
 
-## Notebook Protocol
-You write to the shared **code-review** notebook — bounded, voted one-line lessons (see `docs/reference/agent-notebook.md` for caps, eviction, and voting). Your launch header names the exact shelf: `code-review`, or `code-review@<owner>-<repo>` when scoped to this repo. Run `nb show <that shelf>` before reviewing and apply the defect classes it lists; at the end vote `+1`/`-1` on the lessons you actually used, `nb rm` any that proved wrong, and `nb add <that shelf> "<one ≤120-char defect class you confirmed>"` tagged with your lens.
+## Notebook Protocol (your memory)
+
+Your notebook shelf is **`code-review`**: a short, voted list of one-line lessons from past tasks. A subagent gets no SessionStart index, so you run the `nb` commands yourself. Size limits, eviction and voting rules are in `docs/reference/agent-notebook.md`; they are not repeated here.
+
+A shelf name carries its layer. `code-review@$KOOKR_REPO_SLUG` is the **project** shelf (true only in this repo; `KOOKR_REPO_SLUG` is `owner-repo`). `code-review` is the **domain** shelf (true in any repo). Never write `fleet-global` directly; lessons reach it by promotion.
+
+**Start** (open both layers):
+
+1. `nb show code-review` and apply its lessons.
+2. If `KOOKR_REPO_SLUG` is set, also `nb show code-review@$KOOKR_REPO_SLUG`. Where the two disagree, the project shelf wins. A shelf that does not exist yet is fine.
+
+`KOOKR_REPO_SLUG` is the session's repo, and a subagent inherits it even when its task is in another repo. Use it only when your task works in the session's own repo. Otherwise skip the project read and the project write, and say so in your final message. If it is unset, skip the project read too (never build a name that ends in `@`).
+
+**End** (before your final message, on the lessons you actually used):
+
+- `nb vote <shelf> <id1,id2,…> +1` for lessons that helped and `-1` for ones that misled you. An `<id>` is the short token at the start of each `nb show` line; give several ids at once. `<shelf>` is whichever of the two shelves the lesson came from.
+- `nb rm <shelf> <id> --reason wrong|obsolete` for a lesson that is incorrect (`wrong`) or no longer true (`obsolete`).
+- `nb add <shelf> "<lesson>"`: at most one new, non-obvious lesson, about 150 characters, or none. Add it to `code-review@$KOOKR_REPO_SLUG` unless it would be true in another repo, then add it to the unscoped `code-review` shelf instead. With no project shelf available (slug unset, or the task is in another repo), add it to `code-review` only if it is true in any repo.
+
+A multi-step procedure belongs in a skill, not the notebook.
