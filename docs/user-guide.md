@@ -145,6 +145,8 @@ For dense multi-repository sessions, start broad and narrow only when the queue 
 
 On a window 1280 px or wider, the left navigation lists queues first: **Needs you**, **Working** and **Finished** jump to that section of the task list, and **Scheduled** opens Schedules. Below the queues are projects by name, with counts. Projects without a running task or a finding sit behind **All N projects** unless they are pinned or selected. On narrower windows, and while a project's detail drawer is open, the navigation shrinks back to one icon per project.
 
+The bottom of the navigation shows spend and quota: spend over the last 24 hours and all time, tasks launched and completed in the last 24 hours, and the 5-hour and 7-day Claude plan quota with a bar each. In the icon column only the quota percentages fit. The same figures are always in the **Usage** section of the top-bar **System** detail, which is where to look on a phone. The task list header shows how many tasks and findings are in view, and the **Needs you** header shows how long the oldest finding has waited; click it to open that finding.
+
 To triage:
 
 1. Use **All projects** or `Alt+0` to catch global blockers.
@@ -301,7 +303,7 @@ Unknown rates, durations, and task costs are empty CSV cells; recorded zeros sta
 
 Use Cost Comparison to estimate Claude vs Codex spend by playbook, agent, and task, and to see whether enough usage data exists to trust those estimates. Dollar figures are estimates from recorded token counts and a pricing table, not invoices. Only Claude Code and Codex CLI appear here.
 
-Open the panel from the command palette (`Ctrl+K` / `Cmd+K`, search **Cost comparison**); by clicking the top-bar all-time spend figure when it is greater than zero; by clicking the rolling 24-hour spend figure in the bottom status bar when that chip is visible; or by clicking live spend on the overview (the right-hand panel when no task is selected) when that chip is visible. Close it with Escape.
+Open the panel from the command palette (`Ctrl+K` / `Cmd+K`, search **Cost comparison**); by clicking either spend figure (rolling 24 hours, or all time) in the navigation footer or in the **Usage** section of the **System** detail; or by clicking live spend on the overview (the right-hand panel when no task is selected) when that chip is visible. Close it with Escape.
 
 Choose **24h**, **7d**, **30d**, or **all** (All time) from the time-window menu. Bounded windows cover the most recent period and select tasks by **creation time**. A task created earlier is excluded even if it finished during that period. Choose **All** (Claude and Codex), **Claude**, or **Codex** from the agent filter chips. Type in **Search task names** to narrow the tables by task name or prompt text — the box is labeled for names, but prompt text matches too. Window, agent, and search all apply to the tables, the priced/excluded counts, and CSV export. Parse-error notes and unbound Codex figures follow the time window (the Claude agent filter also hides unbound Codex); they do not shrink with search.
 
