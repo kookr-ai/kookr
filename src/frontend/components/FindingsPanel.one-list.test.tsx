@@ -140,7 +140,7 @@ describe('FindingsPanel one list (#3561 slice 3)', () => {
     render(root, { healthy: makeWorking(8) });
     const header = container.querySelector('[data-testid="findings-needs-you-header"]');
     expect(header?.textContent).toBe('Needs you (0)nothing waiting');
-    expect(header?.classList.contains('findings-group-header-empty')).toBe(true);
+    expect(header?.classList.contains('findings-needs-you-empty')).toBe(true);
     // All eight working rows are rendered in the list; none is held back.
     expect(container.querySelectorAll('.findings-scroll-area .healthy-row')).toHaveLength(8);
   });
@@ -149,7 +149,7 @@ describe('FindingsPanel one list (#3561 slice 3)', () => {
     render(root, { findings: [makeFinding('a'), makeFinding('b')], healthy: makeWorking(1) });
     const header = container.querySelector('[data-testid="findings-needs-you-header"]');
     expect(header?.textContent).toBe('Needs you (2)');
-    expect(header?.classList.contains('findings-group-header-empty')).toBe(false);
+    expect(header?.classList.contains('findings-needs-you-empty')).toBe(false);
   });
 
   test('a cold, empty rail shows the launch prompt without a "Needs you" line', () => {

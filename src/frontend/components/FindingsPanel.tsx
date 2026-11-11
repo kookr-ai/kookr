@@ -530,11 +530,11 @@ export function FindingsPanel({
           // takes one line instead of holding space (#3561 slice 3). It is not a
           // toggle: findings always stay expanded.
           <div
-            className={`findings-group-header${findings.length === 0 ? ' findings-group-header-empty' : ''}`}
+            className={`findings-needs-you${findings.length === 0 ? ' findings-needs-you-empty' : ''}`}
             data-testid="findings-needs-you-header"
           >
-            <span className="findings-group-label">Needs you ({findings.length})</span>
-            {findings.length === 0 && <span className="findings-group-hint">nothing waiting</span>}
+            <span className="findings-needs-you-label">Needs you ({findings.length})</span>
+            {findings.length === 0 && <span className="findings-needs-you-hint">nothing waiting</span>}
           </div>
         )}
         {nameFilterMatchedNothing && (
