@@ -87,6 +87,10 @@ test.describe('Activity panel → diff pane', () => {
     // Terminal slot becomes active again; diff slot hides via inline display.
     await expect(page.locator('.right-pane-slot-diff')).toHaveCSS('display', 'none');
     await expect(page.locator('.right-pane-slot-terminal')).toHaveCSS('display', 'flex');
+    // #3561 4a: the conversation tab comes back and focus returns to the entry
+    // that opened the diff (it was hidden until the tab re-rendered).
+    await expect(page.locator('.detail-tab', { hasText: 'Conversation' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('button.act-tool-entry.is-clickable').first()).toBeFocused();
   });
 
   test('same file edited in two groups — click each resolves to that group\'s diff', async ({ page, request }) => {

@@ -622,24 +622,26 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     revealRightPane();
   }, [hasAgent, serverStartedAt, revealRightPane]);
 
+  // Return focus to the element that opened the diff or file. In the tabbed
+  // layout that element sits in the conversation pane, which is still hidden
+  // until React re-renders the restored tab, and a browser ignores focus() on
+  // a hidden element; so focus on the next frame (#3561 4a).
+  function restoreFocusAfterRightPane(trigger: HTMLElement | null) {
+    window.requestAnimationFrame(() => {
+      if (trigger && document.body.contains(trigger)) trigger.focus();
+    });
+  }
+
   function handleCloseFile() {
     setRightPane('terminal');
     restoreTabAfterRightPane();
-    const trigger = fileTriggerRef.current;
-    if (trigger && document.body.contains(trigger)) {
-      trigger.focus();
-    }
+    restoreFocusAfterRightPane(fileTriggerRef.current);
   }
 
   function handleCloseDiff() {
     setRightPane('terminal');
     restoreTabAfterRightPane();
-    // Restore focus to the triggering element if it's still in the DOM.
-    // Falls back to the Diff mode button if not.
-    const trigger = diffTriggerRef.current;
-    if (trigger && document.body.contains(trigger)) {
-      trigger.focus();
-    }
+    restoreFocusAfterRightPane(diffTriggerRef.current);
   }
 
   // While the Diff or File pane is active, intercept Escape at capture phase so

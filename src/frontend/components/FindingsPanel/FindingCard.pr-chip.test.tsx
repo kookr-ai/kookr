@@ -219,7 +219,9 @@ describe('FindingCard GitHub PR chip', () => {
     expect(state.selectedTaskId).toBe('task-1');
     expect(state.leftPane).toBe('github');
     expect(state.narrowTab).toBe('github');
-    expect(state.detailPaneMode).toBe('split');
+    // #3561 4a: back to the default tabs, not a persisted Split view.
+    expect(state.detailPaneMode).toBe('tabs');
+    expect(localStorage.getItem('kookr-detail-panel-mode')).toBeNull();
     vi.useRealTimers();
   });
 
