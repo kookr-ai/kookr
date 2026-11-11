@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import {
   buildAgentSelectionOptions,
   settingsVisibleAgentTypes,
@@ -599,6 +600,7 @@ function readNotificationPermission(): NotificationPermission | null {
 }
 
 export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) {
+  const avatarPanel = useAvatarPanelPrefs();
   const availableAgentTypes = useKookrStore((s) => s.availableAgentTypes);
   const serverDefaultAgentType = useKookrStore((s) => s.defaultAgentType);
   const [settings, setSettings] = useState<ServerSettings | null>(null);
@@ -1178,6 +1180,25 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                         className={`settings-toggle ${sound.enabled ? 'active' : ''}`}
                         onClick={handleSoundToggle}
                         aria-label="Toggle sound alerts"
+                      >
+                        <span className="settings-toggle-knob" />
+                      </button>
+                    </div>
+                    <div className="settings-row">
+                      <div className="settings-row-info">
+                        <span className="settings-label">Avatar panel</span>
+                        <span className="settings-desc">
+                          Show a floating window with a 3D character who lip-syncs spoken summaries.
+                          Off by default. Turning it on downloads the 3D renderer and a 3.6 MB avatar
+                          file, and uses your graphics card while the window is open. It can be dragged,
+                          and minimised to a small bubble. This choice is saved for this browser only.
+                        </span>
+                      </div>
+                      <button
+                        className={`settings-toggle ${avatarPanel.enabled ? 'active' : ''}`}
+                        onClick={() => updateAvatarPanelPrefs({ enabled: !avatarPanel.enabled, minimized: false })}
+                        aria-label="Toggle avatar panel"
+                        aria-pressed={avatarPanel.enabled}
                       >
                         <span className="settings-toggle-knob" />
                       </button>

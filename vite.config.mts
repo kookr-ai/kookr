@@ -10,6 +10,7 @@ const devHost: string | boolean = process.env.KOOKR_DEV_HOST ?? true;
 export default defineConfig({
   plugins: [react()],
   root: 'src/frontend',
+  assetsInclude: ['**/*.glb'],
   define: {
     __KOOKR_DISABLE_ONBOARDING__: JSON.stringify(process.env.KOOKR_DISABLE_ONBOARDING ?? ''),
   },
@@ -24,6 +25,9 @@ export default defineConfig({
           if (id.includes('/react/') || id.includes('/react-dom/')) return 'vendor-react';
           if (id.includes('/zustand/')) return 'vendor-state';
           if (id.includes('/@xterm/')) return 'vendor-terminal';
+          // three.js is only used by the optional avatar panel. Keep it out of the shared
+          // `vendor` chunk so it is downloaded only when that panel is switched on.
+          if (id.includes('/three/')) return 'vendor-three';
           return 'vendor';
         },
       },

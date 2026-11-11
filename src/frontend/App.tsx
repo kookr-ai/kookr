@@ -79,6 +79,7 @@ import {
 } from '../shared/contracts/shortcut-bindings.js';
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
+import { useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
@@ -114,6 +115,9 @@ const ContributionWorkspace = lazyWithReload(() => import('./components/Contribu
 const OssProductivityView = lazyWithReload(() => import('./components/OssProductivityView.js').then((m) => ({ default: pickLazyExport<typeof m.OssProductivityView>(m, 'OssProductivityView') })));
 const CostComparisonPanel = lazyWithReload(() => import('./components/CostComparisonPanel.js').then((m) => ({ default: pickLazyExport<typeof m.CostComparisonPanel>(m, 'CostComparisonPanel') })));
 const OperationsPanel = lazyWithReload(() => import('./components/OperationsPanel.js').then((m) => ({ default: pickLazyExport<typeof m.OperationsPanel>(m, 'OperationsPanel') })));
+// The avatar panel pulls in three.js and a 3.6 MB avatar file. This import is only
+// reached when the operator has switched the panel on, so everyone else never downloads either.
+const AvatarDock = lazyWithReload(() => import('./avatar/AvatarDock.js').then((m) => ({ default: pickLazyExport<typeof m.AvatarDock>(m, 'AvatarDock') })));
 const DebugTimelinePanel = lazyWithReload(() => (
   (import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV === true
     ? import('./components/DebugTimelinePanel.js').then((m) => ({ default: pickLazyExport<typeof m.DebugTimelinePanel>(m, 'DebugTimelinePanel') }))
@@ -440,6 +444,7 @@ export function App() {
   // as the top-bar pill — so the two controls never diverge.
   const dnd = useDnd();
   const [debugTimelineEnabled] = useState(() => isDebugTimelineEnabled());
+  const avatarPanelEnabled = useAvatarPanelPrefs().enabled;
   useEffect(() => {
     // Optional Long Task API observer (debug/?longtask=1). Measured snapshot /
     // xterm spans sample independently of this flag.
@@ -1808,6 +1813,11 @@ export function App() {
       {debugTimelineEnabled && (
         <Suspense fallback={null}>
           <DebugTimelinePanel onExport={exportDebugTrace} />
+        </Suspense>
+      )}
+      {avatarPanelEnabled && (
+        <Suspense fallback={null}>
+          <AvatarDock attentionCount={findings.length} />
         </Suspense>
       )}
       <PluginInstallBanner />

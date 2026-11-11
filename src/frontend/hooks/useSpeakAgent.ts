@@ -11,6 +11,7 @@ import {
 } from '../audio/audio-alert-log.js';
 import { getSoundPreferenceState } from '../audio/sound-preference.js';
 import { getDndState } from './useDnd.js';
+import { emitSpeechGenerating, emitSpeechIdle, emitSpeechPlaying } from '../audio/speech-bus.js';
 import type {
   SpeakAgentErrorResponse,
   SpeakAgentRequest,
@@ -162,6 +163,8 @@ export function useSpeakAgent(
 
   const cleanup = useCallback(() => {
     clearClientTimeout();
+    // Tell observers (the optional avatar panel) that nothing is being spoken any more.
+    if (sourceRef.current || abortRef.current) emitSpeechIdle();
     if (sourceRef.current) {
       try { sourceRef.current.stop(); } catch {}
       sourceRef.current.disconnect();
@@ -265,6 +268,7 @@ export function useSpeakAgent(
     abortRef.current = ac;
     const requestStartedAt = nowMs();
     setState({ status: 'generating' });
+    emitSpeechGenerating();
 
     // Guard the client timeout: if the user kicks off a new speak (or stops
     // the hook), `cleanup()` aborts the old `ac` and the next `speak()` clears
@@ -449,6 +453,8 @@ export function useSpeakAgent(
       });
       clearClientTimeout();
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
+      // The clip is audibly playing: let observers follow its loudness and show its text.
+      emitSpeechPlaying(ctx, source, { text: payload.text, durationMs: payload.durationMs });
     })();
   }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup, clearClientTimeout]);
 
