@@ -30,8 +30,8 @@ const GH_PR_BLOCKED = new Set(['merge', 'create', 'new', 'ready', 'close', 'reop
 const GH_RELEASE_BLOCKED = new Set(['create', 'delete', 'delete-asset', 'edit', 'upload']);
 // Every subcommand of `gh pr` / `gh release`: the action is the FIRST of these words, so a flag value that happens to
 // spell a blocked action (`gh pr list --search merge`, `--label review`) is not mistaken for it.
-const GH_PR_ACTIONS = new Set(['checkout', 'checks', 'close', 'comment', 'create', 'new', 'diff', 'edit', 'list', 'lock', 'merge', 'ready', 'reopen', 'revert', 'review', 'status', 'unlock', 'update-branch', 'view']);
-const GH_RELEASE_ACTIONS = new Set(['create', 'delete', 'delete-asset', 'download', 'edit', 'list', 'upload', 'verify', 'verify-asset', 'view']);
+const GH_PR_ACTIONS = new Set(['checkout', 'co', 'checks', 'close', 'comment', 'create', 'new', 'diff', 'edit', 'list', 'ls', 'lock', 'merge', 'ready', 'reopen', 'revert', 'review', 'status', 'unlock', 'update-branch', 'view']);
+const GH_RELEASE_ACTIONS = new Set(['create', 'delete', 'delete-asset', 'download', 'edit', 'list', 'ls', 'upload', 'verify', 'verify-asset', 'view']);
 const GH_GLOBAL_OPTS_WITH_ARG = new Set(['-R', '--repo', '--hostname']);
 const GH_API_OPTS_WITH_ARG = new Set([
   '-X', '--method', '-f', '-F', '--field', '--raw-field', '--input', '-H', '--header', '-q', '--jq', '-t', '--template',
@@ -51,7 +51,8 @@ function findHeredoc(line) {
     if (c === '\\') { i++; continue; }
     if (c === "'" || c === '"') { quote = c; continue; }
     if (c === '#' && (i === 0 || /\s/.test(line[i - 1]))) return null; // comment: nothing after it runs
-    if (c === '<' && line[i + 1] === '<' && line[i + 2] !== '<') {
+    if (c === '<' && line[i + 1] === '<' && line[i + 2] === '<') { i += 2; continue; } // here-string `<<<`, not a heredoc
+    if (c === '<' && line[i + 1] === '<') {
       const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|(\\)?([^\s;&|<>()'"\\]+))/.exec(line.slice(i));
       if (m) return { index: i, delim: m[1] ?? m[2] ?? m[4], expands: m[4] !== undefined && m[3] === undefined };
     }
@@ -99,7 +100,8 @@ function substitutionEnd(text, from) {
     if (c === "'" && !inDouble) { inSingle = true; continue; }
     if (c === '"') { inDouble = !inDouble; continue; }
     if (!inDouble && c === '#' && (j === from || /\s/.test(text[j - 1]))) { while (j < text.length && text[j] !== '\n') j++; continue; }
-    if (!inDouble && c === '<' && text[j + 1] === '<' && text[j + 2] !== '<') {
+    if (!inDouble && c === '<' && text[j + 1] === '<' && text[j + 2] === '<') { j += 2; continue; }
+    if (!inDouble && c === '<' && text[j + 1] === '<') {
       const m = /^<<-?\s*(?:'([^']+)'|"([^"]+)"|\\?([^\s;&|<>()'"\\]+))/.exec(text.slice(j));
       if (m) {
         const delim = m[1] ?? m[2] ?? m[3];
@@ -183,6 +185,7 @@ function toSegments(text) {
     if (c === '\n' || c === ';' || c === '|' || c === '&' || c === '(' || c === ')') { pushSeg(); continue; }
     if (/\s/.test(c)) { pushTok(); continue; }
     // Redirections end a word (`git push>/dev/null`); the target becomes its own, harmless, word.
+    if (c === '<' && text[i + 1] === '<' && text[i + 2] === '<') { pushTok(); i += 2; continue; } // here-string: its word is data fed to the command, keep it
     if (c === '>' || c === '<') {
       if (has && /^[0-9]+$/.test(cur)) { cur = ''; has = false; } // `2>file`: the 2 is a descriptor
       else pushTok();
@@ -218,6 +221,7 @@ function gitVerdict(t) {
 function ghApiVerdict(t, from) {
   let method = null;
   let hasField = false;
+  let hasInput = false;
   let endpoint = null;
   for (let i = from; i < t.length; i++) {
     const tok = t[i];
@@ -229,12 +233,16 @@ function ghApiVerdict(t, from) {
       if (name === '--method') method = (value ?? t[i + 1] ?? '').toUpperCase();
       else if (short) method = (short[2] || t[i + 1] || '').toUpperCase();
       if (GH_API_FIELD_FLAGS.has(name) || /^-[fF]./.test(tok)) hasField = true; // -fkey=value too
+      if (name === '--input') hasInput = true;
       if (eq < 0 && (GH_API_OPTS_WITH_ARG.has(name) || /^-[A-Za-z]*X$/.test(tok))) i++;
     } else if (endpoint === null) {
       endpoint = tok;
     }
   }
-  if (endpoint === 'graphql') return t.some((tok) => /\bmutation\b/i.test(tok)) ? 'gh api graphql mutation' : null;
+  if (endpoint === 'graphql') {
+    if (hasInput) return 'gh api graphql --input (the payload cannot be inspected)'; // e.g. a JSON heredoc carrying a mutation
+    return t.some((tok) => /\bmutation\b/i.test(tok)) ? 'gh api graphql mutation' : null;
+  }
   if (method !== null && method !== 'GET') return `gh api -X ${method}`;
   if (method === null && hasField) return 'gh api with request fields (implicit POST)';
   return null;
@@ -274,6 +282,9 @@ function segmentVerdict(t, depth) {
     else if (SHELLS.has(head)) {
       const c = rest.findIndex((tok, idx) => idx > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(tok));
       if (c > 0 && rest[c + 1] !== undefined) v = classifyCommand(rest[c + 1], depth + 1);
+      else for (const tok of rest.slice(1)) { // `bash <<< "git push"`: a multi-word argument may be a script fed on stdin
+        if (/\s/.test(tok)) { v = classifyCommand(tok, depth + 1); if (v) break; }
+      }
     }
     if (v) return v;
   }
