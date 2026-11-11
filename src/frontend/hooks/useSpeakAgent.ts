@@ -153,6 +153,8 @@ export function useSpeakAgent(
   const sourceRef = useRef<AudioBufferSourceNode | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Identifies this speaker button on the speech bus, so only the button that is speaking can announce the end.
+  const busOwnerRef = useRef<object>({});
 
   const clearClientTimeout = useCallback(() => {
     if (timeoutRef.current) {
@@ -163,8 +165,9 @@ export function useSpeakAgent(
 
   const cleanup = useCallback(() => {
     clearClientTimeout();
-    // Tell observers (the optional avatar panel) that nothing is being spoken any more.
-    if (sourceRef.current || abortRef.current) emitSpeechIdle();
+    // Tell observers (the optional avatar panel) that this button is no longer speaking.
+    // The bus ignores this when another button has spoken since.
+    emitSpeechIdle(busOwnerRef.current);
     if (sourceRef.current) {
       try { sourceRef.current.stop(); } catch {}
       sourceRef.current.disconnect();
@@ -268,7 +271,7 @@ export function useSpeakAgent(
     abortRef.current = ac;
     const requestStartedAt = nowMs();
     setState({ status: 'generating' });
-    emitSpeechGenerating();
+    emitSpeechGenerating(busOwnerRef.current);
 
     // Guard the client timeout: if the user kicks off a new speak (or stops
     // the hook), `cleanup()` aborts the old `ac` and the next `speak()` clears
@@ -443,7 +446,7 @@ export function useSpeakAgent(
         updateAudioAlertDecision(decision.id, { audioContextFinalState: ctx.state });
         // Nothing is audible, so observers must not stay on "generating". The source and context are
         // deliberately left in place for a retry, which is why this does not go through cleanup().
-        emitSpeechIdle();
+        emitSpeechIdle(busOwnerRef.current);
         setState({ status: 'suppressed', errorReason: 'audio-context-suspended', cached: payload.cached, timings: playTimings });
         return;
       }
@@ -457,7 +460,7 @@ export function useSpeakAgent(
       clearClientTimeout();
       setState({ status: 'playing', cached: payload.cached, timings: playTimings });
       // The clip is audibly playing: let observers follow its loudness and show its text.
-      emitSpeechPlaying(ctx, source, { text: payload.text, durationMs: payload.durationMs });
+      emitSpeechPlaying(busOwnerRef.current, ctx, source, payload.text);
     })();
   }, [agentId, anomalyType, ttsAvailable, endpoint, state.status, stop, fetcher, cleanup, clearClientTimeout]);
 

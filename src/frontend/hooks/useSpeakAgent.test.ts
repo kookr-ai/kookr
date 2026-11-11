@@ -303,7 +303,7 @@ describe('useSpeakAgent request shape', () => {
       const mounted = mountProbe(vi.fn(async () => speakResponse('Two tasks need you.')) as unknown as typeof fetch);
       root = mounted.root;
       container = mounted.container;
-      const events: Array<{ type: string; text?: string | null; durationMs?: number | null; analyser?: unknown }> = [];
+      const events: Array<{ type: string; text?: string | null; analyser?: unknown }> = [];
       subscribeSpeechBus((event) => events.push(event));
 
       await speakAndSettle();
@@ -311,7 +311,7 @@ describe('useSpeakAgent request shape', () => {
       expect(probeHandle!.state.status).toBe('playing');
       const ctx = FakeAudioContext.instances[0];
       expect(events.map((event) => event.type)).toEqual(['idle', 'generating', 'playing']);
-      expect(events[2]).toMatchObject({ text: 'Two tasks need you.', durationMs: 2400, analyser: ctx.analyser });
+      expect(events[2]).toEqual({ type: 'playing', text: 'Two tasks need you.', analyser: ctx.analyser });
 
       const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
       // The tap is an extra connection: the clip still goes to the speakers exactly as before.
@@ -388,6 +388,34 @@ describe('useSpeakAgent request shape', () => {
       other.container.remove();
 
       expect(events).toEqual(['idle', 'generating']);
+    });
+
+    test('a button left suspended earlier cannot cut off a clip that another button is playing', async () => {
+      // Button A: the browser keeps its audio suspended, so it ends up "suppressed" with its audio objects kept for a retry.
+      class SuspendedAudioContext extends FakeAudioContext {
+        state: AudioContextState = 'suspended';
+        resume = vi.fn(async () => {});
+      }
+      vi.stubGlobal('AudioContext', SuspendedAudioContext);
+      const first = mountProbe(vi.fn(async () => speakResponse('A')) as unknown as typeof fetch);
+      await speakAndSettle();
+      expect(probeHandle!.state.status).toBe('suppressed');
+
+      // Button B plays normally.
+      vi.stubGlobal('AudioContext', FakeAudioContext);
+      const mounted = mountProbe(vi.fn(async () => speakResponse('B')) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+      const events: string[] = [];
+      subscribeSpeechBus((event) => events.push(event.type));
+      await speakAndSettle();
+      expect(events).toEqual(['idle', 'generating', 'playing']);
+
+      // Button A goes away (its task is closed) while B is still talking.
+      act(() => first.root.unmount());
+      first.container.remove();
+
+      expect(events).toEqual(['idle', 'generating', 'playing']);
     });
   });
 });

@@ -58,7 +58,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const stageRef = useRef<AvatarStage | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const stateRef = useRef<AvatarState>('idle');
-  const dragRef = useRef<{ pointerId: number; dx: number; dy: number } | null>(null);
+  const dragRef = useRef<{ pointerId: number; dx: number; dy: number; last: { x: number; y: number } | null } | null>(null);
   const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
   const bubbleRef = useRef<HTMLButtonElement | null>(null);
   // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
@@ -179,7 +179,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) return;
       if ((event.target as HTMLElement).closest('button')) return;
-      dragRef.current = { pointerId: event.pointerId, dx: event.clientX - position.x, dy: event.clientY - position.y };
+      dragRef.current = { pointerId: event.pointerId, dx: event.clientX - position.x, dy: event.clientY - position.y, last: null };
       event.currentTarget.setPointerCapture(event.pointerId);
       event.preventDefault();
     },
@@ -189,21 +189,21 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     (event: ReactPointerEvent<HTMLDivElement>) => {
       const drag = dragRef.current;
       if (!drag || drag.pointerId !== event.pointerId) return;
-      setDragPos(
-        clampAvatarPanelPosition({ x: event.clientX - drag.dx, y: event.clientY - drag.dy }, viewportSize(), panelSize),
+      drag.last = clampAvatarPanelPosition(
+        { x: event.clientX - drag.dx, y: event.clientY - drag.dy },
+        viewportSize(),
       );
+      setDragPos(drag.last);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [],
   );
   const onDragEnd = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
-    setDragPos((current) => {
-      if (current) updateAvatarPanelPrefs({ position: current });
-      return null;
-    });
+    // Save where it was dropped. A press and release without movement is not a move.
+    if (drag.last) updateAvatarPanelPrefs({ position: drag.last });
+    setDragPos(null);
   }, []);
 
   if (prefs.minimized) {

@@ -80,6 +80,7 @@ import {
 import type { VerbosityScale } from '../shared/contracts/speech.js';
 import { setSpeakVerbositySnapshot } from './hooks/useSpeakAgent.js';
 import { useAvatarPanelPrefs } from './store/avatar-panel-prefs.js';
+import { AvatarErrorBoundary } from './avatar/AvatarErrorBoundary.js';
 import { isTerminalStatus } from '../shared/contracts/task-status.js';
 import { computeAbortActiveTaskIds } from './abort-active-tasks.js';
 import { buildBugReportBundle } from './bug-report-bundle.js';
@@ -1816,9 +1817,11 @@ export function App() {
         </Suspense>
       )}
       {avatarPanelEnabled && (
-        <Suspense fallback={null}>
-          <AvatarDock attentionCount={findings.length} />
-        </Suspense>
+        <AvatarErrorBoundary>
+          <Suspense fallback={null}>
+            <AvatarDock attentionCount={findings.length} />
+          </Suspense>
+        </AvatarErrorBoundary>
       )}
       <PluginInstallBanner />
       <AchievementToasts />

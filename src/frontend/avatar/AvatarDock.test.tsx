@@ -44,6 +44,8 @@ import {
   defaultAvatarPanelPosition,
 } from '../store/avatar-panel-prefs.js';
 
+// Stands in for the speaker button that is talking.
+const SPEAKER = { name: 'a speaker button' };
 const VIEWPORT = { width: 1024, height: 768 };
 const FAR_X = VIEWPORT.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN;
 const FAR_Y = VIEWPORT.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN;
@@ -129,22 +131,25 @@ describe('AvatarDock', () => {
     const stage = stages[0];
     const analyser = { fftSize: 0, smoothingTimeConstant: 0 } as unknown as AnalyserNode;
 
-    act(() => emitSpeechGenerating());
+    act(() => emitSpeechGenerating(SPEAKER));
     expect(dock()!.getAttribute('data-avatar-state')).toBe('thinking');
     expect(stage.setState).toHaveBeenLastCalledWith('thinking');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(null);
 
     act(() => {
-      emitSpeechPlaying({ createAnalyser: () => analyser }, { connect: vi.fn() } as unknown as AudioNode, {
-        text: 'Two tasks need you.',
-      });
+      emitSpeechPlaying(
+        SPEAKER,
+        { createAnalyser: () => analyser },
+        { connect: vi.fn() } as unknown as AudioNode,
+        'Two tasks need you.',
+      );
     });
     expect(dock()!.getAttribute('data-avatar-state')).toBe('speaking');
     expect(caption()!.textContent).toBe('Two tasks need you.');
     expect(stage.setState).toHaveBeenLastCalledWith('speaking');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(analyser);
 
-    act(() => emitSpeechIdle());
+    act(() => emitSpeechIdle(SPEAKER));
     expect(dock()!.getAttribute('data-avatar-state')).toBe('idle');
     expect(stage.setState).toHaveBeenLastCalledWith('idle');
     expect(stage.setAnalyser).toHaveBeenLastCalledWith(null);
@@ -188,7 +193,7 @@ describe('AvatarDock', () => {
     render();
     const analyser = {} as AnalyserNode;
     act(() => {
-      emitSpeechPlaying({ createAnalyser: () => analyser }, { connect: vi.fn() } as unknown as AudioNode, { text: 'hi' });
+      emitSpeechPlaying(SPEAKER, { createAnalyser: () => analyser }, { connect: vi.fn() } as unknown as AudioNode, 'hi');
     });
 
     act(() => bubble()!.click());
@@ -214,10 +219,10 @@ describe('AvatarDock', () => {
     startWith({ minimized: true });
     render();
 
-    act(() => emitSpeechGenerating());
+    act(() => emitSpeechGenerating(SPEAKER));
     expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, preparing');
     act(() => {
-      emitSpeechPlaying({ createAnalyser: () => ({}) as AnalyserNode }, { connect: vi.fn() } as unknown as AudioNode);
+      emitSpeechPlaying(SPEAKER, { createAnalyser: () => ({}) as AnalyserNode }, { connect: vi.fn() } as unknown as AudioNode);
     });
     expect(bubble()!.getAttribute('aria-label')).toBe('Open Lucy, speaking');
   });
@@ -243,6 +248,22 @@ describe('AvatarDock', () => {
     });
     expect(savedPrefs().position).toEqual({ x: 300, y: 250 });
     expect(dock()!.style.left).toBe('300px');
+  });
+
+  test('pressing and releasing the title bar without moving saves nothing', () => {
+    startWith({});
+    render();
+    const header = container.querySelector<HTMLElement>('.avatar-dock-header')!;
+
+    act(() => {
+      header.dispatchEvent(pointer('pointerdown', { clientX: 800, clientY: 400 }));
+    });
+    act(() => {
+      header.dispatchEvent(pointer('pointerup', { clientX: 800, clientY: 400 }));
+    });
+
+    // Still "never moved", so the window keeps following its default corner when the browser is resized.
+    expect(savedPrefs().position).toBeNull();
   });
 
   test('a drag past the edge of the screen stops at the margin', () => {

@@ -16,7 +16,7 @@ export type SpeechBusEvent =
    * A clip started playing. `analyser` taps the clip's audio so a listener can
    * read its loudness; it is null when the tap could not be created.
    */
-  | { type: 'playing'; analyser: AnalyserNode | null; text: string | null; durationMs: number | null }
+  | { type: 'playing'; analyser: AnalyserNode | null; text: string | null }
   /** Playback finished, failed or was cancelled. */
   | { type: 'idle' };
 
@@ -24,6 +24,13 @@ type SpeechBusListener = (event: SpeechBusEvent) => void;
 
 const listeners = new Set<SpeechBusListener>();
 let last: SpeechBusEvent = { type: 'idle' };
+/**
+ * Who made the latest generating/playing announcement. Several speaker buttons
+ * exist at once, each with its own playback; only the one that is currently
+ * speaking may announce the end, so a different button being stopped or removed
+ * cannot cut the avatar off in the middle of someone else's clip.
+ */
+let owner: object | null = null;
 
 /** Subscribe; the listener immediately receives the current state. Returns an unsubscribe function. */
 export function subscribeSpeechBus(listener: SpeechBusListener): () => void {
@@ -32,10 +39,6 @@ export function subscribeSpeechBus(listener: SpeechBusListener): () => void {
   return () => {
     listeners.delete(listener);
   };
-}
-
-export function hasSpeechBusListeners(): boolean {
-  return listeners.size > 0;
 }
 
 function emit(event: SpeechBusEvent): void {
@@ -50,7 +53,9 @@ function emit(event: SpeechBusEvent): void {
   }
 }
 
-export function emitSpeechGenerating(): void {
+/** `by` identifies the caller (any object it keeps for its lifetime); see `owner` above. */
+export function emitSpeechGenerating(by: object): void {
+  owner = by;
   if (last.type === 'generating') return;
   emit({ type: 'generating' });
 }
@@ -61,10 +66,12 @@ export function emitSpeechGenerating(): void {
  * speakers, so it cannot change what the operator hears).
  */
 export function emitSpeechPlaying(
+  by: object,
   ctx: Pick<AudioContext, 'createAnalyser'>,
   source: Pick<AudioNode, 'connect'>,
-  meta: { text?: string | null; durationMs?: number | null } = {},
+  text: string | null = null,
 ): void {
+  owner = by;
   let analyser: AnalyserNode | null = null;
   if (listeners.size > 0) {
     try {
@@ -76,15 +83,13 @@ export function emitSpeechPlaying(
       analyser = null;
     }
   }
-  emit({
-    type: 'playing',
-    analyser,
-    text: meta.text ?? null,
-    durationMs: meta.durationMs ?? null,
-  });
+  emit({ type: 'playing', analyser, text });
 }
 
-export function emitSpeechIdle(): void {
+/** Announce that `by` is no longer speaking. Ignored unless `by` made the latest announcement. */
+export function emitSpeechIdle(by: object): void {
+  if (owner !== by) return;
+  owner = null;
   if (last.type === 'idle') return;
   emit({ type: 'idle' });
 }
@@ -92,4 +97,5 @@ export function emitSpeechIdle(): void {
 export function __resetSpeechBusForTests(): void {
   listeners.clear();
   last = { type: 'idle' };
+  owner = null;
 }

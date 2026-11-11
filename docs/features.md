@@ -392,6 +392,12 @@ spoken text as a caption.
   and stays inside the viewport when the window is resized. Minimising collapses it to a round
   bubble that shows a badge with the number of items needing your attention. A minimised panel shuts its 3D
   view down and uses no graphics memory.
+- **Usable from the keyboard.** A button in the title bar moves the window to the next corner of the
+  screen, so dragging is never required. Focus stays on the panel when you minimise or reopen it,
+  and the spoken text can be focused and scrolled. With "reduce motion" set in your operating
+  system, the decorative rings and particles stand still; only her mouth and a slight sway remain.
+- **It cannot break the dashboard.** If the panel fails to load or crashes, it disappears until the
+  next reload and everything else keeps working.
 - **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still
   play normally. It only has something to say when the speech service is on (`KOOKR_TTS`).
 - **What it does not do.** It never speaks on its own; it only accompanies clips you asked for. Its
