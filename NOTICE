@@ -18,8 +18,12 @@ limitations under the License.
 ---------------------------------------------------------------------------
 Third-party asset with a different licence
 
-src/frontend/avatar/assets/lucy-bust.glb (the optional avatar panel's 3D model)
-is NOT licensed under the Apache License. It is licensed under Creative Commons
+The 3D model used by the optional avatar panel is NOT licensed under the Apache
+License. In the source tree it is src/frontend/avatar/assets/lucy-bust.glb; in a
+built or published copy it is dist/frontend/assets/lucy-bust-<hash>.glb. It is licensed under Creative Commons
 Attribution-NonCommercial 4.0 International (CC BY-NC 4.0) and derives from the
-Ready Player Me sample avatar "brunette.glb". See
-src/frontend/avatar/assets/LICENSE.md. Remove the file for commercial use.
+Ready Player Me sample avatar "brunette.glb" (attribution: Ready Player Me, via
+the TalkingHead project, https://github.com/met4citizen/TalkingHead). Licence
+text: https://creativecommons.org/licenses/by-nc/4.0/ . Details are in
+src/frontend/avatar/assets/LICENSE.md in the source tree. Remove the file for
+commercial use; the avatar panel is off by default and Kookr works without it.

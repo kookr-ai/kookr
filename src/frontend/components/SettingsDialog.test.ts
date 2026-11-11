@@ -9,6 +9,7 @@ import { __resetSoundPreferenceForTests, getSoundPreferenceState } from '../audi
 import type { AgentSelection } from '../../shared/protocol.js';
 import { AVAILABLE_AGENT_TYPES } from '../../shared/protocol.js';
 import { useKookrStore } from '../store/useStore.js';
+import { AVATAR_PANEL_KEY, updateAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 
 interface MockSettings {
   githubPollingEnabled: boolean;
@@ -1124,6 +1125,41 @@ describe('SettingsDialog tabs', () => {
     expect(alert?.textContent).toContain('Revoked 1 shares; 1 revocations failed.');
     expect(container.textContent).not.toContain('Relay logs are at');
     confirmSpy.mockRestore();
+  });
+
+  test('switching the avatar panel on always opens it, even if it was left minimised', async () => {
+    await flush();
+    await act(async () => {
+      updateAvatarPanelPrefs({ enabled: false, minimized: true, position: { x: 40, y: 60 } });
+    });
+    try {
+      const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle avatar panel"]');
+      expect(toggle).not.toBeNull();
+      expect(toggle!.getAttribute('aria-pressed')).toBe('false');
+
+      await act(async () => {
+        toggle!.click();
+      });
+
+      expect(toggle!.getAttribute('aria-pressed')).toBe('true');
+      // Per-browser preference: it goes to localStorage, not to the server settings.
+      expect(JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY) ?? 'null')).toEqual({
+        enabled: true,
+        minimized: false,
+        position: { x: 40, y: 60 },
+      });
+      expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false);
+
+      await act(async () => {
+        toggle!.click();
+      });
+      expect(toggle!.getAttribute('aria-pressed')).toBe('false');
+      expect(JSON.parse(localStorage.getItem(AVATAR_PANEL_KEY) ?? 'null').enabled).toBe(false);
+    } finally {
+      await act(async () => {
+        updateAvatarPanelPrefs({ enabled: false, minimized: false, position: null });
+      });
+    }
   });
 
   test('search filters General settings to matching rows and hides other sections', async () => {

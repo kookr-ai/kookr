@@ -434,8 +434,11 @@ export class AvatarStage {
       if (this.blinkT > 0.16) this.blinkT = -1;
     }
 
-    // Idle motion: a slow head sway and a breath.
+    // Idle motion: a slow head sway and a breath. With "reduce motion" set in the operating system the sway is
+    // much smaller and the purely decorative movement (rings, particles) stops; her mouth still moves, because
+    // that carries information.
     const motion = this.reducedMotion ? 0.3 : 1;
+    const ambient = this.reducedMotion ? 0 : 1;
     if (this.head) {
       this.head.rotation.y = Math.sin(t * 0.45) * 0.14 * motion;
       this.head.rotation.x = 0.03 + Math.sin(t * 0.33) * 0.035 * motion - amp * 0.03;
@@ -447,9 +450,9 @@ export class AvatarStage {
     for (const object of this.spinners) {
       const spin = (object.userData as { lucyFx: SpinFx }).lucyFx.spin;
       if (!spin) continue;
-      object.rotation.x += spin[0] * dt * boost * 0.6 * motion;
-      object.rotation.y += spin[1] * dt * boost * 0.6 * motion;
-      object.rotation.z += spin[2] * dt * boost * 0.6 * motion;
+      object.rotation.x += spin[0] * dt * boost * 0.6 * ambient;
+      object.rotation.y += spin[1] * dt * boost * 0.6 * ambient;
+      object.rotation.z += spin[2] * dt * boost * 0.6 * ambient;
     }
     const pulse = 1 + amp * 0.55 + 0.1 * Math.sin(t * 2.1);
     for (const entry of this.emissive) entry.material.emissiveIntensity = entry.base * pulse;
@@ -465,7 +468,7 @@ export class AvatarStage {
 
     if (this.particles) {
       const uniforms = (this.particles.material as THREE.ShaderMaterial).uniforms;
-      uniforms.uTime.value = t * motion;
+      uniforms.uTime.value = t * ambient;
       uniforms.uA.value = amp;
       (uniforms.uW.value as THREE.Vector3).set(wIdle, wThink, wSpeak);
     }

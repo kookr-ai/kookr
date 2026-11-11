@@ -19,6 +19,7 @@ import { subscribeSpeechBus } from '../audio/speech-bus.js';
 import {
   AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
+  AVATAR_PANEL_MARGIN,
   AVATAR_PANEL_WIDTH,
   clampAvatarPanelPosition,
   defaultAvatarPanelPosition,
@@ -58,6 +59,10 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const stateRef = useRef<AvatarState>('idle');
   const dragRef = useRef<{ pointerId: number; dx: number; dy: number } | null>(null);
+  const minimiseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const bubbleRef = useRef<HTMLButtonElement | null>(null);
+  // Set when the operator minimises or reopens, so keyboard focus can follow to the control that replaced the one they used.
+  const restoreFocusRef = useRef(false);
 
   // Keep the panel on screen when the browser window is resized.
   useEffect(() => {
@@ -127,9 +132,48 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   const minimise = useCallback(() => {
     const image = stageRef.current?.snapshot();
     if (image) setStill(image);
+    restoreFocusRef.current = true;
     updateAvatarPanelPrefs({ minimized: true });
   }, []);
-  const open = useCallback(() => updateAvatarPanelPrefs({ minimized: false }), []);
+  const open = useCallback(() => {
+    restoreFocusRef.current = true;
+    updateAvatarPanelPrefs({ minimized: false });
+  }, []);
+
+  // Minimising swaps the window for the bubble (and back), which unmounts the button that had focus.
+  // Move focus to its counterpart so a keyboard user is not sent back to the top of the page.
+  useEffect(() => {
+    if (!restoreFocusRef.current) return;
+    restoreFocusRef.current = false;
+    (prefs.minimized ? bubbleRef.current : minimiseButtonRef.current)?.focus();
+  }, [prefs.minimized]);
+
+  // A way to move the window without dragging: each press sends it to the next corner of the viewport.
+  const moveToNextCorner = useCallback(() => {
+    const view = viewportSize();
+    const right = view.width - AVATAR_PANEL_WIDTH - AVATAR_PANEL_MARGIN;
+    const bottom = view.height - AVATAR_PANEL_HEIGHT - AVATAR_PANEL_MARGIN;
+    const corners = [
+      { x: right, y: bottom },
+      { x: AVATAR_PANEL_MARGIN, y: bottom },
+      { x: AVATAR_PANEL_MARGIN, y: AVATAR_PANEL_MARGIN },
+      { x: right, y: AVATAR_PANEL_MARGIN },
+    ].map((corner) => clampAvatarPanelPosition(corner, view));
+    const here = clampAvatarPanelPosition(
+      prefs.position ?? defaultAvatarPanelPosition(view),
+      view,
+    );
+    let nearest = 0;
+    let best = Number.POSITIVE_INFINITY;
+    corners.forEach((corner, index) => {
+      const distance = Math.hypot(corner.x - here.x, corner.y - here.y);
+      if (distance < best) {
+        best = distance;
+        nearest = index;
+      }
+    });
+    updateAvatarPanelPrefs({ position: corners[(nearest + 1) % corners.length] });
+  }, [prefs.position]);
 
   const onDragStart = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -163,13 +207,15 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
   }, []);
 
   if (prefs.minimized) {
+    const activity = state === 'idle' ? '' : `, ${STATE_LABEL[state]}`;
     const label =
       attentionCount > 0
-        ? `Open ${NAME}. ${attentionCount} ${attentionCount === 1 ? 'task needs' : 'tasks need'} you.`
-        : `Open ${NAME}`;
+        ? `Open ${NAME}${activity}. ${attentionCount} ${attentionCount === 1 ? 'item needs' : 'items need'} your attention.`
+        : `Open ${NAME}${activity}`;
     return (
       <button
         type="button"
+        ref={bubbleRef}
         className={`avatar-bubble avatar-bubble-${state}`}
         style={{ left: bubblePosition.x, top: bubblePosition.y, backgroundImage: still ? `url(${still})` : undefined }}
         onClick={open}
@@ -189,7 +235,7 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
     <section
       className={`avatar-dock avatar-dock-${state}${dragPos ? ' avatar-dock-dragging' : ''}`}
       style={{ left: position.x, top: position.y, width: AVATAR_PANEL_WIDTH, height: AVATAR_PANEL_HEIGHT }}
-      aria-label={`${NAME}, the avatar panel`}
+      aria-label={`${NAME} avatar`}
       data-testid="avatar-dock"
       data-avatar-state={state}
       data-avatar-loaded={loaded ? 'true' : 'false'}
@@ -204,19 +250,24 @@ export function AvatarDock({ attentionCount }: AvatarDockProps) {
         <span className="avatar-dock-name">{NAME.toUpperCase()}</span>
         <span className="avatar-dock-state">{STATE_LABEL[state]}</span>
         <span className="avatar-dock-spacer" />
-        <button type="button" className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
+        <button type="button" className="avatar-dock-button" onClick={moveToNextCorner} aria-label={`Move ${NAME} to the next corner`} title="Move to the next corner">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 6V3h3M13 10v3h-3M3 3l4 4M13 13l-4-4" /></svg>
+        </button>
+        <button type="button" ref={minimiseButtonRef} className="avatar-dock-button" onClick={minimise} aria-label={`Minimise ${NAME}`} title="Minimise">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 8h10" /></svg>
         </button>
       </div>
       <div className="avatar-dock-view" ref={viewRef}>
-        {!loaded && !error && <span className="avatar-dock-status">Loading…</span>}
-        {error && (
-          <span className="avatar-dock-status" role="status">
-            The 3D view could not start ({error}). Spoken summaries still play.
-          </span>
-        )}
+        {/* The status element is always present so that a message added later is announced. */}
+        <span className="avatar-dock-status" role="status" hidden={loaded && !error}>
+          {error
+            ? `The 3D view could not start (${error}). Spoken summaries still play.`
+            : loaded
+              ? ''
+              : 'Loading…'}
+        </span>
       </div>
-      <div className="avatar-dock-caption" data-testid="avatar-caption">
+      <div className="avatar-dock-caption" data-testid="avatar-caption" tabIndex={0} role="group" aria-label="Spoken text">
         {caption ?? IDLE_HINT}
       </div>
     </section>

@@ -15,7 +15,7 @@ export const SPEECH_VISEMES = [
   'viseme_nn', 'viseme_RR', 'viseme_CH', 'viseme_TH',
 ] as const;
 
-export type SpeechViseme = (typeof SPEECH_VISEMES)[number];
+type SpeechViseme = (typeof SPEECH_VISEMES)[number];
 
 /**
  * Root-mean-square loudness of an audio frame, mapped to 0..1.
@@ -43,7 +43,7 @@ export function createRng(seed = 99): () => number {
   };
 }
 
-export interface LipSyncState {
+interface LipSyncState {
   /** Smoothed loudness, 0..1. */
   amp: number;
   /** The mouth shape currently being formed. */

@@ -441,6 +441,9 @@ export function useSpeakAgent(
           resumeFailed,
         });
         updateAudioAlertDecision(decision.id, { audioContextFinalState: ctx.state });
+        // Nothing is audible, so observers must not stay on "generating". The source and context are
+        // deliberately left in place for a retry, which is why this does not go through cleanup().
+        emitSpeechIdle();
         setState({ status: 'suppressed', errorReason: 'audio-context-suspended', cached: payload.cached, timings: playTimings });
         return;
       }

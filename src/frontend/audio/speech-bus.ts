@@ -20,7 +20,7 @@ export type SpeechBusEvent =
   /** Playback finished, failed or was cancelled. */
   | { type: 'idle' };
 
-export type SpeechBusListener = (event: SpeechBusEvent) => void;
+type SpeechBusListener = (event: SpeechBusEvent) => void;
 
 const listeners = new Set<SpeechBusListener>();
 let last: SpeechBusEvent = { type: 'idle' };

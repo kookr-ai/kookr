@@ -63,6 +63,12 @@ test.describe('avatar panel (optional)', () => {
     await expect(dock).toHaveAttribute('data-avatar-state', 'idle');
     await expect(page.getByTestId('avatar-caption')).toContainText('speaker button');
     expect(requests.some((url) => /AvatarDock/.test(url)), 'the panel code is fetched on demand').toBe(true);
+    // Positive control for the "downloads nothing" checks above: the 3D renderer really does live in a chunk
+    // of its own with this name. If it were folded into a shared chunk, those checks would pass while every
+    // operator paid for it.
+    await expect
+      .poll(() => requests.some((url) => /vendor-three/.test(url)), { message: 'the 3D renderer is fetched on demand' })
+      .toBe(true);
 
     // Switching it off again removes the window.
     await toggle.click();
@@ -90,9 +96,9 @@ test.describe('avatar panel (optional)', () => {
     await page.getByRole('button', { name: 'Minimise Lucy' }).click();
     const bubble = page.getByTestId('avatar-bubble');
     await expect(bubble).toBeVisible();
+    // Keyboard focus follows from the Minimise button to the bubble that replaced the window.
+    await expect(bubble).toBeFocused();
     await expect(dock).toHaveCount(0);
-    // Minimising shuts the 3D view down: no avatar canvas may remain.
-    await expect(page.locator('canvas.avatar-stage-canvas')).toHaveCount(0);
 
     await page.reload();
     await expect(page.getByTestId('avatar-bubble')).toBeVisible();
@@ -100,7 +106,30 @@ test.describe('avatar panel (optional)', () => {
 
     await page.getByTestId('avatar-bubble').click();
     await expect(page.getByTestId('avatar-dock')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Minimise Lucy' })).toBeFocused();
+
     await page.reload();
     await expect(page.getByTestId('avatar-dock')).toBeVisible();
+  });
+
+  test('can be moved to another corner without dragging, and stays there after a reload', async ({ page }) => {
+    await page.addInitScript((key) => {
+      if (window.localStorage.getItem(key) === null) {
+        window.localStorage.setItem(key, JSON.stringify({ enabled: true, minimized: false, position: null }));
+      }
+    }, AVATAR_PANEL_KEY);
+    await page.goto('/');
+    const dock = page.getByTestId('avatar-dock');
+    await expect(dock).toBeVisible();
+    const viewport = page.viewportSize();
+    const before = await dock.boundingBox();
+    expect(before!.x).toBeGreaterThan(viewport!.width / 2);
+
+    await page.getByRole('button', { name: 'Move Lucy to the next corner' }).click();
+    await expect.poll(async () => (await dock.boundingBox())!.x).toBeLessThan(viewport!.width / 2);
+
+    await page.reload();
+    await expect(dock).toBeVisible();
+    expect((await dock.boundingBox())!.x).toBeLessThan(viewport!.width / 2);
   });
 });

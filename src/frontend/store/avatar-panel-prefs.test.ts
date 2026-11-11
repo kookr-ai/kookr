@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
+  AVATAR_BUBBLE_SIZE,
   AVATAR_PANEL_HEIGHT,
   AVATAR_PANEL_KEY,
   AVATAR_PANEL_MARGIN,
   AVATAR_PANEL_WIDTH,
   DEFAULT_AVATAR_PANEL_PREFS,
+  __resetAvatarPanelPrefsForTests,
   clampAvatarPanelPosition,
   defaultAvatarPanelPosition,
   loadAvatarPanelPrefs,
   saveAvatarPanelPrefs,
+  updateAvatarPanelPrefs,
 } from './avatar-panel-prefs.js';
 
 function fakeStorage(initial?: Record<string, string>) {
@@ -50,7 +53,7 @@ describe('avatar-panel-prefs', () => {
     ['an array', '[true]'],
   ])('malformed storage (%s) falls back to the panel being off', (_label, raw) => {
     const storage = fakeStorage({ [AVATAR_PANEL_KEY]: raw });
-    expect(loadAvatarPanelPrefs(storage.impl).enabled).toBe(false);
+    expect(loadAvatarPanelPrefs(storage.impl)).toEqual(DEFAULT_AVATAR_PANEL_PREFS);
   });
 
   test('only a literal true enables the panel; a bad position is dropped, not trusted', () => {
@@ -68,6 +71,44 @@ describe('avatar-panel-prefs', () => {
     expect(loadAvatarPanelPrefs(throwing)).toEqual(DEFAULT_AVATAR_PANEL_PREFS);
     expect(saveAvatarPanelPrefs(DEFAULT_AVATAR_PANEL_PREFS, throwing)?.message).toBe('quota');
     expect(saveAvatarPanelPrefs(DEFAULT_AVATAR_PANEL_PREFS, null)).toBeInstanceOf(Error);
+  });
+
+  describe('the live store behind the settings toggle and the panel', () => {
+    test('an update keeps the fields it was not given and is written to storage', () => {
+      const storage = fakeStorage();
+      vi.stubGlobal('localStorage', storage.impl);
+      __resetAvatarPanelPrefsForTests();
+
+      updateAvatarPanelPrefs({ enabled: true });
+      const next = updateAvatarPanelPrefs({ minimized: true, position: { x: 20, y: 30 } });
+
+      expect(next).toEqual({ enabled: true, minimized: true, position: { x: 20, y: 30 } });
+      expect(JSON.parse(storage.map.get(AVATAR_PANEL_KEY) ?? 'null')).toEqual(next);
+    });
+
+    test('a store that starts from saved prefs keeps them when one field changes', () => {
+      const storage = fakeStorage({
+        [AVATAR_PANEL_KEY]: JSON.stringify({ enabled: true, minimized: false, position: { x: 5, y: 6 } }),
+      });
+      vi.stubGlobal('localStorage', storage.impl);
+      __resetAvatarPanelPrefsForTests();
+
+      expect(updateAvatarPanelPrefs({ minimized: true })).toEqual({
+        enabled: true,
+        minimized: true,
+        position: { x: 5, y: 6 },
+      });
+    });
+
+    test('storage that refuses the write does not lose the change for this page', () => {
+      vi.stubGlobal('localStorage', {
+        getItem: () => null,
+        setItem: () => { throw new Error('quota'); },
+      });
+      __resetAvatarPanelPrefsForTests();
+
+      expect(updateAvatarPanelPrefs({ enabled: true }).enabled).toBe(true);
+    });
   });
 
   describe('clampAvatarPanelPosition', () => {
@@ -107,10 +148,10 @@ describe('avatar-panel-prefs', () => {
     });
 
     test('a custom size (the bubble) is clamped by its own dimensions', () => {
-      const size = { width: 58, height: 58 };
+      const size = { width: AVATAR_BUBBLE_SIZE, height: AVATAR_BUBBLE_SIZE };
       expect(clampAvatarPanelPosition({ x: 5000, y: 5000 }, viewport, size)).toEqual({
-        x: viewport.width - 58 - AVATAR_PANEL_MARGIN,
-        y: viewport.height - 58 - AVATAR_PANEL_MARGIN,
+        x: viewport.width - AVATAR_BUBBLE_SIZE - AVATAR_PANEL_MARGIN,
+        y: viewport.height - AVATAR_BUBBLE_SIZE - AVATAR_PANEL_MARGIN,
       });
     });
   });

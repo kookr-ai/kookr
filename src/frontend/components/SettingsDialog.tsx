@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import {
   buildAgentSelectionOptions,
   settingsVisibleAgentTypes,
@@ -31,6 +30,7 @@ import { useDialogFocus } from '../hooks/useDialogFocus.js';
 import { useKookrStore } from '../store/useStore.js';
 import { applyRoundRobinIndex } from '../store/round-robin-cursor.js';
 import { applyQuotaHeadroomThreshold } from '../store/quota-headroom-threshold.js';
+import { updateAvatarPanelPrefs, useAvatarPanelPrefs } from '../store/avatar-panel-prefs.js';
 import { AgentTypeSelector } from './AgentTypeSelector.js';
 import { HookInventorySection } from './HookInventorySection.js';
 import { DictationCorpusPanel } from './DictationCorpusPanel.js';

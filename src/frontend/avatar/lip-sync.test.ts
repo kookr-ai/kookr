@@ -46,6 +46,16 @@ describe('stepLipSync', () => {
     for (const v of SPEECH_VISEMES) expect(state.weights[v]).toBeCloseTo(0, 6);
   });
 
+  test('background hiss below the speech threshold never picks a new mouth shape', () => {
+    const state = createLipSyncState();
+    const before = { viseme: state.viseme, syllableLeft: state.syllableLeft };
+    run(0.03, 2, state);
+    expect({ viseme: state.viseme, syllableLeft: state.syllableLeft }).toEqual(before);
+    // Just above the threshold the rhythm starts.
+    run(0.05, 0.1, state);
+    expect(state.syllableLeft).toBeGreaterThan(0);
+  });
+
   test('with sound, exactly one mouth shape opens toward the loudness', () => {
     const state = run(0.8, 0.07);
     expect(state.amp).toBeGreaterThan(0.4);
@@ -56,14 +66,26 @@ describe('stepLipSync', () => {
   test('the mouth shape changes at a syllable rhythm while sound continues', () => {
     const state = createLipSyncState();
     const rng = createRng(7);
-    const shapes: string[] = [];
+    const shapes = new Set<string>();
+    const holds: number[] = [];
     for (let i = 0; i < 120; i += 1) {
+      const left = state.syllableLeft;
       stepLipSync(state, 0.7, 1 / 60, rng);
-      if (shapes[shapes.length - 1] !== state.viseme) shapes.push(state.viseme);
+      // The countdown only ever goes up when a new shape was just picked.
+      if (state.syllableLeft > left) holds.push(state.syllableLeft);
+      shapes.add(state.viseme);
     }
-    // Two seconds of speech at 80-200 ms per shape: between 10 and 25 changes.
-    expect(shapes.length).toBeGreaterThanOrEqual(8);
-    expect(shapes.length).toBeLessThanOrEqual(26);
+    // Every shape is held for 80 to 200 ms.
+    for (const hold of holds) {
+      expect(hold).toBeGreaterThanOrEqual(0.08);
+      expect(hold).toBeLessThanOrEqual(0.2);
+    }
+    // Two seconds of speech therefore holds 10 to 25 shapes; a hold ends on the next 60 Hz frame,
+    // which can stretch each one by up to 17 ms, so 9 is the true lower bound.
+    expect(holds.length).toBeGreaterThanOrEqual(9);
+    expect(holds.length).toBeLessThanOrEqual(25);
+    // And it is not the same shape over and over.
+    expect(shapes.size).toBeGreaterThan(3);
   });
 
   test('when the sound stops the mouth relaxes back to closed', () => {

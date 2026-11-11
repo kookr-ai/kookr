@@ -146,7 +146,7 @@ if (typeof window !== 'undefined' && typeof window.addEventListener === 'functio
   });
 }
 
-export function getAvatarPanelPrefs(): AvatarPanelPrefs {
+function getAvatarPanelPrefs(): AvatarPanelPrefs {
   return state;
 }
 

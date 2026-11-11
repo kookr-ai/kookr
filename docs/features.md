@@ -390,7 +390,7 @@ spoken text as a caption.
   avatar file.
 - **A window you can move and minimise.** Drag it by its title bar; it remembers where you left it
   and stays inside the viewport when the window is resized. Minimising collapses it to a round
-  bubble that shows a badge with the number of tasks waiting for you. A minimised panel shuts its 3D
+  bubble that shows a badge with the number of items needing your attention. A minimised panel shuts its 3D
   view down and uses no graphics memory.
 - **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still
   play normally. It only has something to say when the speech service is on (`KOOKR_TTS`).

@@ -17,6 +17,7 @@ import {
   __resetAudioAlertLogForTests,
   getAudioAlertSnapshot,
 } from '../audio/audio-alert-log.js';
+import { __resetSpeechBusForTests, subscribeSpeechBus } from '../audio/speech-bus.js';
 
 describe('speak agent timing formatting', () => {
   test('shows generation, synthesis, decode, and audio timing', () => {
@@ -58,8 +59,16 @@ type FakeBufferSource = {
 };
 
 class FakeAudioContext {
+  static instances: FakeAudioContext[] = [];
   state: AudioContextState = 'running';
   destination = {};
+  analyser = { fftSize: 0, smoothingTimeConstant: 0 };
+
+  constructor() {
+    FakeAudioContext.instances.push(this);
+  }
+
+  createAnalyser = vi.fn(() => this.analyser as unknown as AnalyserNode);
 
   decodeAudioData = vi.fn(async () => ({}) as AudioBuffer);
   close = vi.fn(async () => {
@@ -118,6 +127,8 @@ describe('useSpeakAgent request shape', () => {
     probeHandle = null;
     setSpeakVerbositySnapshot(null);
     __resetAudioAlertLogForTests();
+    __resetSpeechBusForTests();
+    FakeAudioContext.instances = [];
     vi.stubGlobal('AudioContext', FakeAudioContext);
   });
 
@@ -210,6 +221,8 @@ describe('useSpeakAgent request shape', () => {
     const mounted = mountProbe(fetchMock as unknown as typeof fetch);
     root = mounted.root;
     container = mounted.container;
+    const busEvents: string[] = [];
+    subscribeSpeechBus((event) => busEvents.push(event.type));
 
     act(() => {
       probeHandle!.speak();
@@ -223,6 +236,7 @@ describe('useSpeakAgent request shape', () => {
 
     expect(probeHandle!.state.status).toBe('error');
     expect(probeHandle!.state.errorReason).toBe('timeout-client');
+    expect(busEvents).toEqual(['idle', 'generating', 'idle']);
     const snapshot = getAudioAlertSnapshot();
     const timeoutEntry = snapshot.entries.find((entry) => entry.reason === 'timeout_client');
     expect(timeoutEntry?.abortedAtPhase).toBe('generating');
@@ -234,6 +248,8 @@ describe('useSpeakAgent request shape', () => {
     const mounted = mountProbe(fetchMock as unknown as typeof fetch);
     root = mounted.root;
     container = mounted.container;
+    const busEvents: string[] = [];
+    subscribeSpeechBus((event) => busEvents.push(event.type));
 
     act(() => {
       probeHandle!.speak();
@@ -246,8 +262,132 @@ describe('useSpeakAgent request shape', () => {
     });
 
     expect(probeHandle!.state.status).toBe('idle');
+    expect(busEvents).toEqual(['idle', 'generating', 'idle']);
     const snapshot = getAudioAlertSnapshot();
     const cancelEntry = snapshot.entries.find((entry) => entry.reason === 'user_canceled');
     expect(cancelEntry?.abortedAtPhase).toBe('generating');
+  });
+
+  // The optional avatar panel follows playback through the speech bus. These cases pin what the
+  // hook announces, so the avatar cannot be left "preparing" or "speaking" after the clip is over.
+  describe('announcements on the speech bus', () => {
+    function speakResponse(text: string): Response {
+      return {
+        ok: true,
+        json: async () => ({
+          text,
+          audioBase64: 'AA==',
+          mimeType: 'audio/wav',
+          durationMs: 2400,
+          usedFallback: false,
+          fallbackReason: null,
+          llmMs: 0,
+          ttsMs: 0,
+          cached: false,
+          resolvedMode: 'activity',
+          effectiveVerbosity: 'medium',
+          requestId: 'req-bus',
+          cacheKey: 'k',
+        }),
+      } as unknown as Response;
+    }
+
+    async function speakAndSettle(): Promise<void> {
+      await act(async () => {
+        probeHandle!.speak();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+      });
+    }
+
+    test('a clip is announced as generating, then playing with its text and a loudness tap, then idle when it ends', async () => {
+      const mounted = mountProbe(vi.fn(async () => speakResponse('Two tasks need you.')) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+      const events: Array<{ type: string; text?: string | null; durationMs?: number | null; analyser?: unknown }> = [];
+      subscribeSpeechBus((event) => events.push(event));
+
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('playing');
+      const ctx = FakeAudioContext.instances[0];
+      expect(events.map((event) => event.type)).toEqual(['idle', 'generating', 'playing']);
+      expect(events[2]).toMatchObject({ text: 'Two tasks need you.', durationMs: 2400, analyser: ctx.analyser });
+
+      const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+      // The tap is an extra connection: the clip still goes to the speakers exactly as before.
+      expect(source.connect).toHaveBeenCalledWith(ctx.destination);
+      expect(source.connect).toHaveBeenCalledWith(ctx.analyser);
+
+      act(() => {
+        source.onended?.();
+      });
+      expect(probeHandle!.state.status).toBe('idle');
+      expect(events.map((event) => event.type)).toEqual(['idle', 'generating', 'playing', 'idle']);
+    });
+
+    test('with nobody listening, playback creates no extra audio node', async () => {
+      const mounted = mountProbe(vi.fn(async () => speakResponse('hi')) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('playing');
+      const ctx = FakeAudioContext.instances[0];
+      expect(ctx.createAnalyser).not.toHaveBeenCalled();
+      const source = ctx.createBufferSource.mock.results[0].value as unknown as FakeBufferSource;
+      expect(source.connect).toHaveBeenCalledTimes(1);
+    });
+
+    test('a clip the browser refuses to play (audio stays suspended) does not leave observers on generating', async () => {
+      class SuspendedAudioContext extends FakeAudioContext {
+        state: AudioContextState = 'suspended';
+        resume = vi.fn(async () => {});
+      }
+      vi.stubGlobal('AudioContext', SuspendedAudioContext);
+      const mounted = mountProbe(vi.fn(async () => speakResponse('hi')) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+      const events: string[] = [];
+      subscribeSpeechBus((event) => events.push(event.type));
+
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('suppressed');
+      expect(events).toEqual(['idle', 'generating', 'idle']);
+    });
+
+    test('a failed request ends the announcement', async () => {
+      const mounted = mountProbe(vi.fn(async () => { throw new Error('offline'); }) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+      const events: string[] = [];
+      subscribeSpeechBus((event) => events.push(event.type));
+
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('error');
+      expect(events).toEqual(['idle', 'generating', 'idle']);
+    });
+
+    test('another speaker button going away while idle does not cut the announcement short', async () => {
+      const mounted = mountProbe(vi.fn(() => new Promise<Response>(() => {})) as unknown as typeof fetch);
+      root = mounted.root;
+      container = mounted.container;
+      const speaking = probeHandle!;
+      const events: string[] = [];
+      subscribeSpeechBus((event) => events.push(event.type));
+      act(() => {
+        speaking.speak();
+      });
+      expect(events).toEqual(['idle', 'generating']);
+
+      // A second, idle instance of the hook (another task's speaker button) mounts and unmounts.
+      const other = mountProbe(vi.fn() as unknown as typeof fetch);
+      act(() => other.root.unmount());
+      other.container.remove();
+
+      expect(events).toEqual(['idle', 'generating']);
+    });
   });
 });
