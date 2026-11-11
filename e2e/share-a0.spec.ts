@@ -72,6 +72,11 @@ async function createShareFromDashboard(page: Page): Promise<string> {
 }
 
 test.describe('Easy connection sharing Phase A0', () => {
+  // The facts column (Share, dependencies) docks beside the conversation only
+  // when the reading pane is 820 px or wider; from #3561 slice 5a the labelled
+  // navigation leaves less than that between 1280 and about 1440 px.
+  test.use({ viewport: { width: 1600, height: 950 } });
+
   test.beforeEach(async ({ page, request }) => {
     await resetServer(request);
     await page.goto('/');

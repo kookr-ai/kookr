@@ -53,7 +53,7 @@ test('a working task shows one main action; Cancel waits in More actions and Esc
 });
 
 test('the facts column docks on a wide pane and opens over a narrow one from Details', async ({ page, request }) => {
-  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.setViewportSize({ width: 1600, height: 950 });
   await launchTask(page, request, 'Reading pane facts task', false);
   await page.locator('.healthy-row').first().click();
 
@@ -65,7 +65,9 @@ test('the facts column docks on a wide pane and opens over a narrow one from Det
   await expect(facts.getByTestId('task-timeline')).toBeVisible();
   await expect(page.getByTestId('detail-facts-toggle')).toHaveCount(0);
 
-  await page.setViewportSize({ width: 1024, height: 800 });
+  // #3561 slice 5a: at 1280 px the labelled navigation leaves the pane under
+  // 820 px, so the column moves behind Details there.
+  await page.setViewportSize({ width: 1280, height: 800 });
   await expect(facts).toHaveCount(0);
   const toggle = page.getByTestId('detail-facts-toggle');
   await toggle.click();

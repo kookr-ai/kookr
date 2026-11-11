@@ -92,6 +92,7 @@ import {
 } from './debug-timeline.js';
 import { getSelectionTransitionDiagnostics } from './selection-transition-recorder.js';
 import { findingTypeLabel, findingWaitStartedAt, oldestFindingWaitAgent } from './presentation.js';
+import { mergeCompletedHistory, scopeArchivedAgents } from './completed-history.js';
 import { activeModalReducer } from './app-modal-reducer.js';
 import type { ActiveModal } from './app-modal-reducer.js';
 import { useCompletionConfirmation } from './hooks/useCompletionConfirmation.js';
@@ -1276,6 +1277,18 @@ export function App() {
     () => buildAgentBuckets(agents, null, coordinator, projectPriorityRanks).findings,
     [agents, coordinator, projectPriorityRanks],
   );
+  // Queue counts for the labelled navigation (#3561 slice 5a). Finished uses
+  // the same live + archived merge as the list's Finished header, so the two
+  // never disagree once older history has been loaded.
+  const finishedListCount = useMemo(
+    () => mergeCompletedHistory(completed, scopeArchivedAgents(archivedAgents, selectedProject)).length,
+    [completed, archivedAgents, selectedProject],
+  );
+  // "Needs you" heads the one list, so its queue jumps back to the top.
+  const jumpToNeedsYou = useCallback(() => {
+    setMobileTab('findings');
+    document.querySelector('[data-testid="findings-needs-you-header"]')?.scrollIntoView?.({ block: 'nearest' });
+  }, []);
   const oldestWaitingFinding = useMemo(
     () => oldestFindingWaitAgent(findings),
     [findings],
@@ -1490,6 +1503,16 @@ export function App() {
     <ProjectSidebar
       onManage={() => openModal('projectSidebarManager')}
       onAdjustCap={openSettingsAtMaxActiveTasks}
+      labelled={!selectedProjectSummary}
+      queues={{
+        needsYou: findings.length,
+        working: healthy.length,
+        finished: finishedListCount,
+        onNeedsYou: jumpToNeedsYou,
+        onWorking: expandHealthyRail,
+        onFinished: expandCompletedRail,
+        onScheduled: () => openModal('schedules'),
+      }}
     />
   );
 
