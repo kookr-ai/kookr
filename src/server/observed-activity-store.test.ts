@@ -10,17 +10,26 @@ import {
 describe('ObservedActivityStore', () => {
   let dir: string;
   let clock: number;
+  // Every store built during a test. Persists are fire-and-forget, so a write
+  // may still be landing on disk when the test body returns; the directory must
+  // not be removed until those writes finish, or `rmSync` races the atomic
+  // rename and intermittently fails with ENOTEMPTY (issue #3586).
+  let stores: ObservedActivityStore[];
   const sid = `${OBSERVED_SESSION_PREFIX}alpha`;
 
   function makeStore(opts: Partial<ConstructorParameters<typeof ObservedActivityStore>[1]> = {}) {
-    return new ObservedActivityStore(dir, { now: () => clock, ...opts });
+    const store = new ObservedActivityStore(dir, { now: () => clock, ...opts });
+    stores.push(store);
+    return store;
   }
 
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'hermes-obs-'));
     clock = 1_000_000;
+    stores = [];
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(stores.map((store) => store.flush()));
     rmSync(dir, { recursive: true, force: true });
   });
 
