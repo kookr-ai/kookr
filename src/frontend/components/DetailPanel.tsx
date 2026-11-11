@@ -283,7 +283,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   useEffect(() => { setFactsOpen(false); }, [agent?.agentId]);
   const [permissionButtonsDisabled, setPermissionButtonsDisabled] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore(useShallow((state) => ({
+  const { selectAgent, nextBottleneck, advanceEmptyEnter, snoozeAgent, setRelaunchTask, showSentOverlay, githubState, leftPane, setLeftPane, narrowTab, setNarrowTab, detailPaneMode: storedDetailPaneMode, setDetailPaneMode, setTerminalFocusMode, handleAlert, suggestions, clearSuggestion, setFocusZone, focusZone, sttUrl, respondAllAgentIds, setRespondAllAgentIds, shortcutsArmed, armShortcuts } = useKookrStore(useShallow((state) => ({
     selectAgent: state.selectAgent,
     nextBottleneck: state.nextBottleneck,
     advanceEmptyEnter: state.advanceEmptyEnter,
@@ -297,6 +297,7 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
     setNarrowTab: state.setNarrowTab,
     detailPaneMode: state.detailPaneMode,
     setDetailPaneMode: state.setDetailPaneMode,
+    setTerminalFocusMode: state.setTerminalFocusMode,
     handleAlert: state.handleAlert,
     suggestions: state.suggestions,
     clearSuggestion: state.clearSuggestion,
@@ -951,7 +952,8 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
   }
 
   function showConversationFromFocus() {
-    setDetailPaneMode('tabs');
+    // Return to the layout terminal focus was entered from (#3618).
+    setTerminalFocusMode(false);
     selectConversationTab();
     focusNextFrame(conversationTabRef);
   }

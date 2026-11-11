@@ -506,6 +506,71 @@ describe('detail-pane persistence', () => {
     expect(storage.map.get(DETAIL_PANE_MODE_KEY)).toBe('right');
   });
 
+  test('#3618: two terminal-focus toggles from Split view land back in Split view', () => {
+    vi.stubGlobal('localStorage', fakeStorage().impl);
+    const store = createKookrStore();
+    store.getState().setDetailPaneMode('split');
+    store.getState().setLeftPane('github');
+
+    store.getState().toggleTerminalFocusMode();
+    expect(store.getState().detailPaneMode).toBe('right');
+
+    store.getState().toggleTerminalFocusMode();
+    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().terminalFocusMode).toBe(false);
+    // The tab bar highlights what the left pane shows again.
+    expect(store.getState().narrowTab).toBe('github');
+  });
+
+  test('#3618: two terminal-focus toggles from the tabs land on the Terminal tab', () => {
+    vi.stubGlobal('localStorage', fakeStorage().impl);
+    const store = createKookrStore();
+    store.getState().setDetailPaneMode('split');
+    store.getState().toggleTerminalFocusMode();
+    store.getState().toggleTerminalFocusMode();
+    // A later round trip starts from the tabs and must not reuse the old split.
+    store.getState().setDetailPaneMode('tabs');
+    store.getState().setNarrowTab('activity');
+
+    store.getState().toggleTerminalFocusMode();
+    store.getState().toggleTerminalFocusMode();
+
+    expect(store.getState().detailPaneMode).toBe('tabs');
+    expect(store.getState().narrowTab).toBe('terminal');
+  });
+
+  test('#3618: a reload that restores Split view returns to it after terminal focus', () => {
+    vi.stubGlobal('localStorage', fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'split' }).impl);
+    const store = createKookrStore();
+
+    store.getState().setTerminalFocusMode(true);
+    store.getState().setTerminalFocusMode(false);
+
+    expect(store.getState().detailPaneMode).toBe('split');
+  });
+
+  test('#3618: a reload that restores terminal focus leaves it for the tabs', () => {
+    vi.stubGlobal('localStorage', fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'right' }).impl);
+    const store = createKookrStore();
+
+    store.getState().toggleTerminalFocusMode();
+
+    expect(store.getState().detailPaneMode).toBe('tabs');
+    expect(store.getState().narrowTab).toBe('terminal');
+  });
+
+  test('#3618: turning terminal focus off outside terminal focus changes nothing', () => {
+    vi.stubGlobal('localStorage', fakeStorage().impl);
+    const store = createKookrStore();
+    store.getState().setDetailPaneMode('split');
+    store.getState().setNarrowTab('activity');
+
+    store.getState().setTerminalFocusMode(false);
+
+    expect(store.getState().detailPaneMode).toBe('split');
+    expect(store.getState().narrowTab).toBe('activity');
+  });
+
   test('setDetailPaneMode("tabs") removes the persisted key', () => {
     const storage = fakeStorage({ [DETAIL_PANE_MODE_KEY]: 'right' });
     vi.stubGlobal('localStorage', storage.impl);
