@@ -486,7 +486,7 @@ test.describe('Kookr E2E — nominal paths', () => {
 
     // Healthy task state lives in the task list section; aggregate counts live in the status bar.
     await expect(page.locator('.healthy-section')).toBeVisible();
-    await expect(page.locator('.healthy-label')).toContainText('Healthy');
+    await expect(page.locator('.healthy-label')).toContainText('Working');
     await expect(page.locator('.statusbar')).toContainText('2 tasks');
     await expect(page.locator('.topbar-stat')).toHaveCount(0);
   });

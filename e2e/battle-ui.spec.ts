@@ -31,7 +31,7 @@ test.describe('UI layout', () => {
 
   test('findings panel structure is correct', async ({ page }) => {
     await expect(page.locator('.findings-panel')).toBeVisible();
-    await expect(page.locator('.findings-header')).toContainText('Supervisor Findings');
+    await expect(page.locator('.findings-header')).toContainText('Tasks');
   });
 
   test('dashboard reserves findings and topbar space before async data arrives', async ({ page, request }) => {
@@ -50,7 +50,6 @@ test.describe('UI layout', () => {
 
       return {
         findingsPanel: rect('.findings-panel'),
-        bottomSections: rect('.bottom-sections'),
         scheduleSection: rect('.schedule-section'),
         queueInfo: rect('.queue-info'),
         topbarRight: rect('.topbar-right'),
@@ -60,7 +59,6 @@ test.describe('UI layout', () => {
 
     const initial = await readLayout();
     expect(initial.findingsPanel?.width).toBeGreaterThanOrEqual(340);
-    expect(initial.bottomSections?.height).toBeGreaterThanOrEqual(64);
     expect(initial.scheduleSection?.height).toBeGreaterThanOrEqual(40);
     expect(initial.queueInfo?.width).toBeGreaterThanOrEqual(132);
     expect(initial.topbarRight?.width).toBeGreaterThanOrEqual(360);
@@ -74,7 +72,6 @@ test.describe('UI layout', () => {
 
     const populated = await readLayout();
     expect(populated.findingsPanel).toEqual(initial.findingsPanel);
-    expect(populated.bottomSections?.top).toBe(initial.bottomSections?.top);
     expect(populated.scheduleSection?.top).toBe(initial.scheduleSection?.top);
     expect(populated.topbarRight?.width).toBe(initial.topbarRight?.width);
   });
@@ -609,7 +606,7 @@ test.describe('sidebar collapsible sections', () => {
     await expect(page.locator('.healthy-section .section-chevron')).toHaveText('\u25B8');
     await expect(page.locator('.healthy-row')).not.toBeVisible();
     // Header with count should still be visible
-    await expect(page.locator('.healthy-label')).toContainText('Healthy (1)');
+    await expect(page.locator('.healthy-label')).toContainText('Working (1)');
 
     // Re-expand
     await page.locator('.healthy-section .section-header').click();
@@ -698,7 +695,7 @@ test.describe('sidebar collapsible sections', () => {
 
     // Rows hidden, but label visible
     await expect(page.locator('.healthy-row')).not.toBeVisible();
-    await expect(page.locator('.healthy-label')).toContainText('Healthy (3)');
+    await expect(page.locator('.healthy-label')).toContainText('Working (3)');
   });
 
   test('all sections scroll together in single container', async ({ page, request }) => {
@@ -716,11 +713,12 @@ test.describe('sidebar collapsible sections', () => {
 
     await waitForAgentCount(page, 2);
 
-    // Findings in scroll area, healthy in bottom sections
+    // One list (#3561 slice 3): findings and the Working section share the
+    // same scroll container, so both scroll together.
     const scrollArea = page.locator('.findings-scroll-area');
     await expect(scrollArea).toBeVisible();
     await expect(scrollArea.locator('.finding-card')).toBeVisible();
-    const bottomSections = page.locator('.bottom-sections');
-    await expect(bottomSections.locator('.healthy-section')).toBeVisible();
+    await expect(scrollArea.locator('> .healthy-section')).toBeVisible();
+    await expect(page.locator('.bottom-sections')).toHaveCount(0);
   });
 });

@@ -299,7 +299,7 @@ describe('OverviewEmptyState', () => {
     expect(container.textContent).toContain('Live task 0');
     expect(container.textContent).toContain(`Live task ${OVERVIEW_RUNNING_LIMIT - 1}`);
     expect(container.textContent).not.toContain(`Live task ${OVERVIEW_RUNNING_LIMIT}`);
-    expect(container.textContent).toContain('+2 more in Healthy');
+    expect(container.textContent).toContain('+2 more in Working');
     expect(section?.querySelector('.overview-waiting-more')?.tagName).toBe('P');
     expect(section?.textContent).not.toContain('Relaunch');
   });
@@ -313,7 +313,7 @@ describe('OverviewEmptyState', () => {
 
     const section = container.querySelector('[data-testid="overview-running"]');
     expect(section?.querySelectorAll('.overview-waiting-row')).toHaveLength(OVERVIEW_RUNNING_LIMIT);
-    expect(container.textContent).not.toContain('more in Healthy');
+    expect(container.textContent).not.toContain('more in Working');
   });
 
   test('running overflow is a button that calls onExpandHealthy when more than six running tasks exist (issue #3406)', () => {
@@ -327,8 +327,8 @@ describe('OverviewEmptyState', () => {
 
     const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-running-overflow"]');
     expect(overflow?.tagName).toBe('BUTTON');
-    expect(overflow?.textContent).toBe('+1 more in Healthy');
-    expect(overflow?.getAttribute('aria-label')).toBe('+1 more in Healthy. Show healthy agents');
+    expect(overflow?.textContent).toBe('+1 more in Working');
+    expect(overflow?.getAttribute('aria-label')).toBe('+1 more in Working. Show working tasks');
 
     act(() => {
       overflow!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -347,7 +347,7 @@ describe('OverviewEmptyState', () => {
     });
 
     expect(container.querySelector('[data-testid="overview-running-overflow"]')).toBeNull();
-    expect(container.textContent).not.toContain('more in Healthy');
+    expect(container.textContent).not.toContain('more in Working');
     expect(onExpandHealthy).not.toHaveBeenCalled();
   });
 
@@ -1038,7 +1038,7 @@ describe('OverviewEmptyState', () => {
     expect(names).toEqual(['Newest done', 'Middle done', 'Oldest done']);
     expect(names).toHaveLength(OVERVIEW_RECENT_COMPLETED_LIMIT);
     expect(container.textContent).not.toContain('Should stay in the rail');
-    expect(container.textContent).toContain('+1 more in Completed');
+    expect(container.textContent).toContain('+1 more in Finished');
   });
 
   describe('completed session costs', () => {
@@ -1095,7 +1095,7 @@ describe('OverviewEmptyState', () => {
     });
 
     expect(container.querySelectorAll('.overview-completed-name')).toHaveLength(3);
-    expect(container.textContent).not.toContain('more in Completed');
+    expect(container.textContent).not.toContain('more in Finished');
   });
 
   test('overflow is a button that calls onExpandCompleted when more than three completed tasks exist (issue #3392)', () => {
@@ -1114,9 +1114,9 @@ describe('OverviewEmptyState', () => {
 
     const overflow = container.querySelector<HTMLButtonElement>('[data-testid="overview-completed-overflow"]');
     expect(overflow?.tagName).toBe('BUTTON');
-    expect(overflow?.textContent).toBe('+1 more in Completed');
+    expect(overflow?.textContent).toBe('+1 more in Finished');
     expect(overflow?.getAttribute('aria-label')).toBe(
-      '+1 more in Completed. Show completed tasks',
+      '+1 more in Finished. Show finished tasks',
     );
 
     act(() => {
@@ -1139,7 +1139,7 @@ describe('OverviewEmptyState', () => {
     });
 
     expect(container.querySelector('[data-testid="overview-completed-overflow"]')).toBeNull();
-    expect(container.textContent).not.toContain('more in Completed');
+    expect(container.textContent).not.toContain('more in Finished');
     expect(onExpandCompleted).not.toHaveBeenCalled();
   });
 
@@ -1156,7 +1156,7 @@ describe('OverviewEmptyState', () => {
     const overflow = container.querySelector('.overview-completed .overview-waiting-more');
     expect(overflow).not.toBeNull();
     expect(overflow?.tagName).toBe('P');
-    expect(overflow?.textContent).toBe('+1 more in Completed');
+    expect(overflow?.textContent).toBe('+1 more in Finished');
     expect(container.querySelector('[data-testid="overview-completed-overflow"]')).toBeNull();
   });
 

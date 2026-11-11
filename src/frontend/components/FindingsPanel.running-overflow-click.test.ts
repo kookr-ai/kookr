@@ -2,7 +2,7 @@
 
 /**
  * FindingsPanel Healthy-rail expand + scroll (issue #3406). App bumps
- * `expandHealthyNonce` when the overview "+N more in Healthy" overflow is
+ * `expandHealthyNonce` when the overview "+N more in Working" overflow is
  * clicked; the panel reuses `expandHealthy` and scrolls the section into
  * view. Healthy defaults to expanded, so an already-open section only
  * scrolls; a manually-collapsed one re-expands. Count refreshes must not

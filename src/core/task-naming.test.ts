@@ -1,5 +1,11 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
-import { deterministicTaskName, extractEmbeddedTaskName, generateTaskName } from './task-naming.js';
+import {
+  deterministicTaskName,
+  extractEmbeddedTaskName,
+  generateTaskName,
+  presentTaskName,
+  stripPromptOpeners,
+} from './task-naming.js';
 import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from './llm-client.js';
 import {
   GUARDRAIL_PREFIXED_USER_PROMPT,
@@ -355,6 +361,90 @@ describe('deterministicTaskName (issue #1526 Phase C4 — no task is ever unname
     const name = deterministicTaskName(GUARDRAIL_PREFIXED_USER_PROMPT, '/p');
     expect(name).toBe(GUARDRAIL_PREFIXED_USER_PROMPT_BODY);
     expect(name.startsWith('You are currently in')).toBe(false);
+  });
+});
+
+describe('stripPromptOpeners (#3561 slice 3: titles are not prompts)', () => {
+  test.each([
+    // Real first lines from the operator's task store (Nov 2026).
+    ['You are continuing a sequential Kookr task chain (continuation envelope v1).',
+      'Continuing a sequential Kookr task chain (continuation envelope v1).'],
+    ['You are CONTINUING the repository idea chain', 'CONTINUING the repository idea chain'],
+    ['Can you add a dark mode toggle', 'Add a dark mode toggle'],
+    // The two openers the issue names, plus the common agent-addressing ones.
+    ['Your job is to fix the /auth/refresh 500 under load', 'Fix the /auth/refresh 500 under load'],
+    ['Your task is to migrate the schedules store', 'Migrate the schedules store'],
+    ["You're reviewing PR 12", 'Reviewing PR 12'],
+    ['I want you to rename the config keys', 'Rename the config keys'],
+    ['Please fix the flaky test', 'Fix the flaky test'],
+    ['Could you please look at the CPU spike', 'Look at the CPU spike'],
+    ['You’re reviewing PR 12', 'Reviewing PR 12'],
+    ['Please, tidy the docs', 'Tidy the docs'],
+    // A role sentence names no work; it goes when more text follows it.
+    ['You are a careful reviewer. Review PR 12 for races', 'Review PR 12 for races'],
+    ['You are an expert. Your job is to triage issue 9', 'Triage issue 9'],
+  ])('%s', (input, expected) => {
+    expect(stripPromptOpeners(input)).toBe(expected);
+  });
+
+  test('leaves names without an opener untouched', () => {
+    for (const name of ['Fix auth refresh token race', 'Youth league scheduler', 'Pleased-users survey', 'Context pack — repo map', 'You must not push to main', 'You should rotate the keys']) {
+      expect(stripPromptOpeners(name)).toBe(name);
+    }
+  });
+
+  test('never strips a name down to nothing', () => {
+    expect(stripPromptOpeners('Please')).toBe('Please');
+    expect(stripPromptOpeners('You are ')).toBe('You are ');
+  });
+
+  test('is idempotent', () => {
+    for (const name of ['You are continuing a chain', 'You are a reviewer. Please fix X', 'Can you add Y']) {
+      const once = stripPromptOpeners(name);
+      expect(stripPromptOpeners(once)).toBe(once);
+    }
+  });
+});
+
+describe('deterministicTaskName strips prompt openers (#3561 slice 3)', () => {
+  test('a prompt that opens with "Your job is to" is named after the work', () => {
+    expect(deterministicTaskName('Your job is to fix the /auth/refresh 500.\nMore detail', '/p'))
+      .toBe('Fix the /auth/refresh 500.');
+  });
+
+  test('stays within the 80-char cap after stripping', () => {
+    const name = deterministicTaskName(`You are continuing ${'x'.repeat(200)}`, '/p');
+    expect(name.length).toBeLessThanOrEqual(80);
+    expect(name.startsWith('Continuing')).toBe(true);
+  });
+});
+
+describe('presentTaskName (#3561 slice 3: display names for existing tasks)', () => {
+  const PROMPT = 'You are continuing a sequential Kookr task chain.\n\nGoal: ship slice 3';
+  const untitled = (prompt: string) => prompt.replace(/\s+/g, ' ').trim();
+
+  test('strips openers from a stored prompt-derived name that lost its autoNamed flag', () => {
+    expect(presentTaskName({ name: 'You are continuing a sequential Kookr task chain.' }, PROMPT, untitled))
+      .toBe('Continuing a sequential Kookr task chain.');
+  });
+
+  test('strips openers from a truncated prompt-derived name', () => {
+    expect(presentTaskName({ name: 'You are continuing a sequential Kookr…' }, PROMPT, untitled))
+      .toBe('Continuing a sequential Kookr…');
+  });
+
+  test('strips openers from an autoNamed name even when the prompt is unavailable', () => {
+    expect(presentTaskName({ name: 'Your job is to fix X', autoNamed: true }, '', untitled)).toBe('Fix X');
+  });
+
+  test('keeps an authoritative name that happens to start with an opener', () => {
+    // A user or LLM name that does not repeat the prompt is shown as written.
+    expect(presentTaskName({ name: 'Please-hold queue cleanup' }, PROMPT, untitled)).toBe('Please-hold queue cleanup');
+    expect(presentTaskName({ name: 'You are here map' }, PROMPT, untitled)).toBe('You are here map');
+  });
+
+  test('strips openers from the untitled fallback', () => {
+    expect(presentTaskName({}, 'Your job is to fix X', untitled)).toBe('Fix X');
   });
 });
 

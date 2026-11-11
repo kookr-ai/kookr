@@ -1,8 +1,10 @@
 import { basename } from 'node:path';
 import { classifyLlmProviderFailure, completeLlmDetailed } from './llm-client.js';
 import type { LlmClient, LlmCompletionRequest, LlmResponseFormat } from './llm-client.js';
-import { stripWorktreeGuardrailPrefix } from './prompt-display.js';
+import { firstMeaningfulPromptLine, stripPromptOpeners } from '../shared/task-name-display.js';
 import { logTaskNaming } from './training-data-logger.js';
+
+export { presentTaskName, stripPromptOpeners } from '../shared/task-name-display.js';
 
 const TIMEOUT_MS = 10_000;
 // Token budget for a single naming call. Reasoning models (e.g. baseten
@@ -79,17 +81,6 @@ function parseTaskName(raw: string): string | null {
   return normalizeTaskName(structuredName ?? raw);
 }
 
-// A line that, once leading markers are stripped, is nothing but JSON
-// structural punctuation — `{`, `}`, `[`, `]`, optionally with a trailing
-// comma/colon. These are the opening lines of a spawn payload pasted in as the
-// prompt (issue #1556, task a5a89a9a named `"{"`) and must never become a task
-// name; the namer falls through to the first line with real content.
-const STRUCTURAL_JUNK_LINE_RE = /^[{}[\]()][{}[\]()\s,:]*$/;
-
-function isNameWorthyLine(line: string): boolean {
-  return line.length > 0 && !STRUCTURAL_JUNK_LINE_RE.test(line);
-}
-
 /**
  * Deterministic, never-empty task name derived from the prompt itself —
  * the guaranteed fallback when the LLM namer returns nothing (issue #1526
@@ -106,11 +97,7 @@ function isNameWorthyLine(line: string): boolean {
  * longer yields the boilerplate first line.
  */
 export function deterministicTaskName(prompt: string, cwd?: string): string {
-  const firstLine = stripWorktreeGuardrailPrefix(prompt)
-    .split('\n')
-    .map((line) => line.replace(/^[\s#>*-]+/, '').trim())
-    .find(isNameWorthyLine);
-  const collapsed = firstLine?.replace(/\s+/g, ' ') ?? '';
+  const collapsed = stripPromptOpeners(firstMeaningfulPromptLine(prompt));
   if (collapsed.length === 0) {
     const dir = cwd ? basename(cwd) : '';
     return dir ? `Task in ${dir}` : 'Unnamed task';

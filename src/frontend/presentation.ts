@@ -5,6 +5,7 @@ import type { TaskCompletionFeedback } from '../shared/contracts/task.js';
 import { AGENT_TYPES, isAgentType } from '../shared/contracts/agent-types.js';
 import type { ArchivedTaskRecordJson } from './completed-history.js';
 import { toolLabel } from '../shared/contracts/activity-summary.js';
+import { presentTaskName, stripWorktreeGuardrailPrefix } from '../shared/task-name-display.js';
 
 /**
  * A small palette of muted background/text color pairs for project badges.
@@ -722,7 +723,13 @@ export function archivedTaskToAgentState(record: ArchivedTaskRecordJson): AgentS
     anomaly: null,
     lastEventSeq: 0,
     taskId,
-    taskName: asNonEmptyString(task.name) ?? archivePromptTitle(displayPrompt),
+    // Same opener stripping as live and terminal rows in the snapshot, so
+    // archived rows from "Load older history" do not read like prompts.
+    taskName: presentTaskName(
+      { name: asNonEmptyString(task.name), autoNamed: task.autoNamed === true },
+      stripWorktreeGuardrailPrefix(displayPrompt),
+      archivePromptTitle,
+    ),
     taskStatus: asTerminalTaskStatus(task.status),
     description: displayPrompt || undefined,
     cwd,

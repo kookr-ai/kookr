@@ -104,6 +104,10 @@ test('Ralph controls stay inside compact dashboard rows', async ({ page, request
       const parentBox = parent.getBoundingClientRect();
       return [...parent.querySelectorAll('*')].every((element) => {
         const box = element.getBoundingClientRect();
+        // Unrendered elements (display: none, e.g. details a compact
+        // unselected finding card hides) report a 0x0 box at the viewport
+        // origin; they cannot overflow the row.
+        if (box.width === 0 && box.height === 0) return true;
         return box.left >= parentBox.left - 0.5 && box.right <= parentBox.right + 0.5;
       });
     }
