@@ -97,9 +97,9 @@ const AFTER_GOVERNOR = new RegExp(`\\b${GOVERNOR}(?:\\s+${ADVERB}){0,2}\\s+$`, '
 // The verb as a noun: "the merge", "a local profiled export run". "this" and "that" are
 // left out: they are also pronouns ("after that merge it").
 const AFTER_DETERMINER = /\b(?:the|a|an|each|every|per|its|their|his|her|another)(?:\s+(?:first|second|third|last|next|final|previous|initial|single|full|dry|local|nightly|test|export|ci|\w+ed|\w+ly)){0,3}\s+$/i;
-// A count: "one run in five", "3 commits of 5". Only with "in/of/per" after it, or "step one run the tests" would pass.
+// A count: "one run in five". Only with "in/of/per" after it, or "step one run the tests" would pass.
 const AFTER_NUMBER = /\b(?:one|two|three|four|five|six|seven|eight|nine|ten|\d+)\s+$/i;
-const COUNTED = /^s?\s+(?:in|out of|of|per)\b/i;
+const COUNTED = /^\s+(?:in|out of|of|per)\b/i;
 // "run" is its own participle: "has been run", "is run nightly". Not with an object after it ("is run the tests").
 const AFTER_BE = new RegExp(`\\b(?:been|was|is|are|were|be|being|gets?|got)(?:\\s+${ADVERB})?\\s+$`, 'i');
 const TAKES_OBJECT = /^\s+(?:the|a|an|it|this|that|them|these|those|your|all|every\w*)\b/i;
@@ -111,6 +111,18 @@ const STARTS_WITH_PLAN_VERB = new RegExp(`^${PLAN_VERB}\\b`, 'i');
 
 /** Later in the same sentence, a closing "and/or" plus a plan verb: what makes a comma-separated verb a list item. */
 const LIST_CLOSES_LATER = new RegExp(`^[^.!?;:]*?\\b(?:and|or)\\s+${PLAN_VERB}\\b`, 'i');
+/**
+ * Governors that announce what the agent itself is about to do. Only these start a list
+ * that runs across commas. "ready to", "unable to", "nothing to", "did not" and "cannot"
+ * state a condition; what follows their comma is a new clause, often a command ("It is
+ * ready to merge, merge it and push.").
+ */
+const PLAN_GOVERNOR = new RegExp(
+  `\\b(?:will|would|(?:is|are|was) going to|plans? to|planned to|wants? to|wanted to|intends? to|intended to|tries to|tried to|starts? to|started to|begins? to|began to|goes on to|went on to|proceeds? to|proceeded to|decided to|chose to|is about to|permission to)(?:\\s+${ADVERB}){0,2}\\s+$`,
+  'i',
+);
+/** Words and marks that start a new clause or a quotation: none of them belongs inside one verb phrase of a list. */
+const BREAKS_PHRASE = /\b(?:so|then|but|because|if|when|while|after|before|and|or|now|just|please)\b|["'“”‘’(){}[\]→✅]/i;
 
 /**
  * True when the verb between `before` and `after` continues a governed verb: everything
@@ -119,27 +131,33 @@ const LIST_CLOSES_LATER = new RegExp(`^[^.!?;:]*?\\b(?:and|or)\\s+${PLAN_VERB}\\
  * - "planned to commit and [run]": joined by "and/or" to one plan phrase.
  * - "will rebase, [push], and open": after a comma, with the list closing later.
  * - "will rebase, test, and [push]": after ", and", closing a list of two or more.
- * Not "go to main and [merge] it" ("main" is no verb), not "ready to merge, [merge] it"
- * (no list closes after it), not "it can wait, or [merge] it now" (one item is no list).
+ * Across a comma this needs a governor that announces a plan, and no verb twice. So not
+ * "ready to merge, [merge] it and push", not "go to main and [merge] it" ("main" is no
+ * verb), not "it can wait, or [merge] it now".
  */
-function continuesGovernedVerb(before: string, after: string): boolean {
+function continuesGovernedVerb(before: string, after: string, verb: string): boolean {
   const governor = LAST_GOVERNOR.exec(before);
   if (!governor) return false;
-  const chain = before.slice(governor.index + governor[0].length);
+  const governorEnd = governor.index + governor[0].length;
+  const chain = before.slice(governorEnd);
   // A capital or an end mark means another sentence started in between, punctuated or not.
   if (/[A-Z.!?;:]/.test(chain)) return false;
   const pieces = chain.split(',').map((piece) => piece.trim());
   const tail = pieces[pieces.length - 1];
   const items = pieces.slice(0, -1).map((piece) => piece.replace(/^(?:and|or)\b\s*/i, ''));
   if (!items.every(isPlanPhrase)) return false;
-  if (tail === '') return items.length >= 1 && LIST_CLOSES_LATER.test(after);
-  if (/^(?:and|or)$/i.test(tail)) return items.length >= 2;
   const joined = /^(.+?)\s+(?:and|or)$/i.exec(tail);
+  if (items.length === 0) return joined !== null && isPlanPhrase(joined[1]);
+  // From here on the list runs across at least one comma.
+  if (!PLAN_GOVERNOR.test(before.slice(0, governorEnd))) return false;
+  if (items.some((item) => new RegExp(`^(?:force-|re-)?${verb}\\b`, 'i').test(item))) return false;
+  if (tail === '') return LIST_CLOSES_LATER.test(after);
+  if (/^(?:and|or)$/i.test(tail)) return items.length >= 2;
   return joined !== null && isPlanPhrase(joined[1].replace(/^(?:and|or)\b\s*/i, ''));
 }
 
 function isPlanPhrase(phrase: string): boolean {
-  return STARTS_WITH_PLAN_VERB.test(phrase) && phrase.split(/\s+/).length <= 6;
+  return STARTS_WITH_PLAN_VERB.test(phrase) && phrase.split(/\s+/).length <= 6 && !BREAKS_PHRASE.test(phrase);
 }
 
 /**
@@ -156,7 +174,7 @@ function actionsAreGoverned(sentence: string): boolean {
     if (AFTER_GOVERNOR.test(before) || AFTER_DETERMINER.test(before)) continue;
     if (AFTER_NUMBER.test(before) && COUNTED.test(after)) continue;
     if (match[0].toLowerCase() === 'run' && AFTER_BE.test(before) && !TAKES_OBJECT.test(after)) continue;
-    if (/(?:,|\b(?:and|or))\s*$/i.test(before) && continuesGovernedVerb(before, after)) continue;
+    if (/(?:,|\b(?:and|or))\s*$/i.test(before) && continuesGovernedVerb(before, after, match[0])) continue;
     return false;
   }
   return true;
@@ -189,10 +207,11 @@ const SENTENCE_BREAK = /(?<=[.!?;:…])(?=\s|[A-Z"'“(])|[—–\n]|\s-\s|--+/;
  *
  * This is a heuristic, not a security boundary. It never rejects anything the former
  * rule accepted, and it accepts one thing the former rule rejected: a plain description
- * that uses an action verb. An instruction can therefore get through in two ways. It
- * can use a verb outside the list ("ship it"), as it always could. Or it can be dressed
- * as a description ("the agent will merge it once the tests pass" reads the same
- * whether it is a report or a plan the operator is being walked into). The boundary is
+ * that uses an action verb. An instruction can therefore get through when it uses a
+ * verb outside the list ("ship it"), as it always could, or when it has the grammar of a
+ * description: "the agent will merge it once the tests pass" reads the same whether it
+ * is a report or a plan the operator is being walked into, and so do "the reviewer can
+ * merge it now" and "this needs a merge". The boundary is
  * elsewhere: the summary is only spoken and shown, and the operator decides in the
  * dashboard with the real prompt in front of them.
  */
