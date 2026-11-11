@@ -79,7 +79,7 @@ import { GLOBAL_SHELF, classifyShelf, loadSlugAliases } from '../plugin/hooks/li
 import {
   createNbClient,
   isStoreGitRepo,
-  missingFlagValue,
+  checkArgv,
   moveCommand,
   nbMove,
   nbRemoveDuplicate,
@@ -295,6 +295,9 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
   log(`Scanned ${stats.projectLessons} lessons in ${stats.projectShelves} project shelves (slugs resolved through the alias map).`);
   log(`Exact groups: ${exact.length}   Candidate groups: ${cand.length}${covered.length ? `   (${covered.length} more already covered by a domain/global lesson, not offered)` : ''}`);
   for (const s of stats.skippedShelves) log(`  ignored malformed shelf name: ${s}`);
+  if (snapshot.approximateOrder.length > 0) {
+    log(`Note: file order could not be confirmed for ${snapshot.approximateOrder.join(', ')}; eviction ties and aging there are approximate.`);
+  }
   if (exact.length === 0) {
     log('No exact groups: nothing is removable. A person chooses from the candidates below; fleet-global is never filled automatically.');
   }
@@ -336,7 +339,7 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
     steps.filter((s) => s.group.tier === 'candidate').forEach(show);
   }
   if (found.leftovers.length > 0) {
-    log(`\nPROJECT COPIES of a lesson that ${found.leftovers[0].heldIn === GLOBAL_SHELF ? 'fleet-global' : 'the domain shelf'} already holds word for word (${found.leftovers.length}); not removed automatically (e.g. a promotion that stopped before its removals). Remove by hand if you agree:`);
+    log(`\nPROJECT COPIES of a lesson the domain shelf or fleet-global already holds word for word (${found.leftovers.length}); not removed automatically (e.g. a promotion that stopped before its removals). Remove by hand if you agree:`);
     for (const l of found.leftovers) log(`    ${removeCommand(l.shelf, l.id)}   (held in ${l.heldIn}) ${clip(l.text, 70)}`);
   }
   log(`\n${only ? `* = chosen with --only (${[...only].join(', ')})` : '* = what a plain --apply would act on (exact groups only)'}`);
@@ -537,9 +540,12 @@ export function main(argv = process.argv.slice(2)) {
     );
     return 0;
   }
-  const flagProblem = missingFlagValue(argv, ['--only', '--to-global', '--threshold', '--map', '--nb', '--tag']);
+  const flagProblem = checkArgv(argv, {
+    switches: ['--apply', '--force-low', '--help', '-h'],
+    values: ['--only', '--to-global', '--threshold', '--map', '--nb', '--tag'],
+  });
   if (flagProblem) {
-    console.error(`promote-notebook-lessons: ${flagProblem}.`);
+    console.error(`promote-notebook-lessons: ${flagProblem}. Nothing was changed.`);
     return 2;
   }
   const thrRaw = arg(argv, '--threshold');

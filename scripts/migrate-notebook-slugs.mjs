@@ -75,7 +75,7 @@ import {
   commitPaths,
   createNbClient,
   isStoreGitRepo,
-  missingFlagValue,
+  checkArgv,
   moveCommand,
   nbMove,
   reapZeroByteShelf,
@@ -451,9 +451,12 @@ export function main(argv = process.argv.slice(2)) {
     );
     return 0;
   }
-  const flagProblem = missingFlagValue(argv, ['--map', '--manifest', '--nb', '--tag']);
+  const flagProblem = checkArgv(argv, {
+    switches: ['--apply', '--force-low', '--help', '-h'],
+    values: ['--map', '--manifest', '--nb', '--tag'],
+  });
   if (flagProblem) {
-    console.error(`migrate-notebook-slugs: ${flagProblem}.`);
+    console.error(`migrate-notebook-slugs: ${flagProblem}. Nothing was changed.`);
     return 2;
   }
   const aliases = loadSlugAliases(arg(argv, '--map'));

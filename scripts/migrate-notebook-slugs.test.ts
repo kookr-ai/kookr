@@ -458,6 +458,18 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     }
   });
 
+  test('a misspelled, unknown or "="-form flag is refused, never ignored (--map=<file> must not fall back to the default alias map)', () => {
+    const dir = store({ git: false });
+    writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));
+    const script = join(repoRoot, 'scripts', 'migrate-notebook-slugs.mjs');
+    const env = cleanEnv({ NB_DIR: dir });
+    for (const args of [['--map=/tmp/none.json'], ['--aply'], ['--apply', 'stray'], ['--force_low']]) {
+      const r = spawnSync(process.execPath, [script, ...args], { encoding: 'utf-8', env });
+      expect(r.status, args.join(' ')).toBe(2);
+      expect(r.stderr).toContain('unknown argument');
+    }
+  });
+
   test('a tag that already exists is kept (the anchor of the first run)', () => {
     const dir = store();
     writeShelf(dir, 'tester@agent-notebook', L([2, 'tester one']));

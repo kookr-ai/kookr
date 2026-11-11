@@ -115,20 +115,32 @@ export function reapZeroByteShelf(dir, shelf) {
 }
 
 /**
- * Reject a value flag that has no usable value. `--only` followed by nothing (or
- * by another flag, or by an empty string from an unset shell variable) must NOT
- * fall back to "no restriction": for a script that can move and remove lessons,
- * a restricted run silently widening is the worst way to fail.
- * Returns an error message, or null when every present flag has a value.
+ * Strictly validate a command line: every token must be a known switch, a known
+ * value flag, or the value right after one. Returns an error message or null.
+ *
+ * Why strict. These scripts can move and remove lessons, and a restricted run
+ * must never silently become a broader one. A flag that was misspelled
+ * (`--onyl`), written with `=` (`--only=c-1`) or given an empty value (`--only
+ * "$IDS"` with IDS unset) would otherwise be ignored, and the run would proceed
+ * as a plain `--apply`.
  */
-export function missingFlagValue(argv, flags) {
-  for (const flag of flags) {
-    const i = argv.indexOf(flag);
-    if (i === -1) continue;
-    const value = argv[i + 1];
-    if (value === undefined || value.trim() === '' || value.startsWith('--')) {
-      return `${flag} needs a value${value === '' ? ' (it was empty: is a shell variable unset?)' : ''}`;
+export function checkArgv(argv, { switches = [], values = [] }) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (switches.includes(a)) continue;
+    if (values.includes(a)) {
+      const v = argv[i + 1];
+      if (v === undefined || v.trim() === '' || v.startsWith('--')) {
+        return `${a} needs a value${v === '' ? ' (it was empty: is a shell variable unset?)' : ''}`;
+      }
+      i++;
+      continue;
     }
+    const eq = a.indexOf('=');
+    if (a.startsWith('--') && eq > 2 && values.includes(a.slice(0, eq))) {
+      return `unknown argument ${JSON.stringify(a)}: write "${a.slice(0, eq)} ${a.slice(eq + 1)}" with a space`;
+    }
+    return `unknown argument ${JSON.stringify(a)}`;
   }
   return null;
 }
