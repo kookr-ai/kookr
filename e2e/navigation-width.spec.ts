@@ -14,6 +14,9 @@ import { resetServer } from './reset-server.js';
 import type { APIRequestContext, Page } from '@playwright/test';
 import { getTmuxNameForPrompt, injectSessionStart, injectToolUse } from './battle-helpers.js';
 import {
+  DASHBOARD_SPLIT_KEY,
+  MAX_FINDINGS_WIDTH,
+  MIN_FINDINGS_WIDTH,
   DEFAULT_NAV_WIDTH,
   MAX_NAV_WIDTH,
   MIN_NAV_WIDTH,
@@ -71,6 +74,13 @@ test.describe('resizable left navigation', () => {
     const divider = page.getByTestId('nav-resizer');
     await expect(divider).toBeVisible();
     await expect(divider).toHaveAttribute('role', 'separator');
+    // What a screen reader needs from a focusable separator: a name, an
+    // orientation, and the current value with its range.
+    await expect(divider).toHaveAttribute('aria-label', 'Resize navigation');
+    await expect(divider).toHaveAttribute('aria-orientation', 'vertical');
+    await expect(divider).toHaveAttribute('aria-valuenow', String(DEFAULT_NAV_WIDTH));
+    await expect(divider).toHaveAttribute('aria-valuemin', String(MIN_NAV_WIDTH));
+    await expect(divider).toHaveAttribute('aria-valuemax', String(MAX_NAV_WIDTH));
     expect(await navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
     expect(await storedNavWidth(page)).toBeNull();
 
@@ -94,6 +104,50 @@ test.describe('resizable left navigation', () => {
     expect(await storedNavWidth(page)).toBeNull();
   });
 
+  test('the navigation follows the pointer during a drag and the width is stored only on release', async ({ page, request }) => {
+    await openWithProject(page, request);
+    const box = await page.getByTestId('nav-resizer').boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 60, y, { steps: 6 });
+    // Still held: the navigation has already moved, nothing is stored yet, and
+    // the resize cursor is locked on the whole layout.
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 60);
+    expect(await storedNavWidth(page)).toBeNull();
+    await expect(page.locator('main.main')).toHaveClass(/main-resizing-nav/);
+    await expect(page.getByTestId('nav-resizer')).toHaveClass(/dragging/);
+
+    await page.mouse.up();
+    expect(await storedNavWidth(page)).toBe(String(DEFAULT_NAV_WIDTH + 60));
+    await expect(page.locator('main.main')).not.toHaveClass(/main-resizing-nav/);
+    await expect(page.getByTestId('nav-resizer')).not.toHaveClass(/dragging/);
+
+    // Released: the pointer no longer drags the navigation along.
+    await page.mouse.move(x + 200, y + 40, { steps: 4 });
+    expect(await navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 60);
+    expect(await storedNavWidth(page)).toBe(String(DEFAULT_NAV_WIDTH + 60));
+  });
+
+  test('a click with a slightly unsteady hand is still a click, not a resize', async ({ page, request }) => {
+    await openWithProject(page, request);
+    const box = await page.getByTestId('nav-resizer').boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 2, y + 1);
+    await page.mouse.up();
+
+    expect(await navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
+    expect(await storedNavWidth(page)).toBeNull();
+  });
+
   test('a drag far past either edge stops at the bounds', async ({ page, request }) => {
     await openWithProject(page, request);
 
@@ -104,9 +158,11 @@ test.describe('resizable left navigation', () => {
     await dragDivider(page, -900);
     await expect.poll(() => navWidth(page)).toBe(MIN_NAV_WIDTH);
     expect(await storedNavWidth(page)).toBe(String(MIN_NAV_WIDTH));
-    // Still usable at the minimum: queue names are not clipped away, and the
-    // project filter ends inside the navigation instead of running under its edge.
-    await expect(page.getByTestId('nav-queue-needs-you').locator('.project-nav-name')).toBeVisible();
+    // Still usable at the minimum: queue names fit without being shortened, and
+    // the project filter ends inside the navigation instead of running under its edge.
+    const queueName = page.getByTestId('nav-queue-needs-you').locator('.project-nav-name');
+    await expect(queueName).toBeVisible();
+    expect(await queueName.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
     const nav = await page.getByTestId('project-sidebar').boundingBox();
     const filter = await page.getByTestId('project-sidebar-filter').boundingBox();
     expect(filter!.x + filter!.width).toBeLessThanOrEqual(nav!.x + nav!.width);
@@ -117,10 +173,17 @@ test.describe('resizable left navigation', () => {
     const divider = page.getByTestId('nav-resizer');
 
     await divider.focus();
+    // Each expected width stays strictly inside the bounds, so a wrong step
+    // size cannot hide behind the clamp.
     await divider.press('ArrowRight');
     await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 16);
+    await divider.press('Shift+ArrowRight');
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 16 + 48);
+    await divider.press('ArrowLeft');
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 48);
     await divider.press('Shift+ArrowLeft');
-    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 16 - 48);
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
+    expect(await storedNavWidth(page)).toBe(String(DEFAULT_NAV_WIDTH));
     await divider.press('End');
     await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
     await divider.press('Home');
@@ -175,14 +238,43 @@ test.describe('resizable left navigation', () => {
     await expect(page.getByTestId('nav-resizer')).toBeHidden();
   });
 
-  test('the widest navigation still leaves the reading pane its floor at 1280 px', async ({ page, request }) => {
-    // Worst case: the narrowest window that shows this layout, the navigation
-    // at its maximum, and the widest task list the other divider can store.
+  test('while the coordinator findings pane is open, a wide navigation gives its extra width back', async ({ page, request }) => {
+    // That pane is a fourth column. At 1280 px there is no room for it beside
+    // a 480 px navigation, so the navigation is drawn at the default width
+    // and the divider is hidden; the stored width is left alone.
     await page.addInitScript(
-      ({ key, max }) => {
-        window.localStorage.setItem(key, String(max));
-        window.localStorage.setItem('kookr:dashboardFindingsWidth', '720');
-      },
+      ({ key, max }) => window.localStorage.setItem(key, String(max)),
+      { key: NAV_WIDTH_KEY, max: MAX_NAV_WIDTH },
+    );
+    await openWithProject(page, request, 1280);
+    await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
+
+    const trigger = page.getByRole('button', { name: /Coordinator findings/ });
+    await trigger.click();
+    await expect(page.getByTestId('coordinator-findings-pane')).toBeVisible();
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
+    await expect(page.getByTestId('nav-resizer')).toBeHidden();
+    expect(await storedNavWidth(page)).toBe(String(MAX_NAV_WIDTH));
+
+    // A window with room for all four columns keeps the chosen width.
+    await page.setViewportSize({ width: 1700, height: 900 });
+    await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
+
+    // Closing the pane restores the chosen width and the divider.
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
+    await trigger.click();
+    await expect(page.getByTestId('coordinator-findings-pane')).toHaveCount(0);
+    await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
+    await expect(page.getByTestId('nav-resizer')).toBeVisible();
+  });
+
+  test('at 1280 px the widest navigation leaves the task list its default width', async ({ page, request }) => {
+    // The reason MAX_NAV_WIDTH is 480: on the narrowest window that shows this
+    // layout, an untouched task list (28% of the window, 358 px) still fits
+    // beside the reading pane's floor.
+    await page.addInitScript(
+      ({ key, max }) => window.localStorage.setItem(key, String(max)),
       { key: NAV_WIDTH_KEY, max: MAX_NAV_WIDTH },
     );
     await openWithProject(page, request, 1280);
@@ -190,19 +282,46 @@ test.describe('resizable left navigation', () => {
 
     await page.locator('.healthy-row').first().click();
     await expect(page.locator('.detail-panel')).toBeVisible();
-    await expect.poll(() => widthOf(page, '.detail-panel')).toBeGreaterThanOrEqual(READING_PANE_FLOOR - 8);
-    await expect.poll(() => widthOf(page, '.findings-panel')).toBeGreaterThanOrEqual(280);
+    await expect.poll(() => widthOf(page, '.findings-panel')).toBe(Math.round(1280 * 0.28));
+    await expect.poll(() => widthOf(page, '.detail-panel')).toBeGreaterThanOrEqual(READING_PANE_FLOOR);
+  });
 
-    // The other divider's upper bound follows the navigation's width.
+  test('at 1280 px the widest navigation and the widest stored task list still leave the reading pane its floor', async ({ page, request }) => {
+    // Worst case: the narrowest window that shows this layout, the navigation
+    // at its maximum, and the widest task list the other divider can store.
+    await page.addInitScript(
+      ({ navKey, navMax, splitKey, splitMax }) => {
+        window.localStorage.setItem(navKey, String(navMax));
+        window.localStorage.setItem(splitKey, String(splitMax));
+      },
+      { navKey: NAV_WIDTH_KEY, navMax: MAX_NAV_WIDTH, splitKey: DASHBOARD_SPLIT_KEY, splitMax: MAX_FINDINGS_WIDTH },
+    );
+    await openWithProject(page, request, 1280);
+    await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
+
+    // What is left for the task list once the navigation and the reading
+    // pane's floor are taken out of the window.
+    const taskListRoom = 1280 - MAX_NAV_WIDTH - READING_PANE_FLOOR;
+    expect(taskListRoom).toBeGreaterThanOrEqual(MIN_FINDINGS_WIDTH);
+
+    await page.locator('.healthy-row').first().click();
+    await expect(page.locator('.detail-panel')).toBeVisible();
+    await expect.poll(() => widthOf(page, '.findings-panel')).toBe(taskListRoom);
+    await expect.poll(() => widthOf(page, '.detail-panel')).toBe(READING_PANE_FLOOR);
+
+    // The other divider's own upper bound follows the navigation's width: its
+    // widest setting stores what fits, not the 720 px it allows on a wide window.
     const findingsDivider = page.getByTestId('findings-resizer');
+    await expect(findingsDivider).toHaveAttribute('aria-valuemax', String(taskListRoom));
     await findingsDivider.focus();
     await page.keyboard.press('End');
-    await expect.poll(() => widthOf(page, '.detail-panel')).toBeGreaterThanOrEqual(READING_PANE_FLOOR - 8);
+    await expect.poll(
+      () => page.evaluate((key) => localStorage.getItem(key), DASHBOARD_SPLIT_KEY),
+    ).toBe(String(taskListRoom));
+    await expect.poll(() => widthOf(page, '.detail-panel')).toBe(READING_PANE_FLOOR);
 
-    // Nothing is pushed off-screen.
-    const overflow = await page.evaluate(
-      () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
-    );
-    expect(overflow).toBeLessThanOrEqual(0);
+    // The reading pane ends inside the window rather than being cut off by it.
+    const pane = await page.locator('.detail-panel').boundingBox();
+    expect(pane!.x + pane!.width).toBeLessThanOrEqual(1280);
   });
 });

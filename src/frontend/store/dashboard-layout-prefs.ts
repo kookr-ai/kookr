@@ -85,7 +85,10 @@ export const DEFAULT_NAV_WIDTH = 212;
  * and the spend and quota footer legible. The maximum is chosen so that at the
  * narrowest window showing this layout (1280 px) the task list keeps its
  * default width and the reading pane keeps its 428 px floor:
- * 480 + 358 + 428 = 1266.
+ * 480 + 358 + 428 = 1266. That sum assumes three columns. While the
+ * coordinator findings pane adds a fourth, the stylesheet draws the
+ * navigation narrower than the stored width where the window lacks room
+ * (see `--nav-width-used` in styles.css).
  */
 export const MIN_NAV_WIDTH = 180;
 export const MAX_NAV_WIDTH = 480;

@@ -9983,19 +9983,30 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
 .nav-resizer {
   display: none;
 }
-@media (prefers-reduced-motion: reduce) {
-  .nav-resizer::after { transition: none; }
-}
 
 @media (min-width: 1280px) {
   /* --nav-width is set on .main once the user has resized the navigation
      (App.tsx, already clamped to MIN_NAV_WIDTH..MAX_NAV_WIDTH); without it the
-     default applies. critical.css repeats this rule for the first paint. */
+     default applies. --nav-width-used is the width actually drawn, which is
+     the same value except in the one case below. critical.css sets the
+     navigation's width from --nav-width for the first paint. */
+  .main {
+    --nav-width-used: var(--nav-width, 212px);
+  }
+  /* The coordinator findings pane is a fourth column (300 px). While it is
+     open, the navigation gives back any width beyond the default unless the
+     window has room for everything: 1148 px = 300 (that pane) + 420 (widest
+     default task list) + 428 (reading pane floor). A chosen width narrower
+     than the default is kept. The divider is hidden meanwhile (further
+     down), so a drag never stores a width the layout is not showing. */
+  .main:has(> .coordinator-findings-pane) {
+    --nav-width-used: min(var(--nav-width, 212px), max(212px, calc(100% - 1148px)));
+  }
   .project-sidebar.labelled {
     align-items: stretch;
     gap: 2px;
-    width: var(--nav-width, 212px);
-    min-width: var(--nav-width, 212px);
+    width: var(--nav-width-used, 212px);
+    min-width: var(--nav-width-used, 212px);
     padding: 8px;
   }
 
@@ -10171,7 +10182,7 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
      (MIN_TERMINAL_RESERVE_PX 480 minus the 52 px icon rail = 428 px). The
      navigation's own width is resizable, so it is subtracted as a variable. */
   .main:has(> .project-sidebar.labelled) > .findings-panel {
-    max-width: max(280px, calc(100% - 428px - var(--nav-width, 212px)));
+    max-width: max(280px, calc(100% - 428px - var(--nav-width-used, 212px)));
   }
 
   /* Divider on the navigation's right edge (NavResizer.tsx). It overlaps the
@@ -10186,6 +10197,10 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     background: transparent;
     position: relative;
     touch-action: none;
+  }
+  /* Placed after the rule above, which has the same specificity. */
+  .main:has(> .coordinator-findings-pane) > .nav-resizer {
+    display: none;
   }
   .nav-resizer::after {
     content: '';
@@ -10208,6 +10223,19 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   }
   .nav-resizer:focus-visible::after {
     width: 2px;
+  }
+  /* After the transition above, so it wins for users who ask for less motion. */
+  @media (prefers-reduced-motion: reduce) {
+    .nav-resizer::after { transition: none; }
+  }
+  /* High-contrast modes replace author backgrounds, which would hide the line
+     that is this divider's only hover and focus cue. */
+  @media (forced-colors: active) {
+    .nav-resizer:hover::after,
+    .nav-resizer:focus-visible::after,
+    .nav-resizer.dragging::after {
+      background: Highlight;
+    }
   }
 
   /* "All projects" is always the selected row in this layout; keep the red

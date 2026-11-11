@@ -138,8 +138,19 @@ describe('dashboard-layout-prefs', () => {
       ['99999', MAX_NAV_WIDTH],
       ['-5', MIN_NAV_WIDTH],
       ['0', MIN_NAV_WIDTH],
-      ['1e9', MIN_NAV_WIDTH],
     ])('pulls the out-of-range stored value %s back into the bounds', (raw, expected) => {
+      storage.map.set(NAV_WIDTH_KEY, raw);
+      expect(loadNavWidth()).toBe(expected);
+    });
+
+    // The key only ever holds what saveNavWidth wrote: a plain integer. Anything
+    // else is read the way parseInt reads it (leading digits only), and the
+    // result is still clamped, so it stays usable whatever was meant.
+    test.each([
+      ['300px', 300],
+      ['300.9', 300],
+      ['1e9', MIN_NAV_WIDTH],
+    ])('reads only the leading integer of the hand-edited value %s', (raw, expected) => {
       storage.map.set(NAV_WIDTH_KEY, raw);
       expect(loadNavWidth()).toBe(expected);
     });
