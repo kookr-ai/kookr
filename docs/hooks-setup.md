@@ -121,14 +121,17 @@ spawned, so a repo without markers (for example an upstream OSS repo such as
 the same rule (`kookr pr-checklist verify` on such a repo prints "No opinion" and
 exits `0`, and runs none of its structural diff rules).
 
-The probe looks at the repo toplevel (a session inside a subdirectory still
-finds the template) and, when the command names `-R owner/repo`, applies only if
-that repo is one of the session repo's own remotes (the `-R` is read from the command with heredoc and quoted body text removed, so prose in the body cannot fake it) — a PR for some other repo
-run from a Kookr checkout is not judged by Kookr's template. A tracked template
-that cannot be read safely (outside the repo, over the size cap, unreadable) fails the check
-closed rather than reporting "no opinion". If the session repo opted in but the
-`--head` worktree cannot be mapped, the gate fails open **with** a degrade-log
-record.
+The probe looks at the repo toplevel, so a session inside a subdirectory still
+finds the template. The hook does not try to guess which repo a command targets:
+it hands marker repos to `kookr pr-checklist verify`, whose tokenizer reads the
+real `--repo`/`-R` value (any spelling — `-R x/y`, `--repo=x/y`, quoted) and
+ignores `-R` prose inside heredoc or multi-line quoted bodies. If that value is
+not one of the session repo's git remotes, the engine reports "No opinion" — a PR
+for some other repo run from a Kookr checkout is not judged by Kookr's template
+(this costs one Node start for such a PR). A tracked template that cannot be read
+safely (outside the repo, over the size cap, unreadable) fails the check closed
+rather than reporting "no opinion". If the session repo opted in but the `--head`
+worktree cannot be mapped, the gate fails open **with** a degrade-log record.
 
 This is **separate from `~/.kookr/pr-gated-repos.json`**, which only scopes the
 heavy pre-PR review (state-file) gate described above. The checklist gate never

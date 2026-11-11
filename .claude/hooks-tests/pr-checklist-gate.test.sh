@@ -233,18 +233,15 @@ tpl_case "template WITHOUT markers: gate OFF, kookr never spawned" .github/pull_
 
 tpl_case "session cwd in a repo SUBDIRECTORY still finds the toplevel template: gate ON" \
   .github/pull_request_template.md "$MARK" deny src/deep
-tpl_case "foreign repo via -R (cwd repo has a marker template): no opinion, gate OFF" \
-  .github/pull_request_template.md "$MARK" off "" \
-  "gh pr create -R upstream/oss-$SUFFIX --head me:fix --title x --body \"plain oss body\""
-
-# -R / --repo text INSIDE a heredoc or quoted body must not be mistaken for the real flag.
-HD_BODY=$'gh pr create --title t --body "$(cat <<\'EOF\'\nMention: use gh -R src/lib to list, or --repo a/b.\nEOF\n)"'
-tpl_case "-R text inside a heredoc body is not a foreign-repo flag: gate ON" \
+# A PR for another repo (-R other/repo) is sorted out by the engine (it tokenizes the
+# command), not by bash: the hook still hands marker repos to `kookr pr-checklist`,
+# whatever prose or -R forms the command contains.
+tpl_case "-R other/repo from a marker repo: hook delegates to the engine (gate ON)" \
+  .github/pull_request_template.md "$MARK" deny "" \
+  "gh pr create -R upstream/oss-$SUFFIX --head me:fix --title x --body \"plain\""
+HD_BODY=$'gh pr create --title t --body "$(cat <<\'EOF\'\nMention: use gh -R src/lib to list.\nEOF\n)"'
+tpl_case "-R prose inside a heredoc body: gate ON (no repo-flag guessing in bash)" \
   .github/pull_request_template.md "$MARK" deny "" "$HD_BODY"
-tpl_case "-R text inside a quoted inline body is not a foreign-repo flag: gate ON" \
-  .github/pull_request_template.md "$MARK" deny "" 'gh pr create --title t --body "see gh -R src/lib"'
-tpl_case "a real -R flag AFTER a quoted body still marks a foreign repo: gate OFF" \
-  .github/pull_request_template.md "$MARK" off "" "gh pr create --body \"x\" -R upstream/oss-$SUFFIX"
 
 # An unreadable tracked template must not make the gate vanish (engine fails closed).
 if [ "$(id -u)" != "0" ]; then

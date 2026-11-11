@@ -254,46 +254,6 @@ checklist_repo_opted_in() {
   return 1
 }
 
-# With an explicit `-R owner/repo`, the template probe only applies when that repo
-# is the session cwd's own repo (one of its remotes). Otherwise this is a PR for
-# some other repo (e.g. an upstream OSS repo, run from a kookr checkout) and the
-# cwd's template says nothing about it.
-#
-# `REPO_FLAG` above is a loose sed over the whole raw command, so a `-R x/y` that
-# merely appears inside a heredoc or quoted `--body` text would be mistaken for a
-# real flag (silently turning the gate off). Re-derive the flag here from the
-# command with heredoc bodies and quoted strings removed.
-checklist_cli_repo_flag() {
-  printf '%s\n' "$COMMAND" | awk -v dq='"' -v sq="'" '
-    heredoc != "" { l = $0; sub(/^\t+/, "", l); if ($0 == heredoc || l == heredoc) heredoc = ""; next }
-    {
-      line = $0
-      if (match(line, /<<-?[ \t]*["\x27]?[A-Za-z_][A-Za-z0-9_.-]*["\x27]?/)) {
-        tok = substr(line, RSTART, RLENGTH)
-        gsub(/<<-?[ \t]*/, "", tok); gsub(/["\x27]/, "", tok)
-        heredoc = tok
-      }
-      gsub(dq "[^" dq "]*" dq, "", line)
-      gsub(sq "[^" sq "]*" sq, "", line)
-      print line
-    }' \
-    | sed -nE 's/.*(-R|--repo)[[:space:]]+([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+).*/\2/p' | head -1
-}
-
-checklist_targets_cwd_repo() {
-  local dir="$1" want cli_flag
-  cli_flag=$(checklist_cli_repo_flag) || cli_flag=""
-  if [ -z "$cli_flag" ]; then
-    return 0
-  fi
-  want=$(printf '%s' "$cli_flag" | tr '[:upper:]' '[:lower:]')
-  want="${want//./[.]}"
-  if git -C "$dir" remote -v 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -qE "[:/]${want}(\.git)?[[:space:]]"; then
-    return 0
-  fi
-  return 1
-}
-
 pr_checklist_gate() {
   # --- Bash-side fast-exit BEFORE spawning Node (S3). ---
   # Kill-switch first: KOOKR_PR_CHECKLIST=0 force-disables regardless of scope.
@@ -304,11 +264,12 @@ pr_checklist_gate() {
   # deprecated — the env opt-in / the checklist scope file lists the repo.
   local enabled=0
   if [ -n "$CHECKLIST_CWD" ] && [ -d "$CHECKLIST_CWD" ]; then
-    if checklist_targets_cwd_repo "$CHECKLIST_CWD" && checklist_repo_opted_in "$CHECKLIST_CWD"; then
+    # (A PR for a different repo named via `-R` is sorted out by the engine, which
+    # tokenizes the command properly: it reports "no opinion" for such a PR.)
+    if checklist_repo_opted_in "$CHECKLIST_CWD"; then
       enabled=1
     fi
-  elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ] \
-       && checklist_targets_cwd_repo "$CWD" && checklist_repo_opted_in "$CWD"; then
+  elif [ -n "${CWD:-}" ] && [ -d "${CWD:-}" ] && checklist_repo_opted_in "$CWD"; then
     # The session repo opted in but the --head worktree could not be mapped, so
     # the diff cannot be resolved: fail OPEN, but never silently.
     checklist_fail_open "effective checklist cwd unavailable — cannot resolve the diff"

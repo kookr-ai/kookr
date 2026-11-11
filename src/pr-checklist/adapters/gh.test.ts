@@ -27,7 +27,7 @@ describe('extractFromGhCommand', () => {
 
   it('extracts an inline --body and default (null) base', () => {
     const r = extractFromGhCommand(`gh pr create --title T --body "hello world"`);
-    expect(r).toEqual({ base: null, bodySource: { kind: 'inline', text: 'hello world' } });
+    expect(r).toEqual({ base: null, repo: null, bodySource: { kind: 'inline', text: 'hello world' } });
   });
 
   it('extracts -b short form and -B base', () => {
@@ -179,6 +179,29 @@ describe('extractFromGhCommand', () => {
       const cmd = `cat > /tmp/x <<'EOF'\n-b "$(cat <<'EOF2'\nfake\nEOF2\n)"\nEOF\ngh pr create --title T`;
       const r = extractFromGhCommand(cmd);
       expect(r?.bodySource.kind).toBe('unverifiable');
+    });
+  });
+
+  describe('--repo / -R target', () => {
+    it.each([
+      ['gh pr create -R acme/w --fill', 'acme/w'],
+      ['gh pr create --repo acme/w --fill', 'acme/w'],
+      ['gh pr create --repo=acme/w --fill', 'acme/w'],
+      ['gh pr create -R=acme/w --fill', 'acme/w'],
+      ['gh pr create -R "acme/w" --fill', 'acme/w'],
+      ['gh pr create --fill', null],
+    ])('%s -> %s', (cmd, repo) => {
+      expect(extractFromGhCommand(cmd)?.repo).toBe(repo);
+    });
+
+    it('ignores -R/--repo text inside a heredoc body and inside a multi-line quoted body', () => {
+      expect(extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nuse gh -R src/lib or --repo a/b\nEOF\n)"`)?.repo).toBeNull();
+      expect(extractFromGhCommand('gh pr create --title t --body "\nsee gh pr create\n -R x/y\n"')?.repo).toBeNull();
+      expect(extractFromGhCommand(`gh pr create --body 'a\n--repo x/y\n'`)?.repo).toBeNull();
+    });
+
+    it('still finds a real -R after a quoted/heredoc body', () => {
+      expect(extractFromGhCommand(`gh pr create --body "$(cat <<'EOF'\nx\nEOF\n)" -R o/r`)?.repo).toBe('o/r');
     });
   });
 

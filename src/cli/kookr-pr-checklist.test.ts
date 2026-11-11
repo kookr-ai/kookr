@@ -397,6 +397,45 @@ describe('runPrChecklistCli doctor', () => {
       }
     });
 
+    describe('-R / --repo naming a different repo', () => {
+      const remotes = (url: string) =>
+        fakeGit({
+          'remote -v': { stdout: `origin\t${url} (fetch)\norigin\t${url} (push)` },
+          'merge-base origin/main HEAD': { stdout: 'B' },
+          'diff --name-status B...HEAD': { stdout: 'M\tsrc/core/x.test.ts' },
+          'diff --unified=0 B...HEAD': { stdout: '+++ b/src/core/x.test.ts\n+t' },
+          'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+        });
+      const go = (cmd: string, git: GitRunner, o = out()) =>
+        runPrChecklistCli(['verify', '--from-command', cmd], { out: o, cwd: '/repo', gitRunner: git, readFileText: readTemplate(TEMPLATE) });
+
+      it('a foreign repo gets no opinion (0) in every -R spelling, incl. quoted and = forms', async () => {
+        for (const flag of ['-R other/x', '--repo other/x', '--repo=other/x', '-R=other/x', '-R "other/x"']) {
+          const o = out();
+          expect(await go(`gh pr create ${flag} --title t --fill`, remotes('git@github.com:acme/own.git'), o)).toBe(EXIT_PASS);
+          expect(printed(o)).toMatch(/no opinion/i);
+        }
+      });
+
+      it("the session repo's own -R (ssh or https remote, any case) is still judged", async () => {
+        expect(await go('gh pr create -R ACME/Own --fill', remotes('git@github.com:acme/own.git'))).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go('gh pr create -R acme/own --fill', remotes('https://github.com/acme/own'))).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
+      it('unreadable remotes mean "cannot tell": the PR is judged, not skipped', async () => {
+        const git = fakeGit({
+          'ls-files -- .github/PULL_REQUEST_TEMPLATE.md': { stdout: '.github/PULL_REQUEST_TEMPLATE.md' },
+        });
+        expect(await go('gh pr create -R other/x --fill', git)).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+
+      it('-R prose inside a multi-line quoted body or heredoc body does not make the PR foreign', async () => {
+        const git = remotes('git@github.com:acme/own.git');
+        expect(await go('gh pr create --title t --body "\nsee gh pr create\n -R x/y\n"', git)).toBe(EXIT_VERIFICATION_FAILURE);
+        expect(await go(heredoc('use gh -R src/lib or --repo a/b'), git)).toBe(EXIT_VERIFICATION_FAILURE);
+      });
+    });
+
     it('never echoes the heredoc body text', async () => {
       const o = out();
       await run(heredoc('SECRET-BODY-TEXT'), o);

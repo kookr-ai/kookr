@@ -14,7 +14,7 @@ import { BOX_EVIDENCE } from '../pr-checklist/checklist.js';
 import { degradeLogPath, parseDegradeLog, summarizeDegrades } from '../pr-checklist/degrade-log.js';
 import { collectAndVerify, MAX_BODY_BYTES } from '../pr-checklist/engine.js';
 import { ChecklistInputError } from '../pr-checklist/errors.js';
-import { resolveRepoRoot, type GitRunner } from '../pr-checklist/git.js';
+import { execGit, resolveRepoRoot, type GitRunner } from '../pr-checklist/git.js';
 import type { VerifyReport } from '../pr-checklist/types.js';
 
 export const EXIT_PASS = 0;
@@ -119,6 +119,16 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
       // command to attest against; degrade to structural-only, printed.
       out.log('  • --from-command is not a `gh pr create`; running structural checks only');
     } else {
+      if (extracted.repo && (await isForeignRepo(deps.gitRunner ?? execGit(root), extracted.repo))) {
+        // `gh pr create -R other/repo` from this checkout: this repo's template and
+        // diff say nothing about that PR, so the gate has no opinion.
+        out.log(
+          `  • no opinion: the PR targets ${extracted.repo}, which is not a remote of this repo — ` +
+            `the checklist gate only judges this repo's own PRs`,
+        );
+        out.log('✓ No opinion — foreign-repo PR.');
+        return EXIT_PASS;
+      }
       if (extracted.base) base = extracted.base;
       const src = extracted.bodySource;
       if (src.kind === 'unverifiable') {
@@ -179,6 +189,22 @@ export async function runPrChecklistCli(argv = process.argv.slice(2), deps: RunD
     printHuman(report, out);
   }
   return report.ok ? EXIT_PASS : EXIT_VERIFICATION_FAILURE;
+}
+
+/**
+ * True only when `git remote -v` succeeded and none of its URLs names `slug`
+ * (`owner/repo`, case-insensitive). When the remotes cannot be read the answer
+ * is "not foreign" — the gate then judges the PR rather than skipping it.
+ */
+async function isForeignRepo(runner: GitRunner, slug: string): Promise<boolean> {
+  const r = await runner(['remote', '-v']);
+  if (r.exitCode !== 0 || !r.stdout.trim()) return false;
+  const want = slug.toLowerCase();
+  for (const line of r.stdout.split('\n')) {
+    const url = (line.split(/\s+/)[1] ?? '').toLowerCase().replace(/\.git$/, '');
+    if (url.endsWith(`/${want}`) || url.endsWith(`:${want}`)) return false;
+  }
+  return true;
 }
 
 function parseArgs(argv: string[]): Args {
