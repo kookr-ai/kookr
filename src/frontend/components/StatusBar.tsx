@@ -1,54 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useKookrStore } from '../store/useStore.js';
 import type { FocusZone } from '../store/useStore.js';
 import type { QuotaStatus } from '../../shared/protocol.js';
-import { useSoundPreference } from '../audio/sound.js';
-import { useAudioAlertLog, type LocalAudioAlertDecision } from '../audio/audio-alert-log.js';
-import {
-  cpuSeverity,
-  eventLoopSeverity,
-  formatResourceDetails,
-  formatResourcePercent,
-  isResourceStatusStale,
-  memorySeverity,
-} from '../resource-status.js';
-import { formatShortcutBinding, type ShortcutBindingMap } from '../../shared/contracts/shortcut-bindings.js';
-import {
-  TIME_TO_UNBLOCK_MIN_SAMPLES,
-  formatTimeToUnblockChipLabel,
-  formatTimeToUnblockChipTitle,
-  type TimeToUnblockSnapshot,
-} from '../../shared/contracts/time-to-unblock.js';
-import { getLiveFrictionCalibration, getOutcomeLedger, getTimeToUnblock } from '../api/index.js';
+import { getOutcomeLedger } from '../api/index.js';
 import type { OutcomeLedgerReadiness } from '../../shared/contracts/outcome-ledger.js';
-import {
-  formatLiveFrictionChipLabel,
-  isLiveFrictionSnapshot,
-  liveFrictionChipCounts,
-  shouldShowLiveFrictionChip,
-  LIVE_FRICTION_CHIP_TITLE,
-  type LiveFrictionSnapshot,
-} from './live-friction-chip.js';
-import {
-  formatFaaResidualAge,
-  formatFaaResidualLabel,
-  shouldShowFaaResidualPill,
-} from './faa-residual-pill.js';
-import {
-  formatLaunchDepsLabel,
-  formatLaunchDepsTitle,
-  shouldShowLaunchDepsPill,
-} from './launch-deps-pill.js';
-import {
-  formatPausedSchedulesLabel,
-  formatPausedSchedulesTitle,
-  shouldShowPausedSchedulesPill,
-} from './paused-schedules-pill.js';
-import {
-  formatTimerOverdueLabel,
-  formatTimerOverdueTitle,
-  shouldShowTimerOverduePill,
-} from './timer-overdue-pill.js';
 import { formatOldestFindingWait } from '../presentation.js';
 import {
   formatCompletedInWindowChipLabel,
@@ -65,6 +20,14 @@ import {
   format24hCostChipTitle,
   shouldShow24hCostChip,
 } from './status-bar-24h-cost.js';
+
+/*
+ * The status bar keeps counts, spend and quota (issue #3561 slice 2, "quiet
+ * chrome"). Host resources, ops-health pills, time to unblock, live friction,
+ * speech-to-text, sound and achievements moved behind the System indicator in
+ * the top bar (see SystemStatusDetails). The focus-zone cue and the reflection
+ * prompt stay: both appear only in a specific moment, never at rest.
+ */
 
 interface Props {
   findings: number;
@@ -90,26 +53,10 @@ interface Props {
   compact?: boolean;
   onShowShortcuts: () => void;
   /**
-   * Open the capacity settings section when the FAA residual pill is clicked
-   * (issue #2082). Optional so isolated StatusBar tests need no App wiring.
-   */
-  onOpenCapacity?: () => void;
-  /**
-   * Open Diagnostics at the live-friction panel (issue #2596). Optional so
-   * isolated StatusBar tests need no App wiring.
-   */
-  onOpenLiveFriction?: () => void;
-  /**
-   * Open Diagnostics from the overdue-timer, time-to-unblock, or launched-task
-   * chip. Optional so isolated StatusBar instances can show passive counts.
+   * Open Diagnostics (Outcome Scoreboard) from the launched-task chip.
+   * Optional so isolated StatusBar instances can show passive counts.
    */
   onOpenDiagnostics?: () => void;
-  /**
-   * Open the Schedules dialog when the paused-schedules pill is clicked
-   * (issue #3399). Optional so isolated StatusBar tests keep today's
-   * non-button span. Does not resume paused jobs — the operator decides.
-   */
-  onOpenSchedules?: () => void;
   /**
    * Open Cost Comparison when the 24h cost chip is clicked (issue #3335).
    * Optional so isolated StatusBar tests need no App wiring.
@@ -134,7 +81,6 @@ interface Props {
   } | null;
   onReflect?: () => void;
   onDismissReflection?: () => void;
-  shortcutBindings?: ShortcutBindingMap;
 }
 
 const ZONE_LABELS: Record<FocusZone, string> = {
@@ -164,23 +110,6 @@ function quotaColorClass(utilization: number): string {
   return 'quota-low';
 }
 
-function formatRelativeAge(timestamp: string): string {
-  const ageMs = Date.now() - new Date(timestamp).getTime();
-  if (!Number.isFinite(ageMs) || ageMs < 0) return 'just now';
-  if (ageMs < 60_000) return 'just now';
-  const minutes = Math.floor(ageMs / 60_000);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  return `${Math.floor(hours / 24)}d ago`;
-}
-
-function soundToggleTitle(soundOn: boolean, lastDecision: LocalAudioAlertDecision | null): string {
-  const action = soundOn ? 'Mute alert sounds' : 'Unmute alert sounds';
-  if (!lastDecision) return action;
-  return `${action}. Last alert: ${lastDecision.source} -> ${lastDecision.outcome}, ${lastDecision.reason}, ${formatRelativeAge(lastDecision.timestamp)}`;
-}
-
 export function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   const staleSec = Math.floor((Date.now() - quota.updatedAt) / 1000);
   const stale = staleSec > 300; // >5 min = stale
@@ -205,274 +134,6 @@ export function QuotaDisplay({ quota }: { quota: QuotaStatus }) {
   );
 }
 
-function ResourceDisplay({ compact }: { compact: boolean }) {
-  const resourceStatus = useKookrStore((s) => s.resourceStatus);
-  const receivedAtMs = useKookrStore((s) => s.resourceStatusReceivedAtMs);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const [open, setOpen] = useState(false);
-
-  useEffect(() => {
-    if (!resourceStatus) return;
-    const timer = setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => clearInterval(timer);
-  }, [resourceStatus]);
-
-  if (!resourceStatus) return null;
-
-  const stale = isResourceStatusStale(receivedAtMs, nowMs);
-  const cpuLabel = formatResourcePercent(resourceStatus.host.cpuUsagePercent);
-  const memoryLabel = formatResourcePercent(resourceStatus.host.memoryUsedPercent);
-  const cpuClass = cpuSeverity(resourceStatus.host.cpuUsagePercent);
-  const memoryClass = memorySeverity(resourceStatus);
-  const loopClass = eventLoopSeverity(resourceStatus.server.eventLoopDelayP95Ms);
-  const showLoopWarning = loopClass === 'high' || loopClass === 'critical';
-  const details = formatResourceDetails(resourceStatus, nowMs);
-  const ariaLabel = [
-    `CPU ${cpuLabel}`,
-    `RAM ${memoryLabel}`,
-    ...details,
-    stale ? 'Resource data is stale' : '',
-  ].filter(Boolean).join('. ');
-
-  return (
-    <span className={`resource-status ${compact ? 'compact' : ''} ${stale ? 'stale' : ''} ${showLoopWarning ? `loop-${loopClass}` : ''}`}>
-      <button
-        type="button"
-        className="resource-status-trigger"
-        title={ariaLabel}
-        aria-label={ariaLabel}
-        aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
-      >
-        <span className={`resource-pill resource-${cpuClass}`}>CPU {cpuLabel}</span>
-        <span className={`resource-pill resource-${memoryClass}`}>RAM {memoryLabel}</span>
-        {showLoopWarning && (
-          <span className={`resource-pill resource-${loopClass}`} title="Server event-loop p95 delay">
-            Loop {resourceStatus.server.eventLoopDelayP95Ms === null ? '--' : `${Math.round(resourceStatus.server.eventLoopDelayP95Ms)}ms`}
-          </span>
-        )}
-      </button>
-      {open && (
-        <span className="resource-status-popover" role="tooltip">
-          {details.map((line) => (
-            <span key={line}>{line}</span>
-          ))}
-        </span>
-      )}
-    </span>
-  );
-}
-
-/**
- * Compact ops-health pills for smoke-tick failing streak, resourceWatchdog off
- * (issue #2037), chronic finishedAwaitingAck residual (issue #2082),
- * launch-dependency degradation (issue #2364), fail-closed paused
- * schedules (issue #2432 / click-through #3399), and overdue lifecycle
- * timers (issue #2643). Hidden when healthy / enabled / residual clear /
- * no data yet.
- */
-function OpsHealthPills({
-  onOpenCapacity,
-  onOpenDiagnostics,
-  onOpenSchedules,
-}: {
-  onOpenCapacity?: () => void;
-  onOpenDiagnostics?: () => void;
-  onOpenSchedules?: () => void;
-}) {
-  const prodSmokeTick = useKookrStore((s) => s.prodSmokeTick);
-  const resourceWatchdog = useKookrStore((s) => s.resourceWatchdog);
-  const capacityResidual = useKookrStore((s) => s.capacityResidual);
-  const launchDependencies = useKookrStore((s) => s.launchDependencies);
-  const pausedSchedules = useKookrStore((s) => s.pausedSchedules);
-  const timerHealth = useKookrStore((s) => s.timerHealth);
-
-  const smokeFailures = prodSmokeTick?.consecutiveFailures ?? 0;
-  const showSmoke = smokeFailures >= 1;
-  const showWatchdog = resourceWatchdog != null && resourceWatchdog.enabled === false;
-  const faaCount = capacityResidual?.finishedAwaitingAck ?? 0;
-  const faaAgeMs = capacityResidual?.oldestFinishedAwaitingAckAgeMs ?? null;
-  const showFaa = capacityResidual != null && shouldShowFaaResidualPill(faaCount, faaAgeMs);
-  const showLaunchDeps = shouldShowLaunchDepsPill(launchDependencies);
-  const showPausedSchedules = shouldShowPausedSchedulesPill(pausedSchedules);
-  const showTimerOverdue = shouldShowTimerOverduePill(timerHealth);
-
-  if (
-    !showSmoke
-    && !showWatchdog
-    && !showFaa
-    && !showLaunchDeps
-    && !showPausedSchedules
-    && !showTimerOverdue
-  ) return null;
-
-  const smokeTitle = showSmoke
-    ? [
-        `Prod smoke tick failing for ${smokeFailures} consecutive hour${smokeFailures === 1 ? '' : 's'}`,
-        prodSmokeTick?.failingChecks?.length
-          ? `failing checks: ${prodSmokeTick.failingChecks.join(', ')}`
-          : null,
-        prodSmokeTick?.firstFailedAt
-          ? `streak began ${prodSmokeTick.firstFailedAt}`
-          : null,
-        'See GET /api/health.prodSmokeTick',
-      ].filter(Boolean).join(' · ')
-    : '';
-
-  const watchdogTitle = showWatchdog
-    ? [
-        resourceWatchdog?.pressureWhileDisabled
-          ? 'Resource watchdog continuous monitoring is off under host pressure'
-          : 'Resource watchdog continuous monitoring is off',
-        resourceWatchdog?.lastDecision ? `lastDecision=${resourceWatchdog.lastDecision}` : null,
-        resourceWatchdog?.pressureWhileDisabled && resourceWatchdog.pressureWhileDisabledReason
-          ? resourceWatchdog.pressureWhileDisabledReason
-          : null,
-        'Set KOOKR_RESOURCE_WATCHDOG=1 for continuous sampling · GET /api/health.resourceWatchdog',
-      ].filter(Boolean).join(' · ')
-    : '';
-
-  const faaLabel = showFaa ? formatFaaResidualLabel(faaCount, faaAgeMs) : '';
-  const faaAgeLabel = showFaa ? formatFaaResidualAge(faaAgeMs) : null;
-  const faaTitle = showFaa
-    ? [
-        `${faaCount} task${faaCount === 1 ? '' : 's'} finished and awaiting completion ack`,
-        faaAgeLabel ? `oldest residual age ${faaAgeLabel}` : null,
-        onOpenCapacity
-          ? 'Capacity slots held with no forward progress — open capacity settings'
-          : 'Capacity slots held with no forward progress',
-        'See GET /api/health.capacity',
-      ].filter(Boolean).join(' · ')
-    : '';
-
-  const launchDepsLabel =
-    showLaunchDeps && launchDependencies ? formatLaunchDepsLabel(launchDependencies) : '';
-  const launchDepsTitle =
-    showLaunchDeps && launchDependencies ? formatLaunchDepsTitle(launchDependencies) : '';
-
-  const pausedSchedulesLabel =
-    showPausedSchedules && pausedSchedules ? formatPausedSchedulesLabel(pausedSchedules) : '';
-  const pausedSchedulesTitle =
-    showPausedSchedules && pausedSchedules
-      ? [
-          formatPausedSchedulesTitle(pausedSchedules),
-          onOpenSchedules ? 'Open Schedules' : null,
-        ].filter(Boolean).join(' · ')
-      : '';
-
-  const timerOverdueLabel =
-    showTimerOverdue && timerHealth ? formatTimerOverdueLabel(timerHealth) : '';
-  const timerOverdueTitle =
-    showTimerOverdue && timerHealth
-      ? formatTimerOverdueTitle(timerHealth, Boolean(onOpenDiagnostics))
-      : '';
-
-  return (
-    <span className="ops-health-pills" data-testid="ops-health-pills">
-      {showSmoke && (
-        <span
-          className="ops-health-pill ops-health-smoke"
-          data-testid="ops-health-smoke-pill"
-          title={smokeTitle}
-          role="status"
-        >
-          Smoke: fail×{smokeFailures}
-        </span>
-      )}
-      {showWatchdog && (
-        <span
-          className="ops-health-pill ops-health-watchdog"
-          data-testid="ops-health-watchdog-pill"
-          title={watchdogTitle}
-          role="status"
-        >
-          Watchdog: off
-        </span>
-      )}
-      {showFaa && (
-        onOpenCapacity ? (
-          <button
-            type="button"
-            className="ops-health-pill ops-health-faa"
-            data-testid="ops-health-faa-pill"
-            title={faaTitle}
-            aria-label={`${faaLabel}. Open capacity settings`}
-            onClick={onOpenCapacity}
-          >
-            {faaLabel}
-          </button>
-        ) : (
-          <span
-            className="ops-health-pill ops-health-faa"
-            data-testid="ops-health-faa-pill"
-            title={faaTitle}
-            role="status"
-          >
-            {faaLabel}
-          </span>
-        )
-      )}
-      {showLaunchDeps && (
-        <span
-          className="ops-health-pill ops-health-launch-deps"
-          data-testid="ops-health-launch-deps-pill"
-          title={launchDepsTitle}
-          aria-label={launchDepsTitle}
-          role="status"
-        >
-          {launchDepsLabel}
-        </span>
-      )}
-      {showPausedSchedules && (
-        onOpenSchedules ? (
-          <button
-            type="button"
-            className="ops-health-pill ops-health-paused-schedules"
-            data-testid="ops-health-paused-schedules-pill"
-            title={pausedSchedulesTitle}
-            aria-label={`${pausedSchedulesLabel}. Open Schedules`}
-            onClick={onOpenSchedules}
-          >
-            {pausedSchedulesLabel}
-          </button>
-        ) : (
-          <span
-            className="ops-health-pill ops-health-paused-schedules"
-            data-testid="ops-health-paused-schedules-pill"
-            title={pausedSchedulesTitle}
-            role="status"
-          >
-            {pausedSchedulesLabel}
-          </span>
-        )
-      )}
-      {showTimerOverdue && (
-        onOpenDiagnostics ? (
-          <button
-            type="button"
-            className="ops-health-pill ops-health-timer-overdue"
-            data-testid="ops-health-timer-overdue-pill"
-            title={timerOverdueTitle}
-            aria-label={`${timerOverdueLabel}. Open Diagnostics`}
-            onClick={onOpenDiagnostics}
-          >
-            {timerOverdueLabel}
-          </button>
-        ) : (
-          <span
-            className="ops-health-pill ops-health-timer-overdue"
-            data-testid="ops-health-timer-overdue-pill"
-            title={timerOverdueTitle}
-            role="status"
-          >
-            {timerOverdueLabel}
-          </span>
-        )
-      )}
-    </span>
-  );
-}
-
 export function StatusBar({
   findings,
   oldestFindingWaitStartedAt,
@@ -481,72 +142,23 @@ export function StatusBar({
   launchedLast24h = 0,
   compact = false,
   onShowShortcuts,
-  onOpenCapacity,
-  onOpenLiveFriction,
   onOpenDiagnostics,
-  onOpenSchedules,
   onOpenCostComparison,
   onExpandCompleted,
   onSelectOldestFinding,
   reflectionSuggestion,
   onReflect,
   onDismissReflection,
-  shortcutBindings,
 }: Props) {
   const focusZone = useKookrStore((s) => s.focusZone);
-  const sttUrl = useKookrStore((s) => s.sttUrl);
   const quotaStatus = useKookrStore((s) => s.quotaStatus);
-  const achievements = useKookrStore((s) => s.achievements);
-  const toggleAchievementsPanel = useKookrStore((s) => s.toggleAchievementsPanel);
   const zoneLabel = ZONE_LABELS[focusZone];
-  const sound = useSoundPreference();
-  const audioAlertSnapshot = useAudioAlertLog(1);
-  const soundOn = sound.enabled;
-  const soundTitle = soundToggleTitle(soundOn, audioAlertSnapshot.lastDecision);
-  const [timeToUnblock, setTimeToUnblock] = useState<TimeToUnblockSnapshot | null>(null);
-  const [liveFriction, setLiveFriction] = useState<LiveFrictionSnapshot | null>(null);
   const [cost24h, setCost24h] = useState<{
     costUsd: number;
     readiness: OutcomeLedgerReadiness;
     costCoverage: number | null;
   } | null>(null);
   const [, setOldestWaitTick] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const body = await getTimeToUnblock();
-        if (!cancelled) setTimeToUnblock(body);
-      } catch {
-        if (!cancelled) setTimeToUnblock(null);
-      }
-    };
-    void load();
-    const timer = setInterval(() => { void load(); }, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const body = await getLiveFrictionCalibration<unknown>();
-        if (!cancelled) setLiveFriction(isLiveFrictionSnapshot(body) ? body : null);
-      } catch {
-        if (!cancelled) setLiveFriction(null);
-      }
-    };
-    void load();
-    const timer = setInterval(() => { void load(); }, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -583,32 +195,10 @@ export function StatusBar({
     return () => clearInterval(timer);
   }, [findings, oldestFindingWaitStartedAt]);
 
-  const showUnblockChip = timeToUnblock !== null
-    && timeToUnblock.sampleCount >= TIME_TO_UNBLOCK_MIN_SAMPLES
-    && timeToUnblock.medianMs !== null
-    && Number.isFinite(timeToUnblock.medianMs);
-  const unblockLabel = showUnblockChip && timeToUnblock?.medianMs != null
-    ? formatTimeToUnblockChipLabel(
-      timeToUnblock.sampleCount,
-      timeToUnblock.medianMs,
-      timeToUnblock.windowMs,
-    )
-    : '';
-  const unblockTitle = showUnblockChip && timeToUnblock?.medianMs != null
-    ? formatTimeToUnblockChipTitle(
-      timeToUnblock.sampleCount,
-      timeToUnblock.medianMs,
-      timeToUnblock.windowMs,
-    )
-    : '';
-
   const oldestWaitLabel = findings > 0
     ? formatOldestFindingWait(oldestFindingWaitStartedAt)
     : null;
 
-  const showFrictionChip = shouldShowLiveFrictionChip(liveFriction);
-  const frictionCounts = liveFriction ? liveFrictionChipCounts(liveFriction) : null;
-  const frictionLabel = frictionCounts ? formatLiveFrictionChipLabel(frictionCounts) : '';
   const showCompletedChip = shouldShowCompletedInWindowChip(completedLast24h);
   const showLaunchedChip = shouldShowLaunchedInWindowChip(launchedLast24h);
   const showCost24hChip = cost24h !== null
@@ -619,17 +209,6 @@ export function StatusBar({
   const cost24hTitle = showCost24hChip && cost24h
     ? format24hCostChipTitle(cost24h.costUsd)
     : '';
-
-  const hasNewAchievements = useMemo(() => {
-    const lastOpen = typeof localStorage !== 'undefined'
-      ? Number(localStorage.getItem('kookr-last-achievement-panel-open')) || Date.now()
-      : Date.now();
-    return Object.values(achievements).some(ts => new Date(ts).getTime() > lastOpen);
-  }, [achievements]);
-
-  const toggleSound = useCallback(() => {
-    sound.setEnabled(!sound.enabled);
-  }, [sound]);
 
   return (
     <div className={`statusbar${compact ? ' compact' : ''}`}>
@@ -682,29 +261,6 @@ export function StatusBar({
             </span>
           )
         )}
-        {showCost24hChip && cost24h && (
-          onOpenCostComparison ? (
-            <button
-              type="button"
-              className="cost-24h-pill"
-              data-testid="cost-24h-chip"
-              title={cost24hTitle}
-              aria-label={`${cost24hLabel}. Open Cost Comparison`}
-              onClick={onOpenCostComparison}
-            >
-              {cost24hLabel}
-            </button>
-          ) : (
-            <span
-              className="cost-24h-pill"
-              data-testid="cost-24h-chip"
-              role="status"
-              title={cost24hTitle}
-            >
-              {cost24hLabel}
-            </span>
-          )
-        )}
         {oldestWaitLabel && (
           onSelectOldestFinding ? (
             <button
@@ -728,77 +284,6 @@ export function StatusBar({
             </span>
           )
         )}
-        {showUnblockChip && (
-          onOpenDiagnostics ? (
-            <button
-              type="button"
-              className="time-to-unblock-pill"
-              data-testid="time-to-unblock-chip"
-              title={unblockTitle}
-              aria-label={`${unblockLabel}. Open Diagnostics`}
-              onClick={onOpenDiagnostics}
-            >
-              {unblockLabel}
-            </button>
-          ) : (
-            <span
-              className="time-to-unblock-pill"
-              data-testid="time-to-unblock-chip"
-              role="status"
-              title={unblockTitle}
-            >
-              {unblockLabel}
-            </span>
-          )
-        )}
-        {showFrictionChip && frictionCounts && (
-          onOpenLiveFriction ? (
-            <button
-              type="button"
-              className="live-friction-pill"
-              data-testid="live-friction-chip"
-              title={LIVE_FRICTION_CHIP_TITLE}
-              aria-label={`${frictionLabel}. Open live friction diagnostics. Diagnostics only, does not reorder findings.`}
-              onClick={onOpenLiveFriction}
-            >
-              {frictionLabel}
-            </button>
-          ) : (
-            <span
-              className="live-friction-pill"
-              data-testid="live-friction-chip"
-              role="status"
-              title={LIVE_FRICTION_CHIP_TITLE}
-            >
-              {frictionLabel}
-            </span>
-          )
-        )}
-        <ResourceDisplay compact={compact} />
-        {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
-        <OpsHealthPills
-          onOpenCapacity={onOpenCapacity}
-          onOpenDiagnostics={onOpenDiagnostics}
-          onOpenSchedules={onOpenSchedules}
-        />
-        {sttUrl && <span className="stt-status-pill" title="Speech-to-text enabled">STT</span>}
-        <button
-          className={`btn-sound-toggle ${soundOn ? '' : 'muted'}`}
-          onClick={toggleSound}
-          title={soundTitle}
-          aria-label={soundOn ? 'Mute alert sounds' : 'Unmute alert sounds'}
-        >
-          {soundOn ? '\u{1F50A}' : '\u{1F507}'}
-        </button>
-        <button
-          className="btn-trophy"
-          onClick={toggleAchievementsPanel}
-          title={`Achievements${shortcutBindings ? ` (${formatShortcutBinding(shortcutBindings.toggle_achievements)})` : ''}`}
-          aria-label="Achievements"
-        >
-          {'\u{1F3C6}'}
-          {hasNewAchievements && <span className="trophy-badge-dot" />}
-        </button>
         {reflectionSuggestion && (
           <span className="reflection-prompt" role="status" aria-live="polite">
             <span className="reflection-prompt-copy">
@@ -811,6 +296,32 @@ export function StatusBar({
             <button className="btn-reflection btn-reflection-dismiss" onClick={onDismissReflection}>Dismiss</button>
           </span>
         )}
+      </span>
+      <span className="statusbar-right" data-testid="statusbar-spend-quota">
+        {showCost24hChip && cost24h && (
+          onOpenCostComparison ? (
+            <button
+              type="button"
+              className="cost-24h-pill"
+              data-testid="cost-24h-chip"
+              title={cost24hTitle}
+              aria-label={`${cost24hLabel}. Open Cost Comparison`}
+              onClick={onOpenCostComparison}
+            >
+              {cost24hLabel}
+            </button>
+          ) : (
+            <span
+              className="cost-24h-pill"
+              data-testid="cost-24h-chip"
+              role="status"
+              title={cost24hTitle}
+            >
+              {cost24hLabel}
+            </span>
+          )
+        )}
+        {quotaStatus && <QuotaDisplay quota={quotaStatus} />}
       </span>
       {compact && (
         <span className="statusbar-compact-actions">

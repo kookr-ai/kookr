@@ -411,3 +411,48 @@ describe('state colours: four roles, one shape each', () => {
     expect(rules(STYLESHEETS['critical.css']).lookup('.project-icon-dot.active', 'background')).toBe(ROLE_COLOR.work);
   });
 });
+
+describe('quiet chrome (issue #3561 slice 2)', () => {
+  const styles = rules(STYLESHEETS['styles.css']);
+  const redish = /var\(--(red|state-bad)\)|#f87171|rgba\(\s*248\s*,\s*113\s*,\s*113/i;
+
+  test('the full-width bypass banner and the always-visible red Abort button are gone', () => {
+    const css = stripComments(STYLESHEETS['styles.css']);
+    expect(css).not.toMatch(/\.permission-bypass-banner\b/);
+    expect(css).not.toMatch(/\.btn-abort-active\b/);
+    expect(css).not.toMatch(/\.version-badge\b/);
+  });
+
+  test.each([
+    ['.mode-chip'],
+    ['.detail-badge.permission-bypassed'],
+    ['.system-indicator'],
+    ['.rail-actions-trigger'],
+  ])('%s is drawn without red at rest', (selector) => {
+    for (const prop of ['color', 'background', 'background-color', 'border', 'border-color']) {
+      const value = styles.lookup(selector, prop) ?? '';
+      expect(value, `${selector} ${prop}`).not.toMatch(redish);
+    }
+    // The selector must exist, or the assertion above proves nothing.
+    expect(styles.lookup(selector, 'color')).toBeDefined();
+  });
+
+  test('the System panel stays on screen on a phone and shows the CPU/RAM detail inline', () => {
+    // Right-anchored at 320 px wide, the panel ran off the left edge at 375 px.
+    // On a full top bar it opens rightward from the indicator; right-anchored,
+    // it ran off the left edge between 769 and ~1060 px.
+    expect(styles.lookup('.system-popover', 'left')).toBe('0');
+    expect(styles.lookup('.system-popover', 'right')).toBeUndefined();
+    expect(styles.lookup('.topbar.compact .system-indicator-wrap', 'position')).toBe('static');
+    expect(styles.lookup('.topbar.compact .system-popover', 'left')).toBe('16px');
+    expect(styles.lookup('.topbar.compact .system-popover', 'right')).toBe('16px');
+    expect(styles.lookup('.topbar.compact .system-popover', 'min-width')).toBe('0');
+    // The resource detail opened upward from the old bottom bar; inside the
+    // scrolling panel it would be clipped above the panel's top edge.
+    expect(styles.lookup('.system-popover .resource-status-popover', 'position')).toBe('static');
+  });
+
+  test('the System attention dot uses the "waiting on you" role, not red', () => {
+    expect(styles.lookup('.system-attention-dot', 'background')).toBe('var(--state-need)');
+  });
+});

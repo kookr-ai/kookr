@@ -158,30 +158,69 @@ kbd {
   pointer-events: none;
 }
 
-.version-badge {
-  font-family: var(--font-mono);
+/* System indicator (issue #3561 slice 2): one quiet top-bar control that
+   opens status detail and build info ("About"). Fixed width so the top bar
+   does not shift when the attention dot appears. */
+.system-indicator-wrap { position: relative; display: inline-flex; }
+.system-indicator {
+  font: inherit;
   font-size: 12px;
   color: var(--text-secondary);
-  background: var(--bg-card);
-  border: 1px solid var(--border-dim);
-  padding: 1px 7px;
-  border-radius: 4px;
+  background: transparent;
+  border: 1px solid transparent;
+  padding: 2px 10px;
+  border-radius: 8px;
   cursor: pointer;
-  position: relative;
   user-select: none;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  min-width: 84px;
   line-height: inherit;
+  white-space: nowrap;
 }
-.version-badge:hover,
-.version-badge:focus-visible { border-color: var(--border); color: var(--text); }
-.version-badge.dev { color: var(--amber); border-color: rgba(251,191,36,0.3); }
-.version-built { color: var(--text-muted); }
+.system-indicator:hover,
+.system-indicator:focus-visible { background: var(--bg-card-hover); color: var(--text-bright); }
+.system-indicator[aria-expanded="true"] { border-color: var(--border); color: var(--text-bright); }
+.system-update-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--state-neutral);
+  box-sizing: border-box;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.system-attention-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--state-need);
+  display: inline-block;
+  flex-shrink: 0;
+}
 
-.version-popover {
+/* Bypass mode is a mode the operator chose, not an alarm: a quiet neutral
+   chip instead of the old full-width red banner. */
+.mode-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Opens rightward from the indicator, like the old build popover: the
+   indicator sits left of the search, Follow/DND and Launch controls, so
+   there is always room to the right, while a right-anchored panel ran off
+   the left edge between 769 and ~1060 px. */
+.system-popover {
   position: absolute;
-  top: 30px;
+  top: calc(100% + 6px);
   left: 0;
   z-index: 100;
   background: var(--bg-card);
@@ -189,7 +228,69 @@ kbd {
   border-radius: 8px;
   padding: 10px 14px;
   min-width: 320px;
+  max-width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
   box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  text-align: left;
+}
+.system-popover-heading {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.system-popover-heading + .version-row,
+.system-status-details + .system-popover-heading {
+  margin-top: 10px;
+}
+.system-attention-summary {
+  font-size: 12px;
+  color: var(--state-need);
+  margin-bottom: 6px;
+}
+.system-status-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.system-status-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* The CPU/RAM detail opened upward from the old bottom status bar. Inside the
+   scrolling System panel it would be clipped, so show it inline instead. */
+.system-popover .resource-status {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.system-popover .resource-status-popover {
+  position: static;
+  min-width: 0;
+  max-width: none;
+  box-shadow: none;
+}
+/* On a compact (phone) top bar the System indicator sits near the left of the
+   second row, so a right-anchored panel would run off-screen. Anchor it to the
+   whole top bar with the 16 px page gutter instead. */
+.topbar.compact { position: relative; }
+/* The compact top bar shows only its last control group. With the mode chip
+   and System indicator in it, that group is wider than a 320-390 px phone,
+   so let it wrap instead of pushing Launch off-screen. */
+.topbar.compact .metric-group:last-child {
+  flex-wrap: wrap;
+  row-gap: 8px;
+  min-width: 0;
+}
+.topbar.compact .system-indicator-wrap { position: static; }
+.topbar.compact .system-popover {
+  left: 16px;
+  right: 16px;
+  min-width: 0;
+  max-width: none;
 }
 .version-row {
   font-size: 12px;
@@ -212,7 +313,6 @@ kbd {
   color: var(--text-secondary);
   font-size: 12px;
 }
-.version-badge.has-updates { border-color: var(--green); }
 
 /* Deploy section in version popover */
 .deploy-divider {
@@ -341,14 +441,6 @@ kbd {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
-.update-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--green);
-  display: inline-block;
-  margin-left: 2px;
-}
 
 .queue-info {
   display: flex;
@@ -401,7 +493,7 @@ kbd {
   gap: 4px;
 }
 .metric-group { display: inline-flex; align-items: center; gap: 12px; }
-/* --- Health Dot (version badge) --- */
+/* --- Health Dot (System indicator) --- */
 .health-dot {
   width: 6px;
   height: 6px;
@@ -750,24 +842,63 @@ button.topbar-spend:focus-visible {
   outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
-.btn-abort-active {
-  border: 1px solid var(--red);
+/* Rail "More actions" menu (issue #3561 slice 2): destructive bulk actions
+   never sit on screen at rest. */
+.rail-actions-menu { position: relative; display: inline-flex; }
+.rail-actions-trigger {
+  border: 1px solid var(--border-dim);
   background: transparent;
-  color: var(--red);
+  color: var(--text-secondary);
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 0 6px;
   font: inherit;
   letter-spacing: 0;
   text-transform: none;
   cursor: pointer;
+  line-height: 18px;
 }
-.btn-abort-active:hover {
-  background: rgba(248, 113, 113, 0.15);
+.rail-actions-trigger:hover,
+.rail-actions-trigger[aria-expanded="true"] {
+  color: var(--text-bright);
+  border-color: var(--border);
 }
-.btn-abort-active:focus-visible {
-  outline: 2px solid var(--red);
+.rail-actions-trigger:focus-visible {
+  outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
+.rail-actions-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  /* Open toward the rail body: the trigger sits near the rail's left edge,
+     and a right-anchored popup would slide under the project sidebar. */
+  left: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.rail-actions-item {
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0;
+  text-transform: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rail-actions-item:hover,
+.rail-actions-item:focus-visible { background: var(--bg-card-hover); outline: none; }
+.rail-actions-item-danger { color: var(--state-bad); }
 .btn-snooze-all {
   border: 1px solid var(--amber);
   background: transparent;
@@ -2450,7 +2581,8 @@ a.overview-tour-link:visited:hover {
 .detail-badge.stuck { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .detail-badge.error { background: rgba(248,113,113,0.1); color: var(--state-bad); }
 .detail-badge.turn-complete { background: rgba(251,191,36,0.12); color: var(--state-need); }
-.detail-badge.permission-bypassed { background: rgba(248,113,113,0.14); color: var(--red); }
+/* A mode the operator chose, not a failure: neutral, not red (issue #3561 slice 2). */
+.detail-badge.permission-bypassed { background: transparent; border: 1px solid var(--border); color: var(--text-secondary); }
 
 .detail-header-right {
   display: flex;
@@ -4440,34 +4572,6 @@ a.playbook-empty-docs-link:visited:hover {
 }
 .read-only-banner__learn-more:hover {
   color: var(--text-primary);
-}
-
-.permission-bypass-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  background: rgba(127, 29, 29, 0.36);
-  border-bottom: 1px solid rgba(248, 113, 113, 0.55);
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.permission-bypass-banner__badge {
-  flex: 0 0 auto;
-  text-transform: uppercase;
-  font-size: 12px;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(248, 113, 113, 0.2);
-  color: var(--red);
-}
-
-.permission-bypass-banner__text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .drain-mode-banner {
@@ -7065,8 +7169,12 @@ label.task-share-row {
   flex: 1;
   min-width: 0;
 }
-.statusbar-left .btn-sound-toggle {
-  margin-left: auto;
+/* Spend and quota sit at the right end of the status bar (issue #3561 slice 2). */
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .focus-zone-pill {
   font-size: 12px;
@@ -13190,10 +13298,6 @@ a.oss-productivity-empty-docs-link:visited:hover {
     gap: 6px;
   }
 
-  .statusbar.compact .statusbar-left .btn-sound-toggle {
-    margin-left: 0;
-  }
-
   .reflection-prompt {
     width: 100%;
     flex-wrap: wrap;
@@ -15836,6 +15940,27 @@ body.kookr-tour-active-findings .kookr-tour-target-findings {
 }
 .command-trigger-mag { font-size: 12px; line-height: 1; }
 .command-trigger-label { white-space: nowrap; }
+/* Narrow desktop widths (769-1179 px, e.g. iPad portrait): drop the search
+   label (the icon and Ctrl+K hint stay) so the right-hand controls fit
+   without sliding over the logo and the Bypass mode chip (#3561 slice 2). */
+@media (max-width: 1179px) {
+  .command-trigger { min-width: 0; }
+  .command-trigger-label { display: none; }
+}
+@media (max-width: 900px) {
+  .command-trigger-kbd { display: none; }
+}
+/* Same squeeze for the all-time spend figure: below 1180 px drop its
+   "all-time" scope word (the tooltip keeps it), and below 900 px hide the
+   figure, which Cost Comparison and the 24-hour cost chip still show. It must
+   never print over the logo or the Bypass mode chip. Desktop only: the compact
+   (phone) bar already hides this group. */
+@media (min-width: 769px) and (max-width: 1179px) {
+  .topbar-spend-scope { display: none; }
+}
+@media (min-width: 769px) and (max-width: 900px) {
+  .topbar-spend-group { display: none; }
+}
 .command-trigger-kbd {
   margin-left: auto;
   font-family: var(--font-mono);

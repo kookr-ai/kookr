@@ -161,6 +161,33 @@ test.describe('UI layout', () => {
     await expect(page.locator('.finding-card.selected')).toBeVisible();
   });
 
+  test('top bar never covers the logo at narrow desktop widths, even with spend', async ({ page, request }) => {
+    // #3561 slice 2 review: the System indicator widened the right-hand
+    // controls, which slid left over the logo (and the Bypass mode chip beside
+    // it) at 769-945 px; with spend above $0 the all-time figure did too. The
+    // search trigger and the spend figure shed text below 1180 px.
+    await request.post('/api/test/set-spend', { data: { lifetimeSpendUsd: 12345.67 } });
+    await page.reload();
+    await expect(page.locator('.health-dot-connected')).toBeVisible();
+    await page.setViewportSize({ width: 1600, height: 1000 });
+    await expect(page.locator('.topbar-spend')).toHaveText('$12345.67');
+    for (const width of [769, 834, 900, 1024, 1179]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const layout = await page.evaluate(() => {
+        const visible = Array.from(document.querySelectorAll<HTMLElement>('.topbar-right *'))
+          .map((el) => el.getBoundingClientRect())
+          .filter((box) => box.width > 0 && box.height > 0);
+        return {
+          scrollWidth: document.documentElement.scrollWidth,
+          logoRight: document.querySelector('.logo')!.getBoundingClientRect().right,
+          rightStart: Math.min(...visible.map((box) => box.left)),
+        };
+      });
+      expect(layout.scrollWidth, `${width}px`).toBeLessThanOrEqual(width);
+      expect(layout.rightStart, `${width}px`).toBeGreaterThanOrEqual(layout.logoRight);
+    }
+  });
+
   test('mobile viewport uses findings/task tabs and touch actions', async ({ page, request }) => {
     await page.setViewportSize({ width: 390, height: 844 });
 
@@ -171,6 +198,11 @@ test.describe('UI layout', () => {
 
     await expect(page.getByTestId('mobile-dashboard-tabs')).toBeVisible();
     await expect(page.getByTestId('mobile-quick-actions')).toBeVisible();
+    // The compact top bar wraps instead of overflowing: no sideways scroll,
+    // and Launch stays fully on screen (#3561 slice 2 review).
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    const launch = await page.locator('.btn-launch').boundingBox();
+    expect(launch!.x + launch!.width).toBeLessThanOrEqual(390);
     await expect(page.getByTestId('mobile-tab-findings')).toHaveClass(/active/);
     await expect(page.locator('.finding-card')).toBeVisible();
 

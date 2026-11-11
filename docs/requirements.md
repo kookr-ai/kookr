@@ -1227,11 +1227,12 @@ The system SHOULD display a status bar with agent counts and keyboard shortcut h
 - When at least one live agent has a `finishedAt` in the last 24 hours, show a completed-task chip such as `3 completed / 24h` next to the task/finding counts (issue #2618). Hidden when the count is 0. Tooltip: tasks that reached a terminal status in the last 24 hours; the number is a lower bound because the live snapshot may have dropped older completed rows. This is completed tasks, not unblocked findings. Clicking the visible chip expands the sidebar Completed section if it was collapsed and scrolls it into view on the same project-scoped list (issue #3333). A count refresh must not expand the section.
 - When at least one live agent has a `startedAt` in the last 24 hours, show a launched-task chip such as `3 launched / 24h` next to the completed chip (issue #2632). Hidden when the count is 0. Skip agents with a missing or unparseable start time — do not invent a start from `finishedAt`. Tooltip: tasks that started in the last 24 hours; the number is a lower bound because the live snapshot may have dropped older rows. This is launched tasks, not completed tasks or unblocked findings.
 - Clicking the launched-task chip opens the Diagnostics popover containing the Outcome Scoreboard, matching the command-palette action. If no diagnostics handler is supplied, the chip remains a non-interactive status span.
-- When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a time-to-unblock chip with the rolling 24-hour unblocked count next to the median wait (issues #2583, #2609). Hide the count copy when `sampleCount` is 0. Skip and snooze are not counted.
+- Quiet chrome (issue #3561 slice 2): at rest the bar holds counts, spend (the 24-hour cost chip) and quota only. Host resources, ops-health pills, the time-to-unblock and live-friction chips, speech-to-text, sound and achievements sit in the System detail opened from the top-bar **System** indicator, which turns amber while any of those readouts is degraded. The build hash and deploy controls sit under **About** in the same detail. Bypass mode is a neutral **Bypass mode** chip in the top bar, not a banner, and **Abort all** sits in the rail header's **More actions** menu behind a confirmation.
+- When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a time-to-unblock chip in the System detail with the rolling 24-hour unblocked count next to the median wait (issues #2583, #2609). Hide the count copy when `sampleCount` is 0. Skip and snooze are not counted.
 - When at least one finding is active, show an oldest-wait chip next to the finding count using the same live wait timestamps as the overview (issue #2588). The chip is hidden when the finding count is zero. It does not replace the historical time-to-unblock chip. Clicking a visible chip selects the live finding whose wait matches the chip — the older of two live findings, the first in list order on a timestamp tie — and does not select a completed or healthy row (issue #3343). When the click handler is omitted, the chip stays a non-interactive status span.
-- When the live-friction snapshot has `signalCount > 0`, show a chip whose skip and snooze counts (and false-positive count, if that kind is present) match `signals[]` (issue #2596). Hidden when `signalCount` is 0. Tooltip states it is diagnostics-only and does not reorder findings. Clicking it opens the existing Live friction diagnostics panel. Does not change attention-queue ranking or `routingMutationAllowed`.
+- When the live-friction snapshot has `signalCount > 0`, show a chip in the System detail whose skip and snooze counts (and false-positive count, if that kind is present) match `signals[]` (issue #2596). Hidden when `signalCount` is 0. Tooltip states it is diagnostics-only and does not reorder findings. Clicking it opens the existing Live friction diagnostics panel. Does not change attention-queue ranking or `routingMutationAllowed`.
 
-**Evidence:** `src/frontend/components/StatusBar.tsx`, `src/frontend/components/status-bar-completed-count.ts`, `src/frontend/components/status-bar-launched-count.ts`, `src/frontend/agent-buckets.ts`, `src/frontend/components/live-friction-chip.ts`, `src/frontend/presentation.ts`, `src/frontend/App.tsx`, `src/core/time-to-unblock.ts`, `src/shared/contracts/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`, `GET /api/live-friction-calibration`.
+**Evidence:** `src/frontend/components/StatusBar.tsx`, `src/frontend/components/SystemStatusDetails.tsx`, `src/frontend/components/TopBar.tsx`, `src/frontend/components/FindingsPanel/AbortActiveMenu.tsx`, `src/frontend/components/status-bar-completed-count.ts`, `src/frontend/components/status-bar-launched-count.ts`, `src/frontend/agent-buckets.ts`, `src/frontend/components/live-friction-chip.ts`, `src/frontend/presentation.ts`, `src/frontend/App.tsx`, `src/core/time-to-unblock.ts`, `src/shared/contracts/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`, `GET /api/live-friction-calibration`.
 
 ### R5.4: Keyboard Shortcuts [F5.4] — SHOULD — `done`
 
@@ -1318,17 +1319,17 @@ The system SHOULD poll GitHub PR and issue state with the fewest API calls neede
 
 ### R5.10: System Resource Visibility — SHOULD — `done`
 
-The system SHOULD show lightweight host and Kookr-server resource status in the dashboard status bar.
+The system SHOULD show lightweight host and Kookr-server resource status in the dashboard (the System detail opened from the top bar, since issue #3561 slice 2).
 
 **Acceptance criteria:**
 - The backend samples host CPU and approximate RAM usage every 2 seconds using Node built-in APIs.
 - The backend samples Kookr server event-loop delay and process memory without persisting resource samples.
 - WebSocket clients receive `resourceStatus` updates and a newly connected client receives the latest cached status after the initial snapshot when one exists.
-- The frontend shows CPU and RAM in the existing status bar, renders unavailable metrics as `--`, and marks data stale when no resource message has arrived for more than 10 seconds.
-- Resource detail is available through keyboard/touch-accessible status bar controls and includes event-loop delay, Kookr RSS, RAM free/total, and sample timing.
+- The frontend shows CPU and RAM in the System detail, renders unavailable metrics as `--`, and marks data stale when no resource message has arrived for more than 10 seconds. A fresh high or critical CPU, RAM or event-loop reading turns the System indicator amber.
+- Resource detail is available through keyboard/touch-accessible System detail controls and includes event-loop delay, Kookr RSS, RAM free/total, and sample timing.
 - Resource status is passive context only; it does not alert, throttle, schedule, or create findings.
 
-**Evidence:** `src/core/system-resource-metrics.ts`, `src/server/system-resource-sampler.ts`, `src/server/resource-status-service.ts`, `src/server/ws-connection-handler.ts`, `src/frontend/resource-status.ts`, `src/frontend/components/StatusBar.tsx`, related tests.
+**Evidence:** `src/core/system-resource-metrics.ts`, `src/server/system-resource-sampler.ts`, `src/server/resource-status-service.ts`, `src/server/ws-connection-handler.ts`, `src/frontend/resource-status.ts`, `src/frontend/components/SystemStatusDetails.tsx`, related tests.
 
 ### R5.11: In-Tour Setup Diagnostics Action — SHALL — `done`
 

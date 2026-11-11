@@ -114,7 +114,7 @@ describe('TopBar plugin update UX', () => {
     renderTopBar();
     await flush();
     await act(async () => {
-      container.querySelector<HTMLElement>('.version-badge')?.click();
+      container.querySelector<HTMLElement>('.system-indicator')?.click();
     });
 
     expect(container.textContent).toContain('Toolkit plugin update available');
@@ -213,7 +213,7 @@ describe('TopBar lastRestart blackout display (issue #1979)', () => {
     renderTopBar();
     await flush();
     await act(async () => {
-      container.querySelector<HTMLElement>('.version-badge')?.click();
+      container.querySelector<HTMLElement>('.system-indicator')?.click();
     });
     await flush();
   }

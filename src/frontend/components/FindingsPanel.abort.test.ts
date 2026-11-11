@@ -55,6 +55,12 @@ function renderPanel(
   return root;
 }
 
+function openMoreActions(): void {
+  const trigger = document.querySelector<HTMLButtonElement>('[data-testid="rail-actions-trigger"]');
+  expect(trigger).not.toBeNull();
+  act(() => trigger!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+}
+
 function queryButtonByText(text: string): HTMLButtonElement | undefined {
   return Array.from(document.querySelectorAll('button')).find(
     (b) => b.textContent?.trim() === text,
@@ -88,9 +94,31 @@ describe('FindingsPanel — control-room batch abort (issue #1325)', () => {
     vi.unstubAllGlobals();
   });
 
-  test('hides the Abort all action when there is nothing active to abort', () => {
+  test('hides the actions menu when there is nothing active to abort', () => {
     root = renderPanel(container, [], [], send);
+    expect(document.querySelector('[data-testid="rail-actions-trigger"]')).toBeNull();
+    expect(queryButtonByText('Abort all active tasks…')).toBeUndefined();
+  });
+
+  test('Abort all is not on screen at rest; it sits in the More actions menu (#3561 slice 2)', () => {
+    root = renderPanel(container, ['task-1'], [makeAgent({ taskId: 'task-1' })], send);
+
+    // At rest: no destructive button, only the neutral menu trigger.
     expect(queryButtonByText('Abort all')).toBeUndefined();
+    expect(queryButtonByText('Abort all active tasks…')).toBeUndefined();
+    const trigger = document.querySelector<HTMLButtonElement>('[data-testid="rail-actions-trigger"]');
+    expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
+    expect(trigger?.getAttribute('aria-expanded')).toBe('false');
+
+    openMoreActions();
+    expect(trigger?.getAttribute('aria-expanded')).toBe('true');
+    const item = queryButtonByText('Abort all active tasks…');
+    expect(item?.getAttribute('role')).toBe('menuitem');
+
+    // Escape closes the menu without sending anything.
+    act(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(queryButtonByText('Abort all active tasks…')).toBeUndefined();
+    expect(send).not.toHaveBeenCalled();
   });
 
   test('confirming Abort all sends one batchAbortTasks with the active task IDs', () => {
@@ -100,7 +128,8 @@ describe('FindingsPanel — control-room batch abort (issue #1325)', () => {
     ];
     root = renderPanel(container, ['task-1', 'task-2'], findings, send);
 
-    const abortButton = queryButtonByText('Abort all');
+    openMoreActions();
+    const abortButton = queryButtonByText('Abort all active tasks…');
     expect(abortButton).toBeDefined();
     act(() => abortButton!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
@@ -122,7 +151,8 @@ describe('FindingsPanel — control-room batch abort (issue #1325)', () => {
   test('cancelling the confirmation sends nothing', () => {
     root = renderPanel(container, ['task-1'], [makeAgent({ taskId: 'task-1' })], send);
 
-    act(() => queryButtonByText('Abort all')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    openMoreActions();
+    act(() => queryButtonByText('Abort all active tasks…')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
     act(() => queryButtonByText('Cancel')!.dispatchEvent(new MouseEvent('click', { bubbles: true })));
 
     expect(send).not.toHaveBeenCalled();

@@ -12,7 +12,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { SystemStatusDetails } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -31,7 +31,7 @@ async function flush() {
   });
 }
 
-async function renderStatusBar(
+async function renderSystemDetails(
   root: Root,
   props: {
     onOpenCapacity?: () => void;
@@ -41,10 +41,7 @@ async function renderStatusBar(
 ): Promise<void> {
   await act(async () => {
     root.render(
-      React.createElement(StatusBar, {
-        findings: 0,
-        total: 1,
-        onShowShortcuts: vi.fn(),
+      React.createElement(SystemStatusDetails, {
         onOpenCapacity: props.onOpenCapacity,
         onOpenDiagnostics: props.onOpenDiagnostics,
         onOpenSchedules: props.onOpenSchedules,
@@ -54,7 +51,7 @@ async function renderStatusBar(
   await flush();
 }
 
-describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #2643)', () => {
+describe('System detail ops-health pills (moved from the status bar, #3561 slice 2) (issue #2037 / #2082 / #2364 / #2432 / #2643)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -96,7 +93,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       timerHealth: { overdue: 0, oldestName: null },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-pills"]')).toBeNull();
     expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')).toBeNull();
@@ -114,7 +111,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
   });
 
   test('hides all pills when store has no ops-health data yet', async () => {
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-pills"]')).toBeNull();
     expect(container.textContent).not.toContain('Smoke: fail');
@@ -137,7 +134,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       resourceWatchdog: { enabled: true },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const smoke = container.querySelector('[data-testid="ops-health-smoke-pill"]');
     expect(smoke).not.toBeNull();
@@ -159,7 +156,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const watchdog = container.querySelector('[data-testid="ops-health-watchdog-pill"]');
     expect(watchdog).not.toBeNull();
@@ -175,7 +172,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       resourceWatchdog: { enabled: false, lastDecision: 'disabled' },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-smoke-pill"]')?.textContent)
       .toBe('Smoke: fail×3');
@@ -191,7 +188,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const faa = container.querySelector('[data-testid="ops-health-faa-pill"]');
     expect(faa).not.toBeNull();
@@ -208,7 +205,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-faa-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('FAA residual');
@@ -222,7 +219,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-faa-pill"]')?.textContent)
       .toBe('FAA residual 1 · 45m');
@@ -237,7 +234,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root, { onOpenCapacity });
+    await renderSystemDetails(root, { onOpenCapacity });
 
     const faa = container.querySelector('[data-testid="ops-health-faa-pill"]');
     expect(faa?.tagName).toBe('BUTTON');
@@ -256,7 +253,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-launch-deps-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('Deps:');
@@ -277,7 +274,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
     expect(pill?.textContent).toBe('Deps: 0 · Parked: kb×2');
@@ -297,7 +294,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
     expect(pill).not.toBeNull();
@@ -320,7 +317,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-launch-deps-pill"]');
     expect(pill?.textContent).toBe('Deps: kb×3 · gh×2 +1');
@@ -332,7 +329,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       pausedSchedules: { schedulesPausedByFailure: [] },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('schedule paused');
@@ -348,7 +345,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
     expect(pill).not.toBeNull();
@@ -372,7 +369,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')?.textContent)
       .toBe('1 schedule paused');
@@ -387,7 +384,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       pausedSchedules: { schedulesPausedByFailure: [] },
     });
 
-    await renderStatusBar(root, { onOpenSchedules });
+    await renderSystemDetails(root, { onOpenSchedules });
 
     expect(container.querySelector('[data-testid="ops-health-paused-schedules-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('schedule paused');
@@ -403,7 +400,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
     expect(pill?.tagName).toBe('SPAN');
@@ -422,7 +419,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       },
     });
 
-    await renderStatusBar(root, { onOpenSchedules });
+    await renderSystemDetails(root, { onOpenSchedules });
 
     const pill = container.querySelector('[data-testid="ops-health-paused-schedules-pill"]');
     expect(pill?.tagName).toBe('BUTTON');
@@ -440,7 +437,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       timerHealth: { overdue: 0, oldestName: 'save' },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('timer overdue');
@@ -451,7 +448,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       timerHealth: null,
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     expect(container.querySelector('[data-testid="ops-health-timer-overdue-pill"]')).toBeNull();
     expect(container.textContent).not.toContain('timer overdue');
@@ -462,7 +459,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       timerHealth: { overdue: 2, oldestName: 'maintenancePrune' },
     });
 
-    await renderStatusBar(root);
+    await renderSystemDetails(root);
 
     const pill = container.querySelector('[data-testid="ops-health-timer-overdue-pill"]');
     expect(pill).not.toBeNull();
@@ -482,7 +479,7 @@ describe('StatusBar ops-health pills (issue #2037 / #2082 / #2364 / #2432 / #264
       timerHealth: { overdue: 1, oldestName: 'deployLagDetector' },
     });
 
-    await renderStatusBar(root, { onOpenDiagnostics });
+    await renderSystemDetails(root, { onOpenDiagnostics });
 
     const pill = container.querySelector('[data-testid="ops-health-timer-overdue-pill"]');
     expect(pill?.tagName).toBe('BUTTON');

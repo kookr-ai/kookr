@@ -11,6 +11,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { SystemStatusDetails } from './SystemStatusDetails.js';
 import { StatusBar } from './StatusBar.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
@@ -41,7 +42,7 @@ async function flushEffects() {
   });
 }
 
-describe('StatusBar unblocked-finding count (issue #2609)', () => {
+describe('System detail unblocked-finding count (moved from the status bar, #3561 slice 2) (issue #2609)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -86,11 +87,7 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await flushEffects();
@@ -114,11 +111,7 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(SystemStatusDetails, {}),
       );
     });
     await flushEffects();
@@ -137,20 +130,28 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
       generatedAt: new Date().toISOString(),
     });
 
+    // The oldest-wait chip stays in the status bar; the median-unblock chip
+    // moved into the System detail. Render both surfaces side by side.
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
-        }),
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(StatusBar, {
+            findings: 1,
+            total: 2,
+            oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+            onShowShortcuts: vi.fn(),
+          }),
+          React.createElement(SystemStatusDetails, {}),
+        ),
       );
     });
     await flushEffects();
 
     const unblock = container.querySelector('[data-testid="time-to-unblock-chip"]');
     const oldest = container.querySelector('[data-testid="oldest-finding-wait-chip"]');
+    expect(container.querySelector('.statusbar [data-testid="time-to-unblock-chip"]')).toBeNull();
     expect(unblock?.textContent).toBe('12 unblocked (24h) · median 8m');
     expect(oldest?.textContent).toContain('oldest');
     expect(unblock?.textContent).not.toContain('oldest');
@@ -170,10 +171,7 @@ describe('StatusBar unblocked-finding count (issue #2609)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(SystemStatusDetails, {
           onOpenDiagnostics,
           onOpenLiveFriction,
         }),

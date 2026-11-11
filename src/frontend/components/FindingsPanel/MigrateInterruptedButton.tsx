@@ -8,7 +8,7 @@ import { getMigratableTasks, migrateTasks } from '../../api/tasks.js';
 /**
  * Control-room batch migration (RFC: rfc-cross-agent-task-migration) —
  * continue every interrupted task in scope under a different, user-chosen
- * agent in one confirmed action. Lives next to `AbortActiveButton`: same
+ * agent in one confirmed action. Lives next to `AbortActiveMenu`: same
  * "one dialog, one summary toast" shape, but a launch (POST /api/tasks/migrate
  * scope:'all') rather than a cancellation.
  */
