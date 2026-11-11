@@ -167,11 +167,12 @@ export function useSpeakAgent(
     }
   }, []);
 
-  const cleanup = useCallback(() => {
+  const cleanup = useCallback((endedBy: 'user_stop' | 'superseded' = 'superseded') => {
     clearClientTimeout();
-    // A clip still playing when we get here was cut short (stop button, other agent selected, unmounted).
+    // A clip still playing when we get here was cut short. Only an explicit stop or cancel press is
+    // 'user_stop'; another agent being selected or the component unmounting is 'superseded'.
     // The normal end of a clip clears the ref first, so this does not double-count.
-    playbackRef.current?.end('user_stop');
+    playbackRef.current?.end(endedBy);
     playbackRef.current = null;
     // Tell observers (the optional avatar panel) that this button is no longer speaking.
     // The bus ignores this when another button has spoken since.
@@ -192,7 +193,7 @@ export function useSpeakAgent(
   }, [clearClientTimeout]);
 
   const stop = useCallback(() => {
-    cleanup();
+    cleanup('user_stop');
     setState({ status: 'idle' });
   }, [cleanup]);
 
@@ -345,7 +346,17 @@ export function useSpeakAgent(
 
       // Remember the clip before any playback or suppression decision, so one that never played
       // (tab in the background, browser blocked audio, sound muted meanwhile) can still be replayed.
-      const audioBytes = base64ToArrayBuffer(payload.audioBase64);
+      let audioBytes: ArrayBuffer;
+      try {
+        audioBytes = base64ToArrayBuffer(payload.audioBase64);
+      } catch (err) {
+        // Malformed base64 (atob throws): nothing was captured, so there is nothing to discard or report.
+        const reason = err instanceof Error ? err.message : String(err);
+        logDecision(context, 'audio_context_error', `decode_failed:${reason.slice(0, 80)}`);
+        cleanup();
+        setState({ status: 'error', errorReason: 'decode-failed', cached: payload.cached });
+        return;
+      }
       const clip = captureLastClip({
         clipId: payload.clipId,
         text: payload.text,

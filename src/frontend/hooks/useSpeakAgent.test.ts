@@ -105,9 +105,9 @@ interface ProbeHandle {
 
 let probeHandle: ProbeHandle | null = null;
 
-function Probe({ fetcher }: { fetcher: typeof fetch }) {
+function Probe({ fetcher, agentId = 'agent-1' }: { fetcher: typeof fetch; agentId?: string }) {
   const hook = useSpeakAgent(
-    { agentId: 'agent-1', anomalyType: null, ttsAvailable: true },
+    { agentId, anomalyType: null, ttsAvailable: true },
     { fetcher },
   );
   probeHandle = hook as ProbeHandle;
@@ -660,7 +660,7 @@ describe('useSpeakAgent request shape', () => {
       expect(probeHandle!.state.status).toBe('idle');
     });
 
-    test('leaving the page mid-clip records user_stop exactly once', async () => {
+    test('leaving the page mid-clip records superseded (not user_stop) exactly once', async () => {
       mount(async () => clipResponse());
       await speakAndSettle();
       expect(probeHandle!.state.status).toBe('playing');
@@ -668,7 +668,30 @@ describe('useSpeakAgent request shape', () => {
       act(() => root!.unmount());
       root = null;
       expect(ofType('lucy_clip_ended')).toHaveLength(1);
-      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'user_stop' });
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'superseded' });
+    });
+
+    test('selecting another agent mid-clip records superseded, not user_stop', async () => {
+      const fetcher = vi.fn(async () => clipResponse()) as unknown as typeof fetch;
+      mount(async () => clipResponse());
+      await speakAndSettle();
+      expect(probeHandle!.state.status).toBe('playing');
+
+      act(() => {
+        root!.render(React.createElement(Probe, { fetcher, agentId: 'agent-2' }));
+      });
+      expect(ofType('lucy_clip_ended')).toHaveLength(1);
+      expect(ofType('lucy_clip_ended')[0]).toMatchObject({ clipId: 'clip-srv-1', endedBy: 'superseded' });
+    });
+
+    test('malformed base64 audio ends in decode-failed instead of staying on generating', async () => {
+      mount(async () => clipResponse({ audioBase64: '***not base64***' }));
+      await speakAndSettle();
+
+      expect(probeHandle!.state.status).toBe('error');
+      expect(probeHandle!.state.errorReason).toBe('decode-failed');
+      expect(getLastClipSnapshot().hasClip).toBe(false);
+      expect(ofType('lucy_clip_started')).toEqual([]);
     });
 
     test('audio that refuses to start is reported as an error and the clip stays replayable', async () => {

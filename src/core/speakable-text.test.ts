@@ -110,6 +110,33 @@ const CASES: Array<[label: string, input: string, expected: string]> = [
   ['non-api route ending in a number left alone', 'Open /tasks/42 now.', 'Open /tasks/42 now.'],
   ['anchored api file-like route left alone', 'Fetch /api/export/report.json again.', 'Fetch /api/export/report.json again.'],
 
+  // Dot-leading words keep the space before them
+  ['keeps the space before .env', 'Edit the .env file to add the key.', 'Edit the .env file to add the key.'],
+  [
+    'keeps the space before .gitignore and .DS_Store',
+    'ignores .gitignore entries and .DS_Store files',
+    'ignores .gitignore entries and .DS_Store files.',
+  ],
+  ['keeps the space before .314', 'Pi is roughly .314 times ten', 'Pi is roughly .314 times ten.'],
+  ['keeps the space before .5', 'Add .5 cups of water', 'Add .5 cups of water.'],
+  ['keeps the space before .env.local and .npmrc', 'Update the .env.local and .npmrc files', 'Update the .env.local and .npmrc files.'],
+  ['shortened home dotfile keeps its leading space', 'Reading ~/.bashrc now', 'Reading .bashrc now.'],
+  ['shortened rooted dotfile keeps its leading space', 'Edited /home/u/repo/.env', 'Edited .env.'],
+  ['dot directory path shortens to the file', '.github/workflows/ci.yml', 'ci.yml.'],
+  ['dotfile at the end of a path with a dot directory', 'Edited src/.eslintrc.json today', 'Edited .eslintrc.json today.'],
+  ['still collapses a space before a sentence-ending dot', 'done .', 'done.'],
+  ['still collapses a space before a clause comma', 'first , then second .', 'first, then second.'],
+  ['still collapses a space before an ellipsis run', 'Wait ... what', 'Wait. what.'],
+
+  // Line-start markers: a number after "-", "*", "+" or ">" is a value, not a marker
+  ['keeps a minus before a number', '- 3 degrees', '- 3 degrees.'],
+  ['keeps a comparison before a number', '> 5 tests failed', '> 5 tests failed.'],
+  ['keeps a plus before a number', '+ 2 files changed', '+ 2 files changed.'],
+  ['keeps a star before a decimal', '* .5 seconds', '* .5 seconds.'],
+  ['still strips a bullet before a word', '- fixed the bug', 'fixed the bug.'],
+  ['still strips stacked word markers', '- - fixed the bug', 'fixed the bug.'],
+  ['strips markers per line but keeps numeric ones', '- fixed it\n- 3 left', 'fixed it. - 3 left.'],
+
   // Brackets
   ['standalone brackets unwrapped', 'Status [ok] and [done] today', 'Status ok and done today.'],
   ['index brackets left alone', 'items[0] and arr[5]', 'items[0] and arr[5].'],
@@ -153,6 +180,7 @@ describe('makeSpeakable', () => {
       '# ', '3f2a9c1', 'https://github.com/o/r/pull/9.', '(', ')', '[', ']', '!?', '::', ',', '.',
       '2025-01-01T00:00:00Z', 'at', 'commit', 'C:\\x\\y.md', '__init__', 'needsInput', '*', '_', '|', '>',
       'src/a/index.ts:3', '~/q', 'x/y', 'from', 'to', 'items[0]', '/api/tasks/42',
+      '.env', '.314', '~/.bashrc', '.github/workflows/ci.yml', '> 5', '- 3', '+ 2', '(())', '[[x]]', ' .',
     ];
     // mulberry32: a 32-bit PRNG that stays exact (no float overflow).
     let state = 0x9e3779b9;
@@ -177,6 +205,33 @@ describe('makeSpeakable', () => {
       expect(makeSpeakable(once), JSON.stringify(input)).toBe(once);
     }
     expect(seen.size).toBeGreaterThan(2500);
+  });
+
+  test.each<[label: string, input: string, expected: string]>([
+    ['deeply nested empty parentheses', '(((((((())))))))', '.'],
+    ['deeply nested brackets', '[[[[[[[[x]]]]]]]]', 'x.'],
+    ['nested brackets beside an index', 'Use [[c]] and x[[d]] and [a][b]', 'Use c and x[d] and a[b].'],
+  ])('settles nested groups in one go: %s', (_label, input, expected) => {
+    const start = performance.now();
+    const once = makeSpeakable(input);
+    expect(performance.now() - start).toBeLessThan(200);
+    expect(once).toBe(expected);
+    expect(makeSpeakable(once)).toBe(once);
+  });
+
+  test('stays idempotent and fast on very deep nesting', () => {
+    const inputs = [
+      '('.repeat(1000) + ')'.repeat(1000),
+      `${'['.repeat(999)}x${']'.repeat(999)}`,
+      '['.repeat(2000) + 'x' + ']'.repeat(2000),
+      '(['.repeat(500) + ']);'.repeat(500),
+    ];
+    for (const input of inputs) {
+      const start = performance.now();
+      const once = makeSpeakable(input);
+      expect(performance.now() - start).toBeLessThan(200);
+      expect(makeSpeakable(once)).toBe(once);
+    }
   });
 
   test('handles odd input with concrete output', () => {

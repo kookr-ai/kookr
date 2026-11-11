@@ -85,7 +85,7 @@ const PR_REF = /^#(\d+)$/;
 const GITHUB_REF = /github\.com\/[^/\s]+\/[^/\s]+\/(pull|issues)\/(\d+)/i;
 const DOMAIN_WITH_PATH = /^(?:[\w-]+\.)+(?:com|org|net|io|dev|ai|app|co|gov|edu)(?:[/:?#]|$)/i;
 const PATH_SEGMENT = /^[\w.@~+-]+$/;
-const FILE_NAME = /^[\w@~+-][\w.@~+-]*\.[A-Za-z][A-Za-z0-9]{0,4}$/;
+const FILE_NAME = /^[\w@~+.-][\w.@~+-]*\.[A-Za-z][A-Za-z0-9]{0,4}$/;
 const KNOWN_FILE_EXTENSIONS = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'json', 'md', 'mdx', 'py', 'rs', 'go', 'java', 'kt', 'rb',
   'php', 'css', 'scss', 'html', 'yml', 'yaml', 'toml', 'ini', 'txt', 'sh', 'sql', 'lock', 'xml', 'csv',
@@ -202,8 +202,14 @@ function stripMarkdown(input: string): string {
   text = text.replace(/~~(?=\S)([\s\S]*?\S)~~/g, '$1');
   text = text.replace(/(?<![\w*])\*(?=[^\s*])([^*\n]*?[^\s*])\*(?![\w*])/g, '$1');
   // Heading, bullet and quote markers, including stacked ones ("- - x", "> # x"),
-  // are stripped in one go so that a single pass reaches the fixed point.
-  text = text.replace(/^(?:[ \t]{0,3}#{1,6}[ \t]+|[ \t]*[-*+•][ \t]+|[ \t]*>[ \t]?)+/gm, '');
+  // are stripped in one go so that a single pass reaches the fixed point. A `-`, `*`,
+  // `+` or `>` followed by a number ("- 3 degrees", "> 5 tests failed") is a minus
+  // or comparison, not a marker, so it stays; the lookahead runs before the marker's
+  // whitespace is consumed so it cannot backtrack into stripping it.
+  text = text.replace(
+    /^(?:[ \t]{0,3}#{1,6}[ \t]+|[ \t]*[-*+](?![ \t]+[-+]?\.?\d)[ \t]+|[ \t]*•[ \t]+|[ \t]*>(?![ \t]*[-+]?\.?\d)[ \t]?)+/gm,
+    '',
+  );
   text = text.replace(/^[ \t]*[-=*_]{3,}[ \t]*$/gm, '');
   text = text.replace(/(?:^|[ \t])\|[ \t]|[ \t]\|(?:[ \t]|$)/g, ', ');
   return text;
@@ -224,32 +230,32 @@ function isDotOrEllipsis(char: string): boolean {
 
 /**
  * Unwrap standalone `[bracketed]` text but keep index-style `items[0]` and
- * `grid[1][2]` intact. One left-to-right scan; the next `]` is only searched
- * for again after the scan passes it, so the cost is linear.
+ * `grid[1][2]` intact. Brackets are matched with a stack in one left-to-right scan,
+ * so nested groups ("[[x]]") unwrap together and the cost is linear. A pair never
+ * spans a line break, and a `[` glued to a word or a closing bracket is an index.
  */
 function unwrapBrackets(text: string): string {
   const n = text.length;
-  let out = '';
-  let last = 0;
-  let close = -1;
-  let newline = -1;
+  const open: number[] = [];
+  const drop = new Set<number>();
   for (let i = 0; i < n; i += 1) {
-    if (text[i] !== '[') continue;
-    if (i > 0 && /[\w\])]/.test(text[i - 1])) continue;
-    if (close < i) {
-      close = text.indexOf(']', i);
-      if (close === -1) break;
+    const ch = text[i];
+    if (ch === '[') {
+      open.push(i);
+    } else if (ch === ']') {
+      const start = open.pop();
+      if (start !== undefined && !(start > 0 && /[\w\])]/.test(text[start - 1]))) {
+        drop.add(start);
+        drop.add(i);
+      }
+    } else if (ch === '\n') {
+      open.length = 0;
     }
-    if (newline < i) {
-      const found = text.indexOf('\n', i);
-      newline = found === -1 ? n : found;
-    }
-    if (newline < close) continue;
-    out += text.slice(last, i) + text.slice(i + 1, close);
-    last = close + 1;
-    i = close;
   }
-  return out + text.slice(last);
+  if (drop.size === 0) return text;
+  let out = '';
+  for (let i = 0; i < n; i += 1) if (!drop.has(i)) out += text[i];
+  return out;
 }
 
 /**
@@ -352,11 +358,33 @@ function rewriteTokens(text: string): string {
   return out.join('');
 }
 
+/**
+ * Remove every `()` group that is empty (or holds only whitespace), including ones
+ * that only become empty once an inner group is gone ("(())"). One linear scan.
+ * Expects whitespace to be collapsed already, so at most one space sits inside.
+ */
+function removeEmptyParens(text: string): string {
+  const out: string[] = [];
+  for (const ch of text) {
+    if (ch === ')') {
+      let k = out.length;
+      if (k > 0 && out[k - 1] === ' ') k -= 1;
+      if (k > 0 && out[k - 1] === '(') {
+        out.length = k - 1;
+        continue;
+      }
+    }
+    out.push(ch);
+  }
+  return out.join('');
+}
+
 function tidy(text: string): string {
-  return text
-    .replace(/\(\s*\)/g, '')
+  return removeEmptyParens(text.replace(/\s+/g, ' '))
     .replace(/\s+/g, ' ')
-    .replace(/\s+([,.;:!?])/g, '$1')
+    // A space before sentence punctuation is dropped only when the punctuation ends a
+    // clause: ".env", ".gitignore" and ".5" start a word and keep the space before them.
+    .replace(/ ([,.;:!?]+)(?=[\s)"'\]]|$)/g, '$1')
     .replace(/(^|[.!?]\s)[,;:]+\s*/g, '$1')
     .replace(/([.!?]){2,}/g, '$1')
     .replace(/[,;:]+(?=\s*[.!?]$)/g, '')
@@ -383,7 +411,6 @@ export function stripGeneratedPhrases(text: string): string {
     .trim();
 }
 
-const MAX_PASSES = 6;
 /** Longest input processed; bounds the worst-case cost of the regex passes. */
 const MAX_INPUT_CHARS = 2000;
 
@@ -405,7 +432,10 @@ export function makeSpeakable(text: string): string {
     // A rewrite can expose new work (a dropped token leaves a stray marker), so
     // run to a fixed point. This is what makes the function idempotent.
     let current = text;
-    for (let pass = 0; pass < MAX_PASSES; pass += 1) {
+    // Real input settles in two or three passes; the cap (the capped input length) only
+    // guards against a pathological ping-pong, and is far above any nesting depth.
+    const maxPasses = Math.min(text.length, MAX_INPUT_CHARS) + 1;
+    for (let pass = 0; pass < maxPasses; pass += 1) {
       const next = speakableOnce(current);
       if (next === current) return next;
       current = next;
