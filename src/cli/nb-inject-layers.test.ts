@@ -385,4 +385,20 @@ describe('nb-inject layered index — the real nb 0.7.0 against a throwaway NB_D
       rmSync(binDir, { recursive: true, force: true });
     }
   }, 30_000);
+
+  test('an empty real store stays silent in layered mode too (nb list --json prints rows: [])', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-realempty-'));
+    const binDir = mkdtempSync(join(tmpdir(), 'kookr-nb-layers-realemptybin-'));
+    symlinkSync(BIN, join(binDir, 'nb'));
+    try {
+      const out = execFileSync(process.execPath, [HOOK], {
+        env: { ...envWith({ KOOKR_REPO_SLUG: 'acme-widgets' }, `${binDir}:${process.env.PATH ?? ''}`), NB_DIR: dir },
+        encoding: 'utf-8',
+      });
+      expect(out).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
