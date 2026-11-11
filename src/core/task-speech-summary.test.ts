@@ -423,7 +423,104 @@ describe('summarizeTaskForSpeech', () => {
     });
   });
 
-  describe('secret redaction keeps long paths readable and still hides secrets', () => {
+  describe('the cache key covers the full text the fallback speaks and the prompt reads', () => {
+    const key = (input: TaskSpeechSummaryInput): string => JSON.stringify(normalizedTaskSpeechSummaryHashInput(input));
+    // A 120-character URL with no secret-sized run, then more shared text: the shared prefix is over 140 characters.
+    const url = `https://example.com/${'section-one/'.repeat(9)}`.slice(0, 120);
+    const finding = (explanation: string): TaskSpeechSummaryInput => ({
+      taskName: 'Repo task',
+      taskStatus: 'inProgress',
+      activeFinding: { type: 'needs_input', severity: 'info', explanation },
+    });
+
+    test('two findings that share a long URL prefix and differ at the end get different keys', () => {
+      expect(url).toHaveLength(120);
+      const passed = finding(`${url} The full run is done and the result is: Tests passed.`);
+      const failed = finding(`${url} The full run is done and the result is: Tests failed.`);
+      // They are spoken differently ...
+      expect(fallbackTaskSpeechSummary(passed)).toContain('Tests passed.');
+      expect(fallbackTaskSpeechSummary(failed)).toContain('Tests failed.');
+      // ... so they must not share a clip.
+      expect(key(passed)).not.toBe(key(failed));
+    });
+
+    test('a difference beyond everything the fallback and the prompt read does not split the key', () => {
+      const long = (ending: string): TaskSpeechSummaryInput => finding(`${'word '.repeat(70)}${ending}`);
+      expect(fallbackTaskSpeechSummary(long('one'))).toBe(fallbackTaskSpeechSummary(long('two')));
+      expect(key(long('one'))).toBe(key(long('two')));
+    });
+
+    test('activity lines that differ beyond the part the fallback speaks get different keys', () => {
+      const line = (ending: string): TaskSpeechSummaryInput => ({
+        taskName: 'T',
+        taskStatus: 'inProgress',
+        recentActivity: [`Agent: ${'steady progress on the cache '.repeat(6)}${ending}`],
+      });
+      expect(fallbackTaskSpeechSummary(line('and then it broke'))).toBe(fallbackTaskSpeechSummary(line('and then it worked')));
+      expect(key(line('and then it broke'))).not.toBe(key(line('and then it worked')));
+    });
+
+    test('digest bullets that differ after 120 characters (the prompt reads 180) get different keys', () => {
+      const digest = (ending: string): TaskSpeechSummaryInput => ({
+        taskName: 'T',
+        taskStatus: 'completed',
+        completionDigest: { bullets: [`${'Checked the whole queue and every worker, '.repeat(3)}${ending}`], filesChanged: [] },
+      });
+      expect(key(digest('all green'))).not.toBe(key(digest('two failed')));
+    });
+
+    test('a second digest bullet is part of the key', () => {
+      const digest = (second: string): TaskSpeechSummaryInput => ({
+        taskName: 'T',
+        taskStatus: 'completed',
+        completionDigest: { bullets: ['Checked the queue', second], filesChanged: [] },
+      });
+      expect(key(digest('all green'))).not.toBe(key(digest('two failed')));
+    });
+
+    test('the launch warning the fallback speaks is part of the key, even after blank ones', () => {
+      const warnings = (third: string): TaskSpeechSummaryInput => ({
+        taskName: 'T',
+        taskStatus: 'pending',
+        launchWarnings: ['', '   ', third],
+      });
+      expect(fallbackTaskSpeechSummary(warnings('Disk is almost full'))).toContain('Disk is almost full');
+      expect(key(warnings('Disk is almost full'))).not.toBe(key(warnings('Network is down')));
+    });
+
+    test('a changed turn state, status or test summary is part of the key', () => {
+      const base: TaskSpeechSummaryInput = { taskName: 'T', taskStatus: 'inProgress', turnState: 'working' };
+      expect(key(base)).not.toBe(key({ ...base, turnState: 'waiting_for_input' }));
+      expect(key(base)).not.toBe(key({ ...base, taskStatus: 'completed' }));
+      const withTests = (testSummary: string): TaskSpeechSummaryInput => ({
+        taskName: 'T',
+        taskStatus: 'completed',
+        completionDigest: { bullets: [], filesChanged: [], testSummary },
+      });
+      expect(key(withTests('Tests passed'))).not.toBe(key(withTests('Tests failed')));
+    });
+  });
+
+  describe('timestamps in the fallback keep their time scope', () => {
+    test.each([
+      ['Do not deploy on 2025-11-10T10:00:00Z.', 'Do not deploy on a set time.'],
+      ['Tests failed at 2025-11-10T10:00:00Z but passed at 2025-11-11T11:30:00Z.', 'Tests failed at a set time but passed at a set time.'],
+      ['It broke at 2025-11-10T10:00:00Z, not at 2025-11-11T11:30:00Z.', 'It broke at a set time, not at a set time.'],
+      ['Wait. At 2025-11-10T10:00:00Z the lock is released.', 'Wait. At a set time the lock is released.'],
+    ])('%s', (explanation, spoken) => {
+      expect(fallbackTaskSpeechSummary({
+        taskName: 'Repo task',
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'needs_input', severity: 'info', explanation },
+      })).toBe(`Repo task needs your input. ${spoken}`);
+    });
+  });
+
+  describe('redaction is exactly what origin/main does, and the speakable step only adds cosmetics after it', () => {
+    /** origin/main's pattern, copied verbatim: the oracle. Nothing it hides may become speakable or reach the prompt. */
+    const MAIN_SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+    const mainMatches = (text: string): string[] => text.match(MAIN_SECRET_PATTERN) ?? [];
+
     const stop = (lastMessage: string): AgentEvent[] => [{ type: 'stop', sessionId: 's1', lastMessage }];
     const lineFor = (message: string): string => buildTaskSpeechActivityLines(stop(message))[0] ?? '';
     const fallbackFor = (message: string): string => fallbackTaskSpeechSummary({
@@ -432,35 +529,72 @@ describe('summarizeTaskForSpeech', () => {
       recentActivity: buildTaskSpeechActivityLines(stop(message)),
     });
 
-    test('a long absolute path survives and is then shortened to its file name', () => {
-      const path = '/home/jean/git/kookr/src/frontend/hooks/useSpeakAgent.test.ts';
-      const line = lineFor(`Tests keep failing in ${path}`);
-      expect(line).not.toContain('redacted');
-      expect(line).toBe('Agent: Tests keep failing in useSpeakAgent.test.ts.');
-      expect(fallbackFor(`Tests keep failing in ${path}`)).toBe(
-        'The task is running. Recent activity: Agent: Tests keep failing in useSpeakAgent.test.ts.',
-      );
-    });
+    /** Every text a listener, a caption or the model could receive for this input. */
+    async function surfacesOf(input: TaskSpeechSummaryInput): Promise<string[]> {
+      let prompt = '';
+      const client: LlmClient = {
+        provider: 'test',
+        model: 'test-model',
+        complete: async (request) => {
+          prompt = request.userMessage;
+          return null;
+        },
+      };
+      const viaClient = await summarizeTaskForSpeech(client, input);
+      const viaNull = await summarizeTaskForSpeech(null, input);
+      return [
+        fallbackTaskSpeechSummary(input),
+        viaNull.text,
+        viaNull.rawText ?? '',
+        viaClient.text,
+        viaClient.rawText ?? '',
+        prompt,
+      ];
+    }
 
-    test('the same path sent as raw activity text is not redacted either', () => {
-      const text = fallbackTaskSpeechSummary({
+    test('the exact fallback example: a long path is redacted as a whole and spoken as "a redacted path"', async () => {
+      const message = 'Tests keep failing in /home/jean/git/kookr/src/frontend/hooks/useSpeakAgent.test.ts';
+      const spoken = 'The task is running. Recent activity: Agent: Tests keep failing in a redacted path.';
+      expect(lineFor(message)).toBe('Agent: Tests keep failing in a redacted path.');
+      expect(fallbackFor(message)).toBe(spoken);
+      const input: TaskSpeechSummaryInput = {
         taskName: 'T',
         taskStatus: 'inProgress',
-        recentActivity: ['Agent: Tests keep failing in /home/jean/git/kookr/src/frontend/hooks/useSpeakAgent.test.ts'],
-      });
-      expect(text).toBe('The task is running. Recent activity: Agent: Tests keep failing in useSpeakAgent.test.ts.');
+        recentActivity: buildTaskSpeechActivityLines(stop(message)),
+      };
+      expect((await summarizeTaskForSpeech(null, input)).text).toBe(spoken);
+      // The same message as raw activity text (not built from events) and as a finding explanation.
+      expect(fallbackTaskSpeechSummary({ taskName: 'T', taskStatus: 'inProgress', recentActivity: [`Agent: ${message}`] })).toBe(spoken);
+      expect(fallbackTaskSpeechSummary({
+        taskName: 'Repo task',
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'repeated_error', severity: 'warning', explanation: message },
+      })).toBe('Repo task keeps hitting the same error. Tests keep failing in a redacted path.');
+      for (const text of await surfacesOf(input)) {
+        // No raw path segment of 10 or more characters, nothing of the directory names, no file name.
+        const segments = text.split(/[^A-Za-z0-9]+/).filter((segment) => segment.length >= 10);
+        expect(segments.filter((segment) => /useSpeakAgent|frontend|jean|kookr/i.test(segment))).toEqual([]);
+        expect(text).not.toMatch(/useSpeakAgent|\/home|jean|kookr|frontend|hooks/);
+      }
     });
 
-    test.each([
-      ['a home path', 'Opened /home/jean/git/kookr-avatar-step1/src/core/speakable-text.ts today', 'speakable-text.ts'],
-      ['a relative path with three slashes', 'Opened packages/frontend-app/src/components/Avatar.tsx today', 'Avatar.tsx'],
-      ['a macOS path with capitalised folders', 'Opened /Users/Jane/Documents/Projects/Kookr/Source/Hooks/UseSpeak.tsx today', 'UseSpeak.tsx'],
-      ['a rooted directory', 'The folder is /home/jean/projects/my-awesome-project/packages/frontend/', 'frontend'],
-    ])('keeps %s', (_label, message, file) => {
-      const line = lineFor(message);
-      expect(line).not.toContain('redacted');
-      expect(line).toContain(file);
-      expect(line).not.toContain('/');
+    test('a long absolute path is hidden, as on main, and a macOS path too', () => {
+      expect(lineFor('Opened /Users/Jane/Documents/Projects/Kookr/Source/Hooks/UseSpeak.tsx today'))
+        .toBe('Agent: Opened a redacted path today.');
+      expect(lineFor('The folder is /home/jean/projects/my-awesome-project/packages/frontend/'))
+        .not.toContain('packages/frontend/');
+    });
+
+    test('a short path is not a secret and is still shortened to its file name', () => {
+      for (const [message, file] of [
+        ['Opened /home/jean/git/kookr-avatar-step1/src/core/speakable-text.ts today', 'speakable-text.ts'],
+        ['Opened packages/frontend-app/src/components/Avatar.tsx today', 'Avatar.tsx'],
+      ]) {
+        expect(mainMatches(message), message).toEqual([]);
+        const line = lineFor(message);
+        expect(line).toContain(file);
+        expect(line).not.toContain('redacted');
+      }
     });
 
     const secrets: Array<[label: string, secret: string]> = [
@@ -479,21 +613,84 @@ describe('summarizeTaskForSpeech', () => {
       ['a lower-case token of 20 characters under two directories', 'srv/data/cache/k3j9x8a7b6c5d4e3f2g1'],
       ['a letters-only mixed-case token of 24 characters', '/srv/app/data/aBcDeFgHiJkLmNoPqRsTuVwX'],
       ['a long slash-free run', 'abcdefghijklmnopqrstuvwxyzabcdefghij'],
+      // The values a reviewer found leaking through the path-shape exemption.
+      ['an AWS secret key with slashes', 'Hq/0HZvaYDA2vv7tCD63Lk/Qj/Ctsm3oRUT5CNlE'],
+      ['a 32-character key with several slashes', 'VBoqxeRP46pZ1fN/2qkvc2b/o0/o4sDB'],
+      ['a letters-only 24-character reset token', '/api/v1/reset/kqjzxmabwcvdyefrgthpinsl'],
+      ['a letters-only 27-character invite token', '/invite/accept/kqjzxmabwcvdyefrgthpinslow'],
+      ['a letters-only 20-character token under a relative path', 'srv/data/cache/kqjzxmabwcvdyefrgthp'],
+      ['a mixed-case 22-character token under lower-case directories', '/srv/app/data/abcDefGhijKlmnOpqrStuv'],
+      ['a reset token in a URL path', 'https://app.example.com/reset-password/Zx9fQw3LmN8vTb2KyU6pHs1DcR4eAj7G'],
+      ['a token in a URL query', 'https://example.com/cb?token=Zx9fQw3LmN8vTb2KyU6pHs1DcR4eAj7G'],
+      ['a JWT header and payload', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ'],
+      ['a long hex digest', '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08'],
     ];
 
-    test.each(secrets)('still redacts %s (task name)', (_label, secret) => {
-      const text = fallbackTaskSpeechSummary({ taskName: `Key ${secret} leaked`, taskStatus: 'pending' });
-      expect(text).toContain('redacted');
-      expect(text).not.toContain(secret.slice(8, 30));
+    test.each(secrets)('the oracle agrees that %s is a secret', (_label, secret) => {
+      expect(mainMatches(` Key ${secret} leaked `).length).toBeGreaterThan(0);
     });
 
-    test.each(secrets)('still redacts %s (agent message, before it is made speakable)', (_label, secret) => {
-      const line = lineFor(`Key ${secret} leaked`);
-      expect(line).toContain('redacted');
-      expect(line).not.toContain(secret.slice(8, 30));
-      const text = fallbackFor(`Key ${secret} leaked`);
-      expect(text).toContain('redacted');
-      expect(text).not.toContain(secret.slice(8, 30));
+    const placements: Array<[name: string, build: (text: string) => TaskSpeechSummaryInput]> = [
+      ['task name', (text) => ({ taskName: `Key ${text} leaked`, taskStatus: 'pending' })],
+      ['finding explanation', (text) => ({
+        taskName: 'T',
+        taskStatus: 'inProgress',
+        activeFinding: { type: 'needs_input', severity: 'info', explanation: `Key ${text} leaked` },
+      })],
+      ['raw activity text', (text) => ({ taskName: 'T', taskStatus: 'inProgress', recentActivity: [`Agent: Key ${text} leaked`] })],
+      ['activity built from an agent message', (text) => ({
+        taskName: 'T',
+        taskStatus: 'inProgress',
+        recentActivity: buildTaskSpeechActivityLines(stop(`Key ${text} leaked`)),
+      })],
+      ['activity built from a bullet list', (text) => ({
+        taskName: 'T',
+        taskStatus: 'inProgress',
+        recentActivity: buildTaskSpeechActivityLines(stop(`Seen in the log:\n- ${text}\n- ${text}`)),
+      })],
+      ['digest bullet', (text) => ({
+        taskName: 'T',
+        taskStatus: 'completed',
+        completionDigest: { bullets: [`Key ${text} leaked`], filesChanged: [] },
+      })],
+      ['test summary', (text) => ({
+        taskName: 'T',
+        taskStatus: 'completed',
+        completionDigest: { bullets: [], filesChanged: [], testSummary: `Key ${text} leaked` },
+      })],
+      ['launch warning', (text) => ({ taskName: 'T', taskStatus: 'pending', launchWarnings: [`Key ${text} leaked`] })],
+    ];
+
+    // The chunks of a secret that must not survive: every 12-character window of its lower-case letters and digits.
+    const windowsOf = (secret: string): string[] => {
+      const flat = secret.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const windows: string[] = [];
+      for (let i = 0; i + 12 <= flat.length; i += 6) windows.push(flat.slice(i, i + 12));
+      return windows;
+    };
+    const flatten = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    describe.each(placements)('in the %s', (_name, build) => {
+      test.each(secrets)('still redacts %s everywhere it can be spoken or prompted', async (_label, secret) => {
+        const input = build(secret);
+        const outputs = await surfacesOf(input);
+        // Hidden either as the marker or, inside a URL, as "a link".
+        expect(outputs.some((text) => /redacted|a link/.test(text)), `nothing hides the secret in ${JSON.stringify(outputs)}`).toBe(true);
+        for (const text of outputs) {
+          const flat = flatten(text);
+          for (const secretRun of mainMatches(` ${secret} `)) {
+            const leaked = windowsOf(secretRun).filter((window) => flat.includes(window));
+            expect(leaked, `${secret} leaked into ${JSON.stringify(text)}`).toEqual([]);
+          }
+        }
+        // The speech activity lines are the fourth surface: they carry the redaction too.
+        for (const line of buildTaskSpeechActivityLines(stop(`Key ${secret} leaked`))) {
+          const flat = flatten(line);
+          for (const secretRun of mainMatches(` ${secret} `)) {
+            expect(windowsOf(secretRun).filter((window) => flat.includes(window))).toEqual([]);
+          }
+        }
+      });
     });
 
     test('redacts a ghp_ token before the speakable rewrite can turn it into words', () => {
@@ -512,6 +709,125 @@ describe('summarizeTaskForSpeech', () => {
       const text = fallbackFor('Seen in the log:\n- ghp_abcdefghijklmnopqrstuvwxyz0123456789\n- sk-abcdefghijklmnopqrstuvwxyz0123');
       expect(text).toBe('The task is running. Recent activity: Agent: Seen in the log: redacted. redacted.');
     });
+
+    test('a bullet that holds a redacted path is still a bullet', () => {
+      const text = fallbackFor('Updated:\n- /home/jean/git/kookr/src/frontend/hooks/useSpeakAgent.test.ts\n- /api/v1/reset/kqjzxmabwcvdyefrgthpinsl');
+      expect(text).toBe('The task is running. Recent activity: Agent: Updated: a redacted path. a redacted path.');
+    });
+  });
+
+  describe('20,000 random secrets: nothing main redacts survives anywhere', () => {
+    const MAIN_SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
+
+    function mulberry32(seed: number): () => number {
+      let state = seed >>> 0;
+      return () => {
+        state = (state + 0x6d2b79f5) | 0;
+        let t = Math.imul(state ^ (state >>> 15), 1 | state);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    }
+
+    const ALPHABETS = [
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
+      'abcdef0123456789',
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789',
+      'abcdefghijklmnopqrstuvwxyz',
+      'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789/',
+      'abcdefghijklmnopqrstuvwxyz0123456789',
+    ];
+
+    // Where a secret can sit in a message: paths, URLs, markdown links, code spans, after bullets, plain prose.
+    const TEMPLATES: Array<(secret: string) => string> = [
+      (secret) => `Key ${secret} leaked`,
+      (secret) => `Tests keep failing in /srv/app/${secret}`,
+      (secret) => `Open /api/v1/reset/${secret} now`,
+      (secret) => `Open srv/data/cache/${secret} now`,
+      (secret) => `Open https://example.com/reset/${secret} now`,
+      (secret) => `Open https://example.com/cb?token=${secret}&x=1 now`,
+      (secret) => `See [the docs](https://x.io/${secret}) for details`,
+      (secret) => `See [${secret}](https://x.io/a) for details`,
+      (secret) => `Run \`${secret}\` before the build`,
+      (secret) => `Seen:\n- ${secret}\n- other`,
+      (secret) => `## Summary\n- Fixed ${secret}\n| Check | Result |\n|---|---|\n| ${secret} | ok |`,
+      (secret) => `AWS_SECRET_ACCESS_KEY is ${secret} for prod`,
+      (secret) => `Updated ${secret}/index.ts and other.test.ts`,
+      (secret) => `At 2025-11-10T10:00:00Z the token ${secret} was rotated`,
+    ];
+
+    const FIELDS: Array<(text: string) => TaskSpeechSummaryInput> = [
+      (text) => ({ taskName: text, taskStatus: 'pending' }),
+      (text) => ({ taskName: 'T', taskStatus: 'inProgress', activeFinding: { type: 'needs_input', severity: 'info', explanation: text } }),
+      (text) => ({ taskName: 'T', taskStatus: 'inProgress', recentActivity: [`Agent: ${text}`] }),
+      (text) => ({
+        taskName: 'T',
+        taskStatus: 'inProgress',
+        recentActivity: buildTaskSpeechActivityLines([{ type: 'stop', sessionId: 's1', lastMessage: text }]),
+      }),
+      (text) => ({ taskName: 'T', taskStatus: 'completed', completionDigest: { bullets: [text], filesChanged: [] } }),
+      (text) => ({ taskName: 'T', taskStatus: 'completed', completionDigest: { bullets: [], filesChanged: [], testSummary: text } }),
+      (text) => ({ taskName: 'T', taskStatus: 'pending', launchWarnings: [text] }),
+    ];
+
+    const flatten = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+    test('no 12-character piece of a secret that main redacts is in any output', async () => {
+      const random = mulberry32(0xc0ffee);
+      const survivors: string[] = [];
+      let mainRedacted = 0;
+      let mainMissed = 0;
+      for (let trial = 0; trial < 20_000; trial += 1) {
+        const alphabet = ALPHABETS[Math.floor(random() * ALPHABETS.length)];
+        const length = 20 + Math.floor(random() * 45);
+        let secret = '';
+        for (let i = 0; i < length; i += 1) secret += alphabet[Math.floor(random() * alphabet.length)];
+        const message = TEMPLATES[Math.floor(random() * TEMPLATES.length)](secret);
+        const input = FIELDS[trial % FIELDS.length](message);
+        const hidden = message.match(MAIN_SECRET_PATTERN) ?? [];
+        if (hidden.length === 0) {
+          mainMissed += 1;
+          continue;
+        }
+        mainRedacted += 1;
+
+        let prompt = '';
+        const client: LlmClient = {
+          provider: 'test',
+          model: 'test-model',
+          complete: async (request) => {
+            prompt = request.userMessage;
+            return null;
+          },
+        };
+        const viaClient = await summarizeTaskForSpeech(client, input);
+        const viaNull = await summarizeTaskForSpeech(null, input);
+        const outputs = [
+          fallbackTaskSpeechSummary(input),
+          viaNull.text,
+          viaNull.rawText ?? '',
+          viaClient.text,
+          viaClient.rawText ?? '',
+          prompt,
+          ...buildTaskSpeechActivityLines([{ type: 'stop', sessionId: 's1', lastMessage: message }]),
+        ];
+        const flat = outputs.map(flatten);
+        // What main itself leaves in the text (a short secret next to a long one): not a regression.
+        const leftByMain = flatten(message.replace(MAIN_SECRET_PATTERN, '[redacted]'));
+        for (const run of hidden) {
+          const runFlat = flatten(run);
+          for (let i = 0; i + 12 <= runFlat.length; i += 4) {
+            const piece = runFlat.slice(i, i + 12);
+            if (leftByMain.includes(piece)) continue;
+            if (flat.some((text) => text.includes(piece))) survivors.push(`${JSON.stringify(message)} -> ${piece}`);
+          }
+        }
+      }
+      // Non-vacuity: most random secrets are long enough for main to redact them.
+      expect(mainRedacted).toBeGreaterThan(10_000);
+      expect(mainMissed + mainRedacted).toBe(20_000);
+      expect(survivors.slice(0, 5)).toEqual([]);
+    }, 120_000);
   });
 
   describe('markdown in agent messages reaches the speech fallback as sentences', () => {

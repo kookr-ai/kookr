@@ -18,46 +18,17 @@ const MAX_SUMMARY_WORDS = 45;
 const MAX_ACTIVITY_ITEMS = 8;
 const MAX_ACTIVITY_LINE_CHARS = 220;
 const MAX_SPOKEN_EXPLANATION_CHARS = 100;
+/** How much of a finding explanation the fallback looks at (it is spoken only when this is short enough). */
+const FINDING_EXPLANATION_CHARS = 300;
 
 const ADVICE_VERB_DENYLIST = /\b(approve|deny|reject|allow|dismiss|execute|run|delete|cancel|merge|push|commit|click)\b/i;
+/**
+ * What counts as a secret. Unchanged from origin/main on purpose: any run of 32 or more
+ * base64-alphabet characters is hidden, whatever it looks like (a long file path
+ * included). Do not add exemptions: telling a path from a token by its shape lets real
+ * tokens through ("/api/v1/reset/<24-character token>").
+ */
 const SECRET_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{12,}|[A-Za-z0-9+/]{32,}={0,2})\b/g;
-/** The shortest run {@link SECRET_PATTERN} treats as a secret; no single path segment may reach it. */
-const MIN_SECRET_RUN = 32;
-/**
- * A path segment, and a segment that reads as a directory name: lower-case letters,
- * digits, `-` and `_` with at least one letter and 2+ characters ("frontend"), or one
- * Capitalised word ("Users", "Documents").
- */
-const PATH_SEGMENT = /^[A-Za-z0-9._@-]+$/;
-const DIRECTORY_NAME = /^(?:(?=[a-z0-9_-]*[a-z])[a-z0-9_-]{2,}|[A-Z][a-z]{1,19})$/;
-
-/** A segment that is token-sized and token-shaped: 20+ characters mixing letters with digits, or mixed-case letters with many capitals. */
-function isTokenLikeSegment(segment: string): boolean {
-  if (segment.length < 20) return false;
-  if (/[A-Za-z]/.test(segment) && /\d/.test(segment)) return true;
-  const capitals = segment.replace(/[^A-Z]/g, '').length;
-  return /[a-z]/.test(segment) && capitals * 4 >= segment.length;
-}
-
-/**
- * True when a long base64-alphabet run is really a long absolute or relative path
- * ("/home/me/git/app/src/frontend/hooks/useThing"), not a secret. It must contain a
- * slash and be rooted (the character before the run is a slash, which `\b` leaves
- * outside the match) or hold two or more slashes; contain no `+` and no `=`; have
- * only non-empty segments, every one shorter than a secret (a single 32+ character
- * segment such as a hash or token is secret-sized) and none of them token-shaped
- * ({@link isTokenLikeSegment}); and have at least two directory-looking segments. A
- * slash-free run, or a run with a long or token-shaped segment, is always redacted.
- */
-function isPathShapedRun(run: string, charBefore: string): boolean {
-  if (!run.includes('/') || run.includes('+') || run.includes('=')) return false;
-  const segments = run.split('/');
-  const rooted = charBefore === '/';
-  if (!rooted && segments.length < 3) return false;
-  if (!segments.every((segment) => PATH_SEGMENT.test(segment) && segment.length < MIN_SECRET_RUN)) return false;
-  if (segments.some(isTokenLikeSegment)) return false;
-  return segments.filter((segment) => DIRECTORY_NAME.test(segment)).length >= 2;
-}
 
 const SYSTEM_PROMPT = `You write short spoken-audio summaries for a developer supervising coding-agent tasks.
 
@@ -129,12 +100,10 @@ function truncate(text: string, max: number): string {
   return text.slice(0, end).trimEnd() + '...';
 }
 
-/** Hide secrets and the prompt delimiters. Keeps line breaks, so a caller can still read the line structure. */
+/** Hide secrets and the prompt delimiters, exactly as origin/main does. Keeps line breaks, so a caller can still read the line structure. */
 function redactSecrets(value: string | null | undefined): string {
   return (value ?? '')
-    .replace(SECRET_PATTERN, (match: string, offset: number, whole: string) => (
-      isPathShapedRun(match, offset > 0 ? whole[offset - 1] : '') ? match : '[redacted]'
-    ))
+    .replace(SECRET_PATTERN, '[redacted]')
     .replace(/<<<\s*(?:TASK_CONTEXT|END)\s*>>>/gi, '[delimiter]');
 }
 
@@ -307,7 +276,7 @@ function findingSentence(name: string, finding: TaskSpeechFindingInput): string 
   const headline = phrase
     ? `${name} ${phrase}`
     : `${name} reported ${identifierToWords(sanitizeText(finding.type, 40)) || 'a problem'}`;
-  const explanation = speakableText(finding.explanation, 300);
+  const explanation = speakableText(finding.explanation, FINDING_EXPLANATION_CHARS);
   const head = sentence(headline);
   // Keep the explanation only when it is short enough to listen to.
   return explanation && explanation.length <= MAX_SPOKEN_EXPLANATION_CHARS
@@ -407,6 +376,21 @@ export async function summarizeTaskForSpeech(
   }
 }
 
+/**
+ * Everything that can change what the summary says, for the cache key. Two inputs
+ * that share a key get the same clip, so the key must cover the FULL text each
+ * consumer reads, not a shorter prefix of it:
+ * - the model reads {@link promptPayload}, and the fallback speaks
+ *   {@link rawFallbackTaskSpeechSummary}; both are part of the key as they are, so a
+ *   field added to either later cannot be forgotten here;
+ * - the named fields below are the same texts, cut at the same lengths by the same
+ *   functions: the finding explanation as the fallback speaks it (made speakable, cut
+ *   at {@link FINDING_EXPLANATION_CHARS}, not the first 140 characters of the raw text:
+ *   a long URL or a shared prefix would hide the part that differs), the activity
+ *   lines at the length the prompt uses, the digest, and the launch warnings.
+ * `filesChanged` is neither prompted nor spoken; it stays in the key only so a
+ * changed file list is still a fresh summary.
+ */
 export function normalizedTaskSpeechSummaryHashInput(input: TaskSpeechSummaryInput): unknown {
   return {
     taskName: taskName(input),
@@ -415,7 +399,7 @@ export function normalizedTaskSpeechSummaryHashInput(input: TaskSpeechSummaryInp
     activeFinding: input.activeFinding ? {
       type: sanitizeText(input.activeFinding.type, 40),
       severity: sanitizeText(input.activeFinding.severity, 40),
-      explanation: sanitizeText(input.activeFinding.explanation, 140),
+      explanation: speakableText(input.activeFinding.explanation, FINDING_EXPLANATION_CHARS),
     } : null,
     recentActivity: recentActivityLines(input),
     digest: input.completionDigest ? {
@@ -425,5 +409,7 @@ export function normalizedTaskSpeechSummaryHashInput(input: TaskSpeechSummaryInp
       filesChanged: input.completionDigest.filesChanged.slice(0, 3).map((item) => sanitizeText(item, 80)),
     } : null,
     launchWarnings: (input.launchWarnings ?? []).slice(0, 2).map((item) => sanitizeText(item, 100)),
+    prompt: promptPayload(input),
+    fallback: rawFallbackTaskSpeechSummary(input),
   };
 }
