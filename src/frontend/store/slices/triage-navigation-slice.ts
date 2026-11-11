@@ -7,6 +7,7 @@ import { recordReportableAlert } from '../../bug-report-recorder.js';
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
 import { saveSelectedProject } from '../selected-project-storage.js';
 import { isActiveFinding } from '../finding-helpers.js';
+import { tabAfterTaskSwitch } from '../tab-after-task-switch.js';
 
 const TERMINAL_FOCUS_STORAGE_KEY = 'kookr-terminal-focus-mode';
 const DETAIL_PANE_MODE_STORAGE_KEY = 'kookr-detail-panel-mode';
@@ -73,15 +74,6 @@ function loadDetailPaneMode(): DetailPaneMode {
   } catch {
     return 'tabs';
   }
-}
-
-/**
- * #3561 4a: the tab to show after moving to another task. An operator watching
- * terminals keeps the Terminal tab; the GitHub tab belongs to one task, so it
- * falls back to the conversation.
- */
-function tabAfterTaskSwitch(current: NarrowTab): { leftPane: 'activity'; narrowTab: NarrowTab } {
-  return { leftPane: 'activity', narrowTab: current === 'terminal' ? 'terminal' : 'activity' };
 }
 
 function activateNavigationSelection(

@@ -1,4 +1,4 @@
-import type { AgentState, FocusZone, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
+import type { AgentState, FocusZone, NarrowTab, TransportSessionSlice, StoreGet, StoreSet } from '../store-types.js';
 import { SEVERITY_ORDER } from '../store-types.js';
 import { loadSTTLanguage, saveSTTLanguage } from '../stt-language.js';
 import { mergeActivityAgent } from '../activity-history.js';
@@ -11,6 +11,7 @@ import {
 import { clearSelectedTask, loadSelectedTask } from '../selected-task-storage.js';
 import { loadDeployIntentActive, saveDeployIntent } from '../deploy-intent-storage.js';
 import { withSelectionTransitionSource } from '../../selection-transition-recorder.js';
+import { tabAfterTaskSwitch } from '../tab-after-task-switch.js';
 import { QUOTA_NO_HEADROOM_UTILIZATION } from '../../../shared/quota-headroom-admission.js';
 
 /**
@@ -62,8 +63,9 @@ function selectedAgentUpdateAfterServerState(
   selectedTaskId: string | null,
   previousAgents: AgentState[],
   nextAgents: AgentState[],
-  archivedAgents: readonly AgentState[] = [],
-): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; focusZone?: FocusZone; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: 'activity'; shortcutsArmed?: false } {
+  archivedAgents: readonly AgentState[],
+  currentTab: NarrowTab,
+): { selectedAgentId?: string | null; selectedTaskId?: string | null; selectedAgentSource?: 'manual'; focusZone?: FocusZone; respondAllAgentIds?: null; leftPane?: 'activity'; narrowTab?: NarrowTab; shortcutsArmed?: false } {
   if (!selectedAgentId) return {};
 
   const previousSelected = findAgent(previousAgents, selectedAgentId, selectedTaskId);
@@ -90,8 +92,7 @@ function selectedAgentUpdateAfterServerState(
       selectedAgentSource: 'manual',
       ...(nextAgentId ? {} : { focusZone: 'none' as const }),
       respondAllAgentIds: null,
-      leftPane: 'activity',
-      narrowTab: 'activity',
+      ...tabAfterTaskSwitch(currentTab),
       shortcutsArmed: false,
     };
   }
@@ -115,13 +116,13 @@ function consumeDashboardTaskIdFromWindow(): string | null {
   }
 }
 
-function selectionFromTaskId(nextAgents: AgentState[], taskId: string): {
+function selectionFromTaskId(nextAgents: AgentState[], taskId: string, currentTab: NarrowTab): {
   selectedAgentId: string;
   selectedTaskId: string | null;
   selectedAgentSource: 'manual';
   respondAllAgentIds: null;
   leftPane: 'activity';
-  narrowTab: 'activity';
+  narrowTab: NarrowTab;
   shortcutsArmed: false;
 } | null {
   const matched = nextAgents.find((agent) => agent.taskId === taskId);
@@ -131,8 +132,7 @@ function selectionFromTaskId(nextAgents: AgentState[], taskId: string): {
     selectedTaskId: matched.taskId ?? null,
     selectedAgentSource: 'manual',
     respondAllAgentIds: null,
-    leftPane: 'activity',
-    narrowTab: 'activity',
+    ...tabAfterTaskSwitch(currentTab),
     shortcutsArmed: false,
   };
 }
@@ -142,6 +142,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
   selectedAgentId: string | null,
   nextAgents: AgentState[],
   deepLinkTaskId: string | null,
+  currentTab: NarrowTab,
 ): {
   update: {
     selectedAgentId?: string | null;
@@ -150,7 +151,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
     focusZone?: FocusZone;
     respondAllAgentIds?: null;
     leftPane?: 'activity';
-    narrowTab?: 'activity';
+    narrowTab?: NarrowTab;
     shortcutsArmed?: false;
   };
   missed: boolean;
@@ -159,7 +160,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
   if (selectedAgentId) return { update: {}, missed: false };
 
   if (deepLinkTaskId) {
-    const linked = selectionFromTaskId(nextAgents, deepLinkTaskId);
+    const linked = selectionFromTaskId(nextAgents, deepLinkTaskId, currentTab);
     if (linked) return { update: linked, missed: false };
     // Unknown id: ignore it and fall through to the stored last selection.
   }
@@ -197,8 +198,7 @@ function selectedAgentRestoreAfterFirstSnapshot(
       selectedTaskId: restored.taskId ?? null,
       selectedAgentSource: 'manual',
       respondAllAgentIds: null,
-      leftPane: 'activity',
-      narrowTab: 'activity',
+      ...tabAfterTaskSwitch(currentTab),
       shortcutsArmed: false,
     },
     missed: false,
@@ -265,11 +265,12 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
             prev.selectedAgentId,
             mergedAgents,
             deepLinkTaskId,
+            prev.narrowTab,
           );
           restoreMissed = restoredSelection.missed;
           return {
             agents: mergedAgents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, mergedAgents, prev.archivedAgents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, mergedAgents, prev.archivedAgents, prev.narrowTab),
             ...restoredSelection.update,
             agentsHydrated: true,
             ...(serverCwd !== undefined ? { serverCwd } : {}),
@@ -315,7 +316,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           ));
           return {
             agents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents, prev.narrowTab),
           };
         });
       });
@@ -360,7 +361,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
           const aggregates = delta.aggregates ?? {};
           return {
             agents,
-            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents),
+            ...selectedAgentUpdateAfterServerState(prev.selectedAgentId, prev.selectedTaskId, prev.agents, agents, prev.archivedAgents, prev.narrowTab),
             ...(delta.taskRelations !== undefined ? { taskRelations: delta.taskRelations } : {}),
             ...(aggregates.totalSpendUsd !== undefined ? { totalSpendUsd: aggregates.totalSpendUsd } : {}),
             ...(aggregates.maxActiveTasks !== undefined ? { maxActiveTasks: aggregates.maxActiveTasks } : {}),
@@ -413,6 +414,13 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
 
     handleDashboardSelection: (selection) => {
       withSelectionTransitionSource({ source: 'handleDashboardSelection', reason: 'server_dashboard_selection' }, () => {
+        const prev = get();
+        // An echo of the task already on screen leaves the tab alone; moving to
+        // another task follows the same tab rule as every other selection path.
+        const movesToAnotherTask = selection.selectedSessionId !== undefined
+          && selection.selectedSessionId !== null
+          && (selection.selectedSessionId !== prev.selectedAgentId
+            || (selection.selectedTaskId ?? null) !== prev.selectedTaskId);
         set({
           dashboardSelection: selection,
           ...(selection.selectedSessionId !== undefined
@@ -421,6 +429,7 @@ export function createTransportSessionSlice(set: StoreSet, get: StoreGet): Trans
                 selectedTaskId: selection.selectedTaskId,
                 selectedAgentSource: 'manual' as const,
                 ...(selection.selectedSessionId === null ? { focusZone: 'none' as const } : {}),
+                ...(movesToAnotherTask ? tabAfterTaskSwitch(prev.narrowTab) : {}),
               }
             : {}),
         });

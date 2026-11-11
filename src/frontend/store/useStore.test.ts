@@ -1474,6 +1474,112 @@ describe('Kookr Zustand Store', () => {
     expect(store.getState().leftPane).toBe('activity');
   });
 
+  describe('#3618: every selection path follows the same tab rule', () => {
+    const finding = (agentId: string): AgentState => ({
+      agentId,
+      taskId: `task-${agentId}`,
+      taskStatus: 'inProgress',
+      events: [],
+      anomaly: { agentId, type: 'needs_input', severity: 'warning', explanation: 'Waiting', detectedAt: new Date() },
+    });
+    const completeTask = (agentId: string) => store.getState().handleUpdate(agentId, {
+      agentId,
+      taskId: `task-${agentId}`,
+      taskStatus: 'completed',
+      events: [],
+      anomaly: null,
+    });
+
+    test('the auto-advance off a completed task keeps the Terminal tab', () => {
+      store.getState().handleSnapshot([finding('a'), finding('b')]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setNarrowTab('terminal');
+
+      completeTask('a');
+
+      expect(store.getState().selectedAgentId).toBe('b');
+      expect(store.getState().narrowTab).toBe('terminal');
+    });
+
+    test('the auto-advance off a completed task leaves the GitHub tab', () => {
+      store.getState().handleSnapshot([finding('a'), finding('b')]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setLeftPane('github');
+      store.getState().setNarrowTab('github');
+
+      completeTask('a');
+
+      expect(store.getState().selectedAgentId).toBe('b');
+      expect(store.getState().narrowTab).toBe('activity');
+      expect(store.getState().leftPane).toBe('activity');
+    });
+
+    test('a server selection of another task keeps Terminal and leaves GitHub', () => {
+      store.getState().handleSnapshot([finding('a'), finding('b'), finding('c')]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setNarrowTab('terminal');
+
+      store.getState().handleDashboardSelection({ selectedTaskId: 'task-b', selectedSessionId: 'b', selectionVersion: 1 });
+      expect(store.getState().selectedAgentId).toBe('b');
+      expect(store.getState().narrowTab).toBe('terminal');
+
+      store.getState().setLeftPane('github');
+      store.getState().setNarrowTab('github');
+      store.getState().handleDashboardSelection({ selectedTaskId: 'task-c', selectedSessionId: 'c', selectionVersion: 2 });
+      expect(store.getState().selectedAgentId).toBe('c');
+      expect(store.getState().narrowTab).toBe('activity');
+      expect(store.getState().leftPane).toBe('activity');
+    });
+
+    test('a server echo of the task on screen keeps the GitHub tab', () => {
+      store.getState().handleSnapshot([finding('a')]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setLeftPane('github');
+      store.getState().setNarrowTab('github');
+
+      store.getState().handleDashboardSelection({ selectedTaskId: 'task-a', selectedSessionId: 'a', selectionVersion: 1 });
+
+      expect(store.getState().narrowTab).toBe('github');
+      expect(store.getState().leftPane).toBe('github');
+    });
+
+    test('a server selection of the same session under another task follows the rule', () => {
+      store.getState().handleSnapshot([finding('a')]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setLeftPane('github');
+      store.getState().setNarrowTab('github');
+
+      store.getState().handleDashboardSelection({ selectedTaskId: 'task-a2', selectedSessionId: 'a', selectionVersion: 1 });
+
+      expect(store.getState().narrowTab).toBe('activity');
+    });
+
+    test('sidebar project selection keeps the Terminal tab', () => {
+      store.getState().handleSnapshot([
+        { ...finding('a'), projectId: 'p1' },
+        { ...finding('b'), projectId: 'p2' },
+      ]);
+      store.getState().selectAgent('a', 'task-a');
+      store.getState().setNarrowTab('terminal');
+
+      store.getState().selectProject('p2');
+
+      expect(store.getState().selectedAgentId).toBe('b');
+      expect(store.getState().narrowTab).toBe('terminal');
+    });
+
+    test('the first-snapshot restore keeps a Terminal tab chosen before it', () => {
+      localStore.set('kookr-selected-task', JSON.stringify({ taskId: 'task-a', agentId: 'a', selectedAt: Date.now() }));
+      store = createKookrStore();
+      store.getState().setNarrowTab('terminal');
+
+      store.getState().handleSnapshot([finding('a')]);
+
+      expect(store.getState().selectedAgentId).toBe('a');
+      expect(store.getState().narrowTab).toBe('terminal');
+    });
+  });
+
   test('nextTask cycles through findings then healthy in round-robin', () => {
     store.getState().handleSnapshot([
       { agentId: 'healthy-1', events: [], anomaly: null },
