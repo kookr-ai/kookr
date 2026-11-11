@@ -83,6 +83,20 @@ describe('summarizeTaskForSpeech', () => {
     expect(call.userMessage.length).toBeLessThan(700);
   });
 
+  test('leaves room for a reasoning model to think before it writes the JSON', async () => {
+    const client: LlmClient = {
+      provider: 'test',
+      model: 'test-model',
+      complete: vi.fn().mockResolvedValue('{"summary":"Task is running."}'),
+    };
+    await summarizeTaskForSpeech(client, baseInput);
+    const call = (client.complete as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    // A 120-token budget ended about one call in ten with finish reason "length" (see MAX_OUTPUT_TOKENS).
+    expect(call.maxTokens).toBeGreaterThan(120);
+    // The schema must not cut a summary the validator accepts (336 characters, tested below).
+    expect(call.responseFormat.jsonSchema.schema.properties.summary.maxLength).toBe(336);
+  });
+
   test('fallback redacts token-shaped text, and a title that held one is not spoken at all', () => {
     const text = fallbackTaskSpeechSummary({
       taskName: 'Secret sk-1234567890abcdefghijklmnop',
@@ -359,11 +373,38 @@ describe('summarizeTaskForSpeech', () => {
       expect(result.text.endsWith('number 42.')).toBe(true);
     });
 
-    test('a summary over the caps before the transform is still rejected', async () => {
-      const summary = `${Array(46).fill('word').join(' ')} #42`;
+    test('a summary a few words over the requested 45 is spoken rather than replaced by the template', async () => {
+      const summary = `${Array(48).fill('word').join(' ')} done.`;
       const client = mockClient(JSON.stringify({ summary }));
       const result = await summarizeTaskForSpeech(client, baseInput);
-      expect(result.usedFallback).toBe(true);
+      expect(result).toEqual({ text: summary, usedFallback: false });
+    });
+
+    // The model may run a fifth over the requested 45 words and 280 characters: 54 words, 336 characters.
+    test.each([
+      ['54 words', `${Array(53).fill('word').join(' ')} done.`, false],
+      ['55 words', `${Array(54).fill('word').join(' ')} done.`, true],
+      ['336 characters', `${Array(30).fill('wordswords').join(' ')} abcde.`, false],
+      ['337 characters', `${Array(30).fill('wordswords').join(' ')} abcdef.`, true],
+    ])('the overshoot allowance ends exactly at its limit: %s', async (label, summary, usedFallback) => {
+      if (label.endsWith('characters')) expect(summary).toHaveLength(Number.parseInt(label, 10));
+      else expect(summary.split(' ')).toHaveLength(Number.parseInt(label, 10));
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(usedFallback);
+    });
+
+    // "#12" is spoken as "number 12": one word in, two words out. The spoken ceiling is 67 words (45 x 1.5).
+    test.each([
+      ['67 spoken words', 31, 18, false],
+      ['68 spoken words', 30, 19, true],
+    ])('a summary within the model caps is re-checked against the spoken ceiling: %s', async (_label, plain, refs, usedFallback) => {
+      const summary = `${[...Array(plain).fill('word'), ...Array(refs).fill('#12')].join(' ')}.`;
+      expect(summary.split(' ').length).toBeLessThanOrEqual(54);
+      const client = mockClient(JSON.stringify({ summary }));
+      const result = await summarizeTaskForSpeech(client, baseInput);
+      expect(result.usedFallback).toBe(usedFallback);
+      if (!usedFallback) expect(result.text.split(' ')).toHaveLength(plain + refs * 2);
     });
 
     test('fallback output is made speakable and reports rawText when it changed', async () => {

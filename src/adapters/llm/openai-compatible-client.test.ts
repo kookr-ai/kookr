@@ -89,6 +89,25 @@ describe('OpenAiCompatibleLlmClient', () => {
     });
   });
 
+  test('extra body fields are sent, but never replace a field the client builds', async () => {
+    const fetchMock = stubFetch(jsonResponse({ choices: [{ message: { content: 'ok' } }] }));
+    const client = new OpenAiCompatibleLlmClient({
+      provider: 'baseten',
+      apiKey: API_KEY,
+      model: 'real-model',
+      baseUrl: 'https://inference.baseten.co/v1',
+      extraBody: { reasoning_effort: 'low', model: 'other-model', max_tokens: 1, messages: [] },
+    });
+
+    await client.complete(baseReq);
+
+    const body = requestBody(fetchMock);
+    expect(body.reasoning_effort).toBe('low');
+    expect(body.model).toBe('real-model');
+    expect(body.max_tokens).toBe(baseReq.maxTokens);
+    expect(body.messages).not.toEqual([]);
+  });
+
   test('completeDetailed surfaces the provider finish reason (issue #1555)', async () => {
     // Reasoning model burned the whole token budget: empty content, finish_reason=length.
     stubFetch(jsonResponse({ choices: [{ finish_reason: 'length', message: { content: '' } }] }));

@@ -102,13 +102,15 @@ Requesty model ids use provider prefixes such as `openai/gpt-4o-mini`.
 ```bash
 KOOKR_LLM_PROVIDER=baseten
 KOOKR_BASETEN_API_KEY=...             # or BASETEN_API_KEY
-KOOKR_BASETEN_MODEL=nvidia/Nemotron-120B-A12B
+KOOKR_BASETEN_MODEL=deepseek-ai/DeepSeek-V4.1-Flash-Fast
 ```
 
-Baseten defaults to model `nvidia/Nemotron-120B-A12B` at
+Baseten defaults to model `deepseek-ai/DeepSeek-V4.1-Flash-Fast` at
 `https://inference.baseten.co/v1` (override with `KOOKR_BASETEN_BASE_URL`).
 `KOOKR_BASETEN_API_KEY` is preferred over `BASETEN_API_KEY` so a Kookr-scoped
 credential can be kept separate. `KOOKR_BASETEN_MODEL` applies only to Baseten.
+`KOOKR_BASETEN_REASONING_EFFORT` (`none`, `low`, `high`, ...) sets how much the
+model reasons before answering; leave it unset for the model's default.
 
 Without any provider key, Kookr still works. It falls back to truncated prompt
 names and omits AI suggestions.

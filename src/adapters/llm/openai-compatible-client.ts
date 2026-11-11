@@ -21,6 +21,12 @@ export interface OpenAiCompatibleClientOptions {
   model: string;
   baseUrl: string;
   extraHeaders?: Record<string, string>;
+  /**
+   * Provider-specific top-level request fields (e.g. `reasoning_effort`). Applied first, so
+   * any field this client sets for a request (`model`, `max_tokens`, `messages`, and
+   * `response_format` / `tools` / `tool_choice` when the request has them) replaces it.
+   */
+  extraBody?: Record<string, unknown>;
   timeoutMs?: number;
   defaultTimeoutMs?: number;
 }
@@ -142,6 +148,7 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
   private readonly apiKey: string;
   private readonly endpoint: string;
   private readonly extraHeaders: Record<string, string>;
+  private readonly extraBody: Record<string, unknown>;
   private readonly timeoutMs?: number;
   private readonly defaultTimeoutMs: number;
 
@@ -152,6 +159,7 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
     const baseUrl = options.baseUrl.trim().replace(/\/+$/, '');
     this.endpoint = `${baseUrl}/chat/completions`;
     this.extraHeaders = options.extraHeaders ?? {};
+    this.extraBody = options.extraBody ?? {};
     this.timeoutMs = options.timeoutMs !== undefined && options.timeoutMs > 0
       ? options.timeoutMs
       : undefined;
@@ -172,6 +180,7 @@ export class OpenAiCompatibleLlmClient implements LlmClient {
     messages.push({ role: 'user', content: req.userMessage });
 
     const body: Record<string, unknown> = {
+      ...this.extraBody,
       model: this.model,
       max_tokens: req.maxTokens,
       messages,

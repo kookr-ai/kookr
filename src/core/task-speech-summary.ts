@@ -16,6 +16,19 @@ const TIMEOUT_MS = 5_000;
 const MAX_FIELD_CHARS = 180;
 const MAX_SUMMARY_CHARS = 280;
 const MAX_SUMMARY_WORDS = 45;
+/**
+ * Token budget for one summary call. The summary itself needs about 60 tokens, but a
+ * reasoning model spends hidden reasoning tokens before any JSON is emitted. With the
+ * former budget of 120 a share of calls finished with `length` before the JSON closed,
+ * and each of those was spoken as the template fallback. This is the same failure, and
+ * the same budget, as task naming (issue #1555).
+ */
+const MAX_OUTPUT_TOKENS = 512;
+/**
+ * How far over the requested caps a model summary may run and still be spoken. Models
+ * count words loosely: a 46-word summary is better listening than the template fallback.
+ */
+const MODEL_OVERSHOOT = 1.2;
 const MAX_ACTIVITY_ITEMS = 8;
 const MAX_ACTIVITY_LINE_CHARS = 220;
 const MAX_SPOKEN_EXPLANATION_CHARS = 100;
@@ -53,7 +66,7 @@ const TASK_SUMMARY_SCHEMA = {
     summary: {
       type: 'string',
       minLength: 1,
-      maxLength: MAX_SUMMARY_CHARS,
+      maxLength: Math.floor(MAX_SUMMARY_CHARS * MODEL_OVERSHOOT),
     },
   },
   required: ['summary'],
@@ -154,12 +167,12 @@ function wordCount(value: string): number {
   return value.split(/\s+/).filter(Boolean).length;
 }
 
-/** Hard ceiling for the spoken text, as a multiple of the caps the model text must meet. */
+/** Hard ceiling for the spoken text, as a multiple of the caps the model is asked to meet. */
 const SPOKEN_CEILING = 1.5;
 
 function withinSummaryLimits(summary: string): boolean {
-  return summary.length <= MAX_SUMMARY_CHARS
-    && wordCount(summary) <= MAX_SUMMARY_WORDS
+  return summary.length <= MAX_SUMMARY_CHARS * MODEL_OVERSHOOT
+    && wordCount(summary) <= MAX_SUMMARY_WORDS * MODEL_OVERSHOOT
     && !ADVICE_VERB_DENYLIST.test(summary);
 }
 
@@ -387,7 +400,7 @@ export async function summarizeTaskForSpeech(
   try {
     const raw = await client.complete({
       useCase: 'task_speech_summary',
-      maxTokens: 120,
+      maxTokens: MAX_OUTPUT_TOKENS,
       system: SYSTEM_PROMPT,
       userMessage: promptPayload(input),
       responseFormat: {

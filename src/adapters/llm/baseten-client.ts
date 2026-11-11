@@ -11,15 +11,40 @@
 import { OpenAiCompatibleLlmClient } from './openai-compatible-client.js';
 import type { LlmClient, LlmCompletionDetail, LlmCompletionRequest } from '../../core/llm-types.js';
 
-const DEFAULT_MODEL = 'nvidia/Nemotron-120B-A12B';
+const DEFAULT_MODEL = 'deepseek-ai/DeepSeek-V4.1-Flash-Fast';
 const DEFAULT_BASE_URL = 'https://inference.baseten.co/v1';
 const DEFAULT_TIMEOUT_MS = 20_000;
+
+/**
+ * Reasoning depths Baseten's Model APIs accept as the top-level `reasoning_effort`
+ * (named levels only: a number is rejected with HTTP 400). Which levels a model
+ * honours is listed per model in Baseten's reasoning docs.
+ */
+export const BASETEN_REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+export type BasetenReasoningEffort = typeof BASETEN_REASONING_EFFORTS[number];
 
 export interface BasetenClientOptions {
   apiKey: string;
   model?: string;
   baseUrl?: string;
   timeoutMs?: number;
+  /** Sent as `reasoning_effort` on every request. Unset leaves the model's own default. */
+  reasoningEffort?: BasetenReasoningEffort;
+}
+
+/**
+ * Read `KOOKR_BASETEN_REASONING_EFFORT`. Unset or blank means "do not send the field".
+ * An unknown value is ignored with a warning: sending it would turn every helper call
+ * into an HTTP 400.
+ */
+export function readBasetenReasoningEffort(env: BasetenEnv = process.env): BasetenReasoningEffort | undefined {
+  const raw = env.KOOKR_BASETEN_REASONING_EFFORT?.trim().toLowerCase();
+  if (!raw) return undefined;
+  if ((BASETEN_REASONING_EFFORTS as readonly string[]).includes(raw)) return raw as BasetenReasoningEffort;
+  console.warn(
+    `[llm] Unknown KOOKR_BASETEN_REASONING_EFFORT="${raw.slice(0, 40)}" — expected ${BASETEN_REASONING_EFFORTS.join('|')}. Using the model's default reasoning depth.`,
+  );
+  return undefined;
 }
 
 export type BasetenEnv = Record<string, string | undefined>;
@@ -39,6 +64,7 @@ export function createBasetenLlmClientFromEnv(env: BasetenEnv = process.env): Ll
     apiKey: key,
     model: env.KOOKR_BASETEN_MODEL?.trim() || undefined,
     baseUrl: env.KOOKR_BASETEN_BASE_URL?.trim() || undefined,
+    reasoningEffort: readBasetenReasoningEffort(env),
   });
 }
 
@@ -54,6 +80,7 @@ export class BasetenLlmClient implements LlmClient {
       apiKey: options.apiKey,
       model: this.model,
       baseUrl: options.baseUrl?.trim() || DEFAULT_BASE_URL,
+      extraBody: options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : undefined,
       timeoutMs: options.timeoutMs,
       defaultTimeoutMs: DEFAULT_TIMEOUT_MS,
     });

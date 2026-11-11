@@ -55,9 +55,9 @@ describe('createLlmClient Baseten adapter integration', () => {
     const client = await createLlmClient({ buildBaseten: createBasetenLlmClientFromEnv });
 
     expect(client?.provider).toBe('baseten');
-    expect(client?.model).toBe('nvidia/Nemotron-120B-A12B');
+    expect(client?.model).toBe('deepseek-ai/DeepSeek-V4.1-Flash-Fast');
     await expect(client?.complete({ maxTokens: 16, userMessage: 'hello' })).resolves.toBe('ok');
     expect(fetchMock.mock.calls[0][0]).toBe('https://inference.baseten.co/v1/chat/completions');
-    expect(requestBody(fetchMock).model).toBe('nvidia/Nemotron-120B-A12B');
+    expect(requestBody(fetchMock).model).toBe('deepseek-ai/DeepSeek-V4.1-Flash-Fast');
   });
 });
