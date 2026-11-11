@@ -241,11 +241,12 @@ lesson and lowers by one point the score of the remaining lesson touched least
 recently (`nb` calls this aging), so moving a weak lesson into a
 full shelf destroys a better one. The script therefore simulates the moves one at
 a time (highest score first), prints every eviction and point it would cost, and
-refuses a move whose lesson does not score strictly **above** a **full** target's
-lowest lesson, counting each lesson at the score it had when the run started (or
-when it arrived), so the aging that earlier moves cause cannot lower the bar unless `--force-low` is given (an equal
-swap would only trade one lesson for another that is no better, and equal-scored lessons would push each
-other out one by one). A target already holding more than the cap would lose
+refuses a move that would evict (from a **full** target) a lesson scoring the same
+or higher than the mover, unless `--force-low` is given: that would only trade one
+lesson for another that is no better, and equal-scored lessons would push each
+other out one by one. The victim counts at the score it had when the run started
+(or when it arrived), so the aging that earlier moves cause cannot make an equal
+lesson look expendable. A target already holding more than the cap would lose
 several lessons at once, so that is refused too. It also predicts the cases `nb` refuses: a lesson the
 target already holds is left on its legacy shelf and listed for a manual decision
 (`nb move` prints "skipped" and exits 0, so the script reads the `--json` result,

@@ -20,10 +20,13 @@
 // so moving a weak lesson into a full shelf destroys a better one. The plan is
 // therefore simulated one move at a time (scripts/lib/nb-sim.mjs; a parity test
 // replays it against the real `nb`), and:
-//   * if the target is FULL and the mover does not score STRICTLY above the
-//     target's lowest lesson, the move is refused unless --force-low: it would
-//     evict a lesson that is no worse, and equal-scored lessons would push each
-//     other out one by one (a non-full target never refuses: nothing is evicted);
+//   * if the target is FULL and the lesson `nb` would evict scores the same or
+//     higher than the mover, the move is refused unless --force-low: it would
+//     trade a lesson for one that is no better, and equal-scored lessons would
+//     push each other out one by one. The victim counts at the score it had when
+//     the run started (or arrived), so the aging that earlier moves cause cannot
+//     make an equal lesson look expendable (a non-full target never refuses:
+//     nothing is evicted);
 //   * if the target already holds MORE than the cap, a move would evict several
 //     lessons at once (`nb move --json` reports only the first), so it is refused
 //     unless --force-low;
@@ -149,7 +152,7 @@ export function planMigration({ snapshot, aliases, cap = maxLines(), forceLow = 
       step.decision = decision;
       if (decision.action === 'move') {
         applyMove(sim, step.from, step.to, step.id, cap);
-        noteMoved(bars, step.to, step.id, step.score);
+        noteMoved(bars, step.id, step.score);
       }
       steps.push(step);
     }
@@ -194,7 +197,7 @@ export function printPlan({ plan, snapshot, cap, forceLow, log }) {
           log(`       and docks ${d.prediction.docked.id} ${fmtScore(d.prediction.docked.from)} -> ${fmtScore(d.prediction.docked.to)}`);
         }
       } else if (d.reason === 'low-score') {
-        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) does not score above the full target's bar (${fmtScore(d.bar)}, the lowest un-aged score there); moving it would evict a lesson that is no worse. Re-run with --force-low to move anyway.`);
+        log(`${n}. SKIP low score: ${s.from} ${s.id} (${fmtScore(s.score)}) would evict ${d.victim.id} (${fmtScore(d.bar)} un-aged) from the full ${s.to}, a lesson that scores no lower. Moving it would be a pure loss. Re-run with --force-low to move anyway.`);
       } else if (d.reason === 'over-cap') {
         log(`${n}. SKIP over-cap: ${s.to} already holds more than ${cap} lessons, so moving ${s.from} ${s.id} would evict ${d.prediction.evictedAll.length} of them at once. Trim the target by hand or re-run with --force-low.`);
       } else if (d.reason === 'duplicate') {
@@ -270,7 +273,7 @@ export function runMigration({
   // The bar a mover must clear comes from the store as it was when the migration
   // began: the rollback tag's tree on a resumed run, else the store now. Otherwise
   // the aging that run 1's moves caused would lower the bar for run 2.
-  const baseline = (isStoreGitRepo(dir) ? storeAtTag(dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
+  const baseline = (isStoreGitRepo(dir) ? storeAtTag(dir, tag) : null) ?? snapshot.store;
   const baselines = baselineScores(baseline);
   const plan = planMigration({ snapshot, aliases, cap, forceLow, baselines });
   const applyBars = cloneBaselines(baselines);
@@ -359,7 +362,7 @@ export function runMigration({
       continue;
     }
     moved++;
-    noteMoved(applyBars, step.to, step.id, step.score);
+    noteMoved(applyBars, step.id, step.score);
     result.performed.push({ ...step, evicted: r.evicted });
     if (client.expectsCommits && headSha(dir) === headBefore) {
       result.ok = false;

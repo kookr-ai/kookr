@@ -174,7 +174,7 @@ describe('migrate-notebook-slugs: --apply', { timeout: 120_000 }, () => {
     commitAll(dir);
     const dry = run(dir, { cap: 3 });
     expect(dry.text).toContain('SKIP low score');
-    expect(dry.text).toContain('does not score above');
+    expect(dry.text).toContain('a lesson that scores no lower');
     for (let i = 0; i < 2; i++) {
       const { result } = run(dir, { apply: true, cap: 3 });
       expect(result.ok).toBe(false); // two lessons await a manual decision
@@ -568,6 +568,39 @@ describe('migrate-notebook-slugs: --apply guards', { timeout: 120_000 }, () => {
     expect(second.result.performed).toEqual([]);
     expect(readLessons(dir, `code-review@${CANON}`)).toEqual(afterFirst);
     expect(readLessons(dir, 'code-review@agent-notebook').map(([, t]) => t).sort()).toEqual(['weak a', 'weak b']);
+  });
+
+  test('RESUME after an interruption: a lesson the first run already moved in keeps its un-aged score, so the second run decides like an uninterrupted one', () => {
+    const seed = (dir: string) => {
+      writeShelf(dir, 'x@Agent-Notebook', L([2, 'papa'], [2, 'quebec'], [2, 'romeo']));
+      writeShelf(dir, 'x@agent-notebook', L([3, 'sierra'], [2, 'tango']));
+      commitAll(dir);
+    };
+    const whole = store();
+    seed(whole);
+    run(whole, { apply: true, cap: 3 });
+
+    const resumed = store();
+    seed(resumed);
+    run(resumed, { apply: true, cap: 3, stopAfter: 3 });
+    const second = run(resumed, { apply: true, cap: 3 });
+    expect(second.result.ok === false || second.result.ok === true).toBe(true);
+    const target = (d: string) => readLessons(d, `x@${CANON}`).map(([, t]) => t).sort();
+    expect(target(resumed)).toEqual(target(whole));
+    expect(readLessons(resumed, 'x@agent-notebook').concat(readLessons(resumed, 'x@Agent-Notebook')).map(([, t]) => t).sort()).toEqual(
+      readLessons(whole, 'x@agent-notebook').concat(readLessons(whole, 'x@Agent-Notebook')).map(([, t]) => t).sort(),
+    );
+  });
+
+  test('a victim that merely TIES the mover once its aging is undone is refused (single uninterrupted run)', () => {
+    const dir = store();
+    writeShelf(dir, `code-review@${CANON}`, L([3, 'alpha'], [2, 'bravo'], [2, 'charlie'])); // alpha is the least recently touched
+    writeShelf(dir, 'code-review@agent-notebook', L([3, 'in one'], [3, 'in two']));
+    commitAll(dir);
+    run(dir, { apply: true, cap: 3 });
+    // 'in one' evicts bravo (+2) and ages alpha to +2; 'in two' would then evict alpha, which was +3 when the run began: refused.
+    expect(readLessons(dir, `code-review@${CANON}`).map(([, t]) => t).sort()).toEqual(['alpha', 'charlie', 'in one']);
+    expect(readLessons(dir, 'code-review@agent-notebook')).toEqual([[3, 'in two']]);
   });
 
   test('a set-but-blank NB_DIR (an unset shell variable) is refused instead of falling back to the live store', () => {

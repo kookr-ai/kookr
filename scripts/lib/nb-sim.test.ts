@@ -126,26 +126,41 @@ describe('decideStep', () => {
   test('a lesson that already left the source is "already-moved"', () => {
     expect(decideStep(full(), step('gone'), { cap: 3 })).toMatchObject({ action: 'skip', reason: 'already-moved' });
   });
-  test('the bar uses UN-AGED scores: a lesson docked from +1 to 0 still counts as +1, and a lesson that arrived counts at its arrival score', () => {
+  test('the victim counts at its UN-AGED score: a lesson docked from +1 to 0 is still not expendable for a +1 mover', () => {
     const store = new Map([
       ['a', [mk('m', 1)]],
       ['t', [mk('aged', 0), mk('b', 5), mk('c', 5)]],
     ]);
     const step = { from: 'a', to: 't', id: 'm' };
-    // Without baselines the aged lesson (0) is the minimum, so a +1 is let in...
+    // Without a baseline the aged lesson (0) looks expendable...
     expect(decideStep(store, step, { cap: 3 }).action).toBe('move');
-    // ...with the start-of-run baseline (aged was +1) it is not.
+    // ...with the start-of-run baseline (it was +1) it is not.
     const baselines = baselineScores(new Map([['t', [mk('aged', 1), mk('b', 5), mk('c', 5)]]]));
     expect(decideStep(store, step, { cap: 3, baselines })).toMatchObject({ action: 'skip', reason: 'low-score', bar: 1 });
-    // A lesson that arrived at +4 and was docked to +3 keeps counting as +4: a +4 mover ties it and is refused, a +5 mover is let in.
-    const arrived = noteMoved(new Map(), 't', 'c', 4);
-    const s2 = (score: number) =>
-      new Map([
-        ['a', [mk('m', score)]],
-        ['t', [mk('aged', 5), mk('b', 5), mk('c', 3)]],
-      ]);
-    expect(decideStep(s2(4), step, { cap: 3, baselines: arrived })).toMatchObject({ action: 'skip', reason: 'low-score', bar: 4 });
-    expect(decideStep(s2(5), step, { cap: 3, baselines: arrived }).action).toBe('move');
+  });
+
+  test('the victim is the lesson nb would really evict (lowest CURRENT score), judged at its un-aged score', () => {
+    // alpha (+3, least recently touched) was aged to +2 by an earlier move; charlie is +2. nb evicts alpha (tie, earliest).
+    const store = new Map([
+      ['a', [mk('m', 3)]],
+      ['t', [mk('alpha', 2), mk('bravo2', 4), mk('charlie', 2)]],
+    ]);
+    const step = { from: 'a', to: 't', id: 'm' };
+    const baselines = baselineScores(new Map([['t', [mk('alpha', 3), mk('bravo2', 4), mk('charlie', 2)]]]));
+    expect(decideStep(store, step, { cap: 3, baselines })).toMatchObject({ action: 'skip', reason: 'low-score', bar: 3 });
+  });
+
+  test('a baseline follows the lesson id across shelves (a lesson an interrupted run already moved)', () => {
+    // At the rollback tag, quebec sat on the SOURCE shelf at +2. It has since moved to the target and been aged to +1.
+    const atTag = new Map([['src', [mk('quebec', 2)]], ['t', []]]);
+    const now = new Map([
+      ['a', [mk('m', 2)]],
+      ['t', [mk('quebec', 1), mk('p', 5), mk('r', 5)]],
+    ]);
+    const baselines = baselineScores(atTag);
+    expect(decideStep(now, { from: 'a', to: 't', id: 'm' }, { cap: 3, baselines })).toMatchObject({ action: 'skip', reason: 'low-score' });
+    // A lesson that arrives is recorded at its arrival score.
+    expect(noteMoved(new Map(), 'x', 4).get('x')).toBe(4);
   });
 
   test('a target already OVER the cap would lose several lessons at once: refused unless forced', () => {

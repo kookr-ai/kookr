@@ -41,9 +41,10 @@
 //     drops the target's lowest-scored lesson to admit the moved one, and lowers
 //     the score of the lesson touched least recently by one point ("aging"); the
 //     plan shows both.
-//   * Moving a lesson that does not score strictly above a FULL target's lowest
-//     lesson is refused unless --force-low (an equal swap is a pure loss); so is
-//     a move into a target already over the cap, which would evict several.
+//   * A move that would evict a lesson scoring the same or higher is refused
+//     unless --force-low (an equal swap is a pure loss). The victim counts at its
+//     score when the run started (or arrived), not its aged score. A move into a
+//     target already over the cap, which would evict several, is refused too.
 //   * A move `nb` would refuse because the target already holds the lesson is
 //     predicted and skipped, and that group's other copies are NOT removed.
 //   * Results are read from `nb move --json` (`reason` must be "moved"), never
@@ -276,7 +277,7 @@ export function planPromotion({ groups, selected, toGlobal, store, cap = maxLine
       step.decision = decideStep(store, step, { cap, forceLow, baselines: bars });
       if (chosen && step.decision.action === 'move') {
         applyMove(store, step.from, step.to, step.id, cap);
-        noteMoved(bars, step.to, step.id, step.score);
+        noteMoved(bars, step.id, step.score);
         // An exact group's other copies go only after the move; model it so
         // later steps see the shelves as they will be.
         for (const m of step.removes) applyRemove(store, m.shelf, m.id);
@@ -333,7 +334,7 @@ export function printReport({ snapshot, found, steps, cap, threshold, toGlobal, 
     } else if (d.reason === 'duplicate') {
       log(`    SKIP: ${step.to} already holds this lesson (${d.prediction.collidedId}); nb would refuse ("skipped", exit 0). Nothing is removed; decide by hand.`);
     } else if (d.reason === 'low-score') {
-      log(`    SKIP: ${fmtScore(step.score)} does not score above the full target's bar (${fmtScore(d.bar)}, the lowest un-aged score there); it would evict a lesson that is no worse. --force-low overrides.`);
+      log(`    SKIP: ${fmtScore(step.score)} would evict ${d.victim.id} (${fmtScore(d.bar)} un-aged) from the full ${step.to}, a lesson that scores no lower. --force-low overrides.`);
     } else if (d.reason === 'over-cap') {
       log(`    SKIP: ${step.to} already holds more than ${cap} lessons, so this move would evict ${d.prediction.evictedAll.length} of them at once. --force-low overrides.`);
     } else if (d.reason === 'bad-destination') {
@@ -412,7 +413,7 @@ export function runPromotion({
   // RESUME an earlier run, pass its tag (--tag <name>, printed at the end of that
   // run): the tag's tree is then the baseline, so the aging its moves caused cannot
   // lower the bar. Without an existing tag, the store as it is now.
-  const baseline = (tag && isStoreGitRepo(snapshot.dir) ? storeAtTag(snapshot.dir, tag, [...snapshot.store.keys()]) : null) ?? snapshot.store;
+  const baseline = (tag && isStoreGitRepo(snapshot.dir) ? storeAtTag(snapshot.dir, tag) : null) ?? snapshot.store;
   const baselines = baselineScores(baseline);
   const applyBars = cloneBaselines(baselines);
   const sim = cloneStore(snapshot.store);
@@ -491,7 +492,7 @@ export function runPromotion({
         log(`  SKIP ${String(r.reason).padEnd(10)} ${label}   (copies left in place)`);
         continue;
       }
-      noteMoved(applyBars, step.to, step.id, step.score);
+      noteMoved(applyBars, step.id, step.score);
       result.performed.push({ id: g.id, from: step.from, to: step.to, lesson: step.id });
       if (client.expectsCommits && headSha(dir) === headBefore) {
         result.ok = false;

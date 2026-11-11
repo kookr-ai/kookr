@@ -334,18 +334,21 @@ export function readFileOrderIds(dir, shelf) {
 }
 
 /**
- * The store as it was at git ref `tag` (a rollback tag), for `shelves`: a
- * Map<shelf, entries in file order>. Returns `null` when the tag does not exist.
- * A resumed run judges its moves against this baseline, not against the store as
- * the earlier part of the run left it, so the one-point aging that earlier moves
- * caused cannot lower the bar for the rest.
+ * The whole store as it was at git ref `tag` (a rollback tag): a
+ * Map<shelf, entries in file order> over every `<shelf>.md` in the tag's tree.
+ * Returns `null` when the tag does not exist. A resumed run judges its moves
+ * against this baseline, not against the store as the earlier part of the run left
+ * it, so the one-point aging that earlier moves caused cannot lower the bar.
  */
-export function storeAtTag(dir, tag, shelves) {
+export function storeAtTag(dir, tag) {
   if (!git(dir, ['rev-parse', '-q', '--verify', `refs/tags/${tag}`]).ok) return null;
+  const listing = git(dir, ['ls-tree', '-r', '--name-only', `refs/tags/${tag}`]);
+  if (!listing.ok) return null;
   const store = new Map();
-  for (const shelf of shelves) {
-    const r = git(dir, ['show', `refs/tags/${tag}:${shelf}.md`]);
-    store.set(shelf, r.ok ? parseShelfText(r.stdout) : []);
+  for (const file of listing.stdout.split('\n')) {
+    if (!file.endsWith('.md') || file.includes('/')) continue;
+    const r = git(dir, ['show', `refs/tags/${tag}:${file}`]);
+    if (r.ok) store.set(file.slice(0, -3), parseShelfText(r.stdout));
   }
   return store;
 }
