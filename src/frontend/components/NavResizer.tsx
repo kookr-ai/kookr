@@ -10,6 +10,12 @@ const KEY_STEP_LARGE_PX = 48;
  * move), and must not change or store a width.
  */
 const DRAG_THRESHOLD_PX = 3;
+/**
+ * How long after a drag ends a double-click on the divider is ignored. Two
+ * short drags in quick succession reach the browser as a double-click; without
+ * this window the second one would throw away the width it had just set.
+ */
+const DOUBLE_CLICK_AFTER_DRAG_MS = 500;
 
 interface Props {
   /** Width the navigation is currently drawn at: the stored preference, or the default. */
@@ -41,10 +47,8 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
   // Ends a drag in progress (see `finish` below). Kept so the drag is also
   // ended if the divider unmounts mid-drag: terminal focus hides the navigation.
   const dragCleanup = useRef<(() => void) | null>(null);
-  // Whether each of the last two presses became a drag. Two short drags in
-  // quick succession look like a double-click to the browser; this is how the
-  // reset tells them apart from two plain clicks.
-  const recentPressWasDrag = useRef<[boolean, boolean]>([false, false]);
+  // When the last drag ended (`performance.now()`), for DOUBLE_CLICK_AFTER_DRAG_MS.
+  const lastDragEndedAt = useRef(Number.NEGATIVE_INFINITY);
 
   useEffect(() => () => dragCleanup.current?.(), []);
 
@@ -59,6 +63,9 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
     if (event.button !== 0) return;
     event.preventDefault();
     dragCleanup.current?.();
+    // Only the pointer that pressed the divider drives the drag. A second
+    // finger on a touch screen must neither move the navigation nor end the drag.
+    const { pointerId } = event;
     const startX = event.clientX;
     const startWidth = renderedWidth();
     const widthAt = (clientX: number) => clampNavWidth(startWidth + (clientX - startX));
@@ -67,6 +74,7 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
     let liveWidth: number | null = null;
 
     const handleMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
       // The button is no longer held, so the release was missed (it can happen
       // over an embedded frame). End the drag instead of following a free pointer.
       if ((moveEvent.buttons & 1) === 0) {
@@ -78,8 +86,12 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
       onResize(liveWidth);
     };
     const handleUp = (upEvent: PointerEvent) => {
+      if (upEvent.pointerId !== pointerId) return;
       if (liveWidth !== null) liveWidth = widthAt(upEvent.clientX);
       finish();
+    };
+    const handleCancel = (cancelEvent: PointerEvent) => {
+      if (cancelEvent.pointerId === pointerId) finish();
     };
     // Every way a press ends goes through here: release, the browser cancelling
     // the gesture, a missed release, a new press, or the divider unmounting.
@@ -90,12 +102,14 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
     function finish() {
       window.removeEventListener('pointermove', handleMove);
       window.removeEventListener('pointerup', handleUp);
-      window.removeEventListener('pointercancel', finish);
+      window.removeEventListener('pointercancel', handleCancel);
       dragCleanup.current = null;
       setDragging(false);
       onResizeStateChange(false);
-      recentPressWasDrag.current = [recentPressWasDrag.current[1], liveWidth !== null];
-      if (liveWidth !== null) onCommit(liveWidth);
+      if (liveWidth !== null) {
+        lastDragEndedAt.current = performance.now();
+        onCommit(liveWidth);
+      }
     }
 
     dragCleanup.current = finish;
@@ -103,11 +117,11 @@ export function NavResizer({ width, onResizeStateChange, onResize, onCommit, onR
     onResizeStateChange(true);
     window.addEventListener('pointermove', handleMove);
     window.addEventListener('pointerup', handleUp);
-    window.addEventListener('pointercancel', finish);
+    window.addEventListener('pointercancel', handleCancel);
   };
 
   const handleDoubleClick = () => {
-    if (recentPressWasDrag.current.some(Boolean)) return;
+    if (performance.now() - lastDragEndedAt.current < DOUBLE_CLICK_AFTER_DRAG_MS) return;
     onReset();
   };
 

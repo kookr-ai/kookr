@@ -9993,14 +9993,15 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   .main {
     --nav-width-used: var(--nav-width, 212px);
   }
-  /* The coordinator findings pane is a fourth column (300 px). While it is
-     open, the navigation gives back any width beyond the default unless the
-     window has room for everything: 1148 px = 300 (that pane) + 420 (widest
-     default task list) + 428 (reading pane floor). A chosen width narrower
-     than the default is kept. The divider is hidden meanwhile (further
-     down), so a drag never stores a width the layout is not showing. */
+  /* The coordinator findings pane is a fourth column that none of the width
+     limits budget for. While it is open the navigation is drawn no wider
+     than the default, so opening it never leaves less room for the task list
+     and the reading pane than it did before the navigation was resizable. A
+     chosen width narrower than the default is kept. The divider is hidden
+     meanwhile (further down), so a drag never stores a width the layout is
+     not showing. */
   .main:has(> .coordinator-findings-pane) {
-    --nav-width-used: min(var(--nav-width, 212px), max(212px, calc(100% - 1148px)));
+    --nav-width-used: min(var(--nav-width, 212px), 212px);
   }
   .project-sidebar.labelled {
     align-items: stretch;
@@ -10185,13 +10186,16 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
     max-width: max(280px, calc(100% - 428px - var(--nav-width-used, 212px)));
   }
 
-  /* Divider on the navigation's right edge (NavResizer.tsx). It overlaps the
-     navigation's border with negative margins, so it takes no layout width. */
+  /* Divider on the navigation's right edge (NavResizer.tsx). Negative margins
+     make it take no layout width. It covers the navigation's 1 px border and
+     the first 5 px of the task list's padding, not the navigation itself:
+     the navigation's scrollbar sits against that border and must stay easy
+     to grab when the project list is long. */
   .project-sidebar.labelled + .nav-resizer {
     display: block;
     flex: 0 0 6px;
     align-self: stretch;
-    margin: 0 -3px;
+    margin: 0 -5px 0 -1px;
     z-index: 2;
     cursor: col-resize;
     background: transparent;
@@ -10202,14 +10206,14 @@ button.ops-health-pill.ops-health-timer-overdue:focus-visible {
   .main:has(> .coordinator-findings-pane) > .nav-resizer {
     display: none;
   }
+  /* The hover and focus line is drawn over the navigation's border. */
   .nav-resizer::after {
     content: '';
     position: absolute;
     top: 0;
     bottom: 0;
-    left: 50%;
+    left: 0;
     width: 1px;
-    transform: translateX(-50%);
     background: transparent;
     transition: background 0.12s ease;
   }

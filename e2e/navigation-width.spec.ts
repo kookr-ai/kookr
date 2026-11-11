@@ -148,6 +148,28 @@ test.describe('resizable left navigation', () => {
     expect(await storedNavWidth(page)).toBeNull();
   });
 
+  test('two quick short drags are two resizes, not the double-click that resets', async ({ page, request }) => {
+    await openWithProject(page, request);
+    const box = await page.getByTestId('nav-resizer').boundingBox();
+    expect(box).not.toBeNull();
+    const x = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+
+    // The second press follows at once and lands on the divider's new
+    // position; `clickCount: 2` is what the browser reports for it, and what
+    // makes it deliver a double-click when the button comes back up.
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x + 20, y, { steps: 4 });
+    await page.mouse.up();
+    await page.mouse.down({ clickCount: 2 });
+    await page.mouse.move(x + 40, y, { steps: 4 });
+    await page.mouse.up({ clickCount: 2 });
+
+    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH + 40);
+    expect(await storedNavWidth(page)).toBe(String(DEFAULT_NAV_WIDTH + 40));
+  });
+
   test('a drag far past either edge stops at the bounds', async ({ page, request }) => {
     await openWithProject(page, request);
 
@@ -239,9 +261,9 @@ test.describe('resizable left navigation', () => {
   });
 
   test('while the coordinator findings pane is open, a wide navigation gives its extra width back', async ({ page, request }) => {
-    // That pane is a fourth column. At 1280 px there is no room for it beside
-    // a 480 px navigation, so the navigation is drawn at the default width
-    // and the divider is hidden; the stored width is left alone.
+    // That pane is a fourth column the width limits do not budget for. While
+    // it is open the navigation is drawn at the default width and the divider
+    // is hidden; the stored width is left alone.
     await page.addInitScript(
       ({ key, max }) => window.localStorage.setItem(key, String(max)),
       { key: NAV_WIDTH_KEY, max: MAX_NAV_WIDTH },
@@ -256,17 +278,29 @@ test.describe('resizable left navigation', () => {
     await expect(page.getByTestId('nav-resizer')).toBeHidden();
     expect(await storedNavWidth(page)).toBe(String(MAX_NAV_WIDTH));
 
-    // A window with room for all four columns keeps the chosen width.
-    await page.setViewportSize({ width: 1700, height: 900 });
-    await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
+    // The same holds on a wide window: the rule does not depend on its size.
+    await page.setViewportSize({ width: 1900, height: 900 });
+    await expect(page.getByTestId('coordinator-findings-pane')).toBeVisible();
+    expect(await navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
+    await page.setViewportSize({ width: 1280, height: 900 });
 
     // Closing the pane restores the chosen width and the divider.
-    await page.setViewportSize({ width: 1280, height: 900 });
-    await expect.poll(() => navWidth(page)).toBe(DEFAULT_NAV_WIDTH);
     await trigger.click();
     await expect(page.getByTestId('coordinator-findings-pane')).toHaveCount(0);
     await expect.poll(() => navWidth(page)).toBe(MAX_NAV_WIDTH);
     await expect(page.getByTestId('nav-resizer')).toBeVisible();
+  });
+
+  test('a navigation chosen narrower than the default stays narrow while the coordinator findings pane is open', async ({ page, request }) => {
+    await page.addInitScript(
+      ({ key, min }) => window.localStorage.setItem(key, String(min)),
+      { key: NAV_WIDTH_KEY, min: MIN_NAV_WIDTH },
+    );
+    await openWithProject(page, request);
+    await expect.poll(() => navWidth(page)).toBe(MIN_NAV_WIDTH);
+    await page.getByRole('button', { name: /Coordinator findings/ }).click();
+    await expect(page.getByTestId('coordinator-findings-pane')).toBeVisible();
+    expect(await navWidth(page)).toBe(MIN_NAV_WIDTH);
   });
 
   test('at 1280 px the widest navigation leaves the task list its default width', async ({ page, request }) => {

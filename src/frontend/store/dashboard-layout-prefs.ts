@@ -87,7 +87,7 @@ export const DEFAULT_NAV_WIDTH = 212;
  * default width and the reading pane keeps its 428 px floor:
  * 480 + 358 + 428 = 1266. That sum assumes three columns. While the
  * coordinator findings pane adds a fourth, the stylesheet draws the
- * navigation narrower than the stored width where the window lacks room
+ * navigation no wider than the default, whatever is stored
  * (see `--nav-width-used` in styles.css).
  */
 export const MIN_NAV_WIDTH = 180;
