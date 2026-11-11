@@ -359,14 +359,16 @@ export function TopBar({
     'System status and build info',
     connected ? null : 'disconnected',
     attentionReasons.length > 0 ? `needs a look: ${attentionReasons.join(', ')}` : null,
-    quietNotes.length > 0 ? quietNotes.join(', ') : null,
+    quietNotes.labels.length > 0 ? quietNotes.labels.join(', ') : null,
     hasUpdates ? 'update available' : null,
   ].filter(Boolean).join('. ');
-  const soundMuted = quietNotes.includes('alert sounds muted');
-  const resourceElevated = quietNotes.some((note) => note.endsWith(' elevated'));
+  const { soundMuted, resourceElevated } = quietNotes;
   // A pill that opens a dialog closes System first, so the dialog is not
-  // stacked over a panel that stays open underneath.
+  // stacked over a panel that stays open underneath. Focus moves to the
+  // System button first, so a dialog that restores focus on close lands there
+  // rather than on the unmounted pill.
   const closeSystemThen = (open?: () => void) => open && (() => {
+    systemButtonRef.current?.focus();
     setShowPopover(false);
     open();
   });
@@ -446,13 +448,13 @@ export function TopBar({
               {deploying && <span className="deploy-spinner" />}
               <span className="system-indicator-label">System</span>
               {soundMuted && (
-                <span className="system-muted-glyph" data-testid="system-muted-glyph" aria-hidden="true">{'\u{1F507}'}</span>
+                <span className="system-muted-glyph" data-testid="system-muted-glyph" aria-hidden="true">{'\u{1F507}\uFE0E'}</span>
               )}
               {systemNeedsAttention && <span className="system-attention-dot" aria-hidden="true" />}
               {!systemNeedsAttention && resourceElevated && (
                 <span className="system-note-dot" data-testid="system-note-dot" aria-hidden="true" />
               )}
-              {!systemNeedsAttention && !resourceElevated && hasUpdates && <span className="system-update-dot" aria-hidden="true" />}
+              {!systemNeedsAttention && hasUpdates && <span className="system-update-dot" aria-hidden="true" />}
             </button>
             {showPopover && (
               <div
@@ -482,7 +484,10 @@ export function TopBar({
                   <div
                     className="system-usage-slot"
                     onClickCapture={(event) => {
-                      if ((event.target as Element).closest('button')) setShowPopover(false);
+                      if ((event.target as Element).closest('button')) {
+                        systemButtonRef.current?.focus();
+                        setShowPopover(false);
+                      }
                     }}
                   >
                     {usage}

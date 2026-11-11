@@ -179,25 +179,41 @@ export interface SystemQuietNotesInput {
   soundMuted?: boolean;
 }
 
+export interface SystemQuietNotes {
+  soundMuted: boolean;
+  /** CPU or RAM is "elevated" (below high) on a fresh sample. */
+  resourceElevated: boolean;
+  /** One short label per note, for the indicator's accessible name. */
+  labels: string[];
+}
+
 /**
  * Non-urgent states that the status bar used to show at rest: muted alert
  * sounds and "elevated" (below high) CPU or RAM. They are not "waiting on
  * you", so they never turn System amber; the indicator shows them neutrally
  * (a muted glyph, a grey dot) and names them in its label.
  */
-export function systemQuietNotes(input: SystemQuietNotesInput): string[] {
-  const notes: string[] = [];
-  if (input.soundMuted) notes.push('alert sounds muted');
+export function systemQuietNotes(input: SystemQuietNotesInput): SystemQuietNotes {
+  const labels: string[] = [];
+  const soundMuted = input.soundMuted === true;
+  if (soundMuted) labels.push('alert sounds muted');
   const resources = input.resourceStatus;
+  let resourceElevated = false;
   if (resources && !input.resourceStale) {
-    if (cpuSeverity(resources.host.cpuUsagePercent) === 'elevated') notes.push('CPU elevated');
-    if (memorySeverity(resources) === 'elevated') notes.push('memory elevated');
+    if (cpuSeverity(resources.host.cpuUsagePercent) === 'elevated') {
+      labels.push('CPU elevated');
+      resourceElevated = true;
+    }
+    if (memorySeverity(resources) === 'elevated') {
+      labels.push('memory elevated');
+      resourceElevated = true;
+    }
   }
-  return notes;
+  return { soundMuted, resourceElevated, labels };
 }
 
 /** Live quiet notes for the System indicator, read from the store. */
-export function useSystemQuietNotes(): string[] {
+export function useSystemQuietNotes(): SystemQuietNotes {
   const resourceStatus = useKookrStore((s) => s.resourceStatus);
   const resourceStale = useResourceStatusStale();
   const soundMuted = !useSoundPreference().enabled;

@@ -400,6 +400,8 @@ describe('TopBar: dialogs opened from System close it first (issue #3619)', () =
 
     expect(onOpenSchedules).toHaveBeenCalledTimes(1);
     expect(container.querySelector('#system-popover')).toBeNull();
+    // A dialog that restores focus on close returns it to System, not <body>.
+    expect(document.activeElement).toBe(systemButton());
   });
 
   test('a button in the Usage section closes System and still runs its action', async () => {
@@ -420,14 +422,16 @@ describe('TopBar: dialogs opened from System close it first (issue #3619)', () =
 
 describe('systemQuietNotes', () => {
   test('names muted sound and elevated CPU or memory', () => {
-    expect(systemQuietNotes({ soundMuted: true })).toEqual(['alert sounds muted']);
+    expect(systemQuietNotes({ soundMuted: true }))
+      .toEqual({ soundMuted: true, resourceElevated: false, labels: ['alert sounds muted'] });
     expect(systemQuietNotes({ resourceStatus: resources({ cpu: 75, memory: 85 }) }))
-      .toEqual(['CPU elevated', 'memory elevated']);
+      .toEqual({ soundMuted: false, resourceElevated: true, labels: ['CPU elevated', 'memory elevated'] });
   });
 
   test('normal, high (already amber) and stale readings add no note', () => {
-    expect(systemQuietNotes({ resourceStatus: resources() })).toEqual([]);
-    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 95 }) })).toEqual([]);
-    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 75 }), resourceStale: true })).toEqual([]);
+    const none = { soundMuted: false, resourceElevated: false, labels: [] };
+    expect(systemQuietNotes({ resourceStatus: resources() })).toEqual(none);
+    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 95 }) })).toEqual(none);
+    expect(systemQuietNotes({ resourceStatus: resources({ cpu: 75 }), resourceStale: true })).toEqual(none);
   });
 });

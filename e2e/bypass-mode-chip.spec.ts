@@ -24,8 +24,16 @@ test.describe('Bypass mode chip with real spend', () => {
 
     const chip = page.getByTestId('permission-mode-chip');
     await expect(chip).toHaveText('Bypass mode');
-    // Neutral, not the red of the old banner.
-    expect(await chip.evaluate((el) => getComputedStyle(el).color)).not.toMatch(/248,\s*113,\s*113/);
+    // Neutral secondary text, not the red of the old banner.
+    const chipColors = await chip.evaluate((el) => {
+      const probe = document.createElement('span');
+      probe.style.color = 'var(--text-secondary)';
+      document.body.appendChild(probe);
+      const neutral = getComputedStyle(probe).color;
+      probe.remove();
+      return { chip: getComputedStyle(el).color, neutral };
+    });
+    expect(chipColors.chip).toBe(chipColors.neutral);
     // The spend really is on screen somewhere, so the check below is not vacuous.
     await expect(page.getByTestId('nav-footer').getByTestId('all-time-spend')).toHaveText('$12345.67');
 

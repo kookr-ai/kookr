@@ -183,6 +183,7 @@ test.describe('Onboarding tour', () => {
     // at the 12 px type-scale floor or larger once the viewBox is scaled.
     const diagramLabelPx = await page.locator('.onboarding-layout-diagram').evaluate((svg) => {
       const el = svg as SVGSVGElement;
+      if (!(el.viewBox.baseVal.width > 0)) return ['viewBox missing 0'];
       const scale = el.getBoundingClientRect().width / el.viewBox.baseVal.width;
       return Array.from(el.querySelectorAll('text')).map(
         (t) => `${t.textContent} ${(Number(t.getAttribute('font-size')) * scale).toFixed(1)}`,
