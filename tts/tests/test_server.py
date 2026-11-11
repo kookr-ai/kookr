@@ -90,3 +90,201 @@ def test_synthesize_accepts_text_at_configured_character_limit(server, monkeypat
     assert response.json()["audioBase64"]
     assert response.json()["durationMs"] == pytest.approx(1.0)
     assert fake_model.generate_calls == [({"voice": "alba"}, "éabc", None)]
+
+
+class FakeKokoroResult:
+    def __init__(self, audio):
+        self.audio = audio
+
+
+class FakeKokoroPipeline:
+    """Stands in for kokoro.KPipeline: one result per call, 12 samples each, plus one empty result."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, text, *, voice, speed):
+        self.calls.append((text, voice, speed))
+        return [
+            FakeKokoroResult(torch.zeros(12, dtype=torch.float32)),
+            FakeKokoroResult(None),
+            FakeKokoroResult(torch.zeros(12, dtype=torch.float32)),
+        ]
+
+
+@pytest.mark.parametrize("voice", ["af_heart", "af_sky", "af_sarah"])
+def test_kokoro_voices_are_synthesized_by_kokoro_not_pocket(server, voice):
+    fake_model = FakeModel()
+    fake_pipeline = FakeKokoroPipeline()
+    server.model = fake_model
+    server.kokoro_pipeline = fake_pipeline
+
+    response = TestClient(server.app).post("/synthesize", json={"text": "Tests pass. It is merged.", "voice": voice})
+
+    assert response.status_code == 200
+    # Softened text, the requested voice, and the pace the voices were chosen at.
+    assert fake_pipeline.calls == [("Tests pass... It is merged.", voice, 0.88)]
+    # Two 12-sample chunks at 24 kHz; the empty result is skipped.
+    assert response.json()["durationMs"] == pytest.approx(1.0)
+    assert response.json()["audioBase64"]
+    assert fake_model.voice_calls == []
+    assert fake_model.generate_calls == []
+
+
+@pytest.mark.parametrize("voice", ["alba", "/clips/a-voice-that-is-not-on-disk.mp3", "af_bella", "AF_HEART"])
+def test_every_other_voice_still_goes_to_pocket(server, voice):
+    fake_model = FakeModel()
+    fake_pipeline = FakeKokoroPipeline()
+    server.model = fake_model
+    server.kokoro_pipeline = fake_pipeline
+
+    response = TestClient(server.app).post("/synthesize", json={"text": "Tests pass. It is merged.", "voice": voice})
+
+    assert response.status_code == 200
+    assert fake_pipeline.calls == []
+    # Pocket gets the text as written: the softening is a Kokoro rule.
+    assert fake_model.generate_calls == [({"voice": voice}, "Tests pass. It is merged.", None)]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("One. Two.", "One... Two."),
+        ("One.\nTwo.  Three", "One... Two... Three"),
+        ("Version 2.5 is out", "Version 2.5 is out"),
+        ("No full stop here", "No full stop here"),
+    ],
+)
+def test_soften_for_kokoro_lengthens_only_the_pause_between_sentences(server, text, expected):
+    assert server.soften_for_kokoro(text) == expected
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [("1.0", 1.0), (" 0.95 ", 0.95), ("", 0.88), ("fast", 0.88), ("0", 0.88), ("-1", 0.88)],
+)
+def test_kokoro_speed_comes_from_the_environment_and_a_bad_value_falls_back(monkeypatch, raw, expected):
+    monkeypatch.setenv("TTS_KOKORO_SPEED", raw)
+
+    server = load_server_module()
+
+    assert server.KOKORO_SPEED == expected
+
+
+def test_kokoro_speed_defaults_to_the_pace_the_voices_were_chosen_at(monkeypatch):
+    monkeypatch.delenv("TTS_KOKORO_SPEED", raising=False)
+
+    server = load_server_module()
+
+    assert server.KOKORO_SPEED == 0.88
+
+
+@pytest.mark.parametrize(
+    "default_voice,expected",
+    [("af_heart", ["kokoro"]), ("/app/voices/matilda.mp3", ["pocket"]), ("alba", ["pocket"])],
+)
+def test_only_the_engine_for_the_default_voice_loads_at_startup(server, monkeypatch, default_voice, expected):
+    loaded = []
+    monkeypatch.setattr(server, "DEFAULT_VOICE", default_voice)
+    monkeypatch.setattr(server, "ensure_kokoro", lambda: loaded.append("kokoro"))
+    monkeypatch.setattr(server, "ensure_pocket_model", lambda: loaded.append("pocket"))
+
+    server.load_default_engine()
+
+    assert loaded == expected
+
+
+def test_default_voice_comes_from_the_environment(monkeypatch):
+    monkeypatch.setenv("TTS_VOICE", "af_sky")
+
+    server = load_server_module()
+
+    assert server.DEFAULT_VOICE == "af_sky"
+
+
+def test_health_is_ok_with_only_kokoro_loaded_and_503_with_neither(server):
+    client = TestClient(server.app)
+    server.model = None
+    server.kokoro_pipeline = None
+    assert client.get("/health").status_code == 503
+
+    server.kokoro_pipeline = FakeKokoroPipeline()
+    assert client.get("/health").status_code == 200
+
+
+def test_a_kokoro_voice_that_yields_no_audio_is_a_server_error(server):
+    class EmptyPipeline:
+        def __call__(self, text, *, voice, speed):
+            return [FakeKokoroResult(None)]
+
+    server.kokoro_pipeline = EmptyPipeline()
+
+    response = TestClient(server.app).post("/synthesize", json={"text": "Hello.", "voice": "af_heart"})
+
+    assert response.status_code == 500
+    assert "no audio" in response.json()["detail"]
+
+
+def test_kokoro_audio_is_a_24_khz_wav_of_the_joined_chunks(server):
+    import base64
+    import io
+
+    import scipy.io.wavfile
+
+    server.kokoro_pipeline = FakeKokoroPipeline()
+
+    response = TestClient(server.app).post("/synthesize", json={"text": "Hello.", "voice": "af_sky"})
+
+    rate, samples = scipy.io.wavfile.read(io.BytesIO(base64.b64decode(response.json()["audioBase64"])))
+    assert rate == 24_000
+    assert len(samples) == 24
+
+
+def test_kokoro_is_constructed_once_for_us_english_and_reused(server, monkeypatch):
+    constructed = []
+
+    class FakeKPipeline(FakeKokoroPipeline):
+        def __init__(self, **kwargs):
+            super().__init__()
+            constructed.append(kwargs)
+
+    kokoro = types.ModuleType("kokoro")
+    kokoro.KPipeline = FakeKPipeline
+    monkeypatch.setitem(sys.modules, "kokoro", kokoro)
+    monkeypatch.setattr(server.torch.cuda, "is_available", lambda: False)
+    server.kokoro_pipeline = None
+
+    first = server.ensure_kokoro()
+    second = server.ensure_kokoro()
+
+    assert first is second
+    assert constructed == [{"lang_code": "a", "repo_id": "hexgrad/Kokoro-82M", "device": "cpu"}]
+
+
+def test_a_pocket_voice_loads_pocket_on_first_use(server, monkeypatch):
+    fake_model = FakeModel()
+    loads = []
+
+    def fake_load():
+        loads.append(1)
+        server.model = fake_model
+
+    server.model = None
+    monkeypatch.setattr(server, "load_model", fake_load)
+    client = TestClient(server.app)
+
+    assert client.post("/synthesize", json={"text": "Hello.", "voice": "alba"}).status_code == 200
+    assert client.post("/synthesize", json={"text": "Again.", "voice": "alba"}).status_code == 200
+    assert loads == [1]
+    assert [call[1] for call in fake_model.generate_calls] == ["Hello.", "Again."]
+
+
+def test_a_failing_default_engine_stops_startup(server, monkeypatch):
+    def boom():
+        raise RuntimeError("no weights")
+
+    monkeypatch.setattr(server, "DEFAULT_VOICE", "af_heart")
+    monkeypatch.setattr(server, "ensure_kokoro", boom)
+
+    with pytest.raises(RuntimeError, match="no weights"):
+        server.load_default_engine()

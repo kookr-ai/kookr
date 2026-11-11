@@ -415,6 +415,9 @@ things she said.
   next reload and everything else keeps working.
 - **What it needs.** A browser with WebGL. Without it the panel says so and spoken summaries still
   play normally. It only has something to say when the speech service is on (`KOOKR_TTS`).
+- **Choose the voice.** Settings → General → **Voice** (server setting `speakVoice`, next to
+  `speakVerbosity`) picks Heart, Sky, Sarah or Matilda, or **Install default** to follow `TTS_VOICE`.
+  It applies to the next spoken clip with no restart. Heart, Sky and Sarah need a GPU to respond quickly.
 - **What it does not do.** It never speaks on its own; it only accompanies clips you asked for. Its
   mouth follows the loudness of the clip, not the individual sounds, so the lip-sync is approximate.
 - **Licence.** The bundled avatar file is CC BY-NC 4.0, not Apache-2.0 like the code — see

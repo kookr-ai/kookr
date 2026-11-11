@@ -57,6 +57,16 @@ describe('computeCacheKey', () => {
   });
 });
 
+describe('computeCacheKey voice', () => {
+  test('differs for different voices', () => {
+    const base = {
+      agentId: 'a1', resolvedMode: 'activity' as const, verbosity: 'medium' as const,
+      lastEventSeq: 1, anomalyDetectedAt: null,
+    };
+    expect(computeCacheKey({ ...base, voice: 'af_heart' })).not.toBe(computeCacheKey({ ...base, voice: 'af_sky' }));
+  });
+});
+
 describe('AgentSpeakCache.get', () => {
   let originalFetch: typeof globalThis.fetch;
   beforeEach(() => {
@@ -89,6 +99,65 @@ describe('AgentSpeakCache.get', () => {
     expect(second.cached).toBe(true);
     expect(second.result.rawText).toBe(first.result.rawText);
     expect(cache.getCachedEntry(first.cacheKey)?.rawText).toBe(first.result.rawText);
+  });
+
+  test('a different voice misses and synthesizes in that voice; the same voice hits', async () => {
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a3', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+    const voiceOfCall = (n: number) =>
+      (JSON.parse(String(vi.mocked(globalThis.fetch).mock.calls[n][1]?.body)) as { voice: string }).voice;
+
+    const first = await cache.get(key, fakeContext);
+    expect(first.cached).toBe(false);
+    expect(voiceOfCall(0)).toBe('matilda');
+
+    const heart = await cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    expect(heart.cached).toBe(false);
+    expect(heart.cacheKey).not.toBe(first.cacheKey);
+    expect(voiceOfCall(1)).toBe('af_heart');
+
+    expect((await cache.get({ ...key, voice: 'af_heart' }, fakeContext)).cached).toBe(true);
+    expect((await cache.get(key, fakeContext)).cached).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  test('requests in flight are shared per voice, never across voices', async () => {
+    // Synthesis stays pending until released, so all three requests overlap.
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const voices: string[] = [];
+    globalThis.fetch = vi.fn().mockImplementation(async (_url, init?: RequestInit) => {
+      const voice = (JSON.parse(String(init?.body)) as { voice: string }).voice;
+      voices.push(voice);
+      await gate;
+      return mockTtsResponse(`AUDIO:${voice}`);
+    }) as unknown as typeof globalThis.fetch;
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a4', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const heart = cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    const sky = cache.get({ ...key, voice: 'af_sky' }, fakeContext);
+    const heartAgain = cache.get({ ...key, voice: 'af_heart' }, fakeContext);
+    await vi.waitFor(() => expect(voices).toHaveLength(2));
+    release();
+
+    expect((await heart).result.audioBase64).toBe('AUDIO:af_heart');
+    expect((await sky).result.audioBase64).toBe('AUDIO:af_sky');
+    expect((await heartAgain).result.audioBase64).toBe('AUDIO:af_heart');
+    // One synthesis per voice: the second Heart request joined the first, Sky did not.
+    expect(voices.sort()).toEqual(['af_heart', 'af_sky']);
+  });
+
+  test('no voice and the configured voice share one cache entry', async () => {
+    const cache = new AgentSpeakCache({ llmClient: null, ttsUrl: 'http://tts', voice: 'matilda' });
+    const key = { agentId: 'a5', resolvedMode: 'activity' as const, verbosity: 'medium' as const, lastEventSeq: 1, anomalyDetectedAt: null };
+
+    const implicit = await cache.get(key, fakeContext);
+    const explicit = await cache.get({ ...key, voice: 'matilda' }, fakeContext);
+
+    expect(explicit.cacheKey).toBe(implicit.cacheKey);
+    expect(explicit.cached).toBe(true);
+    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
   });
 
   test('omits rawText when nothing needed rewriting', async () => {

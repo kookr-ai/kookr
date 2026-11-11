@@ -266,6 +266,36 @@ describe('SettingsDialog tabs', () => {
     expect(localStorage.getItem('kookr:defaultAgentType')).toBeNull();
   });
 
+  test('persists the speak voice, and clears it again with Install default', async () => {
+    await flush();
+
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="Voice"]');
+    expect(select).not.toBeNull();
+    expect(select!.value).toBe('');
+    expect(container.textContent).toContain('Heart, Sky and Sarah need a GPU to respond quickly.');
+    expect(Array.from(select!.options).map((o) => o.textContent)).toEqual([
+      'Install default', 'Heart', 'Sky', 'Sarah', 'Matilda',
+    ]);
+
+    const choose = async (value: string) => {
+      await act(async () => {
+        select!.value = value;
+        select!.dispatchEvent(new Event('change', { bubbles: true }));
+      });
+      await flush();
+    };
+    const lastPutBody = () => {
+      const puts = vi.mocked(fetch).mock.calls.filter(([url, init]) => url === '/api/settings' && init?.method === 'PUT');
+      return JSON.parse(String(puts[puts.length - 1]![1]!.body)) as Record<string, unknown>;
+    };
+
+    await choose('af_sky');
+    expect(lastPutBody()).toMatchObject({ speakVoice: 'af_sky' });
+
+    await choose('');
+    expect('speakVoice' in lastPutBody()).toBe(false);
+  });
+
   test('blacklists an agent with a struck-through label and persists the list', async () => {
     await flush();
 

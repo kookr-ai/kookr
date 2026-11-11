@@ -34,6 +34,11 @@ export interface AgentSpeakCacheKeyInput {
   lastEventSeq: number;
   /** Date | string | number — coerced to ISO string. Null/undefined collapses to `'∅'`. */
   anomalyDetectedAt: Date | string | number | null | undefined;
+  /**
+   * Voice to synthesize in; falls back to `config.voice`. Part of the cache key
+   * so a voice change never replays a clip rendered in another voice.
+   */
+  voice?: string;
 }
 
 export interface AgentSpeakCacheConfig {
@@ -108,6 +113,8 @@ export function computeCacheKey(input: AgentSpeakCacheKeyInput): string {
   hash.update(String(input.lastEventSeq));
   hash.update(CACHE_KEY_FIELD_SEPARATOR);
   hash.update(coerceAnomalyDetectedAt(input.anomalyDetectedAt));
+  hash.update(CACHE_KEY_FIELD_SEPARATOR);
+  hash.update(input.voice ?? '');
   return hash.digest('hex');
 }
 
@@ -241,7 +248,8 @@ export class AgentSpeakCache {
     context: AgentSpeakContext,
     signal?: AbortSignal,
   ): Promise<{ cacheKey: string; cachedAt: string; cached: boolean; result: AgentSpeakResultCore }> {
-    const cacheKey = computeCacheKey(keyInput);
+    const voice = keyInput.voice ?? this.config.voice;
+    const cacheKey = computeCacheKey({ ...keyInput, voice });
     const cached = this.entries.get(cacheKey);
     if (cached) {
       this.hits += 1;
@@ -278,7 +286,7 @@ export class AgentSpeakCache {
 
     this.misses += 1;
     this.byVerbosityByMode[keyInput.verbosity][keyInput.resolvedMode].misses += 1;
-    const work = this.fetchFresh(cacheKey, keyInput, context, signal);
+    const work = this.fetchFresh(cacheKey, keyInput, context, voice, signal);
     this.inflight.set(cacheKey, work);
     try {
       const { entry } = await work;
@@ -297,6 +305,7 @@ export class AgentSpeakCache {
     cacheKey: string,
     keyInput: AgentSpeakCacheKeyInput,
     context: AgentSpeakContext,
+    voice: string,
     signal?: AbortSignal,
   ): Promise<{ entry: InternalCachedEntry }> {
     const nowFn = this.config.now ?? Date.now;
@@ -318,7 +327,7 @@ export class AgentSpeakCache {
     const ttsResult = await synthesizeWithCircuitBreaker(this.config.ttsBreaker, {
       ttsUrl: this.config.ttsUrl,
       text: summary.text,
-      voice: this.config.voice,
+      voice,
       signal,
     });
     const ttsMs = nowFn() - ttsStart;

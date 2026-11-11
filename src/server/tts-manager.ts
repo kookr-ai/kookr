@@ -22,10 +22,11 @@ import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { hasDockerRuntime } from './docker-runtime.js';
+import { MATILDA_VOICE_ID } from '../shared/contracts/speech.js';
 
 const execFileAsync = promisify(execFile);
 
-export const DEFAULT_TTS_VOICE = '/app/voices/matilda.mp3';
+export const DEFAULT_TTS_VOICE = MATILDA_VOICE_ID;
 const TTS_BUILD_STAMP_FILE = '.kookr-tts-build.hash';
 const DEFAULT_REUSE_ATTEMPTS = 3;
 const DEFAULT_REUSE_BACKOFF_MS = 150;
@@ -95,13 +96,39 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
   });
   const { composeFlags, env, resolvedDevice } = identity;
 
+  const buildPlan = await planTTSImageBuild(ttsDir);
+
   // --- Warm reuse path: multi-try health before any compose mutation ---
   const reuseResult = await tryReuseTTS({
     port,
     attempts: reuseAttempts,
     backoffMs: reuseBackoffMs,
   });
-  if (reuseResult.ok) {
+  if (reuseResult.ok && buildPlan.stale) {
+    // A healthy container that was built from older inputs would keep serving the old
+    // code after an update (for example, it would not know a voice the new code adds).
+    console.log(
+      `[tts] Healthy TTS service at port ${port} was built from older inputs; rebuilding instead of reusing it`,
+    );
+    // Build before touching the running container. A build can fail for reasons that have
+    // nothing to do with this machine (a package index or model host is down); the service
+    // that is running still works, so keep it and try again on the next start.
+    try {
+      await execFileAsync('docker', ['compose', ...composeFlags, 'build'], {
+        env,
+        timeout: 600_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[tts] Rebuilding the TTS image failed (${msg}); keeping the running service, which was built from older files`,
+      );
+      return {
+        url: `http://localhost:${port}`,
+        stop: () => stopTTS(composeFlags, env),
+      };
+    }
+  } else if (reuseResult.ok) {
     console.log(
       `[tts] Reusing healthy TTS service at port ${port}` +
         ` (status: ${reuseResult.status}; synthesis probe skipped on reuse)`,
@@ -111,7 +138,9 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
       stop: () => stopTTS(composeFlags, env),
     };
   }
-  console.log(`[tts] Cannot reuse existing TTS (reason=${reuseResult.reason}); starting container...`);
+  if (!reuseResult.ok) {
+    console.log(`[tts] Cannot reuse existing TTS (reason=${reuseResult.reason}); starting container...`);
+  }
 
   console.log(
     `[tts] Starting TTS container (device: ${resolvedDevice}${
@@ -119,7 +148,6 @@ export async function startTTS(config: TTSManagerConfig): Promise<TTSManager> {
     }, voice: ${voice}, port: ${port})...`,
   );
 
-  const buildPlan = await planTTSImageBuild(ttsDir);
   if (buildPlan.build) {
     console.log(`[tts] Building TTS image (${buildPlan.reason})...`);
   } else {
@@ -359,6 +387,12 @@ export function parseTTSDeviceFromEnv(): TTSDevice {
 
 interface TTSImageBuildPlan {
   build: boolean;
+  /**
+   * True when an earlier build left a stamp and the inputs have changed since: whatever is
+   * running was built from older files. False when there is no stamp, because then nothing
+   * is known about a running service and reusing it is the safe default.
+   */
+  stale: boolean;
   inputHash: string;
   reason: string;
 }
@@ -372,14 +406,14 @@ async function planTTSImageBuild(ttsDir: string): Promise<TTSImageBuildPlan> {
     previousHash = (await readFile(stampPath, 'utf-8')).trim();
   } catch {
     // First run, deleted stamp, or unreadable stamp: rebuild conservatively.
-    return { build: true, inputHash, reason: 'no prior build stamp' };
+    return { build: true, stale: false, inputHash, reason: 'no prior build stamp' };
   }
 
   if (previousHash !== inputHash) {
-    return { build: true, inputHash, reason: 'TTS build inputs changed' };
+    return { build: true, stale: true, inputHash, reason: 'TTS build inputs changed' };
   }
 
-  return { build: false, inputHash, reason: 'TTS build inputs unchanged' };
+  return { build: false, stale: false, inputHash, reason: 'TTS build inputs unchanged' };
 }
 
 async function hashTTSBuildInputs(ttsDir: string): Promise<string> {

@@ -59,11 +59,13 @@ function mkApp(opts: {
   lucyLog?: LucyInteractionLog;
   lucyLogPath?: string;
   ttsVoice?: string;
+  settings?: unknown;
 }): Hono {
   const app = new Hono();
   const deps = {
     monitor: opts.monitor ?? { getSnapshot: () => opts.agents ?? [] },
     taskStore: opts.taskStore ?? { getTask: () => opts.task },
+    settings: opts.settings,
   } as unknown as RouteDeps;
   registerSpeechRoutes(app, deps, {
     enabled: opts.enabled ?? true,
@@ -759,6 +761,54 @@ describe('Lucy interaction log wiring', () => {
     });
     expect(said[0]).toMatchObject({ voice: 'alba', verbosity: 'brief' });
     expect(said[1]).toMatchObject({ voice: 'alba', verbosity: 'detailed' });
+  });
+
+  test('agent speak: the Settings voice wins over ttsVoice and is cached, recorded and reported', async () => {
+    const { log, said } = captureLog();
+    const cache = fakeCache({ result: agentResult });
+    const app = mkApp({
+      agents: [fakeAgent()], cache, ttsUrl: 'http://tts', ttsVoice: 'alba', lucyLog: log,
+      settings: { get: () => ({ speakVoice: 'af_sky' }) },
+      isDebugEnabled: () => true,
+    });
+    await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+    expect(vi.mocked(cache.get).mock.calls[0][0]).toMatchObject({ voice: 'af_sky' });
+    expect(said[0]).toMatchObject({ voice: 'af_sky' });
+    const diag = await (await app.request('/api/diagnostics/speak-cache')).json();
+    expect(diag.voice).toBe('af_sky');
+  });
+
+  test('agent speak: with no Settings voice, ttsVoice is used', async () => {
+    const { log, said } = captureLog();
+    const cache = fakeCache({ result: agentResult });
+    const app = mkApp({
+      agents: [fakeAgent()], cache, ttsUrl: 'http://tts', ttsVoice: 'alba', lucyLog: log,
+      settings: { get: () => ({}) },
+    });
+    await app.request('/api/agents/agent-1/speak', { method: 'POST' });
+    expect(vi.mocked(cache.get).mock.calls[0][0]).toMatchObject({ voice: 'alba' });
+    expect(said[0]).toMatchObject({ voice: 'alba' });
+  });
+
+  test('task summary: Settings voice wins over ttsVoice; ttsVoice is the fallback', async () => {
+    const { log, said } = captureLog();
+    const taskCache = fakeTaskCache({
+      text: 'Fix login needs approval.', audioBase64: 'AUDIO', mimeType: 'audio/wav',
+      durationMs: 1, usedFallback: false, llmMs: 1, ttsMs: 1, cached: false,
+    });
+    const agents = [fakeAgent({ taskId: 'task-1', taskName: 'Fix login' })];
+    let voice: string | undefined = 'af_sarah';
+    const app = mkApp({
+      agents, taskCache, ttsUrl: 'http://tts', ttsVoice: 'alba', lucyLog: log,
+      settings: { get: () => ({ speakVoice: voice }) },
+    });
+    await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    voice = undefined;
+    await app.request('/api/tasks/task-1/speak-summary', { method: 'POST' });
+    const calls = vi.mocked(taskCache.get).mock.calls;
+    expect(calls[0][2]).toBe('af_sarah');
+    expect(calls[1][2]).toBe('alba');
+    expect(said.map((s) => s.voice)).toEqual(['af_sarah', 'alba']);
   });
 
   test('task summary: findingType comes from the active finding; rawText is absent when unchanged', async () => {

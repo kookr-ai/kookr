@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -283,6 +283,104 @@ describe('startTTS', () => {
         expect.objectContaining({ timeout: 600_000 }),
         expect.any(Function),
       );
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses a healthy service whose build inputs are unchanged, and rebuilds it once they change', async () => {
+    const ttsDir = await createTTSFixture();
+    const upArgs = ['compose', '-f', join(ttsDir, 'docker-compose.yml'), 'up', '-d', '--build'];
+    const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+    const synthesisProbes = () =>
+      vi.mocked(fetch).mock.calls.filter((c) => String(c[0]).includes('/synthesize')).length;
+
+    try {
+      // First start: nothing is running, so the image is built and its inputs are stamped.
+      let down = true;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (url: string | URL | Request) => {
+          if (down && String(url).includes('/health')) {
+            down = false;
+            throw new Error('down');
+          }
+          return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });
+        }),
+      );
+      await start();
+      expect(execFileMock).toHaveBeenCalledWith('docker', upArgs, expect.anything(), expect.any(Function));
+
+      // Second start: healthy, same inputs. Reused without touching docker.
+      execFileMock.mockClear();
+      vi.mocked(fetch).mockClear();
+      await start();
+      expect(execFileMock).not.toHaveBeenCalled();
+      expect(synthesisProbes()).toBe(0);
+
+      // The service code changes while the old container is still healthy.
+      await writeFile(join(ttsDir, 'src', 'server.py'), 'print("a new voice")\n');
+      execFileMock.mockClear();
+      vi.mocked(fetch).mockClear();
+      await start();
+      expect(execFileMock).toHaveBeenCalledWith('docker', upArgs, expect.anything(), expect.any(Function));
+      // The rebuilt service is probed like a cold start before it is reported ready.
+      expect(synthesisProbes()).toBe(1);
+
+      // And the new inputs are stamped: the next start reuses it again.
+      execFileMock.mockClear();
+      await start();
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reuses a healthy service when no earlier build left a stamp', async () => {
+    const ttsDir = await createTTSFixture();
+
+    try {
+      await startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+
+      // Nothing is known about how the running service was built, so it is left alone.
+      expect(execFileMock).not.toHaveBeenCalled();
+    } finally {
+      await rm(ttsDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the running service when the rebuild of a stale one fails, and tries again next start', async () => {
+    const ttsDir = await createTTSFixture();
+    const stampPath = join(ttsDir, '.kookr-tts-build.hash');
+    const start = () => startTTS({ ttsDir, port: 8004, device: 'cpu', reuseAttempts: 1 });
+    const calls = (verb: string) => execFileMock.mock.calls.filter((c) => (c[1] as string[]).includes(verb)).length;
+
+    try {
+      // A stamp from an earlier build of different files: the running service is stale.
+      await writeFile(stampPath, 'hash-of-older-files\n');
+      execFileMock.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: Function) => {
+        if (args.includes('build')) cb(new Error('package index unreachable'), '', '');
+        else cb(null, '', '');
+      });
+
+      const manager = await start();
+
+      // The build failed before anything touched the container: it is still the one in use.
+      expect(manager.url).toBe('http://localhost:8004');
+      expect(calls('build')).toBe(1);
+      expect(calls('up')).toBe(0);
+      expect(calls('down')).toBe(0);
+      // The failed build is not stamped, or the stale service would be reused from now on.
+      expect((await readFile(stampPath, 'utf-8')).trim()).toBe('hash-of-older-files');
+
+      // The next start tries again, replaces the container, and stamps the new files.
+      execFileMock.mockImplementation((_cmd: string, _args: string[], _opts: unknown, cb: Function) => {
+        cb(null, '', '');
+      });
+      await start();
+      expect(calls('build')).toBe(2);
+      expect(calls('up')).toBe(1);
+      expect((await readFile(stampPath, 'utf-8')).trim()).not.toBe('hash-of-older-files');
     } finally {
       await rm(ttsDir, { recursive: true, force: true });
     }

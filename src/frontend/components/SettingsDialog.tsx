@@ -19,7 +19,7 @@ import {
   type PlatformShortcutBindingOverrides,
   type ShortcutActionId,
 } from '../../shared/contracts/shortcut-bindings.js';
-import type { VerbosityScale } from '../../shared/contracts/speech.js';
+import { SPEAK_VOICE_OPTIONS, isSpeakVoiceId, type SpeakVoiceId, type VerbosityScale } from '../../shared/contracts/speech.js';
 import type { QuietHoursWindow } from '../../shared/contracts/quiet-hours.js';
 import { MAX_REPLY_SNIPPETS, type ReplySnippet } from '../../shared/contracts/reply-snippets.js';
 import { useSoundPreference } from '../audio/sound.js';
@@ -66,6 +66,8 @@ interface ServerSettings {
   agentEffort?: AgentEffortMap;
   shortcutBindings: PlatformShortcutBindingOverrides;
   speakVerbosity?: VerbosityScale;
+  /** Absent = the install default voice. */
+  speakVoice?: SpeakVoiceId;
   /** Keep a local log of Lucy's interactions (server default true; absent = on). */
   lucyInteractionLog?: boolean;
   quietHours?: QuietHoursWindow[];
@@ -873,6 +875,15 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
     void saveSettings(updated);
   }
 
+  function handleSpeakVoiceChange(value: string) {
+    if (!settings) return;
+    // Empty value = "Install default": drop the key so the server clears the override.
+    const { speakVoice: _previous, ...rest } = settings;
+    const updated: ServerSettings = isSpeakVoiceId(value) ? { ...rest, speakVoice: value } : rest;
+    setSettings(updated);
+    void saveSettings(updated);
+  }
+
   function commitReplySnippets(snippets: ReplySnippet[]) {
     if (!settings) return;
     const updated = { ...settings, replySnippets: snippets.slice(0, MAX_REPLY_SNIPPETS) };
@@ -1291,6 +1302,22 @@ export function SettingsDialog({ onClose, focusField, onSettingsSaved }: Props) 
                           </label>
                         ))}
                       </fieldset>
+                    </div>
+                    <div className="settings-row settings-row-fieldset">
+                      <label className="settings-audio-sound">
+                        <span className="settings-label">Voice</span>
+                        <span className="settings-desc">Heart, Sky and Sarah need a GPU to respond quickly.</span>
+                        <select
+                          value={settings.speakVoice ?? ''}
+                          onChange={(e) => handleSpeakVoiceChange(e.target.value)}
+                          aria-label="Voice"
+                        >
+                          <option value="">Install default</option>
+                          {SPEAK_VOICE_OPTIONS.map((option) => (
+                            <option key={option.id} value={option.id}>{option.label}</option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
                     <div className="settings-row settings-row-fieldset">
                       <div className="settings-quiet-hours">
