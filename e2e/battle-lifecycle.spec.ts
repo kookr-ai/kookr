@@ -180,7 +180,7 @@ test.describe('Edge cases & resilience', () => {
 
     // Reload page to get fresh state
     await page.goto('/');
-    await expect(page.locator('.statusbar')).toContainText('0 tasks');
+    await expect(page.getByTestId('task-counts')).toContainText('0 tasks');
     await expect(page.locator('.findings-empty')).toContainText('No agents running');
   });
 
@@ -221,7 +221,7 @@ test.describe('Edge cases & resilience', () => {
         await injectStopEvent(request, tmux);
       }
     }
-    // 3 permission + 2 stop → permission group + 2 stop cards. Check via statusbar instead.
+    // 3 permission + 2 stop → permission group + 2 stop cards. Check via the list header counts instead.
     await waitForFindingCount(page, 5);
   });
 });

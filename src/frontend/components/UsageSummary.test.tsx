@@ -3,7 +3,7 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
-import { QuotaDisplay } from './StatusBar.js';
+import { QuotaRows } from './UsageSummary.js';
 import type { QuotaStatus } from '../../shared/protocol.js';
 
 // Fixed "now" so formatResetTime is deterministic.
@@ -14,12 +14,12 @@ function renderQuota(quota: QuotaStatus): { container: HTMLElement; root: Root }
   document.body.appendChild(container);
   const root = createRoot(container);
   act(() => {
-    root.render(<QuotaDisplay quota={quota} />);
+    root.render(<QuotaRows quota={quota} />);
   });
   return { container, root };
 }
 
-describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
+describe('QuotaRows reset times (issues #2705, #3561 slice 5b)', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(NOW);
@@ -38,10 +38,10 @@ describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
     };
     const { container, root } = renderQuota(quota);
 
-    const pills = Array.from(container.querySelectorAll<HTMLElement>('.quota-pill'));
+    const pills = Array.from(container.querySelectorAll<HTMLElement>('.usage-quota'));
     expect(pills).toHaveLength(2);
 
-    const sevenDayPill = pills.find((p) => p.textContent?.includes('7d:'));
+    const sevenDayPill = pills.find((p) => p.textContent?.includes('7-day quota'));
     expect(sevenDayPill).toBeDefined();
     const reset = sevenDayPill?.querySelector('.quota-reset');
     expect(reset).not.toBeNull();
@@ -60,8 +60,8 @@ describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
     };
     const { container, root } = renderQuota(quota);
 
-    const fiveHourPill = Array.from(container.querySelectorAll<HTMLElement>('.quota-pill'))
-      .find((p) => p.textContent?.includes('5h:'));
+    const fiveHourPill = Array.from(container.querySelectorAll<HTMLElement>('.usage-quota'))
+      .find((p) => p.textContent?.includes('5-hour quota'));
     expect(fiveHourPill?.querySelector('.quota-reset')?.textContent).toBe('(2h 56m)');
 
     act(() => root.unmount());
@@ -77,8 +77,8 @@ describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
     };
     const { container, root } = renderQuota(quota);
 
-    const sevenDayPill = Array.from(container.querySelectorAll<HTMLElement>('.quota-pill'))
-      .find((p) => p.textContent?.includes('7d:'));
+    const sevenDayPill = Array.from(container.querySelectorAll<HTMLElement>('.usage-quota'))
+      .find((p) => p.textContent?.includes('7-day quota'));
     expect(sevenDayPill?.querySelector('.quota-reset')?.textContent).toBe('(now)');
 
     act(() => root.unmount());
@@ -93,11 +93,11 @@ describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
     };
     const { container, root } = renderQuota(quota);
 
-    const pills = Array.from(container.querySelectorAll<HTMLElement>('.quota-pill'));
+    const pills = Array.from(container.querySelectorAll<HTMLElement>('.usage-quota'));
     expect(pills).toHaveLength(1);
-    expect(pills[0].textContent).toContain('7d:');
+    expect(pills[0].textContent).toContain('7-day quota');
     expect(pills[0].querySelector('.quota-reset')?.textContent).toBe('(4d)');
-    expect(container.textContent).not.toContain('5h:');
+    expect(container.textContent).not.toContain('5-hour quota');
 
     act(() => root.unmount());
     container.remove();
@@ -111,10 +111,10 @@ describe('QuotaDisplay 7-day reset time (issue #2705)', () => {
     };
     const { container, root } = renderQuota(quota);
 
-    const pills = Array.from(container.querySelectorAll<HTMLElement>('.quota-pill'));
+    const pills = Array.from(container.querySelectorAll<HTMLElement>('.usage-quota'));
     expect(pills).toHaveLength(1);
-    expect(pills[0].textContent).toContain('5h:');
-    expect(container.textContent).not.toContain('7d:');
+    expect(pills[0].textContent).toContain('5-hour quota');
+    expect(container.textContent).not.toContain('7-day quota');
 
     act(() => root.unmount());
     container.remove();

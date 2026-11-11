@@ -4,7 +4,7 @@
  * Quiet chrome (issue #3561 slice 2). Acceptance:
  * - no permanent red chrome at rest: bypass mode is a neutral chip, not a banner;
  * - the build hash moves from the top bar into the System detail ("About");
- * - the status bar keeps counts, spend and quota; the other readouts sit
+ * - the usage summary keeps spend and quota; the other readouts sit
  *   behind the System indicator, which turns amber when one of them is degraded.
  * The "Abort all" menu + confirmation is covered in FindingsPanel.abort.test.ts.
  */
@@ -14,7 +14,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { TopBar } from './TopBar.js';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary } from './UsageSummary.js';
 import { systemAttentionReasons } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
@@ -236,13 +236,14 @@ describe('TopBar: System indicator and About', () => {
   });
 });
 
-describe('StatusBar: counts, spend and quota only', () => {
-  test('at rest the bar shows the counts and quota but none of the moved readouts', async () => {
+describe('UsageSummary: spend and quota only', () => {
+  test('at rest the summary shows spend and quota but none of the moved readouts', async () => {
     useKookrStore.setState({
       resourceStatus: resources({ loopMs: 600 }),
       resourceStatusReceivedAtMs: Date.now(),
       prodSmokeTick: { consecutiveFailures: 3, failingChecks: [], firstFailedAt: null } as never,
       sttUrl: 'http://stt.local',
+      totalSpendUsd: 12.5,
       quotaStatus: {
         fiveHour: { utilization: 14, resetsAt: new Date(Date.now() + 3_600_000).toISOString() },
         sevenDay: { utilization: 27, resetsAt: new Date(Date.now() + 86_400_000).toISOString() },
@@ -250,13 +251,15 @@ describe('StatusBar: counts, spend and quota only', () => {
       },
     });
     act(() => {
-      root.render(React.createElement(StatusBar, { findings: 1, total: 3, onShowShortcuts: vi.fn() }));
+      root.render(React.createElement(UsageSummary, { placement: 'nav' }));
     });
     await flush();
 
-    const bar = container.querySelector('.statusbar');
-    expect(bar?.textContent).toContain('3 tasks · 1 finding');
-    expect(bar?.querySelector('[data-testid="statusbar-spend-quota"] .quota-display')).not.toBeNull();
+    const bar = container.querySelector('[data-testid="nav-footer"]');
+    expect(bar).not.toBeNull();
+    expect(bar?.querySelector('[data-testid="all-time-spend"]')).not.toBeNull();
+    expect(bar?.querySelector('[data-testid="usage-quota-5h"]')).not.toBeNull();
+    expect(bar?.querySelector('[data-testid="usage-quota-7d"]')).not.toBeNull();
     for (const moved of [
       '.resource-status',
       '[data-testid="ops-health-pills"]',

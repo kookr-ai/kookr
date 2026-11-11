@@ -112,11 +112,11 @@ async function launchViaUI(page: Page, prompt: string, cwd: string) {
 }
 
 async function waitForAgentCount(page: Page, count: number) {
-  await expect(page.locator('.statusbar')).toContainText(`${count} task`, { timeout: 5000 });
+  await expect(page.getByTestId('task-counts')).toContainText(`${count} task`, { timeout: 5000 });
 }
 
 async function currentTaskCount(page: Page): Promise<number> {
-  const status = await page.locator('.statusbar').textContent();
+  const status = await page.getByTestId('task-counts').textContent();
   const match = status?.match(/(\d+)\s+tasks?/);
   return match ? Number(match[1]) : 0;
 }

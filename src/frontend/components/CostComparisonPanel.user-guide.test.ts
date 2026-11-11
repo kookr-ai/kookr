@@ -3,8 +3,9 @@ import { describe, expect, test } from 'vitest';
 
 /**
  * Pins the user-guide Cost Comparison section to the live open paths
- * (command palette, status-bar 24h chip, overview live spend, top-bar
- * all-time spend figure). The decisions log still mentions a stale top-bar
+ * (command palette, the 24-hour and all-time spend figures in the navigation
+ * footer and the System detail's Usage section, overview live spend). The
+ * status bar and the top-bar spend figure are gone (#3561 slice 5b). The decisions log still mentions a stale top-bar
  * `$` icon; that icon is gone — this test guards against copying it back.
  */
 describe('user-guide Cost Comparison section', () => {
@@ -23,14 +24,15 @@ describe('user-guide Cost Comparison section', () => {
     expect(section).toMatch(/command palette/i);
   });
 
-  test('documents the status-bar 24h spend chip as a second open path', () => {
-    expect(section).toMatch(/status bar/i);
-    expect(section).toMatch(/24-hour spend/i);
+  test('documents the 24-hour and all-time spend figures as open paths (issues #3335, #3398)', () => {
+    expect(section).toMatch(/either spend figure \(rolling 24 hours, or all time\)/i);
+    expect(section).toMatch(/navigation footer/i);
+    expect(section).toMatch(/\*\*Usage\*\* section of the \*\*System\*\* detail/i);
   });
 
-  test('documents the top-bar all-time spend figure as an open path (issue #3398)', () => {
-    expect(section).toMatch(/top-bar all-time spend figure/i);
-    expect(section).toMatch(/greater than zero/i);
+  test('no longer points at the removed status bar or top-bar spend figure (#3561 slice 5b)', () => {
+    expect(section).not.toMatch(/status bar/i);
+    expect(section).not.toMatch(/top-bar all-time spend/i);
   });
 
   test('documents that a live Tasks-row name opens the dashboard task (issue #3331)', () => {

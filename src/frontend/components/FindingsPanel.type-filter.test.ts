@@ -102,7 +102,7 @@ describe('FindingsPanel type-filter chips (issue #2445)', () => {
     expect(chip(container, 'budget_exceeded').textContent).toContain('Budget Exceeded');
     expect(chip(container, 'needs_input').textContent).toContain('Needs Input');
     expect(cardNames(container)).toEqual(['Needs sudo', 'Out of tokens', 'Waiting on you']);
-    expect(container.querySelector('.findings-count')?.textContent).toBe('3 active');
+    expect(container.querySelector('.findings-count')?.textContent).toBe('3 tasks · 3 findings');
   });
 
   test('clicking a chip hides other types; clicking again restores', () => {

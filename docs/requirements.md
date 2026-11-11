@@ -1217,22 +1217,24 @@ frame and marker targets are not yet met. Isolation remains opt-in pending full
 qualification, including macOS and real agent terminal fixtures. See the
 [validation report](reports/terminal-responsiveness-validation.md).
 
-### R5.3: Status Bar [F5.3] — SHOULD — `done`
+### R5.3: Counts, Spend and Quota (formerly Status Bar) [F5.3] — SHOULD — `done`
 
-The system SHOULD display a status bar with agent counts and keyboard shortcut hints.
+The system SHOULD display agent counts, spend and quota at rest. Since issue #3561 slice 5b there is no bottom status bar: its contents moved to the places below.
 
 **Acceptance criteria:**
-- Bottom bar shows count of agents needing attention
-- Keyboard shortcut hints displayed
-- When at least one live agent has a `finishedAt` in the last 24 hours, show a completed-task chip such as `3 completed / 24h` next to the task/finding counts (issue #2618). Hidden when the count is 0. Tooltip: tasks that reached a terminal status in the last 24 hours; the number is a lower bound because the live snapshot may have dropped older completed rows. This is completed tasks, not unblocked findings. Clicking the visible chip expands the sidebar Completed section if it was collapsed and scrolls it into view on the same project-scoped list (issue #3333). A count refresh must not expand the section.
+- The task list header shows `N tasks · M findings` (test id `task-counts`), the counts the status bar used to show.
+- Spend and quota sit in a footer pinned to the bottom of the left navigation (variant B "triage inbox"): the rolling 24-hour cost, all-time spend, the 24-hour launched and completed chips, and the 5-hour and 7-day Claude plan quota with a bar each. In the 52 px icon rail only the quota percentages show. The same summary is the **Usage** section of the System detail, so it stays reachable on phones, with no tracked project, after `Alt+P` and in terminal focus. All-time spend is no longer in the top bar.
+- The oldest-wait chip sits on the right of the list's **Needs you** header; the reflection prompt is a notice at the top of the list; the focus-zone cue (**Terminal** / **Response**) sits at the end of the reading pane's tab bar; **Help & shortcuts** (the phone status bar's Shortcuts button) is in the System detail and the command palette.
+- Keyboard shortcut hints are in **Help & shortcuts** and the command palette.
+- When at least one live agent has a `finishedAt` in the last 24 hours, show a completed-task chip such as `3 completed / 24h` in the spend and quota summary (issue #2618). Hidden when the count is 0. Tooltip: tasks that reached a terminal status in the last 24 hours; the number is a lower bound because the live snapshot may have dropped older completed rows. This is completed tasks, not unblocked findings. Clicking the visible chip expands the sidebar Completed section if it was collapsed and scrolls it into view on the same project-scoped list (issue #3333). A count refresh must not expand the section.
 - When at least one live agent has a `startedAt` in the last 24 hours, show a launched-task chip such as `3 launched / 24h` next to the completed chip (issue #2632). Hidden when the count is 0. Skip agents with a missing or unparseable start time — do not invent a start from `finishedAt`. Tooltip: tasks that started in the last 24 hours; the number is a lower bound because the live snapshot may have dropped older rows. This is launched tasks, not completed tasks or unblocked findings.
 - Clicking the launched-task chip opens the Diagnostics popover containing the Outcome Scoreboard, matching the command-palette action. If no diagnostics handler is supplied, the chip remains a non-interactive status span.
-- Quiet chrome (issue #3561 slice 2): at rest the bar holds counts, spend (the 24-hour cost chip) and quota only. Host resources, ops-health pills, the time-to-unblock and live-friction chips, speech-to-text, sound and achievements sit in the System detail opened from the top-bar **System** indicator, which turns amber while any of those readouts is degraded. The build hash and deploy controls sit under **About** in the same detail. Bypass mode is a neutral **Bypass mode** chip in the top bar, not a banner, and **Abort all** sits in the rail header's **More actions** menu behind a confirmation.
+- Quiet chrome (issue #3561 slice 2): at rest the chrome holds counts, spend and quota only. Host resources, ops-health pills, the time-to-unblock and live-friction chips, speech-to-text, sound and achievements sit in the System detail opened from the top-bar **System** indicator, which turns amber while any of those readouts is degraded. The build hash and deploy controls sit under **About** in the same detail. Bypass mode is a neutral **Bypass mode** chip in the top bar, not a banner, and **Abort all** sits in the rail header's **More actions** menu behind a confirmation.
 - When at least five `finding_resolved` human-reply samples exist in the last 24 hours, show a time-to-unblock chip in the System detail with the rolling 24-hour unblocked count next to the median wait (issues #2583, #2609). Hide the count copy when `sampleCount` is 0. Skip and snooze are not counted.
-- When at least one finding is active, show an oldest-wait chip next to the finding count using the same live wait timestamps as the overview (issue #2588). The chip is hidden when the finding count is zero. It does not replace the historical time-to-unblock chip. Clicking a visible chip selects the live finding whose wait matches the chip — the older of two live findings, the first in list order on a timestamp tie — and does not select a completed or healthy row (issue #3343). When the click handler is omitted, the chip stays a non-interactive status span.
+- When at least one finding is active, show an oldest-wait chip in the list's **Needs you** header using the same live wait timestamps as the overview (issue #2588). The chip is hidden when the finding count is zero. It does not replace the historical time-to-unblock chip. Clicking a visible chip selects the live finding whose wait matches the chip — the older of two live findings, the first in list order on a timestamp tie — and does not select a completed or healthy row (issue #3343). When the click handler is omitted, the chip stays a non-interactive status span.
 - When the live-friction snapshot has `signalCount > 0`, show a chip in the System detail whose skip and snooze counts (and false-positive count, if that kind is present) match `signals[]` (issue #2596). Hidden when `signalCount` is 0. Tooltip states it is diagnostics-only and does not reorder findings. Clicking it opens the existing Live friction diagnostics panel. Does not change attention-queue ranking or `routingMutationAllowed`.
 
-**Evidence:** `src/frontend/components/StatusBar.tsx`, `src/frontend/components/SystemStatusDetails.tsx`, `src/frontend/components/TopBar.tsx`, `src/frontend/components/FindingsPanel/AbortActiveMenu.tsx`, `src/frontend/components/status-bar-completed-count.ts`, `src/frontend/components/status-bar-launched-count.ts`, `src/frontend/agent-buckets.ts`, `src/frontend/components/live-friction-chip.ts`, `src/frontend/presentation.ts`, `src/frontend/App.tsx`, `src/core/time-to-unblock.ts`, `src/shared/contracts/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`, `GET /api/live-friction-calibration`.
+**Evidence:** `src/frontend/components/UsageSummary.tsx`, `src/frontend/components/OldestFindingWaitChip.tsx`, `src/frontend/components/FindingsPanel.tsx`, `src/frontend/components/SystemStatusDetails.tsx`, `src/frontend/components/TopBar.tsx`, `src/frontend/components/FindingsPanel/AbortActiveMenu.tsx`, `src/frontend/components/status-bar-completed-count.ts`, `src/frontend/components/status-bar-launched-count.ts`, `src/frontend/agent-buckets.ts`, `src/frontend/components/live-friction-chip.ts`, `src/frontend/presentation.ts`, `src/frontend/App.tsx`, `src/core/time-to-unblock.ts`, `src/shared/contracts/time-to-unblock.ts`, `GET /api/diagnostics/time-to-unblock`, `GET /api/live-friction-calibration`.
 
 ### R5.4: Keyboard Shortcuts [F5.4] — SHOULD — `done`
 
@@ -1733,7 +1735,7 @@ The system SHOULD suggest an opt-in reflection task after a supervision session 
 - Thresholds are conservative and explainable to avoid spam
 - Triggering reflection creates a normal Kookr task with concise session context built from the activity-summary foundation
 
-**Evidence:** `src/core/reflection-recommendation.ts`, `src/server/reflection-task.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/ws.ts`, `src/frontend/App.tsx`, `src/frontend/components/StatusBar.tsx`, related tests in `src/core/reflection-recommendation.test.ts`, `src/server/index.test.ts`, `src/server/ws.test.ts`, `src/frontend/components/status-bar-reflection.test.ts`.
+**Evidence:** `src/core/reflection-recommendation.ts`, `src/server/reflection-task.ts`, `src/server/routes/diagnostics-routes.ts`, `src/server/ws.ts`, `src/frontend/App.tsx`, `src/frontend/components/ReflectionPrompt.tsx`, related tests in `src/core/reflection-recommendation.test.ts`, `src/server/index.test.ts`, `src/server/ws.test.ts`, `src/frontend/components/status-bar-reflection.test.ts`.
 
 ---
 
@@ -2331,14 +2333,14 @@ See [speech recognition usage](reference/speech-recognition.md).
 | R4c.2 | — | SHALL | done | ledger-analytics, project-summary |
 | R5.1 | F5.1 | SHALL | done | AgentList |
 | R5.2 | F5.2 | SHALL | done | AgentDetail |
-| R5.3 | F5.3 | SHOULD | done | StatusBar |
+| R5.3 | F5.3 | SHOULD | done | UsageSummary, FindingsPanel |
 | R5.4 | F5.4 | SHOULD | done | App, useStore, DetailPanel |
 | R5.5 | F5.5 | SHALL | done | useWebSocket, ws, useStore |
 | R5.6 | — | SHOULD | done | OnboardingTour, onboarding-status, onboarding-tour E2E |
 | R5.7 | — | SHOULD | done | project-sidebar-store, project-routes, project-sidebar-slice |
 | R5.8 | — | SHOULD | done | prompt-display, monitor, launch-service, Tooltip, DetailPanel, ActivityPanel, ProjectDetailDrawer, FindingsPanel, TopBar |
 | R5.9 | — | SHOULD | done | github-scanner-service, github-state-store, github-fetcher, project-identity |
-| R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, StatusBar |
+| R5.10 | — | SHOULD | done | system-resource-metrics, resource-status-service, useWebSocket, SystemStatusDetails |
 | R5.11 | #2909 | SHALL | done | OnboardingTour, App, onboarding-tour component/E2E tests |
 | R5.12 | FS.4, #2888 | SHALL | done | ProjectDetailDrawer, client-message-schema, config-handler, project-config-store |
 | R6.1 | ADR-007 / ADR-014 | SHALL | done | local-dtach-backend |
@@ -2367,7 +2369,7 @@ See [speech recognition usage](reference/speech-recognition.md).
 | R8.1 | — | SHALL | done | workspace-cleanup-policy, cleanup inspector/projections/service |
 | R8.2 | — | SHALL | done | workspace-cleanup use-cases, shared contracts |
 | R8.3 | — | SHALL | done | workspace-cleanup-service, CleanupCandidateTable |
-| R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, StatusBar |
+| R9.1 | F8.1-F8.3 | SHOULD | done | reflection-recommendation, reflection-task, ReflectionPrompt |
 | R10.1 | F11 | SHALL | done | schedule, schedule-service, schedule-runner, schedule-routes |
 | R10.2 | F11 | SHALL | done | schedule execution ledger, schedule-runner, schedule-routes, SchedulesDialog |
 | R10.3 | F11 | SHALL | done | cron description helpers |

@@ -70,7 +70,7 @@ export async function getSessionHealth(): Promise<unknown> {
 
 /**
  * GET the live-friction calibration snapshot. Throws `HTTP <status>` on a
- * non-2xx. The StatusBar chip hides itself when this fails or when the body
+ * non-2xx. The System live-friction chip hides itself when this fails or when the body
  * is not a `live-friction-calibration.v1` snapshot with `signalCount > 0`.
  */
 export function getLiveFrictionCalibration<T>(signal?: AbortSignal): Promise<T> {
@@ -87,7 +87,7 @@ export function getFindingEvidenceOperationsDiagnostics<T>(signal: AbortSignal):
 
 /**
  * GET the 24-hour human-reply wait snapshot (issues #2583, #2609). Throws
- * `HTTP <status>` on a non-2xx; the StatusBar chip hides itself when this
+ * `HTTP <status>` on a non-2xx; the System time-to-unblock chip hides itself when this
  * fails or when `sampleCount` is below five. The chip label reuses
  * `sampleCount` as the unblocked volume next to the median.
  */

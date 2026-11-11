@@ -45,8 +45,11 @@ vi.mock('./telemetry.js', () => ({
   track: vi.fn(),
 }));
 
+// The status bar is gone (#3561 slice 5b): spend, quota and the 24h counts
+// render in the System detail's Usage section (and the navigation footer,
+// which needs a tracked project). The stub renders that Usage slot.
 vi.mock('./components/TopBar.js', () => ({
-  TopBar: () => React.createElement('div', { 'data-testid': 'top-bar' }),
+  TopBar: (props: { usage?: React.ReactNode }) => React.createElement('div', { 'data-testid': 'top-bar' }, props.usage),
 }));
 
 vi.mock('./components/DetailPanel.js', async () => {

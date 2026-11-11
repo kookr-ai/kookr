@@ -1580,7 +1580,7 @@ export function registerDiagnosticsRoutes(app: Hono, deps: RouteDeps): void {
 
   // Median human-reply wait over the last 24 hours (issue #2583). Reads the
   // existing session interaction JSONL files; does not invent a store.
-  // The StatusBar chip hides itself below five samples — this route still
+  // The System time-to-unblock chip hides itself below five samples — this route still
   // returns the raw snapshot so the threshold stays a UI rule.
   app.get('/api/diagnostics/time-to-unblock', async (c) => {
     const nowMs = deps.nowMs?.() ?? Date.now();

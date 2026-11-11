@@ -1146,6 +1146,12 @@ export function DetailPanel({ agent, send, onLaunch, onLaunchSample, onLaunchPla
                   Split view
                 </button>
               )}
+              {/* Which zone holds the keyboard (#3561 5b: moved from the status bar) */}
+              {focusZone !== 'none' && (
+                <span className="focus-zone-pill" data-testid="focus-zone-cue">
+                  {focusZone === 'terminal' ? 'Terminal' : 'Response'}
+                </span>
+              )}
             </div>}
 
             {/* Pane container: one pane in the tabbed layout, two in split view */}

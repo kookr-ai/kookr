@@ -433,6 +433,12 @@ interface Props {
    */
   labelled?: boolean;
   /**
+   * Spend and quota pinned to the bottom of the navigation (#3561 slice 5b,
+   * the variant B footer). Full rows in the labelled layout; the 52 px icon
+   * rail keeps only the quota percentages (see styles.css).
+   */
+  footer?: React.ReactNode;
+  /**
    * Called when the user requests to adjust the server concurrency cap (e.g.
    * via right-click on the all-projects icon). The parent owns navigation —
    * typically opens Settings deep-linked to the maxActiveTasks field.
@@ -440,7 +446,7 @@ interface Props {
   onAdjustCap?: () => void;
 }
 
-export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true }: Props) {
+export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true, footer }: Props) {
   const {
     visibleProjectSummaries,
     projectSummaries,
@@ -808,6 +814,7 @@ export function ProjectSidebar({ onManage, onAdjustCap, queues, labelled = true 
 
       <div className="project-sidebar-spacer" />
       <OrganizerButton onManage={onManage} />
+      {footer}
 
       {menuProjectId && menuRow && (
         <ProjectContextMenu

@@ -14,7 +14,7 @@ interface DetectionStats {
 // Plain-language explainers for the detection-quality metrics. Without these
 // the panel shows bare "N FP" / "N FN" / "x% fire rate" values an operator
 // can't act on — especially a new user who doesn't know the abbreviations
-// (issue #3001). Mirrors the QuotaDisplay explainer pattern in StatusBar.tsx.
+// (issue #3001). Mirrors the quota explainer pattern in UsageSummary.tsx.
 const FP_EXPLAINER =
   'False positives — detections the operator dismissed as not a real problem. Lower is better.';
 const FN_EXPLAINER =

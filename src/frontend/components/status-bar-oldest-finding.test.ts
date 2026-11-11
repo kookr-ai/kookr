@@ -1,16 +1,19 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar oldest live finding wait (issue #2588). The chip reuses the
- * same wait timestamps the overview formats. Hidden when the findings
- * count is zero; visible next to the count for an aged finding.
+ * Oldest live finding wait chip (issue #2588), now OldestFindingWaitChip in the
+ * list's "Needs you" header (#3561 slice 5b). The chip reuses the same wait
+ * timestamps the overview formats. Hidden when the findings count is zero;
+ * visible for an aged finding. The 24h cost and completed click-throughs it
+ * used to sit beside now live in UsageSummary and are checked separately.
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { OldestFindingWaitChip } from './OldestFindingWaitChip.js';
+import { UsageSummary, useCost24h } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -28,6 +31,10 @@ async function flush() {
   await act(async () => {
     await Promise.resolve();
   });
+}
+
+function UsageHarness(props: Omit<React.ComponentProps<typeof UsageSummary>, 'placement' | 'cost24h'>) {
+  return React.createElement(UsageSummary, { placement: 'nav', cost24h: useCost24h(), ...props });
 }
 
 function stubOutcomeLedger(totalKnownCostUsd: number) {
@@ -51,7 +58,7 @@ function stubOutcomeLedger(totalKnownCostUsd: number) {
   }));
 }
 
-describe('StatusBar oldest finding wait (issue #2588)', () => {
+describe('OldestFindingWaitChip oldest finding wait (issue #2588)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -91,11 +98,9 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
   test('hides the oldest-wait chip when the findings count is zero', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
+        React.createElement(OldestFindingWaitChip, {
           findings: 0,
-          total: 2,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
+          startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
         }),
       );
     });
@@ -108,11 +113,9 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
   test('shows the oldest-wait chip for one aged finding', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
+        React.createElement(OldestFindingWaitChip, {
           findings: 1,
-          total: 2,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
+          startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
         }),
       );
     });
@@ -127,20 +130,13 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
 
   test('clicking the visible chip calls the oldest-finding selector (issue #3343)', async () => {
     const onSelectOldestFinding = vi.fn();
-    const onExpandCompleted = vi.fn();
-    const onOpenCostComparison = vi.fn();
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
+        React.createElement(OldestFindingWaitChip, {
           findings: 2,
-          total: 3,
-          completedLast24h: 3,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
-          onSelectOldestFinding,
-          onExpandCompleted,
-          onOpenCostComparison,
+          startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+          onSelect: onSelectOldestFinding,
         }),
       );
     });
@@ -159,28 +155,32 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
 
     expect(onSelectOldestFinding).toHaveBeenCalledOnce();
-    expect(onExpandCompleted).not.toHaveBeenCalled();
-    expect(onOpenCostComparison).not.toHaveBeenCalled();
   });
 
-  test('keeps completed-count and 24h cost click-throughs when the oldest-wait chip is also wired', async () => {
+  test('keeps completed-count and 24h cost click-throughs separate from the oldest-wait chip', async () => {
     const onSelectOldestFinding = vi.fn();
     const onExpandCompleted = vi.fn();
     const onOpenCostComparison = vi.fn();
     stubOutcomeLedger(12.3);
 
+    // The oldest-wait chip and the usage summary are separate components now;
+    // each click must reach only its own handler.
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          completedLast24h: 3,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
-          onSelectOldestFinding,
-          onExpandCompleted,
-          onOpenCostComparison,
-        }),
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(OldestFindingWaitChip, {
+            findings: 1,
+            startedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
+            onSelect: onSelectOldestFinding,
+          }),
+          React.createElement(UsageHarness, {
+            completedLast24h: 3,
+            onExpandCompleted,
+            onOpenCostComparison,
+          }),
+        ),
       );
     });
     await flush();
@@ -193,6 +193,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
     expect(onExpandCompleted).toHaveBeenCalledOnce();
     expect(onSelectOldestFinding).not.toHaveBeenCalled();
+    expect(onOpenCostComparison).not.toHaveBeenCalled();
 
     const costChip = container.querySelector<HTMLButtonElement>('[data-testid="cost-24h-chip"]');
     expect(costChip?.tagName).toBe('BUTTON');
@@ -201,6 +202,15 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     });
     expect(onOpenCostComparison).toHaveBeenCalledOnce();
     expect(onSelectOldestFinding).not.toHaveBeenCalled();
+    expect(onExpandCompleted).toHaveBeenCalledOnce();
+
+    const oldestChip = container.querySelector<HTMLButtonElement>('[data-testid="oldest-finding-wait-chip"]');
+    await act(async () => {
+      oldestChip!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(onSelectOldestFinding).toHaveBeenCalledOnce();
+    expect(onExpandCompleted).toHaveBeenCalledOnce();
+    expect(onOpenCostComparison).toHaveBeenCalledOnce();
   });
 
   test('does not invent a clickable chip when the oldest wait is hidden', async () => {
@@ -208,12 +218,10 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
+        React.createElement(OldestFindingWaitChip, {
           findings: 0,
-          total: 2,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
-          onSelectOldestFinding,
+          startedAt: new Date(Date.now() - 12 * 60_000).toISOString(),
+          onSelect: onSelectOldestFinding,
         }),
       );
     });
@@ -237,11 +245,9 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
+        React.createElement(OldestFindingWaitChip, {
           findings: 1,
-          total: 2,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
+          startedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
         }),
       );
     });
@@ -253,7 +259,7 @@ describe('StatusBar oldest finding wait (issue #2588)', () => {
     expect(container.textContent).toContain('oldest 4m');
     expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).not.toBeNull();
     // The historical median moved behind the System indicator (#3561 slice 2);
-    // only the live oldest wait stays in the status bar.
+    // only the live oldest wait chip exists.
     expect(container.textContent).not.toContain('unblocked');
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
   });

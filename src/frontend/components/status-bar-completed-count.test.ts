@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar 24-hour completed-task count (issue #2618). Counts live
+ * Usage-summary 24-hour completed-task count (issue #2618). Counts live
  * agents whose finishedAt falls in the shared 24-hour window — not the
  * unblocked-finding volume from #2609.
  */
@@ -10,11 +10,10 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
-import { TIME_TO_UNBLOCK_MIN_SAMPLES } from '../../shared/contracts/time-to-unblock.js';
 import {
   formatCompletedInWindowChipLabel,
   formatCompletedInWindowChipTitle,
@@ -65,7 +64,7 @@ describe('completed-in-window chip copy (issue #2618)', () => {
   });
 });
 
-describe('StatusBar completed-task count (issue #2618)', () => {
+describe('UsageSummary completed-task count (issue #2618)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -102,11 +101,9 @@ describe('StatusBar completed-task count (issue #2618)', () => {
   test('renders the completed chip from the completedLast24h prop', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 2,
-          total: 5,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 3,
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
@@ -118,17 +115,14 @@ describe('StatusBar completed-task count (issue #2618)', () => {
     expect(chip?.getAttribute('title')).toBe(
       '3 tasks reached a terminal status in the last 24 hours. Lower bound — may miss tasks that finished and then aged out of the live list.',
     );
-    expect(container.textContent).toContain('5 tasks · 2 findings');
   });
 
   test('hides the chip when completedLast24h is 0', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 0,
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
@@ -136,36 +130,23 @@ describe('StatusBar completed-task count (issue #2618)', () => {
 
     expect(container.querySelector('[data-testid="completed-24h-chip"]')).toBeNull();
     expect(container.textContent).not.toContain('completed /');
-    expect(container.textContent).toContain('2 tasks · 1 finding');
   });
 
-  test('keeps the task/finding counts next to the completed count', async () => {
-    stubTimeToUnblock({
-      schemaVersion: 'time-to-unblock.v1',
-      medianMs: 8 * 60_000,
-      sampleCount: TIME_TO_UNBLOCK_MIN_SAMPLES,
-      windowMs: 24 * 60 * 60 * 1000,
-      generatedAt: new Date().toISOString(),
-    });
-
+  test('shows the completed count without the removed status-bar chips', async () => {
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 4,
+        React.createElement(UsageSummary, {
+          placement: 'nav',
           completedLast24h: 3,
-          oldestFindingWaitStartedAt: new Date(Date.now() - 4 * 60_000).toISOString(),
-          onShowShortcuts: vi.fn(),
         }),
       );
     });
     await flushEffects();
 
-    expect(container.textContent).toContain('4 tasks · 1 finding');
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)
       .toBe('3 completed / 24h');
-    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')?.textContent)
-      .toContain('oldest');
+    // The oldest-wait chip lives in OldestFindingWaitChip, not the usage summary.
+    expect(container.querySelector('[data-testid="oldest-finding-wait-chip"]')).toBeNull();
     // The median-unblock chip moved behind the System indicator (#3561 slice 2).
     expect(container.querySelector('[data-testid="time-to-unblock-chip"]')).toBeNull();
     expect(container.querySelector('[data-testid="completed-24h-chip"]')?.textContent)

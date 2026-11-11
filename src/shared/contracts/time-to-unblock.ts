@@ -2,7 +2,7 @@
  * Dashboard product metric: how long findings waited for a human reply.
  *
  * A finding is an agent blocked on a person. Time-to-unblock is how long
- * that wait lasted before someone actually replied. The StatusBar chip
+ * that wait lasted before someone actually replied. The System time-to-unblock chip
  * shows the median of those waits so one hour-scale outlier cannot dominate.
  */
 
@@ -12,7 +12,7 @@ export const TIME_TO_UNBLOCK_SCHEMA_VERSION = 'time-to-unblock.v1' as const;
 export const TIME_TO_UNBLOCK_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Hide the StatusBar chip until this many human-reply samples exist.
+ * Hide the System time-to-unblock chip until this many human-reply samples exist.
  * 5 is large enough that a couple of fast replies cannot paint a false
  * "we are fast" story, and small enough that a working day can fill it.
  */
@@ -41,7 +41,7 @@ export function emptyTimeToUnblockSnapshot(
 }
 
 /**
- * Format a wait for the StatusBar chip: "45s", "12m", "1h 5m", "2d".
+ * Format a wait for the time-to-unblock chip: "45s", "12m", "1h 5m", "2d".
  * Seconds only appear under a minute. Lives here (not in core) so the
  * dashboard can import it without Node fs.
  */
@@ -69,7 +69,7 @@ function formatUnblockWindowLabel(windowMs: number = TIME_TO_UNBLOCK_WINDOW_MS):
 }
 
 /**
- * StatusBar chip label: volume next to speed, e.g. "12 unblocked (24h) · median 8m".
+ * Time-to-unblock chip label: volume next to speed, e.g. "12 unblocked (24h) · median 8m".
  * When `sampleCount` is 0, omit the count so a zero does not look like a cleared queue.
  */
 export function formatTimeToUnblockChipLabel(

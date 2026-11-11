@@ -4,7 +4,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { ReflectionPrompt } from './ReflectionPrompt.js';
 import { SystemStatusDetails } from './SystemStatusDetails.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests, recordAudioAlertDecision } from '../audio/audio-alert-log.js';
@@ -25,7 +25,7 @@ async function flush() {
   });
 }
 
-describe('StatusBar reflection prompt', () => {
+describe('ReflectionPrompt', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -68,18 +68,15 @@ describe('StatusBar reflection prompt', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 0,
-          total: 2,
-          onShowShortcuts: vi.fn(),
-          reflectionSuggestion: {
+        React.createElement(ReflectionPrompt, {
+          suggestion: {
             sessionLabel: '09:00-09:45',
             summary: 'Session had 5 interventions and 2 friction signals.',
             totalInterventions: 5,
             totalFindings: 2,
           },
           onReflect,
-          onDismissReflection,
+          onDismiss: onDismissReflection,
         }),
       );
     });

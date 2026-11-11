@@ -728,7 +728,7 @@ kookr/
 │       ├── markdown.ts                    # Markdown rendering helpers
 │       ├── oss-trends.ts                  # OSS contribution trend aggregation for the dashboard
 │       ├── components/                    # React components — see `src/frontend/components/`
-│       │   # Triage surface: FindingsPanel, DetailPanel, TerminalPanel, TopBar, StatusBar,
+│       │   # Triage surface: FindingsPanel, DetailPanel, TerminalPanel, TopBar, UsageSummary,
 │       │   #                 SnoozeDialog, SnoozeGroup, SentOverlay, Toasts, Tooltip,
 │       │   #                 ConfirmDialog, CompleteDialogFooter, ShortcutsHelp, AchievementToast,
 │       │   #                 DiffPane, DndPill

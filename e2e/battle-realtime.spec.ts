@@ -32,9 +32,9 @@ test.describe('WebSocket real-time updates', () => {
   });
 
   test('snapshot delivered on page load', async ({ page }) => {
-    // The status bar should show 0 tasks — snapshot was received
-    await expect(page.locator('.statusbar')).toContainText('0 tasks');
-    await expect(page.locator('.statusbar')).toContainText('0 findings');
+    // The list header should show 0 tasks — snapshot was received
+    await expect(page.getByTestId('task-counts')).toContainText('0 tasks');
+    await expect(page.getByTestId('task-counts')).toContainText('0 findings');
   });
 
   test('real-time update when agent goes from healthy to needs_input', async ({ page, request }) => {

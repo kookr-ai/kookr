@@ -16,7 +16,7 @@ async function createTask(request: APIRequestContext): Promise<void> {
 }
 
 async function selectTask(page: Page) {
-  await expect(page.locator('.statusbar')).toContainText('1 task', { timeout: 5_000 });
+  await expect(page.getByTestId('task-counts')).toContainText('1 task', { timeout: 5_000 });
   const shareButton = page.getByTestId('task-share-button');
   if (await shareButton.isVisible().catch(() => false)) return;
   await page.locator('.healthy-row, .finding-card').first().click();

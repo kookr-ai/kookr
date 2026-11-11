@@ -1,16 +1,16 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar 24h cost chip click-through (issue #3335). The visible chip
+ * Usage-summary 24h cost chip click-through (issue #3335). The visible chip
  * becomes a button that opens Cost Comparison when App supplies the opener.
- * Isolated StatusBar tests still render a non-button status chip.
+ * Isolated UsageSummary tests still render a non-button status chip.
  */
 
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary, useCost24h } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -21,6 +21,10 @@ function syncGlobalStore() {
     Object.entries(freshState).filter(([, value]) => typeof value !== 'function'),
   );
   useKookrStore.setState(nextData);
+}
+
+function UsageHarness(props: Omit<React.ComponentProps<typeof UsageSummary>, 'placement' | 'cost24h'>) {
+  return React.createElement(UsageSummary, { placement: 'nav', cost24h: useCost24h(), ...props });
 }
 
 function stubOutcomeLedger(body: Record<string, unknown> | null) {
@@ -56,7 +60,7 @@ async function flushEffects() {
   });
 }
 
-describe('StatusBar 24h cost chip click-through (issue #3335)', () => {
+describe('UsageSummary 24h cost chip click-through (issue #3335)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -97,10 +101,7 @@ describe('StatusBar 24h cost chip click-through (issue #3335)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
           onOpenCostComparison,
           onOpenDiagnostics,
         }),
@@ -124,15 +125,12 @@ describe('StatusBar 24h cost chip click-through (issue #3335)', () => {
     expect(onOpenDiagnostics).not.toHaveBeenCalled();
   });
 
-  test('isolated StatusBar tests still render a non-button chip without App wiring', async () => {
+  test('isolated UsageSummary tests still render a non-button chip without App wiring', async () => {
     stubOutcomeLedger(ledgerBody(12.3, 'ready'));
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });
@@ -151,10 +149,7 @@ describe('StatusBar 24h cost chip click-through (issue #3335)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
           onOpenCostComparison,
         }),
       );

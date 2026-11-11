@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 
 /**
- * Status-bar rolling-24h agent-spend chip (issue #3096). Covers the formatter
- * and the zero/low-sample guard, plus the StatusBar rendering sourced from the
+ * Usage-summary rolling-24h agent-spend chip (issue #3096). Covers the formatter
+ * and the zero/low-sample guard, plus the UsageSummary rendering sourced from the
  * outcome-ledger 24h window.
  */
 
@@ -10,7 +10,7 @@ import React from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { StatusBar } from './StatusBar.js';
+import { UsageSummary, useCost24h } from './UsageSummary.js';
 import { createKookrStore, useKookrStore } from '../store/useStore.js';
 import { __resetAudioAlertLogForTests } from '../audio/audio-alert-log.js';
 import { __resetSoundPreferenceForTests } from '../audio/sound.js';
@@ -30,8 +30,12 @@ function syncGlobalStore() {
 
 /**
  * Stub fetch so the outcome-ledger 24h request resolves to `body` and every
- * other StatusBar fetch (time-to-unblock, live-friction) is a benign miss.
+ * other fetch (time-to-unblock, live-friction) is a benign miss.
  */
+function UsageHarness(props: Omit<React.ComponentProps<typeof UsageSummary>, 'placement' | 'cost24h'>) {
+  return React.createElement(UsageSummary, { placement: 'nav', cost24h: useCost24h(), ...props });
+}
+
 function stubOutcomeLedger(body: Record<string, unknown> | null) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
@@ -122,7 +126,7 @@ describe('24h cost chip copy (issue #3096)', () => {
   });
 });
 
-describe('StatusBar 24h cost chip (issue #3096)', () => {
+describe('UsageSummary 24h cost chip (issue #3096)', () => {
   let container: HTMLDivElement;
   let root: Root;
   let localStore: Map<string, string>;
@@ -161,10 +165,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 2,
-          total: 5,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });
@@ -192,10 +193,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
       await act(async () => {
         root.render(
-          React.createElement(StatusBar, {
-            findings: 1,
-            total: 2,
-            onShowShortcuts: vi.fn(),
+          React.createElement(UsageHarness, {
           }),
         );
       });
@@ -223,10 +221,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });
@@ -241,10 +236,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });
@@ -260,10 +252,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });
@@ -277,10 +266,7 @@ describe('StatusBar 24h cost chip (issue #3096)', () => {
 
     await act(async () => {
       root.render(
-        React.createElement(StatusBar, {
-          findings: 1,
-          total: 2,
-          onShowShortcuts: vi.fn(),
+        React.createElement(UsageHarness, {
         }),
       );
     });

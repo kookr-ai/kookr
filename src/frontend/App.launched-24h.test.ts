@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 /**
- * App wiring for the 24-hour launched-task chip (issue #2632). StatusBar
+ * App wiring for the 24-hour launched-task chip (issue #2632). UsageSummary
  * tests inject a number; this file checks that live agents with startedAt
  * actually produce that number, that the chip opens the Outcome Scoreboard's
  * diagnostics popover, and that the completed chip is unchanged.
@@ -40,8 +40,11 @@ vi.mock('./telemetry.js', () => ({
   track: vi.fn(),
 }));
 
+// The status bar is gone (#3561 slice 5b): spend, quota and the 24h counts
+// render in the System detail's Usage section (and the navigation footer,
+// which needs a tracked project). The stub renders that Usage slot.
 vi.mock('./components/TopBar.js', () => ({
-  TopBar: () => React.createElement('div', { 'data-testid': 'top-bar' }),
+  TopBar: (props: { usage?: React.ReactNode }) => React.createElement('div', { 'data-testid': 'top-bar' }, props.usage),
 }));
 
 vi.mock('./components/DetailPanel.js', () => ({

@@ -36,7 +36,8 @@ import { ScheduledTasksHint } from './components/ScheduledTasksHint.js';
 import { shouldShow as scheduledTasksHintShouldShow } from './store/scheduled-tasks-hint-status.js';
 import type { SchedulePrefill } from './components/SchedulesDialog.js';
 import { DetailPanel } from './components/DetailPanel.js';
-import { StatusBar } from './components/StatusBar.js';
+import { UsageSummary, useCost24h } from './components/UsageSummary.js';
+import { ReflectionPrompt } from './components/ReflectionPrompt.js';
 import { Toasts } from './components/Toasts.js';
 import { PluginInstallBanner } from './components/PluginInstallBanner.js';
 import { PluginManagerDialog } from './components/PluginManagerDialog.js';
@@ -1327,6 +1328,7 @@ export function App() {
     const timer = setInterval(() => setWindowNowMs(Date.now()), 60_000);
     return () => clearInterval(timer);
   }, []);
+  const cost24h = useCost24h();
   const completedLast24h = useMemo(
     () => countCompletedInWindow(completed, windowNowMs),
     [completed, windowNowMs],
@@ -1470,6 +1472,16 @@ export function App() {
       consumedExpandNonceRef={consumedExpandNonceRef}
       expandHealthyNonce={expandHealthyNonce}
       consumedExpandHealthyNonceRef={consumedExpandHealthyNonceRef}
+      totalTasks={filteredAgents.length}
+      oldestFindingWaitStartedAt={oldestFindingWait}
+      onSelectOldestFinding={oldestWaitingFinding ? selectOldestWaitingFinding : undefined}
+      notice={reflectionSuggestion && (
+        <ReflectionPrompt
+          suggestion={reflectionSuggestion}
+          onReflect={triggerReflection}
+          onDismiss={dismissReflectionSuggestion}
+        />
+      )}
     />
   );
 
@@ -1511,11 +1523,26 @@ export function App() {
     setSettingsFocus('maxActiveTasks');
     openModal('settings');
   };
+  // Spend and quota (#3561 slice 5b): one poll, two homes. The navigation
+  // footer shows them at rest; the System detail's Usage section keeps them
+  // reachable wherever the navigation is not shown.
+  const renderUsage = (placement: 'nav' | 'system') => (
+    <UsageSummary
+      placement={placement}
+      cost24h={cost24h}
+      completedLast24h={completedLast24h}
+      launchedLast24h={launchedLast24h}
+      onOpenCostComparison={() => openModal('costComparison')}
+      onOpenDiagnostics={openDiagnostics}
+      onExpandCompleted={expandCompletedRail}
+    />
+  );
   const projectSidebar = !terminalFocusActive && (
     <ProjectSidebar
       onManage={() => openModal('projectSidebarManager')}
       onAdjustCap={openSettingsAtMaxActiveTasks}
       labelled={!selectedProjectSummary}
+      footer={renderUsage('nav')}
       queues={{
         needsYou: findings.length,
         working: healthy.length,
@@ -1697,7 +1724,8 @@ export function App() {
           toggleTerminalFocusMode();
         }}
         shortcutBindings={shortcutBindings}
-        onOpenCostComparison={() => openModal('costComparison')}
+        usage={renderUsage('system')}
+        onShowShortcuts={() => openModal('shortcuts')}
         onOpenCapacity={openSettingsAtMaxActiveTasks}
         onOpenLiveFriction={openLiveFrictionDiagnostics}
         onOpenDiagnostics={openDiagnostics}
@@ -1825,22 +1853,6 @@ export function App() {
           {detailPanel}
         </main>
       )}
-      <StatusBar
-        findings={findings.length}
-        oldestFindingWaitStartedAt={oldestFindingWait}
-        total={filteredAgents.length}
-        completedLast24h={completedLast24h}
-        launchedLast24h={launchedLast24h}
-        compact={isMobileViewport}
-        onShowShortcuts={() => openModal('shortcuts')}
-        onOpenDiagnostics={openDiagnostics}
-        onOpenCostComparison={() => openModal('costComparison')}
-        onExpandCompleted={expandCompletedRail}
-        onSelectOldestFinding={oldestWaitingFinding ? selectOldestWaitingFinding : undefined}
-        reflectionSuggestion={reflectionSuggestion}
-        onReflect={triggerReflection}
-        onDismissReflection={dismissReflectionSuggestion}
-      />
       <Toasts />
       <DestructiveUndoToasts
         actions={pendingDestructiveActions}
