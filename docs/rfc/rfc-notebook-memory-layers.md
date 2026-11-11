@@ -1,6 +1,6 @@
 # RFC: Notebook memory layers (project > domain > global) for every Kookr agent
 
-**Status:** Draft (v5, after review round 1 and three independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook #362 via #364, #365); K2-K5 pending (K5 = #3598).
+**Status:** Draft (v6, after review round 1 and four independent merge reviews). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook PRs #364 and #365 for issue #362); K2-K5 pending (K5 = #3598).
 **Date:** 2026-11-10
 **Author:** Jean Ibarz (with Claude)
 
@@ -238,8 +238,12 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
   `diagnostician`, `planner`, `refactorer`, `tester` (1 each). K2 therefore adds
   seed triggers for those five bases (written as situations, from reading each
   shelf's lessons) **and** an explicit `fleet-global` trigger, and its test asserts
-  that after applying the seed to a copy of the live store **no** project shelf is
-  left undescribed.
+  that after applying the seed to a copy of the live store **no canonical-slug
+  project shelf** is left undescribed. Legacy-slug shelves (an alias source in
+  `slug-aliases.json`) are deliberately **not** described: the migration empties
+  them, and `nb` 0.7.0 reaps an emptied *undescribed* shelf but keeps an emptied
+  *described* one as a 0-lesson row (probe), so describing them would leave 7
+  empty project rows behind for good.
 - `scripts/migrate-notebook-slugs.mjs` (new, **dry-run by default**): lists the
   legacy-slug shelves and the exact `nb move` calls that would fold them into
   canonical-slug shelves. `nb` evicts the **lowest-scored** line of a full
@@ -249,7 +253,12 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
   lesson scoring below the target's current minimum unless `--force-low`, (c)
   checks `len(base@slug) <= 128` and reports a name that would fail with
   `bad_args` before starting, (d) is **resumable** (it re-reads the store before
-  every move), and (e) `--apply` tags the store's git repo first
+  every move), (e) predicts and reports `nb move`'s refusal when the target holds a
+  near-duplicate (and moves, then removes, never the reverse), (f) after the last
+  lesson leaves a legacy shelf, confirms it was reaped (it is undescribed, see D4)
+  and reports any that remain, and re-runs the description seed so the canonical
+  shelves the moves created (6 today, all new and undescribed) get their
+  descriptions, and (g) `--apply` tags the store's git repo first
   (`pre-slug-migration`). Every move is its own commit (K1 makes `move`
   auto-commit), so rollback is `git revert` of that range, not `reset --hard`,
   which would discard writes agents make meanwhile. It is an operator action;
@@ -257,7 +266,7 @@ this RFC). Claude Code gets an **index**; opencode will get **content packs**
 
 ### D5. Promotion loop (harness-side, so the global layer is not empty)
 
-A promotion needs to find lessons that appear in more than one project shelf.
+A promotion needs to find lessons that appear in more than one project shelf. Slugs are first resolved through `slug-aliases.json`, so a copy under `@agent-notebook` and one under `@jeanibarz-agent-notebook` (the same repo) are never offered as a cross-project promotion.
 Kookr can do that with `nb list --json` + `nb show --json`, so it does:
 
 - `scripts/promote-notebook-lessons.mjs` (new, **dry-run by default**) finds
@@ -265,8 +274,7 @@ Kookr can do that with `nb list --json` + `nb show --json`, so it does:
   tiers:
   - **Exact group**: equal text after trimming, collapsing whitespace and
     case-folding (conservative; `nb` 0.7.0's `show --json` has no dedup key). The
-    script prints the `nb move` of the highest-scored copy to the domain shelf (or
-    `fleet-global` when the lesson names no work type) plus the
+    script prints the `nb move` of the highest-scored copy to the domain shelf (a move to `fleet-global` needs an explicit reviewer flag, `--to-global <group-id>`, never a default) plus the
     `nb rm --reason obsolete --note duplicate` of the other copies. Only an exact
     group's other copies are ever removed.
   - **Candidate group** (token-overlap above a printed threshold, so paraphrases
@@ -280,7 +288,7 @@ Kookr can do that with `nb list --json` + `nb show --json`, so it does:
   `--apply` tags the store first and shares the migration script's
   sequential-simulation (evictions **and** the one-point aging `nb` applies to the
   oldest surviving line on every over-cap admit), minimum-score and resumability
-  rules.
+  rules; both dry-runs also predict `nb move`'s near-duplicate refusal, and an exact group's `nb rm` runs only after its move succeeded.
 - `.kookr/playbooks/agent-notebook-reflection.md` runs it and runs the shipped
   janitor, and sets `KOOKR_NB_CURATOR=1` for its own `nb` calls.
 - First use is a one-shot **seed pass**. Measured today: 0 exact groups in the
@@ -353,8 +361,8 @@ it relies on is described and alias-covered.
 | Slice | Content | Depends on |
 |---|---|---|
 | K1 | Three small fixes, one commit each, one PR: `bin/nb.js` `move` in `MUTATING` + drift test + `fleet-global` and cross-slug advisories (merged); retro hook sync (batch vote, reason codes, ~150 chars, placement rule, atomic sentinel); `nb list` failure warning in the inject hook. | none |
-| K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + seed triggers for the five bases that have none (`orchestrator`, `diagnostician`, `planner`, `refactorer`, `tester`) + a `fleet-global` trigger, with a test that no project shelf is left undescribed; `plugin/notebooks/slug-aliases.json` (the legacy-to-canonical slug map the migration script reads); `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default; the reflection playbook's promotion step (it runs the promotion script, sets `KOOKR_NB_CURATOR=1`, and only reports; the flag exists so the shim does not warn about the `fleet-global` writes an operator's reviewed `--apply` makes). | K1 (`move` auto-commit) |
-| K3 | `notebook-layers.mjs`, layered index, the shim advisory moved onto it, the index reading K2's `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
+| K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + seed triggers for the five bases that have none (`orchestrator`, `diagnostician`, `planner`, `refactorer`, `tester`) + a `fleet-global` trigger, with a test that no canonical-slug project shelf is left undescribed; `plugin/notebooks/slug-aliases.json` (the legacy-to-canonical slug map) and `plugin/hooks/lib/notebook-layers.mjs` (the single classification module: last-`@` split, case-insensitive slug, alias resolution; unit-tested), which the K2 scripts already use; `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default; the reflection playbook's promotion step (it runs the promotion script, sets `KOOKR_NB_CURATOR=1`, and only reports; the flag exists so the shim does not warn about the `fleet-global` writes an operator's reviewed `--apply` makes). | K1 (`move` auto-commit) |
+| K3 | Layered index and the shim advisory, both moved onto K2's `notebook-layers.mjs`, the index reading K2's `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
 | K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to the 23 agent docs that have a notebook section, by script + guard test; skill scope rule ("open both layers"). | K1 (can ship before or with K3) |
 | K5 | Reviewer and orchestrator routing: `plugin/reviewer-specialists/*.md`, `plugin/skills/pre-pr-review/SKILL.md` and `src/core/reviewer-fanout.ts` (still one shelf, "≤120 chars") get the same two-layer read and placement rule. | K4 |
 
@@ -374,7 +382,7 @@ comparison is like for like. Read a week after K1+K2+K3:
 
 - Rows injected per session for `jeanibarz-agent-notebook`: 44 → 29 (the 15 other-project shelves hidden; 22 would be hidden without the alias file, wrongly including this repo's 7 legacy shelves).
 - `add` error rate and its `too_long` share fall from 35% / 96%.
-- Undescribed project shelves: 24 → 0.
+- Undescribed project shelves: 17 canonical-slug shelves described by K2's seed (24 minus the 7 legacy ones, which are retired, not described); after the migration `--apply`, the 6 new canonical shelves it creates are described by the re-run seed, giving 0 undescribed.
 - Agent-definition audit: agent docs with a notebook section that lack the shared
   Notebook Protocol (both layers): 23 of 23 → 0 (14 name only a bare shelf, 9 only a
   project shelf).
@@ -518,6 +526,17 @@ grouping and never cuts the project group, the unset-slug and mixed-case rules f
 subagents, the `KOOKR_NB_CURATOR` purpose, and stale status/A2/A3 wording. Left as
 noted: D5's exact-match normalization is deliberately narrower than `nb`'s own
 `dedupKey` (the safe direction).
+
+Fourth independent merge review (blind Opus-class, exact head `4da9c756`): **BLOCK**,
+one confirmed defect, fixed in v6: describing the 7 legacy-slug shelves (v5) stops
+`nb` from reaping them once the migration empties them (probe: an emptied *described*
+shelf stays as a 0-lesson row, an emptied *undescribed* one is reaped), so the alias
+file could never be retired and the legacy advisory could never turn on. Legacy
+shelves are now left undescribed, the migration confirms their reaping and re-runs
+the seed for the new canonical shelves. Non-blocking notes taken: the classifier module
+moves into K2 so its scripts share it, promotion resolves aliases before grouping,
+moves to `fleet-global` need an explicit reviewer flag, both dry-runs predict the
+near-duplicate refusal, and the status line was corrected.
 
 Intent preservation check: the operator asked for (1) check what changed in the
 release and adapt the harness, (2) make agents aware of project > domain > global
