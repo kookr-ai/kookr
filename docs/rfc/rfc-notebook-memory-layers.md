@@ -1,6 +1,6 @@
 # RFC: Notebook memory layers (project > domain > global) for every Kookr agent
 
-**Status:** Draft (v2, after review round 1)
+**Status:** Draft (v3, after review round 1 and the independent merge review). Progress: K1 merged (#3595); upstream janitor signals merged (agent-notebook #362 via #364, #365); K2-K4 pending.
 **Date:** 2026-11-10
 **Author:** Jean Ibarz (with Claude)
 
@@ -22,7 +22,7 @@ This RFC does three things:
 1. Defines each layer in terms of **shelf names that already exist** in `nb`
    (no new storage, no new tool concept).
 2. Makes the Claude Code session-start and end-of-task hooks layer-aware **and**
-   the 25 agent definitions and the spawn skill (which is where subagents,
+   the 23 agent definitions that have a notebook section and the spawn skill (which is where subagents,
    the bulk of memory use, actually get their shelf names), using only released
    `agent-notebook` 0.7.0, and fixes the places where the harness misuses the
    0.6/0.7 CLI.
@@ -45,7 +45,7 @@ rejected.
 pins it. So there are two separate gaps:
 
 - **Released features Kookr does not use correctly** (0.6/0.7): evidence below.
-- **Unreleased work on upstream `main`** (50 commits: `nb doctor`, new-shelf
+- **Unreleased work on upstream `main`** (52 commits at last count: `nb doctor`, new-shelf
   notice #354, case-collision refusal #337, merge-marker refusal #352, per-shelf
   add-rate stats #353). Using it needs a 0.8.0 release. Publishing to npm is
   irreversible, so it is an operator decision, not part of this RFC's slices.
@@ -63,9 +63,10 @@ pins it. So there are two separate gaps:
 | E7 | `nb stats`: `add` 35% errors over 883 calls, 96% of the classified ones `too_long`; `vote` 16% errors; `move` 2/2 failed. Kookr's retro hook text says "≤200 chars" without upstream's "aim ~150" guidance, passes free text as `--reason` where `nb` expects a code (accepted as `other`, so `nb stats` cannot group the reasons), and teaches single-id votes though batch voting exists. | The write path itself is wasting calls, and it is where layer placement must be taught. |
 | E8 | `bin/nb.js` copies its own `MUTATING` set (`add vote merge rm split describe`). `move` is missing, so a promotion is never auto-committed to the store's git history (0 `nb move` commits in the store log). Upstream fixed the same bug in its example wrapper (#253). | Promotion is the verb that moves lessons up a layer; it must be recoverable. |
 | E9 | `nb-inject.mjs` swallows a failing `nb list` and injects nothing; upstream's example hook prints a warning. | A broken store looks like an empty one. |
-| E10 | Hermes shadow runs: memory had no measurable effect because "the packs held almost no lessons relevant to the issue". | Layer content must be relevant (project-first), not merely larger. |
+| E10 | Hermes shadow runs: memory had no measurable effect because "the packs held almost no lessons relevant to the issue" (operator-published Hermes shadow-run findings; not in this repo). | Layer content must be relevant (project-first), not merely larger. |
+| E11 | Of the 25 `plugin/agents/*.md`, 14 hardcode only a bare shelf (`nb show change-verifier`), 9 already name only a project shelf (`X@<owner>-<repo>`, no domain read), and 2 (`product-owner`, `user-test-simulator`) have no notebook section. None mention `KOOKR_REPO_SLUG` as a variable, and they teach quoted-id votes and a "≤120 chars" target. They say plainly that "a subagent gets no SessionStart index injection". The `notebook-role-reuse` skill offers project *or* domain, "pick one per spawn", never both. The most-opened shelves (`orchestrator@…`, `code-review@…`, `change-verifier`, `test-quality-reviewer`) are opened by name from these files. | The routing layer for subagents is the agent definitions, not the hook. A hook-only change would leave most memory use where it is. |
 
-| E11 | All 25 `plugin/agents/*.md` hardcode one bare shelf (`nb show change-verifier`), none mention `KOOKR_REPO_SLUG` or a project shelf, and they teach quoted-id votes and a "≤120 chars" target. They say plainly that "a subagent gets no SessionStart index injection". The `notebook-role-reuse` skill offers project *or* domain, "pick one per spawn", never both. The most-opened shelves (`orchestrator@…`, `code-review@…`, `change-verifier`, `test-quality-reviewer`) are opened by name from these files. | The routing layer for subagents is the agent definitions, not the hook. A hook-only change would leave most memory use where it is. |
+E7-E9 describe the state before slice K1; K1 (#3595) has since fixed E8, E9 and the retro-text parts of E7.
 
 Source pointers: `plugin/hooks/nb-inject.mjs`, `plugin/hooks/nb-retro.mjs`,
 `bin/nb.js` (`MUTATING`), `src/adapters/agent-launch-context.ts` (exports
@@ -98,7 +99,7 @@ Rules:
   a group, not the reason to merge shelves: consolidation stays deferred, as in
   the shelf-reorg RFC.
 - **Slug is canonical:** exactly `KOOKR_REPO_SLUG`. Shelves under another slug
-  for the same repo are legacy and are migrated (see slice K3).
+  for the same repo are legacy and are migrated (see slice K2).
 - **Parsing rule (one place, tested):** split the shelf name on the **last** `@`;
   the part after it is the slug, compared **case-insensitively** and after
   trimming. A name with no `@` is bare. `a@b@slug`, `a@@slug` and
@@ -121,7 +122,7 @@ gains grouping. This reverses a stated choice in the hook's header comment
 still never opens a shelf *for* the agent.
 
 1. Read `KOOKR_REPO_SLUG`. Missing, or `KOOKR_NB_LAYERS=0` (the kill switch) →
-   behave exactly as today (flat index).
+   behave as today (flat index, still capped by item 6 below).
 2. Run `nb list --json` (works on 0.7.0). Classify each row with the shared
    classifier (D3). A shelf `base@s` is in the project layer when `s` equals the
    slug **or** `plugin/notebooks/slug-aliases.json` maps `s` to the slug (today:
@@ -184,10 +185,15 @@ open the shelf their agent file names. So the layer vocabulary must be in those
 files. One shared **Notebook Protocol** block (single source in
 `plugin/skills/notebook-role-reuse/`, copied into each agent doc by a script and
 checked by a test, as the shelf-reorg RFC did for its FR-1 guard) replaces the
-per-agent text:
+per-agent text. It is applied to the 23 agent docs that have a notebook section; the 2 that have none are left alone (a read-only role must not start writing the notebook):
 
 - Start: `nb show <domain-shelf>`, and if it exists `nb show <domain-shelf>@$KOOKR_REPO_SLUG`
-  (project layer, applies first on conflict). Missing shelf is fine.
+  (project layer, applies first on conflict). Missing shelf is fine. A subagent
+  inherits its parent's slug even when its task is in another repo, so the block
+  says: use `$KOOKR_REPO_SLUG` only when your task works in the session's own
+  repo; otherwise skip the project read and write, and say so. Until K2's
+  migration is applied, shelves under a legacy slug are not read by this line;
+  that gap is accepted and the migration closes it.
 - End: vote by id (`id1,id2` batch), `nb rm … --reason wrong|obsolete`, and
   `nb add` to the project shelf unless the lesson would be true in another repo,
   in which case the domain shelf. Never `fleet-global` directly. ~150 characters.
@@ -204,7 +210,7 @@ main session.
 
 The layer rules (the `fleet-global` name, the slug rule, aliases, the precedence
 order) live in **one dependency-free ES module**,
-`plugin/hooks/lib/notebook-layers.mjs`. Only the hook uses it today. The opencode
+`plugin/hooks/lib/notebook-layers.mjs`. The hook and the shim's advisory (K3 moves it off its own first-`@` split) use it. The opencode
 adapter (`opencode-shelf-memory.ts`) does **not** get a TS copy now: its layered
 composer (slice S3 of #3541) is not built, and a classifier written for a future
 caller is speculative. When S3 is built it must import this module (or, if the
@@ -246,8 +252,12 @@ A promotion needs to find lessons that appear in more than one project shelf.
 Kookr can do that with `nb list --json` + `nb show --json`, so it does:
 
 - `scripts/promote-notebook-lessons.mjs` (new, **dry-run by default**) groups
-  lessons across `*@<slug>` shelves of the same base by normalized text (and a
-  token-overlap threshold, both reported), and prints for each group the
+  lessons across `*@<slug>` shelves of the same base by **exact text equality
+  after trimming, collapsing whitespace and case-folding** (conservative; `nb`
+  0.7.0's `show --json` has no dedup key). Only an exact group is eligible for
+  `nb rm`. A fuzzy near-match (similarity score printed) is **report-only**: a
+  lesson and its negation can score as near-identical (#286), and a lesson found in
+  only one copy would be lost. For each exact group it prints the
   `nb move` of the highest-scored copy to the domain shelf (or `fleet-global`
   when the lesson names no work type) plus the `nb rm --reason obsolete --note duplicate` of the
   others. `--apply` tags the store first and shares the migration script's
@@ -294,15 +304,19 @@ No Kookr slice depends on an upstream change or release.
   atomically.
 - **FR-4** `bin/nb.js` SHALL auto-commit every mutating verb, `move` included.
 - **FR-5** Layer classification SHALL have one owning module
-  (`plugin/hooks/lib/notebook-layers.mjs`). A second implementation (opencode S3)
-  SHALL import it, or ship with a parity test and an RFC amendment.
+  (`plugin/hooks/lib/notebook-layers.mjs`). The session-start hook **and the
+  `bin/nb.js` shim** (whose K1 advisory currently splits on the first `@`,
+  case-sensitively, unlike the last-`@`, case-insensitive rule above) SHALL import
+  it; a second implementation (opencode S3) SHALL import it too, or ship with a
+  parity test and an RFC amendment.
 - **FR-6** Slices that ship before an `agent-notebook` release SHALL work on
   0.7.0. No slice publishes to npm.
 - **FR-7** The store migration and promotion scripts SHALL default to dry-run
   and tag the store's git repo before `--apply`.
-- **FR-9** Every `plugin/agents/*.md` SHALL carry the shared Notebook Protocol
-  block (both layers on read, narrowest-true layer on write), verified by a test.
 - **FR-8** The hook SHALL be disable-able without a release (`KOOKR_NB_LAYERS=0`).
+- **FR-9** Every `plugin/agents/*.md` that has a notebook section SHALL carry the
+  shared Notebook Protocol block (both layers on read, narrowest-true layer on
+  write, slug caveat for subagents), verified by a test.
 
 Non-goals: merging shelves by co-access; injecting lesson *content* into Claude
 Code sessions; enforcing precedence in code; changing the 50-line cap; migrating
@@ -315,10 +329,10 @@ it relies on is described and alias-covered.
 
 | Slice | Content | Depends on |
 |---|---|---|
-| K1 | Three small fixes, one commit each, one PR: `bin/nb.js` `move` in `MUTATING` + drift test + `fleet-global` advisory; retro hook sync (batch vote, reason codes, ~150 chars, placement rule, atomic sentinel); `nb list` failure warning in the inject hook. | none |
+| K1 | Three small fixes, one commit each, one PR: `bin/nb.js` `move` in `MUTATING` + drift test + `fleet-global` and cross-slug advisories (merged); retro hook sync (batch vote, reason codes, ~150 chars, placement rule, atomic sentinel); `nb list` failure warning in the inject hook. | none |
 | K2 | Store tooling: project-shelf descriptions in the seed (applied to the live store, idempotent, never overwrites a human description) + `fleet-global` trigger; `migrate-notebook-slugs.mjs` and `promote-notebook-lessons.mjs`, both dry-run by default; the reflection playbook's promotion step (it runs the promotion script, sets `KOOKR_NB_CURATOR=1`, and only reports). | K1 (`move` auto-commit) |
-| K3 | `notebook-layers.mjs`, layered index, `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
-| K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to all 25 agent docs by script + guard test; skill scope rule ("open both layers"). | K1 (can ship before or with K3) |
+| K3 | `notebook-layers.mjs`, layered index, the shim advisory moved onto it, `slug-aliases.json`, kill switch, fixture test on a snapshot of the 44-shelf store, baseline numbers in the PR. | K1, K2 (descriptions applied) |
+| K4 | D2b: shared Notebook Protocol block in the `notebook-role-reuse` skill, applied to the 23 agent docs that have a notebook section, by script + guard test; skill scope rule ("open both layers"). | K1 (can ship before or with K3) |
 
 Upstream (`jeanibarz/agent-notebook`): **A2** (neutral janitor signals), **A3**
 (layers documentation; written to describe what Kookr does, no code).
@@ -337,8 +351,9 @@ comparison is like for like. Read a week after K1+K2+K3:
 - Rows injected per session for `jeanibarz-agent-notebook`: 44 → 29 (the 15 other-project shelves hidden; 22 would be hidden without the alias file, wrongly including this repo's 7 legacy shelves).
 - `add` error rate and its `too_long` share fall from 35% / 96%.
 - Undescribed project shelves: 24 → 0.
-- Agent-definition audit: agent docs hardcoding a bare shelf with no project
-  line: 25 of 25 → 0.
+- Agent-definition audit: agent docs with a notebook section that lack the shared
+  Notebook Protocol (both layers): 23 of 23 → 0 (14 name only a bare shelf, 9 only a
+  project shelf).
 - Relevance proxy: share of `show` calls that target a project-layer shelf, and
   `+1` votes per injected shelf, per session (`nb stats`, keyed by `NB_SESSION`).
   Expect the first to rise; if it does not, the index grouping did not change
@@ -364,7 +379,8 @@ proven.
   the migration; the hidden count and slug are always printed so a wrong filter
   is visible, and `KOOKR_NB_LAYERS=0` turns the feature off with no release.
 - **Full target shelf on migration/promotion**: `nb move` evicts the target's
-  stalest other lesson. The migration dry-run lists these before anything runs.
+  lowest-scored other lesson (note `nb --help` still says "stalest"; the code
+  evicts by score). The migration dry-run lists these before anything runs.
 - **Slug collisions and drift**: `a-b/c` and `a/b-c` both produce `a-b-c`; a
   fork produces `forkowner-repo`, a different slug from upstream (separate shelf
   sets); a repo with no remote gets `local-<dirname>`, so each differently named
@@ -397,13 +413,13 @@ proven.
    deferred above (D6). A `.`-prefix filter was considered as a smaller upstream
    alternative: it cannot express "everything except other projects' `@`
    shelves", and `.` already means namespace.
+5. **Make the hook derive the slug from `git remote`.** Rejected:
+   `KOOKR_REPO_SLUG` already exists and is the canonical form.
 6. **Inject the project layer's content (a byte-capped top-scored pack) into
    Claude Code sessions.** Deferred with a number: the project layer is ~17 KB
    for `jeanibarz-agent-notebook` (about 4k tokens per session) and ~12 KB for
    `kookr-ai-kookr`. Reconsider as a flag-gated follow-up once the baseline shows
    whether agents open project shelves after the grouped index.
-5. **Make the hook derive the slug from `git remote`.** Rejected:
-   `KOOKR_REPO_SLUG` already exists and is the canonical form.
 
 ## Critic feedback incorporated
 
@@ -441,6 +457,18 @@ cut. Result: a small harness-side dry-run script instead of an upstream feature.
 
 Invocation log: ambition-amplifier 2026-11-10: novel finding (global layer empty by construction; outcome metric).
 
+Independent merge review (blind Opus-class reviewer, exact head `cd16c5e1`, 2026-11-11):
+**BLOCK**, two confirmed defects, both fixed in v3: (1) the promotion script used
+fuzzy matching to pick copies to `nb rm`, which can delete a lesson that says the
+opposite (#286) or one found in only one copy, so removal is now exact-text-only and
+fuzzy matches are report-only (D5); (2) the single-owner parsing rule contradicted
+the merged K1 shim, which splits on the first `@` case-sensitively, so FR-5 now
+makes the shim import the same module (K3). Non-blocking notes also fixed: E11
+counts (14 bare-only, 9 project-only, 2 without a notebook section, so 23 docs not
+25), the subagent-slug caveat in D2b, "lowest-scored" eviction wording, the K3→K2
+migration reference, the D1 fallback wording, slice table, FR/alternative order,
+and stale status text.
+
 Intent preservation check: the operator asked for (1) check what changed in the
 release and adapt the harness, (2) make agents aware of project > domain > global
 structure, (3) decide whether `agent-notebook` should grow features. All three
@@ -450,7 +478,7 @@ silently.
 
 general-purpose 2026-11-10: consensus-attack — **finding**. The panel assumed
 the injected index is how agents choose shelves. Checked and confirmed against
-`plugin/agents/*.md`: all 25 hardcode a bare shelf and subagents get no index,
+`plugin/agents/*.md`: every agent with a notebook section names one shelf by hand (14 bare, 9 project-only; 2 have no section) and subagents get no index,
 so a hook-only design would leave most memory use unchanged and its success
 metric could not tell the difference. Incorporated (one revision): E11, D2b,
 FR-9, K4 widened, the agent-definition audit measure, and the honest-limit text.
