@@ -177,6 +177,14 @@ characters) to the project shelf unless the lesson is true in another repo, then
 to the unscoped shelf. It never writes `fleet-global`. This is the same placement
 rule the retrospective nudge above states.
 
+Two limits are accepted. (1) A subagent inherits its parent's `KOOKR_REPO_SLUG`
+even when its task is in another repo, so the block tells it to use the slug only
+when the task works in the session's own repo. (2) The block reads the literal
+name `<shelf>@$KOOKR_REPO_SLUG`, so a shelf written earlier under a different
+spelling of the repo's slug (a legacy slug) is not read until it is migrated to
+the current slug. Opening a project shelf that does not exist is harmless: `nb show`
+exits 0 and creates nothing, though `nb stats` may list it as shown but never voted.
+
 The block has one source, `plugin/skills/notebook-role-reuse/references/notebook-protocol.md`.
 `node scripts/apply-notebook-protocol.mjs` copies it into each agent doc (with the
 agent's own shelf name), and `src/plugin/notebook-protocol.test.ts` fails when a

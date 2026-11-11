@@ -31,7 +31,7 @@ const scriptPath = join(repoRoot, 'scripts', 'apply-notebook-protocol.mjs');
 const template = readFileSync(DEFAULT_TEMPLATE as string, 'utf-8');
 const agentsDir = DEFAULT_AGENTS_DIR as string;
 
-/** Agent docs that have a notebook section, and the two that must stay without one. */
+/** Agent docs that deliberately have no notebook section (a role that never wrote the notebook must not start). */
 const NO_NOTEBOOK = ['product-owner.md', 'user-test-simulator.md'];
 const agentFiles = readdirSync(agentsDir).filter((f) => f.endsWith('.md')).sort();
 const withProtocol = agentFiles.filter((f) => !NO_NOTEBOOK.includes(f));
@@ -119,16 +119,19 @@ describe('notebook protocol source (plugin/skills/notebook-role-reuse/references
 // ---- the applied copies -----------------------------------------------------------------
 
 describe('plugin/agents/*.md carry the shared Notebook Protocol', () => {
-  test('exactly the 23 docs with a notebook section are covered, and the 2 without one stay without', () => {
-    expect(agentFiles).toHaveLength(25);
-    expect(withProtocol).toHaveLength(23);
+  test('every doc with a notebook section is covered, and the two read-only-by-design docs stay without one', () => {
+    expect(withProtocol.length).toBeGreaterThan(0);
+    expect(withProtocol.every((f) => !NO_NOTEBOOK.includes(f))).toBe(true);
     for (const f of NO_NOTEBOOK) {
+      expect(agentFiles, `${f} moved or was renamed; update NO_NOTEBOOK`).toContain(f);
       const doc = readFileSync(join(agentsDir, f), 'utf-8');
       expect(findSection(doc), `${f} must not gain a notebook section`).toBeNull();
       expect(doc).not.toMatch(/\bnb (?:show|add|vote|rm)\b/);
     }
+    // A new agent doc must carry the section, or be added to NO_NOTEBOOK on purpose; otherwise
+    // it would silently dodge every check below.
     for (const f of withProtocol) {
-      expect(findSection(readFileSync(join(agentsDir, f), 'utf-8')), `${f} lost its section`).not.toBeNull();
+      expect(findSection(readFileSync(join(agentsDir, f), 'utf-8')), `${f} has no Notebook Protocol section`).not.toBeNull();
     }
   });
 
