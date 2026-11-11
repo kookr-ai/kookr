@@ -112,7 +112,8 @@ This task may run unattended. Do not ask questions; decide and report.
   `decide` (the operator chooses), `junk` (not a lesson), `investigate` (the
   finding itself is unverified; keep the entry).
 - Shell variables do not survive from one command call to the next. Phase 1
-  prints the three file paths; use those literal paths in later commands. The
+  prints the reports directory and the three file paths; use those literal
+  paths in later commands. The
   snippets are bash.
 
 ## Phases
@@ -132,7 +133,7 @@ nb list --limit 1000 | awk 'NR>1 {print $1}' | while read -r shelf; do
   printf '=== SHELF: %s\n%s\n\n' "$shelf" "$(printf '%s\n' "$out" | grep -v '^# vote by id')"
 done > "$SNAP"
 grep -c '^=== SHELF: ' "$SNAP"; grep -cE '^[0-9a-f]{6}  \[' "$SNAP"
-printf 'SNAP=%s\nMAP=%s\nREPORT=%s\n' "$SNAP" "$REPORTS/notebook-retrofit-$STAMP.map.tsv" "$REPORTS/notebook-retrofit-$STAMP.md"
+printf 'REPORTS=%s\nSNAP=%s\nMAP=%s\nREPORT=%s\n' "$REPORTS" "$SNAP" "$REPORTS/notebook-retrofit-$STAMP.map.tsv" "$REPORTS/notebook-retrofit-$STAMP.md"
 ```
 
 Check the two counts against `nb list` (shelf count, and the sum of its lesson
@@ -142,7 +143,7 @@ counts). If they differ, fix the snapshot before going on.
 
 The previous run is the stamp, other than this run's, that has **both** a
 `.map.tsv` and a `.shelves.txt` in the reports directory and whose map was
-modified most recently (`ls -t "$REPORTS"/notebook-retrofit-*.map.tsv`). Use
+modified most recently (`ls -t <REPORTS path Phase 1 printed>/notebook-retrofit-*.map.tsv`). Use
 that map and that snapshot as a pair. Ignore a snapshot that has no map: it is
 left over from a run that did not finish, and diffing against it hides entries
 for good. Also find the umbrella issue.
